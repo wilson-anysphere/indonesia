@@ -1131,7 +1131,7 @@ fn collect_type_var_constraints(
 ) {
     match pattern {
         Type::TypeVar(id) => {
-            mapping.entry(*id).or_insert_with(|| actual.clone());
+            insert_type_var_constraint(mapping, *id, actual);
         }
         Type::Array(p_elem) => {
             if let Type::Array(a_elem) = actual {
@@ -1160,6 +1160,26 @@ fn collect_type_var_constraints(
         }
         _ => {}
     }
+}
+
+fn insert_type_var_constraint(mapping: &mut HashMap<TypeVarId, Type>, id: TypeVarId, actual: &Type) {
+    use std::collections::hash_map::Entry;
+
+    match mapping.entry(id) {
+        Entry::Vacant(v) => {
+            v.insert(actual.clone());
+        }
+        Entry::Occupied(mut o) => {
+            let current = o.get();
+            if is_placeholder_type_for_inference(current) && !is_placeholder_type_for_inference(actual) {
+                o.insert(actual.clone());
+            }
+        }
+    }
+}
+
+fn is_placeholder_type_for_inference(ty: &Type) -> bool {
+    matches!(ty, Type::Unknown | Type::Error | Type::Null)
 }
 
 fn most_specific<'a>(
@@ -1225,6 +1245,44 @@ pub fn infer_var_type(initializer: Option<Type>) -> Type {
     initializer.unwrap_or(Type::Error)
 }
 
+/// Infer type arguments for a generic method given a call site.
+///
+/// This is a small, constraint-based solver (far from full JLS 18), but it's
+/// sufficient for common IDE use-cases.
+///
+/// The `owner` is the declaring class/interface of `method`.
+pub fn infer_type_arguments(
+    env: &dyn TypeEnv,
+    call: &MethodCall<'_>,
+    owner: ClassId,
+    method: &MethodDef,
+) -> Vec<Type> {
+    if method.type_params.is_empty() {
+        return Vec::new();
+    }
+
+    if !call.explicit_type_args.is_empty() {
+        return call.explicit_type_args.clone();
+    }
+
+    let mut receiver = call.receiver.clone();
+    if let Type::Named(name) = &receiver {
+        if let Some(id) = env.lookup_class(name) {
+            receiver = Type::class(id, vec![]);
+        }
+    }
+
+    let class_subst = class_substitution_for_owner(env, &receiver, owner);
+    let params = method
+        .params
+        .iter()
+        .map(|t| substitute(t, &class_subst))
+        .collect::<Vec<_>>();
+    let return_type = substitute(&method.return_type, &class_subst);
+
+    infer_type_arguments_from_call(env, method, &params, &return_type, call)
+}
+
 pub fn infer_diamond_type_args(env: &dyn TypeEnv, class: ClassId, target: Option<&Type>) -> Vec<Type> {
     let Some(class_def) = env.class(class) else {
         return Vec::new();
@@ -1240,8 +1298,33 @@ pub fn infer_diamond_type_args(env: &dyn TypeEnv, class: ClassId, target: Option
         }
     }
 
-    // Fall back to Object for each type parameter.
     let object = Type::class(env.well_known().object, vec![]);
+
+    // Best-effort: infer type parameters from a supertype target, e.g.
+    // `List<String> xs = new ArrayList<>()` => `ArrayList<String>`.
+    if let Some(target_ty) = target {
+        let target_class = match target_ty {
+            Type::Class(ct) => Some(ct.clone()),
+            Type::Named(name) => env.lookup_class(name).map(|id| ClassType { def: id, args: vec![] }),
+            _ => None,
+        };
+
+        if let Some(target_class) = target_class {
+            if !target_class.args.is_empty() {
+                if let Some(mapping) =
+                    infer_class_type_arguments_from_target(env, class, target_class.def, &target_class.args)
+                {
+                    return class_def
+                        .type_params
+                        .iter()
+                        .map(|id| mapping.get(id).cloned().unwrap_or_else(|| object.clone()))
+                        .collect();
+                }
+            }
+        }
+    }
+
+    // Fall back to Object for each type parameter.
     vec![object; class_def.type_params.len()]
 }
 
@@ -1277,6 +1360,147 @@ pub fn infer_lambda_param_types(env: &dyn TypeEnv, target: &Type) -> Option<Vec<
         .map(|t| substitute(t, &subst))
         .collect();
     Some(params)
+}
+
+fn class_substitution_for_owner(
+    env: &dyn TypeEnv,
+    receiver: &Type,
+    owner: ClassId,
+) -> HashMap<TypeVarId, Type> {
+    let mut subst = HashMap::new();
+
+    let Type::Class(ClassType { def, args }) = receiver else {
+        return subst;
+    };
+
+    let owner_instantiation = instantiate_as(env, *def, args.clone(), owner);
+    let Some(owner_instantiation) = owner_instantiation else {
+        return subst;
+    };
+
+    let Some(owner_def) = env.class(owner) else {
+        return subst;
+    };
+
+    if owner_def.type_params.len() != owner_instantiation.len() {
+        return subst;
+    }
+
+    subst.extend(
+        owner_def
+            .type_params
+            .iter()
+            .copied()
+            .zip(owner_instantiation.into_iter()),
+    );
+
+    subst
+}
+
+fn instantiate_as(
+    env: &dyn TypeEnv,
+    start_def: ClassId,
+    start_args: Vec<Type>,
+    target_def: ClassId,
+) -> Option<Vec<Type>> {
+    let mut queue = VecDeque::new();
+    let mut seen = HashSet::new();
+    queue.push_back(Type::class(start_def, start_args));
+
+    while let Some(current) = queue.pop_front() {
+        let Type::Class(ClassType { def, args }) = current.clone() else {
+            continue;
+        };
+        if !seen.insert((def, args.clone())) {
+            continue;
+        }
+
+        if def == target_def {
+            return Some(args);
+        }
+
+        let Some(class_def) = env.class(def) else {
+            continue;
+        };
+        let subst = class_def
+            .type_params
+            .iter()
+            .copied()
+            .zip(args.into_iter())
+            .collect::<HashMap<_, _>>();
+
+        if let Some(sc) = &class_def.super_class {
+            queue.push_back(substitute(sc, &subst));
+        }
+        for iface in &class_def.interfaces {
+            queue.push_back(substitute(iface, &subst));
+        }
+    }
+
+    None
+}
+
+fn infer_class_type_arguments_from_target(
+    env: &dyn TypeEnv,
+    class: ClassId,
+    target_def: ClassId,
+    target_args: &[Type],
+) -> Option<HashMap<TypeVarId, Type>> {
+    let class_def = env.class(class)?;
+    if class_def.type_params.is_empty() {
+        return None;
+    }
+
+    // Start with a symbolic instantiation: `C<T1, T2, ...>`.
+    let start_args = class_def
+        .type_params
+        .iter()
+        .copied()
+        .map(Type::TypeVar)
+        .collect::<Vec<_>>();
+    let mut queue = VecDeque::new();
+    let mut seen = HashSet::new();
+    queue.push_back(Type::class(class, start_args));
+
+    while let Some(current) = queue.pop_front() {
+        let Type::Class(ClassType { def, args }) = current.clone() else {
+            continue;
+        };
+        if !seen.insert((def, args.clone())) {
+            continue;
+        }
+
+        if def == target_def {
+            if args.len() != target_args.len() {
+                return None;
+            }
+            let mut mapping = HashMap::new();
+            for (pattern, actual) in args.iter().zip(target_args) {
+                collect_type_var_constraints(&mut mapping, pattern, actual);
+            }
+            return Some(mapping);
+        }
+
+        let Some(current_def) = env.class(def) else {
+            continue;
+        };
+
+        let subst = current_def
+            .type_params
+            .iter()
+            .copied()
+            .zip(args.into_iter())
+            .collect::<HashMap<_, _>>();
+
+        if let Some(sc) = &current_def.super_class {
+            queue.push_back(substitute(sc, &subst));
+        }
+        for iface in &current_def.interfaces {
+            queue.push_back(substitute(iface, &subst));
+        }
+    }
+
+    None
 }
 
 // === Minimal expression typing ==============================================
@@ -1457,6 +1681,91 @@ mod tests {
 
         assert!(is_subtype(&env, &al_string, &list_string));
         assert!(!is_subtype(&env, &list_string, &list_object));
+    }
+
+    #[test]
+    fn diamond_inference_uses_target_supertype() {
+        let env = store();
+        let array_list = env.class_id("java.util.ArrayList").unwrap();
+        let list = env.class_id("java.util.List").unwrap();
+
+        let string = Type::class(env.well_known().string, vec![]);
+        let target = Type::class(list, vec![string.clone()]);
+
+        let inferred = infer_diamond_type_args(&env, array_list, Some(&target));
+        assert_eq!(inferred, vec![string]);
+    }
+
+    #[test]
+    fn infer_type_arguments_api_basic_generic_method() {
+        let mut env = store();
+        let object = env.well_known().object;
+        let string = Type::class(env.well_known().string, vec![]);
+
+        let t = env.add_type_param("T", vec![Type::class(object, vec![])]);
+        let util = env.add_class(ClassDef {
+            name: "Util".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            methods: vec![MethodDef {
+                name: "id".to_string(),
+                type_params: vec![t],
+                params: vec![Type::TypeVar(t)],
+                return_type: Type::TypeVar(t),
+                is_static: true,
+                is_varargs: false,
+                is_abstract: false,
+            }],
+        });
+
+        let call = MethodCall {
+            receiver: Type::class(util, vec![]),
+            name: "id",
+            args: vec![string.clone()],
+            expected_return: None,
+            explicit_type_args: vec![],
+        };
+        let method = &env.class(util).unwrap().methods[0];
+        let inferred = infer_type_arguments(&env, &call, util, method);
+        assert_eq!(inferred, vec![string]);
+    }
+
+    #[test]
+    fn infer_type_arguments_prefers_expected_return_over_unknown_arg() {
+        let mut env = store();
+        let object = env.well_known().object;
+        let string = Type::class(env.well_known().string, vec![]);
+
+        let t = env.add_type_param("T", vec![Type::class(object, vec![])]);
+        let util = env.add_class(ClassDef {
+            name: "Util2".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            methods: vec![MethodDef {
+                name: "id".to_string(),
+                type_params: vec![t],
+                params: vec![Type::TypeVar(t)],
+                return_type: Type::TypeVar(t),
+                is_static: true,
+                is_varargs: false,
+                is_abstract: false,
+            }],
+        });
+
+        let call = MethodCall {
+            receiver: Type::class(util, vec![]),
+            name: "id",
+            args: vec![Type::Unknown],
+            expected_return: Some(string.clone()),
+            explicit_type_args: vec![],
+        };
+        let method = &env.class(util).unwrap().methods[0];
+        let inferred = infer_type_arguments(&env, &call, util, method);
+        assert_eq!(inferred, vec![string]);
     }
 
     #[test]
