@@ -373,47 +373,39 @@ fn path_context(tokens: &[Token], cursor: usize) -> Option<(String, Vec<String>)
 }
 
 fn entity_context(tokens: &[Token], cursor: usize) -> bool {
-    // Heuristic: cursor is within the entity identifier following the most
-    // recent FROM/JOIN keyword.
-    let mut kw_idx = None;
+    // Heuristic: cursor is in a position where an entity name is expected.
+    //
+    // This includes:
+    // - immediately after `FROM` / `JOIN`
+    // - immediately after a comma in a multi-`FROM` clause
+    // - within the entity identifier itself (partial typing)
+    let mut current = None;
     for (idx, tok) in tokens.iter().enumerate() {
-        if tok.span.start >= cursor {
+        if tok.span.start > cursor {
             break;
         }
-        if matches!(
-            tok.kind,
-            TokenKind::Keyword(ref k) if k == "FROM" || k == "JOIN"
-        ) {
-            kw_idx = Some(idx);
+        current = Some(idx);
+        if tok.span.end >= cursor {
+            break;
         }
     }
-    let Some(kw_idx) = kw_idx else {
+    let Some(idx) = current else {
         return false;
     };
 
-    let mut idx = kw_idx + 1;
-    // Skip join modifiers like LEFT/INNER/FETCH/AS.
-    while let Some(tok) = tokens.get(idx) {
-        match &tok.kind {
-            TokenKind::Keyword(k)
-                if matches!(
-                    k.as_str(),
-                    "INNER" | "LEFT" | "RIGHT" | "OUTER" | "FETCH" | "AS"
-                ) =>
-            {
-                idx += 1;
-                continue;
-            }
-            _ => break,
+    match &tokens[idx].kind {
+        TokenKind::Keyword(k) if k == "FROM" || k == "JOIN" => true,
+        TokenKind::Comma => true,
+        TokenKind::Ident(_) if cursor <= tokens[idx].span.end => {
+            matches!(
+                tokens.get(idx.wrapping_sub(1)).map(|t| &t.kind),
+                Some(TokenKind::Keyword(k)) if k == "FROM" || k == "JOIN"
+            ) || matches!(
+                tokens.get(idx.wrapping_sub(1)).map(|t| &t.kind),
+                Some(TokenKind::Comma)
+            )
         }
-    }
-
-    let Some(tok) = tokens.get(idx) else {
-        return true;
-    };
-    match &tok.kind {
-        TokenKind::Ident(_) => cursor <= tok.span.end,
-        _ => true,
+        _ => false,
     }
 }
 
@@ -422,21 +414,70 @@ pub fn jpql_diagnostics(query: &str, model: &EntityModel) -> Vec<Diagnostic> {
     let alias_map = build_alias_map(&tokens, model);
     let mut diags = Vec::new();
 
-    // Validate FROM entity.
+    // Validate entity references (FROM + entity JOINs).
     for (idx, tok) in tokens.iter().enumerate() {
-        if tok.kind == TokenKind::Keyword("FROM".to_string()) {
-            if let Some(entity_tok) = tokens.get(idx + 1) {
-                if let TokenKind::Ident(entity_name) = &entity_tok.kind {
-                    let entity_name = simple_name(entity_name);
-                    if model.entity_by_jpql_name(&entity_name).is_none() {
-                        diags.push(Diagnostic::error(
-                            "JPQL_UNKNOWN_ENTITY",
-                            format!("Unknown JPQL entity `{}`", entity_name),
-                            Some(entity_tok.span),
-                        ));
+        match &tok.kind {
+            TokenKind::Keyword(k) if k == "FROM" => {
+                let start = idx + 1;
+                if let Some(entity_tok) = tokens.get(start) {
+                    if let TokenKind::Ident(entity_name) = &entity_tok.kind {
+                        let entity_name = simple_name(entity_name);
+                        validate_entity_name(&entity_name, entity_tok.span, model, &mut diags);
+                    }
+                }
+
+                if let Some((_entity, _alias, mut next_i)) = parse_entity_alias(&tokens, start) {
+                    while tokens
+                        .get(next_i)
+                        .is_some_and(|t| matches!(&t.kind, TokenKind::Comma))
+                    {
+                        let item_start = next_i + 1;
+                        let Some((entity, _alias, item_end)) =
+                            parse_entity_alias(&tokens, item_start)
+                        else {
+                            break;
+                        };
+                        let entity_name = simple_name(&entity);
+                        let span = tokens
+                            .get(item_start)
+                            .map(|t| t.span)
+                            .unwrap_or_else(|| Span::new(0, 0));
+                        validate_entity_name(&entity_name, span, model, &mut diags);
+                        next_i = item_end;
                     }
                 }
             }
+            TokenKind::Keyword(k) if k == "JOIN" => {
+                let mut i = idx + 1;
+                while let Some(tok) = tokens.get(i) {
+                    match &tok.kind {
+                        TokenKind::Keyword(k)
+                            if matches!(
+                                k.as_str(),
+                                "INNER" | "LEFT" | "RIGHT" | "OUTER" | "FETCH"
+                            ) =>
+                        {
+                            i += 1;
+                            continue;
+                        }
+                        _ => break,
+                    }
+                }
+
+                let Some(entity_tok) = tokens.get(i) else {
+                    continue;
+                };
+                let TokenKind::Ident(entity_name) = &entity_tok.kind else {
+                    continue;
+                };
+                if tokens.get(i + 1).map(|t| &t.kind) == Some(&TokenKind::Dot) {
+                    // Path join: `JOIN u.posts ...`
+                    continue;
+                }
+                let entity_name = simple_name(entity_name);
+                validate_entity_name(&entity_name, entity_tok.span, model, &mut diags);
+            }
+            _ => {}
         }
     }
 
@@ -532,6 +573,21 @@ fn simple_name(ty: &str) -> String {
     ty.rsplit('.').next().unwrap_or(ty).to_string()
 }
 
+fn validate_entity_name(
+    entity_name: &str,
+    span: Span,
+    model: &EntityModel,
+    diags: &mut Vec<Diagnostic>,
+) {
+    if model.entity_by_jpql_name(entity_name).is_none() {
+        diags.push(Diagnostic::error(
+            "JPQL_UNKNOWN_ENTITY",
+            format!("Unknown JPQL entity `{}`", entity_name),
+            Some(span),
+        ));
+    }
+}
+
 fn build_alias_map(tokens: &[Token], model: &EntityModel) -> HashMap<String, String> {
     let mut map = HashMap::new();
 
@@ -540,13 +596,34 @@ fn build_alias_map(tokens: &[Token], model: &EntityModel) -> HashMap<String, Str
         match &tokens[i].kind {
             TokenKind::Keyword(k) if k == "FROM" => {
                 i += 1;
-                if let Some((entity, alias, next_i)) = parse_entity_alias(tokens, i) {
+                if let Some((entity, alias, mut next_i)) = parse_entity_alias(tokens, i) {
                     let entity = simple_name(&entity);
                     let class_name = model
                         .entity_by_jpql_name(&entity)
                         .map(|e| e.name.clone())
                         .unwrap_or(entity);
                     map.insert(alias, class_name);
+
+                    // Support comma-separated from items: `FROM User u, Post p`.
+                    while tokens
+                        .get(next_i)
+                        .is_some_and(|t| matches!(&t.kind, TokenKind::Comma))
+                    {
+                        let item_start = next_i + 1;
+                        let Some((entity, alias, item_end)) =
+                            parse_entity_alias(tokens, item_start)
+                        else {
+                            break;
+                        };
+                        let entity = simple_name(&entity);
+                        let class_name = model
+                            .entity_by_jpql_name(&entity)
+                            .map(|e| e.name.clone())
+                            .unwrap_or(entity);
+                        map.insert(alias, class_name);
+                        next_i = item_end;
+                    }
+
                     i = next_i;
                     continue;
                 }

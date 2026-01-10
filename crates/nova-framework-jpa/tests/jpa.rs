@@ -58,6 +58,35 @@ fn missing_id_emits_diagnostic() {
 }
 
 #[test]
+fn id_on_getter_method_is_recognized() {
+    let src = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class User {
+            private Long id;
+
+            @Id
+            public Long getId() { return id; }
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[src]);
+    assert!(
+        !analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "JPA_MISSING_ID"),
+        "unexpected JPA_MISSING_ID diagnostic, got: {:#?}",
+        analysis.diagnostics
+    );
+
+    let user = analysis.model.entity("User").unwrap();
+    assert!(user.id_fields().any(|f| f.name == "id"));
+}
+
+#[test]
 fn relationship_parsing_and_mappedby_validation() {
     let user = r#"
         import jakarta.persistence.Entity;
@@ -218,6 +247,70 @@ fn jpql_completion_handles_as_alias() {
     let items = jpql_completions(query, query.len(), &analysis.model);
     assert!(items.iter().any(|i| i.label == "id"));
     assert!(items.iter().any(|i| i.label == "name"));
+}
+
+#[test]
+fn jpql_completion_handles_multiple_from_entities() {
+    let user = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+        }
+    "#;
+
+    let post = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class Post {
+            @Id private Long id;
+            private String title;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[user, post]);
+
+    let query = "SELECT p FROM User u, Post p WHERE p.";
+    let items = jpql_completions(query, query.len(), &analysis.model);
+    assert!(items.iter().any(|i| i.label == "id"));
+    assert!(items.iter().any(|i| i.label == "title"));
+
+    let diags = nova_framework_jpa::jpql_diagnostics(
+        "SELECT p FROM User u, Post p WHERE p.title = 'x'",
+        &analysis.model,
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == "JPQL_UNKNOWN_ALIAS"),
+        "unexpected alias diagnostics: {diags:#?}"
+    );
+}
+
+#[test]
+fn jpql_diagnostics_validate_join_entity_names() {
+    let user = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[user]);
+    let diags = nova_framework_jpa::jpql_diagnostics(
+        "SELECT u FROM User u JOIN Unknown x",
+        &analysis.model,
+    );
+
+    assert!(
+        diags.iter().any(|d| d.code == "JPQL_UNKNOWN_ENTITY"),
+        "expected JPQL_UNKNOWN_ENTITY diagnostic, got: {diags:#?}"
+    );
 }
 
 #[test]

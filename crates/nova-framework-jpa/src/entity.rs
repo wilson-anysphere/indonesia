@@ -202,6 +202,7 @@ fn parse_entity_class(node: Node<'_>, source: &str) -> Option<Entity> {
 
 fn parse_class_body(body: Node<'_>, source: &str) -> (Vec<Field>, bool, bool) {
     let mut fields = Vec::new();
+    let mut method_properties = Vec::new();
     let mut has_explicit_ctor = false;
     let mut has_no_arg_ctor = false;
 
@@ -210,6 +211,11 @@ fn parse_class_body(body: Node<'_>, source: &str) -> (Vec<Field>, bool, bool) {
         match child.kind() {
             "field_declaration" => {
                 fields.extend(parse_field_declaration(child, source));
+            }
+            "method_declaration" => {
+                if let Some(field) = parse_method_property(child, source) {
+                    method_properties.push(field);
+                }
             }
             "constructor_declaration" => {
                 has_explicit_ctor = true;
@@ -225,6 +231,37 @@ fn parse_class_body(body: Node<'_>, source: &str) -> (Vec<Field>, bool, bool) {
     // constructor.
     if !has_explicit_ctor {
         has_no_arg_ctor = true;
+    }
+
+    if !method_properties.is_empty() {
+        let mut by_name: HashMap<String, usize> = fields
+            .iter()
+            .enumerate()
+            .map(|(idx, f)| (f.name.clone(), idx))
+            .collect();
+
+        for method_field in method_properties {
+            if let Some(&idx) = by_name.get(&method_field.name) {
+                let existing = &mut fields[idx];
+                existing.is_id |= method_field.is_id;
+                existing.is_embedded_id |= method_field.is_embedded_id;
+                if method_field.relationship.is_some() {
+                    existing.relationship = method_field.relationship.clone();
+                }
+                if existing.ty.is_empty() && !method_field.ty.is_empty() {
+                    existing.ty = method_field.ty.clone();
+                }
+                if method_field.is_id
+                    || method_field.is_embedded_id
+                    || method_field.relationship.is_some()
+                {
+                    existing.span = method_field.span;
+                }
+            } else {
+                by_name.insert(method_field.name.clone(), fields.len());
+                fields.push(method_field);
+            }
+        }
     }
 
     (fields, has_explicit_ctor, has_no_arg_ctor)
@@ -325,6 +362,141 @@ fn parse_field_declaration(node: Node<'_>, source: &str) -> Vec<Field> {
     }
 
     fields
+}
+
+fn parse_method_property(node: Node<'_>, source: &str) -> Option<Field> {
+    // Best-effort support for JPA property access where annotations are placed
+    // on getter methods rather than fields.
+    //
+    // We only treat no-arg getter-like methods as persistent properties to avoid
+    // pulling in arbitrary business methods.
+    let mut annotations = Vec::new();
+    let mut is_static = false;
+
+    if let Some(modifiers) = node
+        .child_by_field_name("modifiers")
+        .or_else(|| find_named_child(node, "modifiers"))
+    {
+        annotations = collect_annotations(modifiers, source);
+        let mods_txt = node_text(source, modifiers);
+        is_static = mods_txt.split_whitespace().any(|t| t == "static");
+    }
+
+    if is_static {
+        return None;
+    }
+
+    let params = node
+        .child_by_field_name("parameters")
+        .or_else(|| find_named_child(node, "formal_parameters"));
+    if params.is_some_and(|p| p.named_child_count() > 0) {
+        return None;
+    }
+
+    let name_node = node
+        .child_by_field_name("name")
+        .or_else(|| find_named_child(node, "identifier"))?;
+    let method_name = node_text(source, name_node).trim().to_string();
+
+    let ty_node = node
+        .child_by_field_name("type")
+        .or_else(|| infer_method_return_type_node(node));
+    let ty = ty_node
+        .map(|n| clean_type(node_text(source, n)))
+        .unwrap_or_default();
+
+    let prop_name = getter_property_name(&method_name, &ty)?;
+
+    let is_transient = annotations.iter().any(|ann| ann.simple_name == "Transient");
+    if is_transient {
+        return None;
+    }
+
+    let is_id = annotations.iter().any(|ann| ann.simple_name == "Id");
+    let is_embedded_id = annotations
+        .iter()
+        .any(|ann| ann.simple_name == "EmbeddedId");
+
+    let relationship = annotations
+        .iter()
+        .find_map(|ann| relationship_from_annotation(ann, source));
+
+    let span = Span::new(name_node.start_byte(), name_node.end_byte());
+
+    Some(Field {
+        name: prop_name.clone(),
+        ty,
+        span,
+        is_transient,
+        is_static,
+        is_id,
+        is_embedded_id,
+        relationship: relationship.as_ref().map(|rel| Relationship {
+            field_name: prop_name,
+            ..rel.clone()
+        }),
+    })
+}
+
+fn infer_method_return_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
+    // Method declarations are roughly: [modifiers] <type> <name> <params> ...
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        match child.kind() {
+            k if k == "modifiers" || k == "type_parameters" || k.ends_with("annotation") => {
+                continue
+            }
+            "identifier" => break,
+            _ => return Some(child),
+        }
+    }
+    None
+}
+
+fn getter_property_name(method_name: &str, return_type: &str) -> Option<String> {
+    let return_type = return_type.trim();
+    if return_type.is_empty() || return_type == "void" {
+        return None;
+    }
+
+    if let Some(rest) = method_name.strip_prefix("get") {
+        if rest.is_empty() {
+            return None;
+        }
+        if rest.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            return Some(decapitalize_java_bean(rest));
+        }
+    }
+
+    if let Some(rest) = method_name.strip_prefix("is") {
+        if rest.is_empty() {
+            return None;
+        }
+        if rest.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            return Some(decapitalize_java_bean(rest));
+        }
+    }
+
+    None
+}
+
+fn decapitalize_java_bean(name: &str) -> String {
+    // JavaBeans decapitalize rules: if the first two chars are both uppercase,
+    // do not change the name (e.g. "URL" stays "URL").
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let second = chars.clone().next();
+
+    if first.is_ascii_uppercase() && second.is_some_and(|c| c.is_ascii_uppercase()) {
+        return name.to_string();
+    }
+
+    let mut out = String::new();
+    out.push(first.to_ascii_lowercase());
+    out.push_str(chars.as_str());
+    out
 }
 
 fn find_named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
