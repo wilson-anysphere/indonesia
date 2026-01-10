@@ -428,4 +428,47 @@ mod tests {
         assert_eq!(fuzzy.kind, MatchKind::Fuzzy);
         assert!(prefix.rank_key() > fuzzy.rank_key());
     }
+
+    fn lcg(seed: &mut u64) -> u64 {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        *seed
+    }
+
+    fn gen_ascii(seed: &mut u64, len: usize) -> String {
+        let mut s = String::with_capacity(len);
+        for i in 0..len {
+            let x = lcg(seed);
+            let ch = (b'a' + (x % 26) as u8) as char;
+            if i > 0 && (x & 0x3f) == 0 {
+                s.push('_');
+            } else if (x & 1) == 0 {
+                s.push(ch.to_ascii_uppercase());
+            } else {
+                s.push(ch);
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn matcher_agrees_with_fuzzy_match() {
+        let mut seed = 0xfeed_beef_dead_cafeu64;
+        for _ in 0..500 {
+            let cand_len = (lcg(&mut seed) % 32 + 1) as usize;
+            let candidate = gen_ascii(&mut seed, cand_len);
+
+            let query_len = (lcg(&mut seed) % 8) as usize;
+            let query = gen_ascii(&mut seed, query_len);
+
+            let direct = fuzzy_match(&query, &candidate);
+            let mut matcher = FuzzyMatcher::new(&query);
+            let via = matcher.score(&candidate);
+
+            assert_eq!(
+                direct.map(|s| (s.kind, s.score)),
+                via.map(|s| (s.kind, s.score)),
+                "query={query:?} candidate={candidate:?}"
+            );
+        }
+    }
 }
