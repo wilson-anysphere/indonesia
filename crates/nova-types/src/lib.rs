@@ -396,6 +396,8 @@ pub enum ClassKind {
 pub struct TypeParamDef {
     pub name: String,
     pub upper_bounds: Vec<Type>,
+    /// Capture conversion may introduce a lower bound (`? super T`).
+    pub lower_bound: Option<Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -604,8 +606,74 @@ impl TypeStore {
         self.type_params.push(TypeParamDef {
             name: name.into(),
             upper_bounds,
+            lower_bound: None,
         });
         id
+    }
+
+    fn add_capture_type_param(&mut self, upper_bounds: Vec<Type>, lower_bound: Option<Type>) -> TypeVarId {
+        let id = TypeVarId(self.type_params.len() as u32);
+        self.type_params.push(TypeParamDef {
+            name: format!("CAP#{}", id.0),
+            upper_bounds,
+            lower_bound,
+        });
+        id
+    }
+
+    /// Capture conversion for parameterized types containing wildcards (JLS 5.1.10).
+    ///
+    /// This is a best-effort implementation intended for common IDE scenarios.
+    /// It allocates fresh `TypeVarId`s inside the store to represent capture
+    /// variables.
+    pub fn capture_conversion(&mut self, ty: &Type) -> Type {
+        let Type::Class(ClassType { def, args }) = ty else {
+            return ty.clone();
+        };
+
+        if args.iter().all(|a| !matches!(a, Type::Wildcard(_))) {
+            return ty.clone();
+        }
+
+        let Some(class_def) = self.class(*def) else {
+            return ty.clone();
+        };
+
+        let object = Type::class(self.well_known().object, vec![]);
+        let formal_bounds: Vec<Type> = class_def
+            .type_params
+            .iter()
+            .map(|tp| {
+                self.type_param(*tp)
+                    .and_then(|d| d.upper_bounds.first().cloned())
+                    .unwrap_or_else(|| object.clone())
+            })
+            .collect();
+
+        let mut new_args = Vec::with_capacity(args.len());
+        for (idx, arg) in args.iter().enumerate() {
+            match arg {
+                Type::Wildcard(WildcardBound::Unbounded) => {
+                    let upper = formal_bounds.get(idx).cloned().unwrap_or_else(|| object.clone());
+                    let cap = self.add_capture_type_param(vec![upper], None);
+                    new_args.push(Type::TypeVar(cap));
+                }
+                Type::Wildcard(WildcardBound::Extends(upper)) => {
+                    let formal = formal_bounds.get(idx).cloned().unwrap_or_else(|| object.clone());
+                    let glb = glb(self, &formal, upper);
+                    let cap = self.add_capture_type_param(vec![glb], None);
+                    new_args.push(Type::TypeVar(cap));
+                }
+                Type::Wildcard(WildcardBound::Super(lower)) => {
+                    let upper = formal_bounds.get(idx).cloned().unwrap_or_else(|| object.clone());
+                    let cap = self.add_capture_type_param(vec![upper], Some((**lower).clone()));
+                    new_args.push(Type::TypeVar(cap));
+                }
+                other => new_args.push(other.clone()),
+            }
+        }
+
+        Type::class(*def, new_args)
     }
 
     pub fn add_class(&mut self, mut def: ClassDef) -> ClassId {
@@ -724,13 +792,15 @@ pub fn is_subtype(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
             .unwrap_or(false),
 
         (other, Type::TypeVar(id)) => {
-            // Type variables are reference types; treat `T` as `? extends upperBound`.
             env.type_param(*id)
                 .map(|tp| {
-                    if tp.upper_bounds.is_empty() {
-                        other.is_reference()
+                    if let Some(lower) = &tp.lower_bound {
+                        is_subtype(env, other, lower)
                     } else {
-                        tp.upper_bounds.iter().all(|b| is_subtype(env, other, b))
+                        // For declared type variables without a lower bound we
+                        // can't generally decide `other <: T` (it depends on
+                        // the eventual instantiation), so be conservative.
+                        false
                     }
                 })
                 .unwrap_or(false)
@@ -790,7 +860,7 @@ fn is_subtype_class(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
         }
 
         if def == super_def {
-            return type_args_compatible(env, &args, &super_args);
+            return type_args_compatible(env, def, &args, &super_args);
         }
 
         let Some(class_def) = env.class(def) else {
@@ -815,9 +885,24 @@ fn is_subtype_class(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
     false
 }
 
-fn type_args_compatible(env: &dyn TypeEnv, sub: &[Type], super_: &[Type]) -> bool {
+fn type_args_compatible(env: &dyn TypeEnv, def: ClassId, sub: &[Type], super_: &[Type]) -> bool {
+    let type_param_len = env
+        .class(def)
+        .map(|c| c.type_params.len())
+        .unwrap_or(0);
+    let sub_raw = sub.is_empty() && type_param_len != 0;
+    let super_raw = super_.is_empty() && type_param_len != 0;
+
+    // Raw target types behave like erasure: any instantiation is a subtype of
+    // the raw form. (Raw -> parameterized is handled via unchecked conversion.)
+    if super_raw {
+        return true;
+    }
+    if sub_raw {
+        return false;
+    }
+
     if sub.len() != super_.len() {
-        // Raw vs parameterized mismatch; treat as incompatible for now.
         return false;
     }
     for (s, t) in sub.iter().zip(super_) {
@@ -866,12 +951,376 @@ fn substitute(ty: &Type, subst: &HashMap<TypeVarId, Type>) -> Type {
 }
 
 pub fn is_assignable(env: &dyn TypeEnv, from: &Type, to: &Type) -> bool {
-    // Assignment conversion is broader than subtyping, but for our current needs we
-    // mostly care about:
-    // * primitive widening
-    // * reference widening (subtyping)
-    // * null to reference
-    is_subtype(env, from, to)
+    assignment_conversion(env, from, to).is_some()
+}
+
+// === Conversions (JLS 5) =====================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UncheckedReason {
+    RawConversion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeWarning {
+    Unchecked(UncheckedReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConversionStep {
+    Identity,
+    WideningPrimitive,
+    NarrowingPrimitive,
+    WideningReference,
+    NarrowingReference,
+    Boxing,
+    Unboxing,
+    Unchecked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conversion {
+    pub steps: Vec<ConversionStep>,
+    pub warnings: Vec<TypeWarning>,
+}
+
+impl Conversion {
+    fn new(step: ConversionStep) -> Self {
+        Self {
+            steps: vec![step],
+            warnings: Vec::new(),
+        }
+    }
+
+    fn push_step(mut self, step: ConversionStep) -> Self {
+        self.steps.push(step);
+        self
+    }
+
+    fn push_warning(mut self, warning: TypeWarning) -> Self {
+        self.warnings.push(warning);
+        self
+    }
+}
+
+/// Unary numeric promotion (JLS 5.6.1).
+pub fn unary_numeric_promotion(from: PrimitiveType) -> Option<PrimitiveType> {
+    use PrimitiveType::*;
+    Some(match from {
+        Byte | Short | Char => Int,
+        Int | Long | Float | Double => from,
+        Boolean => return None,
+    })
+}
+
+/// Binary numeric promotion (JLS 5.6.2).
+pub fn binary_numeric_promotion(a: PrimitiveType, b: PrimitiveType) -> Option<PrimitiveType> {
+    use PrimitiveType::*;
+    if !a.is_numeric() || !b.is_numeric() {
+        return None;
+    }
+    Some(if a == Double || b == Double {
+        Double
+    } else if a == Float || b == Float {
+        Float
+    } else if a == Long || b == Long {
+        Long
+    } else {
+        Int
+    })
+}
+
+fn primitive_narrowing(from: PrimitiveType, to: PrimitiveType) -> bool {
+    if from == to {
+        return true;
+    }
+    from.is_numeric() && to.is_numeric()
+}
+
+/// Strict method invocation conversion (JLS 15.12.2.2): identity, widening
+/// primitive, widening reference.
+pub fn strict_method_invocation_conversion(
+    env: &dyn TypeEnv,
+    from: &Type,
+    to: &Type,
+) -> Option<Conversion> {
+    let from = canonicalize_named(env, from);
+    let to = canonicalize_named(env, to);
+
+    if from == to {
+        return Some(Conversion::new(ConversionStep::Identity));
+    }
+
+    match (&from, &to) {
+        (Type::Null, t) if t.is_reference() || matches!(t, Type::Wildcard(_)) => {
+            Some(Conversion::new(ConversionStep::WideningReference))
+        }
+        (Type::Primitive(a), Type::Primitive(b)) if primitive_widening(*a, *b) => {
+            Some(Conversion::new(ConversionStep::WideningPrimitive))
+        }
+        (a, b) if a.is_reference() && b.is_reference() && is_subtype(env, a, b) => {
+            let mut conv = Conversion::new(ConversionStep::WideningReference);
+            if raw_warning(env, a, b) {
+                conv.warnings.push(TypeWarning::Unchecked(UncheckedReason::RawConversion));
+            }
+            Some(conv)
+        }
+        _ => None,
+    }
+}
+
+/// Method invocation conversion (JLS 5.3): strict conversion plus boxing,
+/// unboxing, and unchecked raw conversions.
+pub fn method_invocation_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -> Option<Conversion> {
+    let from = canonicalize_named(env, from);
+    let to = canonicalize_named(env, to);
+
+    if let Some(conv) = strict_method_invocation_conversion(env, &from, &to) {
+        return Some(conv);
+    }
+
+    // Boxing (and possible widening reference after boxing).
+    if let Type::Primitive(p) = from {
+        if let Some(boxed) = boxing_type(env, p) {
+            if boxed == to {
+                return Some(Conversion::new(ConversionStep::Boxing));
+            }
+            if boxed.is_reference() && to.is_reference() && is_subtype(env, &boxed, &to) {
+                let mut conv =
+                    Conversion::new(ConversionStep::Boxing).push_step(ConversionStep::WideningReference);
+                if raw_warning(env, &boxed, &to) {
+                    conv.warnings.push(TypeWarning::Unchecked(UncheckedReason::RawConversion));
+                }
+                return Some(conv);
+            }
+        }
+    }
+
+    // Unboxing (and possible widening primitive after unboxing).
+    if let Some(unboxed) = unbox(env, &from) {
+        if let Type::Primitive(target) = to {
+            if unboxed == target {
+                return Some(Conversion::new(ConversionStep::Unboxing));
+            }
+            if primitive_widening(unboxed, target) {
+                return Some(
+                    Conversion::new(ConversionStep::Unboxing).push_step(ConversionStep::WideningPrimitive),
+                );
+            }
+        }
+    }
+
+    // Unchecked conversion involving raw types.
+    if let Some(conv) = unchecked_raw_conversion(env, &from, &to) {
+        return Some(conv);
+    }
+
+    None
+}
+
+/// Assignment conversion (JLS 5.2).
+pub fn assignment_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -> Option<Conversion> {
+    method_invocation_conversion(env, from, to)
+}
+
+/// Casting conversion (JLS 5.5), implemented for common cases.
+pub fn cast_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -> Option<Conversion> {
+    let from = canonicalize_named(env, from);
+    let to = canonicalize_named(env, to);
+
+    if let Some(conv) = assignment_conversion(env, &from, &to) {
+        return Some(conv);
+    }
+
+    // Primitive casts: allow numeric narrowing.
+    if let (Type::Primitive(a), Type::Primitive(b)) = (&from, &to) {
+        if primitive_narrowing(*a, *b) {
+            return Some(Conversion::new(ConversionStep::NarrowingPrimitive));
+        }
+        return None;
+    }
+
+    // Unboxing followed by primitive cast.
+    if let Some(unboxed) = unbox(env, &from) {
+        if let Type::Primitive(target) = to {
+            if primitive_narrowing(unboxed, target) {
+                return Some(
+                    Conversion::new(ConversionStep::Unboxing).push_step(ConversionStep::NarrowingPrimitive),
+                );
+            }
+        }
+    }
+
+    // Reference casts.
+    if from.is_reference() && to.is_reference() && reference_castable(env, &from, &to) {
+        let mut conv = Conversion::new(ConversionStep::NarrowingReference);
+        if raw_warning(env, &from, &to) {
+            conv.warnings.push(TypeWarning::Unchecked(UncheckedReason::RawConversion));
+        }
+        return Some(conv);
+    }
+
+    // Intersection casts: `(A & B) expr` is valid iff `expr` is castable to each component.
+    if let Type::Intersection(parts) = &to {
+        let conv = Conversion::new(ConversionStep::NarrowingReference);
+        for p in parts {
+            cast_conversion(env, &from, p)?;
+        }
+        return Some(conv);
+    }
+
+    None
+}
+
+fn canonicalize_named(env: &dyn TypeEnv, ty: &Type) -> Type {
+    match ty {
+        Type::Named(name) => env
+            .lookup_class(name)
+            .map(|id| Type::class(id, vec![]))
+            .unwrap_or_else(|| ty.clone()),
+        other => other.clone(),
+    }
+}
+
+fn boxing_type(env: &dyn TypeEnv, prim: PrimitiveType) -> Option<Type> {
+    let name = match prim {
+        PrimitiveType::Boolean => "java.lang.Boolean",
+        PrimitiveType::Byte => "java.lang.Byte",
+        PrimitiveType::Short => "java.lang.Short",
+        PrimitiveType::Char => "java.lang.Character",
+        PrimitiveType::Int => "java.lang.Integer",
+        PrimitiveType::Long => "java.lang.Long",
+        PrimitiveType::Float => "java.lang.Float",
+        PrimitiveType::Double => "java.lang.Double",
+    };
+    env.lookup_class(name).map(|id| Type::class(id, vec![]))
+}
+
+fn unbox(env: &dyn TypeEnv, from: &Type) -> Option<PrimitiveType> {
+    match from {
+        Type::Class(ClassType { def, .. }) => env.class(*def).and_then(|c| unbox_class_name(&c.name)),
+        Type::TypeVar(id) => env
+            .type_param(*id)
+            .and_then(|tp| tp.upper_bounds.first())
+            .and_then(|b| unbox(env, b)),
+        _ => None,
+    }
+}
+
+fn unbox_class_name(name: &str) -> Option<PrimitiveType> {
+    Some(match name {
+        "java.lang.Boolean" => PrimitiveType::Boolean,
+        "java.lang.Byte" => PrimitiveType::Byte,
+        "java.lang.Short" => PrimitiveType::Short,
+        "java.lang.Character" => PrimitiveType::Char,
+        "java.lang.Integer" => PrimitiveType::Int,
+        "java.lang.Long" => PrimitiveType::Long,
+        "java.lang.Float" => PrimitiveType::Float,
+        "java.lang.Double" => PrimitiveType::Double,
+        _ => return None,
+    })
+}
+
+fn is_raw_class(env: &dyn TypeEnv, def: ClassId, args: &[Type]) -> bool {
+    args.is_empty()
+        && env
+            .class(def)
+            .is_some_and(|c| !c.type_params.is_empty())
+}
+
+fn raw_warning(env: &dyn TypeEnv, from: &Type, to: &Type) -> bool {
+    let (Type::Class(ClassType { def: f_def, args: f_args }), Type::Class(ClassType { def: t_def, args: t_args })) =
+        (from, to)
+    else {
+        return false;
+    };
+    let from_raw = is_raw_class(env, *f_def, f_args);
+    let to_raw = is_raw_class(env, *t_def, t_args);
+    let from_param = !from_raw && !f_args.is_empty();
+    let to_param = !to_raw && !t_args.is_empty();
+    (from_raw && to_param) || (to_raw && from_param)
+}
+
+fn unchecked_raw_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -> Option<Conversion> {
+    let (Type::Class(ClassType { def: f_def, args: f_args }), Type::Class(ClassType { def: t_def, args: t_args })) =
+        (from, to)
+    else {
+        return None;
+    };
+
+    let from_raw = is_raw_class(env, *f_def, f_args);
+    let to_raw = is_raw_class(env, *t_def, t_args);
+
+    if from_raw && !to_raw && !t_args.is_empty() {
+        let from_er = erasure(env, from);
+        let to_er = erasure(env, to);
+        if is_subtype(env, &from_er, &to_er) {
+            return Some(
+                Conversion::new(ConversionStep::Unchecked)
+                    .push_warning(TypeWarning::Unchecked(UncheckedReason::RawConversion)),
+            );
+        }
+    }
+
+    // Parameterized -> raw: prefer strict widening but still surface a warning.
+    if !from_raw && !f_args.is_empty() && to_raw && is_subtype(env, from, to) {
+        return Some(
+            Conversion::new(ConversionStep::WideningReference)
+                .push_warning(TypeWarning::Unchecked(UncheckedReason::RawConversion)),
+        );
+    }
+
+    None
+}
+
+fn erasure(env: &dyn TypeEnv, ty: &Type) -> Type {
+    match ty {
+        Type::Class(ClassType { def, .. }) => Type::class(*def, vec![]),
+        Type::Array(elem) => Type::Array(Box::new(erasure(env, elem))),
+        Type::TypeVar(id) => env
+            .type_param(*id)
+            .and_then(|tp| tp.upper_bounds.first().cloned())
+            .map(|b| erasure(env, &b))
+            .unwrap_or_else(|| Type::class(env.well_known().object, vec![])),
+        Type::Intersection(types) => types
+            .first()
+            .map(|t| erasure(env, t))
+            .unwrap_or_else(|| Type::class(env.well_known().object, vec![])),
+        Type::Wildcard(_) => Type::class(env.well_known().object, vec![]),
+        Type::Named(name) => env
+            .lookup_class(name)
+            .map(|id| Type::class(id, vec![]))
+            .unwrap_or_else(|| Type::class(env.well_known().object, vec![])),
+        other => other.clone(),
+    }
+}
+
+fn reference_castable(env: &dyn TypeEnv, from: &Type, to: &Type) -> bool {
+    if matches!(from, Type::Null) {
+        return to.is_reference();
+    }
+    if is_subtype(env, from, to) || is_subtype(env, to, from) {
+        return true;
+    }
+
+    // Best-effort: allow casts involving interfaces.
+    let (Type::Class(ClassType { def: from_def, .. }), Type::Class(ClassType { def: to_def, .. })) = (from, to)
+    else {
+        return false;
+    };
+    let from_kind = env.class(*from_def).map(|c| c.kind);
+    let to_kind = env.class(*to_def).map(|c| c.kind);
+    matches!(from_kind, Some(ClassKind::Interface)) || matches!(to_kind, Some(ClassKind::Interface))
+}
+
+fn glb(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
+    if is_subtype(env, a, b) {
+        return a.clone();
+    }
+    if is_subtype(env, b, a) {
+        return b.clone();
+    }
+    Type::Intersection(vec![a.clone(), b.clone()])
 }
 
 // === Method resolution =======================================================
@@ -893,6 +1342,8 @@ pub struct ResolvedMethod {
     pub return_type: Type,
     pub is_varargs: bool,
     pub inferred_type_args: Vec<Type>,
+    pub warnings: Vec<TypeWarning>,
+    pub used_varargs: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -900,6 +1351,13 @@ pub enum MethodResolution {
     Found(ResolvedMethod),
     NotFound,
     Ambiguous(Vec<ResolvedMethod>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MethodPhase {
+    Strict,
+    Loose,
+    Varargs,
 }
 
 pub fn resolve_method_call(env: &dyn TypeEnv, call: &MethodCall<'_>) -> MethodResolution {
@@ -910,40 +1368,29 @@ pub fn resolve_method_call(env: &dyn TypeEnv, call: &MethodCall<'_>) -> MethodRe
         }
     }
 
-    let mut candidates = collect_method_candidates(env, &receiver, call.name);
+    let candidates = collect_method_candidates(env, &receiver, call.name);
 
     if candidates.is_empty() {
         return MethodResolution::NotFound;
     }
 
-    // Phase ordering: prefer fixed-arity over varargs (simplified JLS 15.12.2).
-    let mut fixed_applicable = Vec::new();
-    let mut varargs_applicable = Vec::new();
+    for phase in [MethodPhase::Strict, MethodPhase::Loose, MethodPhase::Varargs] {
+        let applicable: Vec<ResolvedMethod> = candidates
+            .iter()
+            .filter_map(|cand| check_applicability(env, cand, call, phase))
+            .collect();
 
-    for cand in candidates.drain(..) {
-        if let Some(app) = check_applicability(env, &cand, call) {
-            if app.is_varargs {
-                varargs_applicable.push(app);
-            } else {
-                fixed_applicable.push(app);
-            }
+        if applicable.is_empty() {
+            continue;
         }
+
+        return match most_specific(env, &applicable, call.args.len()) {
+            Some(best) => MethodResolution::Found(best.clone()),
+            None => MethodResolution::Ambiguous(applicable),
+        };
     }
 
-    let applicable = if !fixed_applicable.is_empty() {
-        fixed_applicable
-    } else {
-        varargs_applicable
-    };
-
-    if applicable.is_empty() {
-        return MethodResolution::NotFound;
-    }
-
-    match most_specific(env, &applicable, call.args.len()) {
-        Some(best) => MethodResolution::Found(best.clone()),
-        None => MethodResolution::Ambiguous(applicable),
-    }
+    MethodResolution::NotFound
 }
 
 #[derive(Debug, Clone)]
@@ -1009,32 +1456,79 @@ fn check_applicability(
     env: &dyn TypeEnv,
     cand: &CandidateMethod,
     call: &MethodCall<'_>,
+    phase: MethodPhase,
 ) -> Option<ResolvedMethod> {
     let method = &cand.method;
+    let arity = call.args.len();
 
-    // Arity check.
-    if method.is_varargs {
-        if call.args.len() < method.params.len().saturating_sub(1) {
-            return None;
-        }
-    } else if call.args.len() != method.params.len() {
-        return None;
+    // Arity precheck.
+    match (method.is_varargs, phase) {
+        (false, _) if arity != method.params.len() => return None,
+        (true, MethodPhase::Strict | MethodPhase::Loose) if arity != method.params.len() => return None,
+        (true, MethodPhase::Varargs) if arity + 1 < method.params.len() => return None,
+        _ => {}
     }
 
     // Substitute class type parameters into the method signature.
-    let mut params = method
+    let base_params = method
         .params
         .iter()
         .map(|t| substitute(t, &cand.class_subst))
         .collect::<Vec<_>>();
-    let mut return_type = substitute(&method.return_type, &cand.class_subst);
+    let base_return_type = substitute(&method.return_type, &cand.class_subst);
 
-    // Infer (or apply explicit) method type arguments.
+    // Try a fixed-arity invocation first (including varargs methods invoked with an array).
+    if let Some(res) = try_method_invocation(env, cand.owner, method, &base_params, &base_return_type, call, phase, false)
+    {
+        return Some(res);
+    }
+
+    // Varargs phase can also use variable-arity invocation.
+    if method.is_varargs && phase == MethodPhase::Varargs {
+        return try_method_invocation(env, cand.owner, method, &base_params, &base_return_type, call, phase, true);
+    }
+
+    None
+}
+
+fn try_method_invocation(
+    env: &dyn TypeEnv,
+    owner: ClassId,
+    method: &MethodDef,
+    base_params: &[Type],
+    base_return_type: &Type,
+    call: &MethodCall<'_>,
+    phase: MethodPhase,
+    force_varargs: bool,
+) -> Option<ResolvedMethod> {
+    let arity = call.args.len();
+
+    let (pattern_params, used_varargs) = if method.is_varargs && (phase == MethodPhase::Varargs) {
+        if force_varargs {
+            (expand_varargs_pattern(base_params, arity)?, true)
+        } else {
+            // Fixed-arity invocation (last param is the array type).
+            if arity != base_params.len() {
+                return None;
+            }
+            (base_params.to_vec(), false)
+        }
+    } else if method.is_varargs {
+        // Strict/loose: only fixed-arity invocation allowed.
+        if arity != base_params.len() {
+            return None;
+        }
+        (base_params.to_vec(), false)
+    } else {
+        (base_params.to_vec(), false)
+    };
+
+    // Infer (or apply explicit) method type arguments using the effective parameter pattern.
     let inferred_type_args = if !method.type_params.is_empty() {
         if !call.explicit_type_args.is_empty() {
             call.explicit_type_args.clone()
         } else {
-            infer_type_arguments_from_call(env, method, &params, &return_type, call)
+            infer_type_arguments_from_call(env, method, &pattern_params, base_return_type, call)
         }
     } else {
         Vec::new()
@@ -1047,43 +1541,63 @@ fn check_applicability(
         .zip(inferred_type_args.iter().cloned())
         .collect();
 
-    params = params.iter().map(|t| substitute(t, &method_subst)).collect();
-    return_type = substitute(&return_type, &method_subst);
-
-    let effective_params = if method.is_varargs {
-        // Expand varargs to match the call site.
-        MethodDef {
-            name: method.name.clone(),
-            type_params: vec![],
-            params: params.clone(),
-            return_type: return_type.clone(),
-            is_static: method.is_static,
-            is_varargs: true,
-            is_abstract: method.is_abstract,
-        }
-        .param_types_for_arity(call.args.len())
-    } else {
-        params.clone()
-    };
-
-    if effective_params.len() != call.args.len() {
+    let effective_params: Vec<Type> = pattern_params
+        .iter()
+        .map(|t| substitute(t, &method_subst))
+        .collect();
+    if effective_params.len() != arity {
         return None;
     }
+    let return_type = substitute(base_return_type, &method_subst);
 
+    let mut warnings = Vec::new();
     for (arg, param) in call.args.iter().zip(&effective_params) {
-        if !is_assignable(env, arg, param) {
-            return None;
-        }
+        let conv = match phase {
+            MethodPhase::Strict => strict_method_invocation_conversion(env, arg, param)?,
+            MethodPhase::Loose | MethodPhase::Varargs => method_invocation_conversion(env, arg, param)?,
+        };
+        warnings.extend(conv.warnings);
     }
 
     Some(ResolvedMethod {
-        owner: cand.owner,
+        owner,
         name: method.name.clone(),
         params: effective_params,
         return_type,
         is_varargs: method.is_varargs,
         inferred_type_args,
+        warnings,
+        used_varargs,
     })
+}
+
+fn expand_varargs_pattern(params: &[Type], arity: usize) -> Option<Vec<Type>> {
+    if params.is_empty() {
+        return Some(Vec::new());
+    }
+    let fixed = params.len().saturating_sub(1);
+    if arity < fixed {
+        return None;
+    }
+
+    let mut out = Vec::with_capacity(arity.max(params.len()));
+    out.extend(params[..fixed].iter().cloned());
+    let vararg_ty = params[fixed].clone();
+    let elem_ty = match vararg_ty {
+        Type::Array(elem) => *elem,
+        other => other,
+    };
+    let extra = arity.saturating_sub(fixed);
+    for _ in 0..extra {
+        out.push(elem_ty.clone());
+    }
+    Some(out)
+}
+
+#[derive(Default, Clone)]
+struct InferenceBounds {
+    lower: Vec<Type>,
+    upper: Vec<Type>,
 }
 
 fn infer_type_arguments_from_call(
@@ -1093,58 +1607,249 @@ fn infer_type_arguments_from_call(
     return_type: &Type,
     call: &MethodCall<'_>,
 ) -> Vec<Type> {
-    let mut mapping: HashMap<TypeVarId, Type> = HashMap::new();
+    let object = Type::class(env.well_known().object, vec![]);
+    let mut bounds: HashMap<TypeVarId, InferenceBounds> = method
+        .type_params
+        .iter()
+        .copied()
+        .map(|tv| {
+            let mut b = InferenceBounds::default();
+            b.upper.extend(
+                env.type_param(tv)
+                    .and_then(|tp| {
+                        if tp.upper_bounds.is_empty() {
+                            None
+                        } else {
+                            Some(tp.upper_bounds.clone())
+                        }
+                    })
+                    .unwrap_or_else(|| vec![object.clone()]),
+            );
+            (tv, b)
+        })
+        .collect();
 
     // Constraints from arguments.
-    if method.is_varargs && !params.is_empty() {
-        let fixed = params.len() - 1;
-        for (arg, param) in call.args.iter().take(fixed).zip(&params[..fixed]) {
-            collect_type_var_constraints(&mut mapping, param, arg);
-        }
-
-        let vararg_param = &params[fixed];
-        let elem_ty = match vararg_param {
-            Type::Array(elem) => elem.as_ref(),
-            other => other,
-        };
-        for arg in call.args.iter().skip(fixed) {
-            collect_type_var_constraints(&mut mapping, elem_ty, arg);
-        }
-    } else {
-        for (arg, param) in call.args.iter().zip(params) {
-            collect_type_var_constraints(&mut mapping, param, arg);
-        }
+    for (arg, param) in call.args.iter().zip(params) {
+        collect_arg_constraints(env, arg, param, &mut bounds);
     }
 
     // Constraints from expected return type.
     if let Some(expected) = &call.expected_return {
-        collect_type_var_constraints(&mut mapping, return_type, expected);
+        collect_return_constraints(env, return_type, expected, &mut bounds);
     }
 
-    // Solve: fill with discovered mapping or upper bounds (or Object).
-    let object = Type::class(env.well_known().object, vec![]);
+    // Solve bounds: prefer LUB of lowers, else GLB of uppers.
     method
         .type_params
         .iter()
-        .map(|id| {
-            mapping.get(id).cloned().unwrap_or_else(|| {
-                env.type_param(*id)
-                    .and_then(|tp| tp.upper_bounds.first().cloned())
-                    .unwrap_or_else(|| object.clone())
-            })
+        .map(|tv| {
+            let b = bounds.get(tv).cloned().unwrap_or_default();
+            let upper_glb = glb_all(env, &b.upper, &object);
+            let candidate = if b.lower.is_empty() {
+                upper_glb.clone()
+            } else {
+                lub_all(env, &b.lower, &object)
+            };
+
+            if is_subtype(env, &candidate, &upper_glb) {
+                candidate
+            } else {
+                upper_glb
+            }
         })
         .collect()
 }
 
-fn collect_type_var_constraints(
-    mapping: &mut HashMap<TypeVarId, Type>,
-    pattern: &Type,
-    actual: &Type,
+fn glb_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
+    let mut it = tys.iter();
+    let Some(first) = it.next() else {
+        return object.clone();
+    };
+    let mut acc = first.clone();
+    for t in it {
+        acc = glb(env, &acc, t);
+    }
+    acc
+}
+
+fn lub_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
+    let mut it = tys.iter();
+    let Some(first) = it.next() else {
+        return object.clone();
+    };
+    let mut acc = first.clone();
+    for t in it {
+        acc = lub2(env, &acc, t, object);
+    }
+    acc
+}
+
+fn lub2(env: &dyn TypeEnv, a: &Type, b: &Type, object: &Type) -> Type {
+    if is_subtype(env, a, b) {
+        return b.clone();
+    }
+    if is_subtype(env, b, a) {
+        return a.clone();
+    }
+    object.clone()
+}
+
+fn push_lower_bound(bounds: &mut HashMap<TypeVarId, InferenceBounds>, tv: TypeVarId, ty: Type) {
+    if is_placeholder_type_for_inference(&ty) {
+        return;
+    }
+    if let Some(b) = bounds.get_mut(&tv) {
+        b.lower.push(ty);
+    }
+}
+
+fn push_upper_bound(bounds: &mut HashMap<TypeVarId, InferenceBounds>, tv: TypeVarId, ty: Type) {
+    if is_placeholder_type_for_inference(&ty) {
+        return;
+    }
+    if let Some(b) = bounds.get_mut(&tv) {
+        b.upper.push(ty);
+    }
+}
+
+fn collect_arg_constraints(
+    env: &dyn TypeEnv,
+    arg: &Type,
+    param: &Type,
+    bounds: &mut HashMap<TypeVarId, InferenceBounds>,
 ) {
-    match pattern {
-        Type::TypeVar(id) => {
-            insert_type_var_constraint(mapping, *id, actual);
+    match param {
+        Type::TypeVar(tv) => {
+            push_lower_bound(bounds, *tv, arg.clone());
         }
+        Type::Array(p_elem) => {
+            if let Type::Array(a_elem) = arg {
+                collect_arg_constraints(env, a_elem, p_elem, bounds);
+            }
+        }
+        Type::Class(ClassType { def: p_def, args: p_args }) => {
+            if let Type::Class(ClassType { def: a_def, args: a_args }) = arg {
+                if p_def == a_def && p_args.len() == a_args.len() {
+                    for (a, p) in a_args.iter().zip(p_args) {
+                        collect_type_arg_constraints(env, a, p, bounds);
+                    }
+                }
+            }
+        }
+        Type::Intersection(parts) => {
+            for p in parts {
+                collect_arg_constraints(env, arg, p, bounds);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_type_arg_constraints(
+    env: &dyn TypeEnv,
+    actual: &Type,
+    formal: &Type,
+    bounds: &mut HashMap<TypeVarId, InferenceBounds>,
+) {
+    match formal {
+        Type::Wildcard(WildcardBound::Unbounded) => {}
+        Type::Wildcard(WildcardBound::Extends(upper)) => {
+            collect_arg_constraints(env, actual, upper, bounds);
+        }
+        Type::Wildcard(WildcardBound::Super(lower)) => {
+            collect_reverse_constraints(env, lower, actual, bounds);
+        }
+        _ => collect_equality_constraints(env, actual, formal, bounds),
+    }
+}
+
+fn collect_reverse_constraints(
+    env: &dyn TypeEnv,
+    lower: &Type,
+    actual: &Type,
+    bounds: &mut HashMap<TypeVarId, InferenceBounds>,
+) {
+    // lower <: actual
+    match lower {
+        Type::TypeVar(tv) => push_upper_bound(bounds, *tv, actual.clone()),
+        Type::Class(ClassType { def: l_def, args: l_args }) => {
+            if let Type::Class(ClassType { def: a_def, args: a_args }) = actual {
+                if l_def == a_def && l_args.len() == a_args.len() {
+                    for (l, a) in l_args.iter().zip(a_args) {
+                        collect_reverse_constraints(env, l, a, bounds);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_equality_constraints(
+    env: &dyn TypeEnv,
+    actual: &Type,
+    formal: &Type,
+    bounds: &mut HashMap<TypeVarId, InferenceBounds>,
+) {
+    match formal {
+        Type::TypeVar(tv) => {
+            push_lower_bound(bounds, *tv, actual.clone());
+            push_upper_bound(bounds, *tv, actual.clone());
+        }
+        Type::Array(f_elem) => {
+            if let Type::Array(a_elem) = actual {
+                collect_equality_constraints(env, a_elem, f_elem, bounds);
+            }
+        }
+        Type::Class(ClassType { def: f_def, args: f_args }) => {
+            if let Type::Class(ClassType { def: a_def, args: a_args }) = actual {
+                if f_def == a_def && f_args.len() == a_args.len() {
+                    for (a, f) in a_args.iter().zip(f_args) {
+                        collect_equality_constraints(env, a, f, bounds);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_return_constraints(
+    env: &dyn TypeEnv,
+    ret: &Type,
+    expected: &Type,
+    bounds: &mut HashMap<TypeVarId, InferenceBounds>,
+) {
+    // ret <: expected
+    match ret {
+        Type::TypeVar(tv) => push_upper_bound(bounds, *tv, expected.clone()),
+        Type::Class(ClassType { def: r_def, args: r_args }) => {
+            if let Type::Class(ClassType { def: e_def, args: e_args }) = expected {
+                if r_def == e_def && r_args.len() == e_args.len() {
+                    for (r, e) in r_args.iter().zip(e_args) {
+                        collect_equality_constraints(env, e, r, bounds);
+                    }
+                }
+            }
+        }
+        Type::Array(r_elem) => {
+            if let Type::Array(e_elem) = expected {
+                collect_return_constraints(env, r_elem, e_elem, bounds);
+            }
+        }
+        Type::Intersection(parts) => {
+            for p in parts {
+                collect_return_constraints(env, p, expected, bounds);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_type_var_constraints(mapping: &mut HashMap<TypeVarId, Type>, pattern: &Type, actual: &Type) {
+    match pattern {
+        Type::TypeVar(id) => insert_type_var_constraint(mapping, *id, actual),
         Type::Array(p_elem) => {
             if let Type::Array(a_elem) = actual {
                 collect_type_var_constraints(mapping, p_elem, a_elem);
@@ -1159,10 +1864,7 @@ fn collect_type_var_constraints(
                 }
             }
         }
-        Type::Wildcard(WildcardBound::Extends(p)) => {
-            collect_type_var_constraints(mapping, p, actual);
-        }
-        Type::Wildcard(WildcardBound::Super(p)) => {
+        Type::Wildcard(WildcardBound::Extends(p)) | Type::Wildcard(WildcardBound::Super(p)) => {
             collect_type_var_constraints(mapping, p, actual);
         }
         Type::Intersection(types) => {
@@ -1199,55 +1901,70 @@ fn most_specific<'a>(
     methods: &'a [ResolvedMethod],
     arity: usize,
 ) -> Option<&'a ResolvedMethod> {
-    let mut best: Option<&ResolvedMethod> = None;
+    if methods.is_empty() {
+        return None;
+    }
 
+    let mut maximals = Vec::new();
     'outer: for m in methods {
         for other in methods {
             if std::ptr::eq(m, other) {
                 continue;
             }
-
             if !is_more_specific(env, m, other, arity) {
                 continue 'outer;
             }
         }
-        if best.is_some() {
-            // Two methods are "most specific" => ambiguous.
-            return None;
-        }
-        best = Some(m);
+        maximals.push(m);
     }
 
-    best
+    if maximals.len() == 1 {
+        return Some(maximals[0]);
+    }
+
+    if maximals.is_empty() {
+        return None;
+    }
+
+    // Tie-breakers (best-effort):
+    // 1. Prefer fixed-arity invocations over varargs expansion.
+    // 2. Prefer non-generic methods over generic ones when parameter types tie.
+    // 3. Prefer fewer unchecked/raw warnings.
+    let mut scored: Vec<(&ResolvedMethod, (u8, u8, usize))> = maximals
+        .into_iter()
+        .map(|m| {
+            (
+                m,
+                (
+                    u8::from(m.used_varargs),
+                    u8::from(!m.inferred_type_args.is_empty()),
+                    m.warnings.len(),
+                ),
+            )
+        })
+        .collect();
+
+    scored.sort_by(|a, b| a.1.cmp(&b.1));
+    let (best, best_score) = scored.first().copied().unwrap();
+    if scored.iter().skip(1).all(|(_, score)| score != &best_score) {
+        Some(best)
+    } else {
+        None
+    }
 }
 
 fn is_more_specific(env: &dyn TypeEnv, a: &ResolvedMethod, b: &ResolvedMethod, arity: usize) -> bool {
-    let a_params = if a.is_varargs {
-        if a.params.len() == arity {
-            &a.params
-        } else {
-            return false;
-        }
-    } else {
-        &a.params
-    };
-    let b_params = if b.is_varargs {
-        if b.params.len() == arity {
-            &b.params
-        } else {
-            return false;
-        }
-    } else {
-        &b.params
-    };
+    if a.used_varargs != b.used_varargs {
+        return !a.used_varargs && b.used_varargs;
+    }
 
-    if a_params.len() != b_params.len() {
+    if a.params.len() != arity || b.params.len() != arity {
         return false;
     }
 
-    a_params
+    a.params
         .iter()
-        .zip(b_params)
+        .zip(&b.params)
         .all(|(a_ty, b_ty)| is_subtype(env, a_ty, b_ty))
 }
 

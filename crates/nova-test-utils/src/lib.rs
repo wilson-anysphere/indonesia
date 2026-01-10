@@ -2,6 +2,16 @@
 //!
 //! This crate contains small helpers for fixture-based tests across the
 //! workspace (refactorings, LSP navigation, etc).
+//!
+//! It also includes a small differential harness against `javac` (see
+//! [`javac`](crate::javac)).
+//!
+//! ## Running `javac` differential tests locally
+//!
+//! ```bash
+//! # Run ignored tests (requires `javac` on PATH)
+//! cargo test -p nova-types -- --ignored
+//! ```
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -240,3 +250,4 @@ fn strip_markers(text: &str) -> (String, Vec<(u32, usize)>) {
     (out, markers)
 }
 
+pub mod javac;
