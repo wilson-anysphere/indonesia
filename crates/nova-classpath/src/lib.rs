@@ -435,6 +435,7 @@ fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
         annotations: cf
             .runtime_visible_annotations
             .into_iter()
+            .chain(cf.runtime_invisible_annotations.into_iter())
             .map(|a| a.type_descriptor)
             .collect(),
         fields: cf
@@ -448,6 +449,7 @@ fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
                 annotations: f
                     .runtime_visible_annotations
                     .into_iter()
+                    .chain(f.runtime_invisible_annotations.into_iter())
                     .map(|a| a.type_descriptor)
                     .collect(),
             })
@@ -463,6 +465,7 @@ fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
                 annotations: m
                     .runtime_visible_annotations
                     .into_iter()
+                    .chain(m.runtime_invisible_annotations.into_iter())
                     .map(|a| a.type_descriptor)
                     .collect(),
             })

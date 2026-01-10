@@ -42,6 +42,8 @@ pub struct MethodStub {
 
 impl ClassStub {
     pub fn from_classfile(class: &ClassFile) -> Result<Self> {
+        let mut class_annotations = class.runtime_visible_annotations.clone();
+        class_annotations.extend(class.runtime_invisible_annotations.clone());
         let signature = match class.signature.as_deref() {
             Some(sig) => Some(parse_class_signature(sig)?),
             None => None,
@@ -62,7 +64,11 @@ impl ClassStub {
                     descriptor: f.descriptor.clone(),
                     parsed_descriptor,
                     signature,
-                    annotations: f.runtime_visible_annotations.clone(),
+                    annotations: {
+                        let mut annotations = f.runtime_visible_annotations.clone();
+                        annotations.extend(f.runtime_invisible_annotations.clone());
+                        annotations
+                    },
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -82,7 +88,11 @@ impl ClassStub {
                     descriptor: m.descriptor.clone(),
                     parsed_descriptor,
                     signature,
-                    annotations: m.runtime_visible_annotations.clone(),
+                    annotations: {
+                        let mut annotations = m.runtime_visible_annotations.clone();
+                        annotations.extend(m.runtime_invisible_annotations.clone());
+                        annotations
+                    },
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -93,7 +103,7 @@ impl ClassStub {
             super_class: class.super_class.clone(),
             interfaces: class.interfaces.clone(),
             signature,
-            annotations: class.runtime_visible_annotations.clone(),
+            annotations: class_annotations,
             inner_classes: class.inner_classes.clone(),
             fields,
             methods,
@@ -106,4 +116,3 @@ impl ClassFile {
         ClassStub::from_classfile(self)
     }
 }
-

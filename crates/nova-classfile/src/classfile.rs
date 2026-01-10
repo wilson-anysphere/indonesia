@@ -15,6 +15,7 @@ pub struct ClassFile {
     pub methods: Vec<ClassMember>,
     pub signature: Option<String>,
     pub runtime_visible_annotations: Vec<Annotation>,
+    pub runtime_invisible_annotations: Vec<Annotation>,
     pub inner_classes: Vec<InnerClassInfo>,
 }
 
@@ -25,6 +26,7 @@ pub struct ClassMember {
     pub descriptor: String,
     pub signature: Option<String>,
     pub runtime_visible_annotations: Vec<Annotation>,
+    pub runtime_invisible_annotations: Vec<Annotation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +91,7 @@ impl ClassFile {
             methods,
             signature: class_attrs.signature,
             runtime_visible_annotations: class_attrs.runtime_visible_annotations,
+            runtime_invisible_annotations: class_attrs.runtime_invisible_annotations,
             inner_classes: class_attrs.inner_classes,
         })
     }
@@ -106,6 +109,7 @@ fn parse_member(reader: &mut Reader<'_>, cp: &ConstantPool) -> Result<ClassMembe
         descriptor,
         signature: attrs.signature,
         runtime_visible_annotations: attrs.runtime_visible_annotations,
+        runtime_invisible_annotations: attrs.runtime_invisible_annotations,
     })
 }
 
@@ -113,6 +117,7 @@ fn parse_member(reader: &mut Reader<'_>, cp: &ConstantPool) -> Result<ClassMembe
 struct ParsedAttributes {
     signature: Option<String>,
     runtime_visible_annotations: Vec<Annotation>,
+    runtime_invisible_annotations: Vec<Annotation>,
     inner_classes: Vec<InnerClassInfo>,
 }
 
@@ -148,6 +153,15 @@ fn parse_attributes(
                     anns.push(Annotation::parse(&mut sub, cp)?);
                 }
                 parsed.runtime_visible_annotations.extend(anns);
+                sub.ensure_empty()?;
+            }
+            "RuntimeInvisibleAnnotations" => {
+                let num = sub.read_u2()? as usize;
+                let mut anns = Vec::with_capacity(num);
+                for _ in 0..num {
+                    anns.push(Annotation::parse(&mut sub, cp)?);
+                }
+                parsed.runtime_invisible_annotations.extend(anns);
                 sub.ensure_empty()?;
             }
             "InnerClasses" if matches!(target, AttributeTarget::Class) => {
@@ -189,4 +203,3 @@ fn parse_attributes(
 
     Ok(parsed)
 }
-

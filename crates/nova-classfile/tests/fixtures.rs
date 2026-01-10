@@ -63,6 +63,7 @@ fn parse_runtime_visible_annotations() {
     let class = ClassFile::parse(bytes).unwrap();
     assert_eq!(class.this_class, "com/example/Annotated");
     assert_eq!(class.runtime_visible_annotations.len(), 1);
+    assert!(class.runtime_invisible_annotations.is_empty());
 
     let ann = &class.runtime_visible_annotations[0];
     assert_eq!(ann.type_descriptor, "Lcom/example/Ann;");
@@ -85,6 +86,31 @@ fn parse_runtime_visible_annotations() {
             ElementValue::Const(ConstValue::Int(2)),
         ])
     );
+}
+
+#[test]
+fn parse_runtime_invisible_annotations() {
+    let bytes = include_bytes!("../testdata/InvisibleAnnotated.class");
+    let class = ClassFile::parse(bytes).unwrap();
+    assert_eq!(class.this_class, "com/example/InvisibleAnnotated");
+    assert!(class.runtime_visible_annotations.is_empty());
+    assert_eq!(class.runtime_invisible_annotations.len(), 1);
+
+    let ann = &class.runtime_invisible_annotations[0];
+    assert_eq!(ann.type_descriptor, "Lcom/example/Ann;");
+    assert_eq!(ann.type_internal_name.as_deref(), Some("com/example/Ann"));
+    assert_eq!(
+        ann.elements,
+        vec![(
+            "value".to_string(),
+            ElementValue::Const(ConstValue::String("hello".into()))
+        )]
+    );
+
+    // Stubs should surface both visible and invisible annotations.
+    let stub = class.stub().unwrap();
+    assert_eq!(stub.annotations.len(), 1);
+    assert_eq!(stub.annotations[0].type_descriptor, "Lcom/example/Ann;");
 }
 
 #[test]
