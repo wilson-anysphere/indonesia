@@ -40,6 +40,7 @@ impl AiClient {
                 config.provider.url.clone(),
                 config.provider.model.clone(),
                 config.provider.timeout(),
+                config.api_key.clone(),
             )?),
         };
 

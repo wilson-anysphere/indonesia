@@ -1,3 +1,4 @@
+use futures::stream::iter;
 use futures::StreamExt;
 use hyper::{
     service::{make_service_fn, service_fn},
@@ -8,7 +9,6 @@ use nova_config::{AiConfig, AiPrivacyConfig, AiProviderConfig, AiProviderKind};
 use serde_json::Value;
 use std::{convert::Infallible, net::SocketAddr, time::Duration};
 use tokio::{sync::mpsc, task::JoinHandle};
-use futures::stream::iter;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -130,6 +130,7 @@ async fn openai_compatible_request_formatting() {
         async move {
             assert_eq!(req.method(), hyper::Method::POST);
             assert_eq!(req.uri().path(), "/v1/chat/completions");
+            assert!(req.headers().get(hyper::header::AUTHORIZATION).is_none());
 
             let bytes = hyper::body::to_bytes(req.into_body())
                 .await
@@ -165,6 +166,139 @@ async fn openai_compatible_request_formatting() {
     assert_eq!(body["stream"], false);
     assert_eq!(body["messages"][0]["role"], "user");
     assert_eq!(body["messages"][0]["content"], "hi");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn openai_compatible_sends_authorization_header_when_api_key_is_set() {
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.method(), hyper::Method::POST);
+        assert_eq!(req.uri().path(), "/v1/chat/completions");
+
+        let auth = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .expect("authorization header");
+        assert_eq!(
+            auth.to_str().expect("authorization header utf8"),
+            "Bearer test-key"
+        );
+
+        Response::new(Body::from(
+            r#"{"choices":[{"message":{"content":"hello"}}]}"#,
+        ))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+    let mut config = openai_config(url);
+    config.api_key = Some("test-key".to_string());
+
+    let client = AiClient::from_config(&config).unwrap();
+    let content = client
+        .chat(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(7),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(content, "hello");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn openai_compatible_list_models_sends_authorization_header_when_api_key_is_set() {
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.method(), hyper::Method::GET);
+        assert_eq!(req.uri().path(), "/v1/models");
+
+        let auth = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .expect("authorization header");
+        assert_eq!(
+            auth.to_str().expect("authorization header utf8"),
+            "Bearer test-key"
+        );
+
+        Response::new(Body::from(r#"{"data":[{"id":"m1"},{"id":"m2"}]}"#))
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+    let mut config = openai_config(url);
+    config.api_key = Some("test-key".to_string());
+
+    let client = AiClient::from_config(&config).unwrap();
+    let models = client
+        .list_models(CancellationToken::new())
+        .await
+        .expect("list models");
+
+    assert_eq!(models, vec!["m1".to_string(), "m2".to_string()]);
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn openai_compatible_stream_sends_authorization_header_when_api_key_is_set() {
+    let handler = move |req: Request<Body>| async move {
+        assert_eq!(req.method(), hyper::Method::POST);
+        assert_eq!(req.uri().path(), "/v1/chat/completions");
+
+        let auth = req
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .expect("authorization header");
+        assert_eq!(
+            auth.to_str().expect("authorization header utf8"),
+            "Bearer test-key"
+        );
+
+        let chunks = vec![
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+            )),
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from(
+                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+            )),
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from("data: [DONE]\n\n")),
+        ];
+
+        Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::wrap_stream(iter(chunks)))
+            .unwrap()
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+    let mut config = openai_config(url);
+    config.api_key = Some("test-key".to_string());
+
+    let client = AiClient::from_config(&config).unwrap();
+
+    let mut stream = client
+        .chat_stream(
+            ChatRequest {
+                messages: vec![ChatMessage::user("hi")],
+                max_tokens: Some(5),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+    let mut output = String::new();
+    while let Some(item) = stream.next().await {
+        output.push_str(&item.unwrap());
+    }
+    assert_eq!(output, "Hello world");
 
     handle.abort();
 }
@@ -228,6 +362,7 @@ async fn openai_compatible_streaming_parsing() {
                     .body(Body::empty())
                     .unwrap();
             }
+            assert!(req.headers().get(hyper::header::AUTHORIZATION).is_none());
 
             let bytes = hyper::body::to_bytes(req.into_body())
                 .await

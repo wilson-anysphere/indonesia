@@ -16,6 +16,7 @@ pub struct OpenAiCompatibleProvider {
     base_url: Url,
     model: String,
     timeout: Duration,
+    api_key: Option<String>,
     client: reqwest::Client,
 }
 
@@ -24,14 +25,23 @@ impl OpenAiCompatibleProvider {
         base_url: Url,
         model: impl Into<String>,
         timeout: Duration,
+        api_key: Option<String>,
     ) -> Result<Self, AiError> {
         let client = reqwest::Client::builder().build()?;
         Ok(Self {
             base_url,
             model: model.into(),
             timeout,
+            api_key,
             client,
         })
+    }
+
+    fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.api_key {
+            Some(api_key) => request.bearer_auth(api_key),
+            None => request,
+        }
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, AiError> {
@@ -68,8 +78,7 @@ impl AiProvider for OpenAiCompatibleProvider {
 
         let fut = async {
             let response = self
-                .client
-                .post(url)
+                .authorize(self.client.post(url))
                 .json(&body)
                 .timeout(self.timeout)
                 .send()
@@ -107,14 +116,14 @@ impl AiProvider for OpenAiCompatibleProvider {
             stream: true,
         };
 
+        let request_builder = self
+            .authorize(self.client.post(url))
+            .json(&body)
+            .timeout(self.timeout);
+
         let response = tokio::select! {
             _ = cancel.cancelled() => return Err(AiError::Cancelled),
-            resp = self
-                .client
-                .post(url)
-                .json(&body)
-                .timeout(self.timeout)
-                .send() => resp?,
+            resp = request_builder.send() => resp?,
         }
         .error_for_status()?;
 
@@ -179,8 +188,7 @@ impl AiProvider for OpenAiCompatibleProvider {
         let url = self.endpoint("/models")?;
         let fut = async {
             let response = self
-                .client
-                .get(url)
+                .authorize(self.client.get(url))
                 .timeout(self.timeout)
                 .send()
                 .await?
