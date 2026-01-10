@@ -37,6 +37,7 @@ impl Workspace {
                 .map(|p| p.to_path_buf())
                 .context("file path has no parent directory")?
         };
+        let root = find_project_root(&root);
         let root = fs::canonicalize(&root)
             .with_context(|| format!("failed to canonicalize {}", root.display()))?;
         let root = discover_workspace_root(&root);
@@ -236,18 +237,44 @@ impl Workspace {
             .with_context(|| format!("failed to read metadata for {}", path.display()))?;
         let mut diagnostics = Vec::new();
 
-        let files = if meta.is_dir() {
-            self.project_java_files()?
+        let requested_file = if meta.is_dir() {
+            None
         } else {
-            vec![path.to_path_buf()]
+            Some(fs::canonicalize(path).with_context(|| {
+                format!("failed to canonicalize diagnostics path {}", path.display())
+            })?)
         };
 
-        for file in files {
+        // Always load full project sources so framework diagnostics can see both bean
+        // definitions and injection sites, even when diagnostics are requested for a
+        // single file.
+        let files = self
+            .project_java_files()
+            .unwrap_or_else(|_| vec![path.to_path_buf()]);
+
+        let mut sources = Vec::with_capacity(files.len());
+        for file in &files {
+            let file = if requested_file.is_some() {
+                fs::canonicalize(file)
+                    .with_context(|| format!("failed to canonicalize {}", file.display()))?
+            } else {
+                file.clone()
+            };
             let content = fs::read_to_string(&file)
                 .with_context(|| format!("failed to read {}", file.display()))?;
+            sources.push((file, content));
+        }
+
+        for (file, content) in &sources {
+            if requested_file
+                .as_ref()
+                .is_some_and(|requested| requested != file)
+            {
+                continue;
+            }
 
             // Parse-like delimiter checks (cheap but useful in CI smoke tests).
-            let parse = parse_brace_tree(&content);
+            let parse = parse_brace_tree(content);
             for err in parse.errors {
                 diagnostics.push(Diagnostic {
                     file: file.clone(),
@@ -279,12 +306,73 @@ impl Workspace {
             }
         }
 
+        diagnostics.extend(self.spring_diagnostics(&sources, requested_file.as_deref())?);
+
         let summary = DiagnosticsSummary::from_diagnostics(&diagnostics);
         Ok(DiagnosticsReport {
             root: self.root.clone(),
             diagnostics,
             summary,
         })
+    }
+
+    fn spring_diagnostics(
+        &self,
+        sources: &[(PathBuf, String)],
+        requested_file: Option<&Path>,
+    ) -> Result<Vec<Diagnostic>> {
+        let config = match nova_project::load_project(&self.root) {
+            Ok(config) => Some(config),
+            Err(ProjectError::UnknownProjectType { .. }) => None,
+            Err(err) => {
+                return Err(anyhow::anyhow!(err))
+                    .with_context(|| format!("failed to load project at {}", self.root.display()))
+            }
+        };
+
+        let Some(config) = config else {
+            return Ok(Vec::new());
+        };
+
+        if !nova_framework_spring::is_spring_applicable(&config) {
+            return Ok(Vec::new());
+        }
+
+        let texts: Vec<&str> = sources.iter().map(|(_, text)| text.as_str()).collect();
+        let analysis = nova_framework_spring::analyze_java_sources(&texts);
+
+        let mut diags = Vec::new();
+        for source_diag in analysis.diagnostics {
+            let Some((file_path, file_text)) = sources.get(source_diag.source) else {
+                continue;
+            };
+            if requested_file.is_some_and(|requested| requested != file_path.as_path()) {
+                continue;
+            }
+
+            let (line, column) = source_diag
+                .diagnostic
+                .span
+                .map(|span| line_col_at(file_text, span.start))
+                .unwrap_or((1, 1));
+
+            let severity = match source_diag.diagnostic.severity {
+                nova_framework_spring::Severity::Error => Severity::Error,
+                nova_framework_spring::Severity::Warning => Severity::Warning,
+                nova_framework_spring::Severity::Info => Severity::Warning,
+            };
+
+            diags.push(Diagnostic {
+                file: file_path.clone(),
+                line,
+                column,
+                severity,
+                code: Some(source_diag.diagnostic.code.to_string()),
+                message: source_diag.diagnostic.message,
+            });
+        }
+
+        Ok(diags)
     }
 
     pub fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>> {
@@ -870,3 +958,35 @@ pub use live::{
     WatcherHandle, Workspace as LiveWorkspace, WorkspaceClient,
     WorkspaceConfig as LiveWorkspaceConfig,
 };
+fn find_project_root(start: &Path) -> PathBuf {
+    let mut current = start;
+    loop {
+        if looks_like_project_root(current) {
+            return current.to_path_buf();
+        }
+        let Some(parent) = current.parent() else {
+            return start.to_path_buf();
+        };
+        if parent == current {
+            return start.to_path_buf();
+        }
+        current = parent;
+    }
+}
+
+fn looks_like_project_root(dir: &Path) -> bool {
+    if dir.join("pom.xml").is_file() {
+        return true;
+    }
+    if dir.join("build.gradle").is_file()
+        || dir.join("build.gradle.kts").is_file()
+        || dir.join("settings.gradle").is_file()
+        || dir.join("settings.gradle.kts").is_file()
+    {
+        return true;
+    }
+    if dir.join("src").is_dir() {
+        return true;
+    }
+    false
+}
