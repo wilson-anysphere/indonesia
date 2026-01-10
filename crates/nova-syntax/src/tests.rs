@@ -103,3 +103,16 @@ fn cache_parse_detects_doc_comments() {
     let kinds: Vec<_> = parsed.tokens().map(|t| t.kind).collect();
     assert!(kinds.contains(&SyntaxKind::DocComment));
 }
+
+#[test]
+fn parse_annotation_type_declaration() {
+    let input = "@interface Foo { int value(); }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let has_annotation_type = result
+        .syntax()
+        .descendants()
+        .any(|n| n.kind() == SyntaxKind::AnnotationTypeDeclaration);
+    assert!(has_annotation_type);
+}

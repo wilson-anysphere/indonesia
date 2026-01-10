@@ -121,6 +121,9 @@ impl<'a> Parser<'a> {
 
     fn parse_type_declaration_inner(&mut self, checkpoint: rowan::Checkpoint) {
         match self.current() {
+            SyntaxKind::At if self.nth(1) == Some(SyntaxKind::InterfaceKw) => {
+                self.parse_annotation_type_decl(checkpoint)
+            }
             SyntaxKind::ClassKw => {
                 self.parse_class_decl(checkpoint, SyntaxKind::ClassDeclaration, SyntaxKind::ClassBody)
             }
@@ -152,6 +155,16 @@ impl<'a> Parser<'a> {
                 self.builder.finish_node();
             }
         }
+    }
+
+    fn parse_annotation_type_decl(&mut self, checkpoint: rowan::Checkpoint) {
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::AnnotationTypeDeclaration.into());
+        self.expect(SyntaxKind::At, "expected `@`");
+        self.expect(SyntaxKind::InterfaceKw, "expected `interface` after `@`");
+        self.expect_ident_like("expected annotation type name");
+        self.parse_class_body(SyntaxKind::AnnotationBody);
+        self.builder.finish_node();
     }
 
     fn parse_class_decl(
@@ -290,7 +303,8 @@ impl<'a> Parser<'a> {
         if matches!(
             self.current(),
             SyntaxKind::ClassKw | SyntaxKind::InterfaceKw | SyntaxKind::EnumKw | SyntaxKind::RecordKw
-        ) {
+        ) || (self.at(SyntaxKind::At) && self.nth(1) == Some(SyntaxKind::InterfaceKw))
+        {
             self.parse_type_declaration_inner(checkpoint);
             return;
         }
@@ -382,6 +396,10 @@ impl<'a> Parser<'a> {
         loop {
             self.eat_trivia();
             if self.at(SyntaxKind::At) {
+                // `@interface` is an annotation *type* declaration, not an annotation modifier.
+                if self.nth(1) == Some(SyntaxKind::InterfaceKw) {
+                    break;
+                }
                 self.parse_annotation();
                 continue;
             }

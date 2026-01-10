@@ -181,10 +181,12 @@ pub enum SyntaxKind {
     InterfaceDeclaration,
     EnumDeclaration,
     RecordDeclaration,
+    AnnotationTypeDeclaration,
     ClassBody,
     InterfaceBody,
     EnumBody,
     RecordBody,
+    AnnotationBody,
     EnumConstant,
 
     FieldDeclaration,

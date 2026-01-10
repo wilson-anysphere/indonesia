@@ -37,6 +37,7 @@ ast_node!(ClassDeclaration, SyntaxKind::ClassDeclaration);
 ast_node!(InterfaceDeclaration, SyntaxKind::InterfaceDeclaration);
 ast_node!(EnumDeclaration, SyntaxKind::EnumDeclaration);
 ast_node!(RecordDeclaration, SyntaxKind::RecordDeclaration);
+ast_node!(AnnotationTypeDeclaration, SyntaxKind::AnnotationTypeDeclaration);
 ast_node!(MethodDeclaration, SyntaxKind::MethodDeclaration);
 ast_node!(FieldDeclaration, SyntaxKind::FieldDeclaration);
 
@@ -61,4 +62,3 @@ impl CompilationUnit {
         })
     }
 }
-
