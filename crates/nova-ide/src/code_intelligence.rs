@@ -23,6 +23,8 @@ use nova_db::{Database, FileId};
 use nova_fuzzy::FuzzyMatcher;
 use nova_types::{Diagnostic, Severity, Span};
 
+use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
+
 #[cfg(feature = "ai")]
 use nova_ai::{maybe_rank_completions, AiConfig, BaselineCompletionRanker};
 #[cfg(feature = "ai")]
@@ -180,7 +182,9 @@ pub fn file_diagnostics_lsp(db: &dyn Database, file: FileId) -> Vec<lsp_types::D
 
 pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<CompletionItem> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position);
+    let Some(offset) = position_to_offset(text, position) else {
+        return Vec::new();
+    };
 
     if let Some(path) = db.file_path(file) {
         if is_spring_properties_file(path) {
@@ -241,7 +245,9 @@ pub async fn completions_with_ai(
     }
 
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position);
+    let Some(offset) = position_to_offset(text, position) else {
+        return baseline;
+    };
     let (_, prefix) = identifier_prefix(text, offset);
     let line_text = line_text_at_offset(text, offset);
 
@@ -471,7 +477,7 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>) {
 
 pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> Option<Location> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position);
+    let offset = position_to_offset(text, position)?;
 
     // Spring config navigation from `@Value("${foo.bar}")` -> config definition.
     if db
@@ -512,7 +518,9 @@ pub fn find_references(
     include_declaration: bool,
 ) -> Vec<Location> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position);
+    let Some(offset) = position_to_offset(text, position) else {
+        return Vec::new();
+    };
 
     if let Some(path) = db.file_path(file) {
         if is_spring_properties_file(path) || is_spring_yaml_file(path) {
@@ -694,7 +702,7 @@ fn file_uri_from_path(path: &Path) -> Option<lsp_types::Uri> {
 
 pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hover> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position);
+    let offset = position_to_offset(text, position)?;
     let analysis = analyze(text);
     let token = token_at_offset(&analysis.tokens, offset)?;
     if token.kind != TokenKind::Ident {
@@ -743,7 +751,7 @@ pub fn signature_help(
     position: Position,
 ) -> Option<SignatureHelp> {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position);
+    let offset = position_to_offset(text, position)?;
     let analysis = analyze(text);
 
     // Find the first call whose argument list includes the cursor (best-effort).
@@ -779,8 +787,12 @@ pub fn signature_help(
 
 pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHint> {
     let text = db.file_content(file);
-    let start = position_to_offset(text, range.start);
-    let end = position_to_offset(text, range.end);
+    let Some(start) = position_to_offset(text, range.start) else {
+        return Vec::new();
+    };
+    let Some(end) = position_to_offset(text, range.end) else {
+        return Vec::new();
+    };
     let analysis = analyze(text);
 
     let mut hints = Vec::new();
@@ -1487,47 +1499,6 @@ fn is_field_modifier(ident: &str) -> bool {
 // -----------------------------------------------------------------------------
 // Text coordinate helpers
 // -----------------------------------------------------------------------------
-
-pub(crate) fn position_to_offset(text: &str, position: Position) -> usize {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if line == position.line && col == position.character {
-            return idx;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    text.len()
-}
-
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    Position::new(line, col)
-}
-
-fn span_to_lsp_range(text: &str, span: Span) -> Range {
-    Range::new(
-        offset_to_position(text, span.start),
-        offset_to_position(text, span.end),
-    )
-}
 
 fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
     let bytes = text.as_bytes();
