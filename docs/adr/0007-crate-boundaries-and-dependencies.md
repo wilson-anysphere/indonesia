@@ -66,7 +66,9 @@ If you are adding a new crate, prefer placing it in the **lowest layer that can 
 
 ### Dependency policy
 
-- **No protocol crate (`nova-lsp`, `nova-dap`) is allowed to be depended on by any other crate.**
+- Protocol crates (`nova-lsp`, `nova-dap`) are **top-of-tree integration crates**:
+  - core crates (syntax/DB/semantic/IDE) MUST NOT depend on them,
+  - other integration crates MAY depend on them where it makes sense (and especially in `dev-dependencies` for end-to-end tests), but keep those dependencies out of core APIs.
 - Prefer keeping protocol *transport* and editor-specific behavior in `nova-lsp`, but using `lsp-types` as a shared data model is acceptable in higher layers (e.g. `nova-ide`) if it materially reduces adapter boilerplate.
 - Lower-level crates (e.g. `nova-core`, `nova-vfs`, `nova-syntax`, `nova-db`) SHOULD avoid depending on `lsp-types` to keep foundational layers lightweight.
 - Lower layers must not depend on higher layers (no cycles).

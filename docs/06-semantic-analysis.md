@@ -6,6 +6,8 @@
 
 Semantic analysis transforms raw syntax trees into meaningful program understanding. This is where Nova must match and exceed IntelliJ's legendary code intelligence. This document covers name resolution, type checking, type inference, and flow analysis.
 
+**Implementation note:** Nova’s semantic layer is intended to be driven by Salsa queries (see [ADR 0001](adr/0001-incremental-query-engine.md)) over a rowan-based syntax tree (see [ADR 0002](adr/0002-syntax-tree-rowan.md)). Code blocks in this document use simplified `#[query]`-style pseudo-code; the concrete implementation uses `ra_ap_salsa` macros (`ra_salsa::*`) and the `crates/nova-db` database.
+
 ---
 
 ## Semantic Analysis Pipeline

@@ -6,6 +6,8 @@
 
 Code intelligence is what users interact with: completions, diagnostics, navigation, hover information. This is where Nova must match IntelliJ's legendary user experience while leveraging our query-based architecture for superior performance.
 
+**Implementation note:** IDE-facing features are expected to be implemented as incremental queries (see [ADR 0001](adr/0001-incremental-query-engine.md)) executed on read-only database snapshots (see [ADR 0004](adr/0004-concurrency-model.md)). The transport layer that exposes these over LSP is covered in [ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md).
+
 ---
 
 ## Code Completion
