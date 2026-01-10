@@ -1,5 +1,7 @@
+use anyhow::{Context, Result};
 use crossbeam_channel as channel;
 use nova_scheduler::{chunk_vec, Debouncer};
+use nova_project::ProjectError;
 use nova_vfs::{FileId, FileIdRegistry, LocalFs, OverlayFs, VfsPath};
 use notify::RecursiveMode;
 use notify::Watcher;
@@ -85,6 +87,8 @@ pub trait WorkspaceClient: Send + Sync + 'static {
 
 #[derive(Debug, Clone)]
 pub struct WorkspaceConfig {
+    /// Workspace root (used as a broad watch boundary, and to classify `.java` files).
+    pub workspace_root: PathBuf,
     pub source_roots: Vec<PathBuf>,
     pub generated_source_roots: Vec<PathBuf>,
     pub build_file_roots: Vec<PathBuf>,
@@ -96,11 +100,13 @@ pub struct WorkspaceConfig {
 
 impl WorkspaceConfig {
     pub fn new(
+        workspace_root: PathBuf,
         source_roots: Vec<PathBuf>,
         generated_source_roots: Vec<PathBuf>,
         build_file_roots: Vec<PathBuf>,
     ) -> Self {
         Self {
+            workspace_root,
             source_roots,
             generated_source_roots,
             build_file_roots,
@@ -123,6 +129,79 @@ pub struct Workspace {
 }
 
 impl Workspace {
+    /// Open a live workspace rooted at `path`.
+    ///
+    /// This helper discovers source roots and build file locations via
+    /// `nova-project` so callers don't need to manually configure watcher roots.
+    pub fn open(path: impl AsRef<Path>, client: Arc<dyn WorkspaceClient>) -> Result<Self> {
+        let path = path.as_ref();
+        let meta = fs::metadata(path)
+            .with_context(|| format!("failed to read metadata for {}", path.display()))?;
+        let root = if meta.is_dir() {
+            path.to_path_buf()
+        } else {
+            path.parent()
+                .map(|p| p.to_path_buf())
+                .context("file path has no parent directory")?
+        };
+
+        let workspace_root = fs::canonicalize(&root)
+            .with_context(|| format!("failed to canonicalize {}", root.display()))?;
+
+        let project = match nova_project::load_project(&workspace_root) {
+            Ok(project) => Some(project),
+            Err(ProjectError::UnknownProjectType { .. }) => None,
+            Err(err) => {
+                return Err(anyhow::Error::new(err)).with_context(|| {
+                    format!("failed to load project at {}", workspace_root.display())
+                })
+            }
+        };
+
+        let (source_roots, generated_source_roots, build_file_roots) = if let Some(project) =
+            &project
+        {
+            let mut source_roots = Vec::new();
+            let mut generated_roots = Vec::new();
+            for root in &project.source_roots {
+                match root.origin {
+                    nova_project::SourceRootOrigin::Source => source_roots.push(root.path.clone()),
+                    nova_project::SourceRootOrigin::Generated => {
+                        generated_roots.push(root.path.clone())
+                    }
+                }
+            }
+
+            let mut build_roots: HashSet<PathBuf> = HashSet::new();
+            build_roots.insert(project.workspace_root.clone());
+            for module in &project.modules {
+                build_roots.insert(module.root.clone());
+            }
+
+            (
+                source_roots,
+                generated_roots,
+                build_roots.into_iter().collect(),
+            )
+        } else {
+            (
+                vec![workspace_root.clone()],
+                Vec::new(),
+                vec![workspace_root.clone()],
+            )
+        };
+
+        Ok(Self::new(
+            WorkspaceConfig::new(
+                workspace_root,
+                source_roots,
+                generated_source_roots,
+                build_file_roots,
+            ),
+            client,
+        ))
+    }
+
     pub fn new(config: WorkspaceConfig, client: Arc<dyn WorkspaceClient>) -> Self {
         Self {
             file_ids: Arc::new(Mutex::new(FileIdRegistry::new())),
@@ -207,7 +286,7 @@ impl WorkspaceDriver {
         }
     }
 
-    fn apply_build_changes(&self, _events: Vec<NormalizedEvent>) {
+    fn apply_build_changes(&self, events: Vec<NormalizedEvent>) {
         // Debouncer already batches build changes; additionally guard against reload storms.
         let now = Instant::now();
         {
@@ -221,6 +300,14 @@ impl WorkspaceDriver {
         }
 
         self.client.show_status("Reloading project…".to_string());
+        if let Err(err) = nova_project::load_project(&self.config.workspace_root) {
+            // Reload failures should not crash the watcher loop; surface as a user-visible error.
+            self.client.show_error(format!("Project reload failed: {err}"));
+        } else if !events.is_empty() {
+            // Currently the live workspace does not store the new project graph, but successfully
+            // invoking the loader is still a useful correctness signal (it validates build files
+            // and primes downstream caches for future integrations).
+        }
         self.indexer.lock().unwrap().reload_project();
 
         // On reload, re-index everything we currently know about.
@@ -234,36 +321,58 @@ impl WorkspaceDriver {
     fn apply_source_changes(&self, events: Vec<NormalizedEvent>) {
         let mut affected = HashSet::new();
 
+        // Coalesce noisy watcher streams (especially during git checkouts / rename storms) by
+        // processing each path at most once per batch. We always consult the filesystem at apply
+        // time to decide whether the end state is "exists" or "deleted".
+        let mut move_events = Vec::new();
+        let mut other_paths: HashSet<PathBuf> = HashSet::new();
+
         for event in events {
             match event {
-                NormalizedEvent::Created(path) | NormalizedEvent::Modified(path) => {
-                    if let Some(id) = self.update_file_from_disk(&path) {
-                        affected.insert(id);
-                    }
+                NormalizedEvent::Moved { from, to } => move_events.push((from, to)),
+                NormalizedEvent::Created(path)
+                | NormalizedEvent::Modified(path)
+                | NormalizedEvent::Deleted(path) => {
+                    other_paths.insert(path);
                 }
-                NormalizedEvent::Deleted(path) => {
-                    let vfs_path = VfsPath::local(path);
-                    let id = self.file_ids.lock().unwrap().file_id(vfs_path);
-                    {
-                        let mut db = self.db.lock().unwrap();
-                        db.file_exists.insert(id, false);
-                        db.file_content.remove(&id);
-                    }
+            }
+        }
+
+        // Apply moves first to keep FileId mapping stable before we touch the destination file.
+        move_events.sort();
+        for (from, to) in move_events {
+            other_paths.remove(&from);
+            other_paths.remove(&to);
+
+            let from_path = VfsPath::local(from);
+            let to_path = VfsPath::local(to.clone());
+            let id = self
+                .file_ids
+                .lock()
+                .unwrap()
+                .rename_path(&from_path, to_path);
+            if let Some(id) = self.update_file_from_disk(&to).or(Some(id)) {
+                affected.insert(id);
+            }
+        }
+
+        // Apply remaining paths once, based on their end state on disk.
+        let mut paths: Vec<_> = other_paths.into_iter().collect();
+        paths.sort();
+        for path in paths {
+            if path.exists() {
+                if let Some(id) = self.update_file_from_disk(&path) {
                     affected.insert(id);
                 }
-                NormalizedEvent::Moved { from, to } => {
-                    let from_path = VfsPath::local(from);
-                    let to_buf = to.clone();
-                    let to_path = VfsPath::local(to_buf);
-                    let id = self
-                        .file_ids
-                        .lock()
-                        .unwrap()
-                        .rename_path(&from_path, to_path);
-                    if let Some(id) = self.update_file_from_disk(&to).or(Some(id)) {
-                        affected.insert(id);
-                    }
+            } else {
+                let vfs_path = VfsPath::local(path);
+                let id = self.file_ids.lock().unwrap().file_id(vfs_path);
+                {
+                    let mut db = self.db.lock().unwrap();
+                    db.file_exists.insert(id, false);
+                    db.file_content.remove(&id);
                 }
+                affected.insert(id);
             }
         }
 
@@ -363,18 +472,30 @@ impl FileWatcher {
                 }
             };
 
+            // Deduplicate watch roots and prefer recursive watches when both are requested.
+            let mut watch_roots: HashMap<PathBuf, RecursiveMode> = HashMap::new();
+
+            for root in &config.build_file_roots {
+                watch_roots.insert(root.clone(), RecursiveMode::NonRecursive);
+            }
+
+            // Always watch the workspace root so we see new/generated sources show up even if their
+            // directories didn't exist at startup.
+            watch_roots.insert(config.workspace_root.clone(), RecursiveMode::Recursive);
+
             for root in config
                 .source_roots
                 .iter()
                 .chain(config.generated_source_roots.iter())
             {
-                if let Err(err) = watcher.watch(root, RecursiveMode::Recursive) {
-                    client.show_error(format!("Failed to watch {}: {err}", root.display()));
-                }
+                watch_roots.insert(root.clone(), RecursiveMode::Recursive);
             }
 
-            for root in &config.build_file_roots {
-                if let Err(err) = watcher.watch(root, RecursiveMode::NonRecursive) {
+            for (root, mode) in watch_roots {
+                if !root.exists() {
+                    continue;
+                }
+                if let Err(err) = watcher.watch(&root, mode) {
                     client.show_error(format!("Failed to watch {}: {err}", root.display()));
                 }
             }
@@ -443,7 +564,8 @@ fn categorize_event(config: &WorkspaceConfig, event: &NormalizedEvent) -> Option
         if path.extension().and_then(|s| s.to_str()) != Some("java") {
             continue;
         }
-        if is_within_any(path, &config.source_roots)
+        if path.starts_with(&config.workspace_root)
+            || is_within_any(path, &config.source_roots)
             || is_within_any(path, &config.generated_source_roots)
         {
             return Some(ChangeCategory::Source);
@@ -648,6 +770,7 @@ mod tests {
         let client = Arc::new(TestClient::default());
         let workspace = Workspace::new(
             WorkspaceConfig {
+                workspace_root: root.clone(),
                 source_roots: vec![root.clone()],
                 generated_source_roots: vec![],
                 build_file_roots: vec![],
@@ -705,6 +828,7 @@ mod tests {
         let client = Arc::new(TestClient::default());
         let workspace = Workspace::new(
             WorkspaceConfig {
+                workspace_root: root.clone(),
                 source_roots: vec![root.clone()],
                 generated_source_roots: vec![],
                 build_file_roots: vec![root.clone()],
@@ -732,4 +856,3 @@ mod tests {
         assert_eq!(db.file_content(id), Some("class Example { int x; }"));
     }
 }
-
