@@ -87,6 +87,9 @@ impl BuildSystem for ProjectHotSwapBuild {
         let build_result = match self.project.build_system {
             nova_project::BuildSystem::Maven => self.build.build_maven(&self.project_root, None),
             nova_project::BuildSystem::Gradle => self.build.build_gradle(&self.project_root, None),
+            nova_project::BuildSystem::Bazel => Err(nova_build::BuildError::Unsupported(
+                "bazel hot-swap is not supported".into(),
+            )),
             nova_project::BuildSystem::Simple => Err(nova_build::BuildError::Unsupported(
                 "simple project hot-swap is not supported".into(),
             )),

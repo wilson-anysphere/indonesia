@@ -120,6 +120,9 @@ impl AptManager {
         let result = match self.project.build_system {
             BuildSystem::Maven => build.build_maven(&self.project.workspace_root, None)?,
             BuildSystem::Gradle => build.build_gradle(&self.project.workspace_root, None)?,
+            BuildSystem::Bazel => BuildResult {
+                diagnostics: Vec::new(),
+            },
             BuildSystem::Simple => BuildResult {
                 diagnostics: Vec::new(),
             },

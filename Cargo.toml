@@ -13,6 +13,7 @@ members = [
     "crates/nova-framework-spring",
     "crates/nova-framework-mapstruct",
     "crates/nova-project",
+    "crates/nova-build-bazel",
     "crates/nova-types",
     "crates/nova-vfs",
     "crates/nova-hir",

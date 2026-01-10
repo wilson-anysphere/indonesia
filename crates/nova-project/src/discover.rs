@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use nova_config::NovaConfig;
 
-use crate::{gradle, maven, simple, BuildSystem, ProjectConfig};
+use crate::{bazel, gradle, maven, simple, BuildSystem, ProjectConfig};
 
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
@@ -58,6 +58,7 @@ pub fn load_project_with_options(
     match build_system {
         BuildSystem::Maven => maven::load_maven_project(&workspace_root, options),
         BuildSystem::Gradle => gradle::load_gradle_project(&workspace_root, options),
+        BuildSystem::Bazel => bazel::load_bazel_project(&workspace_root, options),
         BuildSystem::Simple => simple::load_simple_project(&workspace_root, options),
     }
 }
@@ -71,6 +72,10 @@ pub fn reload_project(
 }
 
 fn detect_build_system(root: &Path) -> Result<BuildSystem, ProjectError> {
+    if is_bazel_workspace(root) {
+        return Ok(BuildSystem::Bazel);
+    }
+
     if root.join("pom.xml").is_file() {
         return Ok(BuildSystem::Maven);
     }
@@ -102,4 +107,32 @@ fn detect_build_system(root: &Path) -> Result<BuildSystem, ProjectError> {
     Err(ProjectError::UnknownProjectType {
         root: root.to_path_buf(),
     })
+}
+
+/// Walk upwards from `start` to find the Bazel workspace root.
+///
+/// A workspace root is identified by the presence of one of:
+/// - `WORKSPACE`
+/// - `WORKSPACE.bazel`
+/// - `MODULE.bazel`
+pub fn bazel_workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
+    let start = start.as_ref();
+    let mut dir = if start.is_file() {
+        start.parent()?
+    } else {
+        start
+    };
+
+    loop {
+        if is_bazel_workspace(dir) {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
+
+pub fn is_bazel_workspace(root: &Path) -> bool {
+    ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
+        .iter()
+        .any(|marker| root.join(marker).is_file())
 }

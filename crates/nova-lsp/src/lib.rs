@@ -20,6 +20,10 @@
 //!   - `nova/ai/explainError`
 //!   - `nova/ai/generateMethodBody`
 //!   - `nova/ai/generateTests`
+//! - Build integration endpoints (classpath, build status, diagnostics)
+//!   - `nova/build/targetClasspath`
+//!   - `nova/build/status`
+//!   - `nova/build/diagnostics`
 
 pub mod extensions;
 pub mod extract_method;
@@ -63,6 +67,10 @@ pub const AI_EXPLAIN_ERROR_METHOD: &str = "nova/ai/explainError";
 pub const AI_GENERATE_METHOD_BODY_METHOD: &str = "nova/ai/generateMethodBody";
 pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
 
+pub const BUILD_TARGET_CLASSPATH_METHOD: &str = "nova/build/targetClasspath";
+pub const BUILD_STATUS_METHOD: &str = "nova/build/status";
+pub const BUILD_DIAGNOSTICS_METHOD: &str = "nova/build/diagnostics";
+
 /// Dispatch a Nova custom request (`nova/*`) by method name.
 ///
 /// This helper is designed to be embedded in whichever LSP transport is used
@@ -78,6 +86,9 @@ pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<
         RELOAD_PROJECT_METHOD => extensions::build::handle_reload_project(params),
         DEBUG_CONFIGURATIONS_METHOD => extensions::debug::handle_debug_configurations(params),
         DEBUG_HOT_SWAP_METHOD => extensions::debug::handle_hot_swap(params),
+        BUILD_TARGET_CLASSPATH_METHOD => extensions::build::handle_target_classpath(params),
+        BUILD_STATUS_METHOD => extensions::build::handle_build_status(params),
+        BUILD_DIAGNOSTICS_METHOD => extensions::build::handle_build_diagnostics(params),
         _ => Err(NovaLspError::InvalidParams(format!(
             "unknown (stateless) method: {method}"
         ))),

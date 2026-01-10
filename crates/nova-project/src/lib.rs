@@ -6,6 +6,7 @@
 //! - Java language level
 //! - (future) module graph
 
+mod bazel;
 mod discover;
 mod generated;
 mod gradle;
@@ -15,7 +16,8 @@ pub mod package;
 mod simple;
 
 pub use discover::{
-    load_project, load_project_with_options, reload_project, LoadOptions, ProjectError,
+    bazel_workspace_root, is_bazel_workspace, load_project, load_project_with_options,
+    reload_project, LoadOptions, ProjectError,
 };
 pub use model::*;
 pub use package::{

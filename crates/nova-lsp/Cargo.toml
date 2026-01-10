@@ -21,6 +21,7 @@ nova-refactor = { path = "../nova-refactor" }
 nova-testing = { path = "../nova-testing" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 nova-router = { path = "../nova-router" }
+nova-build-bazel = { path = "../nova-build-bazel" }
 lsp-types = "0.97"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

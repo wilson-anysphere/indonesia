@@ -4,6 +4,7 @@ use std::path::PathBuf;
 pub enum BuildSystem {
     Maven,
     Gradle,
+    Bazel,
     Simple,
 }
 

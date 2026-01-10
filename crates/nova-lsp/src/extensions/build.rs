@@ -218,6 +218,191 @@ fn auto_detect_kind(root: &Path) -> Result<BuildKind> {
     )))
 }
 
+// -----------------------------------------------------------------------------
+// Target-aware build metadata (Bazel/BSP)
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetClasspathParams {
+    #[serde(alias = "root")]
+    pub project_root: String,
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TargetClasspathResult {
+    pub project_root: String,
+    #[serde(default)]
+    pub target: Option<String>,
+    pub classpath: Vec<String>,
+    #[serde(default)]
+    pub module_path: Vec<String>,
+    #[serde(default)]
+    pub source_roots: Vec<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub target_version: Option<String>,
+}
+
+pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
+    let req: TargetClasspathParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+
+    if req.project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+
+    let requested_root = PathBuf::from(&req.project_root);
+    let requested_root = requested_root
+        .canonicalize()
+        .unwrap_or_else(|_| requested_root.clone());
+
+    if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
+        let Some(target) = req.target.clone() else {
+            return Err(NovaLspError::InvalidParams(
+                "`target` must be provided for Bazel projects".to_string(),
+            ));
+        };
+
+        let cache_path = workspace_root.join(".nova-cache/bazel.json");
+        let runner = nova_build_bazel::DefaultCommandRunner::default();
+        let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
+            .and_then(|ws| ws.with_cache_path(cache_path))
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+
+        let info = workspace
+            .target_compile_info(&target)
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+
+        let result = TargetClasspathResult {
+            project_root: workspace_root.to_string_lossy().to_string(),
+            target: Some(target),
+            classpath: info.classpath,
+            module_path: info.module_path,
+            source_roots: info.source_roots,
+            source: info.source,
+            target_version: info.target,
+        };
+        serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+    } else {
+        let config = nova_project::load_project(&requested_root)
+            .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+
+        let result = TargetClasspathResult {
+            project_root: config.workspace_root.to_string_lossy().to_string(),
+            target: req.target,
+            classpath: config
+                .classpath
+                .iter()
+                .map(|entry| entry.path.to_string_lossy().to_string())
+                .collect(),
+            module_path: Vec::new(),
+            source_roots: config
+                .source_roots
+                .iter()
+                .map(|root| root.path.to_string_lossy().to_string())
+                .collect(),
+            source: Some(config.java.source.0.to_string()),
+            target_version: Some(config.java.target.0.to_string()),
+        };
+        serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildStatusParams {
+    #[serde(alias = "root")]
+    pub project_root: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildStatus {
+    Idle,
+    Building,
+    Failed,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildStatusResult {
+    pub status: BuildStatus,
+}
+
+pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Value> {
+    let _req: BuildStatusParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+
+    serde_json::to_value(BuildStatusResult {
+        status: BuildStatus::Idle,
+    })
+    .map_err(|err| NovaLspError::Internal(err.to_string()))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildDiagnosticsParams {
+    #[serde(alias = "root")]
+    pub project_root: String,
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildDiagnosticsResult {
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub diagnostics: Vec<NovaDiagnostic>,
+}
+
+pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json::Value> {
+    let req: BuildDiagnosticsParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+
+    let requested_root = PathBuf::from(&req.project_root);
+    let requested_root = requested_root
+        .canonicalize()
+        .unwrap_or_else(|_| requested_root.clone());
+
+    if nova_project::bazel_workspace_root(&requested_root).is_some() {
+        // Bazel build diagnostics are expected to be sourced via `bazel build` output or BSP.
+        // For now, return an empty set so clients can rely on the endpoint.
+        return serde_json::to_value(BuildDiagnosticsResult {
+            target: req.target,
+            diagnostics: Vec::new(),
+        })
+        .map_err(|err| NovaLspError::Internal(err.to_string()));
+    }
+
+    // Maven/Gradle: run an incremental build and return diagnostics from the build layer.
+    let params = NovaProjectParams {
+        project_root: requested_root.to_string_lossy().to_string(),
+        build_tool: None,
+        module: None,
+        project_path: None,
+    };
+    let manager = build_manager(&params);
+    let result = run_build(&manager, &params)?;
+    let resp = BuildDiagnosticsResult {
+        target: req.target,
+        diagnostics: result
+            .diagnostics
+            .into_iter()
+            .map(NovaDiagnostic::from)
+            .collect(),
+    };
+    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,3 +421,4 @@ mod tests {
         assert_eq!(params.project_path.as_deref(), Some(":app"));
     }
 }
+
