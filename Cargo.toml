@@ -1,4 +1,5 @@
 [workspace]
+resolver = "2"
 members = [
     "crates/nova-core",
     "crates/nova-framework",
@@ -13,8 +14,9 @@ members = [
     "crates/nova-db",
     "crates/nova-ide",
     "crates/nova-dap",
+    "crates/nova-lsp",
+    "crates/nova-testing",
 ]
-resolver = "2"
 
 [workspace.package]
 edition = "2021"
