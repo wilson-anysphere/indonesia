@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use nova_core::ProjectConfig;
 use nova_jdk::{JdkIndex, JdkInstallation};
+use tempfile::tempdir;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -87,3 +88,25 @@ fn discovery_prefers_config_override() -> Result<(), Box<dyn std::error::Error>>
     Ok(())
 }
 
+#[test]
+fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let temp = tempdir()?;
+    let root = temp.path();
+    let jmods_dir = root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+
+    let jre_dir = root.join("jre");
+    std::fs::create_dir_all(&jre_dir)?;
+
+    let _java_home = EnvVarGuard::set("JAVA_HOME", &jre_dir);
+    let install = JdkInstallation::discover(None)?;
+    assert_eq!(install.root(), root);
+
+    Ok(())
+}

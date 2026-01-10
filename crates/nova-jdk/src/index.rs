@@ -168,11 +168,18 @@ impl JdkSymbolIndex {
             return Ok(cached.clone());
         }
 
-        // Ensure we can enumerate all `java/lang/*` types without repeatedly
-        // scanning the same modules.
-        for module_idx in 0..self.modules.len() {
-            self.ensure_module_indexed(module_idx)?;
-        }
+        // `java.lang` lives in `java.base`; avoid scanning all modules just to
+        // populate the universe.
+        let java_base_idx = self
+            .modules
+            .iter()
+            .position(|m| {
+                m.path
+                    .file_name()
+                    .is_some_and(|n| n == std::ffi::OsStr::new("java.base.jmod"))
+            })
+            .unwrap_or(0);
+        self.ensure_module_indexed(java_base_idx)?;
 
         let internal_names: Vec<String> = self
             .class_to_module

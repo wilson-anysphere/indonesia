@@ -31,20 +31,22 @@ impl JdkInstallation {
 
     /// Discover a JDK installation.
     ///
-    /// Discovery sources are tried in this order:
+    /// When `ProjectConfig.jdk_home` is set it is used as an explicit override.
+    /// Otherwise discovery sources are tried in this order:
     /// 1. `JAVA_HOME`
     /// 2. `java` on `PATH` (via `java -XshowSettings:properties -version`, then symlink resolution)
-    /// 3. Optional `ProjectConfig.jdk_home` override (highest precedence when present)
     pub fn discover(config: Option<&ProjectConfig>) -> Result<Self, JdkDiscoveryError> {
+        // Optional config override: when present it should win regardless of environment.
+        if let Some(override_home) = config.and_then(|c| c.jdk_home.as_deref()) {
+            let candidate =
+                coerce_to_jdk_root(override_home.to_path_buf()).unwrap_or_else(|| override_home.to_path_buf());
+            return Self::from_root(candidate);
+        }
+
         // Base discovery order: JAVA_HOME, then `java` on PATH.
         let discovered = discover_from_java_home()
             .and_then(|p| Self::from_root(p).ok())
             .or_else(|| discover_from_java_on_path().and_then(|p| Self::from_root(p).ok()));
-
-        // Optional config override: when present it should win regardless of what was discovered.
-        if let Some(override_home) = config.and_then(|c| c.jdk_home.as_deref()) {
-            return Self::from_root(override_home);
-        }
 
         discovered.ok_or(JdkDiscoveryError::NotFound)
     }
@@ -60,7 +62,9 @@ pub enum JdkDiscoveryError {
 }
 
 fn discover_from_java_home() -> Option<PathBuf> {
-    std::env::var_os("JAVA_HOME").map(PathBuf::from)
+    std::env::var_os("JAVA_HOME")
+        .map(PathBuf::from)
+        .and_then(coerce_to_jdk_root)
 }
 
 fn discover_from_java_on_path() -> Option<PathBuf> {
@@ -126,4 +130,3 @@ fn coerce_to_jdk_root(mut candidate: PathBuf) -> Option<PathBuf> {
 
     None
 }
-
