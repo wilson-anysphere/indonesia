@@ -90,4 +90,4 @@ Negative:
 - Define a shared “request context” type (request id, cancellation token, tracing span) used by both LSP and DAP handlers.
 - Add protocol-level test harnesses (golden JSON transcripts) for cancellation, shutdown, and error mapping.
 - Document supported transports and security considerations for TCP mode (bind to localhost by default).
-
+- If any minimal/legacy JSON-RPC stdio loop exists for early prototyping, migrate it to an `lsp-server`-based transport as full LSP feature support lands.

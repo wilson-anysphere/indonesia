@@ -16,12 +16,19 @@ The persistence layer must support:
 
 ## Decision
 
-### Primary persistence format: `rkyv`
+### Primary persistence format for mmap-friendly stores: `rkyv`
 
 Use **`rkyv`** for on-disk persistent indexes/caches that benefit from memory mapping and fast startup.
 
 - Persisted data is treated as **derived cache**, not a stable interchange format.
 - Archives MUST be validated before use (e.g., `bytecheck` / archive validation) to avoid UB on corrupted inputs.
+
+### Small derived caches: `serde` + `bincode` (allowed)
+
+For small, read-fully-into-memory caches (where mmap/zero-copy is not a priority), `serde` + `bincode` is an acceptable persistence format.
+
+- These caches still follow the same invalidation rules (schema/version/fingerprint gating).
+- This allows bootstrapping persistence early while reserving `rkyv` for the large “hot path” stores.
 
 ### Metadata / human-readable state: `serde` + JSON
 
@@ -85,4 +92,4 @@ Negative:
   - random bit flips,
   - schema mismatch.
 - Decide compression policy for cold storage (compressed blobs vs mmap-ready hot indexes).
-
+- Prioritize migrating large, frequently-read indexes to `rkyv` first; smaller caches may remain `bincode`-based until mmap-style access is required.

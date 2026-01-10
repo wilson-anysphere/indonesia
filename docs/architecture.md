@@ -14,3 +14,16 @@ The documents under `docs/` describe Nova's intended design and implementation a
 6. [0006 — Path/URI normalization and virtual document schemes](adr/0006-uri-normalization.md)
 7. [0007 — Crate boundaries and dependency policy](adr/0007-crate-boundaries-and-dependencies.md)
 
+## Current repo status vs ADRs
+
+This repository contains working code **and** forward-looking design docs. Some subsystems are still scaffolding and may not yet match the ADR decisions. The intent is:
+
+- ADRs describe the **target architecture** contributors should implement toward.
+- Temporary implementations may exist to enable end-to-end demos and tests; those should be migrated as the architecture solidifies.
+
+Notable “delta” areas to be aware of:
+
+- Incremental engine: the workspace does not yet use `salsa`; some crates contain placeholder database types.
+- Protocols: there is a minimal stdio JSON message loop in the current `nova-lsp` binary; ADR 0003 selects `lsp-server` for the long-term LSP transport.
+- Persistence: several caches are currently `serde`/`bincode`-based; ADR 0005 selects `rkyv` for large mmap-friendly stores, with `serde` formats still acceptable for small metadata/config.
+- URIs: core helpers currently focus on `file:` URIs; archive paths exist internally (JAR/JMOD) but are not yet fully exposed as LSP URIs.

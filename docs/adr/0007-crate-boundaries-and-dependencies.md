@@ -15,28 +15,31 @@ Without explicit crate boundaries, the codebase will drift into a monolith where
 Adopt a layered crate architecture with strict dependency direction:
 
 ```
-nova-lsp / nova-dap
+nova-cli / nova-lsp / nova-dap
         ↓
-     nova-ide
+     nova-ide / nova-refactor
         ↓
-   nova-semantic
+   (semantic + project model crates)
         ↓
      nova-syntax
         ↓
       nova-vfs
         ↓
-    (utility crates)
+    nova-core / utility crates
 ```
 
-### Proposed crates (initial)
+### Crate roles (current + target)
 
+- `nova-core` (foundation)
+  - small shared types/utilities (text ranges, IDs, small strings)
+  - keep dependencies minimal; avoid pulling protocol stacks into the base layer
 - `nova-vfs`
   - file watching, file id mapping, archive reading, in-memory overlays
-  - owns `DocumentUri` normalization (ADR 0006) or a dedicated `nova-uri` helper if needed
-- `nova-syntax`
+  - owns path/document identity normalization (ADR 0006) or a dedicated helper crate if needed
+- `nova-syntax` (target; may be introduced as the full parser lands)
   - lexer, parser, rowan syntax tree, typed AST wrappers (ADR 0002)
-- `nova-semantic`
-  - name resolution, types, symbol tables, project model, build system integration
+- semantic + project model crates (e.g., resolution, types, indexing, workspace/project loading)
+  - name resolution, types, symbols, build/project model integration
   - defines most Salsa queries (ADR 0001) that higher layers consume
 - `nova-ide`
   - IDE features as pure functions/queries: diagnostics, completion, navigation, refactors
@@ -91,9 +94,8 @@ Negative:
 
 ## Follow-ups
 
-- Add a `docs/` page describing crate responsibilities once the workspace exists.
+- Add a `docs/` page describing crate responsibilities and the intended layer mapping for the existing workspace.
 - Establish “public API” rules:
   - internal crates can be `pub(crate)` heavy and expose only what upstream needs,
   - avoid leaking rowan/salsa types across too many layers without wrappers.
 - Add CI checks for forbidden dependency edges (e.g., via `cargo deny` / custom script).
-

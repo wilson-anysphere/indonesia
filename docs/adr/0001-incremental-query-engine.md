@@ -79,7 +79,6 @@ Negative:
 
 ## Follow-ups
 
-- Establish a `RootDatabase` template and “how to add a query” guide (code + docs) once the codebase exists.
+- Introduce `salsa` into the workspace and establish a `RootDatabase` template (plus a “how to add a query” guide).
 - Define the initial set of interned IDs (names, paths, symbol IDs) to keep query keys compact.
 - Re-evaluate adoption of newer Salsa APIs after the first end-to-end prototype (parser → simple name resolution → LSP hover).
-

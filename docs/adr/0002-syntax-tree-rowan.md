@@ -76,4 +76,4 @@ Negative:
 - Define the initial `SyntaxKind` set (tokens + nodes) and establish a generation process (single source of truth).
 - Implement a typed AST module (`ast::*`) and establish conventions for naming, optional children, and lists.
 - Document which syntax artifacts are persisted (if any) and how schema versioning interacts with `SyntaxKind` changes (ADR 0005).
-
+- Treat any existing “sketch parsers” as temporary scaffolding; consolidate parsing/AST needs behind the rowan-based syntax crate once it exists.

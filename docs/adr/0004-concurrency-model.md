@@ -101,4 +101,4 @@ Negative:
   - snapshot creation frequency,
   - CPU pool saturation.
 - Establish conventions for debouncing/cancelling background indexing so edits always win.
-
+- If early prototypes run fully synchronously, treat them as bootstrap implementations; migrate to the Tokio+Rayon split as soon as request concurrency and background work become non-trivial.

@@ -12,7 +12,10 @@ LSP uses URIs as stable identifiers across requests. If URI normalization is inc
 
 ## Decision
 
-Define a canonical internal representation `DocumentUri` with explicit variants and a single normalization path at the protocol boundary.
+Use a canonical internal representation for “document identity” with explicit variants and a single normalization path at the protocol boundary.
+
+- Internally, prefer a structured type (e.g. `nova-vfs::VfsPath` / `ArchivePath`) over raw strings.
+- Externally (LSP/DAP), use URIs that round-trip cleanly and can be used as stable cache keys.
 
 ### Canonical schemes
 
@@ -38,9 +41,9 @@ Define a canonical internal representation `DocumentUri` with explicit variants 
 
 ### Normalization rules
 
-- URI parsing/printing uses `url::Url` at the boundary.
+- URI parsing/printing uses `lsp_types::Uri` / `url::Url` at the protocol boundary (not in low-level crates that intentionally avoid heavy dependencies).
 - All normalization happens *once* at ingress:
-  - incoming URIs are parsed → converted into `DocumentUri` → used as map keys.
+  - incoming URIs are parsed → converted into the internal document identity type → used as map keys.
 - For `file:` URIs:
   - prefer logical normalization (clean `.`/`..`) over filesystem canonicalization to avoid forcing symlink resolution and to handle non-existent-but-open documents.
 - For non-file URIs:
@@ -80,7 +83,6 @@ Negative:
 
 - Decide whether to support JDK `jrt:` URIs as a first-class variant (modules in the runtime image).
 - Provide conversion helpers:
-  - `DocumentUri <-> Url`
-  - `DocumentUri <-> FileId`
+  - internal document identity type `<-> Url`
+  - internal document identity type `<-> FileId`
 - Add unit tests for normalization edge cases (percent encoding, Windows paths, `!` parsing, `..` rejection).
-
