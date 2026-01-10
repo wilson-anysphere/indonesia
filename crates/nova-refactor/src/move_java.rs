@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use thiserror::Error;
@@ -57,6 +57,12 @@ pub enum RefactorError {
     PublicTypeNotFound { path: PathBuf, expected: String },
     #[error("destination already contains `{path}`")]
     DestinationAlreadyExists { path: PathBuf },
+    #[error("destination already defines type `{package}.{name}` in `{path}`")]
+    DestinationTypeAlreadyExists {
+        package: String,
+        name: String,
+        path: PathBuf,
+    },
     #[error("no files found in package `{package}`")]
     PackageNotFound { package: String },
     #[error("parse error: {0}")]
@@ -136,6 +142,15 @@ pub fn move_class(
     let old_fqn = format!("{}.{}", pkg.name, params.class_name);
     let new_fqn = format!("{}.{}", params.target_package, params.class_name);
 
+    let type_index = build_type_index(files, [&params.source_path])?;
+    if let Some(path) = type_index.get(&new_fqn) {
+        return Err(RefactorError::DestinationTypeAlreadyExists {
+            package: params.target_package,
+            name: params.class_name,
+            path: path.clone(),
+        });
+    }
+
     let mut out = RefactoringEdit::default();
 
     // Moved file: update package declaration and rename file path.
@@ -154,9 +169,16 @@ pub fn move_class(
         let mut new_content = java_text::replace_qualified_name(content, &old_fqn, &new_fqn)
             .map_err(parse_err)?;
 
-        // If this file lived in the original package, it may have referenced the moved type
-        // without an import. After the move it must import the new FQN.
-        if file_package_name(&new_content)?.as_deref() == Some(&pkg.name) {
+        let file_pkg = file_package_name(&new_content)?;
+        let imports = java_text::parse_import_decls(&new_content).map_err(parse_err)?;
+        let uses_old_star_import = imports
+            .iter()
+            .any(|i| !i.is_static && i.path == format!("{}.*", pkg.name));
+
+        // If this file lived in the original package (or used a wildcard import of the original
+        // package), it may have referenced the moved type without an explicit import. After the
+        // move it must import the new FQN.
+        if file_pkg.as_deref() == Some(&pkg.name) || uses_old_star_import {
             new_content = ensure_import(&new_content, &new_fqn, &params.class_name)?;
         }
 
@@ -239,6 +261,33 @@ pub fn move_package(
             return Err(RefactorError::DestinationAlreadyExists {
                 path: new_path.clone(),
             });
+        }
+    }
+
+    let type_index = build_type_index(files, moving_from.iter().copied())?;
+    // Conflict detection: ensure we don't introduce duplicate FQNs in the destination package.
+    for (old_path, _) in &moves {
+        let old_source = files.get(old_path).expect("file exists");
+        let Some(old_pkg) = file_package_name(old_source)? else {
+            continue;
+        };
+        let suffix = package_suffix(&params.old_package, &old_pkg);
+        let new_pkg = if suffix.is_empty() {
+            params.new_package.clone()
+        } else {
+            format!("{}.{}", params.new_package, suffix)
+        };
+
+        let type_names = java_text::find_top_level_type_names(old_source).map_err(parse_err)?;
+        for name in type_names {
+            let new_fqn = format!("{new_pkg}.{name}");
+            if let Some(path) = type_index.get(&new_fqn) {
+                return Err(RefactorError::DestinationTypeAlreadyExists {
+                    package: new_pkg,
+                    name,
+                    path: path.clone(),
+                });
+            }
         }
     }
 
@@ -357,6 +406,32 @@ fn ensure_import(source: &str, fqn: &str, simple_name: &str) -> Result<String, R
     };
     out.insert_str(insertion_offset, &import_stmt);
     Ok(out)
+}
+
+fn build_type_index<'a, I>(
+    files: &BTreeMap<PathBuf, String>,
+    excluded_paths: I,
+) -> Result<HashMap<String, PathBuf>, RefactorError>
+where
+    I: IntoIterator<Item = &'a PathBuf>,
+{
+    let excluded: HashSet<&PathBuf> = excluded_paths.into_iter().collect();
+    let mut index = HashMap::new();
+
+    for (path, source) in files {
+        if excluded.contains(path) {
+            continue;
+        }
+        let Some(pkg) = file_package_name(source)? else {
+            continue;
+        };
+        let type_names = java_text::find_top_level_type_names(source).map_err(parse_err)?;
+        for name in type_names {
+            index.entry(format!("{pkg}.{name}")).or_insert_with(|| path.clone());
+        }
+    }
+
+    Ok(index)
 }
 
 mod java_text {
@@ -699,6 +774,28 @@ mod java_text {
         Ok(types)
     }
 
+    pub fn find_top_level_type_names(source: &str) -> Result<Vec<String>, ParseError> {
+        let mut lexer = Lexer::new(source);
+        let mut depth = 0usize;
+        let mut names = Vec::new();
+
+        while let Some(token) = lexer.next_token() {
+            match token.kind {
+                TokenKind::Symbol('{') => depth += 1,
+                TokenKind::Symbol('}') => depth = depth.saturating_sub(1),
+                TokenKind::Ident("class" | "interface" | "enum" | "record") if depth == 0 => {
+                    let name_token = lexer.next_token().ok_or(ParseError::UnexpectedEof)?;
+                    if let TokenKind::Ident(name) = name_token.kind {
+                        names.push(name.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(names)
+    }
+
     pub fn contains_identifier_after_offset(source: &str, offset: usize, ident: &str) -> bool {
         if offset >= source.len() {
             return false;
@@ -882,6 +979,77 @@ public class C { A a; }
     }
 
     #[test]
+    fn move_class_adds_import_when_old_package_star_import_used() {
+        let input = files(vec![
+            (
+                "src/main/java/com/foo/A.java",
+                r#"package com.foo;
+
+public class A {}
+"#,
+            ),
+            (
+                "src/main/java/com/other/C.java",
+                r#"package com.other;
+
+import com.foo.*;
+
+public class C { A a; }
+"#,
+            ),
+        ]);
+
+        let edit = move_class(
+            &input,
+            MoveClassParams {
+                source_path: PathBuf::from("src/main/java/com/foo/A.java"),
+                class_name: "A".into(),
+                target_package: "com.bar".into(),
+            },
+        )
+        .unwrap();
+
+        let mut applied = input.clone();
+        edit.apply_to(&mut applied, true);
+
+        let c = &applied[Path::new("src/main/java/com/other/C.java")];
+        assert!(c.contains("import com.foo.*;"));
+        assert!(c.contains("import com.bar.A;"));
+    }
+
+    #[test]
+    fn move_class_detects_conflicting_type_in_destination_package() {
+        let input = files(vec![
+            (
+                "src/main/java/com/foo/A.java",
+                r#"package com.foo;
+
+public class A {}
+"#,
+            ),
+            (
+                "src/main/java/com/bar/Other.java",
+                r#"package com.bar;
+
+class A {}
+"#,
+            ),
+        ]);
+
+        let err = move_class(
+            &input,
+            MoveClassParams {
+                source_path: PathBuf::from("src/main/java/com/foo/A.java"),
+                class_name: "A".into(),
+                target_package: "com.bar".into(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, RefactorError::DestinationTypeAlreadyExists { .. }));
+    }
+
+    #[test]
     fn move_package_moves_files_and_updates_references() {
         let input = files(vec![
             (
@@ -937,5 +1105,35 @@ public class C {
         assert!(c.contains("import com.bar.sub.B;"));
         assert!(c.contains("com.bar.sub.B qb;"));
     }
-}
 
+    #[test]
+    fn move_package_detects_conflicting_type_in_destination_package() {
+        let input = files(vec![
+            (
+                "src/main/java/com/foo/A.java",
+                r#"package com.foo;
+
+public class A {}
+"#,
+            ),
+            (
+                "src/main/java/com/bar/Other.java",
+                r#"package com.bar;
+
+class A {}
+"#,
+            ),
+        ]);
+
+        let err = move_package(
+            &input,
+            MovePackageParams {
+                old_package: "com.foo".into(),
+                new_package: "com.bar".into(),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, RefactorError::DestinationTypeAlreadyExists { .. }));
+    }
+}
