@@ -575,4 +575,17 @@ mod tests {
             "expected salsa query to unwind with Cancelled after request_cancellation"
         );
     }
+
+    #[test]
+    fn wrapper_sets_default_source_root() {
+        let db = Database::new();
+        let file = FileId::from_raw(1);
+
+        db.set_file_text(file, "class Foo {}".to_string());
+
+        db.with_snapshot(|snap| {
+            assert!(snap.file_exists(file));
+            assert_eq!(snap.source_root(file), SourceRootId::from_raw(0));
+        });
+    }
 }
