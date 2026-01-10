@@ -7,6 +7,8 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::thread;
 use tempfile::TempDir;
 
 #[test]
@@ -116,6 +118,98 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
     let result = discover_resp.get("result").cloned().expect("result");
     let resp: TestDiscoverResponse = serde_json::from_value(result).expect("decode response");
     assert!(resp.tests.iter().any(|t| t.id == "com.example.SimpleTest"));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_handles_debug_configurations_request() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("project");
+    fs::create_dir_all(&root).expect("create project dir");
+
+    let main_dir = root.join("src/main/java/com/example");
+    let test_dir = root.join("src/test/java/com/example");
+    fs::create_dir_all(&main_dir).expect("create main dir");
+    fs::create_dir_all(&test_dir).expect("create test dir");
+
+    fs::write(
+        main_dir.join("Main.java"),
+        r#"
+            package com.example;
+
+            public class Main {
+                public static void main(String[] args) {}
+            }
+        "#,
+    )
+    .expect("write Main.java");
+
+    fs::write(
+        test_dir.join("MainTest.java"),
+        r#"
+            package com.example;
+
+            import org.junit.jupiter.api.Test;
+
+            public class MainTest {
+                @Test void ok() {}
+            }
+        "#,
+    )
+    .expect("write MainTest.java");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/debug/configurations",
+            "params": { "projectRoot": root.to_string_lossy() }
+        }),
+    );
+    let resp = read_jsonrpc_message(&mut stdout);
+    let result = resp.get("result").cloned().expect("result");
+    let configs = result.as_array().expect("configs array");
+
+    let mut names: Vec<_> = configs
+        .iter()
+        .filter_map(|c| c.get("name").and_then(|n| n.as_str()))
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["Debug Tests: MainTest", "Run Main"]);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -611,6 +705,178 @@ exit 0
 
 #[cfg(unix)]
 #[test]
+fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("maven-project");
+    fs::create_dir_all(&root).expect("create project dir");
+
+    fs::write(
+        root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0-SNAPSHOT</version>
+</project>
+"#,
+    )
+    .expect("write pom");
+
+    let java_dir = root.join("src/main/java/com/example");
+    fs::create_dir_all(&java_dir).expect("create java dir");
+    let java_file = java_dir.join("Main.java");
+    fs::write(
+        &java_file,
+        r#"
+            package com.example;
+
+            public class Main {
+                public static void main(String[] args) {}
+            }
+        "#,
+    )
+    .expect("write Main.java");
+
+    // Create a dummy class file to "hotswap".
+    let class_dir = root.join("target/classes/com/example");
+    fs::create_dir_all(&class_dir).expect("create class dir");
+    let class_file = class_dir.join("Main.class");
+    fs::write(&class_file, vec![0xCA, 0xFE, 0xBA, 0xBE]).expect("write class file");
+
+    // Fake `mvn` so `nova-build` doesn't require a system Maven installation.
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let mvn_path = bin_dir.join("mvn");
+    fs::write(&mvn_path, "#!/bin/sh\nexit 0\n").expect("write fake mvn");
+    let mut perms = fs::metadata(&mvn_path).expect("stat mvn").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&mvn_path, perms).expect("chmod mvn");
+
+    // Minimal JDWP server that can satisfy `TcpJdwpClient` connect + redefine.
+    let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind jdwp listener");
+    let port = listener.local_addr().expect("local addr").port();
+    let jdwp_thread = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept jdwp");
+        let mut handshake = [0u8; 14];
+        stream.read_exact(&mut handshake).expect("read handshake");
+        assert_eq!(&handshake, b"JDWP-Handshake");
+        stream.write_all(&handshake).expect("write handshake");
+        stream.flush().ok();
+
+        loop {
+            let mut len_buf = [0u8; 4];
+            if stream.read_exact(&mut len_buf).is_err() {
+                break;
+            }
+            let length = u32::from_be_bytes(len_buf) as usize;
+            assert!(length >= 11, "invalid packet length {length}");
+            let mut rest = vec![0u8; length - 4];
+            stream.read_exact(&mut rest).expect("read packet");
+
+            let id = u32::from_be_bytes(rest[0..4].try_into().unwrap());
+            let flags = rest[4];
+            assert_eq!(flags & 0x80, 0, "client must send command packets");
+            let command_set = rest[5];
+            let command = rest[6];
+            let data = &rest[7..];
+
+            match (command_set, command) {
+                (1, 7) => {
+                    // VirtualMachine/IDSizes
+                    assert!(data.is_empty());
+                    let mut reply = Vec::new();
+                    for _ in 0..5 {
+                        reply.extend_from_slice(&(8u32).to_be_bytes());
+                    }
+                    write_reply(&mut stream, id, &reply);
+                }
+                (1, 2) => {
+                    // VirtualMachine/ClassesBySignature
+                    let _ = data;
+                    let mut reply = Vec::new();
+                    reply.extend_from_slice(&(1u32).to_be_bytes()); // count
+                    reply.push(1); // tag = class
+                    reply.extend_from_slice(&123u64.to_be_bytes()); // type id
+                    reply.extend_from_slice(&(1u32).to_be_bytes()); // status
+                    write_reply(&mut stream, id, &reply);
+                }
+                (1, 18) => {
+                    // VirtualMachine/RedefineClasses
+                    write_reply(&mut stream, id, &[]);
+                    break;
+                }
+                other => panic!("unexpected JDWP command {other:?}"),
+            }
+        }
+    });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("PATH", bin_dir.to_string_lossy().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/debug/hotSwap",
+            "params": {
+                "projectRoot": root.to_string_lossy(),
+                "changedFiles": [java_file.to_string_lossy()],
+                "port": port
+            }
+        }),
+    );
+
+    let resp = read_jsonrpc_message(&mut stdout);
+    let result = resp.get("result").cloned().expect("result");
+    let results = result
+        .get("results")
+        .and_then(|v| v.as_array())
+        .expect("results array");
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].get("status").and_then(|v| v.as_str()),
+        Some("success")
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+    jdwp_thread.join().expect("join jdwp thread");
+}
+
+#[cfg(unix)]
+#[test]
 fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
     let temp = TempDir::new().expect("tempdir");
     let root = temp.path().join("maven-project");
@@ -990,4 +1256,17 @@ fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).expect("read body");
     serde_json::from_slice(&buf).expect("parse json")
+}
+
+#[cfg(unix)]
+fn write_reply(stream: &mut impl Write, id: u32, data: &[u8]) {
+    let length = 11usize + data.len();
+    stream
+        .write_all(&(length as u32).to_be_bytes())
+        .expect("write length");
+    stream.write_all(&id.to_be_bytes()).expect("write id");
+    stream.write_all(&[0x80]).expect("write flags");
+    stream.write_all(&0u16.to_be_bytes()).expect("write error");
+    stream.write_all(data).expect("write data");
+    stream.flush().ok();
 }
