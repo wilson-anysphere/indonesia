@@ -132,8 +132,9 @@ mod tests {
     #[test]
     fn rename_path_to_existing_path_keeps_destination_id_and_clears_source_path() {
         let mut registry = FileIdRegistry::new();
-        let from = VfsPath::local("/tmp/a.java");
-        let to = VfsPath::local("/tmp/b.java");
+        let dir = tempfile::tempdir().unwrap();
+        let from = VfsPath::local(dir.path().join("a.java"));
+        let to = VfsPath::local(dir.path().join("b.java"));
         let from_id = registry.file_id(from.clone());
         let to_id = registry.file_id(to.clone());
 
