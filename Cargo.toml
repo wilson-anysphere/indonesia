@@ -11,6 +11,7 @@ members = [
     "crates/nova-framework-jpa",
     "crates/nova-framework-lombok",
     "crates/nova-framework-spring",
+    "crates/nova-framework-mapstruct",
     "crates/nova-project",
     "crates/nova-types",
     "crates/nova-vfs",

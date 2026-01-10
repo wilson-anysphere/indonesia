@@ -3,8 +3,33 @@ use nova_config::NovaConfig;
 use nova_core::fs;
 use nova_project::{BuildSystem, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+/// Discover generated Java source roots produced by common annotation processor setups.
+///
+/// This helper exists for components that only know the workspace root on disk
+/// (e.g. lightweight navigation/analysis in fixture tests). When a full
+/// [`ProjectConfig`] is available, prefer using its generated [`SourceRoot`]s
+/// (origin = `Generated`).
+pub fn discover_generated_source_roots(project_root: &Path) -> Vec<PathBuf> {
+    let candidates = [
+        // Maven
+        "target/generated-sources/annotations",
+        "target/generated-sources/annotationProcessor/java/main",
+        "target/generated-sources/annotationProcessor/java/test",
+        // Gradle
+        "build/generated/sources/annotationProcessor/java/main",
+        "build/generated/sources/annotationProcessor/java/test",
+        "build/generated/sources/annotationProcessor/java/integrationTest",
+    ];
+
+    candidates
+        .into_iter()
+        .map(|rel| project_root.join(rel))
+        .filter(|path| path.is_dir())
+        .collect()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GeneratedSourcesFreshness {
