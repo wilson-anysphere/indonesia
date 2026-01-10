@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::{
     JdwpClient, JdwpError, JdwpEvent, JdwpValue, JdwpVariable, ObjectId, ObjectKindPreview,
-    ObjectPreview, ObjectRef, StackFrameInfo, StopReason, StoppedEvent, ThreadId, ThreadInfo,
+    ObjectPreview, ObjectRef, StackFrameInfo, StepKind, StopReason, StoppedEvent, ThreadId, ThreadInfo,
 };
 
 const ERROR_INVALID_OBJECT: u16 = 20;
@@ -31,8 +31,14 @@ pub struct TcpJdwpClient {
     cache: Cache,
     pending_events: VecDeque<JdwpEvent>,
     pending_return_values: HashMap<ThreadId, JdwpValue>,
-    active_step_requests: HashMap<ThreadId, u32>,
+    active_step_requests: HashMap<ThreadId, ActiveStepRequest>,
     active_method_exit_requests: HashMap<ThreadId, u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ActiveStepRequest {
+    request_id: u32,
+    kind: StepKind,
 }
 
 impl TcpJdwpClient {
@@ -666,13 +672,21 @@ impl TcpJdwpClient {
         }
 
         for (reason, thread_id, request_id) in stopped_events {
-            let return_value = self.pending_return_values.remove(&thread_id);
+            let captured = self.pending_return_values.remove(&thread_id);
+            let (return_value, expression_value) = match captured {
+                None => (None, None),
+                Some(value) => match self.active_step_requests.get(&thread_id).map(|req| req.kind) {
+                    Some(StepKind::Out) => (Some(value), None),
+                    Some(StepKind::Over) | Some(StepKind::Into) => (None, Some(value)),
+                    None => (Some(value), None),
+                },
+            };
             self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
                 reason,
                 thread_id,
                 request_id,
                 return_value,
-                expression_value: None,
+                expression_value,
             }));
         }
 
@@ -790,7 +804,7 @@ impl JdwpClient for TcpJdwpClient {
 
     fn next(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
         if let Some(prev) = self.active_step_requests.remove(&thread_id) {
-            let _ = self.clear_event_request(EVENT_KIND_STEP, prev);
+            let _ = self.clear_event_request(EVENT_KIND_STEP, prev.request_id);
         }
         if let Some(prev) = self.active_method_exit_requests.remove(&thread_id) {
             let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, prev);
@@ -803,13 +817,19 @@ impl JdwpClient for TcpJdwpClient {
         }
 
         let request_id = self.set_step_request(thread_id, 1)?; // StepDepth.OVER
-        self.active_step_requests.insert(thread_id, request_id);
+        self.active_step_requests.insert(
+            thread_id,
+            ActiveStepRequest {
+                request_id,
+                kind: StepKind::Over,
+            },
+        );
         self.resume_vm()
     }
 
     fn step_in(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
         if let Some(prev) = self.active_step_requests.remove(&thread_id) {
-            let _ = self.clear_event_request(EVENT_KIND_STEP, prev);
+            let _ = self.clear_event_request(EVENT_KIND_STEP, prev.request_id);
         }
         if let Some(prev) = self.active_method_exit_requests.remove(&thread_id) {
             let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, prev);
@@ -821,13 +841,19 @@ impl JdwpClient for TcpJdwpClient {
         }
 
         let request_id = self.set_step_request(thread_id, 0)?; // StepDepth.INTO
-        self.active_step_requests.insert(thread_id, request_id);
+        self.active_step_requests.insert(
+            thread_id,
+            ActiveStepRequest {
+                request_id,
+                kind: StepKind::Into,
+            },
+        );
         self.resume_vm()
     }
 
     fn step_out(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
         if let Some(prev) = self.active_step_requests.remove(&thread_id) {
-            let _ = self.clear_event_request(EVENT_KIND_STEP, prev);
+            let _ = self.clear_event_request(EVENT_KIND_STEP, prev.request_id);
         }
         if let Some(prev) = self.active_method_exit_requests.remove(&thread_id) {
             let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, prev);
@@ -839,7 +865,13 @@ impl JdwpClient for TcpJdwpClient {
         }
 
         let request_id = self.set_step_request(thread_id, 2)?; // StepDepth.OUT
-        self.active_step_requests.insert(thread_id, request_id);
+        self.active_step_requests.insert(
+            thread_id,
+            ActiveStepRequest {
+                request_id,
+                kind: StepKind::Out,
+            },
+        );
         self.resume_vm()
     }
 
@@ -1134,7 +1166,7 @@ impl JdwpClient for TcpJdwpClient {
         if let Some(event) = self.pending_events.pop_front() {
             let JdwpEvent::Stopped(stopped) = &event;
             if let Some(step_request) = self.active_step_requests.remove(&stopped.thread_id) {
-                let _ = self.clear_event_request(EVENT_KIND_STEP, step_request);
+                let _ = self.clear_event_request(EVENT_KIND_STEP, step_request.request_id);
             }
             if let Some(exit_request) = self.active_method_exit_requests.remove(&stopped.thread_id) {
                 let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, exit_request);
@@ -1165,7 +1197,7 @@ impl JdwpClient for TcpJdwpClient {
                     if let Some(event) = self.pending_events.pop_front() {
                         let JdwpEvent::Stopped(stopped) = &event;
                         if let Some(step_request) = self.active_step_requests.remove(&stopped.thread_id) {
-                            let _ = self.clear_event_request(EVENT_KIND_STEP, step_request);
+                            let _ = self.clear_event_request(EVENT_KIND_STEP, step_request.request_id);
                         }
                         if let Some(exit_request) = self.active_method_exit_requests.remove(&stopped.thread_id) {
                             let _ = self.clear_event_request(
