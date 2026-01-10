@@ -1,6 +1,8 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+use nova_core::{file_uri_to_path, path_to_file_uri, AbsPathBuf};
+
 use crate::archive::{ArchiveKind, ArchivePath};
 
 /// A path that can be resolved by the VFS.
@@ -31,12 +33,31 @@ impl VfsPath {
     }
 
     pub fn uri(uri: impl Into<String>) -> Self {
-        Self::Uri(uri.into())
+        let uri = uri.into();
+        // Treat `file:` URIs as local paths so that LSP buffers and disk paths
+        // map to the same `VfsPath`/`FileId`.
+        if uri.starts_with("file:") {
+            if let Ok(path) = file_uri_to_path(&uri) {
+                return Self::Local(path.into_path_buf());
+            }
+        }
+        Self::Uri(uri)
     }
 
     pub fn as_local_path(&self) -> Option<&Path> {
         match self {
             VfsPath::Local(path) => Some(path.as_path()),
+            _ => None,
+        }
+    }
+
+    /// Convert this path into a `file://` URI, if it represents an absolute local path.
+    pub fn to_file_uri(&self) -> Option<String> {
+        match self {
+            VfsPath::Local(path) => {
+                let abs = AbsPathBuf::new(path.clone()).ok()?;
+                path_to_file_uri(&abs).ok()
+            }
             _ => None,
         }
     }
@@ -63,4 +84,3 @@ impl fmt::Display for VfsPath {
         }
     }
 }
-

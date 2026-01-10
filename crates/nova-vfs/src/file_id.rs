@@ -55,4 +55,16 @@ mod tests {
         assert_eq!(registry.get_id(&path), Some(id1));
         assert_eq!(registry.get_path(id1), Some(&path));
     }
+
+    #[test]
+    fn file_id_is_stable_across_uri_and_path_representations() {
+        let mut registry = FileIdRegistry::new();
+        let uri = VfsPath::uri("file:///tmp/Main.java");
+        let path = VfsPath::local("/tmp/Main.java");
+
+        let id1 = registry.file_id(uri);
+        let id2 = registry.file_id(path);
+
+        assert_eq!(id1, id2);
+    }
 }
