@@ -9,6 +9,7 @@ members = [
     "crates/nova-hir",
     "crates/nova-jdk",
     "crates/nova-resolve",
+    "crates/nova-classfile",
 ]
 resolver = "2"
 
