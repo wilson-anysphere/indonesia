@@ -6,6 +6,8 @@ TEST_PROJECTS_DIR="${ROOT_DIR}/test-projects"
 
 run_maven_compile() {
   local name="$1"
+  shift || true
+  local extra_args=("$@")
   local dir="${TEST_PROJECTS_DIR}/${name}"
 
   if [[ ! -d "${dir}" ]]; then
@@ -17,9 +19,9 @@ run_maven_compile() {
   (
     cd "${dir}"
     if [[ -x "./mvnw" ]]; then
-      ./mvnw -q -DskipTests compile
+      ./mvnw -q -DskipTests "${extra_args[@]}" compile
     elif command -v mvn >/dev/null 2>&1; then
-      mvn -q -DskipTests compile
+      mvn -q -DskipTests "${extra_args[@]}" compile
     else
       echo "No mvn/mvnw found; skipping ${name}" >&2
     fi
@@ -27,7 +29,8 @@ run_maven_compile() {
 }
 
 run_maven_compile "spring-petclinic"
-run_maven_compile "guava"
+# Guava's full multi-module build can be sensitive to local JDK/Maven versions.
+# For a lightweight "javac sanity" check we build only the main `guava` module.
+run_maven_compile "guava" -pl guava -am
 
 echo "==> Done"
-

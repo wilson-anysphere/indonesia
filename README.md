@@ -26,6 +26,7 @@ cargo test -p nova-project --test real_projects -- --include-ignored
 
 ### (Optional) Run `javac`/build validation
 Best-effort helper that attempts to build the fixture projects using their build toolchain (typically Maven).
+For Guava it builds only the main `guava` module for a lightweight sanity check.
 
 ```bash
 ./scripts/javac-validate.sh
