@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 nova-core = { path = "../nova-core" }
+nova-archive = { path = "../nova-archive" }
 
 [dev-dependencies]
 tempfile = "3"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }

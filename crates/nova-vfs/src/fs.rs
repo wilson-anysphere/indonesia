@@ -3,7 +3,8 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::archive::{ArchiveReader, StubArchiveReader};
+use crate::archive::ArchiveReader;
+use crate::archive_reader::NovaArchiveReader;
 use crate::path::VfsPath;
 
 /// File system abstraction for Nova.
@@ -25,6 +26,8 @@ pub trait FileSystem: Send + Sync {
 }
 
 /// Local OS file system implementation.
+///
+/// By default this uses [`crate::NovaArchiveReader`] to resolve [`VfsPath::Archive`] reads.
 #[derive(Debug, Clone)]
 pub struct LocalFs {
     archive: Arc<dyn ArchiveReader>,
@@ -52,7 +55,7 @@ impl LocalFs {
 impl Default for LocalFs {
     fn default() -> Self {
         Self {
-            archive: Arc::new(StubArchiveReader),
+            archive: Arc::new(NovaArchiveReader),
         }
     }
 }

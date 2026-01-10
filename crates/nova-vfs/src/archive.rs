@@ -44,15 +44,15 @@ impl fmt::Display for ArchivePath {
 
 /// Pluggable interface for reading files from archives (`.jar`/`.jmod`).
 ///
-/// This is an abstraction hook; the default implementation in this crate is a
-/// stub that returns `ErrorKind::Unsupported`.
+/// This is an abstraction hook; `LocalFs` uses a concrete implementation by
+/// default, but callers can supply custom readers via `LocalFs::with_archive_reader`.
 pub trait ArchiveReader: Send + Sync + fmt::Debug {
     fn read_to_string(&self, path: &ArchivePath) -> io::Result<String>;
 
     fn exists(&self, path: &ArchivePath) -> bool;
 }
 
-/// Stub `ArchiveReader` used until real archive support is implemented.
+/// Stub `ArchiveReader` that returns `ErrorKind::Unsupported`.
 #[derive(Debug, Default)]
 pub struct StubArchiveReader;
 

@@ -7,6 +7,7 @@
 //! - Representing file change events and a pluggable watcher interface.
 
 mod archive;
+mod archive_reader;
 mod change;
 mod document;
 mod file_id;
@@ -18,6 +19,7 @@ mod vfs;
 mod watch;
 
 pub use archive::{ArchiveKind, ArchivePath, ArchiveReader, StubArchiveReader};
+pub use archive_reader::NovaArchiveReader;
 pub use change::{ChangeEvent, ChangeKind, FileChange, FileChangeKind};
 pub use document::{ContentChange, Document, DocumentError};
 pub use file_id::FileIdRegistry;
