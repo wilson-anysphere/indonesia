@@ -581,4 +581,65 @@ mod tests {
 
         assert_eq!(stubs_first.len(), stubs_cached.len());
     }
+
+    #[test]
+    fn resolve_type_returns_typename() {
+        let index = ClasspathIndex::build(&[ClasspathEntry::Jar(test_jar())], None).unwrap();
+        let ty = index
+            .resolve_type(&QualifiedName::from_dotted("com.example.dep.Foo"))
+            .unwrap();
+        assert_eq!(ty, TypeName::new("com.example.dep.Foo"));
+
+        let ty = index
+            .resolve_type_in_package(
+                &PackageName::from_dotted("com.example.dep"),
+                &Name::from("Foo"),
+            )
+            .unwrap();
+        assert_eq!(ty, TypeName::new("com.example.dep.Foo"));
+    }
+
+    #[test]
+    fn resolve_static_member_uses_classpath_stubs() {
+        const ACC_STATIC: u16 = 0x0008;
+
+        let mut index = ClasspathIndex::default();
+        index.stubs_by_binary.insert(
+            "com.example.Static".to_string(),
+            ClasspathClassStub {
+                binary_name: "com.example.Static".to_string(),
+                internal_name: "com/example/Static".to_string(),
+                access_flags: 0,
+                super_binary_name: None,
+                interfaces: Vec::new(),
+                signature: None,
+                annotations: Vec::new(),
+                fields: vec![ClasspathFieldStub {
+                    name: "FOO".to_string(),
+                    descriptor: "I".to_string(),
+                    signature: None,
+                    access_flags: ACC_STATIC,
+                    annotations: Vec::new(),
+                }],
+                methods: vec![ClasspathMethodStub {
+                    name: "bar".to_string(),
+                    descriptor: "()V".to_string(),
+                    signature: None,
+                    access_flags: ACC_STATIC,
+                    annotations: Vec::new(),
+                }],
+            },
+        );
+
+        let owner = TypeName::new("com.example.Static");
+        let member = index
+            .resolve_static_member(&owner, &Name::from("FOO"))
+            .unwrap();
+        assert_eq!(member.as_str(), "com.example.Static::FOO");
+
+        let member = index
+            .resolve_static_member(&owner, &Name::from("bar"))
+            .unwrap();
+        assert_eq!(member.as_str(), "com.example.Static::bar");
+    }
 }
