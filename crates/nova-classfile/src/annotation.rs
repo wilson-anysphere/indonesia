@@ -117,7 +117,19 @@ impl ElementValue {
             }
             's' => {
                 let idx = reader.read_u2()?;
-                let value = cp.get_string_constant(idx)?;
+                // The JVM spec uses a CONSTANT_Utf8_info for annotation string values.
+                // Some producers may still emit CONSTANT_String_info; accept both.
+                let value = match cp.get(idx)? {
+                    CpInfo::Utf8(s) => s.clone(),
+                    CpInfo::String { string_index } => cp.get_utf8(*string_index)?.to_string(),
+                    other => {
+                        return Err(Error::ConstantPoolTypeMismatch {
+                            index: idx,
+                            expected: "Utf8",
+                            found: other.kind(),
+                        })
+                    }
+                };
                 Ok(ElementValue::Const(ConstValue::String(value)))
             }
             'e' => {
@@ -168,4 +180,3 @@ pub fn descriptor_to_internal_name(desc: &str) -> Option<String> {
         .and_then(|rest| rest.strip_suffix(';'))
         .map(|name| name.to_string())
 }
-

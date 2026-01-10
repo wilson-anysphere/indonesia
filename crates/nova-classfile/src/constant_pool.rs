@@ -194,17 +194,6 @@ impl ConstantPool {
             }),
         }
     }
-
-    pub fn get_string_constant(&self, index: u16) -> Result<String> {
-        match self.get(index)? {
-            CpInfo::String { string_index } => Ok(self.get_utf8(*string_index)?.to_string()),
-            other => Err(Error::ConstantPoolTypeMismatch {
-                index,
-                expected: "String",
-                found: other.kind(),
-            }),
-        }
-    }
 }
 
 fn decode_modified_utf8(bytes: &[u8]) -> Result<String> {
