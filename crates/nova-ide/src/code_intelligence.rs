@@ -12,8 +12,19 @@ use lsp_types::{
     SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp, SignatureInformation,
 };
 
+#[cfg(feature = "ai")]
+use std::collections::HashMap;
+
 use nova_db::{Database, FileId};
 use nova_types::{Diagnostic, Severity, Span};
+
+#[cfg(feature = "ai")]
+use nova_ai::{maybe_rank_completions, AiConfig, BaselineCompletionRanker};
+#[cfg(feature = "ai")]
+use nova_core::{
+    CompletionContext as AiCompletionContext, CompletionItem as AiCompletionItem,
+    CompletionItemKind as AiCompletionItemKind,
+};
 
 // -----------------------------------------------------------------------------
 // Diagnostics
@@ -40,11 +51,7 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         if call.receiver.is_some() {
             continue;
         }
-        if analysis
-            .methods
-            .iter()
-            .any(|m| m.name == call.name)
-        {
+        if analysis.methods.iter().any(|m| m.name == call.name) {
             continue;
         }
         diagnostics.push(Diagnostic::error(
@@ -99,6 +106,114 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     general_completions(db, file, &prefix)
 }
 
+/// Completion with optional AI re-ranking.
+///
+/// This is behind the `ai` Cargo feature because `nova-ide` must remain fully
+/// functional without `nova-ai` enabled.
+///
+/// The ranking call is cancellable (drop the returned future) and guarded by a
+/// short timeout; if ranking fails for any reason, the baseline order is
+/// returned.
+#[cfg(feature = "ai")]
+pub async fn completions_with_ai(
+    db: &dyn Database,
+    file: FileId,
+    position: Position,
+    config: &AiConfig,
+) -> Vec<CompletionItem> {
+    let baseline = completions(db, file, position);
+    if !config.features.completion_ranking {
+        return baseline;
+    }
+
+    let text = db.file_content(file);
+    let offset = position_to_offset(text, position);
+    let (_, prefix) = identifier_prefix(text, offset);
+    let line_text = line_text_at_offset(text, offset);
+
+    let ctx = AiCompletionContext::new(prefix, line_text);
+    let ranker = BaselineCompletionRanker;
+
+    // Keep a full fallback list in case we fail to map ranked items back to their
+    // LSP representation (e.g., due to duplicate labels/kinds).
+    let fallback = baseline.clone();
+
+    let mut buckets: HashMap<(String, AiCompletionItemKind), Vec<CompletionItem>> = HashMap::new();
+    let mut core_items = Vec::with_capacity(baseline.len());
+    for item in baseline {
+        let kind = ai_kind_from_lsp(item.kind);
+        core_items.push(AiCompletionItem::new(item.label.clone(), kind));
+        buckets
+            .entry((item.label.clone(), kind))
+            .or_default()
+            .push(item);
+    }
+
+    // Use `pop()` while preserving the original order for duplicates.
+    for bucket in buckets.values_mut() {
+        bucket.reverse();
+    }
+
+    let ranked = maybe_rank_completions(config, &ranker, &ctx, core_items).await;
+
+    let mut out = Vec::with_capacity(ranked.len());
+    for AiCompletionItem { label, kind } in ranked {
+        let Some(bucket) = buckets.get_mut(&(label, kind)) else {
+            return fallback;
+        };
+        let Some(item) = bucket.pop() else {
+            return fallback;
+        };
+        out.push(item);
+    }
+
+    if out.len() == fallback.len() {
+        out
+    } else {
+        fallback
+    }
+}
+
+#[cfg(feature = "ai")]
+fn ai_kind_from_lsp(kind: Option<CompletionItemKind>) -> AiCompletionItemKind {
+    match kind {
+        Some(CompletionItemKind::KEYWORD) => AiCompletionItemKind::Keyword,
+        Some(
+            CompletionItemKind::METHOD
+            | CompletionItemKind::FUNCTION
+            | CompletionItemKind::CONSTRUCTOR,
+        ) => AiCompletionItemKind::Method,
+        Some(CompletionItemKind::FIELD | CompletionItemKind::PROPERTY) => {
+            AiCompletionItemKind::Field
+        }
+        Some(
+            CompletionItemKind::VARIABLE | CompletionItemKind::VALUE | CompletionItemKind::CONSTANT,
+        ) => AiCompletionItemKind::Variable,
+        Some(
+            CompletionItemKind::CLASS
+            | CompletionItemKind::INTERFACE
+            | CompletionItemKind::ENUM
+            | CompletionItemKind::STRUCT,
+        ) => AiCompletionItemKind::Class,
+        Some(CompletionItemKind::SNIPPET) => AiCompletionItemKind::Snippet,
+        _ => AiCompletionItemKind::Other,
+    }
+}
+
+#[cfg(feature = "ai")]
+fn line_text_at_offset(text: &str, offset: usize) -> String {
+    let bytes = text.as_bytes();
+    let mut start = offset.min(bytes.len());
+    while start > 0 && bytes[start - 1] != b'\n' {
+        start -= 1;
+    }
+    let mut end = offset.min(bytes.len());
+    while end < bytes.len() && bytes[end] != b'\n' {
+        end += 1;
+    }
+    text[start..end].to_string()
+}
+
 fn member_completions(
     db: &dyn Database,
     file: FileId,
@@ -126,7 +241,10 @@ fn member_completions(
     if receiver_type == "String" {
         for (name, detail) in [
             ("length", "int length()"),
-            ("substring", "String substring(int beginIndex, int endIndex)"),
+            (
+                "substring",
+                "String substring(int beginIndex, int endIndex)",
+            ),
             ("charAt", "char charAt(int index)"),
             ("isEmpty", "boolean isEmpty()"),
         ] {
@@ -214,11 +332,7 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
     }
 
     // Prefer calls at the cursor.
-    if analysis
-        .calls
-        .iter()
-        .any(|c| c.name_span == token.span)
-    {
+    if analysis.calls.iter().any(|c| c.name_span == token.span) {
         let decl = analysis.methods.iter().find(|m| m.name == token.text)?;
         let uri = lsp_types::Uri::from_str("file:///unknown.java").ok()?;
         return Some(Location {
@@ -309,7 +423,11 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
     None
 }
 
-pub fn signature_help(db: &dyn Database, file: FileId, position: Position) -> Option<SignatureHelp> {
+pub fn signature_help(
+    db: &dyn Database,
+    file: FileId,
+    position: Position,
+) -> Option<SignatureHelp> {
     let text = db.file_content(file);
     let offset = position_to_offset(text, position);
     let analysis = analyze(text);
@@ -619,9 +737,12 @@ fn analyze(text: &str) -> Analysis {
                     }
                 };
 
-                if r_paren_idx + 1 < tokens.len() && tokens[r_paren_idx + 1].kind == TokenKind::Symbol('{') {
+                if r_paren_idx + 1 < tokens.len()
+                    && tokens[r_paren_idx + 1].kind == TokenKind::Symbol('{')
+                {
                     let params = parse_params(&tokens[(i + 3)..r_paren_idx]);
-                    if let Some((body_end_idx, body_span)) = find_matching_brace(&tokens, r_paren_idx + 1)
+                    if let Some((body_end_idx, body_span)) =
+                        find_matching_brace(&tokens, r_paren_idx + 1)
                     {
                         analysis.methods.push(MethodDecl {
                             name: name.text.clone(),
@@ -644,12 +765,16 @@ fn analyze(text: &str) -> Analysis {
     for method in &analysis.methods {
         let body_tokens: Vec<&Token> = tokens
             .iter()
-            .filter(|t| t.span.start >= method.body_span.start && t.span.end <= method.body_span.end)
+            .filter(|t| {
+                t.span.start >= method.body_span.start && t.span.end <= method.body_span.end
+            })
             .collect();
 
         // Vars: (<ty>|var) <name> ('=' | ';')
         for win in body_tokens.windows(3) {
-            let [ty_tok, name_tok, next] = win else { continue };
+            let [ty_tok, name_tok, next] = win else {
+                continue;
+            };
             if ty_tok.kind != TokenKind::Ident || name_tok.kind != TokenKind::Ident {
                 continue;
             }
@@ -854,7 +979,9 @@ fn is_ident_continue(ch: char) -> bool {
 }
 
 fn token_at_offset(tokens: &[Token], offset: usize) -> Option<&Token> {
-    tokens.iter().find(|t| t.span.start <= offset && offset <= t.span.end)
+    tokens
+        .iter()
+        .find(|t| t.span.start <= offset && offset <= t.span.end)
 }
 
 fn find_matching_paren(tokens: &[Token], open_idx: usize) -> Option<(usize, usize)> {
@@ -983,7 +1110,10 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
 }
 
 fn span_to_lsp_range(text: &str, span: Span) -> Range {
-    Range::new(offset_to_position(text, span.start), offset_to_position(text, span.end))
+    Range::new(
+        offset_to_position(text, span.start),
+        offset_to_position(text, span.end),
+    )
 }
 
 fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {

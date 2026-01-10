@@ -86,7 +86,9 @@ pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<
         BUILD_PROJECT_METHOD => extensions::build::handle_build_project(params),
         JAVA_CLASSPATH_METHOD => extensions::build::handle_java_classpath(params),
         JAVA_GENERATED_SOURCES_METHOD => extensions::apt::handle_generated_sources(params),
-        RUN_ANNOTATION_PROCESSING_METHOD => extensions::apt::handle_run_annotation_processing(params),
+        RUN_ANNOTATION_PROCESSING_METHOD => {
+            extensions::apt::handle_run_annotation_processing(params)
+        }
         RELOAD_PROJECT_METHOD => extensions::build::handle_reload_project(params),
         DEBUG_CONFIGURATIONS_METHOD => extensions::debug::handle_debug_configurations(params),
         DEBUG_HOT_SWAP_METHOD => extensions::debug::handle_hot_swap(params),
@@ -136,6 +138,20 @@ pub fn completion(
     position: lsp_types::Position,
 ) -> Vec<lsp_types::CompletionItem> {
     nova_ide::completions(db, file, position)
+}
+
+/// Delegate completion requests to `nova-ide` with optional AI re-ranking.
+///
+/// This is behind the `ai` Cargo feature so Nova remains fully usable without AI
+/// scaffolding enabled.
+#[cfg(feature = "ai")]
+pub async fn completion_with_ai(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+    config: &nova_ai::AiConfig,
+) -> Vec<lsp_types::CompletionItem> {
+    nova_ide::completions_with_ai(db, file, position, config).await
 }
 
 /// Delegate hover requests to `nova-ide`.
