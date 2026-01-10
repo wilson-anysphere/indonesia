@@ -161,3 +161,26 @@ class Foo {
     assert!(kinds.contains(&SyntaxKind::CatchClause));
     assert!(kinds.contains(&SyntaxKind::FinallyClause));
 }
+
+#[test]
+fn parse_postfix_increment_decrement() {
+    let input = "class Foo { void m() { int i = 0; i++; ++i; i--; --i; } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let plus_plus = result
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind() == SyntaxKind::PlusPlus)
+        .count();
+    let minus_minus = result
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind() == SyntaxKind::MinusMinus)
+        .count();
+
+    assert_eq!(plus_plus, 2);
+    assert_eq!(minus_minus, 2);
+}

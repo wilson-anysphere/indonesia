@@ -1152,6 +1152,16 @@ impl<'a> Parser<'a> {
                     self.builder.finish_node();
                     continue;
                 }
+                SyntaxKind::PlusPlus | SyntaxKind::MinusMinus => {
+                    if min_bp > 120 {
+                        break;
+                    }
+                    self.builder
+                        .start_node_at(checkpoint, SyntaxKind::UnaryExpression.into());
+                    self.bump();
+                    self.builder.finish_node();
+                    continue;
+                }
                 _ => {}
             }
 
