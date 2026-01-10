@@ -72,6 +72,29 @@ pub trait JdwpRedefiner {
     fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> Result<(), JdwpError>;
 }
 
+impl JdwpRedefiner for crate::jdwp::TcpJdwpClient {
+    fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> Result<(), JdwpError> {
+        crate::jdwp::TcpJdwpClient::redefine_class(self, class_name, bytecode).map_err(map_jdwp_error)
+    }
+}
+
+fn map_jdwp_error(err: crate::jdwp::JdwpError) -> JdwpError {
+    match err {
+        crate::jdwp::JdwpError::CommandFailed { error_code } if is_schema_change(error_code) => {
+            JdwpError::SchemaChange(format!(
+                "HotSwap rejected by JVM (JDWP error {error_code})"
+            ))
+        }
+        other => JdwpError::Other(other.to_string()),
+    }
+}
+
+fn is_schema_change(error_code: u16) -> bool {
+    // See JDWP error codes (subset). These are commonly returned by
+    // `VirtualMachine/RedefineClasses` when the change is not supported.
+    matches!(error_code, 21 | 60 | 61 | 62 | 63 | 64 | 66 | 67 | 70 | 71)
+}
+
 /// Hot-swap coordinator combining compilation with JDWP `RedefineClasses`.
 #[derive(Debug)]
 pub struct HotSwapEngine<B, J> {
@@ -262,4 +285,3 @@ mod tests {
         );
     }
 }
-

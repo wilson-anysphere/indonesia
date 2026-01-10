@@ -238,6 +238,30 @@ impl TcpJdwpClient {
         Ok(Some(info))
     }
 
+    /// Replace the bytecode for an already-loaded class.
+    ///
+    /// This uses JDWP's `VirtualMachine/RedefineClasses` command. The JVM will
+    /// reject changes that are not supported by HotSwap (for example schema
+    /// changes like adding fields/methods).
+    pub fn redefine_class(&mut self, class: &str, bytecode: &[u8]) -> Result<(), JdwpError> {
+        let signature = class_name_to_signature(class);
+        let Some(class_info) = self.class_by_signature(&signature)? else {
+            return Err(JdwpError::Protocol(format!(
+                "class {class} is not loaded in target JVM"
+            )));
+        };
+
+        let mut body = Vec::new();
+        body.extend_from_slice(&(1u32).to_be_bytes()); // classCount
+        write_id(&mut body, self.id_sizes.reference_type_id, class_info.type_id);
+        body.extend_from_slice(&(bytecode.len() as u32).to_be_bytes());
+        body.extend_from_slice(bytecode);
+
+        // VirtualMachine/RedefineClasses
+        let _ = self.send_command(1, 18, &body)?;
+        Ok(())
+    }
+
     fn methods_for_type(&mut self, type_id: u64) -> Result<&HashMap<u64, MethodInfo>, JdwpError> {
         if !self.cache.methods.contains_key(&type_id) {
             let mut body = Vec::new();

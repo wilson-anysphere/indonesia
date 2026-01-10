@@ -66,6 +66,8 @@ pub fn handle_custom_request(
         JAVA_GENERATED_SOURCES_METHOD => extensions::apt::handle_generated_sources(params),
         RUN_ANNOTATION_PROCESSING_METHOD => extensions::apt::handle_run_annotation_processing(params),
         RELOAD_PROJECT_METHOD => extensions::build::handle_reload_project(params),
+        DEBUG_CONFIGURATIONS_METHOD => extensions::debug::handle_debug_configurations(params),
+        DEBUG_HOT_SWAP_METHOD => extensions::debug::handle_hot_swap(params),
         _ => Err(NovaLspError::InvalidParams(format!(
             "unknown (stateless) method: {method}"
         ))),
