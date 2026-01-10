@@ -25,6 +25,12 @@ nova-ide = { path = "../nova-ide" }
 nova-project = { path = "../nova-project" }
 nova-jdwp = { path = "../nova-jdwp" }
 
+# Hardening / crash recovery support.
+nova-bugreport = { path = "../nova-bugreport" }
+nova-config = { path = "../nova-config" }
+nova-scheduler = { path = "../nova-scheduler" }
+tracing = { workspace = true }
+
 [lib]
 path = "src/lib.rs"
 

@@ -43,6 +43,7 @@ members = [
     "crates/nova-lsp",
     "crates/nova-testing",
     "crates/nova-workspace",
+    "crates/nova-bugreport",
     "crates/nova-perf",
     "crates/nova-project",
     "crates/nova-properties",
@@ -72,9 +73,12 @@ repository = "https://github.com/wilson-anysphere/indonesia"
 anyhow = "1"
 bincode = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 tempfile = "3"
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 
 # Config for `dist` (cargo-dist): https://axodotdev.github.io/cargo-dist/
 [workspace.metadata.dist]

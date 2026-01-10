@@ -43,6 +43,12 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    // Install panic hook + structured logging early. The stdio transport does
+    // not currently emit `window/showMessage` notifications on panic, but
+    // `nova/bugReport` can be used to generate a diagnostic bundle.
+    let config = nova_config::NovaConfig::default();
+    nova_lsp::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
+
     // Accept `--stdio` for compatibility with editor templates. For now we only
     // support stdio transport, and ignore any other args.
 
@@ -62,7 +68,14 @@ fn main() -> std::io::Result<()> {
         let id = message.get("id").cloned();
         if id.is_none() {
             // Notification.
-            handle_notification(method, &message, &mut state)?;
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                handle_notification(method, &message, &mut state)
+            })) {
+                Ok(result) => result?,
+                Err(_) => {
+                    tracing::error!(target = "nova.lsp", method, "panic while handling notification");
+                }
+            }
             flush_memory_status_notifications(&mut writer, &mut state)?;
             continue;
         }
@@ -73,7 +86,23 @@ fn main() -> std::io::Result<()> {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
 
-        let response = handle_request(method, id, params, &mut state, &mut writer)?;
+        let id_for_panic = id.clone();
+        let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            handle_request(method, id, params, &mut state, &mut writer)
+        })) {
+            Ok(result) => result?,
+            Err(_) => {
+                tracing::error!(target = "nova.lsp", method, "panic while handling request");
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": id_for_panic,
+                    "error": {
+                        "code": -32603,
+                        "message": "Internal error (panic)"
+                    }
+                })
+            }
+        };
         write_json_message(&mut writer, &response)?;
         flush_memory_status_notifications(&mut writer, &mut state)?;
     }

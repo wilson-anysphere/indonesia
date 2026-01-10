@@ -1,4 +1,5 @@
 use clap::Parser;
+use std::sync::Arc;
 
 /// Nova Debug Adapter Protocol server (experimental).
 ///
@@ -18,6 +19,12 @@ struct Cli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Best-effort hardening: install structured logging + panic hook early so
+    // panics in request handlers are recorded and surfaced to the client.
+    let config = nova_config::NovaConfig::default();
+    nova_dap::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
+
     if cli.legacy {
         nova_dap::server::DapServer::default().run_stdio()
     } else {

@@ -37,3 +37,6 @@ pub mod dap_tokio;
 /// Experimental DAP server that talks to a real JVM via `nova-jdwp::wire`.
 pub mod wire_debugger;
 pub mod wire_server;
+
+/// Crash hardening helpers (panic hook installation, safe-mode toggles).
+pub mod hardening;

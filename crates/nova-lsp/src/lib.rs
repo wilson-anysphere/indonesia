@@ -28,12 +28,15 @@
 //!   - `nova/build/targetClasspath`
 //!   - `nova/build/status`
 //!   - `nova/build/diagnostics`
+//! - Resilience endpoints
+//!   - `nova/bugReport`
 
 pub mod decompile;
 pub mod code_action;
 mod ai_codegen;
 pub mod extensions;
 pub mod extract_method;
+pub mod hardening;
 pub mod refactor;
 pub mod handlers;
 pub mod formatting;
@@ -91,6 +94,7 @@ pub const DEBUG_HOT_SWAP_METHOD: &str = "nova/debug/hotSwap";
 pub const AI_EXPLAIN_ERROR_METHOD: &str = "nova/ai/explainError";
 pub const AI_GENERATE_METHOD_BODY_METHOD: &str = "nova/ai/generateMethodBody";
 pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
+pub const BUG_REPORT_METHOD: &str = "nova/bugReport";
 
 pub const BUILD_TARGET_CLASSPATH_METHOD: &str = "nova/build/targetClasspath";
 pub const BUILD_STATUS_METHOD: &str = "nova/build/status";
@@ -113,25 +117,69 @@ pub const DOCUMENT_ON_TYPE_FORMATTING_METHOD: &str = "textDocument/onTypeFormatt
 /// This helper is designed to be embedded in whichever LSP transport is used
 /// (e.g. `lsp-server`, `tower-lsp`). It only supports stateless endpoints.
 pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    hardening::record_request();
+    handle_custom_request_inner(method, params)
+}
+
+fn handle_custom_request_inner(method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+    hardening::guard_method(method)?;
+
     match method {
-        TEST_DISCOVER_METHOD => extensions::test::handle_discover(params),
-        TEST_RUN_METHOD => extensions::test::handle_run(params),
-        WEB_ENDPOINTS_METHOD | QUARKUS_ENDPOINTS_METHOD => extensions::web::handle_endpoints(params),
-        TEST_DEBUG_CONFIGURATION_METHOD => extensions::test::handle_debug_configuration(params),
-        BUILD_PROJECT_METHOD => extensions::build::handle_build_project(params),
-        JAVA_CLASSPATH_METHOD => extensions::build::handle_java_classpath(params),
-        JAVA_GENERATED_SOURCES_METHOD => extensions::apt::handle_generated_sources(params),
-        RUN_ANNOTATION_PROCESSING_METHOD => {
-            extensions::apt::handle_run_annotation_processing(params)
+        BUG_REPORT_METHOD => hardening::handle_bug_report(params),
+        TEST_DISCOVER_METHOD => hardening::run_with_watchdog(
+            method,
+            params,
+            extensions::test::handle_discover,
+        ),
+        TEST_RUN_METHOD => hardening::run_with_watchdog(method, params, extensions::test::handle_run),
+        WEB_ENDPOINTS_METHOD | QUARKUS_ENDPOINTS_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::web::handle_endpoints)
         }
-        RELOAD_PROJECT_METHOD => extensions::build::handle_reload_project(params),
-        MICRONAUT_ENDPOINTS_METHOD => extensions::micronaut::handle_endpoints(params),
-        MICRONAUT_BEANS_METHOD => extensions::micronaut::handle_beans(params),
-        DEBUG_CONFIGURATIONS_METHOD => extensions::debug::handle_debug_configurations(params),
-        DEBUG_HOT_SWAP_METHOD => extensions::debug::handle_hot_swap(params),
-        BUILD_TARGET_CLASSPATH_METHOD => extensions::build::handle_target_classpath(params),
-        BUILD_STATUS_METHOD => extensions::build::handle_build_status(params),
-        BUILD_DIAGNOSTICS_METHOD => extensions::build::handle_build_diagnostics(params),
+        TEST_DEBUG_CONFIGURATION_METHOD => hardening::run_with_watchdog(
+            method,
+            params,
+            extensions::test::handle_debug_configuration,
+        ),
+        BUILD_PROJECT_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::build::handle_build_project)
+        }
+        JAVA_CLASSPATH_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::build::handle_java_classpath)
+        }
+        JAVA_GENERATED_SOURCES_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::apt::handle_generated_sources)
+        }
+        RUN_ANNOTATION_PROCESSING_METHOD => hardening::run_with_watchdog(
+            method,
+            params,
+            extensions::apt::handle_run_annotation_processing,
+        ),
+        RELOAD_PROJECT_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::build::handle_reload_project)
+        }
+        DEBUG_CONFIGURATIONS_METHOD => hardening::run_with_watchdog(
+            method,
+            params,
+            extensions::debug::handle_debug_configurations,
+        ),
+        DEBUG_HOT_SWAP_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::debug::handle_hot_swap)
+        }
+        BUILD_TARGET_CLASSPATH_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::build::handle_target_classpath)
+        }
+        BUILD_STATUS_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::build::handle_build_status)
+        }
+        BUILD_DIAGNOSTICS_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::build::handle_build_diagnostics)
+        }
+        MICRONAUT_ENDPOINTS_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::micronaut::handle_endpoints)
+        }
+        MICRONAUT_BEANS_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::micronaut::handle_beans)
+        }
         _ => Err(NovaLspError::InvalidParams(format!(
             "unknown (stateless) method: {method}"
         ))),
@@ -167,7 +215,11 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value> {
+    hardening::record_request();
+    hardening::guard_method(method)?;
+
     match method {
+        BUG_REPORT_METHOD => hardening::handle_bug_report(params),
         DEBUG_CONFIGURATIONS_METHOD => serde_json::to_value(server.debug_configurations())
             .map_err(|err| NovaLspError::Internal(err.to_string())),
         DEBUG_HOT_SWAP_METHOD => {
@@ -179,7 +231,7 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
             serde_json::to_value(server.hot_swap(hot_swap, params))
                 .map_err(|err| NovaLspError::Internal(err.to_string()))
         }
-        _ => handle_custom_request(method, params),
+        _ => handle_custom_request_inner(method, params),
     }
 }
 

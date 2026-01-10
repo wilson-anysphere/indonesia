@@ -13,6 +13,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
+use std::panic::AssertUnwindSafe;
 
 struct Outgoing {
     messages: Vec<serde_json::Value>,
@@ -69,9 +70,10 @@ impl<C: JdwpClient> DapServer<C> {
         let mut writer = BufWriter::new(stdout.lock());
 
         while let Some(request) = read_json_message::<_, Request>(&mut reader)? {
-            let outgoing = match self.handle_request(&request) {
-                Ok(outgoing) => outgoing,
-                Err(err) => Outgoing {
+            let outgoing = match std::panic::catch_unwind(AssertUnwindSafe(|| self.handle_request(&request)))
+            {
+                Ok(Ok(outgoing)) => outgoing,
+                Ok(Err(err)) => Outgoing {
                     messages: vec![serde_json::to_value(Response::error(
                         self.alloc_seq(),
                         &request,
@@ -79,6 +81,22 @@ impl<C: JdwpClient> DapServer<C> {
                     ))?],
                     wait_for_stop: false,
                 },
+                Err(_) => {
+                    tracing::error!(
+                        target = "nova.dap",
+                        "panic in DAP request handler; recovering workspace state"
+                    );
+                    self.recover_after_panic();
+                    Outgoing {
+                        messages: vec![serde_json::to_value(Response::error(
+                            self.alloc_seq(),
+                            &request,
+                            "Internal error (panic). The adapter will continue in safe-mode."
+                                .to_owned(),
+                        ))?],
+                        wait_for_stop: false,
+                    }
+                }
             };
 
             for msg in outgoing.messages {
@@ -105,6 +123,18 @@ impl<C: JdwpClient> DapServer<C> {
         }
 
         Ok(())
+    }
+
+    fn recover_after_panic(&mut self) {
+        // Best-effort recovery: drop all derived state and restart the semantic DB
+        // without taking down the whole adapter process.
+        self.db = RootDatabase::new();
+        self.breakpoints.clear();
+        self.thread_ids.clear();
+        self.frame_ids.clear();
+        self.frame_locations.clear();
+        self.next_thread_id = 1;
+        self.next_frame_id = 1;
     }
 
     fn alloc_seq(&mut self) -> u64 {

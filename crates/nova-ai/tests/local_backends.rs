@@ -60,6 +60,8 @@ fn openai_config(url: Url) -> AiConfig {
             excluded_paths: vec![],
             redact_patterns: vec![],
         },
+        enabled: true,
+        ..AiConfig::default()
     }
 }
 
@@ -79,6 +81,8 @@ fn ollama_config(url: Url) -> AiConfig {
             excluded_paths: vec![],
             redact_patterns: vec![],
         },
+        enabled: true,
+        ..AiConfig::default()
     }
 }
 

@@ -5,11 +5,13 @@ mod debouncer;
 mod progress;
 mod scheduler;
 mod task;
+mod watchdog;
 
 pub use debouncer::{KeyedDebouncedHandle, KeyedDebouncer};
 pub use progress::{Progress, ProgressEvent, ProgressId, ProgressReceiver, ProgressSender};
 pub use scheduler::{PoolKind, Scheduler, SchedulerConfig};
 pub use task::{AsyncTask, BlockingTask};
+pub use watchdog::{Watchdog, WatchdogError};
 
 pub use tokio_util::sync::CancellationToken;
 
