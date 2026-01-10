@@ -1351,7 +1351,7 @@ fn is_field_modifier(ident: &str) -> bool {
 // Text coordinate helpers
 // -----------------------------------------------------------------------------
 
-fn position_to_offset(text: &str, position: Position) -> usize {
+pub(crate) fn position_to_offset(text: &str, position: Position) -> usize {
     let mut line = 0u32;
     let mut col = 0u32;
     for (idx, ch) in text.char_indices() {
