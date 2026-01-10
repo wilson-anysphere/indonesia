@@ -134,6 +134,12 @@ fn internal_name_to_binary(internal: &str) -> String {
     internal.replace('/', ".")
 }
 
+fn is_ignored_class(internal_name: &str) -> bool {
+    internal_name == "module-info"
+        || internal_name == "package-info"
+        || internal_name.ends_with("/package-info")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClasspathFieldStub {
     pub name: String,
@@ -362,7 +368,7 @@ fn index_class_dir(dir: &Path) -> Result<Vec<ClasspathClassStub>, ClasspathError
 
         let bytes = std::fs::read(entry.path())?;
         let cf = ClassFile::parse(&bytes)?;
-        if cf.this_class == "module-info" {
+        if is_ignored_class(&cf.this_class) {
             continue;
         }
         out.push(stub_from_classfile(cf));
@@ -402,7 +408,7 @@ fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, Clas
         let mut bytes = Vec::with_capacity(file.size() as usize);
         file.read_to_end(&mut bytes)?;
         let cf = ClassFile::parse(&bytes)?;
-        if cf.this_class == "module-info" {
+        if is_ignored_class(&cf.this_class) {
             continue;
         }
         out.push(stub_from_classfile(cf));
@@ -480,6 +486,11 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/classdir")
     }
 
+    fn test_jmod() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-jdk/testdata/fake-jdk/jmods/java.base.jmod")
+    }
+
     #[test]
     fn lookup_type_from_jar() {
         let tmp = TempDir::new().unwrap();
@@ -519,5 +530,13 @@ mod tests {
         let index = ClasspathIndex::build(&[ClasspathEntry::Jar(test_jar())], None).unwrap();
         let pkgs = index.packages_with_prefix("com.example");
         assert!(pkgs.contains(&"com.example.dep".to_string()));
+    }
+
+    #[test]
+    fn lookup_type_from_jmod() {
+        let index = ClasspathIndex::build(&[ClasspathEntry::Jmod(test_jmod())], None).unwrap();
+        assert!(index.lookup_binary("java.lang.String").is_some());
+        assert!(index.lookup_internal("java/lang/String").is_some());
+        assert!(index.packages_with_prefix("java").contains(&"java.lang".to_string()));
     }
 }
