@@ -1,10 +1,11 @@
 use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
 use nova_index::{
-    load_indexes, save_indexes, CandidateStrategy, ProjectIndexes, SearchStats,
-    SearchSymbol, SymbolLocation, SymbolSearchIndex,
+    load_indexes, save_indexes, CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol,
+    SymbolLocation, SymbolSearchIndex,
 };
 use nova_project::ProjectError;
+use nova_syntax::SyntaxNode;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -250,16 +251,17 @@ impl Workspace {
         // single file.
         let files = self
             .project_java_files()
-            .unwrap_or_else(|_| vec![path.to_path_buf()]);
+            .or_else(|_| {
+                if meta.is_dir() {
+                    self.java_files_in(path)
+                } else {
+                    Ok(vec![path.to_path_buf()])
+                }
+            })?;
 
         let mut sources = Vec::with_capacity(files.len());
         for file in &files {
-            let file = if requested_file.is_some() {
-                fs::canonicalize(file)
-                    .with_context(|| format!("failed to canonicalize {}", file.display()))?
-            } else {
-                file.clone()
-            };
+            let file = fs::canonicalize(file).unwrap_or_else(|_| file.clone());
             let content = fs::read_to_string(&file)
                 .with_context(|| format!("failed to read {}", file.display()))?;
             sources.push((file, content));
@@ -268,16 +270,20 @@ impl Workspace {
         for (file, content) in &sources {
             if requested_file
                 .as_ref()
-                .is_some_and(|requested| requested != file)
+                .is_some_and(|requested| requested != file.as_path())
             {
                 continue;
             }
 
-            // Parse-like delimiter checks (cheap but useful in CI smoke tests).
-            let parse = parse_brace_tree(content);
-            for err in parse.errors {
+            let display_path = file
+                .strip_prefix(&self.root)
+                .unwrap_or(file.as_path())
+                .to_path_buf();
+
+            // Parse errors (from the Java syntax parser).
+            for err in parse_java_errors(content) {
                 diagnostics.push(Diagnostic {
-                    file: file.clone(),
+                    file: display_path.clone(),
                     line: err.line,
                     column: err.column,
                     severity: Severity::Error,
@@ -294,7 +300,7 @@ impl Workspace {
                 for (line_idx, line) in content.lines().enumerate() {
                     if let Some(col) = line.find(needle) {
                         diagnostics.push(Diagnostic {
-                            file: file.clone(),
+                            file: display_path.clone(),
                             line: line_idx + 1,
                             column: col + 1,
                             severity: sev,
@@ -362,8 +368,13 @@ impl Workspace {
                 nova_framework_spring::Severity::Info => Severity::Warning,
             };
 
+            let display_path = file_path
+                .strip_prefix(&self.root)
+                .unwrap_or(file_path.as_path())
+                .to_path_buf();
+
             diags.push(Diagnostic {
-                file: file_path.clone(),
+                file: display_path,
                 line,
                 column,
                 severity,
@@ -392,7 +403,21 @@ impl Workspace {
         let file = file.as_ref();
         let content = fs::read_to_string(file)
             .with_context(|| format!("failed to read {}", file.display()))?;
-        Ok(parse_brace_tree(&content))
+        let parsed = nova_syntax::parse_java(&content);
+        let tree = debug_dump_syntax(&parsed.syntax());
+        let errors = parsed
+            .errors
+            .into_iter()
+            .map(|err| {
+                let (line, column) = line_col_at(&content, err.range.start as usize);
+                ParseError {
+                    message: err.message,
+                    line,
+                    column,
+                }
+            })
+            .collect();
+        Ok(ParseResult { tree, errors })
     }
 
     pub fn cache_status(&self) -> Result<CacheStatus> {
@@ -688,187 +713,64 @@ pub struct ParseError {
     pub column: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Normal,
-    LineComment,
-    BlockComment,
-    String,
-    Char,
+fn parse_java_errors(text: &str) -> Vec<ParseError> {
+    let parsed = nova_syntax::parse_java(text);
+    parsed
+        .errors
+        .into_iter()
+        .map(|err| {
+            let (line, column) = line_col_at(text, err.range.start as usize);
+            ParseError {
+                message: err.message,
+                line,
+                column,
+            }
+        })
+        .collect()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Delim {
-    Brace,
-    Paren,
-    Bracket,
-}
+fn debug_dump_syntax(node: &SyntaxNode) -> String {
+    fn go(node: &SyntaxNode, indent: usize, out: &mut String) {
+        use rowan::NodeOrToken;
+        use std::fmt::Write;
 
-fn delim_for_open(c: char) -> Option<Delim> {
-    match c {
-        '{' => Some(Delim::Brace),
-        '(' => Some(Delim::Paren),
-        '[' => Some(Delim::Bracket),
-        _ => None,
-    }
-}
-
-fn delim_for_close(c: char) -> Option<Delim> {
-    match c {
-        '}' => Some(Delim::Brace),
-        ')' => Some(Delim::Paren),
-        ']' => Some(Delim::Bracket),
-        _ => None,
-    }
-}
-
-fn delim_name(d: Delim) -> &'static str {
-    match d {
-        Delim::Brace => "brace",
-        Delim::Paren => "paren",
-        Delim::Bracket => "bracket",
-    }
-}
-
-fn parse_brace_tree(text: &str) -> ParseResult {
-    let mut mode = Mode::Normal;
-    let mut stack: Vec<(Delim, usize)> = Vec::new();
-    let mut events = Vec::new();
-    let mut errors = Vec::new();
-
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() {
-        let b = bytes[i];
-        let c = b as char;
-
-        match mode {
-            Mode::Normal => {
-                if c == '/' && i + 1 < bytes.len() {
-                    let next = bytes[i + 1] as char;
-                    if next == '/' {
-                        mode = Mode::LineComment;
-                        i += 2;
-                        continue;
-                    }
-                    if next == '*' {
-                        mode = Mode::BlockComment;
-                        i += 2;
-                        continue;
-                    }
-                }
-
-                if c == '"' {
-                    mode = Mode::String;
-                    i += 1;
-                    continue;
-                }
-                if c == '\'' {
-                    mode = Mode::Char;
-                    i += 1;
-                    continue;
-                }
-
-                if let Some(d) = delim_for_open(c) {
-                    let depth = stack.len();
-                    stack.push((d, i));
-                    let (line, col) = line_col_at(text, i);
-                    events.push(format!(
-                        "{:indent$}open {} @ {}:{}",
+        let _ = writeln!(out, "{:indent$}{:?}", "", node.kind(), indent = indent);
+        for child in node.children_with_tokens() {
+            match child {
+                NodeOrToken::Node(n) => go(&n, indent + 2, out),
+                NodeOrToken::Token(t) => {
+                    let _ = writeln!(
+                        out,
+                        "{:indent$}{:?} {:?}",
                         "",
-                        delim_name(d),
-                        line,
-                        col,
-                        indent = depth * 2
-                    ));
-                } else if let Some(close) = delim_for_close(c) {
-                    let depth = stack.len();
-                    match stack.pop() {
-                        Some((open, open_idx)) if open == close => {
-                            let (line, col) = line_col_at(text, i);
-                            events.push(format!(
-                                "{:indent$}close {} @ {}:{}",
-                                "",
-                                delim_name(close),
-                                line,
-                                col,
-                                indent = (depth.saturating_sub(1)) * 2
-                            ));
-                        }
-                        Some((open, open_idx)) => {
-                            // Put the opener back and continue (best-effort recovery).
-                            stack.push((open, open_idx));
-                            let (line, col) = line_col_at(text, i);
-                            errors.push(ParseError {
-                                message: format!("mismatched closing {}", delim_name(close)),
-                                line,
-                                column: col,
-                            });
-                        }
-                        None => {
-                            let (line, col) = line_col_at(text, i);
-                            errors.push(ParseError {
-                                message: format!("unmatched closing {}", delim_name(close)),
-                                line,
-                                column: col,
-                            });
-                        }
-                    }
-                }
-            }
-            Mode::LineComment => {
-                if c == '\n' {
-                    mode = Mode::Normal;
-                }
-            }
-            Mode::BlockComment => {
-                if c == '*' && i + 1 < bytes.len() && bytes[i + 1] as char == '/' {
-                    mode = Mode::Normal;
-                    i += 2;
-                    continue;
-                }
-            }
-            Mode::String => {
-                if c == '\\' && i + 1 < bytes.len() {
-                    // Skip escaped character.
-                    i += 2;
-                    continue;
-                }
-                if c == '"' {
-                    mode = Mode::Normal;
-                }
-            }
-            Mode::Char => {
-                if c == '\\' && i + 1 < bytes.len() {
-                    i += 2;
-                    continue;
-                }
-                if c == '\'' {
-                    mode = Mode::Normal;
+                        t.kind(),
+                        truncate_token_text(t.text(), 120),
+                        indent = indent + 2
+                    );
                 }
             }
         }
-
-        i += 1;
     }
 
-    for (d, idx) in stack.into_iter().rev() {
-        let (line, col) = line_col_at(text, idx);
-        errors.push(ParseError {
-            message: format!("unclosed {}", delim_name(d)),
-            line,
-            column: col,
-        });
+    let mut out = String::new();
+    go(node, 0, &mut out);
+    out
+}
+
+fn truncate_token_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
     }
 
-    let mut tree = String::new();
-    tree.push_str("delimiters:\n");
-    for e in events {
-        tree.push_str(&e);
-        tree.push('\n');
+    let mut out = String::new();
+    for (idx, ch) in text.chars().enumerate() {
+        if idx >= max_chars {
+            break;
+        }
+        out.push(ch);
     }
-
-    ParseResult { tree, errors }
+    out.push('…');
+    out
 }
 
 fn line_col_at(text: &str, byte_idx: usize) -> (usize, usize) {
