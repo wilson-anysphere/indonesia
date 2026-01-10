@@ -1,7 +1,11 @@
 mod codec;
 
 use codec::{read_json_message, write_json_message};
-use lsp_types::{Position as LspTypesPosition, Range as LspTypesRange, Uri as LspUri};
+use lsp_types::{
+    CodeAction, CodeActionKind, Position as LspTypesPosition, Range as LspTypesRange,
+    RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
+    WorkspaceEdit as LspWorkspaceEdit,
+};
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ContextRequest, ProviderKind, RetryConfig};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
@@ -9,6 +13,10 @@ use nova_ide::{
     CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN,
     COMMAND_EXPLAIN_ERROR,
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
+};
+use nova_refactor::{
+    code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp, FileId,
+    InMemoryJavaDatabase, OrganizeImportsParams, RenameParams as RefactorRenameParams, SemanticRefactorError,
 };
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use serde::Deserialize;
@@ -143,19 +151,21 @@ fn handle_request(
             // capabilities that Nova supports today; editor integrations can
             // still call custom `nova/*` requests directly.
             let result = json!({
-                "capabilities": {
-                    "textDocumentSync": { "openClose": true, "change": 1 },
-                    "documentFormattingProvider": true,
-                    "documentRangeFormattingProvider": true,
-                    "documentOnTypeFormattingProvider": {
-                        "firstTriggerCharacter": "}",
-                        "moreTriggerCharacter": [";"]
-                    },
-                    "codeActionProvider": {
+                    "capabilities": {
+                        "textDocumentSync": { "openClose": true, "change": 1 },
+                        "documentFormattingProvider": true,
+                        "documentRangeFormattingProvider": true,
+                        "documentOnTypeFormattingProvider": {
+                            "firstTriggerCharacter": "}",
+                            "moreTriggerCharacter": [";"]
+                        },
+                        "renameProvider": { "prepareProvider": true },
+                        "codeActionProvider": {
                         "codeActionKinds": [
                             CODE_ACTION_KIND_EXPLAIN,
                             CODE_ACTION_KIND_AI_GENERATE,
                             CODE_ACTION_KIND_AI_TESTS,
+                            "source.organizeImports",
                             "refactor.extract"
                         ]
                     },
@@ -196,6 +206,26 @@ fn handle_request(
             let result = handle_code_action(params, state);
             Ok(match result {
                 Ok(actions) => json!({ "jsonrpc": "2.0", "id": id, "result": actions }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+            })
+        }
+        "textDocument/prepareRename" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_prepare_rename(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+            })
+        }
+        "textDocument/rename" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_rename(params, state);
+            Ok(match result {
+                Ok(edit) => json!({ "jsonrpc": "2.0", "id": id, "result": edit }),
                 Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
             })
         }
@@ -480,6 +510,13 @@ fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<
         }
     }
 
+    if let Some(text) = text {
+        if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
+            if let Some(action) = organize_imports_code_action(&uri, text) {
+                actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+            }
+        }
+    }
     // AI code actions (gracefully degrade when AI isn't configured).
     if state.ai.is_some() {
         // Explain error (diagnostic-driven).
@@ -530,6 +567,164 @@ fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<
     }
 
     Ok(serde_json::Value::Array(actions))
+}
+
+fn organize_imports_code_action(uri: &LspUri, source: &str) -> Option<CodeAction> {
+    let file = FileId::new(uri.to_string());
+    let db = InMemoryJavaDatabase::new([(file.clone(), source.to_string())]);
+    let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() }).ok()?;
+    if edit.edits.is_empty() {
+        return None;
+    }
+    let lsp_edit = workspace_edit_to_lsp(&db, &edit).ok()?;
+    Some(code_action_for_edit(
+        "Organize imports",
+        CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+        lsp_edit,
+    ))
+}
+
+fn handle_prepare_rename(params: serde_json::Value, state: &ServerState) -> Result<serde_json::Value, String> {
+    let params: TextDocumentPositionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+    let Some(source) = load_document_text(state, uri.as_str()) else {
+        return Ok(serde_json::Value::Null);
+    };
+
+    let Some(offset) = position_to_offset_utf16(&source, params.position) else {
+        return Ok(serde_json::Value::Null);
+    };
+
+    let Some((start, end)) = ident_range_at(&source, offset) else {
+        return Ok(serde_json::Value::Null);
+    };
+
+    let range = LspTypesRange::new(
+        offset_to_position_utf16(&source, start),
+        offset_to_position_utf16(&source, end),
+    );
+    serde_json::to_value(range).map_err(|e| e.to_string())
+}
+
+fn handle_rename(params: serde_json::Value, state: &ServerState) -> Result<LspWorkspaceEdit, String> {
+    let params: LspRenameParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document_position.text_document.uri;
+    let Some(source) = load_document_text(state, uri.as_str()) else {
+        return Err(format!("missing document text for `{}`", uri.as_str()));
+    };
+
+    let Some(offset) = position_to_offset_utf16(&source, params.text_document_position.position) else {
+        return Err("position out of bounds".to_string());
+    };
+
+    let file = FileId::new(uri.to_string());
+    let db = InMemoryJavaDatabase::new([(file.clone(), source)]);
+    let symbol = db
+        .symbol_at(&file, offset)
+        .ok_or_else(|| "no symbol at cursor".to_string())?;
+
+    let edit = semantic_rename(
+        &db,
+        RefactorRenameParams {
+            symbol,
+            new_name: params.new_name,
+        },
+    )
+    .map_err(|err| match err {
+        SemanticRefactorError::Conflicts(conflicts) => format!("rename conflicts: {conflicts:?}"),
+        other => other.to_string(),
+    })?;
+
+    workspace_edit_to_lsp(&db, &edit).map_err(|e| e.to_string())
+}
+
+fn position_to_offset_utf16(text: &str, position: lsp_types::Position) -> Option<usize> {
+    let mut line: u32 = 0;
+    let mut col_utf16: u32 = 0;
+    let mut idx = 0usize;
+
+    for ch in text.chars() {
+        if line == position.line && col_utf16 == position.character {
+            return Some(idx);
+        }
+
+        if ch == '\n' {
+            if line == position.line {
+                if col_utf16 == position.character {
+                    return Some(idx);
+                }
+                return None;
+            }
+            line += 1;
+            col_utf16 = 0;
+            idx += 1;
+            continue;
+        }
+
+        if line == position.line {
+            col_utf16 += ch.len_utf16() as u32;
+            if col_utf16 > position.character {
+                return None;
+            }
+        }
+        idx += ch.len_utf8();
+    }
+
+    if line == position.line && col_utf16 == position.character {
+        Some(idx)
+    } else {
+        None
+    }
+}
+
+fn offset_to_position_utf16(text: &str, offset: usize) -> lsp_types::Position {
+    let mut line: u32 = 0;
+    let mut col_utf16: u32 = 0;
+    let mut i = 0usize;
+
+    for ch in text.chars() {
+        if i >= offset {
+            break;
+        }
+
+        if ch == '\n' {
+            line += 1;
+            col_utf16 = 0;
+        } else {
+            col_utf16 += ch.len_utf16() as u32;
+        }
+
+        i += ch.len_utf8();
+    }
+
+    lsp_types::Position::new(line, col_utf16)
+}
+
+fn ident_range_at(text: &str, offset: usize) -> Option<(usize, usize)> {
+    fn is_ident_continue(b: u8) -> bool {
+        (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'
+    }
+
+    let bytes = text.as_bytes();
+    if offset > bytes.len() {
+        return None;
+    }
+
+    let mut start = offset.min(bytes.len());
+    while start > 0 && is_ident_continue(bytes[start - 1]) {
+        start -= 1;
+    }
+
+    let mut end = offset.min(bytes.len());
+    while end < bytes.len() && is_ident_continue(bytes[end]) {
+        end += 1;
+    }
+
+    if start == end {
+        None
+    } else {
+        Some((start, end))
+    }
 }
 
 fn code_action_to_lsp(action: NovaCodeAction) -> serde_json::Value {
