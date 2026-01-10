@@ -64,8 +64,11 @@ impl BazelCache {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let data = fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&data)?)
+        let data = match fs::read_to_string(path) {
+            Ok(data) => data,
+            Err(_) => return Ok(Self::default()),
+        };
+        Ok(serde_json::from_str(&data).unwrap_or_default())
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -73,7 +76,18 @@ impl BazelCache {
             fs::create_dir_all(parent)?;
         }
         let data = serde_json::to_string_pretty(self)?;
-        fs::write(path, data)?;
+        let tmp_path = path.with_extension("json.tmp");
+        fs::write(&tmp_path, data)?;
+        // `rename` is best-effort atomic on Unix. If it fails because the
+        // destination exists (Windows), fall back to remove+rename.
+        match fs::rename(&tmp_path, path) {
+            Ok(()) => {}
+            Err(_) if path.exists() => {
+                let _ = fs::remove_file(path);
+                fs::rename(&tmp_path, path)?;
+            }
+            Err(err) => return Err(err.into()),
+        }
         Ok(())
     }
 }

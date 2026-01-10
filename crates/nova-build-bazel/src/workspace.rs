@@ -124,7 +124,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
     fn persist_cache(&self) -> Result<()> {
         if let Some(path) = &self.cache_path {
-            self.cache.save(path)?;
+            // Cache persistence is best-effort: failing to write should not fail
+            // the query itself.
+            let _ = self.cache.save(path);
         }
         Ok(())
     }

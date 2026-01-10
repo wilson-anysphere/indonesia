@@ -3524,7 +3524,6 @@ dependencies = [
  "anyhow",
  "httpmock",
  "lsp-types",
- "nova-ai",
  "nova-apt",
  "nova-bugreport",
  "nova-build",
