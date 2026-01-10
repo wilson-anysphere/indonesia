@@ -72,10 +72,14 @@ impl FileIdRegistry {
 mod tests {
     use super::*;
 
+    use nova_core::{file_uri_to_path, path_to_file_uri, AbsPathBuf};
+
     #[test]
     fn file_id_is_stable_across_lookups() {
         let mut registry = FileIdRegistry::new();
-        let path = VfsPath::uri("file:///tmp/Main.java");
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("Main.java");
+        let path = VfsPath::local(file_path);
         let id1 = registry.file_id(path.clone());
         let id2 = registry.file_id(path.clone());
 
@@ -87,8 +91,14 @@ mod tests {
     #[test]
     fn file_id_is_stable_across_uri_and_path_representations() {
         let mut registry = FileIdRegistry::new();
-        let uri = VfsPath::uri("file:///tmp/Main.java");
-        let path = VfsPath::local("/tmp/Main.java");
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("Main.java");
+        let abs = AbsPathBuf::new(file_path).unwrap();
+        let uri_string = path_to_file_uri(&abs).unwrap();
+        let decoded = file_uri_to_path(&uri_string).unwrap().into_path_buf();
+
+        let uri = VfsPath::uri(uri_string);
+        let path = VfsPath::local(decoded);
 
         let id1 = registry.file_id(uri);
         let id2 = registry.file_id(path);
@@ -99,10 +109,13 @@ mod tests {
     #[test]
     fn rename_path_preserves_id() {
         let mut registry = FileIdRegistry::new();
-        let from = VfsPath::local("/tmp/a.java");
+        let dir = tempfile::tempdir().unwrap();
+        let from_path = dir.path().join("a.java");
+        let to_path = dir.path().join("b.java");
+        let from = VfsPath::local(from_path);
         let id = registry.file_id(from.clone());
 
-        let to = VfsPath::local("/tmp/b.java");
+        let to = VfsPath::local(to_path);
         let moved_id = registry.rename_path(&from, to.clone());
 
         assert_eq!(id, moved_id);
