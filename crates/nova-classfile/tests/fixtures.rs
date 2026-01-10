@@ -1,5 +1,5 @@
 use nova_classfile::{
-    BaseType, ClassFile, ConstValue, ElementValue, FieldType, ReturnType, TypeSignature,
+    BaseType, ClassFile, ClassMember, ConstValue, ElementValue, FieldType, ReturnType, TypeSignature,
 };
 
 #[test]
@@ -124,4 +124,37 @@ fn parse_inner_classes_attribute() {
     assert_eq!(inner.outer_class.as_deref(), Some("com/example/Outer"));
     assert_eq!(inner.inner_name.as_deref(), Some("Inner"));
     assert_eq!(inner.access_flags, 0x0001);
+}
+
+#[test]
+fn stub_is_best_effort_for_unparseable_signature_attribute() {
+    let class = ClassFile {
+        minor_version: 0,
+        major_version: 52,
+        access_flags: 0x0021,
+        this_class: "com/example/BadSignature".into(),
+        super_class: Some("java/lang/Object".into()),
+        interfaces: Vec::new(),
+        fields: vec![ClassMember {
+            access_flags: 0x0001,
+            name: "f".into(),
+            descriptor: "I".into(),
+            signature: Some("not a signature".into()),
+            runtime_visible_annotations: Vec::new(),
+            runtime_invisible_annotations: Vec::new(),
+        }],
+        methods: Vec::new(),
+        signature: Some("not a signature".into()),
+        runtime_visible_annotations: Vec::new(),
+        runtime_invisible_annotations: Vec::new(),
+        inner_classes: Vec::new(),
+    };
+
+    let stub = class.stub().unwrap();
+    assert_eq!(stub.raw_signature.as_deref(), Some("not a signature"));
+    assert!(stub.signature.is_none(), "parsed signature should be omitted");
+
+    let field = &stub.fields[0];
+    assert_eq!(field.raw_signature.as_deref(), Some("not a signature"));
+    assert!(field.signature.is_none(), "parsed field signature should be omitted");
 }

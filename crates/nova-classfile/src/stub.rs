@@ -13,6 +13,8 @@ pub struct ClassStub {
     pub access_flags: u16,
     pub super_class: Option<String>,
     pub interfaces: Vec<String>,
+    /// Raw `Signature` attribute string, if present.
+    pub raw_signature: Option<String>,
     pub signature: Option<ClassSignature>,
     pub annotations: Vec<Annotation>,
     pub inner_classes: Vec<crate::InnerClassInfo>,
@@ -26,6 +28,8 @@ pub struct FieldStub {
     pub name: String,
     pub descriptor: String,
     pub parsed_descriptor: FieldType,
+    /// Raw `Signature` attribute string, if present.
+    pub raw_signature: Option<String>,
     pub signature: Option<FieldTypeSignature>,
     pub annotations: Vec<Annotation>,
 }
@@ -36,6 +40,8 @@ pub struct MethodStub {
     pub name: String,
     pub descriptor: String,
     pub parsed_descriptor: MethodDescriptor,
+    /// Raw `Signature` attribute string, if present.
+    pub raw_signature: Option<String>,
     pub signature: Option<MethodSignature>,
     pub annotations: Vec<Annotation>,
 }
@@ -44,25 +50,28 @@ impl ClassStub {
     pub fn from_classfile(class: &ClassFile) -> Result<Self> {
         let mut class_annotations = class.runtime_visible_annotations.clone();
         class_annotations.extend(class.runtime_invisible_annotations.clone());
-        let signature = match class.signature.as_deref() {
-            Some(sig) => Some(parse_class_signature(sig)?),
-            None => None,
-        };
+        let raw_signature = class.signature.clone();
+        let signature = class
+            .signature
+            .as_deref()
+            .and_then(|sig| parse_class_signature(sig).ok());
 
         let fields = class
             .fields
             .iter()
             .map(|f| {
                 let parsed_descriptor = parse_field_descriptor(&f.descriptor)?;
-                let signature = match f.signature.as_deref() {
-                    Some(sig) => Some(parse_field_signature(sig)?),
-                    None => None,
-                };
+                let raw_signature = f.signature.clone();
+                let signature = f
+                    .signature
+                    .as_deref()
+                    .and_then(|sig| parse_field_signature(sig).ok());
                 Ok(FieldStub {
                     access_flags: f.access_flags,
                     name: f.name.clone(),
                     descriptor: f.descriptor.clone(),
                     parsed_descriptor,
+                    raw_signature,
                     signature,
                     annotations: {
                         let mut annotations = f.runtime_visible_annotations.clone();
@@ -78,15 +87,17 @@ impl ClassStub {
             .iter()
             .map(|m| {
                 let parsed_descriptor = parse_method_descriptor(&m.descriptor)?;
-                let signature = match m.signature.as_deref() {
-                    Some(sig) => Some(parse_method_signature(sig)?),
-                    None => None,
-                };
+                let raw_signature = m.signature.clone();
+                let signature = m
+                    .signature
+                    .as_deref()
+                    .and_then(|sig| parse_method_signature(sig).ok());
                 Ok(MethodStub {
                     access_flags: m.access_flags,
                     name: m.name.clone(),
                     descriptor: m.descriptor.clone(),
                     parsed_descriptor,
+                    raw_signature,
                     signature,
                     annotations: {
                         let mut annotations = m.runtime_visible_annotations.clone();
@@ -102,6 +113,7 @@ impl ClassStub {
             access_flags: class.access_flags,
             super_class: class.super_class.clone(),
             interfaces: class.interfaces.clone(),
+            raw_signature,
             signature,
             annotations: class_annotations,
             inner_classes: class.inner_classes.clone(),
