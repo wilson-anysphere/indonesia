@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use nova_modules::ModuleName;
+
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, ProjectConfig, SourceRoot,
