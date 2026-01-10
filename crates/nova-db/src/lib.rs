@@ -21,6 +21,7 @@ use nova_syntax::{parse as syntax_parse, ParseResult};
 pub struct RootDatabase {
     next_file_id: u32,
     path_to_file: HashMap<PathBuf, FileId>,
+    file_to_path: HashMap<FileId, PathBuf>,
     files: HashMap<FileId, String>,
 }
 
@@ -30,6 +31,10 @@ pub struct RootDatabase {
 /// we only expose raw file text for analysis.
 pub trait Database {
     fn file_content(&self, file_id: FileId) -> &str;
+
+    fn file_path(&self, _file_id: FileId) -> Option<&Path> {
+        None
+    }
 }
 
 impl RootDatabase {
@@ -45,7 +50,8 @@ impl RootDatabase {
 
         let id = FileId::from_raw(self.next_file_id);
         self.next_file_id = self.next_file_id.saturating_add(1);
-        self.path_to_file.insert(path, id);
+        self.path_to_file.insert(path.clone(), id);
+        self.file_to_path.insert(id, path);
         id
     }
 
@@ -56,11 +62,19 @@ impl RootDatabase {
     pub fn file_text(&self, file_id: FileId) -> Option<&str> {
         self.files.get(&file_id).map(String::as_str)
     }
+
+    pub fn path_for_file(&self, file_id: FileId) -> Option<&Path> {
+        self.file_to_path.get(&file_id).map(PathBuf::as_path)
+    }
 }
 
 impl Database for RootDatabase {
     fn file_content(&self, file_id: FileId) -> &str {
         self.file_text(file_id).unwrap_or("")
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<&Path> {
+        self.path_for_file(file_id)
     }
 }
 

@@ -180,7 +180,7 @@ pub fn move_class(
         // If this file lived in the original package (or used a wildcard import of the original
         // package), it may have referenced the moved type without an explicit import. After the
         // move it must import the new FQN.
-        if file_pkg.as_deref() == Some(&pkg.name) || uses_old_star_import {
+        if file_pkg.as_deref() == Some(pkg.name.as_str()) || uses_old_star_import {
             new_content = ensure_import(&new_content, &new_fqn, &params.class_name)?;
         }
 

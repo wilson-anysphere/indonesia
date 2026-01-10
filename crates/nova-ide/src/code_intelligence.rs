@@ -4,12 +4,15 @@
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
 
+use std::collections::HashSet;
+use std::path::Path;
 use std::str::FromStr;
 
 use lsp_types::{
     CompletionItem, CompletionItemKind, DiagnosticSeverity, Hover, HoverContents, InlayHint,
     InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
-    SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp, SignatureInformation,
+    CallHierarchyItem, SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp,
+    SignatureInformation, SymbolKind, TypeHierarchyItem,
 };
 
 #[cfg(feature = "ai")]
@@ -231,6 +234,13 @@ fn member_completions(
             .iter()
             .find(|v| v.name == receiver)
             .map(|v| v.ty.as_str())
+            .or_else(|| {
+                analysis
+                    .fields
+                    .iter()
+                    .find(|f| f.name == receiver)
+                    .map(|f| f.ty.as_str())
+            })
     };
 
     let Some(receiver_type) = receiver_type else {
@@ -292,6 +302,17 @@ fn general_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<Com
         }
     }
 
+    for f in &analysis.fields {
+        if f.name.starts_with(prefix) {
+            items.push(CompletionItem {
+                label: f.name.clone(),
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(f.ty.clone()),
+                ..Default::default()
+            });
+        }
+    }
+
     for kw in ["if", "else", "for", "while", "return", "class", "new"] {
         if kw.starts_with(prefix) {
             items.push(CompletionItem {
@@ -334,7 +355,7 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
     // Prefer calls at the cursor.
     if analysis.calls.iter().any(|c| c.name_span == token.span) {
         let decl = analysis.methods.iter().find(|m| m.name == token.text)?;
-        let uri = lsp_types::Uri::from_str("file:///unknown.java").ok()?;
+        let uri = file_uri(db, file);
         return Some(Location {
             uri,
             range: span_to_lsp_range(text, decl.name_span),
@@ -358,10 +379,7 @@ pub fn find_references(
         _ => return Vec::new(),
     };
 
-    let uri = match lsp_types::Uri::from_str("file:///unknown.java") {
-        Ok(uri) => uri,
-        Err(_) => return Vec::new(),
-    };
+    let uri = file_uri(db, file);
 
     let mut locations = Vec::new();
     if include_declaration {
@@ -385,6 +403,138 @@ pub fn find_references(
     locations
 }
 
+pub fn outgoing_calls(db: &dyn Database, file: FileId, method_name: &str) -> Vec<CallHierarchyItem> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+    let uri = file_uri(db, file);
+
+    let Some(owner) = analysis.methods.iter().find(|m| m.name == method_name) else {
+        return Vec::new();
+    };
+
+    let mut seen = HashSet::<String>::new();
+    let mut items = Vec::new();
+
+    for call in analysis.calls.iter().filter(|c| {
+        owner.body_span.start <= c.name_span.start && c.name_span.end <= owner.body_span.end
+    }) {
+        if !seen.insert(call.name.clone()) {
+            continue;
+        }
+        let Some(target) = analysis.methods.iter().find(|m| m.name == call.name) else {
+            continue;
+        };
+        items.push(call_hierarchy_item(&uri, text, target));
+    }
+
+    items
+}
+
+pub fn incoming_calls(db: &dyn Database, file: FileId, method_name: &str) -> Vec<CallHierarchyItem> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+    let uri = file_uri(db, file);
+
+    let mut seen = HashSet::<String>::new();
+    let mut items = Vec::new();
+
+    for call in analysis.calls.iter().filter(|c| c.name == method_name) {
+        let Some(enclosing) = analysis.methods.iter().find(|m| {
+            m.body_span.start <= call.name_span.start && call.name_span.end <= m.body_span.end
+        }) else {
+            continue;
+        };
+        if !seen.insert(enclosing.name.clone()) {
+            continue;
+        }
+        items.push(call_hierarchy_item(&uri, text, enclosing));
+    }
+
+    items
+}
+
+fn call_hierarchy_item(uri: &lsp_types::Uri, text: &str, method: &MethodDecl) -> CallHierarchyItem {
+    CallHierarchyItem {
+        name: method.name.clone(),
+        kind: SymbolKind::METHOD,
+        tags: None,
+        detail: Some(format_method_signature(method)),
+        uri: uri.clone(),
+        range: span_to_lsp_range(text, method.body_span),
+        selection_range: span_to_lsp_range(text, method.name_span),
+        data: None,
+    }
+}
+
+pub fn type_hierarchy_supertypes(
+    db: &dyn Database,
+    file: FileId,
+    class_name: &str,
+) -> Vec<TypeHierarchyItem> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+    let uri = file_uri(db, file);
+
+    let Some(class) = analysis.classes.iter().find(|c| c.name == class_name) else {
+        return Vec::new();
+    };
+
+    let Some(super_name) = class.extends.as_deref() else {
+        return Vec::new();
+    };
+
+    let Some(super_decl) = analysis.classes.iter().find(|c| c.name == super_name) else {
+        return Vec::new();
+    };
+
+    vec![type_hierarchy_item(&uri, text, super_decl)]
+}
+
+pub fn type_hierarchy_subtypes(
+    db: &dyn Database,
+    file: FileId,
+    class_name: &str,
+) -> Vec<TypeHierarchyItem> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+    let uri = file_uri(db, file);
+
+    analysis
+        .classes
+        .iter()
+        .filter(|c| c.extends.as_deref() == Some(class_name))
+        .map(|c| type_hierarchy_item(&uri, text, c))
+        .collect()
+}
+
+fn type_hierarchy_item(uri: &lsp_types::Uri, text: &str, class: &ClassDecl) -> TypeHierarchyItem {
+    TypeHierarchyItem {
+        name: class.name.clone(),
+        kind: SymbolKind::CLASS,
+        tags: None,
+        detail: class.extends.as_ref().map(|s| format!("extends {s}")),
+        uri: uri.clone(),
+        range: span_to_lsp_range(text, class.name_span),
+        selection_range: span_to_lsp_range(text, class.name_span),
+        data: None,
+    }
+}
+
+fn file_uri(db: &dyn Database, file: FileId) -> lsp_types::Uri {
+    if let Some(path) = db.file_path(file) {
+        if let Some(uri) = file_uri_from_path(path) {
+            return uri;
+        }
+    }
+    lsp_types::Uri::from_str("file:///unknown.java").expect("static URI is valid")
+}
+
+fn file_uri_from_path(path: &Path) -> Option<lsp_types::Uri> {
+    let abs = nova_core::AbsPathBuf::new(path.to_path_buf()).ok()?;
+    let uri = nova_core::path_to_file_uri(&abs).ok()?;
+    lsp_types::Uri::from_str(&uri).ok()
+}
+
 // -----------------------------------------------------------------------------
 // Hover + signature help
 // -----------------------------------------------------------------------------
@@ -404,6 +554,17 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
                 value: format!("```java\n{}: {}\n```", var.name, var.ty),
+            }),
+            range: None,
+        });
+    }
+
+    // Field hover: show type.
+    if let Some(field) = analysis.fields.iter().find(|f| f.name == token.text) {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("```java\n{}: {}\n```", field.name, field.ty),
             }),
             range: None,
         });
@@ -440,6 +601,13 @@ pub fn signature_help(
 
     let method = analysis.methods.iter().find(|m| m.name == call.name)?;
     let sig = format_method_signature(method);
+    let active_parameter = call
+        .arg_starts
+        .iter()
+        .enumerate()
+        .filter(|(_, start)| **start <= offset)
+        .map(|(idx, _)| idx as u32)
+        .last();
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {
             label: sig,
@@ -448,7 +616,7 @@ pub fn signature_help(
             active_parameter: None,
         }],
         active_signature: Some(0),
-        active_parameter: Some(0),
+        active_parameter: active_parameter.or(Some(0)),
     })
 }
 
@@ -540,6 +708,12 @@ pub fn semantic_tokens(db: &dyn Database, file: FileId) -> Vec<SemanticToken> {
             .any(|m| m.name_span == token.span && m.name == token.text)
         {
             SemanticTokenType::METHOD
+        } else if analysis
+            .fields
+            .iter()
+            .any(|f| f.name_span == token.span && f.name == token.text)
+        {
+            SemanticTokenType::PROPERTY
         } else if analysis
             .vars
             .iter()
@@ -651,10 +825,12 @@ struct Token {
 struct ClassDecl {
     name: String,
     name_span: Span,
+    extends: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 struct ParamDecl {
+    ty: String,
     name: String,
     name_span: Span,
 }
@@ -665,6 +841,13 @@ struct MethodDecl {
     name_span: Span,
     params: Vec<ParamDecl>,
     body_span: Span,
+}
+
+#[derive(Clone, Debug)]
+struct FieldDecl {
+    name: String,
+    name_span: Span,
+    ty: String,
 }
 
 #[derive(Clone, Debug)]
@@ -688,6 +871,7 @@ struct CallExpr {
 struct Analysis {
     classes: Vec<ClassDecl>,
     methods: Vec<MethodDecl>,
+    fields: Vec<FieldDecl>,
     vars: Vec<VarDecl>,
     calls: Vec<CallExpr>,
     tokens: Vec<Token>,
@@ -700,15 +884,42 @@ fn analyze(text: &str) -> Analysis {
         ..Default::default()
     };
 
-    // Classes.
-    for window in tokens.windows(2) {
-        let [a, b] = window else { continue };
-        if a.kind == TokenKind::Ident && a.text == "class" && b.kind == TokenKind::Ident {
+    // Classes (+ very small `extends` support for type hierarchy).
+    let mut i = 0usize;
+    while i + 1 < tokens.len() {
+        if tokens[i].kind == TokenKind::Ident && tokens[i].text == "class" {
+            let name_tok = match tokens.get(i + 1) {
+                Some(tok) if tok.kind == TokenKind::Ident => tok,
+                _ => {
+                    i += 1;
+                    continue;
+                }
+            };
+
+            let mut extends: Option<String> = None;
+            let mut j = i + 2;
+            while j + 1 < tokens.len() {
+                let tok = &tokens[j];
+                if tok.kind == TokenKind::Symbol('{') {
+                    break;
+                }
+                if tok.kind == TokenKind::Ident && tok.text == "extends" {
+                    if let Some(name) = tokens.get(j + 1).filter(|t| t.kind == TokenKind::Ident) {
+                        extends = Some(name.text.clone());
+                    }
+                }
+                j += 1;
+            }
+
             analysis.classes.push(ClassDecl {
-                name: b.text.clone(),
-                name_span: b.span,
+                name: name_tok.text.clone(),
+                name_span: name_tok.span,
+                extends,
             });
+            i = j;
+            continue;
         }
+        i += 1;
     }
 
     // Methods (very small heuristic): <ret> <name> '(' ... ')' '{' body '}'.
@@ -758,6 +969,47 @@ fn analyze(text: &str) -> Analysis {
             }
         }
 
+        i += 1;
+    }
+
+    // Fields: (modifiers)* <type> <name> (';' | '=')
+    // Restrict to class-body brace depth == 1.
+    let mut i = 0usize;
+    let mut brace_depth: i32 = 0;
+    while i + 2 < tokens.len() {
+        if brace_depth == 1 {
+            let mut j = i;
+            while let Some(tok) = tokens.get(j) {
+                if tok.kind == TokenKind::Ident && is_field_modifier(&tok.text) {
+                    j += 1;
+                    continue;
+                }
+                break;
+            }
+            if j + 2 < tokens.len() {
+                let ty = &tokens[j];
+                let name = &tokens[j + 1];
+                let next = &tokens[j + 2];
+                if ty.kind == TokenKind::Ident
+                    && name.kind == TokenKind::Ident
+                    && matches!(next.kind, TokenKind::Symbol(';') | TokenKind::Symbol('='))
+                {
+                    analysis.fields.push(FieldDecl {
+                        name: name.text.clone(),
+                        name_span: name.span,
+                        ty: ty.text.clone(),
+                    });
+                    i = j + 3;
+                    continue;
+                }
+            }
+        }
+
+        match tokens[i].kind {
+            TokenKind::Symbol('{') => brace_depth += 1,
+            TokenKind::Symbol('}') => brace_depth -= 1,
+            _ => {}
+        }
         i += 1;
     }
 
@@ -1027,6 +1279,7 @@ fn parse_params(tokens: &[Token]) -> Vec<ParamDecl> {
         let name = &tokens[i + 1];
         if ty.kind == TokenKind::Ident && name.kind == TokenKind::Ident {
             out.push(ParamDecl {
+                ty: ty.text.clone(),
                 name: name.text.clone(),
                 name_span: name.span,
             });
@@ -1065,10 +1318,17 @@ fn format_method_signature(method: &MethodDecl) -> String {
     let params = method
         .params
         .iter()
-        .map(|p| p.name.as_str())
+        .map(|p| format!("{} {}", p.ty, p.name))
         .collect::<Vec<_>>()
         .join(", ");
     format!("{}({})", method.name, params)
+}
+
+fn is_field_modifier(ident: &str) -> bool {
+    matches!(
+        ident,
+        "public" | "private" | "protected" | "static" | "final" | "transient" | "volatile"
+    )
 }
 
 // -----------------------------------------------------------------------------
