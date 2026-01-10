@@ -209,6 +209,8 @@ pub enum SyntaxKind {
     DoWhileStatement,
     SynchronizedStatement,
     TryStatement,
+    ResourceSpecification,
+    Resource,
     CatchClause,
     FinallyClause,
     AssertStatement,

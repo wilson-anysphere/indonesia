@@ -134,3 +134,30 @@ fn parse_annotation_type_declaration() {
         .any(|n| n.kind() == SyntaxKind::AnnotationTypeDeclaration);
     assert!(has_annotation_type);
 }
+
+#[test]
+fn parse_try_with_resources_and_multi_catch() {
+    let input = r#"
+class Foo {
+  void m() {
+    try (var x = open(); y) {
+      throw new RuntimeException();
+    } catch (IOException | RuntimeException e) {
+      return;
+    } finally {
+      assert true;
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::TryStatement));
+    assert!(kinds.contains(&SyntaxKind::ResourceSpecification));
+    assert!(kinds.contains(&SyntaxKind::Resource));
+    assert!(kinds.contains(&SyntaxKind::CatchClause));
+    assert!(kinds.contains(&SyntaxKind::FinallyClause));
+}

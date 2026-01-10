@@ -727,22 +727,23 @@ impl<'a> Parser<'a> {
             .start_node_at(checkpoint, SyntaxKind::TryStatement.into());
         self.expect(SyntaxKind::TryKw, "expected `try`");
         if self.at(SyntaxKind::LParen) {
-            // Resource specification: consume tokens until matching ')'.
-            self.builder.start_node(SyntaxKind::ForHeader.into());
-            self.bump();
-            while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
-                self.bump_any();
-            }
-            self.expect(SyntaxKind::RParen, "expected `)`");
-            self.builder.finish_node();
+            self.parse_resource_specification();
         }
         self.parse_block();
         while self.at(SyntaxKind::CatchKw) {
             self.builder.start_node(SyntaxKind::CatchClause.into());
             self.bump();
             self.expect(SyntaxKind::LParen, "expected `(` after catch");
+            // Multi-catch: `catch (A | B e)`.
+            if self.at(SyntaxKind::FinalKw) || self.at(SyntaxKind::At) {
+                self.parse_modifiers();
+            }
             if self.at_type_start() {
                 self.parse_type();
+                while self.at(SyntaxKind::Pipe) {
+                    self.bump();
+                    self.parse_type();
+                }
             }
             self.expect_ident_like("expected catch parameter name");
             self.expect(SyntaxKind::RParen, "expected `)` after catch parameter");
@@ -756,6 +757,33 @@ impl<'a> Parser<'a> {
             self.builder.finish_node();
         }
         self.builder.finish_node();
+    }
+
+    fn parse_resource_specification(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::ResourceSpecification.into());
+        self.expect(SyntaxKind::LParen, "expected `(` after try");
+        while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
+            self.builder.start_node(SyntaxKind::Resource.into());
+            if self.at_local_var_decl_start() {
+                self.parse_modifiers();
+                self.parse_type();
+                // Try-with-resources allows only a single declarator.
+                self.parse_variable_declarator();
+            } else {
+                self.parse_expression(0);
+            }
+            self.builder.finish_node(); // Resource
+
+            if self.at(SyntaxKind::Semicolon) {
+                self.bump();
+                // Trailing semicolon is allowed.
+                continue;
+            }
+            break;
+        }
+        self.expect(SyntaxKind::RParen, "expected `)` after resource specification");
+        self.builder.finish_node(); // ResourceSpecification
     }
 
     fn parse_for_header_contents(&mut self) {
