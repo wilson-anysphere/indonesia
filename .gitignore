@@ -23,7 +23,7 @@ test-projects/**
 !test-projects/README.md
 !test-projects/pins.toml
 
-# Nova persistent cache
+# Legacy workspace-local cache (the default persistent cache lives in `~/.nova/cache`)
 **/.nova-cache/
 
 **/*.rs.bk

@@ -28,7 +28,8 @@ cargo run -p nova-cli -- --help
 ### Commands
 
 ```bash
-# Index a project and warm `.nova-cache`
+# Index a project and warm the persistent cache
+# (defaults to `~/.nova/cache/<project-hash>/`, override with `NOVA_CACHE_DIR`)
 nova index <path>
 
 # Run diagnostics for a project (or a single file)
@@ -44,7 +45,7 @@ nova cache status
 nova cache warm --path <workspace>
 nova cache clean --path <workspace>
 
-# Performance report (reads `.nova-cache/perf.json`)
+# Performance report (reads `<cache_root>/perf.json`)
 nova perf report --path <workspace>
 
 # Debug parsing for a single file

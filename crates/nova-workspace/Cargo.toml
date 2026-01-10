@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+nova-cache = { path = "../nova-cache" }
+nova-index = { path = "../nova-index" }
+nova-project = { path = "../nova-project" }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

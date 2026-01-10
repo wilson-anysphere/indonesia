@@ -5,7 +5,11 @@ use serde::Serialize;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "nova", version, about = "Nova CLI (indexing, diagnostics, cache, perf)")]
+#[command(
+    name = "nova",
+    version,
+    about = "Nova CLI (indexing, diagnostics, cache, perf)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -19,7 +23,7 @@ enum Command {
     Diagnostics(DiagnosticsArgs),
     /// Workspace symbol search (defaults to current directory)
     Symbols(SymbolsArgs),
-    /// Manage persistent cache stored in `.nova-cache`
+    /// Manage persistent cache (defaults to `~/.nova/cache`, override with `NOVA_CACHE_DIR`)
     Cache(CacheArgs),
     /// Print performance metrics captured during indexing
     Perf(PerfArgs),
@@ -140,9 +144,10 @@ fn run(cli: Cli) -> Result<i32> {
             let ws = Workspace::open(&args.path)?;
             match args.command {
                 CacheCommand::Clean => {
+                    let cache_root = ws.cache_root()?;
                     ws.cache_clean()?;
                     if !args.json {
-                        println!("cache: cleaned {}", ws.cache_dir().display());
+                        println!("cache: cleaned {}", cache_root.display());
                     } else {
                         print_output(&serde_json::json!({ "ok": true }), true)?;
                     }
@@ -167,10 +172,14 @@ fn run(cli: Cli) -> Result<i32> {
                         print_output(&PerfEnvelope { perf }, true)?;
                     } else if let Some(perf) = perf {
                         println!("perf:");
-                        println!("  files_scanned: {}", perf.files_scanned);
-                        println!("  bytes_scanned: {}", perf.bytes_scanned);
+                        println!("  files_total: {}", perf.files_total);
+                        println!("  files_indexed: {}", perf.files_indexed);
+                        println!("  bytes_indexed: {}", perf.bytes_indexed);
                         println!("  symbols_indexed: {}", perf.symbols_indexed);
                         println!("  elapsed_ms: {}", perf.elapsed_ms);
+                        if let Some(rss) = perf.rss_bytes {
+                            println!("  rss_bytes: {}", rss);
+                        }
                     } else {
                         println!("perf: no cached metrics found (run `nova index <path>` or `nova cache warm`)");
                     }
@@ -202,10 +211,16 @@ fn print_output<T: Serialize + 'static>(value: &T, json: bool) -> Result<()> {
         let any = value as &dyn std::any::Any;
         if let Some(report) = any.downcast_ref::<IndexReport>() {
             println!("indexed: {}", report.root.display());
-            println!("  files_scanned: {}", report.metrics.files_scanned);
-            println!("  bytes_scanned: {}", report.metrics.bytes_scanned);
+            println!("  project_hash: {}", report.project_hash);
+            println!("  cache_root: {}", report.cache_root.display());
+            println!("  files_total: {}", report.metrics.files_total);
+            println!("  files_indexed: {}", report.metrics.files_indexed);
+            println!("  bytes_indexed: {}", report.metrics.bytes_indexed);
             println!("  symbols_indexed: {}", report.metrics.symbols_indexed);
             println!("  elapsed_ms: {}", report.metrics.elapsed_ms);
+            if let Some(rss) = report.metrics.rss_bytes {
+                println!("  rss_bytes: {}", rss);
+            }
         } else if let Some(report) = any.downcast_ref::<DiagnosticsReport>() {
             for d in &report.diagnostics {
                 println!(
@@ -248,17 +263,25 @@ fn print_cache_status(status: &CacheStatus, json: bool) -> Result<()> {
     }
 
     println!("cache:");
-    println!("  dir: {}", status.cache_dir.display());
-    println!("  exists: {}", status.exists);
-    println!("  index: {}", status.index_path.display());
-    if let Some(bytes) = status.index_bytes {
-        println!("    bytes: {bytes}");
-    } else {
-        println!("    bytes: (missing)");
+    println!("  project_root: {}", status.project_root.display());
+    println!("  project_hash: {}", status.project_hash);
+    println!("  root: {}", status.cache_root.display());
+    println!("  metadata: {}", status.metadata_path.display());
+    println!("    present: {}", status.metadata.is_some());
+    if let Some(meta) = &status.metadata {
+        println!("    compatible: {}", meta.is_compatible());
+        println!("    last_updated_millis: {}", meta.last_updated_millis);
     }
-    if let Some(symbols) = status.symbols_indexed {
-        println!("    symbols_indexed: {symbols}");
+
+    println!("  indexes:");
+    for idx in &status.indexes {
+        let bytes = idx
+            .bytes
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "(missing)".to_string());
+        println!("    {}: {} ({})", idx.name, idx.path.display(), bytes);
     }
+
     println!("  perf: {}", status.perf_path.display());
     if let Some(bytes) = status.perf_bytes {
         println!("    bytes: {bytes}");
@@ -266,10 +289,14 @@ fn print_cache_status(status: &CacheStatus, json: bool) -> Result<()> {
         println!("    bytes: (missing)");
     }
     if let Some(perf) = &status.last_perf {
-        println!("    files_scanned: {}", perf.files_scanned);
-        println!("    bytes_scanned: {}", perf.bytes_scanned);
+        println!("    files_total: {}", perf.files_total);
+        println!("    files_indexed: {}", perf.files_indexed);
+        println!("    bytes_indexed: {}", perf.bytes_indexed);
         println!("    symbols_indexed: {}", perf.symbols_indexed);
         println!("    elapsed_ms: {}", perf.elapsed_ms);
+        if let Some(rss) = perf.rss_bytes {
+            println!("    rss_bytes: {}", rss);
+        }
     }
 
     Ok(())

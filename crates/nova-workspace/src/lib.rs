@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
+use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
+use nova_index::{load_indexes, save_indexes, ProjectIndexes, SymbolLocation};
+use nova_project::ProjectError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -39,8 +41,17 @@ impl Workspace {
         &self.root
     }
 
-    pub fn cache_dir(&self) -> PathBuf {
-        self.root.join(".nova-cache")
+    pub fn cache_root(&self) -> Result<PathBuf> {
+        Ok(self.open_cache_dir()?.root().to_path_buf())
+    }
+
+    fn open_cache_dir(&self) -> Result<CacheDir> {
+        CacheDir::new(&self.root, CacheConfig::from_env()).with_context(|| {
+            format!(
+                "failed to open cache dir for project at {}",
+                self.root.display()
+            )
+        })
     }
 
     fn java_files_in(&self, root: &Path) -> Result<Vec<PathBuf>> {
@@ -59,81 +70,150 @@ impl Workspace {
         Ok(files)
     }
 
+    fn project_java_files(&self) -> Result<Vec<PathBuf>> {
+        match nova_project::load_project(&self.root) {
+            Ok(config) => {
+                let mut files = Vec::new();
+                for root in config.source_roots {
+                    files.extend(self.java_files_in(&root.path)?);
+                }
+                files.sort();
+                files.dedup();
+                Ok(files)
+            }
+            Err(ProjectError::UnknownProjectType { .. }) => self.java_files_in(&self.root),
+            Err(err) => Err(anyhow::anyhow!(err))
+                .with_context(|| format!("failed to load project at {}", self.root.display())),
+        }
+    }
+
     pub fn index(&self) -> Result<IndexReport> {
-        self.build_index(self.root.as_path())
+        let (snapshot, cache_dir, _indexes, metrics) = self.build_indexes()?;
+        Ok(IndexReport {
+            root: snapshot.project_root().to_path_buf(),
+            project_hash: snapshot.project_hash().as_str().to_string(),
+            cache_root: cache_dir.root().to_path_buf(),
+            metrics,
+        })
     }
 
-    /// Index a project and persist the resulting artifacts into `.nova-cache`.
+    /// Index a project and persist the resulting artifacts into Nova's persistent cache.
     pub fn index_and_write_cache(&self) -> Result<IndexReport> {
-        let report = self.index()?;
-        self.write_cache_index(&report.index)?;
-        self.write_cache_perf(&report.metrics)?;
-        Ok(report)
+        let (snapshot, cache_dir, indexes, metrics) = self.build_indexes()?;
+        save_indexes(&cache_dir, &snapshot, &indexes).context("failed to persist indexes")?;
+        self.write_cache_perf(&cache_dir, &metrics)?;
+        Ok(IndexReport {
+            root: snapshot.project_root().to_path_buf(),
+            project_hash: snapshot.project_hash().as_str().to_string(),
+            cache_root: cache_dir.root().to_path_buf(),
+            metrics,
+        })
     }
 
-    fn build_index(&self, root: &Path) -> Result<IndexReport> {
+    fn build_indexes(&self) -> Result<(ProjectSnapshot, CacheDir, ProjectIndexes, PerfMetrics)> {
         let start = Instant::now();
 
+        let files = self.project_java_files()?;
+        let snapshot = ProjectSnapshot::new(&self.root, files).with_context(|| {
+            format!(
+                "failed to build project snapshot for {}",
+                self.root.display()
+            )
+        })?;
+
+        let cache_dir = self.open_cache_dir()?;
+
+        let loaded =
+            load_indexes(&cache_dir, &snapshot).context("failed to load cached indexes")?;
+
+        let (mut indexes, files_to_index) = match loaded {
+            Some(loaded) => (loaded.indexes, loaded.invalidated_files),
+            None => (
+                ProjectIndexes::default(),
+                snapshot.file_fingerprints().keys().cloned().collect(),
+            ),
+        };
+
+        let (files_indexed, bytes_indexed) =
+            self.index_files(&snapshot, &mut indexes, &files_to_index)?;
+
+        let metrics = PerfMetrics {
+            files_total: snapshot.file_fingerprints().len(),
+            files_indexed,
+            bytes_indexed,
+            symbols_indexed: count_symbols(&indexes),
+            elapsed_ms: start.elapsed().as_millis(),
+            rss_bytes: current_rss_bytes(),
+        };
+
+        Ok((snapshot, cache_dir, indexes, metrics))
+    }
+
+    fn index_files(
+        &self,
+        snapshot: &ProjectSnapshot,
+        indexes: &mut ProjectIndexes,
+        files_to_index: &[String],
+    ) -> Result<(usize, u64)> {
         let type_re = Regex::new(
             r"(?m)^\s*(?:public|protected|private)?\s*(?:abstract\s+|final\s+)?(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)",
         )?;
         let method_re = Regex::new(
             r"(?m)^\s*(?:public|protected|private)?\s*(?:static\s+)?(?:final\s+)?(?:synchronized\s+)?[A-Za-z0-9_<>,\[\]\s]+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
         )?;
+        let annotation_re = Regex::new(r"(?m)@([A-Za-z_][A-Za-z0-9_]*)")?;
 
-        let mut symbols = Vec::new();
-        let mut files_scanned = 0usize;
-        let mut bytes_scanned = 0u64;
+        let mut files_indexed = 0usize;
+        let mut bytes_indexed = 0u64;
 
-        for file in self.java_files_in(root)? {
-            files_scanned += 1;
-            let content = fs::read_to_string(&file)
-                .with_context(|| format!("failed to read {}", file.display()))?;
-            bytes_scanned += content.len() as u64;
+        for file in files_to_index {
+            let full_path = snapshot.project_root().join(file);
+            let content = fs::read_to_string(&full_path)
+                .with_context(|| format!("failed to read {}", full_path.display()))?;
+            files_indexed += 1;
+            bytes_indexed += content.len() as u64;
+
             for cap in type_re.captures_iter(&content) {
-                let kind = match cap.get(1).map(|m| m.as_str()) {
-                    Some("class") => SymbolKind::Class,
-                    Some("interface") => SymbolKind::Interface,
-                    Some("enum") => SymbolKind::Enum,
-                    Some("record") => SymbolKind::Record,
-                    _ => SymbolKind::Unknown,
-                };
                 let m = cap.get(2).expect("regex capture");
                 let (line, column) = line_col_at(&content, m.start());
-                symbols.push(Symbol {
-                    name: m.as_str().to_string(),
-                    kind,
-                    file: file.clone(),
-                    line,
-                    column,
-                });
+                indexes.symbols.insert(
+                    m.as_str(),
+                    SymbolLocation {
+                        file: file.clone(),
+                        line: as_u32(line),
+                        column: as_u32(column),
+                    },
+                );
             }
+
             for cap in method_re.captures_iter(&content) {
                 let m = cap.get(1).expect("regex capture");
                 let (line, column) = line_col_at(&content, m.start());
-                symbols.push(Symbol {
-                    name: m.as_str().to_string(),
-                    kind: SymbolKind::Method,
-                    file: file.clone(),
-                    line,
-                    column,
-                });
+                indexes.symbols.insert(
+                    m.as_str(),
+                    SymbolLocation {
+                        file: file.clone(),
+                        line: as_u32(line),
+                        column: as_u32(column),
+                    },
+                );
+            }
+
+            for cap in annotation_re.captures_iter(&content) {
+                let m = cap.get(1).expect("regex capture");
+                let (line, column) = line_col_at(&content, m.start().saturating_sub(1));
+                indexes.annotations.insert(
+                    format!("@{}", m.as_str()),
+                    nova_index::AnnotationLocation {
+                        file: file.clone(),
+                        line: as_u32(line),
+                        column: as_u32(column),
+                    },
+                );
             }
         }
 
-        let elapsed = start.elapsed();
-        let index = Index { symbols };
-        let metrics = PerfMetrics {
-            files_scanned,
-            bytes_scanned,
-            symbols_indexed: index.symbols.len(),
-            elapsed_ms: elapsed.as_millis(),
-        };
-        Ok(IndexReport {
-            root: root.to_path_buf(),
-            index,
-            metrics,
-        })
+        Ok((files_indexed, bytes_indexed))
     }
 
     pub fn diagnostics(&self, path: impl AsRef<Path>) -> Result<DiagnosticsReport> {
@@ -143,7 +223,7 @@ impl Workspace {
         let mut diagnostics = Vec::new();
 
         let files = if meta.is_dir() {
-            self.java_files_in(path)?
+            self.project_java_files()?
         } else {
             vec![path.to_path_buf()]
         };
@@ -193,27 +273,24 @@ impl Workspace {
         })
     }
 
-    pub fn workspace_symbols(&self, query: &str) -> Result<Vec<Symbol>> {
-        // Prefer cached index if it exists, falling back to an in-memory scan.
-        let index = if self.cache_index_path().exists() {
-            match fs::read_to_string(self.cache_index_path()) {
-                Ok(data) => serde_json::from_str::<Index>(&data).unwrap_or_else(|_| Index {
-                    symbols: Vec::new(),
-                }),
-                Err(_) => Index {
-                    symbols: Vec::new(),
-                },
-            }
-        } else {
-            self.index()?.index
-        };
+    pub fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>> {
+        // Keep the symbol index up to date by running the incremental indexer
+        // and persisting the updated indexes into the on-disk cache.
+        let (snapshot, cache_dir, indexes, metrics) = self.build_indexes()?;
+        save_indexes(&cache_dir, &snapshot, &indexes).context("failed to persist indexes")?;
+        self.write_cache_perf(&cache_dir, &metrics)?;
 
         let q = query.to_lowercase();
-        Ok(index
-            .symbols
-            .into_iter()
-            .filter(|s| s.name.to_lowercase().contains(&q))
-            .collect())
+        let mut results = Vec::new();
+        for (name, locations) in &indexes.symbols.symbols {
+            if name.to_lowercase().contains(&q) {
+                results.push(WorkspaceSymbol {
+                    name: name.clone(),
+                    locations: locations.clone(),
+                });
+            }
+        }
+        Ok(results)
     }
 
     pub fn parse_file(&self, file: impl AsRef<Path>) -> Result<ParseResult> {
@@ -224,61 +301,74 @@ impl Workspace {
     }
 
     pub fn cache_status(&self) -> Result<CacheStatus> {
-        let cache_dir = self.cache_dir();
-        let index_path = self.cache_index_path();
-        let perf_path = self.cache_perf_path();
+        let cache_dir = self.open_cache_dir()?;
 
-        let mut status = CacheStatus {
-            cache_dir,
-            exists: false,
-            index_path,
-            index_bytes: None,
-            symbols_indexed: None,
-            perf_path,
-            perf_bytes: None,
-            last_perf: None,
+        let metadata_path = cache_dir.metadata_path();
+        let metadata = if metadata_path.exists() {
+            CacheMetadata::load(&metadata_path).ok()
+        } else {
+            None
         };
 
-        status.exists = status.cache_dir.exists();
-
-        if let Ok(meta) = fs::metadata(&status.index_path) {
-            status.index_bytes = Some(meta.len());
-            if let Ok(data) = fs::read_to_string(&status.index_path) {
-                if let Ok(index) = serde_json::from_str::<Index>(&data) {
-                    status.symbols_indexed = Some(index.symbols.len());
-                }
-            }
+        let mut indexes = Vec::new();
+        for (name, path) in [
+            ("symbols", cache_dir.indexes_dir().join("symbols.idx")),
+            ("references", cache_dir.indexes_dir().join("references.idx")),
+            (
+                "inheritance",
+                cache_dir.indexes_dir().join("inheritance.idx"),
+            ),
+            (
+                "annotations",
+                cache_dir.indexes_dir().join("annotations.idx"),
+            ),
+        ] {
+            let bytes = fs::metadata(&path).ok().map(|m| m.len());
+            indexes.push(CacheArtifact {
+                name: name.to_string(),
+                path,
+                bytes,
+            });
         }
 
-        if let Ok(meta) = fs::metadata(&status.perf_path) {
-            status.perf_bytes = Some(meta.len());
-            if let Ok(data) = fs::read_to_string(&status.perf_path) {
-                if let Ok(perf) = serde_json::from_str::<PerfMetrics>(&data) {
-                    status.last_perf = Some(perf);
-                }
-            }
-        }
+        let perf_path = cache_dir.root().join("perf.json");
+        let perf_bytes = fs::metadata(&perf_path).ok().map(|m| m.len());
+        let last_perf = self.read_cache_perf(&cache_dir)?;
 
-        Ok(status)
+        Ok(CacheStatus {
+            project_root: cache_dir.project_root().to_path_buf(),
+            project_hash: cache_dir.project_hash().as_str().to_string(),
+            cache_root: cache_dir.root().to_path_buf(),
+            metadata_path,
+            metadata,
+            indexes,
+            perf_path,
+            perf_bytes,
+            last_perf,
+        })
     }
 
     pub fn cache_clean(&self) -> Result<()> {
-        let dir = self.cache_dir();
-        if dir.exists() {
-            fs::remove_dir_all(&dir)
-                .with_context(|| format!("failed to remove {}", dir.display()))?;
+        let cache_dir = self.open_cache_dir()?;
+        let root = cache_dir.root();
+        if root.exists() {
+            fs::remove_dir_all(root)
+                .with_context(|| format!("failed to remove {}", root.display()))?;
         }
         Ok(())
     }
 
     pub fn cache_warm(&self) -> Result<IndexReport> {
-        fs::create_dir_all(self.cache_dir())
-            .with_context(|| format!("failed to create {}", self.cache_dir().display()))?;
         self.index_and_write_cache()
     }
 
     pub fn perf_report(&self) -> Result<Option<PerfMetrics>> {
-        let path = self.cache_perf_path();
+        let cache_dir = self.open_cache_dir()?;
+        self.read_cache_perf(&cache_dir)
+    }
+
+    fn read_cache_perf(&self, cache_dir: &CacheDir) -> Result<Option<PerfMetrics>> {
+        let path = cache_dir.root().join("perf.json");
         if !path.exists() {
             return Ok(None);
         }
@@ -290,85 +380,41 @@ impl Workspace {
         ))
     }
 
-    fn cache_index_path(&self) -> PathBuf {
-        self.cache_dir().join("index.json")
-    }
-
-    fn cache_perf_path(&self) -> PathBuf {
-        self.cache_dir().join("perf.json")
-    }
-
-    fn write_cache_index(&self, index: &Index) -> Result<()> {
-        fs::create_dir_all(self.cache_dir())
-            .with_context(|| format!("failed to create {}", self.cache_dir().display()))?;
-        let path = self.cache_index_path();
-        let json = serde_json::to_string_pretty(index)?;
-        fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
+    fn write_cache_perf(&self, cache_dir: &CacheDir, metrics: &PerfMetrics) -> Result<()> {
+        let path = cache_dir.root().join("perf.json");
+        let json = serde_json::to_vec_pretty(metrics)?;
+        nova_cache::atomic_write(&path, &json)
+            .with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
     }
-
-    fn write_cache_perf(&self, metrics: &PerfMetrics) -> Result<()> {
-        fs::create_dir_all(self.cache_dir())
-            .with_context(|| format!("failed to create {}", self.cache_dir().display()))?;
-        let path = self.cache_perf_path();
-        let json = serde_json::to_string_pretty(metrics)?;
-        fs::write(&path, json).with_context(|| format!("failed to write {}", path.display()))?;
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Index {
-    pub symbols: Vec<Symbol>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexReport {
     pub root: PathBuf,
-    pub index: Index,
+    pub project_hash: String,
+    pub cache_root: PathBuf,
     pub metrics: PerfMetrics,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct PerfMetrics {
-    pub files_scanned: usize,
-    pub bytes_scanned: u64,
+    pub files_total: usize,
+    #[serde(alias = "files_scanned")]
+    pub files_indexed: usize,
+    #[serde(alias = "bytes_scanned")]
+    pub bytes_indexed: u64,
     pub symbols_indexed: usize,
     pub elapsed_ms: u128,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SymbolKind {
-    Class,
-    Interface,
-    Enum,
-    Record,
-    Method,
-    Unknown,
-}
-
-impl fmt::Display for SymbolKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let s = match self {
-            SymbolKind::Class => "class",
-            SymbolKind::Interface => "interface",
-            SymbolKind::Enum => "enum",
-            SymbolKind::Record => "record",
-            SymbolKind::Method => "method",
-            SymbolKind::Unknown => "unknown",
-        };
-        f.write_str(s)
-    }
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rss_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Symbol {
+pub struct WorkspaceSymbol {
     pub name: String,
-    pub kind: SymbolKind,
-    pub file: PathBuf,
-    pub line: usize,
-    pub column: usize,
+    pub locations: Vec<SymbolLocation>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -417,14 +463,26 @@ pub struct Diagnostic {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheStatus {
-    pub cache_dir: PathBuf,
-    pub exists: bool,
-    pub index_path: PathBuf,
-    pub index_bytes: Option<u64>,
-    pub symbols_indexed: Option<usize>,
+    pub project_root: PathBuf,
+    pub project_hash: String,
+    pub cache_root: PathBuf,
+    pub metadata_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<CacheMetadata>,
+    pub indexes: Vec<CacheArtifact>,
     pub perf_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub perf_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_perf: Option<PerfMetrics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheArtifact {
+    pub name: String,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -552,10 +610,7 @@ fn parse_brace_tree(text: &str) -> ParseResult {
                             stack.push((open, open_idx));
                             let (line, col) = line_col_at(text, i);
                             errors.push(ParseError {
-                                message: format!(
-                                    "mismatched closing {}",
-                                    delim_name(close)
-                                ),
+                                message: format!("mismatched closing {}", delim_name(close)),
                                 line,
                                 column: col,
                             });
@@ -645,4 +700,37 @@ fn line_col_at(text: &str, byte_idx: usize) -> (usize, usize) {
     }
 
     (line, col)
+}
+
+fn as_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+fn count_symbols(indexes: &ProjectIndexes) -> usize {
+    indexes
+        .symbols
+        .symbols
+        .values()
+        .map(|locations| locations.len())
+        .sum()
+}
+
+fn current_rss_bytes() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            let line = line.trim_start();
+            if let Some(rest) = line.strip_prefix("VmRSS:") {
+                let kb = rest.trim().split_whitespace().next()?.parse::<u64>().ok()?;
+                return Some(kb.saturating_mul(1024));
+            }
+        }
+        None
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
