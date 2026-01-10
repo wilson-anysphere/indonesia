@@ -5,6 +5,21 @@
 //! - derived queries for parsing and per-file structural summaries
 //! - snapshot-based concurrency (via `ra_salsa::ParallelDatabase`)
 //! - lightweight instrumentation (query timings + optional `tracing`)
+//!
+//! ## Usage sketch
+//!
+//! ```rust
+//! use nova_db::salsa::NovaSyntax;
+//! use nova_db::{FileId, SalsaDatabase};
+//!
+//! let db = SalsaDatabase::new();
+//! let file = FileId::from_raw(0);
+//! db.set_file_text(file, "class Foo {}".to_string());
+//!
+//! let snap = db.snapshot();
+//! let parse = snap.parse(file);
+//! assert!(parse.errors.is_empty());
+//! ```
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -28,6 +43,16 @@ static INTERRUPTIBLE_WORK_STARTED: std::sync::atomic::AtomicBool =
 /// Database functionality needed by query implementations to record timing stats.
 pub trait HasQueryStats {
     fn record_query_stat(&self, query_name: &'static str, duration: Duration);
+}
+
+/// Runs `f` and catches any Salsa cancellation.
+///
+/// This is a convenience wrapper around `ra_salsa::Cancelled::catch`.
+pub fn catch_cancelled<F, T>(f: F) -> Result<T, ra_salsa::Cancelled>
+where
+    F: FnOnce() -> T + std::panic::UnwindSafe,
+{
+    ra_salsa::Cancelled::catch(f)
 }
 
 #[ra_salsa::query_group(NovaInputsStorage)]
@@ -332,6 +357,14 @@ impl Database {
     pub fn with_snapshot<T>(&self, f: impl FnOnce(&Snapshot) -> T) -> T {
         let snap = self.snapshot();
         f(&snap)
+    }
+
+    pub fn with_snapshot_catch_cancelled<T>(
+        &self,
+        f: impl FnOnce(&Snapshot) -> T + std::panic::UnwindSafe,
+    ) -> Result<T, ra_salsa::Cancelled> {
+        let snap = self.snapshot();
+        catch_cancelled(|| f(&snap))
     }
 
     pub fn query_stats(&self) -> QueryStats {

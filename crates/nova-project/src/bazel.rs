@@ -1,12 +1,11 @@
 use std::path::Path;
 
-use nova_modules::ModuleName;
-
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, ProjectConfig, SourceRoot,
     SourceRootKind, SourceRootOrigin,
 };
+use nova_modules::ModuleName;
 
 pub(crate) fn load_bazel_project(
     root: &Path,
