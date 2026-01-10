@@ -94,7 +94,7 @@ impl AstArtifactCache {
         file_path: &str,
         fingerprint: &Fingerprint,
     ) -> Result<Option<FileAstArtifacts>, CacheError> {
-        let metadata = self.read_metadata()?;
+        let metadata = self.read_metadata();
         if !metadata.is_compatible() {
             return Ok(None);
         }
@@ -113,8 +113,14 @@ impl AstArtifactCache {
             return Ok(None);
         }
 
-        let bytes = std::fs::read(artifact_path)?;
-        let persisted: PersistedAstArtifactsOwned = decode(&bytes)?;
+        let bytes = match std::fs::read(artifact_path) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(None),
+        };
+        let persisted: PersistedAstArtifactsOwned = match decode(&bytes) {
+            Ok(persisted) => persisted,
+            Err(_) => return Ok(None),
+        };
 
         if persisted.schema_version != AST_ARTIFACT_SCHEMA_VERSION {
             return Ok(None);
@@ -155,7 +161,7 @@ impl AstArtifactCache {
         let bytes = encode(&persisted)?;
         atomic_write(&artifact_path, &bytes)?;
 
-        let mut metadata = self.read_metadata()?;
+        let mut metadata = self.read_metadata();
         if !metadata.is_compatible() {
             metadata = AstCacheMetadata::empty();
         }
@@ -174,12 +180,20 @@ impl AstArtifactCache {
         Ok(())
     }
 
-    fn read_metadata(&self) -> Result<AstCacheMetadata, CacheError> {
+    fn read_metadata(&self) -> AstCacheMetadata {
         if !self.metadata_path.exists() {
-            return Ok(AstCacheMetadata::empty());
+            return AstCacheMetadata::empty();
         }
-        let bytes = std::fs::read(&self.metadata_path)?;
-        Ok(decode(&bytes)?)
+
+        let bytes = match std::fs::read(&self.metadata_path) {
+            Ok(bytes) => bytes,
+            Err(_) => return AstCacheMetadata::empty(),
+        };
+
+        match decode::<AstCacheMetadata>(&bytes) {
+            Ok(metadata) => metadata,
+            Err(_) => AstCacheMetadata::empty(),
+        }
     }
 }
 
@@ -245,5 +259,50 @@ mod tests {
 
         let fp2 = Fingerprint::from_bytes(b"class Foo { }");
         assert!(cache.load("src/Foo.java", &fp2).unwrap().is_none());
+    }
+
+    #[test]
+    fn corrupt_metadata_is_cache_miss() {
+        let tmp = TempDir::new().unwrap();
+        let cache = AstArtifactCache::new(tmp.path());
+
+        let text = "class Foo {}";
+        let parsed = parse(text);
+        let it = item_tree(&parsed, text);
+        let artifacts = FileAstArtifacts {
+            parse: parsed,
+            item_tree: it,
+            symbol_summary: None,
+        };
+        let fp = Fingerprint::from_bytes(text.as_bytes());
+
+        cache.store("src/Foo.java", &fp, &artifacts).unwrap();
+
+        std::fs::write(tmp.path().join("metadata.bin"), b"not bincode").unwrap();
+
+        assert!(cache.load("src/Foo.java", &fp).unwrap().is_none());
+    }
+
+    #[test]
+    fn corrupt_artifact_is_cache_miss() {
+        let tmp = TempDir::new().unwrap();
+        let cache = AstArtifactCache::new(tmp.path());
+
+        let text = "class Foo {}";
+        let parsed = parse(text);
+        let it = item_tree(&parsed, text);
+        let artifacts = FileAstArtifacts {
+            parse: parsed,
+            item_tree: it,
+            symbol_summary: None,
+        };
+        let fp = Fingerprint::from_bytes(text.as_bytes());
+
+        cache.store("src/Foo.java", &fp, &artifacts).unwrap();
+
+        let artifact_name = artifact_file_name("src/Foo.java");
+        std::fs::write(tmp.path().join(artifact_name), b"broken").unwrap();
+
+        assert!(cache.load("src/Foo.java", &fp).unwrap().is_none());
     }
 }

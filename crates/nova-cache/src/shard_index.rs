@@ -19,9 +19,13 @@ pub fn load_shard_index(cache_dir: &Path, shard_id: ShardId) -> Result<Option<Sh
     let path = shard_cache_path(cache_dir, shard_id);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(err.into()),
+        Err(_) => return Ok(None),
     };
-    Ok(Some(bincode::deserialize(&bytes)?))
-}
 
+    let index = match bincode::deserialize(&bytes) {
+        Ok(index) => index,
+        Err(_) => return Ok(None),
+    };
+
+    Ok(Some(index))
+}
