@@ -91,7 +91,7 @@ pub fn load_indexes(
         match metadata.file_fingerprints.get(path) {
             Some(previous_fp) if previous_fp == current_fp => {}
             Some(_) => invalidated.push(path.clone()),
-            None => {}
+            None => invalidated.push(path.clone()),
         }
     }
 
