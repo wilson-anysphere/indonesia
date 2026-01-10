@@ -204,6 +204,47 @@ fn relationship_target_entity_attribute_is_respected() {
 }
 
 #[test]
+fn mappedby_points_to_non_relationship_emits_warning() {
+    let user = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+        import jakarta.persistence.OneToMany;
+        import java.util.List;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+
+            @OneToMany(mappedBy = "user")
+            private List<Post> posts;
+        }
+    "#;
+
+    let post = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class Post {
+            @Id private Long id;
+
+            // Missing @ManyToOne annotation.
+            private User user;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[user, post]);
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "JPA_MAPPEDBY_NOT_RELATIONSHIP"),
+        "expected JPA_MAPPEDBY_NOT_RELATIONSHIP, got: {:#?}",
+        analysis.diagnostics
+    );
+}
+
+#[test]
 fn jpql_completion_suggests_entities_and_fields() {
     let src = r#"
         import jakarta.persistence.Entity;

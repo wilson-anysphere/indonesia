@@ -840,7 +840,7 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
 
             if let Some(mapped_by) = &rel.mapped_by {
                 if let Some(target_entity) = model.entity(target) {
-                    if target_entity.field_named(mapped_by).is_none() {
+                    let Some(mapped_field) = target_entity.field_named(mapped_by) else {
                         diags.push(Diagnostic::error(
                             "JPA_MAPPEDBY_MISSING",
                             format!(
@@ -849,6 +849,40 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
                             ),
                             Some(rel.span),
                         ));
+                        continue;
+                    };
+
+                    // Best-effort: validate that the mappedBy field looks like a
+                    // relationship back to the declaring entity.
+                    let Some(mapped_rel) = &mapped_field.relationship else {
+                        diags.push(Diagnostic::warning(
+                            "JPA_MAPPEDBY_NOT_RELATIONSHIP",
+                            format!(
+                                "`mappedBy=\"{}\"` on `{}`.{} refers to `{}`.{}, which is not a relationship field",
+                                mapped_by, entity.name, field.name, target, mapped_by
+                            ),
+                            Some(rel.span),
+                        ));
+                        continue;
+                    };
+
+                    if let Some(mapped_target) = &mapped_rel.target_entity {
+                        if mapped_target != &entity.name {
+                            diags.push(Diagnostic::warning(
+                                "JPA_MAPPEDBY_WRONG_TARGET",
+                                format!(
+                                    "`mappedBy=\"{}\"` on `{}`.{} points at `{}`.{} which targets `{}`, expected `{}`",
+                                    mapped_by,
+                                    entity.name,
+                                    field.name,
+                                    target,
+                                    mapped_by,
+                                    mapped_target,
+                                    entity.name
+                                ),
+                                Some(rel.span),
+                            ));
+                        }
                     }
                 }
             }
