@@ -1,5 +1,9 @@
-use crate::indexes::{AnnotationIndex, InheritanceIndex, ProjectIndexes, ReferenceIndex, SymbolIndex};
+use crate::indexes::{
+    AnnotationIndex, ArchivedAnnotationLocation, ArchivedSymbolLocation, InheritanceIndex,
+    ProjectIndexes, ReferenceIndex, SymbolIndex,
+};
 use nova_cache::{CacheDir, CacheMetadata, ProjectSnapshot};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 pub const INDEX_SCHEMA_VERSION: u32 = 1;
@@ -29,6 +33,80 @@ pub struct LoadedIndexArchives {
     pub inheritance: nova_storage::PersistedArchive<InheritanceIndex>,
     pub annotations: nova_storage::PersistedArchive<AnnotationIndex>,
     pub invalidated_files: Vec<String>,
+}
+
+/// A zero-copy, mmap-backed view over persisted project indexes.
+///
+/// This is intended for warm-start queries that can operate directly on the
+/// archived representation without allocating a full `ProjectIndexes` in memory.
+///
+/// The view also tracks `invalidated_files` (based on the current
+/// [`ProjectSnapshot`]) and filters out results coming from those files so
+/// callers see an effectively "pruned" index without requiring
+/// `PersistedArchive::to_owned()`.
+#[derive(Debug)]
+pub struct ProjectIndexesView {
+    pub symbols: nova_storage::PersistedArchive<SymbolIndex>,
+    pub references: nova_storage::PersistedArchive<ReferenceIndex>,
+    pub inheritance: nova_storage::PersistedArchive<InheritanceIndex>,
+    pub annotations: nova_storage::PersistedArchive<AnnotationIndex>,
+
+    /// Files whose contents differ from the snapshot used to persist the
+    /// indexes (new/modified/deleted).
+    pub invalidated_files: BTreeSet<String>,
+
+    /// Optional in-memory overlay for newly indexed/updated files.
+    ///
+    /// Callers can keep this empty if they only need read-only access to the
+    /// persisted archives.
+    pub overlay: ProjectIndexes,
+}
+
+impl ProjectIndexesView {
+    /// Returns `true` if `file` should be treated as stale and filtered out of
+    /// archived query results.
+    #[inline]
+    pub fn is_file_invalidated(&self, file: &str) -> bool {
+        self.invalidated_files.contains(file)
+    }
+
+    /// Returns symbol definition locations for `name`, filtering out any
+    /// locations that come from invalidated files.
+    pub fn symbol_locations<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> impl Iterator<Item = &'a ArchivedSymbolLocation> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.symbols
+            .archived()
+            .symbols
+            .get(name)
+            .into_iter()
+            .flat_map(move |locations| {
+                locations
+                    .iter()
+                    .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            })
+    }
+
+    /// Returns annotation locations for `name`, filtering out any locations
+    /// that come from invalidated files.
+    pub fn annotation_locations<'a>(
+        &'a self,
+        name: &'a str,
+    ) -> impl Iterator<Item = &'a ArchivedAnnotationLocation> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.annotations
+            .archived()
+            .annotations
+            .get(name)
+            .into_iter()
+            .flat_map(move |locations| {
+                locations
+                    .iter()
+                    .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            })
+    }
 }
 
 pub fn save_indexes(
@@ -177,6 +255,34 @@ pub fn load_indexes(
     Ok(Some(LoadedIndexes {
         indexes,
         invalidated_files: archives.invalidated_files,
+    }))
+}
+
+/// Loads indexes as a zero-copy view backed by validated `rkyv` archives.
+///
+/// This is similar to [`load_indexes`], but avoids deserializing the full
+/// `ProjectIndexes` into memory. Instead, callers can query the persisted
+/// archives directly via helper methods on [`ProjectIndexesView`].
+pub fn load_index_view(
+    cache_dir: &CacheDir,
+    current_snapshot: &ProjectSnapshot,
+) -> Result<Option<ProjectIndexesView>, IndexPersistenceError> {
+    let Some(archives) = load_index_archives(cache_dir, current_snapshot)? else {
+        return Ok(None);
+    };
+
+    let invalidated_files = archives
+        .invalidated_files
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+    Ok(Some(ProjectIndexesView {
+        symbols: archives.symbols,
+        references: archives.references,
+        inheritance: archives.inheritance,
+        annotations: archives.annotations,
+        invalidated_files,
+        overlay: ProjectIndexes::default(),
     }))
 }
 
