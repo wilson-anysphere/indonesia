@@ -3,7 +3,7 @@
 //! This crate is intentionally small and dependency-free.
 
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The current Nova version.
 ///
@@ -344,3 +344,67 @@ impl Diagnostic {
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// AI scaffolding surfaces (used by `nova-ai` and integration layers)
+// -----------------------------------------------------------------------------
+
+/// A single completion candidate produced by Nova's non-AI completion engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionItem {
+    pub label: String,
+    pub kind: CompletionItemKind,
+}
+
+impl CompletionItem {
+    pub fn new(label: impl Into<String>, kind: CompletionItemKind) -> Self {
+        Self {
+            label: label.into(),
+            kind,
+        }
+    }
+}
+
+/// A coarse classification for completion items.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub enum CompletionItemKind {
+    Keyword,
+    Class,
+    Method,
+    Field,
+    Variable,
+    Snippet,
+    Other,
+}
+
+/// Context used for AI-assisted completion ranking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionContext {
+    /// What the user has already typed.
+    pub prefix: String,
+
+    /// The current line text (optional; used for heuristics).
+    pub line_text: String,
+}
+
+impl CompletionContext {
+    pub fn new(prefix: impl Into<String>, line_text: impl Into<String>) -> Self {
+        Self {
+            prefix: prefix.into(),
+            line_text: line_text.into(),
+        }
+    }
+}
+
+/// Abstract view of a project used by indexing/search subsystems.
+///
+/// In the full Nova architecture this will likely be backed by a query database.
+/// For now, we only expose what the AI scaffolding needs.
+pub trait ProjectDatabase {
+    /// Return the list of project files that should be searchable.
+    fn project_files(&self) -> Vec<PathBuf>;
+
+    /// Return the UTF-8 text contents for a given file.
+    fn file_text(&self, path: &Path) -> Option<String>;
+}
+
