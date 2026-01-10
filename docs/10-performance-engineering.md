@@ -6,6 +6,8 @@
 
 Performance is not an afterthought—it's a core design requirement. Nova must be fast enough that users never wait, efficient enough to run on laptops, and scalable enough to handle massive codebases.
 
+**Implementation note:** Persistence and cache format decisions are tracked in [ADR 0005](adr/0005-persistence-formats.md), and concurrency/runtime choices are tracked in [ADR 0004](adr/0004-concurrency-model.md). The material in this document is a mix of concrete targets and design sketches.
+
 ---
 
 ## Performance Targets

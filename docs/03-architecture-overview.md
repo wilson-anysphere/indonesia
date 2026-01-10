@@ -6,6 +6,8 @@
 
 This document describes Nova's high-level architecture—the system design that enables us to surpass IntelliJ. The architecture is built around three core principles: **query-based incremental computation**, **layered abstraction**, and **composable components**.
 
+**Implementation note:** Binding technology choices (incremental engine, syntax trees, protocols, persistence, etc.) are tracked as ADRs. See [`docs/architecture.md`](architecture.md).
+
 ---
 
 ## System Architecture

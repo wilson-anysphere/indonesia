@@ -6,6 +6,8 @@
 
 Debugging is essential for Java development. Nova integrates with the Debug Adapter Protocol (DAP) to provide debugging capabilities that match or exceed IntelliJ's debugger.
 
+**Implementation note:** Protocol stack decisions (including DAP transport framing and cancellation strategy) are tracked in [ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md).
+
 ---
 
 ## Debug Adapter Protocol
