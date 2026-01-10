@@ -9,6 +9,7 @@ pub mod ai;
 pub mod decompile;
 pub mod semantics;
 pub mod code_action;
+pub mod extensions;
 
 mod completion;
 pub mod code_intelligence;

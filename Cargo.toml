@@ -17,6 +17,7 @@ members = [
     "crates/nova-dap",
     "crates/nova-db",
     "crates/nova-decompile",
+    "crates/nova-ext",
     "crates/nova-flow",
     "crates/nova-format",
     "crates/nova-framework",

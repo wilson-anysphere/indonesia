@@ -34,6 +34,47 @@ impl Cancelled {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunWithTimeoutError {
+    Timeout,
+    Cancelled,
+    Panic,
+}
+
+/// Runs `f` on a dedicated thread and waits up to `timeout` for it to finish.
+///
+/// If the timeout elapses, `cancel_token` is cancelled before returning. Extensions are expected
+/// to cooperate by periodically checking the token.
+pub fn run_with_timeout<T, F>(
+    timeout: Duration,
+    cancel_token: CancellationToken,
+    f: F,
+) -> Result<T, RunWithTimeoutError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    if cancel_token.is_cancelled() {
+        return Err(RunWithTimeoutError::Cancelled);
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel::<std::thread::Result<T>>();
+    std::thread::spawn(move || {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(_payload)) => Err(RunWithTimeoutError::Panic),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            cancel_token.cancel();
+            Err(RunWithTimeoutError::Timeout)
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(RunWithTimeoutError::Panic),
+    }
+}
+
 /// A generic per-category debounce helper.
 ///
 /// Each category has its own debounce duration. Items are buffered until no new
@@ -197,7 +238,11 @@ mod tests {
 
     #[test]
     fn chunk_vec_splits_preserving_order() {
-        assert_eq!(chunk_vec(vec![1, 2, 3, 4, 5], 2), vec![vec![1, 2], vec![3, 4], vec![5]]);
+        assert_eq!(
+            chunk_vec(vec![1, 2, 3, 4, 5], 2),
+            vec![vec![1, 2], vec![3, 4], vec![5]]
+        );
         assert_eq!(chunk_vec(Vec::<u8>::new(), 3), Vec::<Vec<u8>>::new());
     }
 }
+

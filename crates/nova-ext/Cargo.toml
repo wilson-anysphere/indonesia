@@ -1,0 +1,18 @@
+[package]
+name = "nova-ext"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+wasm-extensions = ["dep:serde", "dep:serde_json", "dep:wasmtime", "dep:wat"]
+
+[dependencies]
+nova-config = { path = "../nova-config" }
+nova-core = { path = "../nova-core" }
+nova-types = { path = "../nova-types" }
+nova-scheduler = { path = "../nova-scheduler" }
+
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+wasmtime = { version = "18.0", optional = true, default-features = false, features = ["cranelift"] }
+wat = { version = "1.0", optional = true }
