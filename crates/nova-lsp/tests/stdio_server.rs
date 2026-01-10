@@ -260,6 +260,120 @@ fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
     assert!(status.success());
 }
 
+#[cfg(unix)]
+#[test]
+fn stdio_server_handles_build_project_request_with_fake_maven_diagnostics() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("maven-project");
+    fs::create_dir_all(&root).expect("create project dir");
+
+    fs::write(
+        root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0-SNAPSHOT</version>
+</project>
+"#,
+    )
+    .expect("write pom");
+
+    let java_dir = root.join("src/main/java/com/example");
+    fs::create_dir_all(&java_dir).expect("create java dir");
+    let java_file = java_dir.join("Foo.java");
+    fs::write(&java_file, "package com.example; public class Foo {}").expect("write Foo.java");
+
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let mvn_path = bin_dir.join("mvn");
+    fs::write(
+        &mvn_path,
+        format!(
+            r#"#!/bin/sh
+printf '%s\n' '[ERROR] {}:[10,5] cannot find symbol'
+printf '%s\n' '[ERROR]   symbol:   variable x'
+printf '%s\n' '[ERROR]   location: class com.example.Foo'
+exit 1
+"#,
+            java_file.display(),
+        ),
+    )
+    .expect("write fake mvn");
+    let mut perms = fs::metadata(&mvn_path).expect("stat mvn").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&mvn_path, perms).expect("chmod mvn");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("PATH", bin_dir.to_string_lossy().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/buildProject",
+            "params": { "projectRoot": root.to_string_lossy() }
+        }),
+    );
+
+    let build_resp = read_jsonrpc_message(&mut stdout);
+    let result = build_resp.get("result").cloned().expect("result");
+    let diags = result
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .expect("diagnostics array");
+    assert_eq!(diags.len(), 1);
+    let diag = &diags[0];
+    assert_eq!(diag.get("file").and_then(|v| v.as_str()), Some(java_file.to_str().unwrap()));
+    assert_eq!(diag.get("severity").and_then(|v| v.as_str()), Some("error"));
+    assert_eq!(
+        diag.pointer("/range/start/line").and_then(|v| v.as_u64()),
+        Some(9)
+    );
+    assert_eq!(
+        diag.pointer("/range/start/character")
+            .and_then(|v| v.as_u64()),
+        Some(4)
+    );
+    assert!(diag
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .contains("cannot find symbol"));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
 fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
     let bytes = serde_json::to_vec(message).expect("serialize");
     write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
