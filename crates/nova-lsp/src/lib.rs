@@ -40,7 +40,10 @@ pub mod workspace_edit;
 pub use cancellation::RequestCancellation;
 pub use diagnostics::DiagnosticsDebouncer;
 pub use distributed::NovaLspFrontend;
-pub use refactor::{safe_delete_code_action, RefactorResponse};
+pub use refactor::{
+    extract_member_code_actions, resolve_extract_member_code_action, safe_delete_code_action,
+    RefactorResponse,
+};
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
 pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
 

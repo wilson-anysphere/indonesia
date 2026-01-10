@@ -85,3 +85,22 @@ pub fn safe_delete_code_action(index: &Index, target: SafeDeleteTarget) -> Optio
         })),
     }
 }
+
+/// Build `Extract constant` / `Extract field` code actions for a selection in a single document.
+pub fn extract_member_code_actions(
+    uri: &Uri,
+    source: &str,
+    selection: lsp_types::Range,
+) -> Vec<CodeActionOrCommand> {
+    nova_ide::refactor::extract_member_code_actions(uri, source, selection)
+}
+
+/// Resolve a code action produced by [`extract_member_code_actions`].
+pub fn resolve_extract_member_code_action(
+    uri: &Uri,
+    source: &str,
+    action: &mut CodeAction,
+    name: Option<String>,
+) -> Result<(), nova_refactor::ExtractError> {
+    nova_ide::refactor::resolve_extract_member_code_action(uri, source, action, name)
+}

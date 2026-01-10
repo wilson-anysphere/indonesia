@@ -54,3 +54,23 @@ pub fn dedent_block(block: &str) -> String {
     }
     out
 }
+
+/// Formats a single class member declaration (field/constant) for insertion.
+///
+/// `indent` is the indentation used for class members (typically 4 spaces more
+/// than the class declaration indentation).
+///
+/// `needs_blank_line_after` controls whether we add an extra blank line after
+/// the declaration (useful when inserting a field before a method).
+#[must_use]
+pub fn format_member_insertion(indent: &str, declaration: &str, needs_blank_line_after: bool) -> String {
+    let mut out = String::new();
+    out.push_str(indent);
+    out.push_str(declaration.trim_end());
+    out.push('\n');
+    if needs_blank_line_after {
+        out.push('\n');
+    }
+    out
+}
+

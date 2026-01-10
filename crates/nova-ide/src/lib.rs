@@ -2,8 +2,8 @@
 //!
 //! The real Nova project would expose rich semantic queries (symbols, types,
 //! control-flow, etc.). For this repository we only implement the small portion
-//! required by `nova-dap`, Nova's debugging extensions, and basic navigation
-//! helpers used by the LSP layer.
+//! required by `nova-dap`, Nova's debugging extensions, basic navigation helpers
+//! used by the LSP layer, and early refactoring support.
 
 pub mod ai;
 pub mod decompile;
@@ -13,6 +13,7 @@ pub mod code_action;
 mod completion;
 pub mod code_intelligence;
 mod project;
+pub mod refactor;
 
 pub use ai::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,

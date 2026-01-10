@@ -1803,3 +1803,67 @@ mod tests {
         assert_eq!(params, vec![Type::class(env.well_known().string, vec![])]);
     }
 }
+
+// -----------------------------------------------------------------------------
+// Lightweight type spelling helpers (used by early refactorings)
+// -----------------------------------------------------------------------------
+
+/// A best-effort Java type spelling.
+///
+/// Nova's long-term type system will represent types structurally. For early
+/// refactorings we primarily need a stable type *spelling* and heuristics for
+/// deciding whether to insert imports for fully-qualified types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeRef {
+    text: String,
+}
+
+impl TypeRef {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// Returns a fully qualified base type (without generics/arrays) if one is
+    /// present. Example: `com.example.Foo<Bar>[]` → `com.example.Foo`.
+    pub fn fully_qualified_base(&self) -> Option<&str> {
+        let base = self.base_type();
+        base.contains('.').then_some(base)
+    }
+
+    /// Returns the type text but with the base type shortened to the simple
+    /// name (dropping package qualifiers).
+    pub fn with_simple_base(&self) -> String {
+        let base = self.base_type();
+        let Some((_, simple)) = base.rsplit_once('.') else {
+            return self.text.clone();
+        };
+        self.text.replacen(base, simple, 1)
+    }
+
+    /// Whether this type should be imported when used in a compilation unit.
+    ///
+    /// Best-effort heuristics:
+    /// - fully-qualified names outside `java.lang` get imported
+    /// - primitive types and simple names do not
+    pub fn needs_import(&self) -> bool {
+        let Some(fq) = self.fully_qualified_base() else {
+            return false;
+        };
+        !fq.starts_with("java.lang.")
+    }
+
+    fn base_type(&self) -> &str {
+        let mut s = self.text.trim();
+        if let Some(idx) = s.find('<') {
+            s = &s[..idx];
+        }
+        while let Some(stripped) = s.strip_suffix("[]") {
+            s = stripped;
+        }
+        s
+    }
+}
