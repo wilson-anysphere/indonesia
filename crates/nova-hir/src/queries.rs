@@ -1,5 +1,5 @@
 use crate::hir::Body;
-use crate::ids::MethodId;
+use crate::ids::{ConstructorId, InitializerId, MethodId};
 use crate::item_tree::ItemTree;
 use crate::lowering::{lower_body, lower_item_tree, slice_range};
 use nova_vfs::FileId;
@@ -34,6 +34,30 @@ pub fn body(db: &dyn HirDatabase, method: MethodId) -> Arc<Body> {
     };
 
     let text = db.file_text(method.file);
+    let block_text = slice_range(&text, body_range);
+    let block = nova_syntax::java::parse_block(block_text, body_range.start);
+    Arc::new(lower_body(&block))
+}
+
+/// Lower the body of a constructor into HIR.
+#[must_use]
+pub fn constructor_body(db: &dyn HirDatabase, constructor: ConstructorId) -> Arc<Body> {
+    let tree = item_tree(db, constructor.file);
+    let data = tree.constructor(constructor);
+    let body_range = data.body_range;
+    let text = db.file_text(constructor.file);
+    let block_text = slice_range(&text, body_range);
+    let block = nova_syntax::java::parse_block(block_text, body_range.start);
+    Arc::new(lower_body(&block))
+}
+
+/// Lower a class or instance initializer block into HIR.
+#[must_use]
+pub fn initializer_body(db: &dyn HirDatabase, initializer: InitializerId) -> Arc<Body> {
+    let tree = item_tree(db, initializer.file);
+    let data = tree.initializer(initializer);
+    let body_range = data.body_range;
+    let text = db.file_text(initializer.file);
     let block_text = slice_range(&text, body_range);
     let block = nova_syntax::java::parse_block(block_text, body_range.start);
     Arc::new(lower_body(&block))

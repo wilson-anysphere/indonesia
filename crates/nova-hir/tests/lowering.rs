@@ -1,6 +1,6 @@
 use nova_vfs::FileId;
 use nova_hir::hir::{Body, Expr, ExprId};
-use nova_hir::queries::{body, item_tree, HirDatabase};
+use nova_hir::queries::{body, constructor_body, initializer_body, item_tree, HirDatabase};
 use std::sync::Arc;
 
 struct TestDb {
@@ -41,6 +41,11 @@ import static java.lang.Math.*;
 
 class Foo {
     int field;
+
+    static {
+        int s = 0;
+        System.out.println(s);
+    }
 
     Foo(int a) {
         int x = a;
@@ -107,6 +112,11 @@ class Foo {
         .iter()
         .any(|member| matches!(member, nova_hir::item_tree::Member::Type(_))));
 
+    assert_eq!(tree.constructors.len(), 1);
+    assert_eq!(tree.constructors[0].name, "Foo");
+
+    assert!(tree.initializers.iter().any(|init| init.is_static));
+
     assert_eq!(tree.fields.len(), 1);
     assert_eq!(tree.fields[0].name, "field");
     assert!(tree.methods.iter().any(|method| method.name == "value"));
@@ -139,4 +149,37 @@ class Foo {
         }
     }
     assert!(call_paths.iter().any(|path| path == "System.out.println"));
+
+    let ctor_id = nova_hir::ids::ConstructorId::new(file, 0);
+    let ctor_body = constructor_body(&db, ctor_id);
+    let ctor_local_names: Vec<_> = ctor_body
+        .locals
+        .iter()
+        .map(|(_, local)| local.name.as_str())
+        .collect();
+    assert_eq!(ctor_local_names, vec!["x"]);
+
+    let mut ctor_call_paths = Vec::new();
+    for (id, expr) in ctor_body.exprs.iter() {
+        if let Expr::Call { callee, .. } = expr {
+            let callee_path =
+                expr_path(&ctor_body, *callee).unwrap_or_else(|| format!("ExprId({id})"));
+            ctor_call_paths.push(callee_path);
+        }
+    }
+    assert!(ctor_call_paths.iter().any(|path| path == "bar"));
+
+    let init_index = tree
+        .initializers
+        .iter()
+        .position(|init| init.is_static)
+        .expect("static initializer");
+    let init_id = nova_hir::ids::InitializerId::new(file, init_index as u32);
+    let init_body = initializer_body(&db, init_id);
+    let init_locals: Vec<_> = init_body
+        .locals
+        .iter()
+        .map(|(_, local)| local.name.as_str())
+        .collect();
+    assert_eq!(init_locals, vec!["s"]);
 }
