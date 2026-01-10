@@ -1,10 +1,16 @@
 [workspace]
 members = [
     "crates/nova-core",
+    "crates/nova-framework",
+    "crates/nova-framework-jpa",
     "crates/nova-project",
+    "crates/nova-types",
     "crates/nova-vfs",
     "crates/nova-hir",
     "crates/nova-jdk",
     "crates/nova-resolve",
 ]
 resolver = "2"
+
+[workspace.package]
+edition = "2021"

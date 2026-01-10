@@ -1,0 +1,492 @@
+//! Minimal JPQL support.
+//!
+//! JPQL is a fairly complex language. For editor features we can get away with
+//! a tokenizer + some heuristics to understand the most common query patterns.
+
+use std::collections::HashMap;
+
+use nova_types::{CompletionItem, Diagnostic, Span};
+use regex::Regex;
+
+use crate::entity::EntityModel;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TokenKind {
+    Ident(String),
+    Keyword(String),
+    Dot,
+    Comma,
+    LParen,
+    RParen,
+    StringLiteral(String),
+    Number(String),
+    Operator(char),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Token {
+    pub kind: TokenKind,
+    pub span: Span,
+}
+
+pub fn tokenize_jpql(input: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let bytes = input.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                i += 1;
+            }
+            b'.' => {
+                tokens.push(Token {
+                    kind: TokenKind::Dot,
+                    span: Span::new(i, i + 1),
+                });
+                i += 1;
+            }
+            b',' => {
+                tokens.push(Token {
+                    kind: TokenKind::Comma,
+                    span: Span::new(i, i + 1),
+                });
+                i += 1;
+            }
+            b'(' => {
+                tokens.push(Token {
+                    kind: TokenKind::LParen,
+                    span: Span::new(i, i + 1),
+                });
+                i += 1;
+            }
+            b')' => {
+                tokens.push(Token {
+                    kind: TokenKind::RParen,
+                    span: Span::new(i, i + 1),
+                });
+                i += 1;
+            }
+            b'\'' | b'"' => {
+                let quote = b;
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == quote {
+                        i += 1;
+                        break;
+                    }
+                    // JPQL escapes quotes by doubling them ('')
+                    if bytes[i] == quote && i + 1 < bytes.len() && bytes[i + 1] == quote {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                }
+                let raw = &input[start..i];
+                let unquoted = raw.trim_matches(|c| c == '\'' || c == '"').to_string();
+                tokens.push(Token {
+                    kind: TokenKind::StringLiteral(unquoted),
+                    span: Span::new(start, i),
+                });
+            }
+            b'0'..=b'9' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && matches!(bytes[i], b'0'..=b'9') {
+                    i += 1;
+                }
+                tokens.push(Token {
+                    kind: TokenKind::Number(input[start..i].to_string()),
+                    span: Span::new(start, i),
+                });
+            }
+            b'=' | b'<' | b'>' | b'+' | b'-' | b'*' | b'/' => {
+                tokens.push(Token {
+                    kind: TokenKind::Operator(b as char),
+                    span: Span::new(i, i + 1),
+                });
+                i += 1;
+            }
+            _ if is_ident_start(b as char) => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && is_ident_continue(bytes[i] as char) {
+                    i += 1;
+                }
+                let text = &input[start..i];
+                let upper = text.to_ascii_uppercase();
+                let kind = if is_keyword(&upper) {
+                    TokenKind::Keyword(upper)
+                } else {
+                    TokenKind::Ident(text.to_string())
+                };
+                tokens.push(Token {
+                    kind,
+                    span: Span::new(start, i),
+                });
+            }
+            _ => {
+                // Unknown char; skip.
+                i += 1;
+            }
+        }
+    }
+    tokens
+}
+
+fn is_ident_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_' || ch == '$'
+}
+
+fn is_ident_continue(ch: char) -> bool {
+    is_ident_start(ch) || ch.is_ascii_digit()
+}
+
+fn is_keyword(upper: &str) -> bool {
+    matches!(
+        upper,
+        "SELECT"
+            | "FROM"
+            | "WHERE"
+            | "JOIN"
+            | "INNER"
+            | "LEFT"
+            | "RIGHT"
+            | "OUTER"
+            | "FETCH"
+            | "AS"
+            | "ON"
+            | "GROUP"
+            | "BY"
+            | "ORDER"
+            | "HAVING"
+            | "UPDATE"
+            | "DELETE"
+            | "INSERT"
+    )
+}
+
+/// Extract JPQL strings from Java source annotations (`@Query`, `@NamedQuery`).
+pub fn extract_jpql_strings(java_source: &str) -> Vec<(String, Span)> {
+    // We use regex for best-effort extraction of string literals. This is not a
+    // full Java parser, but it works well for common patterns.
+    //
+    // Examples:
+    //   @Query("select u from User u")
+    //   @NamedQuery(name="X", query="select u from User u")
+    //
+    // We intentionally support both single and double quote literals.
+    static QUERY_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new(r#"@Query\s*\(\s*(?:value\s*=\s*)?(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#)
+            .unwrap()
+    });
+    static NAMED_QUERY_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new(
+            r#"@NamedQuery\s*\([^)]*?\bquery\s*=\s*(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#,
+        )
+        .unwrap()
+    });
+
+    let mut out = Vec::new();
+
+    for cap in QUERY_RE.captures_iter(java_source) {
+        if let Some(m) = cap.name("lit") {
+            let span = Span::new(m.start(), m.end());
+            out.push((strip_quotes(m.as_str()).to_string(), span));
+        }
+    }
+    for cap in NAMED_QUERY_RE.captures_iter(java_source) {
+        if let Some(m) = cap.name("lit") {
+            let span = Span::new(m.start(), m.end());
+            out.push((strip_quotes(m.as_str()).to_string(), span));
+        }
+    }
+
+    out
+}
+
+fn strip_quotes(lit: &str) -> &str {
+    let lit = lit.trim();
+    if (lit.starts_with('"') && lit.ends_with('"'))
+        || (lit.starts_with('\'') && lit.ends_with('\''))
+    {
+        &lit[1..lit.len() - 1]
+    } else {
+        lit
+    }
+}
+
+pub fn jpql_completions(query: &str, cursor: usize, model: &EntityModel) -> Vec<CompletionItem> {
+    let tokens = tokenize_jpql(query);
+    jpql_completions_tokens(&tokens, cursor, model)
+}
+
+fn jpql_completions_tokens(
+    tokens: &[Token],
+    cursor: usize,
+    model: &EntityModel,
+) -> Vec<CompletionItem> {
+    if let Some((alias, _)) = dot_context(tokens, cursor) {
+        let alias_map = build_alias_map(tokens, model);
+        if let Some(entity_name) = alias_map.get(&alias) {
+            if let Some(entity) = model.entity(entity_name) {
+                let mut items: Vec<_> = entity
+                    .fields
+                    .iter()
+                    .filter(|f| !f.is_transient && !f.is_static)
+                    .map(|f| CompletionItem::new(f.name.clone()))
+                    .collect();
+                items.sort_by(|a, b| a.label.cmp(&b.label));
+                return items;
+            }
+        }
+        return Vec::new();
+    }
+
+    if entity_context(tokens, cursor) {
+        let mut items: Vec<_> = model
+            .entity_names()
+            .map(|name| CompletionItem::new(name.clone()))
+            .collect();
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+        return items;
+    }
+
+    Vec::new()
+}
+
+fn dot_context(tokens: &[Token], cursor: usize) -> Option<(String, Span)> {
+    // Find the most recent `alias .` before the cursor.
+    let mut dot_idx = None;
+    for (idx, tok) in tokens.iter().enumerate() {
+        if tok.span.end > cursor {
+            break;
+        }
+        if tok.kind == TokenKind::Dot {
+            dot_idx = Some(idx);
+        }
+    }
+    let dot_idx = dot_idx?;
+    let alias_tok = tokens.get(dot_idx.checked_sub(1)?)?;
+    let TokenKind::Ident(alias) = &alias_tok.kind else {
+        return None;
+    };
+    Some((alias.clone(), alias_tok.span))
+}
+
+fn entity_context(tokens: &[Token], cursor: usize) -> bool {
+    // Heuristic: cursor is within the entity identifier following the most
+    // recent FROM/JOIN keyword.
+    let mut kw_idx = None;
+    for (idx, tok) in tokens.iter().enumerate() {
+        if tok.span.start >= cursor {
+            break;
+        }
+        if matches!(
+            tok.kind,
+            TokenKind::Keyword(ref k) if k == "FROM" || k == "JOIN"
+        ) {
+            kw_idx = Some(idx);
+        }
+    }
+    let Some(kw_idx) = kw_idx else {
+        return false;
+    };
+
+    let mut idx = kw_idx + 1;
+    // Skip join modifiers like LEFT/INNER/FETCH/AS.
+    while let Some(tok) = tokens.get(idx) {
+        match &tok.kind {
+            TokenKind::Keyword(k)
+                if matches!(
+                    k.as_str(),
+                    "INNER" | "LEFT" | "RIGHT" | "OUTER" | "FETCH" | "AS"
+                ) =>
+            {
+                idx += 1;
+                continue;
+            }
+            _ => break,
+        }
+    }
+
+    let Some(tok) = tokens.get(idx) else {
+        return true;
+    };
+    match &tok.kind {
+        TokenKind::Ident(_) => cursor <= tok.span.end,
+        _ => true,
+    }
+}
+
+pub fn jpql_diagnostics(query: &str, model: &EntityModel) -> Vec<Diagnostic> {
+    let tokens = tokenize_jpql(query);
+    let alias_map = build_alias_map(&tokens, model);
+    let mut diags = Vec::new();
+
+    // Validate FROM entity.
+    for (idx, tok) in tokens.iter().enumerate() {
+        if tok.kind == TokenKind::Keyword("FROM".to_string()) {
+            if let Some(entity_tok) = tokens.get(idx + 1) {
+                if let TokenKind::Ident(entity_name) = &entity_tok.kind {
+                    let entity_name = simple_name(entity_name);
+                    if model.entity(&entity_name).is_none() {
+                        diags.push(Diagnostic::error(
+                            "JPQL_UNKNOWN_ENTITY",
+                            format!("Unknown JPQL entity `{}`", entity_name),
+                            Some(entity_tok.span),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate dotted field references.
+    for i in 0..tokens.len() {
+        if tokens[i].kind != TokenKind::Dot {
+            continue;
+        }
+        let Some(alias_tok) = tokens.get(i.wrapping_sub(1)) else {
+            continue;
+        };
+        let Some(field_tok) = tokens.get(i + 1) else {
+            continue;
+        };
+        let (TokenKind::Ident(alias), TokenKind::Ident(field)) = (&alias_tok.kind, &field_tok.kind)
+        else {
+            continue;
+        };
+
+        let Some(entity_name) = alias_map.get(alias) else {
+            diags.push(Diagnostic::error(
+                "JPQL_UNKNOWN_ALIAS",
+                format!("Unknown JPQL alias `{}`", alias),
+                Some(alias_tok.span),
+            ));
+            continue;
+        };
+
+        if let Some(entity) = model.entity(entity_name) {
+            if entity.field_named(field).is_none() {
+                diags.push(Diagnostic::error(
+                    "JPQL_UNKNOWN_FIELD",
+                    format!("Unknown field `{}` on entity `{}`", field, entity_name),
+                    Some(field_tok.span),
+                ));
+            }
+        }
+    }
+
+    diags
+}
+
+fn simple_name(ty: &str) -> String {
+    ty.rsplit('.').next().unwrap_or(ty).to_string()
+}
+
+fn build_alias_map(tokens: &[Token], model: &EntityModel) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+
+    let mut i = 0usize;
+    while i < tokens.len() {
+        match &tokens[i].kind {
+            TokenKind::Keyword(k) if k == "FROM" => {
+                i += 1;
+                if let Some((entity, alias, next_i)) = parse_entity_alias(tokens, i) {
+                    let entity = simple_name(&entity);
+                    map.insert(alias, entity);
+                    i = next_i;
+                    continue;
+                }
+            }
+            TokenKind::Keyword(k) if k == "JOIN" => {
+                i += 1;
+                // Skip join modifiers.
+                while let Some(tok) = tokens.get(i) {
+                    match &tok.kind {
+                        TokenKind::Keyword(k)
+                            if matches!(
+                                k.as_str(),
+                                "INNER" | "LEFT" | "RIGHT" | "OUTER" | "FETCH" | "AS"
+                            ) =>
+                        {
+                            i += 1;
+                            continue;
+                        }
+                        _ => break,
+                    }
+                }
+                if let Some((target_entity, alias, next_i)) = parse_join(tokens, i, &map, model) {
+                    map.insert(alias, target_entity);
+                    i = next_i;
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    map
+}
+
+fn parse_entity_alias(tokens: &[Token], start: usize) -> Option<(String, String, usize)> {
+    let entity_tok = tokens.get(start)?;
+    let TokenKind::Ident(entity) = &entity_tok.kind else {
+        return None;
+    };
+    let alias_tok = tokens.get(start + 1)?;
+    let TokenKind::Ident(alias) = &alias_tok.kind else {
+        return None;
+    };
+    Some((entity.clone(), alias.clone(), start + 2))
+}
+
+fn parse_join(
+    tokens: &[Token],
+    start: usize,
+    alias_map: &HashMap<String, String>,
+    model: &EntityModel,
+) -> Option<(String, String, usize)> {
+    let first_tok = tokens.get(start)?;
+    let TokenKind::Ident(first_ident) = &first_tok.kind else {
+        return None;
+    };
+
+    // Path join: alias . field alias2
+    if tokens.get(start + 1).map(|t| t.kind.clone()) == Some(TokenKind::Dot) {
+        let field_tok = tokens.get(start + 2)?;
+        let TokenKind::Ident(field_name) = &field_tok.kind else {
+            return None;
+        };
+        let join_alias_tok = tokens.get(start + 3)?;
+        let TokenKind::Ident(join_alias) = &join_alias_tok.kind else {
+            return None;
+        };
+
+        let entity_name = alias_map.get(first_ident)?;
+        let entity = model.entity(entity_name)?;
+        let field = entity.field_named(field_name)?;
+        let target = field
+            .relationship
+            .as_ref()
+            .and_then(|rel| rel.target_entity.clone());
+
+        let Some(target) = target else {
+            return None;
+        };
+        return Some((target, join_alias.clone(), start + 4));
+    }
+
+    // Entity join: Entity alias
+    let alias_tok = tokens.get(start + 1)?;
+    let TokenKind::Ident(alias) = &alias_tok.kind else {
+        return None;
+    };
+    Some((simple_name(first_ident), alias.clone(), start + 2))
+}
+
+// TODO: Could support deeper semantic understanding (function calls, nested
+// expressions, etc.) as Nova grows.
