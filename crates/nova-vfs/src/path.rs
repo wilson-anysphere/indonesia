@@ -138,10 +138,12 @@ impl From<lsp_types::Uri> for VfsPath {
 }
 
 fn normalize_archive_entry(entry: String) -> String {
-    entry
-        .strip_prefix('/')
-        .unwrap_or(entry.as_str())
-        .to_string()
+    let entry = entry.trim_start_matches(['/', '\\']);
+    if entry.contains('\\') {
+        entry.replace('\\', "/")
+    } else {
+        entry.to_string()
+    }
 }
 
 fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
@@ -183,6 +185,15 @@ mod tests {
         let uri = jmod.to_uri().expect("jmod uri");
         let round = VfsPath::uri(uri);
         assert_eq!(round, jmod);
+    }
+
+    #[test]
+    fn archive_entries_normalize_backslashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("lib.jar");
+        let a = VfsPath::jar(archive_path.clone(), "com\\example\\A.java");
+        let b = VfsPath::jar(archive_path, "com/example/A.java");
+        assert_eq!(a, b);
     }
 
     #[cfg(feature = "lsp")]
