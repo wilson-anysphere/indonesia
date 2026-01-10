@@ -3,6 +3,7 @@ use crate::fingerprint::{Fingerprint, ProjectSnapshot};
 use crate::util::now_millis;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 pub const CACHE_METADATA_SCHEMA_VERSION: u32 = 1;
@@ -35,6 +36,34 @@ impl CacheMetadata {
         self.last_updated_millis = now_millis();
         self.project_hash = snapshot.project_hash().clone();
         self.file_fingerprints = snapshot.file_fingerprints().clone();
+    }
+
+    /// Compute the set of files that should be invalidated when moving from this
+    /// metadata to `snapshot`.
+    ///
+    /// A file is considered invalidated if it:
+    /// - is new (present in `snapshot` but absent from `self.file_fingerprints`)
+    /// - is modified (fingerprint differs)
+    /// - is deleted (present in `self.file_fingerprints` but absent from `snapshot`)
+    pub fn diff_files(&self, snapshot: &ProjectSnapshot) -> Vec<String> {
+        let mut invalidated = BTreeSet::new();
+
+        for (path, current_fp) in snapshot.file_fingerprints() {
+            match self.file_fingerprints.get(path) {
+                Some(previous_fp) if previous_fp == current_fp => {}
+                _ => {
+                    invalidated.insert(path.clone());
+                }
+            }
+        }
+
+        for path in self.file_fingerprints.keys() {
+            if !snapshot.file_fingerprints().contains_key(path) {
+                invalidated.insert(path.clone());
+            }
+        }
+
+        invalidated.into_iter().collect()
     }
 
     pub fn is_compatible(&self) -> bool {

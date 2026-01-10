@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 /// A stable SHA-256 fingerprint stored as a lowercase hex string.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -20,6 +21,26 @@ impl Fingerprint {
     /// Compute the SHA-256 fingerprint of a file's contents.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, CacheError> {
         let bytes = std::fs::read(path)?;
+        Ok(Self::from_bytes(bytes))
+    }
+
+    /// Compute a fast fingerprint based on file metadata (size + mtime).
+    ///
+    /// This avoids hashing full file contents and is intended for quick
+    /// warm-start cache validation.
+    pub fn from_file_metadata(path: impl AsRef<Path>) -> Result<Self, CacheError> {
+        let meta = std::fs::metadata(path)?;
+        let len = meta.len();
+        let modified_nanos = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+
+        let mut bytes = Vec::with_capacity(8 + 16);
+        bytes.extend_from_slice(&len.to_le_bytes());
+        bytes.extend_from_slice(&modified_nanos.to_le_bytes());
         Ok(Self::from_bytes(bytes))
     }
 
@@ -54,6 +75,27 @@ pub struct ProjectSnapshot {
 impl ProjectSnapshot {
     /// Create a snapshot from an explicit set of files.
     pub fn new(project_root: impl AsRef<Path>, files: Vec<PathBuf>) -> Result<Self, CacheError> {
+        Self::new_with_fingerprinter(project_root, files, |path| Fingerprint::from_file(path))
+    }
+
+    /// Create a snapshot using fast per-file fingerprints (metadata only).
+    ///
+    /// This is suitable for quickly checking if a persisted cache is likely up
+    /// to date without reading the full contents of every file.
+    pub fn new_fast(project_root: impl AsRef<Path>, files: Vec<PathBuf>) -> Result<Self, CacheError> {
+        Self::new_with_fingerprinter(project_root, files, |path| {
+            Fingerprint::from_file_metadata(path)
+        })
+    }
+
+    fn new_with_fingerprinter<F>(
+        project_root: impl AsRef<Path>,
+        files: Vec<PathBuf>,
+        fingerprinter: F,
+    ) -> Result<Self, CacheError>
+    where
+        F: Fn(&Path) -> Result<Fingerprint, CacheError>,
+    {
         let project_root = std::fs::canonicalize(project_root)?;
         let project_hash = Fingerprint::for_project_root(&project_root)?;
 
@@ -72,7 +114,7 @@ impl ProjectSnapshot {
                     project_root: project_root.clone(),
                 })?;
             let relative = relative.to_string_lossy().replace('\\', "/");
-            file_fingerprints.insert(relative, Fingerprint::from_file(full)?);
+            file_fingerprints.insert(relative, fingerprinter(&full)?);
         }
 
         Ok(Self {

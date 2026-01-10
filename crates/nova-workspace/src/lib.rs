@@ -116,7 +116,7 @@ impl Workspace {
         let start = Instant::now();
 
         let files = self.project_java_files()?;
-        let snapshot = ProjectSnapshot::new(&self.root, files).with_context(|| {
+        let snapshot = ProjectSnapshot::new_fast(&self.root, files).with_context(|| {
             format!(
                 "failed to build project snapshot for {}",
                 self.root.display()
@@ -135,6 +135,14 @@ impl Workspace {
                 snapshot.file_fingerprints().keys().cloned().collect(),
             ),
         };
+
+        // `invalidated_files` may include deleted files (which we already removed
+        // from the loaded indexes). Only re-index files that still exist in the
+        // current snapshot.
+        let files_to_index: Vec<String> = files_to_index
+            .into_iter()
+            .filter(|path| snapshot.file_fingerprints().contains_key(path))
+            .collect();
 
         let (files_indexed, bytes_indexed) =
             self.index_files(&snapshot, &mut indexes, &files_to_index)?;

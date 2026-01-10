@@ -88,21 +88,7 @@ pub fn load_indexes(
         annotations,
     };
 
-    let mut invalidated = Vec::new();
-
-    for (path, current_fp) in current_snapshot.file_fingerprints() {
-        match metadata.file_fingerprints.get(path) {
-            Some(previous_fp) if previous_fp == current_fp => {}
-            Some(_) => invalidated.push(path.clone()),
-            None => invalidated.push(path.clone()),
-        }
-    }
-
-    for path in metadata.file_fingerprints.keys() {
-        if !current_snapshot.file_fingerprints().contains_key(path) {
-            invalidated.push(path.clone());
-        }
-    }
+    let invalidated = metadata.diff_files(current_snapshot);
 
     for file in &invalidated {
         indexes.invalidate_file(file);

@@ -23,7 +23,7 @@ enum Command {
     Diagnostics(DiagnosticsArgs),
     /// Workspace symbol search (defaults to current directory)
     Symbols(SymbolsArgs),
-    /// Manage persistent cache (defaults to `~/.nova/cache`, override with `NOVA_CACHE_DIR`)
+    /// Manage persistent cache (defaults to `~/.nova/cache/<project-hash>/`, override with `NOVA_CACHE_DIR`)
     Cache(CacheArgs),
     /// Print performance metrics captured during indexing
     Perf(PerfArgs),
