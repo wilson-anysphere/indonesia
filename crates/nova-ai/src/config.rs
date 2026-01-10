@@ -122,7 +122,8 @@ impl Default for PrivacyConfig {
     fn default() -> Self {
         Self {
             local_only: true,
-            anonymize: true,
+            // In local-only mode, keep code unchanged by default unless the user explicitly opts in.
+            anonymize: false,
             redact_sensitive_strings: true,
             excluded_paths: Vec::new(),
             audit_logging: false,

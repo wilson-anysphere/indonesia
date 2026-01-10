@@ -7,9 +7,15 @@
 //! - Optional cloud LLM client and higher-level AI actions
 
 mod anonymizer;
+mod client;
 mod completion_ranking;
 mod config;
+mod error;
+mod features;
+mod llm_privacy;
+mod providers;
 mod semantic_search;
+mod types;
 mod util;
 
 pub mod actions;
@@ -19,6 +25,7 @@ pub mod privacy;
 
 pub use actions::AiService;
 pub use anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
+pub use client::AiClient;
 pub use cloud::{CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
 pub use completion_ranking::{
     maybe_rank_completions, rank_completions_with_timeout, BaselineCompletionRanker,
@@ -27,9 +34,12 @@ pub use completion_ranking::{
 pub use config::{
     AiConfig, AiFeatures, AiTimeouts, CloudConfig, CloudProvider, LocalModelConfig, PrivacyConfig,
 };
+pub use error::AiError;
+pub use features::NovaAi;
 pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedSymbol};
 pub use privacy::{PrivacyMode, RedactionConfig};
 pub use semantic_search::{SearchResult, SemanticSearch, TrigramSemanticSearch};
+pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
 
 #[cfg(test)]
 mod tests {
@@ -241,4 +251,3 @@ mod tests {
         assert_eq!(results[0].path, PathBuf::from("src/A.java"));
     }
 }
-

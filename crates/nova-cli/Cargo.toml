@@ -16,6 +16,10 @@ serde_json = "1"
 nova-cache = { path = "../nova-cache" }
 nova-workspace = { path = "../nova-workspace" }
 nova-perf = { path = "../nova-perf" }
+nova-ai = { path = "../nova-ai" }
+nova-config = { path = "../nova-config" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio-util = "0.7"
 
 [dev-dependencies]
 assert_cmd = "2"

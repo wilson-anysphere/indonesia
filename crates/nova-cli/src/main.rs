@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use nova_ai::AiClient;
+use nova_config::NovaConfig;
 use nova_cache::{
     fetch_cache_package, install_cache_package, pack_cache_package, CacheConfig, CacheDir,
     CachePackageInstallOutcome,
@@ -10,6 +12,7 @@ use nova_workspace::{
 };
 use serde::Serialize;
 use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
 #[command(
@@ -36,6 +39,30 @@ enum Command {
     Perf(PerfArgs),
     /// Print a debug parse tree / errors for a single file
     Parse(ParseArgs),
+    /// Local AI utilities (Ollama / OpenAI-compatible endpoints)
+    Ai(AiArgs),
+}
+
+#[derive(Args)]
+struct AiArgs {
+    #[command(subcommand)]
+    command: AiCommand,
+}
+
+#[derive(Subcommand)]
+enum AiCommand {
+    /// List models (best effort) or validate backend connectivity.
+    Models(AiModelsArgs),
+}
+
+#[derive(Args)]
+struct AiModelsArgs {
+    /// Optional path to a TOML config file (defaults to in-memory defaults).
+    #[arg(long)]
+    config: Option<PathBuf>,
+    /// Emit JSON suitable for CI
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -367,6 +394,30 @@ fn run(cli: Cli) -> Result<i32> {
                 print!("{markdown}");
 
                 Ok(if comparison.has_failure { 1 } else { 0 })
+            }
+        },
+        Command::Ai(args) => match args.command {
+            AiCommand::Models(args) => {
+                let cfg = match args.config.as_ref() {
+                    Some(path) => NovaConfig::load_from_path(path)?,
+                    None => NovaConfig::default(),
+                };
+
+                let client = AiClient::from_config(&cfg.ai)?;
+                let rt = tokio::runtime::Runtime::new()?;
+                let models = rt.block_on(client.list_models(CancellationToken::new()))?;
+
+                if args.json {
+                    print_output(&models, true)?;
+                } else if models.is_empty() {
+                    println!("No models returned by backend.");
+                } else {
+                    for model in models {
+                        println!("{model}");
+                    }
+                }
+
+                Ok(0)
             }
         },
         Command::Parse(args) => {
