@@ -1,8 +1,11 @@
 use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, Uri, WorkspaceEdit};
 use nova_index::Index;
 use nova_refactor::{safe_delete, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget};
+use schemars::schema::RootSchema;
+use schemars::schema_for;
 use serde::{Deserialize, Serialize};
 
+pub const CHANGE_SIGNATURE_METHOD: &str = "nova/refactor/changeSignature";
 pub const MOVE_METHOD_METHOD: &str = "nova/refactor/moveMethod";
 pub const MOVE_STATIC_MEMBER_METHOD: &str = "nova/refactor/moveStaticMember";
 
@@ -20,6 +23,10 @@ pub struct MoveStaticMemberParams {
     pub from_class: String,
     pub member_name: String,
     pub to_class: String,
+}
+
+pub fn change_signature_schema() -> RootSchema {
+    schema_for!(nova_refactor::ChangeSignature)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

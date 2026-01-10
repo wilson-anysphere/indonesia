@@ -4,23 +4,20 @@
 //! - Safe Delete for method declarations (`safe_delete`)
 //! - Move refactorings for Java packages and top-level classes (`move_java`)
 //! - Move refactorings for methods and static members (`move_member`)
+//! - Change Signature for method declarations (`change_signature`)
 //! - Extract Constant / Extract Field for side-effect-free expressions (`extract_member`)
 //! - Inline Method for simple private methods (`inline_method`)
 //!
 //! Additionally, the crate contains a small semantic refactoring engine used for
 //! early experiments. It models changes as [`SemanticChange`] values and
 //! materializes deterministic, previewable [`WorkspaceEdit`]s.
-//! - Inline Method for simple private methods (`inline_method`)
-//!
-//! Additionally, the crate contains a small semantic refactoring engine used for
-//! early experiments. It models changes as [`SemanticChange`] values and
-//! materializes deterministic, previewable [`WorkspaceEdit`]s.
-
+ 
+mod change_signature;
+mod extract_member;
 mod inline_method;
 mod java;
-mod extract_member;
-mod move_member;
 mod move_java;
+mod move_member;
 mod safe_delete;
 
 pub mod extract_method;
@@ -33,6 +30,10 @@ mod preview;
 mod refactorings;
 mod semantic;
 
+pub use change_signature::{
+    change_signature, ChangeSignature, ChangeSignatureConflict, ChangeSignatureError,
+    HierarchyPropagation, ParameterOperation,
+};
 pub use extract_member::{
     extract_constant, extract_field, ExtractError, ExtractKind, ExtractOptions, ExtractOutcome,
 };

@@ -50,7 +50,7 @@ pub use diagnostics::DiagnosticsDebouncer;
 pub use distributed::NovaLspFrontend;
 pub use refactor::{
     extract_member_code_actions, inline_method_code_actions, resolve_extract_member_code_action,
-    safe_delete_code_action, RefactorResponse,
+    safe_delete_code_action, change_signature_schema, RefactorResponse,
 };
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
 pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
@@ -184,7 +184,6 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
 // -----------------------------------------------------------------------------
 // Core LSP request delegation
 // -----------------------------------------------------------------------------
-
 /// Delegate completion requests to `nova-ide`.
 pub fn completion(
     db: &dyn nova_db::Database,

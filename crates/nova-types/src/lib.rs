@@ -13,6 +13,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 // === Generic shared types ====================================================
@@ -2581,5 +2582,22 @@ impl TypeRef {
             s = stripped;
         }
         s
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Refactoring IDs
+// -----------------------------------------------------------------------------
+
+/// Identifies a method symbol within an `nova-index::Index` snapshot.
+///
+/// This is *not* stable across edits; it is intended to be resolved against a
+/// single index snapshot before applying a refactoring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct MethodId(pub u32);
+
+impl MethodId {
+    pub fn new(raw: u32) -> Self {
+        Self(raw)
     }
 }
