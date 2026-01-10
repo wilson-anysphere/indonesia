@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use nova_core::SymbolId;
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 
@@ -54,8 +52,6 @@ pub struct SymbolSearchIndex {
     trigram: TrigramIndex,
     /// Maps first ASCII-lowercased byte to symbol ids.
     prefix1: Vec<Vec<SymbolId>>,
-    /// Maps first two ASCII-lowercased bytes to symbol ids.
-    prefix2: HashMap<u16, Vec<SymbolId>>,
 }
 
 impl SymbolSearchIndex {
@@ -74,7 +70,6 @@ impl SymbolSearchIndex {
         let trigram = builder.build();
 
         let mut prefix1: Vec<Vec<SymbolId>> = vec![Vec::new(); 256];
-        let mut prefix2: HashMap<u16, Vec<SymbolId>> = HashMap::new();
         for (id, entry) in entries.iter().enumerate() {
             if entry.name_folded.is_empty() {
                 continue;
@@ -82,16 +77,12 @@ impl SymbolSearchIndex {
             let bytes = entry.name_folded.as_bytes();
             let a = bytes[0];
             prefix1[a as usize].push(id as SymbolId);
-            let b = *bytes.get(1).unwrap_or(&0);
-            let key = ((a as u16) << 8) | b as u16;
-            prefix2.entry(key).or_default().push(id as SymbolId);
         }
 
         Self {
             symbols: entries,
             trigram,
             prefix1,
-            prefix2,
         }
     }
 
@@ -104,16 +95,13 @@ impl SymbolSearchIndex {
 
         if q_bytes.len() < 3 {
             let a = q_bytes[0];
-            if q_bytes.len() == 1 {
-                return (CandidateStrategy::Prefix, self.prefix1[a as usize].clone());
+            let ids = self.prefix1[a as usize].clone();
+            if !ids.is_empty() {
+                return (CandidateStrategy::Prefix, ids);
             }
-
-            let b = q_bytes[1];
-            let key = ((a as u16) << 8) | b as u16;
-            if let Some(ids) = self.prefix2.get(&key) {
-                return (CandidateStrategy::Prefix, ids.clone());
-            }
-            return (CandidateStrategy::Prefix, Vec::new());
+            let scan_limit = 50_000usize.min(self.symbols.len());
+            let ids = (0..scan_limit as SymbolId).collect();
+            return (CandidateStrategy::FullScan, ids);
         }
 
         let candidates = self.trigram.candidates(&q);
@@ -218,5 +206,36 @@ mod tests {
 
         let results = index.search("foo", 10);
         assert_eq!(results[0].symbol.name, "foobar");
+    }
+
+    #[test]
+    fn short_queries_still_match_acronyms() {
+        let index = SymbolSearchIndex::build(vec![
+            Symbol {
+                name: "HashMap".into(),
+                qualified_name: "java.util.HashMap".into(),
+            },
+            Symbol {
+                name: "Hmac".into(),
+                qualified_name: "crypto.Hmac".into(),
+            },
+        ]);
+
+        let results = index.search("hm", 10);
+        assert!(
+            results.iter().any(|r| r.symbol.name == "HashMap"),
+            "expected acronym query to match HashMap"
+        );
+    }
+
+    #[test]
+    fn short_queries_match_camel_case_initials() {
+        let index = SymbolSearchIndex::build(vec![Symbol {
+            name: "FooBar".into(),
+            qualified_name: "pkg.FooBar".into(),
+        }]);
+
+        let results = index.search("fb", 10);
+        assert_eq!(results[0].symbol.name, "FooBar");
     }
 }

@@ -1,14 +1,22 @@
 use nova_fuzzy::{FuzzyMatcher, MatchScore};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionItem {
-    pub label: String,
-}
+use nova_core::{CompletionItem, CompletionItemKind};
 
 #[derive(Debug, Clone)]
 struct RankedCompletion {
     item: CompletionItem,
     score: MatchScore,
+}
+
+fn kind_weight(kind: CompletionItemKind) -> i32 {
+    match kind {
+        CompletionItemKind::Method => 100,
+        CompletionItemKind::Field => 80,
+        CompletionItemKind::Variable => 70,
+        CompletionItemKind::Class => 60,
+        CompletionItemKind::Snippet => 50,
+        CompletionItemKind::Keyword => 10,
+        CompletionItemKind::Other => 0,
+    }
 }
 
 /// Filter and rank completion items for `query`.
@@ -33,6 +41,7 @@ pub fn filter_and_rank_completions(
         b.score
             .rank_key()
             .cmp(&a.score.rank_key())
+            .then_with(|| kind_weight(b.item.kind).cmp(&kind_weight(a.item.kind)))
             .then_with(|| a.item.label.len().cmp(&b.item.label.len()))
             .then_with(|| a.item.label.cmp(&b.item.label))
     });
@@ -48,12 +57,8 @@ mod tests {
     #[test]
     fn completion_prefix_ranks_first() {
         let items = vec![
-            CompletionItem {
-                label: "foobar".into(),
-            },
-            CompletionItem {
-                label: "barfoo".into(),
-            },
+            CompletionItem::new("foobar", CompletionItemKind::Other),
+            CompletionItem::new("barfoo", CompletionItemKind::Other),
         ];
         let ranked = filter_and_rank_completions(items, "foo", 10);
         assert_eq!(ranked[0].label, "foobar");

@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
-use nova_fuzzy::FuzzyMatcher;
-use nova_index::{load_indexes, save_indexes, ProjectIndexes, SymbolLocation};
+use nova_index::{
+    load_indexes, save_indexes, CandidateStrategy, ProjectIndexes, SearchStats,
+    SearchSymbol, SymbolLocation, SymbolSearchIndex,
+};
 use nova_project::ProjectError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -291,24 +293,10 @@ impl Workspace {
         save_indexes(&cache_dir, &snapshot, &indexes).context("failed to persist indexes")?;
         self.write_cache_perf(&cache_dir, &metrics)?;
 
-        let mut matcher = FuzzyMatcher::new(query);
-        let mut scored = Vec::new();
-        for (name, locations) in &indexes.symbols.symbols {
-            if let Some(score) = matcher.score(name) {
-                scored.push((score.rank_key(), name.clone(), locations.clone()));
-            }
-        }
-
-        scored.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| a.1.len().cmp(&b.1.len()))
-                .then_with(|| a.1.cmp(&b.1))
-        });
-
-        Ok(scored
-            .into_iter()
-            .map(|(_, name, locations)| WorkspaceSymbol { name, locations })
-            .collect())
+        const WORKSPACE_SYMBOL_LIMIT: usize = 200;
+        let (results, _stats) =
+            fuzzy_rank_workspace_symbols(&indexes.symbols, query, WORKSPACE_SYMBOL_LIMIT);
+        Ok(results)
     }
 
     pub fn parse_file(&self, file: impl AsRef<Path>) -> Result<ParseResult> {
@@ -404,6 +392,101 @@ impl Workspace {
         nova_cache::atomic_write(&path, &json)
             .with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
+    }
+}
+
+fn fuzzy_rank_workspace_symbols(
+    symbols: &nova_index::SymbolIndex,
+    query: &str,
+    limit: usize,
+) -> (Vec<WorkspaceSymbol>, SearchStats) {
+    if query.is_empty() {
+        return (
+            Vec::new(),
+            SearchStats {
+                strategy: CandidateStrategy::FullScan,
+                candidates_considered: 0,
+            },
+        );
+    }
+
+    let search_symbols: Vec<SearchSymbol> = symbols
+        .symbols
+        .keys()
+        .map(|name| SearchSymbol {
+            name: name.clone(),
+            qualified_name: name.clone(),
+        })
+        .collect();
+
+    let search_index = SymbolSearchIndex::build(search_symbols);
+    let (results, stats) = search_index.search_with_stats(query, limit);
+
+    let mut ranked = Vec::with_capacity(results.len());
+    for res in results {
+        let name = res.symbol.name;
+        if let Some(locations) = symbols.symbols.get(name.as_str()) {
+            ranked.push(WorkspaceSymbol {
+                name,
+                locations: locations.clone(),
+            });
+        }
+    }
+
+    (ranked, stats)
+}
+
+#[cfg(test)]
+mod fuzzy_symbol_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_symbol_search_uses_trigram_candidate_filtering() {
+        let mut symbols = nova_index::SymbolIndex::default();
+        symbols.insert(
+            "HashMap",
+            SymbolLocation {
+                file: "A.java".into(),
+                line: 1,
+                column: 1,
+            },
+        );
+        symbols.insert(
+            "HashSet",
+            SymbolLocation {
+                file: "B.java".into(),
+                line: 1,
+                column: 1,
+            },
+        );
+        symbols.insert(
+            "FooBar",
+            SymbolLocation {
+                file: "C.java".into(),
+                line: 1,
+                column: 1,
+            },
+        );
+
+        let (_results, stats) = fuzzy_rank_workspace_symbols(&symbols, "Hash", 10);
+        assert_eq!(stats.strategy, CandidateStrategy::Trigram);
+        assert!(stats.candidates_considered < symbols.symbols.len());
+    }
+
+    #[test]
+    fn workspace_symbol_search_supports_acronym_queries() {
+        let mut symbols = nova_index::SymbolIndex::default();
+        symbols.insert(
+            "FooBar",
+            SymbolLocation {
+                file: "A.java".into(),
+                line: 1,
+                column: 1,
+            },
+        );
+
+        let (results, _stats) = fuzzy_rank_workspace_symbols(&symbols, "fb", 10);
+        assert_eq!(results[0].name, "FooBar");
     }
 }
 
