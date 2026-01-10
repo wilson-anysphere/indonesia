@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use nova_classfile::ClassFile;
-use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeId, TypeIndex};
+use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
 #[derive(Debug, Error)]
@@ -299,14 +299,14 @@ impl TypeProvider for ClasspathIndex {
 }
 
 impl TypeIndex for ClasspathIndex {
-    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeId> {
+    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
         let dotted = name.to_dotted();
         self.stubs_by_binary
             .contains_key(&dotted)
-            .then(|| TypeId::new(dotted))
+            .then(|| TypeName::new(dotted))
     }
 
-    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeId> {
+    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
         let pkg = package.to_dotted();
         let fq = if pkg.is_empty() {
             name.as_str().to_string()
@@ -315,7 +315,7 @@ impl TypeIndex for ClasspathIndex {
         };
         self.stubs_by_binary
             .contains_key(&fq)
-            .then(|| TypeId::new(fq))
+            .then(|| TypeName::new(fq))
     }
 
     fn package_exists(&self, package: &PackageName) -> bool {
@@ -324,7 +324,7 @@ impl TypeIndex for ClasspathIndex {
             .is_ok()
     }
 
-    fn resolve_static_member(&self, owner: &TypeId, name: &Name) -> Option<StaticMemberId> {
+    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
         const ACC_STATIC: u16 = 0x0008;
 
         let stub = self.stubs_by_binary.get(owner.as_str())?;
