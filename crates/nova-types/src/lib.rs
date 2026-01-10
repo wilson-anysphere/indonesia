@@ -639,7 +639,20 @@ impl TypeEnv for TypeStore {
     }
 
     fn lookup_class(&self, name: &str) -> Option<ClassId> {
-        self.class_by_name.get(name).copied()
+        if let Some(id) = self.class_by_name.get(name).copied() {
+            return Some(id);
+        }
+
+        // Best-effort support for the implicit `java.lang.*` universe scope.
+        // This mirrors Java name resolution rules where `java.lang` is imported
+        // automatically, but avoids forcing callers to always use fully-qualified
+        // names for common types like `String`.
+        if !name.contains('.') {
+            let jlang = format!("java.lang.{name}");
+            return self.class_by_name.get(&jlang).copied();
+        }
+
+        None
     }
 
 fn well_known(&self) -> &WellKnownTypes {
@@ -1577,6 +1590,13 @@ mod tests {
         let env = store();
         let obj = Type::class(env.well_known().object, vec![]);
         assert!(is_assignable(&env, &Type::Null, &obj));
+    }
+
+    #[test]
+    fn type_store_resolves_java_lang_simple_names() {
+        let env = store();
+        assert_eq!(env.class_id("String"), Some(env.well_known().string));
+        assert_eq!(env.class_id("Object"), Some(env.well_known().object));
     }
 
     #[test]
