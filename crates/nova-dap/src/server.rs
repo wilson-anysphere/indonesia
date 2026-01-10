@@ -4,6 +4,7 @@ use crate::dap::messages::{Event, Request, Response};
 use crate::object_registry::ObjectHandle;
 use crate::session::DebugSession;
 use crate::smart_step_into::enumerate_step_in_targets_in_line;
+use crate::stream_debug::{run_stream_debug, StreamDebugArguments, STREAM_DEBUG_COMMAND};
 use anyhow::Context;
 use nova_db::RootDatabase;
 use nova_project::{AttachConfig, LaunchConfig};
@@ -156,6 +157,7 @@ impl<C: JdwpClient> DapServer<C> {
             "scopes" => self.scopes(request),
             "variables" => self.variables(request),
             "evaluate" => self.evaluate(request),
+            STREAM_DEBUG_COMMAND => self.stream_debug(request),
             "continue" | "next" | "stepIn" | "stepOut" | "pause" => self.execution_control(request),
             "nova/pinObject" => self.pin_object(request),
             "disconnect" => self.disconnect(request),
@@ -517,6 +519,29 @@ impl<C: JdwpClient> DapServer<C> {
                     "variablesReference": 0,
                 })),
             ),
+        }
+    }
+
+    fn stream_debug(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
+        let args: StreamDebugArguments = serde_json::from_value(
+            request
+                .arguments
+                .clone()
+                .context("nova/streamDebug requires arguments")?,
+        )?;
+
+        let Some(dap_frame_id) = args.frame_id else {
+            return self.simple_ok(request, Some(json!({ "error": "streamDebug requires a frameId" })));
+        };
+
+        let Some(jdwp_frame_id) = self.frame_ids.get(&dap_frame_id).copied() else {
+            return self.simple_ok(request, Some(json!({ "error": "Unknown frameId" })));
+        };
+
+        let cfg = args.into_config();
+        match run_stream_debug(self.session.jdwp_mut(), jdwp_frame_id, &args.expression, cfg) {
+            Ok(body) => self.simple_ok(request, Some(serde_json::to_value(body)?)),
+            Err(err) => self.simple_ok(request, Some(json!({ "error": err.to_string() }))),
         }
     }
 

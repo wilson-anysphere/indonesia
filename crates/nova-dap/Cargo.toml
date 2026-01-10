@@ -24,6 +24,7 @@ nova-db = { path = "../nova-db" }
 nova-ide = { path = "../nova-ide" }
 nova-project = { path = "../nova-project" }
 nova-jdwp = { path = "../nova-jdwp" }
+nova-stream-debug = { path = "../nova-stream-debug" }
 
 # Hardening / crash recovery support.
 nova-bugreport = { path = "../nova-bugreport" }

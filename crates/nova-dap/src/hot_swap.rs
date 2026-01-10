@@ -95,7 +95,6 @@ fn is_schema_change(error_code: u16) -> bool {
     // `VirtualMachine/RedefineClasses` when the change is not supported.
     matches!(error_code, 21 | 60 | 61 | 62 | 63 | 64 | 66 | 67 | 70 | 71)
 }
-
 /// Hot-swap coordinator combining compilation with JDWP `RedefineClasses`.
 #[derive(Debug)]
 pub struct HotSwapEngine<B, J> {

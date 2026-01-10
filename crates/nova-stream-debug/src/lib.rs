@@ -1,0 +1,1115 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::{Duration, Instant};
+
+use nova_jdwp::{FrameId, JdwpClient, JdwpError, JdwpValue, ObjectKindPreview};
+use nova_types::{PrimitiveType, Type};
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StreamValueKind {
+    Stream,
+    IntStream,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StreamSource {
+    Collection {
+        collection_expr: String,
+        stream_expr: String,
+        method: String,
+    },
+    StaticFactory {
+        class_expr: String,
+        stream_expr: String,
+        method: String,
+    },
+    ExistingStream {
+        stream_expr: String,
+    },
+}
+
+impl StreamSource {
+    pub fn stream_expr(&self) -> &str {
+        match self {
+            StreamSource::Collection { stream_expr, .. } => stream_expr,
+            StreamSource::StaticFactory { stream_expr, .. } => stream_expr,
+            StreamSource::ExistingStream { stream_expr } => stream_expr,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StreamOperationKind {
+    Map,
+    Filter,
+    FlatMap,
+    Sorted,
+    Distinct,
+    Limit,
+    Peek,
+    Collect,
+    Count,
+    ForEach,
+    Reduce,
+    Unknown,
+}
+
+impl StreamOperationKind {
+    fn from_method(name: &str) -> Self {
+        match name {
+            "map" => Self::Map,
+            "filter" => Self::Filter,
+            "flatMap" => Self::FlatMap,
+            "sorted" => Self::Sorted,
+            "distinct" => Self::Distinct,
+            "limit" => Self::Limit,
+            "peek" => Self::Peek,
+            "collect" => Self::Collect,
+            "count" => Self::Count,
+            "forEach" => Self::ForEach,
+            "reduce" => Self::Reduce,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Collect | Self::Count | Self::ForEach | Self::Reduce
+        )
+    }
+
+    fn is_side_effecting(self) -> bool {
+        matches!(self, Self::Peek | Self::ForEach)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedMethod {
+    receiver: Type,
+    name: String,
+    arg_count: usize,
+    return_type: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedMethodInfo {
+    pub receiver: String,
+    pub name: String,
+    pub arg_count: usize,
+    pub return_type: String,
+}
+
+impl From<&ResolvedMethod> for ResolvedMethodInfo {
+    fn from(value: &ResolvedMethod) -> Self {
+        Self {
+            receiver: type_to_string(&value.receiver),
+            name: value.name.clone(),
+            arg_count: value.arg_count,
+            return_type: type_to_string(&value.return_type),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamOperation {
+    pub name: String,
+    pub kind: StreamOperationKind,
+    pub call_source: String,
+    pub arg_count: usize,
+    pub expr: String,
+    pub resolved: Option<ResolvedMethodInfo>,
+}
+
+impl StreamOperation {
+    pub fn is_terminal(&self) -> bool {
+        self.kind.is_terminal()
+    }
+
+    pub fn is_side_effecting(&self) -> bool {
+        self.kind.is_side_effecting()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamChain {
+    pub expression: String,
+    pub stream_kind: StreamValueKind,
+    pub source: StreamSource,
+    pub intermediates: Vec<StreamOperation>,
+    pub terminal: Option<StreamOperation>,
+}
+
+#[derive(Debug, Error)]
+pub enum StreamAnalysisError {
+    #[error("empty expression")]
+    EmptyExpression,
+    #[error("unbalanced parentheses in expression")]
+    UnbalancedParens,
+    #[error("expression does not contain a stream pipeline")]
+    NoStreamPipeline,
+}
+
+pub fn analyze_stream_expression(expr: &str) -> Result<StreamChain, StreamAnalysisError> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return Err(StreamAnalysisError::EmptyExpression);
+    }
+
+    let expr = expr.strip_suffix(';').unwrap_or(expr).trim();
+    let dotted = parse_dotted_expr(expr)?;
+    analyze_dotted_expr(expr, &dotted)
+}
+
+fn analyze_dotted_expr(expr: &str, dotted: &DottedExpr) -> Result<StreamChain, StreamAnalysisError> {
+    if dotted.segments.is_empty() {
+        return Err(StreamAnalysisError::NoStreamPipeline);
+    }
+
+    let mut stream_kind = StreamValueKind::Stream;
+    let mut source_end = None::<usize>;
+    let mut source = None::<StreamSource>;
+
+    for (idx, seg) in dotted.segments.iter().enumerate() {
+        let Some((name, args)) = seg.as_call() else {
+            continue;
+        };
+        let arg_count = args.len();
+
+        match name {
+            "stream" | "parallelStream" if arg_count == 0 && idx > 0 => {
+                source_end = Some(idx);
+                source = Some(StreamSource::Collection {
+                    collection_expr: dotted.prefix_source(idx - 1),
+                    stream_expr: dotted.prefix_source(idx),
+                    method: name.to_string(),
+                });
+                stream_kind = StreamValueKind::Stream;
+                break;
+            }
+            "of" if idx > 0 => {
+                let class_expr = dotted.prefix_source(idx - 1);
+                if class_expr.ends_with("Stream") {
+                    source_end = Some(idx);
+                    source = Some(StreamSource::StaticFactory {
+                        class_expr,
+                        stream_expr: dotted.prefix_source(idx),
+                        method: name.to_string(),
+                    });
+                    stream_kind = StreamValueKind::Stream;
+                    break;
+                }
+            }
+            "range" | "rangeClosed" if idx > 0 && arg_count == 2 => {
+                let class_expr = dotted.prefix_source(idx - 1);
+                if class_expr.ends_with("IntStream") {
+                    source_end = Some(idx);
+                    source = Some(StreamSource::StaticFactory {
+                        class_expr,
+                        stream_expr: dotted.prefix_source(idx),
+                        method: name.to_string(),
+                    });
+                    stream_kind = StreamValueKind::IntStream;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let source_end = if let Some(source_end) = source_end {
+        source_end
+    } else {
+        let first_op = dotted
+            .segments
+            .iter()
+            .enumerate()
+            .find_map(|(idx, seg)| {
+                let (name, _) = seg.as_call()?;
+                let kind = StreamOperationKind::from_method(name);
+                (kind != StreamOperationKind::Unknown).then_some(idx)
+            })
+            .ok_or(StreamAnalysisError::NoStreamPipeline)?;
+
+        if first_op == 0 {
+            return Err(StreamAnalysisError::NoStreamPipeline);
+        }
+
+        source = Some(StreamSource::ExistingStream {
+            stream_expr: dotted.prefix_source(first_op - 1),
+        });
+        first_op - 1
+    };
+
+    let source = source.ok_or(StreamAnalysisError::NoStreamPipeline)?;
+
+    let mut receiver = stream_receiver_type(stream_kind);
+    let mut intermediates = Vec::new();
+    let mut terminal = None;
+
+    for (idx, seg) in dotted.segments.iter().enumerate().skip(source_end + 1) {
+        let Some((name, args)) = seg.as_call() else {
+            continue;
+        };
+        let arg_count = args.len();
+        let kind = StreamOperationKind::from_method(name);
+        if kind == StreamOperationKind::Unknown {
+            break;
+        }
+
+        let Some(resolved) = resolve_stream_method(&receiver, name, arg_count) else {
+            break;
+        };
+
+        let op = StreamOperation {
+            name: name.to_string(),
+            kind,
+            call_source: seg.source.clone(),
+            arg_count,
+            expr: dotted.prefix_source(idx),
+            resolved: Some(ResolvedMethodInfo::from(&resolved)),
+        };
+
+        receiver = resolved.return_type.clone();
+
+        if op.is_terminal() {
+            terminal = Some(op);
+            break;
+        }
+
+        intermediates.push(op);
+    }
+
+    Ok(StreamChain {
+        expression: expr.to_string(),
+        stream_kind,
+        source,
+        intermediates,
+        terminal,
+    })
+}
+
+fn resolve_stream_method(receiver: &Type, name: &str, arg_count: usize) -> Option<ResolvedMethod> {
+    let receiver_name = match receiver {
+        Type::Named(name) => name.as_str(),
+        _ => return None,
+    };
+
+    let (return_type, ok) = match receiver_name {
+        "java.util.stream.Stream" => (resolve_stream_method_stream(name, arg_count)?, true),
+        "java.util.stream.IntStream" => (resolve_stream_method_int_stream(name, arg_count)?, true),
+        _ => (Type::Unknown, false),
+    };
+
+    ok.then_some(ResolvedMethod {
+        receiver: receiver.clone(),
+        name: name.to_string(),
+        arg_count,
+        return_type,
+    })
+}
+
+fn resolve_stream_method_stream(name: &str, arg_count: usize) -> Option<Type> {
+    match (name, arg_count) {
+        ("map", 1)
+        | ("filter", 1)
+        | ("flatMap", 1)
+        | ("sorted", 0)
+        | ("sorted", 1)
+        | ("distinct", 0)
+        | ("limit", 1)
+        | ("peek", 1) => Some(Type::Named("java.util.stream.Stream".to_string())),
+        ("collect", 1) | ("collect", 3) => Some(Type::Named("java.lang.Object".to_string())),
+        ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
+        ("forEach", 1) => Some(Type::Void),
+        ("reduce", 1) | ("reduce", 2) | ("reduce", 3) => Some(Type::Named("java.lang.Object".to_string())),
+        _ => None,
+    }
+}
+
+fn resolve_stream_method_int_stream(name: &str, arg_count: usize) -> Option<Type> {
+    match (name, arg_count) {
+        ("map", 1) | ("filter", 1) | ("distinct", 0) | ("limit", 1) | ("peek", 1) => {
+            Some(Type::Named("java.util.stream.IntStream".to_string()))
+        }
+        ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
+        _ => None,
+    }
+}
+
+fn stream_receiver_type(kind: StreamValueKind) -> Type {
+    match kind {
+        StreamValueKind::Stream => Type::Named("java.util.stream.Stream".to_string()),
+        StreamValueKind::IntStream => Type::Named("java.util.stream.IntStream".to_string()),
+    }
+}
+
+fn type_to_string(ty: &Type) -> String {
+    match ty {
+        Type::Void => "void".to_string(),
+        Type::Primitive(p) => match p {
+            PrimitiveType::Boolean => "boolean",
+            PrimitiveType::Byte => "byte",
+            PrimitiveType::Short => "short",
+            PrimitiveType::Char => "char",
+            PrimitiveType::Int => "int",
+            PrimitiveType::Long => "long",
+            PrimitiveType::Float => "float",
+            PrimitiveType::Double => "double",
+        }
+        .to_string(),
+        Type::Named(name) => name.clone(),
+        Type::Null => "null".to_string(),
+        Type::Unknown => "<unknown>".to_string(),
+        Type::Error => "<error>".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl CancellationToken {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamDebugConfig {
+    pub max_sample_size: usize,
+    pub max_total_time: Duration,
+    pub allow_side_effects: bool,
+    pub allow_terminal_ops: bool,
+}
+
+impl Default for StreamDebugConfig {
+    fn default() -> Self {
+        Self {
+            max_sample_size: 25,
+            max_total_time: Duration::from_millis(250),
+            allow_side_effects: false,
+            allow_terminal_ops: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamSample {
+    pub elements: Vec<String>,
+    pub truncated: bool,
+    pub element_type: Option<String>,
+    pub collection_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamStepResult {
+    pub operation: String,
+    pub kind: StreamOperationKind,
+    pub executed: bool,
+    pub input: StreamSample,
+    pub output: StreamSample,
+    pub duration_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamTerminalResult {
+    pub operation: String,
+    pub kind: StreamOperationKind,
+    pub executed: bool,
+    pub value: Option<String>,
+    pub type_name: Option<String>,
+    pub duration_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamDebugResult {
+    pub expression: String,
+    pub source: StreamSource,
+    pub source_sample: StreamSample,
+    pub source_duration_ms: u128,
+    pub steps: Vec<StreamStepResult>,
+    pub terminal: Option<StreamTerminalResult>,
+    pub total_duration_ms: u128,
+}
+
+#[derive(Debug, Error)]
+pub enum StreamDebugError {
+    #[error(transparent)]
+    Analysis(#[from] StreamAnalysisError),
+    #[error("evaluation cancelled")]
+    Cancelled,
+    #[error("evaluation exceeded time limit")]
+    Timeout,
+    #[error(transparent)]
+    Jdwp(#[from] JdwpError),
+    #[error("expected collection result from evaluation")]
+    ExpectedCollection,
+}
+
+pub fn debug_stream<C: JdwpClient>(
+    jdwp: &mut C,
+    frame_id: FrameId,
+    chain: &StreamChain,
+    config: &StreamDebugConfig,
+    cancel: &CancellationToken,
+) -> Result<StreamDebugResult, StreamDebugError> {
+    let started = Instant::now();
+
+    let enforce_limits = || {
+        if cancel.is_cancelled() {
+            return Err(StreamDebugError::Cancelled);
+        }
+        if started.elapsed() > config.max_total_time {
+            return Err(StreamDebugError::Timeout);
+        }
+        Ok(())
+    };
+
+    enforce_limits()?;
+
+    let mut safe_expr = chain.source.stream_expr().to_string();
+    let sample_suffix = sample_suffix(chain.stream_kind, config.max_sample_size);
+
+    let source_eval_expr = format!("{safe_expr}{sample_suffix}");
+    let (source_sample, source_duration_ms) =
+        timed(|| eval_sample(jdwp, frame_id, &source_eval_expr))?;
+
+    let mut last_sample = source_sample.clone();
+    let mut steps = Vec::new();
+
+    for op in &chain.intermediates {
+        enforce_limits()?;
+
+        if op.is_side_effecting() && !config.allow_side_effects {
+            steps.push(StreamStepResult {
+                operation: op.name.clone(),
+                kind: op.kind,
+                executed: false,
+                input: last_sample.clone(),
+                output: last_sample.clone(),
+                duration_ms: 0,
+            });
+            continue;
+        }
+
+        safe_expr = format!("{safe_expr}.{}", op.call_source);
+        let eval_expr = format!("{safe_expr}{sample_suffix}");
+        let (output, duration_ms) = timed(|| eval_sample(jdwp, frame_id, &eval_expr))?;
+
+        steps.push(StreamStepResult {
+            operation: op.name.clone(),
+            kind: op.kind,
+            executed: true,
+            input: last_sample.clone(),
+            output: output.clone(),
+            duration_ms,
+        });
+        last_sample = output;
+    }
+
+    let terminal = if let Some(term) = &chain.terminal {
+        if !config.allow_terminal_ops || (term.is_side_effecting() && !config.allow_side_effects) {
+            Some(StreamTerminalResult {
+                operation: term.name.clone(),
+                kind: term.kind,
+                executed: false,
+                value: None,
+                type_name: None,
+                duration_ms: 0,
+            })
+        } else {
+            enforce_limits()?;
+            let eval_expr = format!(
+                "{safe_expr}.limit({}).{}",
+                config.max_sample_size, term.call_source
+            );
+            let (value, duration_ms) = timed(|| eval_scalar(jdwp, frame_id, &eval_expr))?;
+            Some(StreamTerminalResult {
+                operation: term.name.clone(),
+                kind: term.kind,
+                executed: true,
+                value: Some(value.display),
+                type_name: value.type_name,
+                duration_ms,
+            })
+        }
+    } else {
+        None
+    };
+
+    Ok(StreamDebugResult {
+        expression: chain.expression.clone(),
+        source: chain.source.clone(),
+        source_sample,
+        source_duration_ms,
+        steps,
+        terminal,
+        total_duration_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn sample_suffix(stream_kind: StreamValueKind, max: usize) -> String {
+    match stream_kind {
+        StreamValueKind::Stream => format!(
+            ".limit({}).collect(java.util.stream.Collectors.toList())",
+            max
+        ),
+        StreamValueKind::IntStream => format!(
+            ".limit({}).boxed().collect(java.util.stream.Collectors.toList())",
+            max
+        ),
+    }
+}
+
+fn eval_sample<C: JdwpClient>(
+    jdwp: &mut C,
+    frame_id: FrameId,
+    expression: &str,
+) -> Result<StreamSample, StreamDebugError> {
+    let value = jdwp.evaluate(expression, frame_id)?;
+    let obj = match value {
+        JdwpValue::Object(obj) => obj,
+        _ => return Err(StreamDebugError::ExpectedCollection),
+    };
+
+    let preview = jdwp.preview_object(obj.id)?;
+    let (raw_elements, size, collection_type) = match preview.kind {
+        ObjectKindPreview::List { size, sample } => (sample, size, preview.runtime_type),
+        ObjectKindPreview::Set { size, sample } => (sample, size, preview.runtime_type),
+        ObjectKindPreview::Array { length, sample, .. } => (sample, length, preview.runtime_type),
+        _ => return Err(StreamDebugError::ExpectedCollection),
+    };
+
+    let truncated = raw_elements.len() < size;
+    let element_type = infer_element_type(&raw_elements);
+    let elements = raw_elements
+        .iter()
+        .map(|v| format_value(jdwp, v))
+        .collect();
+
+    Ok(StreamSample {
+        elements,
+        truncated,
+        element_type,
+        collection_type: Some(collection_type),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScalarPreview {
+    display: String,
+    type_name: Option<String>,
+}
+
+fn eval_scalar<C: JdwpClient>(
+    jdwp: &mut C,
+    frame_id: FrameId,
+    expression: &str,
+) -> Result<ScalarPreview, StreamDebugError> {
+    let value = jdwp.evaluate(expression, frame_id)?;
+    Ok(ScalarPreview {
+        display: format_value(jdwp, &value),
+        type_name: Some(type_name_for_value(&value)),
+    })
+}
+
+fn infer_element_type(sample: &[JdwpValue]) -> Option<String> {
+    sample
+        .iter()
+        .find(|v| !matches!(v, JdwpValue::Null))
+        .map(type_name_for_value)
+}
+
+fn type_name_for_value(value: &JdwpValue) -> String {
+    match value {
+        JdwpValue::Null => "null".to_string(),
+        JdwpValue::Void => "void".to_string(),
+        JdwpValue::Boolean(_) => "boolean".to_string(),
+        JdwpValue::Byte(_) => "byte".to_string(),
+        JdwpValue::Short(_) => "short".to_string(),
+        JdwpValue::Int(_) => "int".to_string(),
+        JdwpValue::Long(_) => "long".to_string(),
+        JdwpValue::Float(_) => "float".to_string(),
+        JdwpValue::Double(_) => "double".to_string(),
+        JdwpValue::Char(_) => "char".to_string(),
+        JdwpValue::Object(obj) => obj.runtime_type.clone(),
+    }
+}
+
+fn format_value<C: JdwpClient>(jdwp: &mut C, value: &JdwpValue) -> String {
+    match value {
+        JdwpValue::Null => "null".to_string(),
+        JdwpValue::Void => "void".to_string(),
+        JdwpValue::Boolean(v) => v.to_string(),
+        JdwpValue::Byte(v) => v.to_string(),
+        JdwpValue::Short(v) => v.to_string(),
+        JdwpValue::Int(v) => v.to_string(),
+        JdwpValue::Long(v) => v.to_string(),
+        JdwpValue::Float(v) => v.to_string(),
+        JdwpValue::Double(v) => v.to_string(),
+        JdwpValue::Char(v) => v.to_string(),
+        JdwpValue::Object(obj) => {
+            if obj.runtime_type == "java.lang.String" {
+                if let Ok(preview) = jdwp.preview_object(obj.id) {
+                    if let ObjectKindPreview::String { value } = preview.kind {
+                        return value;
+                    }
+                }
+            }
+            format!("{}#{}", obj.runtime_type, obj.id)
+        }
+    }
+}
+
+fn timed<T, E>(f: impl FnOnce() -> Result<T, E>) -> Result<(T, u128), E> {
+    let start = Instant::now();
+    let value = f()?;
+    Ok((value, start.elapsed().as_millis()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DottedExpr {
+    segments: Vec<Segment>,
+}
+
+impl DottedExpr {
+    fn prefix_source(&self, end: usize) -> String {
+        self.segments
+            .iter()
+            .take(end + 1)
+            .map(|s| s.source.as_str())
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SegmentKind {
+    Access,
+    Call { name: String, args: Vec<String> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Segment {
+    source: String,
+    kind: SegmentKind,
+}
+
+impl Segment {
+    fn as_call(&self) -> Option<(&str, &[String])> {
+        match &self.kind {
+            SegmentKind::Call { name, args } => Some((name.as_str(), args.as_slice())),
+            _ => None,
+        }
+    }
+}
+
+fn parse_dotted_expr(source: &str) -> Result<DottedExpr, StreamAnalysisError> {
+    let raw_segments = split_top_level(source, '.')?;
+    let mut segments = Vec::with_capacity(raw_segments.len());
+
+    for raw in raw_segments {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+
+        if let Some((name, args)) = parse_call_segment(raw)? {
+            segments.push(Segment {
+                source: raw.to_string(),
+                kind: SegmentKind::Call { name, args },
+            });
+        } else {
+            segments.push(Segment {
+                source: raw.to_string(),
+                kind: SegmentKind::Access,
+            });
+        }
+    }
+
+    Ok(DottedExpr { segments })
+}
+
+fn parse_call_segment(raw: &str) -> Result<Option<(String, Vec<String>)>, StreamAnalysisError> {
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_brace = 0usize;
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+    let mut open_paren_idx = None;
+
+    for (i, ch) in raw.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_str {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if in_char {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '\'' => in_char = true,
+            '(' => {
+                if depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 {
+                    open_paren_idx = Some(i);
+                    break;
+                }
+                depth_paren += 1;
+            }
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            _ => {}
+        }
+    }
+
+    let Some(open_paren_idx) = open_paren_idx else {
+        return Ok(None);
+    };
+
+    let (head, tail) = raw.split_at(open_paren_idx);
+    let mut head = head.trim();
+
+    if let Some(stripped) = head.strip_prefix('<') {
+        let (_, rest) = split_angle_args(stripped)?;
+        head = rest.trim();
+    }
+
+    let name = head.to_string();
+    if name.is_empty() {
+        return Err(StreamAnalysisError::UnbalancedParens);
+    }
+
+    let args_raw = extract_matching_parens(tail).ok_or(StreamAnalysisError::UnbalancedParens)?;
+    let args = split_top_level(args_raw, ',')?
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    Ok(Some((name, args)))
+}
+
+fn split_top_level(source: &str, delim: char) -> Result<Vec<&str>, StreamAnalysisError> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+
+    let mut depth_paren = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_brace = 0usize;
+    let mut depth_angle = 0usize;
+
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    for (i, ch) in source.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_str {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if in_char {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '\'' => in_char = true,
+            '(' => depth_paren += 1,
+            ')' => depth_paren = depth_paren.saturating_sub(1),
+            '[' => depth_bracket += 1,
+            ']' => depth_bracket = depth_bracket.saturating_sub(1),
+            '{' => depth_brace += 1,
+            '}' => depth_brace = depth_brace.saturating_sub(1),
+            '<' => depth_angle += 1,
+            '>' => depth_angle = depth_angle.saturating_sub(1),
+            _ => {}
+        }
+
+        if ch == delim
+            && depth_paren == 0
+            && depth_bracket == 0
+            && depth_brace == 0
+            && depth_angle == 0
+            && !in_str
+            && !in_char
+        {
+            parts.push(&source[start..i]);
+            start = i + ch.len_utf8();
+        }
+    }
+
+    if depth_paren != 0 || depth_bracket != 0 || depth_brace != 0 {
+        return Err(StreamAnalysisError::UnbalancedParens);
+    }
+
+    parts.push(&source[start..]);
+    Ok(parts)
+}
+
+fn extract_matching_parens(tail: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    let mut start = None;
+    for (i, ch) in tail.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_str {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if in_char {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '\'' => in_char = true,
+            '(' => {
+                if depth == 0 {
+                    start = Some(i + 1);
+                }
+                depth += 1;
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    let start = start?;
+                    return Some(&tail[start..i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_angle_args(source: &str) -> Result<(&str, &str), StreamAnalysisError> {
+    let mut depth_angle = 1usize;
+    let mut in_str = false;
+    let mut in_char = false;
+    let mut escape = false;
+
+    for (i, ch) in source.char_indices() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_str {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        if in_char {
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '\'' {
+                in_char = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_str = true,
+            '\'' => in_char = true,
+            '<' => depth_angle += 1,
+            '>' => {
+                depth_angle = depth_angle.saturating_sub(1);
+                if depth_angle == 0 {
+                    let inside = &source[..i];
+                    let rest = &source[i + 1..];
+                    return Ok((inside, rest));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Err(StreamAnalysisError::UnbalancedParens)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nova_jdwp::{MockJdwpClient, MockObject, ObjectPreview, ObjectRef};
+
+    #[test]
+    fn extracts_collection_stream_chain() {
+        let expr = "list.stream().filter(x -> x > 0).map(x -> x * 2).collect(Collectors.toList())";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        match &chain.source {
+            StreamSource::Collection {
+                collection_expr,
+                stream_expr,
+                method,
+            } => {
+                assert_eq!(collection_expr, "list");
+                assert_eq!(stream_expr, "list.stream()");
+                assert_eq!(method, "stream");
+            }
+            _ => panic!("expected collection source"),
+        }
+
+        assert_eq!(chain.intermediates.len(), 2);
+        assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Filter);
+        assert_eq!(chain.intermediates[1].kind, StreamOperationKind::Map);
+        assert_eq!(chain.terminal.as_ref().unwrap().kind, StreamOperationKind::Collect);
+    }
+
+    #[test]
+    fn debug_stream_evaluates_each_stage_with_mock_jdwp() {
+        let expr = "list.stream().filter(x -> x > 0).map(x -> x * 2).count()";
+        let chain = analyze_stream_expression(expr).unwrap();
+
+        let mut jdwp = MockJdwpClient::new();
+        jdwp.set_evaluation(
+            1,
+            "list.stream().limit(3).collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 10,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            10,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 3,
+                        sample: vec![JdwpValue::Int(1), JdwpValue::Int(2), JdwpValue::Int(3)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "list.stream().filter(x -> x > 0).limit(3).collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 11,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            11,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 2,
+                        sample: vec![JdwpValue::Int(2), JdwpValue::Int(3)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "list.stream().filter(x -> x > 0).map(x -> x * 2).limit(3).collect(java.util.stream.Collectors.toList())",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 12,
+                runtime_type: "java.util.ArrayList".to_string(),
+            })),
+        );
+        jdwp.insert_object(
+            12,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "java.util.ArrayList".to_string(),
+                    kind: ObjectKindPreview::List {
+                        size: 2,
+                        sample: vec![JdwpValue::Int(4), JdwpValue::Int(6)],
+                    },
+                },
+                children: Vec::new(),
+            },
+        );
+
+        jdwp.set_evaluation(
+            1,
+            "list.stream().filter(x -> x > 0).map(x -> x * 2).limit(3).count()",
+            Ok(JdwpValue::Long(2)),
+        );
+
+        let config = StreamDebugConfig {
+            max_sample_size: 3,
+            max_total_time: Duration::from_secs(1),
+            allow_side_effects: false,
+            allow_terminal_ops: true,
+        };
+        let cancel = CancellationToken::default();
+        let result = debug_stream(&mut jdwp, 1, &chain, &config, &cancel).unwrap();
+
+        assert_eq!(result.source_sample.elements, vec!["1", "2", "3"]);
+        assert_eq!(result.steps.len(), 2);
+        assert_eq!(result.steps[0].output.elements, vec!["2", "3"]);
+        assert_eq!(result.steps[1].output.elements, vec!["4", "6"]);
+        assert_eq!(result.terminal.as_ref().unwrap().value.as_deref(), Some("2"));
+    }
+}
+

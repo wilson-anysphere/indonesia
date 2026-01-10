@@ -3218,6 +3218,7 @@ dependencies = [
  "nova-jdwp",
  "nova-project",
  "nova-scheduler",
+ "nova-stream-debug",
  "serde",
  "serde_json",
  "tempfile",
@@ -3701,6 +3702,16 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "zstd 0.13.3",
+]
+
+[[package]]
+name = "nova-stream-debug"
+version = "0.1.0"
+dependencies = [
+ "nova-jdwp",
+ "nova-types",
+ "serde",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
