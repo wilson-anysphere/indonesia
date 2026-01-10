@@ -1,0 +1,14 @@
+# Benchmarks listed here are allowed to regress (use sparingly; prefer updating thresholds
+# only when the regression is expected/acceptable).
+allow_regressions = []
+
+[default]
+# Performance is a feature: fail CI when critical paths regress.
+#
+# Thresholds are expressed as fractional regression (e.g. 0.10 = +10% slower).
+p50_regression = 0.10
+p95_regression = 0.20
+
+[benchmarks]
+# Per-benchmark overrides go here, for example:
+# "parsing/large" = { p50_regression = 0.15, p95_regression = 0.30 }

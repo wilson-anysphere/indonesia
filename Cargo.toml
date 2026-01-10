@@ -43,6 +43,7 @@ members = [
     "crates/nova-router",
     "crates/nova-scheduler",
     "crates/nova-worker",
+    "crates/nova-perf",
 ]
 
 [workspace.package]

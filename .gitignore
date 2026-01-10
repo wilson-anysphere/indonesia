@@ -1,5 +1,4 @@
 **/target/
-
 .idea/
 .vscode/
 .nova/
@@ -16,6 +15,10 @@ Cargo.lock
 # Local-only agent files
 scratchpad.md
 handoff.md
+
+# Local perf artifacts / CI downloads
+perf-*.json
+perf-*.md
 
 # Real-world fixture projects (cloned locally)
 test-projects/**

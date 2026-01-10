@@ -1,5 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use nova_perf::{compare_runs, load_criterion_directory, BenchRun, ThresholdConfig};
 use nova_workspace::{
     CacheStatus, DiagnosticsReport, IndexReport, ParseResult, Workspace, WorkspaceSymbol,
 };
@@ -27,7 +28,7 @@ enum Command {
     Symbols(SymbolsArgs),
     /// Manage persistent cache (defaults to `~/.nova/cache/<project-hash>/`, override with `NOVA_CACHE_DIR`)
     Cache(CacheArgs),
-    /// Print performance metrics captured during indexing
+    /// Performance tools (cached perf report + benchmark comparison)
     Perf(PerfArgs),
     /// Print a debug parse tree / errors for a single file
     Parse(ParseArgs),
@@ -87,7 +88,35 @@ struct PerfArgs {
 
 #[derive(Subcommand)]
 enum PerfCommand {
+    /// Print cached perf metrics captured during indexing (`nova index ...`).
     Report(WorkspaceArgs),
+    /// Convert a `criterion` output directory into a compact JSON summary.
+    Capture {
+        /// Path to `target/criterion`.
+        #[arg(long)]
+        criterion_dir: PathBuf,
+        /// Path to write the output JSON file.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Compare two benchmark runs and fail if configured regression thresholds are exceeded.
+    Compare {
+        /// Baseline run JSON file OR a `criterion` directory.
+        #[arg(long)]
+        baseline: PathBuf,
+        /// Current run JSON file OR a `criterion` directory.
+        #[arg(long)]
+        current: PathBuf,
+        /// Optional thresholds config (TOML).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Allow regressions for these benchmark IDs (repeatable).
+        #[arg(long)]
+        allow: Vec<String>,
+        /// Optional path to write the markdown report.
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
 }
 
 #[derive(Args, Clone)]
@@ -172,30 +201,69 @@ fn run(cli: Cli) -> Result<i32> {
             }
             Ok(0)
         }
-        Command::Perf(args) => {
-            match args.command {
-                PerfCommand::Report(args) => {
-                    let ws = Workspace::open(&args.path)?;
-                    let perf = ws.perf_report()?;
-                    if args.json {
-                        print_output(&PerfEnvelope { perf }, true)?;
-                    } else if let Some(perf) = perf {
-                        println!("perf:");
-                        println!("  files_total: {}", perf.files_total);
-                        println!("  files_indexed: {}", perf.files_indexed);
-                        println!("  bytes_indexed: {}", perf.bytes_indexed);
-                        println!("  symbols_indexed: {}", perf.symbols_indexed);
-                        println!("  elapsed_ms: {}", perf.elapsed_ms);
-                        if let Some(rss) = perf.rss_bytes {
-                            println!("  rss_bytes: {}", rss);
-                        }
-                    } else {
-                        println!("perf: no cached metrics found (run `nova index <path>` or `nova cache warm`)");
+        Command::Perf(args) => match args.command {
+            PerfCommand::Report(args) => {
+                let ws = Workspace::open(&args.path)?;
+                let perf = ws.perf_report()?;
+                if args.json {
+                    print_output(&PerfEnvelope { perf }, true)?;
+                } else if let Some(perf) = perf {
+                    println!("perf:");
+                    println!("  files_total: {}", perf.files_total);
+                    println!("  files_indexed: {}", perf.files_indexed);
+                    println!("  bytes_indexed: {}", perf.bytes_indexed);
+                    println!("  symbols_indexed: {}", perf.symbols_indexed);
+                    println!("  elapsed_ms: {}", perf.elapsed_ms);
+                    if let Some(rss) = perf.rss_bytes {
+                        println!("  rss_bytes: {}", rss);
                     }
+                } else {
+                    println!(
+                        "perf: no cached metrics found (run `nova index <path>` or `nova cache warm`)"
+                    );
                 }
+                Ok(0)
             }
-            Ok(0)
-        }
+            PerfCommand::Capture { criterion_dir, out } => {
+                let run = load_criterion_directory(&criterion_dir).with_context(|| {
+                    format!("load criterion directory {}", criterion_dir.display())
+                })?;
+                run.write_json(&out)?;
+                println!("wrote {}", out.display());
+                Ok(0)
+            }
+            PerfCommand::Compare {
+                baseline,
+                current,
+                config,
+                allow,
+                markdown_out,
+            } => {
+                let baseline_run = load_run_from_path(&baseline)
+                    .with_context(|| format!("load baseline run from {}", baseline.display()))?;
+                let current_run = load_run_from_path(&current)
+                    .with_context(|| format!("load current run from {}", current.display()))?;
+
+                let config = match config {
+                    Some(path) => ThresholdConfig::read_toml(&path)
+                        .with_context(|| format!("load thresholds config {}", path.display()))?,
+                    None => ThresholdConfig::default(),
+                };
+
+                let comparison = compare_runs(&baseline_run, &current_run, &config, &allow);
+                let markdown = comparison.to_markdown();
+
+                if let Some(path) = markdown_out {
+                    std::fs::write(&path, &markdown).with_context(|| {
+                        format!("failed to write markdown report to {}", path.display())
+                    })?;
+                }
+
+                print!("{markdown}");
+
+                Ok(if comparison.has_failure { 1 } else { 0 })
+            }
+        },
         Command::Parse(args) => {
             let ws = Workspace::open(&args.file)?;
             let result = ws.parse_file(&args.file)?;
@@ -319,4 +387,11 @@ fn print_cache_status(status: &CacheStatus, json: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn load_run_from_path(path: &PathBuf) -> Result<BenchRun> {
+    if path.is_dir() {
+        return load_criterion_directory(path);
+    }
+    BenchRun::read_json(path)
 }

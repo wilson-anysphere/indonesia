@@ -1,0 +1,73 @@
+name: perf
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  perf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      # Use a shared target dir so the baseline + current worktrees can reuse build artifacts.
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Bench (baseline)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euxo pipefail
+          git worktree add /tmp/nova-perf-base ${{ github.event.pull_request.base.sha }}
+          pushd /tmp/nova-perf-base
+          cargo bench -p nova-core --bench critical_paths
+          cargo run -p nova-cli --release -- perf capture \
+            --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
+            --out "${GITHUB_WORKSPACE}/perf-base.json"
+          popd
+
+      - name: Bench (current)
+        run: |
+          set -euxo pipefail
+          cargo bench -p nova-core --bench critical_paths
+          cargo run -p nova-cli --release -- perf capture \
+            --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
+            --out perf-current.json
+
+      - name: Compare
+        if: github.event_name == 'pull_request'
+        run: |
+          set -uox pipefail
+          cargo run -p nova-cli --release -- perf compare \
+            --baseline perf-base.json \
+            --current perf-current.json \
+            --config perf/thresholds.toml \
+            --markdown-out perf-report.md
+          status=$?
+          cat perf-report.md >> "${GITHUB_STEP_SUMMARY}"
+          exit $status
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results
+          if-no-files-found: ignore
+          path: |
+            perf-base.json
+            perf-current.json
+            perf-report.md
+
