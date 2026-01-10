@@ -21,7 +21,7 @@ Adopt a **snapshot reads + single-writer updates** model.
 ### Database access rules
 
 - The authoritative `RootDatabase` is mutated only on a **single writer path**.
-- Read operations are performed on **snapshots** (`salsa::ParallelDatabase::snapshot()`), which:
+- Read operations are performed on **snapshots** (`ra_salsa::ParallelDatabase::snapshot()`), which:
   - are immutable,
   - can run concurrently across threads,
   - see a consistent revision.

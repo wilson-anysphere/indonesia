@@ -24,12 +24,14 @@ Use a canonical internal representation for “document identity” with explici
    - Canonical form: absolute path, normalized separators, percent-encoded as required by RFC 3986.
 
 2. **Archive entries (JAR/JMOD)**
-   - LSP URI scheme: `jar`
+   - LSP URI scheme: `jar` (for `.jar`) and `jmod` (for `.jmod`)
    - Canonical form:
-     - `jar:///ABSOLUTE/PATH/TO/archive.jar!/path/inside/archive/Entry.java`
-     - `jar:///ABSOLUTE/PATH/TO/archive.jmod!/path/inside/archive/Entry.class`
+     - `jar:<file-uri>!/path/inside/archive/Entry.java`
+     - `jmod:<file-uri>!/path/inside/archive/Entry.class`
+     - Example:
+       - `jar:file:///home/me/.m2/repo/example.jar!/com/example/Foo.java`
    - Rules:
-     - archive path is absolute and normalized,
+     - `<file-uri>` MUST be a valid `file:` URI (so OS-specific path escaping lives in one place),
      - `!` separates archive path from entry path,
      - entry path always uses `/` and MUST NOT contain `..`.
 
@@ -48,6 +50,7 @@ Use a canonical internal representation for “document identity” with explici
   - prefer logical normalization (clean `.`/`..`) over filesystem canonicalization to avoid forcing symlink resolution and to handle non-existent-but-open documents.
 - For non-file URIs:
   - treat the URI as an opaque identifier after parsing/validation; do not attempt to “canonicalize” via filesystem calls.
+  - in particular, archive URIs (`jar:`/`jmod:`) SHOULD be parsed into the existing structured archive path representation (e.g. `nova-vfs::ArchivePath`) rather than stored as unstructured strings.
 
 ## Alternatives considered
 
@@ -60,14 +63,23 @@ Cons:
 - normalization rules become scattered and inconsistent,
 - easy to accidentally treat semantically-equal URIs as distinct (percent encoding, path casing, etc.).
 
-### B. Reuse Java’s `jar:file:///...!/` URI form
+### B. Path-only archive URIs (no embedded `file:` URI)
 
 Pros:
-- familiar to Java tooling.
+- shorter and avoids an inner `file:` URI payload.
 
 Cons:
-- nested URI forms are awkward to parse/print consistently in Rust,
-- more opportunities for inconsistent escaping.
+- requires re-implementing OS-specific path escaping/normalization for the archive path (especially on Windows),
+- increases the chance of subtly non-canonical URIs being treated as distinct cache keys.
+
+### C. Custom non-URI archive identifiers (e.g. `jar:/path/to/a.jar!Entry.java`)
+
+Pros:
+- easy to print and resembles existing internal debug formatting.
+
+Cons:
+- tends to break on Windows (`C:\...` and backslashes),
+- harder to validate and normalize consistently at the protocol boundary.
 
 ## Consequences
 

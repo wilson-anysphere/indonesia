@@ -74,7 +74,7 @@ This document describes Nova's high-level architecture—the system design that 
 │  │                 FOUNDATION LAYER                                │     │
 │  │                                                                 │     │
 │  │  ┌──────────────────────────────────────────────────────┐     │     │
-│  │  │              QUERY DATABASE (Salsa-like)              │     │     │
+│  │  │              QUERY DATABASE (Salsa-based)             │     │     │
 │  │  │  • Memoization  • Dependency tracking  • Invalidation │     │     │
 │  │  └──────────────────────────────────────────────────────┘     │     │
 │  │  ┌──────────────┐  ┌────────────────┐  ┌─────────────────┐    │     │

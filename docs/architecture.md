@@ -23,7 +23,7 @@ This repository contains working code **and** forward-looking design docs. Some 
 
 Notable “delta” areas to be aware of:
 
-- Incremental engine: the workspace does not yet use `salsa`; some crates contain placeholder database types.
+- Incremental engine: Nova uses Salsa already (via `ra_ap_salsa` / `ra_salsa` in `crates/nova-db`), but the set of queries and how broadly they cover analysis is still evolving.
 - Protocols: there is a minimal stdio JSON message loop in the current `nova-lsp` binary; ADR 0003 selects `lsp-server` for the long-term LSP transport.
-- Persistence: several caches are currently `serde`/`bincode`-based; ADR 0005 selects `rkyv` for large mmap-friendly stores, with `serde` formats still acceptable for small metadata/config.
-- URIs: core helpers currently focus on `file:` URIs; archive paths exist internally (JAR/JMOD) but are not yet fully exposed as LSP URIs.
+- Persistence: the workspace uses both `rkyv` (for mmap-friendly indexes) and `serde`/`bincode` (for smaller caches). ADR 0005 documents when each is appropriate and the versioning/invalidation policy.
+- URIs: `nova-core` provides robust `file:` URI <-> path conversion, and `nova-vfs` models archive paths (JAR/JMOD), but LSP-facing canonical URIs for archives/virtual documents are still being standardized (ADR 0006).

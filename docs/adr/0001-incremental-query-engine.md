@@ -17,20 +17,34 @@ Nova’s design docs already assume a “Salsa-like” database, snapshots, quer
 
 ## Decision
 
-Use **`salsa` (crate `salsa`, v0.17.x)** as Nova’s incremental query engine.
+Use **Salsa**, via **`ra_ap_salsa`** (crate `ra_ap_salsa`, imported in code as `ra_salsa`), as Nova’s incremental query engine.
+
+This repository already uses `ra_ap_salsa` in `crates/nova-db` to provide:
+
+- query groups (`#[ra_salsa::query_group]`),
+- snapshots (`ra_salsa::ParallelDatabase`),
+- early cutoff (via `Eq`-based memoization),
+- and cooperative cancellation (`unwind_if_cancelled` checkpoints).
+
+### Version / upgrade policy
+
+- Treat the `ra_ap_salsa` version as a **workspace-level architectural pin**.
+- Bump it intentionally (ideally in lockstep with other `ra_ap_*` crates if adopted) and only with:
+  - a full test run, and
+  - a quick performance sanity check on a medium-sized workspace.
 
 ### Required usage patterns
 
-- **Query groups per layer** using the classic `#[salsa::query_group]` pattern:
+- **Query groups per layer** using the classic `#[ra_salsa::query_group]` pattern:
   - `SyntaxDatabase`: lexing/parsing, syntax tree access, text utilities.
   - `SemanticDatabase`: resolution, symbols, types, module/build graph facts.
   - `IdeDatabase`: higher-level “IDE queries” (diagnostics, completion, navigation).
 - A single `RootDatabase` struct implements these groups and contains:
-  - `salsa::Storage<RootDatabase>`
+  - `ra_salsa::Storage<RootDatabase>`
   - any non-incremental runtime state that must not participate in dependency tracking (e.g., telemetry sinks).
-- Use `salsa::ParallelDatabase` snapshots for **concurrent reads**.
+- Use `ra_salsa::ParallelDatabase` snapshots for **concurrent reads**.
 - Use **interning** for identity-heavy values:
-  - `#[salsa::interned]` for `Name`, `SymbolId`, `PackageId`, etc.
+  - `#[ra_salsa::interned]` for `Name`, `SymbolId`, `PackageId`, etc.
   - prefer compact, copyable IDs (newtypes around interned keys) in query results.
 - **Purity rule:** Salsa queries are deterministic functions of their inputs. Do not read wall-clock time, environment variables, random numbers, or mutable global state inside a query.
 
@@ -79,6 +93,6 @@ Negative:
 
 ## Follow-ups
 
-- Introduce `salsa` into the workspace and establish a `RootDatabase` template (plus a “how to add a query” guide).
+- Establish a `RootDatabase` template (plus a “how to add a query” guide) based on the existing `crates/nova-db` patterns.
 - Define the initial set of interned IDs (names, paths, symbol IDs) to keep query keys compact.
 - Re-evaluate adoption of newer Salsa APIs after the first end-to-end prototype (parser → simple name resolution → LSP hover).

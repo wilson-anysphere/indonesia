@@ -19,11 +19,11 @@ nova-cli / nova-lsp / nova-dap
         ↓
      nova-ide / nova-refactor
         ↓
-   (semantic + project model crates)
+    (semantic + project model crates)
         ↓
-     nova-syntax
+      nova-syntax
         ↓
-      nova-vfs
+       nova-vfs
         ↓
     nova-core / utility crates
 ```
@@ -36,24 +36,39 @@ nova-cli / nova-lsp / nova-dap
 - `nova-vfs`
   - file watching, file id mapping, archive reading, in-memory overlays
   - owns path/document identity normalization (ADR 0006) or a dedicated helper crate if needed
-- `nova-syntax` (target; may be introduced as the full parser lands)
+- `nova-syntax`
   - lexer, parser, rowan syntax tree, typed AST wrappers (ADR 0002)
-- semantic + project model crates (e.g., resolution, types, indexing, workspace/project loading)
+- semantic + project model crates (e.g., database, resolution, indexes, workspace/project loading)
   - name resolution, types, symbols, build/project model integration
   - defines most Salsa queries (ADR 0001) that higher layers consume
 - `nova-ide`
   - IDE features as pure functions/queries: diagnostics, completion, navigation, refactors
-  - no protocol types; convert to protocol types in `nova-lsp`
+  - may use `lsp-types` for convenience, but keep protocol transport concerns in `nova-lsp`
 - `nova-lsp`
   - LSP server implementation using `lsp-server` (ADR 0003)
   - request routing, cancellation tokens, progress, editor-specific behavior
 - `nova-dap`
   - DAP server + JDWP integration (ADR 0003)
 
+### Current workspace layering (practical guide)
+
+The workspace already contains many crates. The exact boundaries will evolve, but as a rule of thumb:
+
+- **Foundation**: `nova-core`, `nova-types`
+- **Storage/persistence**: `nova-storage`, `nova-cache`
+- **VFS / IO**: `nova-vfs`, `nova-archive`, `nova-classpath`
+- **Syntax**: `nova-syntax`
+- **Incremental database + semantic graph**: `nova-db`, `nova-hir`, `nova-resolve`, `nova-index`, `nova-project`, `nova-jdk`, `nova-classfile`, `nova-decompile`
+- **IDE features**: `nova-ide`, `nova-refactor`, `nova-framework-*`, `nova-fuzzy`, `nova-ai`
+- **Integrations / tools**: `nova-lsp`, `nova-dap`, `nova-cli`, `nova-workspace`, `nova-worker`, `nova-router`, `nova-remote-proto`, `nova-perf`
+
+If you are adding a new crate, prefer placing it in the **lowest layer that can own the responsibility** without importing higher-level concepts.
+
 ### Dependency policy
 
 - **No protocol crate (`nova-lsp`, `nova-dap`) is allowed to be depended on by any other crate.**
-- `nova-ide` must not depend on `lsp-types` or editor-specific representations.
+- Prefer keeping protocol *transport* and editor-specific behavior in `nova-lsp`, but using `lsp-types` as a shared data model is acceptable in higher layers (e.g. `nova-ide`) if it materially reduces adapter boilerplate.
+- Lower-level crates (e.g. `nova-core`, `nova-vfs`, `nova-syntax`, `nova-db`) SHOULD avoid depending on `lsp-types` to keep foundational layers lightweight.
 - Lower layers must not depend on higher layers (no cycles).
 - New third-party dependencies require:
   - a clear justification (what problem, why this crate),
