@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// A byte-span into a source string.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
@@ -154,3 +156,122 @@ impl Parameter {
     }
 }
 
+// --- External type stubs ---------------------------------------------------
+//
+// Nova's early semantic layers need a way to reason about types that come from
+// compiled dependencies (jars, output directories, etc). Full type-checking will
+// eventually use a richer model; these stubs are a lightweight bridge.
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FieldStub {
+    pub name: String,
+    /// Field descriptor, e.g. `Ljava/lang/String;`.
+    pub descriptor: String,
+    pub signature: Option<String>,
+    pub access_flags: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethodStub {
+    pub name: String,
+    /// Method descriptor, e.g. `(I)Ljava/lang/String;`.
+    pub descriptor: String,
+    pub signature: Option<String>,
+    pub access_flags: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemberStub {
+    Field(FieldStub),
+    Method(MethodStub),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeDefStub {
+    pub binary_name: String,
+    pub access_flags: u16,
+    pub super_binary_name: Option<String>,
+    pub interfaces: Vec<String>,
+    pub signature: Option<String>,
+    pub fields: Vec<FieldStub>,
+    pub methods: Vec<MethodStub>,
+}
+
+/// A source of types used by the semantic layers.
+///
+/// Implementations can be backed by the JDK, a project index, third-party jars, etc.
+pub trait TypeProvider {
+    fn lookup_type(&self, binary_name: &str) -> Option<TypeDefStub>;
+
+    fn members(&self, binary_name: &str) -> Vec<MemberStub> {
+        let Some(ty) = self.lookup_type(binary_name) else {
+            return Vec::new();
+        };
+        ty.fields
+            .into_iter()
+            .map(MemberStub::Field)
+            .chain(ty.methods.into_iter().map(MemberStub::Method))
+            .collect()
+    }
+
+    fn supertypes(&self, binary_name: &str) -> Vec<String> {
+        let Some(ty) = self.lookup_type(binary_name) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if let Some(super_name) = ty.super_binary_name {
+            out.push(super_name);
+        }
+        out.extend(ty.interfaces);
+        out
+    }
+}
+
+/// The semantic layers often want to consult multiple sources (project deps, JDK, etc.). A simple
+/// `TypeProvider` implementation that tries each provider in order.
+pub struct ChainTypeProvider<'a> {
+    providers: Vec<&'a dyn TypeProvider>,
+}
+
+impl<'a> ChainTypeProvider<'a> {
+    pub fn new(providers: Vec<&'a dyn TypeProvider>) -> Self {
+        Self { providers }
+    }
+}
+
+impl<'a> TypeProvider for ChainTypeProvider<'a> {
+    fn lookup_type(&self, binary_name: &str) -> Option<TypeDefStub> {
+        self.providers
+            .iter()
+            .find_map(|p| p.lookup_type(binary_name))
+    }
+
+    fn members(&self, binary_name: &str) -> Vec<MemberStub> {
+        self.providers
+            .iter()
+            .find_map(|p| {
+                let m = p.members(binary_name);
+                if m.is_empty() { None } else { Some(m) }
+            })
+            .unwrap_or_default()
+    }
+
+    fn supertypes(&self, binary_name: &str) -> Vec<String> {
+        self.providers
+            .iter()
+            .find_map(|p| {
+                let s = p.supertypes(binary_name);
+                if s.is_empty() { None } else { Some(s) }
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// A `TypeProvider` that always reports types as missing.
+pub struct EmptyTypeProvider;
+
+impl TypeProvider for EmptyTypeProvider {
+    fn lookup_type(&self, _binary_name: &str) -> Option<TypeDefStub> {
+        None
+    }
+}

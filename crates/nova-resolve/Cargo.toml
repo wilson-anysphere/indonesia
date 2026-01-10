@@ -11,3 +11,4 @@ nova-jdk = { path = "../nova-jdk" }
 nova-types = { path = "../nova-types" }
 
 [dev-dependencies]
+nova-classpath = { path = "../nova-classpath" }

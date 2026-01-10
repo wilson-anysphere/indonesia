@@ -707,10 +707,16 @@ fn methods_of_virtual_inner(
 mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
+    use std::path::PathBuf;
 
+    use nova_classpath::{ClasspathEntry, ClasspathIndex};
     use nova_core::{QualifiedName, TypeIndex};
     use nova_hir::{FieldDecl, ImportDecl, LocalVarDecl, MethodDecl, ParamDecl, Stmt, TypeDecl};
     use nova_jdk::JdkIndex;
+
+    fn test_dep_jar() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/dep.jar")
+    }
 
     #[derive(Default)]
     struct TestIndex {
@@ -899,5 +905,23 @@ mod tests {
         let method_scope = *result.method_scopes.values().next().expect("method scope");
         let res = resolver.resolve_name(&result.scopes, method_scope, &Name::from("x"));
         assert_eq!(res, Some(Resolution::Parameter));
+    }
+
+    #[test]
+    fn resolves_imported_type_from_dependency_jar() {
+        let jdk = JdkIndex::new();
+        let classpath = ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
+        let resolver = Resolver::new(&jdk).with_classpath(&classpath);
+
+        let mut unit = CompilationUnit::new(None);
+        unit.imports.push(ImportDecl::TypeSingle {
+            ty: QualifiedName::from_dotted("com.example.dep.Foo"),
+            alias: None,
+        });
+
+        assert_eq!(
+            resolver.resolve_import(&unit, &Name::from("Foo")),
+            Some(TypeId::from("com.example.dep.Foo"))
+        );
     }
 }

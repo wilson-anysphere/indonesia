@@ -13,6 +13,7 @@ members = [
     "crates/nova-hir",
     "crates/nova-resolve",
     "crates/nova-classfile",
+    "crates/nova-classpath",
     "crates/nova-jdk",
     "crates/nova-db",
     "crates/nova-index",

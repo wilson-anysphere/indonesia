@@ -41,4 +41,3 @@ pub struct AttachConfig {
     /// JDWP port.
     pub port: u16,
 }
-
