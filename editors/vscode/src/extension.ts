@@ -1,16 +1,31 @@
 import * as vscode from 'vscode';
 import { LanguageClient, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
+import * as path from 'path';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
 let testOutput: vscode.OutputChannel | undefined;
+let testController: vscode.TestController | undefined;
+const vscodeTestItemsById = new Map<string, vscode.TestItem>();
 
 type TestKind = 'class' | 'test';
+
+interface LspPosition {
+  line: number;
+  character: number;
+}
+
+interface LspRange {
+  start: LspPosition;
+  end: LspPosition;
+}
 
 interface TestItem {
   id: string;
   label: string;
   kind: TestKind;
+  path: string;
+  range: LspRange;
   children?: TestItem[];
 }
 
@@ -26,6 +41,16 @@ interface RunResponse {
   exitCode: number;
   stdout: string;
   stderr: string;
+  tests: Array<{
+    id: string;
+    status: 'passed' | 'failed' | 'skipped';
+    durationMs?: number;
+    failure?: {
+      message?: string;
+      kind?: string;
+      stackTrace?: string;
+    };
+  }>;
   summary: { total: number; passed: number; failed: number; skipped: number };
 }
 
@@ -55,6 +80,22 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Ensure the client is stopped when the extension is deactivated.
   context.subscriptions.push(client);
+
+  testController = vscode.tests.createTestController('novaTests', 'Nova Tests');
+  context.subscriptions.push(testController);
+
+  testController.createRunProfile(
+    'Run',
+    vscode.TestRunProfileKind.Run,
+    async (request, token) => {
+      await runTestsFromTestExplorer(request, token);
+    },
+    true,
+  );
+
+  testController.resolveHandler = async () => {
+    await refreshTests();
+  };
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.organizeImports', async () => {
@@ -98,6 +139,8 @@ export function activate(context: vscode.ExtensionContext) {
           projectRoot: workspace.uri.fsPath,
         })) as DiscoverResponse;
 
+        await refreshTests(resp);
+
         const flat = flattenTests(resp.tests).filter((t) => t.kind === 'test');
         channel.appendLine(`Discovered ${flat.length} test(s).`);
         for (const t of flat) {
@@ -123,9 +166,10 @@ export function activate(context: vscode.ExtensionContext) {
 
       try {
         const c = await requireClient();
-        const discover = (await c.sendRequest('nova/test/discover', {
-          projectRoot: workspace.uri.fsPath,
-        })) as DiscoverResponse;
+        const discover =
+          (await c.sendRequest('nova/test/discover', {
+            projectRoot: workspace.uri.fsPath,
+          })) as DiscoverResponse;
 
         const candidates = flattenTests(discover.tests).filter((t) => t.kind === 'test');
         if (candidates.length === 0) {
@@ -185,6 +229,163 @@ async function requireClient(): Promise<LanguageClient> {
   }
   await clientStart;
   return client;
+}
+
+async function refreshTests(discovered?: DiscoverResponse): Promise<void> {
+  if (!testController) {
+    return;
+  }
+
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  if (!workspace) {
+    return;
+  }
+
+  const projectRoot = workspace.uri.fsPath;
+  const resp =
+    discovered ??
+    ((await (await requireClient()).sendRequest('nova/test/discover', {
+      projectRoot,
+    })) as DiscoverResponse);
+
+  vscodeTestItemsById.clear();
+  testController.items.replace([]);
+
+  for (const item of resp.tests) {
+    const vscodeItem = createVsTestItem(testController, projectRoot, item);
+    testController.items.add(vscodeItem);
+  }
+}
+
+function createVsTestItem(controller: vscode.TestController, projectRoot: string, item: TestItem): vscode.TestItem {
+  const uri = vscode.Uri.file(path.join(projectRoot, item.path));
+  const vscodeItem = controller.createTestItem(item.id, item.label, uri);
+  vscodeItem.range = toVsRange(item.range);
+  vscodeTestItemsById.set(item.id, vscodeItem);
+
+  for (const child of item.children ?? []) {
+    vscodeItem.children.add(createVsTestItem(controller, projectRoot, child));
+  }
+
+  return vscodeItem;
+}
+
+function toVsRange(range: LspRange): vscode.Range {
+  const start = new vscode.Position(range.start.line, range.start.character);
+  const end = new vscode.Position(range.end.line, range.end.character);
+  return new vscode.Range(start, end);
+}
+
+async function runTestsFromTestExplorer(
+  request: vscode.TestRunRequest,
+  token: vscode.CancellationToken,
+): Promise<void> {
+  if (!testController) {
+    return;
+  }
+
+  const workspace = vscode.workspace.workspaceFolders?.[0];
+  if (!workspace) {
+    return;
+  }
+
+  if (testController.items.size === 0) {
+    await refreshTests();
+  }
+
+  const run = testController.createTestRun(request);
+  try {
+    const include = request.include ?? getRootTestItems(testController);
+    const exclude = request.exclude ?? [];
+
+    const includeIds = collectLeafIds(include);
+    const excludeIds = new Set(collectLeafIds(exclude));
+    const ids = Array.from(new Set(includeIds.filter((id) => !excludeIds.has(id))));
+
+    for (const id of ids) {
+      const item = vscodeTestItemsById.get(id);
+      if (item) {
+        run.enqueued(item);
+      }
+    }
+
+    if (ids.length === 0) {
+      return;
+    }
+
+    const resp = (await (await requireClient()).sendRequest('nova/test/run', {
+      projectRoot: workspace.uri.fsPath,
+      buildTool: 'auto',
+      tests: ids,
+    })) as RunResponse;
+
+    if (resp.stdout) {
+      run.appendOutput(resp.stdout);
+    }
+    if (resp.stderr) {
+      run.appendOutput(resp.stderr);
+    }
+
+    const resultsById = new Map(resp.tests.map((t) => [t.id, t]));
+    for (const id of ids) {
+      const item = vscodeTestItemsById.get(id);
+      if (!item) {
+        continue;
+      }
+      const result = resultsById.get(id);
+      if (!result) {
+        run.skipped(item);
+        continue;
+      }
+      switch (result.status) {
+        case 'passed':
+          run.passed(item);
+          break;
+        case 'skipped':
+          run.skipped(item);
+          break;
+        case 'failed': {
+          const parts = [
+            result.failure?.message,
+            result.failure?.kind,
+            result.failure?.stackTrace,
+          ].filter(Boolean);
+          const message = new vscode.TestMessage(parts.join('\n'));
+          run.failed(item, message);
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    run.appendOutput(`Nova: test run failed: ${message}\n`);
+  } finally {
+    run.end();
+    void token;
+  }
+}
+
+function getRootTestItems(controller: vscode.TestController): vscode.TestItem[] {
+  const out: vscode.TestItem[] = [];
+  controller.items.forEach((item) => out.push(item));
+  return out;
+}
+
+function collectLeafIds(items: Iterable<vscode.TestItem>): string[] {
+  const out: string[] = [];
+  for (const item of items) {
+    collectLeafIdsFromItem(item, out);
+  }
+  return out;
+}
+
+function collectLeafIdsFromItem(item: vscode.TestItem, out: string[]): void {
+  if (item.children.size === 0) {
+    out.push(item.id);
+    return;
+  }
+
+  item.children.forEach((child) => collectLeafIdsFromItem(child, out));
 }
 
 function flattenTests(items: TestItem[]): TestItem[] {

@@ -27,3 +27,14 @@ npm run compile
 - **Nova: Organize Imports** (`nova.organizeImports`)
   - Sends a custom LSP request: `nova/java/organizeImports`.
 
+- **Nova: Discover Tests** (`nova.discoverTests`)
+  - Sends `nova/test/discover` and prints discovered test IDs.
+  - Also refreshes the VS Code Test Explorer tree.
+
+- **Nova: Run Test** (`nova.runTest`)
+  - Prompts for a discovered test ID and runs it via `nova/test/run`.
+
+## Test Explorer
+
+When the extension is active, Nova registers a VS Code Test Explorer controller.
+Tests are discovered via `nova/test/discover` and can be run from the Test Explorer.
