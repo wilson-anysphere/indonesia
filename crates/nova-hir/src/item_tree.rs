@@ -29,6 +29,26 @@ impl ItemTree {
     }
 
     #[must_use]
+    pub fn interface(&self, id: InterfaceId) -> &Interface {
+        &self.interfaces[id.idx()]
+    }
+
+    #[must_use]
+    pub fn enum_(&self, id: EnumId) -> &Enum {
+        &self.enums[id.idx()]
+    }
+
+    #[must_use]
+    pub fn record(&self, id: RecordId) -> &Record {
+        &self.records[id.idx()]
+    }
+
+    #[must_use]
+    pub fn annotation(&self, id: AnnotationId) -> &Annotation {
+        &self.annotations[id.idx()]
+    }
+
+    #[must_use]
     pub fn method(&self, id: MethodId) -> &Method {
         &self.methods[id.idx()]
     }

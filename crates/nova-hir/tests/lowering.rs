@@ -210,7 +210,7 @@ enum E {
         nova_hir::item_tree::Item::Enum(id) => id,
         _ => panic!("expected enum item"),
     };
-    assert_eq!(tree.enums[enum_id.idx()].name, "E");
+    assert_eq!(tree.enum_(enum_id).name, "E");
 
     // Enum constants should not be mis-lowered as fields.
     assert_eq!(tree.fields.len(), 1);
@@ -260,7 +260,7 @@ interface I {
         nova_hir::item_tree::Item::Interface(id) => id,
         _ => panic!("expected interface item"),
     };
-    assert_eq!(tree.interfaces[interface_id.idx()].name, "I");
+    assert_eq!(tree.interface(interface_id).name, "I");
 
     assert_eq!(tree.methods.len(), 1);
     assert_eq!(tree.methods[0].name, "m");

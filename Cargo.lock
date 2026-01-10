@@ -1176,6 +1176,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "console"
+version = "0.15.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "once_cell",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1623,6 +1635,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1758,6 +1776,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -2469,6 +2497,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "insta"
+version = "1.46.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b66886d14d18d420ab5052cbff544fc5d34d0b2cdd35eb5976aaa10a4a472e5"
+dependencies = [
+ "console",
+ "once_cell",
+ "similar",
+ "tempfile",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2834,6 +2874,7 @@ dependencies = [
  "nova-config",
  "nova-core",
  "nova-fuzzy",
+ "nova-syntax",
  "once_cell",
  "regex",
  "reqwest",
@@ -2933,6 +2974,7 @@ dependencies = [
  "bincode",
  "nova-classfile",
  "nova-core",
+ "nova-deps-cache",
  "nova-modules",
  "nova-project",
  "nova-types",
@@ -2953,7 +2995,9 @@ dependencies = [
  "clap",
  "nova-ai",
  "nova-cache",
+ "nova-classpath",
  "nova-config",
+ "nova-deps-cache",
  "nova-perf",
  "nova-workspace",
  "predicates",
@@ -3052,6 +3096,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-deps-cache"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "fs2",
+ "hex",
+ "nova-cache",
+ "nova-storage",
+ "rkyv",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 1.0.69",
+ "walkdir",
+]
+
+[[package]]
 name = "nova-ext"
 version = "0.1.0"
 dependencies = [
@@ -3077,6 +3138,13 @@ dependencies = [
 [[package]]
 name = "nova-format"
 version = "0.1.0"
+dependencies = [
+ "insta",
+ "nova-core",
+ "nova-syntax",
+ "pretty_assertions",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "nova-framework"
@@ -3159,6 +3227,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-framework-quarkus"
+version = "0.1.0"
+dependencies = [
+ "nova-core",
+ "nova-framework",
+ "nova-framework-web",
+ "nova-hir",
+ "nova-types",
+ "pretty_assertions",
+ "regex",
+ "zip 0.6.6",
+]
+
+[[package]]
 name = "nova-framework-spring"
 version = "0.1.0"
 dependencies = [
@@ -3177,6 +3259,13 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-java",
  "zip 0.6.6",
+]
+
+[[package]]
+name = "nova-framework-web"
+version = "0.1.0"
+dependencies = [
+ "regex",
 ]
 
 [[package]]
@@ -3212,6 +3301,7 @@ dependencies = [
  "nova-decompile",
  "nova-ext",
  "nova-framework",
+ "nova-framework-micronaut",
  "nova-framework-spring",
  "nova-fuzzy",
  "nova-index",
@@ -3283,16 +3373,18 @@ dependencies = [
  "nova-dap",
  "nova-db",
  "nova-decompile",
+ "nova-format",
  "nova-framework-micronaut",
+ "nova-framework-web",
  "nova-ide",
  "nova-index",
- "nova-jdwp",
  "nova-memory",
  "nova-project",
  "nova-refactor",
  "nova-remote-proto",
  "nova-router",
  "nova-scheduler",
+ "nova-syntax",
  "nova-test-utils",
  "nova-testing",
  "nova-workspace",
@@ -3466,6 +3558,7 @@ dependencies = [
  "lsp-types",
  "nova-ide",
  "nova-index",
+ "tempfile",
 ]
 
 [[package]]
@@ -3488,6 +3581,8 @@ dependencies = [
 name = "nova-types"
 version = "0.1.0"
 dependencies = [
+ "nova-test-utils",
+ "pretty_assertions",
  "serde",
 ]
 
