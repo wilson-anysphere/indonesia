@@ -55,6 +55,43 @@ fn diagnostics_json_runs_on_tiny_project() {
 }
 
 #[test]
+fn diagnostics_exit_nonzero_on_parse_errors() {
+    let temp = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    temp.child("src").create_dir_all().unwrap();
+    temp.child("src/Bad.java")
+        .write_str("class Bad { int x = ; }")
+        .unwrap();
+
+    let output = nova()
+        .arg("diagnostics")
+        .arg(temp.path())
+        .arg("--json")
+        .env("NOVA_CACHE_DIR", cache_root.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1, got {:?} (stderr: {})",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(v["summary"]["errors"].as_u64().unwrap() > 0, "{v:#}");
+    assert!(
+        v["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "PARSE" && d["file"] == "src/Bad.java"),
+        "expected PARSE diagnostic for src/Bad.java, got: {v:#}"
+    );
+}
+
+#[test]
 fn index_creates_persistent_cache_and_symbols_work() {
     let temp = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
