@@ -87,6 +87,33 @@ fn id_on_getter_method_is_recognized() {
 }
 
 #[test]
+fn lombok_noargs_constructor_suppresses_warning() {
+    let src = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+        import lombok.NoArgsConstructor;
+
+        @Entity
+        @NoArgsConstructor
+        public class User {
+            @Id private Long id;
+
+            public User(String name) {}
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[src]);
+    assert!(
+        !analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == nova_framework_jpa::JPA_NO_NOARG_CTOR),
+        "unexpected JPA_NO_NOARG_CTOR diagnostic, got: {:#?}",
+        analysis.diagnostics
+    );
+}
+
+#[test]
 fn relationship_parsing_and_mappedby_validation() {
     let user = r#"
         import jakarta.persistence.Entity;

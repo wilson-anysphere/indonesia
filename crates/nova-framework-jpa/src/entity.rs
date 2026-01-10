@@ -197,7 +197,15 @@ fn parse_entity_class(node: Node<'_>, source: &str) -> Option<Entity> {
     let body = node
         .child_by_field_name("body")
         .or_else(|| find_named_child(node, "class_body"))?;
-    let (fields, has_explicit_ctor, has_no_arg_ctor) = parse_class_body(body, source);
+    let (fields, has_explicit_ctor, mut has_no_arg_ctor) = parse_class_body(body, source);
+    if !has_no_arg_ctor
+        && annotations
+            .iter()
+            .any(|ann| ann.simple_name == "NoArgsConstructor")
+    {
+        // Best-effort: treat Lombok's `@NoArgsConstructor` as satisfying the JPA requirement.
+        has_no_arg_ctor = true;
+    }
 
     Some(Entity {
         name,
