@@ -9,6 +9,7 @@ use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
     FileText, Revision, RpcMessage, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats,
 };
+use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command;
@@ -157,24 +158,51 @@ struct InProcessRouter {
     global_revision: AtomicU64,
     shard_indexes: Mutex<HashMap<ShardId, ShardIndex>>,
     global_symbols: RwLock<GlobalSymbolIndex>,
+    scheduler: Scheduler,
+    index_token: Mutex<CancellationToken>,
 }
 
 impl InProcessRouter {
     fn new(layout: WorkspaceLayout) -> Self {
+        let scheduler = tokio::runtime::Handle::try_current()
+            .map(|handle| Scheduler::new_with_io_handle(SchedulerConfig::default(), handle))
+            .unwrap_or_else(|_| Scheduler::default());
         Self {
             layout,
             global_revision: AtomicU64::new(0),
             shard_indexes: Mutex::new(HashMap::new()),
             global_symbols: RwLock::new(GlobalSymbolIndex::default()),
+            scheduler,
+            index_token: Mutex::new(CancellationToken::new()),
         }
     }
 
+    async fn next_index_token(&self) -> CancellationToken {
+        let mut guard = self.index_token.lock().await;
+        guard.cancel();
+        let token = CancellationToken::new();
+        *guard = token.clone();
+        token
+    }
+
     async fn index_workspace(&self) -> Result<()> {
+        let token = self.next_index_token().await;
         let revision = self.global_revision.fetch_add(1, Ordering::SeqCst) + 1;
         let mut indexes = HashMap::new();
         for (shard_id, root) in self.layout.source_roots.iter().enumerate() {
             let files = collect_java_files(&root.path).await?;
-            let symbols = index_for_files(&files);
+            let task = self
+                .scheduler
+                .spawn_background_with_token(token.clone(), move |token| {
+                    Cancelled::check(&token)?;
+                    let symbols = index_for_files(&files);
+                    Cancelled::check(&token)?;
+                    Ok(symbols)
+                });
+            let symbols = match task.join().await {
+                Ok(symbols) => symbols,
+                Err(Cancelled) => return Ok(()),
+            };
             indexes.insert(
                 shard_id as ShardId,
                 ShardIndex {
@@ -184,6 +212,10 @@ impl InProcessRouter {
                     symbols,
                 },
             );
+        }
+
+        if token.is_cancelled() {
+            return Ok(());
         }
 
         {
@@ -197,6 +229,7 @@ impl InProcessRouter {
     }
 
     async fn update_file(&self, path: PathBuf, text: String) -> Result<()> {
+        let token = self.next_index_token().await;
         let shard_id = self
             .layout
             .source_roots
@@ -219,7 +252,22 @@ impl InProcessRouter {
             });
         }
 
-        let symbols = index_for_files(&shard_files);
+        let task = self
+            .scheduler
+            .spawn_background_with_token(token.clone(), move |token| {
+                Cancelled::check(&token)?;
+                let symbols = index_for_files(&shard_files);
+                Cancelled::check(&token)?;
+                Ok(symbols)
+            });
+        let symbols = match task.join().await {
+            Ok(symbols) => symbols,
+            Err(Cancelled) => return Ok(()),
+        };
+
+        if token.is_cancelled() {
+            return Ok(());
+        }
         let new_index = ShardIndex {
             shard_id,
             revision,

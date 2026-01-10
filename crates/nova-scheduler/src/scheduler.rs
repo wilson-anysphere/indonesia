@@ -88,6 +88,39 @@ impl Scheduler {
         }
     }
 
+    /// Build a scheduler that reuses an existing Tokio runtime for IO tasks.
+    ///
+    /// This is useful when Nova is already running inside a Tokio runtime (e.g. in
+    /// a `#[tokio::main]` binary) and we want to avoid spawning an extra
+    /// `nova-io` runtime.
+    pub fn new_with_io_handle(config: SchedulerConfig, io_handle: tokio::runtime::Handle) -> Self {
+        let compute_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(config.compute_threads.max(1))
+            .thread_name(|idx| format!("nova-compute-{idx}"))
+            .build()
+            .expect("failed to build compute pool");
+
+        let background_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(config.background_threads.max(1))
+            .thread_name(|idx| format!("nova-background-{idx}"))
+            .build()
+            .expect("failed to build background pool");
+
+        let (progress_tx, _) = broadcast::channel(config.progress_channel_capacity.max(1));
+        let progress = ProgressSender::new(progress_tx);
+
+        Self {
+            inner: Arc::new(SchedulerInner {
+                compute_pool,
+                background_pool,
+                io_runtime: None,
+                io_handle,
+                progress,
+                requests: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
     pub fn progress(&self) -> ProgressSender {
         self.inner.progress.clone()
     }
