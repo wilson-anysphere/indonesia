@@ -155,6 +155,8 @@ pub fn move_class(
 
     // Moved file: update package declaration and rename file path.
     let moved_contents = update_package_declaration(source, &params.target_package)?;
+    let moved_contents =
+        ensure_imports_for_moved_file(&moved_contents, &pkg.name, &params.source_path, &params.class_name, files)?;
     out.file_moves.push(FileMove {
         old_path: params.source_path.clone(),
         new_path: dest_path,
@@ -405,6 +407,43 @@ fn ensure_import(source: &str, fqn: &str, simple_name: &str) -> Result<String, R
         format!("\nimport {fqn};")
     };
     out.insert_str(insertion_offset, &import_stmt);
+    Ok(out)
+}
+
+fn ensure_imports_for_moved_file(
+    moved_contents: &str,
+    old_package: &str,
+    source_path: &PathBuf,
+    moved_class_name: &str,
+    files: &BTreeMap<PathBuf, String>,
+) -> Result<String, RefactorError> {
+    let mut public_types_in_old_pkg: HashSet<String> = HashSet::new();
+
+    for (path, source) in files {
+        if path == source_path {
+            continue;
+        }
+        if file_package_name(source)?.as_deref() != Some(old_package) {
+            continue;
+        }
+        for ty in java_text::find_public_top_level_types(source).map_err(parse_err)? {
+            if ty.name != moved_class_name {
+                public_types_in_old_pkg.insert(ty.name);
+            }
+        }
+    }
+
+    if public_types_in_old_pkg.is_empty() {
+        return Ok(moved_contents.to_string());
+    }
+
+    let mut out = moved_contents.to_string();
+    let mut sorted: Vec<_> = public_types_in_old_pkg.into_iter().collect();
+    sorted.sort();
+    for name in sorted {
+        let fqn = format!("{old_package}.{name}");
+        out = ensure_import(&out, &fqn, &name)?;
+    }
     Ok(out)
 }
 
@@ -1047,6 +1086,46 @@ class A {}
         .unwrap_err();
 
         assert!(matches!(err, RefactorError::DestinationTypeAlreadyExists { .. }));
+    }
+
+    #[test]
+    fn move_class_adds_imports_for_old_package_types_used_in_moved_file() {
+        let input = files(vec![
+            (
+                "src/main/java/com/foo/A.java",
+                r#"package com.foo;
+
+public class A {
+    B b;
+}
+"#,
+            ),
+            (
+                "src/main/java/com/foo/B.java",
+                r#"package com.foo;
+
+public class B {}
+"#,
+            ),
+        ]);
+
+        let edit = move_class(
+            &input,
+            MoveClassParams {
+                source_path: PathBuf::from("src/main/java/com/foo/A.java"),
+                class_name: "A".into(),
+                target_package: "com.bar".into(),
+            },
+        )
+        .unwrap();
+
+        let mut applied = input.clone();
+        edit.apply_to(&mut applied, true);
+
+        let moved = &applied[Path::new("src/main/java/com/bar/A.java")];
+        assert!(moved.contains("package com.bar;"));
+        assert!(moved.contains("import com.foo.B;"));
+        assert!(moved.contains("B b;"));
     }
 
     #[test]
