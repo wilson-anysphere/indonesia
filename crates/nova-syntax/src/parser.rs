@@ -61,7 +61,7 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::CompilationUnit.into());
         self.eat_trivia();
 
-        if self.at(SyntaxKind::PackageKw) {
+        if self.at(SyntaxKind::PackageKw) || self.at_annotated_package_decl_start() {
             self.parse_package_decl();
         }
 
@@ -90,6 +90,9 @@ impl<'a> Parser<'a> {
     fn parse_package_decl(&mut self) {
         self.builder
             .start_node(SyntaxKind::PackageDeclaration.into());
+        while self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw) {
+            self.parse_annotation();
+        }
         self.expect(SyntaxKind::PackageKw, "expected `package`");
         self.parse_name();
         self.expect(SyntaxKind::Semicolon, "expected `;` after package declaration");
@@ -1466,6 +1469,36 @@ impl<'a> Parser<'a> {
         )
     }
 
+    fn at_annotated_package_decl_start(&mut self) -> bool {
+        // Recognize `@Anno ... package foo;` (package-info) without consuming tokens.
+        // We only treat `@` as an annotation here when it is NOT `@interface`.
+        let mut i = skip_trivia(&self.tokens, 0);
+        if self.tokens.get(i).map(|t| t.kind) != Some(SyntaxKind::At) {
+            return false;
+        }
+
+        loop {
+            i = skip_trivia(&self.tokens, i);
+            if self.tokens.get(i).map(|t| t.kind) != Some(SyntaxKind::At) {
+                break;
+            }
+            // `@interface` starts an annotation type declaration, not a package annotation.
+            if self.tokens.get(skip_trivia(&self.tokens, i + 1)).map(|t| t.kind)
+                == Some(SyntaxKind::InterfaceKw)
+            {
+                return false;
+            }
+            let next = skip_annotation(&self.tokens, i);
+            if next <= i {
+                break;
+            }
+            i = next;
+        }
+
+        i = skip_trivia(&self.tokens, i);
+        self.tokens.get(i).map(|t| t.kind) == Some(SyntaxKind::PackageKw)
+    }
+
     fn at_type_start(&mut self) -> bool {
         self.at_primitive_type() || self.at_ident_like()
     }
@@ -1594,6 +1627,42 @@ fn skip_balanced_parens(tokens: &VecDeque<Token>, mut idx: usize) -> usize {
         idx += 1;
     }
     idx
+}
+
+fn skip_annotation(tokens: &VecDeque<Token>, idx: usize) -> usize {
+    // Assumes `tokens[idx]` is `@` and not `@interface`.
+    let mut i = idx;
+    if tokens.get(i).map(|t| t.kind) != Some(SyntaxKind::At) {
+        return idx;
+    }
+    i += 1;
+    i = skip_trivia(tokens, i);
+
+    // Annotation name.
+    if !tokens.get(i).map_or(false, |t| t.kind.is_identifier_like()) {
+        return i;
+    }
+    i += 1;
+
+    loop {
+        let dot = skip_trivia(tokens, i);
+        if tokens.get(dot).map(|t| t.kind) != Some(SyntaxKind::Dot) {
+            i = dot;
+            break;
+        }
+        let seg = skip_trivia(tokens, dot + 1);
+        if !tokens.get(seg).map_or(false, |t| t.kind.is_identifier_like()) {
+            i = dot;
+            break;
+        }
+        i = seg + 1;
+    }
+
+    i = skip_trivia(tokens, i);
+    if tokens.get(i).map(|t| t.kind) == Some(SyntaxKind::LParen) {
+        i = skip_balanced_parens(tokens, i);
+    }
+    i
 }
 
 fn skip_type_arguments(tokens: &VecDeque<Token>, mut idx: usize) -> usize {

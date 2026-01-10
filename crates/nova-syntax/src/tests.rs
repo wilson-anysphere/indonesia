@@ -163,6 +163,18 @@ class Foo {
 }
 
 #[test]
+fn parse_package_declaration_with_annotations() {
+    let input = "/** doc */ @Deprecated package com.example;\nclass Foo {}";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::PackageDeclaration));
+    assert!(kinds.contains(&SyntaxKind::Annotation));
+    assert!(kinds.contains(&SyntaxKind::ClassDeclaration));
+}
+
+#[test]
 fn parse_postfix_increment_decrement() {
     let input = "class Foo { void m() { int i = 0; i++; ++i; i--; --i; } }";
     let result = parse_java(input);
