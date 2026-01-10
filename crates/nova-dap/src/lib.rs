@@ -11,3 +11,6 @@ pub mod dap;
 pub mod jdwp;
 pub mod server;
 
+/// Nova-specific "debugger excellence" extensions.
+pub mod hot_swap;
+pub mod smart_step_into;
