@@ -113,6 +113,7 @@ fn stdio_server_handles_ai_explain_error_code_action() {
     assert_eq!(cmd, nova_ide::COMMAND_EXPLAIN_ERROR);
 
     // 4) Execute the command (this triggers the mock LLM call).
+    let progress_token = json!("progress-token");
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -121,13 +122,38 @@ fn stdio_server_handles_ai_explain_error_code_action() {
             "method": "workspace/executeCommand",
             "params": {
                 "command": cmd,
-                "arguments": args
+                "arguments": args,
+                "workDoneToken": progress_token.clone()
             }
         }),
     );
 
-    let exec_resp = read_jsonrpc_response(&mut stdout, 3);
+    // Collect work-done progress notifications emitted during the AI request.
+    let mut progress_kinds = Vec::new();
+    let exec_resp = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+        if msg.get("method").and_then(|v| v.as_str()) == Some("$/progress") {
+            if msg.get("params").and_then(|p| p.get("token")) == Some(&progress_token) {
+                if let Some(kind) = msg
+                    .get("params")
+                    .and_then(|p| p.get("value"))
+                    .and_then(|v| v.get("kind"))
+                    .and_then(|v| v.as_str())
+                {
+                    progress_kinds.push(kind.to_string());
+                }
+            }
+            continue;
+        }
+
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(3) {
+            break msg;
+        }
+        // Notification or unrelated response; ignore.
+    };
     assert_eq!(exec_resp.get("result"), Some(&json!("mock explanation")));
+    assert!(progress_kinds.contains(&"begin".to_string()));
+    assert!(progress_kinds.contains(&"end".to_string()));
 
     mock.assert_hits(1);
 
@@ -186,4 +212,3 @@ fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
     reader.read_exact(&mut buf).expect("read body");
     serde_json::from_slice(&buf).expect("parse json")
 }
-

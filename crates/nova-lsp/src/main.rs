@@ -550,6 +550,9 @@ struct ExecuteCommandParams {
     command: String,
     #[serde(default)]
     arguments: Vec<serde_json::Value>,
+    /// LSP work-done progress token (if provided by the client).
+    #[serde(default)]
+    work_done_token: Option<serde_json::Value>,
 }
 
 fn handle_execute_command(
@@ -571,15 +574,15 @@ fn handle_execute_command(
         }
         COMMAND_EXPLAIN_ERROR => {
             let args: ExplainErrorArgs = parse_first_arg(params.arguments)?;
-            run_ai_explain_error(args, state, writer)
+            run_ai_explain_error(args, params.work_done_token, state, writer)
         }
         COMMAND_GENERATE_METHOD_BODY => {
             let args: GenerateMethodBodyArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_method_body(args, state, writer)
+            run_ai_generate_method_body(args, params.work_done_token, state, writer)
         }
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_tests(args, state, writer)
+            run_ai_generate_tests(args, params.work_done_token, state, writer)
         }
         _ => Err((-32602, format!("unknown command: {}", params.command))),
     }
@@ -635,18 +638,30 @@ fn handle_ai_custom_request(
     state: &mut ServerState,
     writer: &mut BufWriter<std::io::StdoutLock<'_>>,
 ) -> Result<serde_json::Value, (i32, String)> {
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AiRequestParams<T> {
+        #[serde(default)]
+        work_done_token: Option<serde_json::Value>,
+        #[serde(flatten)]
+        args: T,
+    }
+
     match method {
         nova_lsp::AI_EXPLAIN_ERROR_METHOD => {
-            let args: ExplainErrorArgs = serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_explain_error(args, state, writer)
+            let params: AiRequestParams<ExplainErrorArgs> =
+                serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+            run_ai_explain_error(params.args, params.work_done_token, state, writer)
         }
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD => {
-            let args: GenerateMethodBodyArgs = serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_generate_method_body(args, state, writer)
+            let params: AiRequestParams<GenerateMethodBodyArgs> =
+                serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+            run_ai_generate_method_body(params.args, params.work_done_token, state, writer)
         }
         nova_lsp::AI_GENERATE_TESTS_METHOD => {
-            let args: GenerateTestsArgs = serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_generate_tests(args, state, writer)
+            let params: AiRequestParams<GenerateTestsArgs> =
+                serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+            run_ai_generate_tests(params.args, params.work_done_token, state, writer)
         }
         _ => Err((-32601, format!("Method not found: {method}"))),
     }
@@ -654,6 +669,7 @@ fn handle_ai_custom_request(
 
 fn run_ai_explain_error(
     args: ExplainErrorArgs,
+    work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
     writer: &mut BufWriter<std::io::StdoutLock<'_>>,
 ) -> Result<serde_json::Value, (i32, String)> {
@@ -666,6 +682,8 @@ fn run_ai_explain_error(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
+    send_progress_begin(writer, work_done_token.as_ref(), "AI: Explain this error")?;
+    send_progress_report(writer, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(writer, "AI: explaining error…")?;
     let ctx = build_context_request_from_args(
         state,
@@ -675,15 +693,21 @@ fn run_ai_explain_error(
         /*fallback_enclosing=*/ None,
         /*include_doc_comments=*/ true,
     );
+    send_progress_report(writer, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
         .block_on(ai.explain_error(&args.diagnostic_message, ctx, CancellationToken::new()))
-        .map_err(|e| (-32603, e.to_string()))?;
+        .map_err(|e| {
+            let _ = send_progress_end(writer, work_done_token.as_ref(), "AI request failed");
+            (-32603, e.to_string())
+        })?;
     send_log_message(writer, "AI: explanation ready")?;
+    send_progress_end(writer, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
 
 fn run_ai_generate_method_body(
     args: GenerateMethodBodyArgs,
+    work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
     writer: &mut BufWriter<std::io::StdoutLock<'_>>,
 ) -> Result<serde_json::Value, (i32, String)> {
@@ -696,6 +720,8 @@ fn run_ai_generate_method_body(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
+    send_progress_begin(writer, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_report(writer, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(writer, "AI: generating method body…")?;
     let ctx = build_context_request_from_args(
         state,
@@ -705,15 +731,21 @@ fn run_ai_generate_method_body(
         args.context.clone(),
         /*include_doc_comments=*/ true,
     );
+    send_progress_report(writer, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
         .block_on(ai.generate_method_body(&args.method_signature, ctx, CancellationToken::new()))
-        .map_err(|e| (-32603, e.to_string()))?;
+        .map_err(|e| {
+            let _ = send_progress_end(writer, work_done_token.as_ref(), "AI request failed");
+            (-32603, e.to_string())
+        })?;
     send_log_message(writer, "AI: method body ready")?;
+    send_progress_end(writer, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
 
 fn run_ai_generate_tests(
     args: GenerateTestsArgs,
+    work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
     writer: &mut BufWriter<std::io::StdoutLock<'_>>,
 ) -> Result<serde_json::Value, (i32, String)> {
@@ -726,6 +758,8 @@ fn run_ai_generate_tests(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
+    send_progress_begin(writer, work_done_token.as_ref(), "AI: Generate tests")?;
+    send_progress_report(writer, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(writer, "AI: generating tests…")?;
     let ctx = build_context_request_from_args(
         state,
@@ -735,10 +769,15 @@ fn run_ai_generate_tests(
         args.context.clone(),
         /*include_doc_comments=*/ true,
     );
+    send_progress_report(writer, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
         .block_on(ai.generate_tests(&args.target, ctx, CancellationToken::new()))
-        .map_err(|e| (-32603, e.to_string()))?;
+        .map_err(|e| {
+            let _ = send_progress_end(writer, work_done_token.as_ref(), "AI request failed");
+            (-32603, e.to_string())
+        })?;
     send_log_message(writer, "AI: tests ready")?;
+    send_progress_end(writer, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
 
@@ -752,6 +791,87 @@ fn send_log_message(
             "jsonrpc": "2.0",
             "method": "window/logMessage",
             "params": { "type": 3, "message": message }
+        }),
+    )
+    .map_err(|e| (-32603, e.to_string()))
+}
+
+fn send_progress_begin(
+    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    token: Option<&serde_json::Value>,
+    title: &str,
+) -> Result<(), (i32, String)> {
+    let Some(token) = token else {
+        return Ok(());
+    };
+    write_json_message(
+        writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": token,
+                "value": {
+                    "kind": "begin",
+                    "title": title,
+                    "cancellable": false,
+                    "message": "",
+                }
+            }
+        }),
+    )
+    .map_err(|e| (-32603, e.to_string()))
+}
+
+fn send_progress_report(
+    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    token: Option<&serde_json::Value>,
+    message: &str,
+    percentage: Option<u32>,
+) -> Result<(), (i32, String)> {
+    let Some(token) = token else {
+        return Ok(());
+    };
+    let mut value = serde_json::Map::new();
+    value.insert("kind".to_string(), json!("report"));
+    value.insert("message".to_string(), json!(message));
+    if let Some(percentage) = percentage {
+        value.insert("percentage".to_string(), json!(percentage));
+    }
+    write_json_message(
+        writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": token,
+                "value": value
+            }
+        }),
+    )
+    .map_err(|e| (-32603, e.to_string()))
+}
+
+fn send_progress_end(
+    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    token: Option<&serde_json::Value>,
+    message: &str,
+) -> Result<(), (i32, String)> {
+    let Some(token) = token else {
+        return Ok(());
+    };
+    write_json_message(
+        writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": {
+                "token": token,
+                "value": {
+                    "kind": "end",
+                    "message": message,
+                }
+            }
         }),
     )
     .map_err(|e| (-32603, e.to_string()))
