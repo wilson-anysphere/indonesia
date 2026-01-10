@@ -587,8 +587,21 @@ fn read_file_from_uri(uri: &str) -> Option<String> {
 }
 
 fn path_from_uri(uri: &str) -> Option<PathBuf> {
-    let path = uri.strip_prefix("file://")?;
-    Some(PathBuf::from(path))
+    nova_core::file_uri_to_path(uri)
+        .ok()
+        .map(|path| path.into_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn path_from_uri_decodes_percent_encoding() {
+        let uri = "file:///tmp/My%20File.java";
+        let path = path_from_uri(uri).expect("path");
+        assert_eq!(path, PathBuf::from("/tmp/My File.java"));
+    }
 }
 
 fn to_lsp_types_range(range: &Range) -> LspTypesRange {
