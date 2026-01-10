@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -472,6 +472,8 @@ fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, Clas
             Ok(out)
         }
         ZipKind::Jar => {
+            let is_multi_release = jar_is_multi_release(&mut archive);
+
             // JARs can be multi-release, where version-specific class files live
             // under `META-INF/versions/<n>/...`.
             //
@@ -494,13 +496,19 @@ fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, Clas
                     continue;
                 }
 
-                let mr_version = if let Some(rest) = name.strip_prefix("META-INF/versions/") {
-                    let Some((version, _path)) = rest.split_once('/') else {
+                let mr_version = if is_multi_release {
+                    if let Some(rest) = name.strip_prefix("META-INF/versions/") {
+                        let Some((version, _path)) = rest.split_once('/') else {
+                            continue;
+                        };
+                        match version.parse::<u32>() {
+                            Ok(v) => Some(v),
+                            Err(_) => continue,
+                        }
+                    } else if name.starts_with("META-INF/") {
                         continue;
-                    };
-                    match version.parse::<u32>() {
-                        Ok(v) => Some(v),
-                        Err(_) => continue,
+                    } else {
+                        None
                     }
                 } else if name.starts_with("META-INF/") {
                     continue;
@@ -542,6 +550,33 @@ fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, Clas
             Ok(out)
         }
     }
+}
+
+fn jar_is_multi_release<R: Read + Seek>(archive: &mut zip::ZipArchive<R>) -> bool {
+    let mut file = match archive.by_name("META-INF/MANIFEST.MF") {
+        Ok(file) => file,
+        Err(zip::result::ZipError::FileNotFound) => return false,
+        Err(_) => return false,
+    };
+
+    let mut manifest = String::new();
+    if file.read_to_string(&mut manifest).is_err() {
+        return false;
+    }
+
+    manifest_is_multi_release(&manifest)
+}
+
+fn manifest_is_multi_release(manifest: &str) -> bool {
+    for line in manifest.lines() {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("Multi-Release") {
+            return value.trim().eq_ignore_ascii_case("true");
+        }
+    }
+    false
 }
 
 fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
@@ -623,6 +658,10 @@ mod tests {
 
     fn test_multirelease_jar() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/multirelease.jar")
+    }
+
+    fn test_not_multirelease_jar() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/not-multirelease.jar")
     }
 
     #[test]
@@ -768,5 +807,13 @@ mod tests {
         let index =
             ClasspathIndex::build(&[ClasspathEntry::Jar(test_multirelease_jar())], None).unwrap();
         assert!(index.lookup_binary("com.example.mr.MultiReleaseOnly").is_some());
+    }
+
+    #[test]
+    fn ignores_versions_directory_without_multi_release_manifest() {
+        let index =
+            ClasspathIndex::build(&[ClasspathEntry::Jar(test_not_multirelease_jar())], None)
+                .unwrap();
+        assert!(index.lookup_binary("com.example.mr.MultiReleaseOnly").is_none());
     }
 }
