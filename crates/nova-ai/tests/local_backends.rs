@@ -86,6 +86,41 @@ fn ollama_config(url: Url) -> AiConfig {
     }
 }
 
+#[test]
+fn local_only_allows_loopback_urls() {
+    let url = Url::parse("http://localhost:11434").expect("valid url");
+    let config = openai_config(url);
+    AiClient::from_config(&config).expect("localhost should be allowed in local-only mode");
+}
+
+#[test]
+fn local_only_rejects_remote_urls() {
+    let url = Url::parse("http://example.com").expect("valid url");
+    let config = openai_config(url);
+    let err = match AiClient::from_config(&config) {
+        Ok(_) => panic!("remote urls must be rejected"),
+        Err(err) => err,
+    };
+    match err {
+        AiError::InvalidConfig(msg) => {
+            assert!(msg.contains("local_only"), "error message should mention local_only");
+            assert!(
+                msg.contains("loopback") || msg.contains("localhost"),
+                "error message should guide users toward loopback/localhost"
+            );
+        }
+        other => panic!("expected InvalidConfig, got {other:?}"),
+    }
+}
+
+#[test]
+fn remote_urls_allowed_when_not_local_only() {
+    let url = Url::parse("http://example.com").expect("valid url");
+    let mut config = openai_config(url);
+    config.privacy.local_only = false;
+    AiClient::from_config(&config).expect("remote urls should be allowed when local_only=false");
+}
+
 #[tokio::test]
 async fn openai_compatible_request_formatting() {
     let (body_tx, mut body_rx) = mpsc::channel::<Value>(1);

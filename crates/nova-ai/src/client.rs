@@ -6,6 +6,7 @@ use crate::{
 };
 use futures::StreamExt;
 use nova_config::{AiConfig, AiProviderKind};
+use url::Host;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -23,6 +24,10 @@ impl AiClient {
             return Err(AiError::InvalidConfig(
                 "ai.provider.concurrency must be >= 1".into(),
             ));
+        }
+
+        if config.privacy.local_only {
+            validate_local_only_url(&config.provider.url)?;
         }
 
         let provider: Arc<dyn AiProvider> = match config.provider.kind {
@@ -115,4 +120,22 @@ impl AiClient {
             .map_err(|_| AiError::UnexpectedResponse("ai client shutting down".into()))?;
         self.provider.list_models(cancel).await
     }
+}
+
+fn validate_local_only_url(url: &url::Url) -> Result<(), AiError> {
+    let is_loopback = match url.host() {
+        Some(Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+
+    if is_loopback {
+        return Ok(());
+    }
+
+    Err(AiError::InvalidConfig(format!(
+        "ai.privacy.local_only=true requires ai.provider.url to use a loopback host \
+        (localhost/127.0.0.1/[::1]); got {url}"
+    )))
 }
