@@ -7,12 +7,14 @@
 //! - Change Signature for method declarations (`change_signature`)
 //! - Extract Constant / Extract Field for side-effect-free expressions (`extract_member`)
 //! - Inline Method for simple private methods (`inline_method`)
+//! - Convert a data class to a Java record (`convert_to_record`)
 //!
 //! Additionally, the crate contains a small semantic refactoring engine used for
 //! early experiments. It models changes as [`SemanticChange`] values and
 //! materializes deterministic, previewable [`WorkspaceEdit`]s.
- 
+
 mod change_signature;
+mod convert_to_record;
 mod extract_member;
 mod inline_method;
 mod java;
@@ -34,6 +36,7 @@ pub use change_signature::{
     change_signature, ChangeSignature, ChangeSignatureConflict, ChangeSignatureError,
     HierarchyPropagation, ParameterOperation,
 };
+pub use convert_to_record::{convert_to_record, ConvertToRecordError, ConvertToRecordOptions};
 pub use extract_member::{
     extract_constant, extract_field, ExtractError, ExtractKind, ExtractOptions, ExtractOutcome,
 };
@@ -65,6 +68,7 @@ pub use materialize::{materialize, MaterializeError};
 pub use preview::{generate_preview, FilePreview, RefactoringPreview};
 pub use refactorings::{
     extract_variable, inline_variable, organize_imports, rename, ExtractVariableParams,
-    InlineVariableParams, OrganizeImportsParams, RenameParams, RefactorError as SemanticRefactorError,
+    InlineVariableParams, OrganizeImportsParams, RenameParams,
+    RefactorError as SemanticRefactorError,
 };
 pub use semantic::{Conflict, RefactorDatabase, SemanticChange};

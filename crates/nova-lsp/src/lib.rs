@@ -52,7 +52,8 @@ pub use cancellation::RequestCancellation;
 pub use diagnostics::DiagnosticsDebouncer;
 pub use distributed::NovaLspFrontend;
 pub use refactor::{
-    extract_member_code_actions, inline_method_code_actions, resolve_extract_member_code_action,
+    convert_to_record_code_action, extract_member_code_actions, inline_method_code_actions,
+    resolve_extract_member_code_action,
     safe_delete_code_action, change_signature_schema, RefactorResponse,
 };
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};

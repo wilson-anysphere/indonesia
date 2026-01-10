@@ -276,3 +276,106 @@ pub fn list_methods(text: &str, class: &ClassBlock) -> Vec<MethodSig> {
 
 // Semantic refactoring test database / helpers.
 pub use crate::java_semantic::{InMemoryJavaDatabase, JavaSymbolKind, SymbolId};
+use std::ops::Range;
+
+/// Describes a slice of text along with its starting offset.
+#[derive(Debug, Clone)]
+pub struct TextSlice<'a> {
+    pub text: &'a str,
+    pub offset: usize,
+}
+
+impl<'a> TextSlice<'a> {
+    #[allow(dead_code)]
+    pub fn range(&self) -> Range<usize> {
+        self.offset..(self.offset + self.text.len())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScanMode {
+    Code,
+    LineComment,
+    BlockComment,
+    StringLiteral,
+    CharLiteral,
+}
+
+/// Iterate through `text` and invoke `f` for each byte, providing the current
+/// mode (code vs comment/string).
+pub(crate) fn scan_modes(text: &str, mut f: impl FnMut(usize, u8, ScanMode)) {
+    let bytes = text.as_bytes();
+    let mut mode = ScanMode::Code;
+    let mut idx = 0;
+    while idx < bytes.len() {
+        let b = bytes[idx];
+        f(idx, b, mode);
+
+        match mode {
+            ScanMode::Code => match b {
+                b'/' if idx + 1 < bytes.len() && bytes[idx + 1] == b'/' => {
+                    mode = ScanMode::LineComment;
+                    idx += 2;
+                    continue;
+                }
+                b'/' if idx + 1 < bytes.len() && bytes[idx + 1] == b'*' => {
+                    mode = ScanMode::BlockComment;
+                    idx += 2;
+                    continue;
+                }
+                b'"' => {
+                    mode = ScanMode::StringLiteral;
+                }
+                b'\'' => {
+                    mode = ScanMode::CharLiteral;
+                }
+                _ => {}
+            },
+            ScanMode::LineComment => {
+                if b == b'\n' {
+                    mode = ScanMode::Code;
+                }
+            }
+            ScanMode::BlockComment => {
+                if b == b'*' && idx + 1 < bytes.len() && bytes[idx + 1] == b'/' {
+                    // let the closing `/` be seen as comment too
+                    f(idx + 1, bytes[idx + 1], mode);
+                    idx += 2;
+                    mode = ScanMode::Code;
+                    continue;
+                }
+            }
+            ScanMode::StringLiteral => {
+                if b == b'\\' {
+                    idx += 2;
+                    continue;
+                }
+                if b == b'"' {
+                    mode = ScanMode::Code;
+                }
+            }
+            ScanMode::CharLiteral => {
+                if b == b'\\' {
+                    idx += 2;
+                    continue;
+                }
+                if b == b'\'' {
+                    mode = ScanMode::Code;
+                }
+            }
+        }
+
+        idx += 1;
+    }
+}
+
+pub(crate) fn is_ident_char_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+
+pub(crate) fn is_boundary(text: &[u8], idx: usize) -> bool {
+    if idx >= text.len() {
+        return true;
+    }
+    !is_ident_char_byte(text[idx])
+}
