@@ -22,8 +22,11 @@ In MVP form:
 
 ## Local multi-process mode
 
-In local mode, the router listens on a Unix domain socket and spawns `nova-worker` processes on the
-same machine.
+In local mode, the router listens on a local IPC transport and spawns `nova-worker` processes on
+the same machine:
+
+- Unix: Unix domain socket
+- Windows: named pipe
 
 Workers are started with:
 
@@ -45,4 +48,3 @@ token is supported as a stub (shared secret passed to both router and worker).
 TLS support is feature-gated (`--features tls`) and currently expects PEM files on both ends.
 
 See `crates/nova-worker/README.md` for the worker CLI flags.
-

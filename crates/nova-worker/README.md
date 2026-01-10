@@ -21,6 +21,7 @@ nova-worker \
 
 - `--connect <addr>`
   - Local: `unix:/path/to/router.sock`
+  - Local (Windows): `pipe:nova-router` (or `pipe:\\\\.\\pipe\\nova-router`)
   - Remote: `tcp:127.0.0.1:9000`
   - TLS (feature-gated): `tcp+tls:127.0.0.1:9000`
 - `--shard-id <id>`: numeric shard identifier (assigned by the router).
@@ -41,4 +42,3 @@ nova-worker \
   --cache-dir /tmp/nova-cache \
   --auth-token secret-token
 ```
-

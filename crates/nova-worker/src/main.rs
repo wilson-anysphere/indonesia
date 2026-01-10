@@ -10,6 +10,9 @@ use tokio::net::TcpStream;
 #[cfg(unix)]
 use tokio::net::UnixStream;
 
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::ClientOptions;
+
 #[cfg(feature = "tls")]
 mod tls;
 
@@ -24,6 +27,25 @@ async fn main() -> Result<()> {
                 .await
                 .context("connect unix socket")?,
         ),
+        #[cfg(windows)]
+        ConnectAddr::NamedPipe(name) => {
+            let name = normalize_pipe_name(&name);
+            let mut attempts = 0u32;
+            let client = loop {
+                match ClientOptions::new().open(&name) {
+                    Ok(client) => break client,
+                    Err(err) if attempts < 50 => {
+                        attempts += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(err).with_context(|| format!("connect named pipe {name}"))
+                    }
+                }
+            };
+            Box::new(client)
+        }
         ConnectAddr::Tcp(addr) => Box::new(TcpStream::connect(addr).await.context("connect tcp")?),
         #[cfg(feature = "tls")]
         ConnectAddr::TcpTls(addr) => {
@@ -90,6 +112,8 @@ struct Args {
 enum ConnectAddr {
     #[cfg(unix)]
     Unix(PathBuf),
+    #[cfg(windows)]
+    NamedPipe(String),
     Tcp(SocketAddr),
     #[cfg(feature = "tls")]
     TcpTls(SocketAddr),
@@ -203,6 +227,16 @@ fn parse_connect_addr(raw: &str) -> Result<ConnectAddr> {
                 Err(anyhow!("unix sockets are not supported on this platform"))
             }
         }
+        "pipe" => {
+            #[cfg(windows)]
+            {
+                Ok(ConnectAddr::NamedPipe(rest.to_string()))
+            }
+            #[cfg(not(windows))]
+            {
+                Err(anyhow!("named pipes are only supported on Windows"))
+            }
+        }
         "tcp" => Ok(ConnectAddr::Tcp(rest.parse().context("parse tcp addr")?)),
         "tcp+tls" => {
             #[cfg(feature = "tls")]
@@ -217,6 +251,15 @@ fn parse_connect_addr(raw: &str) -> Result<ConnectAddr> {
             }
         }
         _ => Err(anyhow!("unsupported connect scheme {scheme:?}")),
+    }
+}
+
+#[cfg(windows)]
+fn normalize_pipe_name(name: &str) -> String {
+    if name.starts_with(r"\\.\pipe\") || name.starts_with(r"\\?\pipe\") {
+        name.to_string()
+    } else {
+        format!(r"\\.\pipe\{name}")
     }
 }
 
@@ -253,6 +296,11 @@ impl WorkerState {
                     let index = self.build_index().await?;
                     write_message(stream, &RpcMessage::ShardIndex(index)).await?;
                 }
+                RpcMessage::LoadFiles { revision, files } => {
+                    self.revision = revision;
+                    self.files = files.into_iter().map(|f| (f.path, f.text)).collect();
+                    write_message(stream, &RpcMessage::Ack).await?;
+                }
                 RpcMessage::UpdateFile { revision, file } => {
                     self.revision = revision;
                     self.files.insert(file.path, file.text);
@@ -264,6 +312,7 @@ impl WorkerState {
                         shard_id: self.shard_id,
                         revision: self.revision,
                         index_generation: self.index_generation,
+                        file_count: self.files.len().try_into().unwrap_or(u32::MAX),
                     };
                     write_message(stream, &RpcMessage::WorkerStats(stats)).await?;
                 }

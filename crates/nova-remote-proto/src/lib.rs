@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 pub type Revision = u64;
 pub type ShardId = u32;
@@ -32,6 +32,7 @@ pub struct WorkerStats {
     pub shard_id: ShardId,
     pub revision: Revision,
     pub index_generation: u64,
+    pub file_count: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,6 +49,15 @@ pub enum RpcMessage {
         shard_id: ShardId,
         revision: Revision,
         protocol_version: u32,
+    },
+
+    /// Load a full snapshot of the shard's files without changing the router's global view.
+    ///
+    /// This is used to rehydrate a worker's in-memory file map after a crash/restart so that
+    /// subsequent `UpdateFile` messages can rebuild a complete shard index.
+    LoadFiles {
+        revision: Revision,
+        files: Vec<FileText>,
     },
 
     /// Build (or rebuild) the shard index from a full file snapshot.
@@ -68,6 +78,9 @@ pub enum RpcMessage {
     WorkerStats(WorkerStats),
     /// Response to `IndexShard`/`UpdateFile`.
     ShardIndex(ShardIndex),
+
+    /// Generic success response for commands that don't have a structured payload.
+    Ack,
 
     /// Request graceful shutdown.
     Shutdown,

@@ -37,6 +37,8 @@ pub struct WorkspaceLayout {
 pub enum ListenAddr {
     #[cfg(unix)]
     Unix(PathBuf),
+    #[cfg(windows)]
+    NamedPipe(String),
     Tcp(TcpListenAddr),
 }
 
@@ -45,6 +47,8 @@ impl ListenAddr {
         match self {
             #[cfg(unix)]
             ListenAddr::Unix(path) => format!("unix:{}", path.display()),
+            #[cfg(windows)]
+            ListenAddr::NamedPipe(name) => format!("pipe:{name}"),
             ListenAddr::Tcp(cfg) => match cfg {
                 TcpListenAddr::Plain(addr) => format!("tcp:{addr}"),
                 #[cfg(feature = "tls")]
@@ -541,6 +545,8 @@ async fn accept_loop(
     match listen_addr {
         #[cfg(unix)]
         ListenAddr::Unix(path) => accept_loop_unix(state, path, &mut shutdown_rx).await,
+        #[cfg(windows)]
+        ListenAddr::NamedPipe(name) => accept_loop_named_pipe(state, name, &mut shutdown_rx).await,
         ListenAddr::Tcp(cfg) => accept_loop_tcp(state, cfg, &mut shutdown_rx).await,
     }
 }
@@ -572,6 +578,48 @@ async fn accept_loop_unix(
                 handle_new_connection(state.clone(), boxed).await?;
             }
         }
+    }
+}
+
+#[cfg(windows)]
+async fn accept_loop_named_pipe(
+    state: Arc<RouterState>,
+    name: String,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> Result<()> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let name = normalize_pipe_name(&name);
+    let mut server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&name)
+        .with_context(|| format!("create named pipe {name}"))?;
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    return Ok(());
+                }
+            }
+            res = server.connect() => {
+                res.with_context(|| format!("accept named pipe {name}"))?;
+                let stream: BoxedStream = Box::new(server);
+                handle_new_connection(state.clone(), stream).await?;
+                server = ServerOptions::new()
+                    .create(&name)
+                    .with_context(|| format!("create named pipe {name}"))?;
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn normalize_pipe_name(name: &str) -> String {
+    if name.starts_with(r"\\.\pipe\") || name.starts_with(r"\\?\pipe\") {
+        name.to_string()
+    } else {
+        format!(r"\\.\pipe\{name}")
     }
 }
 
@@ -624,6 +672,7 @@ async fn handle_new_connection(state: Arc<RouterState>, mut stream: BoxedStream)
         } => (shard_id, auth_token, cached_index),
         other => return Err(anyhow!("expected WorkerHello, got {other:?}")),
     };
+    let has_cached_index = cached_index.is_some();
 
     if let Some(expected) = state.config.auth_token.as_ref() {
         if auth_token.as_deref() != Some(expected.as_str()) {
@@ -692,6 +741,32 @@ async fn handle_new_connection(state: Arc<RouterState>, mut stream: BoxedStream)
         build_global_symbols(shard_guard.values().filter_map(|s| s.index.as_ref()))
     };
     write_global_symbols(&state.global_symbols, symbols).await;
+
+    if has_cached_index {
+        let refresh_state = state.clone();
+        let refresh_handle = handle.clone();
+        tokio::spawn(async move {
+            let root = {
+                let guard = refresh_state.shards.lock().await;
+                guard.get(&shard_id).map(|s| s.root.clone())
+            };
+
+            let Some(root) = root else {
+                return;
+            };
+
+            let files = match collect_java_files(&root).await {
+                Ok(files) => files,
+                Err(err) => {
+                    eprintln!("failed to load shard files for worker restart: {err:?}");
+                    return;
+                }
+            };
+
+            let revision = refresh_state.global_revision.load(Ordering::SeqCst);
+            let _ = refresh_handle.notify(RpcMessage::LoadFiles { revision, files });
+        });
+    }
 
     state.notify.notify_waiters();
     Ok(())
