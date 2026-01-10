@@ -374,6 +374,241 @@ exit 1
     assert!(status.success());
 }
 
+#[cfg(unix)]
+#[test]
+fn stdio_server_handles_java_classpath_request_with_fake_gradle_wrapper_and_cache() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("gradle-project");
+    fs::create_dir_all(&root).expect("create project dir");
+
+    fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'\n").expect("write settings");
+    fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").expect("write build.gradle");
+
+    let dep_dir = root.join("deps");
+    fs::create_dir_all(&dep_dir).expect("create deps");
+    let dep1 = dep_dir.join("dep1.jar");
+    let dep2 = dep_dir.join("dep2.jar");
+    fs::write(&dep1, "").expect("write dep1");
+    fs::write(&dep2, "").expect("write dep2");
+
+    let gradlew_path = root.join("gradlew");
+    fs::write(
+        &gradlew_path,
+        format!(
+            r#"#!/bin/sh
+last=""
+for arg in "$@"; do last="$arg"; done
+case "$last" in
+  *printNovaClasspath)
+    printf '%s\n' '{}'
+    printf '%s\n' '{}'
+    ;;
+esac
+"#,
+            dep1.display(),
+            dep2.display()
+        ),
+    )
+    .expect("write fake gradlew");
+    let mut perms = fs::metadata(&gradlew_path)
+        .expect("stat gradlew")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&gradlew_path, perms).expect("chmod gradlew");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    let expected = vec![
+        root.join("build/classes/java/main").to_string_lossy().to_string(),
+        dep1.to_string_lossy().to_string(),
+        dep2.to_string_lossy().to_string(),
+    ];
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/java/classpath",
+            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
+        }),
+    );
+    let classpath_resp = read_jsonrpc_message(&mut stdout);
+    let result = classpath_resp.get("result").cloned().expect("result");
+    let classpath = result
+        .get("classpath")
+        .and_then(|v| v.as_array())
+        .expect("classpath array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(classpath, expected);
+
+    // Remove the wrapper script; subsequent requests should still succeed via
+    // the on-disk cache without invoking Gradle.
+    fs::remove_file(&gradlew_path).expect("remove fake gradlew");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "nova/java/classpath",
+            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
+        }),
+    );
+    let cached_resp = read_jsonrpc_message(&mut stdout);
+    let result = cached_resp.get("result").cloned().expect("result");
+    let classpath = result
+        .get("classpath")
+        .and_then(|v| v.as_array())
+        .expect("classpath array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(classpath, expected);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[cfg(unix)]
+#[test]
+fn stdio_server_handles_build_project_request_with_fake_gradle_diagnostics() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("gradle-project");
+    fs::create_dir_all(&root).expect("create project dir");
+
+    fs::write(root.join("settings.gradle"), "rootProject.name = 'demo'\n").expect("write settings");
+    fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").expect("write build.gradle");
+
+    let java_dir = root.join("src/main/java/com/example");
+    fs::create_dir_all(&java_dir).expect("create java dir");
+    let java_file = java_dir.join("Foo.java");
+    fs::write(&java_file, "package com.example; public class Foo {}").expect("write Foo.java");
+
+    let gradlew_path = root.join("gradlew");
+    fs::write(
+        &gradlew_path,
+        format!(
+            r#"#!/bin/sh
+last=""
+for arg in "$@"; do last="$arg"; done
+case "$last" in
+  *compileJava)
+    printf '%s\n' '{}:10: error: cannot find symbol'
+    printf '%s\n' '        foo.bar();'
+    printf '%s\n' '            ^'
+    printf '%s\n' '  symbol:   method bar()'
+    printf '%s\n' '  location: variable foo of type Foo'
+    exit 1
+    ;;
+esac
+exit 0
+"#,
+            java_file.display()
+        ),
+    )
+    .expect("write fake gradlew");
+    let mut perms = fs::metadata(&gradlew_path)
+        .expect("stat gradlew")
+        .permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&gradlew_path, perms).expect("chmod gradlew");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/buildProject",
+            "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
+        }),
+    );
+
+    let build_resp = read_jsonrpc_message(&mut stdout);
+    let result = build_resp.get("result").cloned().expect("result");
+    let diags = result
+        .get("diagnostics")
+        .and_then(|v| v.as_array())
+        .expect("diagnostics array");
+    assert_eq!(diags.len(), 1);
+    let diag = &diags[0];
+    assert_eq!(diag.get("file").and_then(|v| v.as_str()), Some(java_file.to_str().unwrap()));
+    assert_eq!(diag.get("severity").and_then(|v| v.as_str()), Some("error"));
+    assert_eq!(
+        diag.pointer("/range/start/line").and_then(|v| v.as_u64()),
+        Some(9)
+    );
+    // caret line is indented 12 characters before '^' (1-based column 13).
+    assert_eq!(
+        diag.pointer("/range/start/character")
+            .and_then(|v| v.as_u64()),
+        Some(12)
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
 fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
     let bytes = serde_json::to_vec(message).expect("serialize");
     write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");

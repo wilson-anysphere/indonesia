@@ -63,7 +63,18 @@ impl GradleBuild {
         }
 
         let combined = combine_output(&output);
-        let entries = parse_gradle_classpath_output(&combined);
+        let mut entries = parse_gradle_classpath_output(&combined);
+
+        // Best-effort: include the project's compiled classes output directory.
+        //
+        // Gradle's `compileClasspath` typically only includes dependency artifacts
+        // and does not include the output directory for the current project.
+        // For language-server classpath resolution we want the directory that
+        // `compileJava` emits classes into.
+        let output_dir = gradle_output_dir(project_root, project_path);
+        if !entries.iter().any(|p| p == &output_dir) {
+            entries.insert(0, output_dir);
+        }
 
         cache.update_module(
             project_root,
@@ -167,6 +178,51 @@ impl GradleBuild {
             }
         }
         self.config.gradle_path.clone()
+    }
+}
+
+fn gradle_output_dir(project_root: &Path, project_path: Option<&str>) -> PathBuf {
+    // Best-effort mapping from Gradle project paths to directories.
+    //
+    // For standard Gradle layouts, a project path like `:app` corresponds to an
+    // `app/` directory under the workspace root. More complex setups can change
+    // this mapping using `settings.gradle`, but we keep the heuristic small and
+    // predictable.
+    let mut rel = PathBuf::new();
+    if let Some(path) = project_path {
+        let trimmed = path.trim_matches(':');
+        for part in trimmed.split(':').filter(|p| !p.is_empty()) {
+            rel.push(part);
+        }
+    }
+
+    project_root
+        .join(rel)
+        .join("build")
+        .join("classes")
+        .join("java")
+        .join("main")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gradle_output_dir_maps_project_path_to_directory() {
+        let root = Path::new("/workspace");
+        assert_eq!(
+            gradle_output_dir(root, None),
+            PathBuf::from("/workspace/build/classes/java/main")
+        );
+        assert_eq!(
+            gradle_output_dir(root, Some(":app")),
+            PathBuf::from("/workspace/app/build/classes/java/main")
+        );
+        assert_eq!(
+            gradle_output_dir(root, Some(":lib:core")),
+            PathBuf::from("/workspace/lib/core/build/classes/java/main")
+        );
     }
 }
 
