@@ -162,7 +162,11 @@ impl AptManager {
         }
     }
 
-    fn max_input_mtime(&self, module_root: &Path, kind: SourceRootKind) -> io::Result<Option<SystemTime>> {
+    fn max_input_mtime(
+        &self,
+        module_root: &Path,
+        kind: SourceRootKind,
+    ) -> io::Result<Option<SystemTime>> {
         let mut max_time = None;
 
         for root in self

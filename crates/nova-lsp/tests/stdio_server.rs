@@ -337,8 +337,123 @@ fn stdio_server_handles_debug_configurations_request() {
 }
 
 #[test]
+fn stdio_server_provides_inline_method_code_action() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    let uri = "file:///A.java";
+    let source = r#"class A {
+  private int addOne(int x) { return x + 1; }
+
+  int test() {
+    return addOne(41);
+  }
+}
+"#;
+
+    // Open the document so code actions can use in-memory contents.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // Cursor on `addOne(41)` (line 4, character 11).
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 4, "character": 11 },
+                    "end": { "line": 4, "character": 11 }
+                },
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    let actions = result.as_array().expect("actions array");
+
+    let inline_actions: Vec<_> = actions
+        .iter()
+        .filter(|action| action.get("kind").and_then(|v| v.as_str()) == Some("refactor.inline"))
+        .collect();
+    assert!(
+        !inline_actions.is_empty(),
+        "expected at least one inline-method code action"
+    );
+
+    let mut has_temp_arg = false;
+    for action in inline_actions {
+        let Some(edit) = action.get("edit") else {
+            continue;
+        };
+        let Some(changes) = edit.get("changes").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        let Some(edits) = changes.get(uri).and_then(|v| v.as_array()) else {
+            continue;
+        };
+        if edits.iter().any(|edit| {
+            edit.get("newText")
+                .and_then(|v| v.as_str())
+                .is_some_and(|t| t.contains("int x_arg = 41;"))
+        }) {
+            has_temp_arg = true;
+            break;
+        }
+    }
+    assert!(has_temp_arg, "expected inline method to introduce arg temp");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_handles_generated_sources_request() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -403,7 +518,8 @@ fn stdio_server_handles_generated_sources_request() {
 
 #[test]
 fn stdio_server_handles_run_annotation_processing_request() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
         .arg("--stdio")
@@ -674,7 +790,10 @@ exit 1
         .expect("diagnostics array");
     assert_eq!(diags.len(), 1);
     let diag = &diags[0];
-    assert_eq!(diag.get("file").and_then(|v| v.as_str()), Some(java_file.to_str().unwrap()));
+    assert_eq!(
+        diag.get("file").and_then(|v| v.as_str()),
+        Some(java_file.to_str().unwrap())
+    );
     assert_eq!(diag.get("severity").and_then(|v| v.as_str()), Some("error"));
     assert_eq!(
         diag.pointer("/range/start/line").and_then(|v| v.as_u64()),
@@ -768,7 +887,9 @@ esac
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
 
     let expected = vec![
-        root.join("build/classes/java/main").to_string_lossy().to_string(),
+        root.join("build/classes/java/main")
+            .to_string_lossy()
+            .to_string(),
         dep1.to_string_lossy().to_string(),
         dep2.to_string_lossy().to_string(),
     ];
@@ -913,7 +1034,10 @@ exit 0
         .expect("diagnostics array");
     assert_eq!(diags.len(), 1);
     let diag = &diags[0];
-    assert_eq!(diag.get("file").and_then(|v| v.as_str()), Some(java_file.to_str().unwrap()));
+    assert_eq!(
+        diag.get("file").and_then(|v| v.as_str()),
+        Some(java_file.to_str().unwrap())
+    );
     assert_eq!(diag.get("severity").and_then(|v| v.as_str()), Some("error"));
     assert_eq!(
         diag.pointer("/range/start/line").and_then(|v| v.as_u64()),
@@ -1377,7 +1501,9 @@ esac
     assert_eq!(
         classpath,
         vec![
-            root.join("build/classes/java/main").to_string_lossy().to_string(),
+            root.join("build/classes/java/main")
+                .to_string_lossy()
+                .to_string(),
             dep1.to_string_lossy().to_string(),
         ]
     );
@@ -1406,7 +1532,9 @@ esac
     assert_eq!(
         classpath,
         vec![
-            root.join("build/classes/java/main").to_string_lossy().to_string(),
+            root.join("build/classes/java/main")
+                .to_string_lossy()
+                .to_string(),
             dep1.to_string_lossy().to_string(),
         ]
     );
@@ -1443,7 +1571,9 @@ esac
     assert_eq!(
         classpath,
         vec![
-            root.join("build/classes/java/main").to_string_lossy().to_string(),
+            root.join("build/classes/java/main")
+                .to_string_lossy()
+                .to_string(),
             dep2.to_string_lossy().to_string(),
         ]
     );
@@ -1491,6 +1621,15 @@ fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).expect("read body");
     serde_json::from_slice(&buf).expect("parse json")
+}
+
+fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
+    loop {
+        let msg = read_jsonrpc_message(reader);
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
+            return msg;
+        }
+    }
 }
 
 #[cfg(unix)]

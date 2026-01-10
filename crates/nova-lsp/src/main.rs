@@ -195,7 +195,8 @@ fn handle_request(
                             CODE_ACTION_KIND_AI_GENERATE,
                             CODE_ACTION_KIND_AI_TESTS,
                             "source.organizeImports",
-                            "refactor.extract"
+                            "refactor.extract",
+                            "refactor.inline"
                         ]
                     },
                     "executeCommandProvider": {
@@ -533,7 +534,17 @@ fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<
     if let Some(text) = text {
         if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
             let range = to_lsp_types_range(&params.range);
-            if let Some(action) = nova_ide::code_action::extract_method_code_action(text, uri, range) {
+            if let Some(action) =
+                nova_ide::code_action::extract_method_code_action(text, uri.clone(), range)
+            {
+                actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+            }
+
+            let cursor = LspTypesPosition {
+                line: params.range.start.line,
+                character: params.range.start.character,
+            };
+            for action in nova_ide::refactor::inline_method_code_actions(&uri, text, cursor) {
                 actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
             }
         }
