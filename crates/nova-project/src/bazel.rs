@@ -85,7 +85,8 @@ pub(crate) fn load_bazel_project(
         java: JavaConfig::default(),
         modules: vec![Module {
             name: ModuleName::new(
-                root.file_name()
+                root
+                    .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("root")
                     .to_string(),

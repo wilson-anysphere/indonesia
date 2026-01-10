@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Result;
 use nova_dap::hot_swap::{BuildSystem, HotSwapEngine, HotSwapResult, JdwpRedefiner};
-use nova_ide::{DebugConfiguration, Project, ProjectDiscoveryError};
+use nova_ide::DebugConfiguration;
+use nova_workspace::Workspace;
 use serde::{Deserialize, Serialize};
 
 /// LSP method params for `nova/debug/hotSwap`.
@@ -13,21 +15,21 @@ pub struct HotSwapParams {
 
 #[derive(Debug)]
 pub struct NovaLspServer {
-    project: Project,
+    workspace: Workspace,
 }
 
 impl NovaLspServer {
-    pub fn from_project(project: Project) -> Self {
-        Self { project }
+    pub fn from_workspace(workspace: Workspace) -> Self {
+        Self { workspace }
     }
 
-    pub fn load_from_dir(root: impl AsRef<Path>) -> Result<Self, ProjectDiscoveryError> {
-        Ok(Self::from_project(Project::load_from_dir(root)?))
+    pub fn load_from_dir(root: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self::from_workspace(Workspace::open(root)?))
     }
 
     /// Custom LSP method: `nova/debug/configurations`.
     pub fn debug_configurations(&self) -> Vec<DebugConfiguration> {
-        self.project.discover_debug_configurations()
+        self.workspace.debug_configurations()
     }
 
     /// Custom LSP method: `nova/debug/hotSwap`.
@@ -61,9 +63,7 @@ impl<B, J> HotSwapService<B, J> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nova_dap::hot_swap::{
-        CompileError, CompileOutput, CompiledClass, JdwpError, JdwpRedefiner,
-    };
+    use nova_dap::hot_swap::{CompileError, CompileOutput, CompiledClass, JdwpError, JdwpRedefiner};
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn lsp_hot_swap_delegates_to_engine() {
-        let server = NovaLspServer::from_project(Project::new(Vec::new()));
+        let server = NovaLspServer::from_workspace(Workspace::new_in_memory());
 
         let file = PathBuf::from("src/main/java/com/example/A.java");
         let mut build = MockBuild::default();

@@ -25,3 +25,15 @@ pub struct NovaConfig {
     pub generated_sources: GeneratedSourcesConfig,
 }
 
+#[derive(Debug, Clone)]
+pub struct EffectiveConfig {
+    pub enable_indexing: bool,
+}
+
+impl Default for EffectiveConfig {
+    fn default() -> Self {
+        Self {
+            enable_indexing: true,
+        }
+    }
+}

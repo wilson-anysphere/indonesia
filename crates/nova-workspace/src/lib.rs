@@ -8,22 +8,48 @@ use nova_project::ProjectError;
 use nova_syntax::SyntaxNode;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 use walkdir::WalkDir;
+
+mod engine;
+
+pub use engine::{IndexProgress, WorkspaceEvent, WorkspaceStatus};
 
 /// A minimal, library-first backend for the `nova` CLI.
 ///
 /// This is intentionally lightweight: it provides basic project loading,
 /// indexing, diagnostics, and cache management without requiring an editor or
 /// LSP transport.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Workspace {
     root: PathBuf,
+    engine: Arc<engine::WorkspaceEngine>,
+}
+
+impl fmt::Debug for Workspace {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Workspace")
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Workspace {
+    /// Construct a workspace that doesn't touch the OS filesystem.
+    ///
+    /// This is primarily intended for integration tests exercising the workspace
+    /// event stream and overlay handling.
+    pub fn new_in_memory() -> Self {
+        Self {
+            root: PathBuf::new(),
+            engine: Arc::new(engine::WorkspaceEngine::new()),
+        }
+    }
+
     /// Open a workspace rooted at `path`.
     ///
     /// If `path` is a file, its parent directory is treated as the workspace root.
@@ -41,7 +67,10 @@ impl Workspace {
         let root = fs::canonicalize(&root)
             .with_context(|| format!("failed to canonicalize {}", root.display()))?;
         let root = find_project_root(&root);
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            engine: Arc::new(engine::WorkspaceEngine::new()),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -59,6 +88,44 @@ impl Workspace {
                 self.root.display()
             )
         })
+    }
+
+    // ---------------------------------------------------------------------
+    // Editor/LSP-facing APIs (workspace engine)
+    // ---------------------------------------------------------------------
+
+    /// Subscribe to workspace events (diagnostics, indexing progress, file changes).
+    pub fn subscribe(&self) -> async_channel::Receiver<WorkspaceEvent> {
+        self.engine.subscribe()
+    }
+
+    pub fn open_document(&self, path: nova_vfs::VfsPath, text: String, version: i32) {
+        self.engine.open_document(path, text, version);
+    }
+
+    pub fn close_document(&self, path: &nova_vfs::VfsPath) {
+        self.engine.close_document(path);
+    }
+
+    pub fn apply_changes(
+        &self,
+        path: &nova_vfs::VfsPath,
+        new_version: i32,
+        changes: &[nova_vfs::ContentChange],
+    ) -> std::result::Result<Vec<nova_core::TextEdit>, nova_vfs::DocumentError> {
+        self.engine.apply_changes(path, new_version, changes)
+    }
+
+    pub fn completions(&self, path: &nova_vfs::VfsPath, offset: usize) -> Vec<nova_types::CompletionItem> {
+        self.engine.completions(path, offset)
+    }
+
+    pub fn trigger_indexing(&self) {
+        self.engine.trigger_indexing();
+    }
+
+    pub fn debug_configurations(&self) -> Vec<nova_ide::DebugConfiguration> {
+        self.engine.debug_configurations(&self.root)
     }
 
     fn java_files_in(&self, root: &Path) -> Result<Vec<PathBuf>> {

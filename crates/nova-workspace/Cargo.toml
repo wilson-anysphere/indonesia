@@ -5,15 +5,21 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+async-channel = "2"
 nova-cache = { path = "../nova-cache" }
-nova-fuzzy = { path = "../nova-fuzzy" }
-nova-framework-spring = { path = "../nova-framework-spring" }
-nova-index = { path = "../nova-index" }
-nova-project = { path = "../nova-project" }
-nova-syntax = { path = "../nova-syntax" }
 crossbeam-channel = "0.5"
 notify = "6.1"
+nova-fuzzy = { path = "../nova-fuzzy" }
+nova-framework-spring = { path = "../nova-framework-spring" }
+nova-config = { path = "../nova-config" }
+nova-core = { path = "../nova-core" }
+nova-db = { path = "../nova-db" }
+nova-ide = { path = "../nova-ide" }
+nova-index = { path = "../nova-index" }
+nova-project = { path = "../nova-project" }
 nova-scheduler = { path = "../nova-scheduler" }
+nova-syntax = { path = "../nova-syntax" }
+nova-types = { path = "../nova-types" }
 nova-vfs = { path = "../nova-vfs" }
 rowan = "0.15.17"
 regex = "1"
@@ -23,3 +29,4 @@ walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt", "time"] }

@@ -5,17 +5,15 @@ edition = "2021"
 
 [dependencies]
 anyhow = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 nova-apt = { path = "../nova-apt" }
 nova-build = { path = "../nova-build" }
-nova-ai = { path = "../nova-ai" }
 nova-config = { path = "../nova-config" }
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
 nova-decompile = { path = "../nova-decompile" }
-nova-ai = { path = "../nova-ai" }
 nova-ide = { path = "../nova-ide" }
 nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
@@ -30,6 +28,7 @@ nova-build-bazel = { path = "../nova-build-bazel" }
 nova-jdwp = { path = "../nova-jdwp" }
 nova-framework-micronaut = { path = "../nova-framework-micronaut" }
 lsp-types = "0.97"
+nova-workspace = { path = "../nova-workspace" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"

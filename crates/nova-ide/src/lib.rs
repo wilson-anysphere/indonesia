@@ -6,6 +6,7 @@
 //! used by the LSP layer, and early refactoring support.
 
 pub mod ai;
+pub mod analysis;
 pub mod decompile;
 pub mod semantics;
 pub mod code_action;
