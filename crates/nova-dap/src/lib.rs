@@ -33,6 +33,12 @@ pub mod format;
 pub mod object_registry;
 pub mod session;
 
+/// Re-export JDWP client types for downstream crates.
+///
+/// Historically, callers used `nova_dap::jdwp::*` for convenience. The actual
+/// implementation lives in the dedicated `nova-jdwp` crate.
+pub use nova_jdwp as jdwp;
+
 pub use crate::dap::types::{EvaluateResult, OutputEvent, Scope, Variable, VariablePresentationHint};
 pub use crate::error::{DebugError, DebugResult};
 pub use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
