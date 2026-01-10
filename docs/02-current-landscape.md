@@ -160,35 +160,36 @@ The LSP protocol, while comprehensive, has limitations for Java development:
 5. **Limited Project Model**: Workspace folders are simple; module systems need more
 
 ### Required LSP Extensions for Nova
-
+ 
 Nova will need to extend LSP for Java-specific needs:
-
+ 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Nova LSP Extensions                           │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  PROJECT EXTENSIONS                                              │
-│  • java/projectConfiguration - project structure info           │
-│  • java/classpathUpdate - classpath change notifications        │
-│  • java/sourcePathUpdate - source root changes                  │
+│  • nova/projectConfiguration - project structure info           │
+│  • nova/java/classpath - classpath info                         │
+│  • nova/java/sourcePaths - source root changes                  │
+│  • nova/reloadProject - force project reload                    │
 │                                                                  │
 │  BUILD EXTENSIONS                                                │
-│  • java/buildProject - trigger build                            │
-│  • java/buildProgress - build progress notifications            │
-│  • java/buildDiagnostics - build errors                         │
+│  • nova/buildProject - trigger build                            │
+│  • nova/buildProgress - build progress notifications            │
+│  • nova/buildDiagnostics - build errors                         │
 │                                                                  │
 │  REFACTORING EXTENSIONS                                          │
-│  • java/refactoringPreview - preview refactoring changes        │
-│  • java/refactoringOptions - refactoring configuration          │
+│  • nova/refactor/preview - preview refactoring changes          │
+│  • nova/refactor/apply - apply refactoring with options         │
 │                                                                  │
 │  FRAMEWORK EXTENSIONS                                            │
-│  • java/springBeans - Spring bean information                   │
-│  • java/endpoints - REST endpoint discovery                     │
+│  • nova/spring/beans - Spring bean information                  │
+│  • nova/spring/endpoints - REST endpoint discovery              │
 │                                                                  │
 │  DEBUGGING EXTENSIONS                                            │
-│  • java/debugConfiguration - debug launch configs               │
-│  • java/hotSwap - hot code replacement                          │
+│  • nova/debug/configurations - debug launch configs             │
+│  • nova/debug/hotSwap - hot code replacement                    │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -198,7 +199,7 @@ Nova will need to extend LSP for Java-specific needs:
 ## Analysis of Java Language Complexity
 
 ### Java Versioning Challenge
-
+ 
 Nova must support multiple Java versions with their varying features:
 
 ```
@@ -249,7 +250,15 @@ Nova must support multiple Java versions with their varying features:
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+ 
+The hard part is not just "parsing the newest syntax"—it's doing **version-aware analysis**:
+- language level is **per module** (Maven module / Gradle subproject / Bazel target)
+- preview features must be explicitly enabled (`--enable-preview`)
+- the same source can be legal or illegal depending on that configuration
 
+Nova should model this explicitly as a single `JavaLanguageLevel` value that is threaded through parsing, semantics, and diagnostics. See:
+- [16 - Java Language Levels and Feature Gating](16-java-language-levels.md)
+ 
 ### Type System Complexity
 
 Java's type system has accumulated significant complexity:

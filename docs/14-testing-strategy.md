@@ -222,7 +222,7 @@ mod type_checking_tests {
 ```
 
 ### Specification Tests
-
+ 
 ```rust
 /// Tests derived from Java Language Specification
 mod jls_tests {
@@ -289,8 +289,68 @@ mod jls_tests {
 }
 ```
 
-### LSP Protocol Tests
+### Java language level / preview fixture tests
 
+Nova must be version-aware: the same syntax can be legal or illegal depending on module configuration. Tests should explicitly pin a `JavaLanguageLevel` and assert diagnostics for:
+- stable features (e.g., records in Java 11 → error; records in Java 17 → ok)
+- preview-only windows (e.g., pattern matching for switch in Java 17 requires preview)
+- contextual keyword behavior that differs by version (`var`, `yield`, `record`, …)
+
+```rust
+#[test]
+fn record_is_gated_in_java_11() {
+    let src = r#"record Point(int x, int y) {}"#;
+    let diags = check(src, JavaLanguageLevel::JAVA_11);
+    assert_has_error(&diags, "feature.records.requires_java_16");
+}
+
+#[test]
+fn pattern_switch_requires_preview_in_java_17() {
+    let src = r#"
+        class C {
+          int f(Object o) {
+            return switch (o) {
+              case String s -> s.length();
+              default -> 0;
+            };
+          }
+        }
+    "#;
+
+    let diags = check(src, JavaLanguageLevel::JAVA_17);
+    assert_has_error(&diags, "feature.pattern_matching_switch.requires_enable_preview");
+
+    let diags_preview = check(src, JavaLanguageLevel::JAVA_17.with_preview(true));
+    assert_no_error(&diags_preview, "feature.pattern_matching_switch.requires_enable_preview");
+}
+
+#[test]
+fn pattern_switch_is_ok_in_java_21() {
+    let src = r#"switch (o) { case String s -> 1; default -> 0; }"#;
+    let diags = check(src, JavaLanguageLevel::JAVA_21);
+    assert_no_errors(&diags);
+}
+
+#[test]
+fn var_as_type_name_is_allowed_in_java_8_but_not_in_java_21_locals() {
+    let src = r#"
+        class var {}
+        class C {
+          void f() { var x = new var(); }
+        }
+    "#;
+
+    // Java 8: `var` is just an identifier, so this is an explicit type.
+    assert_no_errors(&check(src, JavaLanguageLevel::JAVA_8));
+
+    // Java 21: the local decl uses type inference; the RHS is still legal,
+    // but the type name `var` cannot be used for local variable declarations.
+    assert_has_error(&check(src, JavaLanguageLevel::JAVA_21), "feature.var_local_inference.restricted_identifier");
+}
+```
+ 
+### LSP Protocol Tests
+ 
 ```rust
 #[cfg(test)]
 mod lsp_tests {

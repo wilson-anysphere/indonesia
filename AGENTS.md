@@ -39,6 +39,7 @@ Binding architectural choices (libraries, core patterns, invariants) are tracked
 - **[04 - Incremental Computation Engine](docs/04-incremental-computation.md)** - Query-based incremental computation system (the core innovation)
 - **[05 - Syntax and Parsing](docs/05-syntax-and-parsing.md)** - Error-resilient parsing and syntax tree architecture
 - **[06 - Semantic Analysis](docs/06-semantic-analysis.md)** - Type checking, symbol resolution, type inference
+- **[16 - Java Language Levels and Feature Gating](docs/16-java-language-levels.md)** - Per-module Java version model, preview features, and version-aware diagnostics
 
 ### Part III: Intelligence Features
 - **[07 - Code Intelligence](docs/07-code-intelligence.md)** - Completions, diagnostics, navigation, code actions

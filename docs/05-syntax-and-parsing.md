@@ -590,34 +590,86 @@ impl IncrementalParser {
 ```
 
 ### Contextual Keywords
-
+ 
 ```rust
 /// Handle contextual keywords (identifiers that are keywords in some contexts)
 impl Parser {
     fn parse_declaration(&mut self) {
-        // 'var' is keyword only in local variable declarations
-        if self.at_contextual_keyword("var") {
+        // Many Java "keywords" are actually restricted identifiers that become
+        // meaningful only after a certain language level (and sometimes only
+        // with preview enabled). Parsing must be aware of the configured
+        // JavaLanguageLevel to match javac/IDE behavior.
+        //
+        // See: docs/16-java-language-levels.md
+        
+        // 'var' (Java 10+) is only special in local variable declarations.
+        if self.lang_level.supports_var_local_inference()
+            && self.at_contextual_keyword("var")
+        {
             self.parse_var_declaration();
         }
-        // 'record' is keyword only at class declaration position
-        else if self.at_contextual_keyword("record") {
+        // 'record' (Java 16+, preview in 14/15) is only special at a type
+        // declaration position.
+        else if self.lang_level.supports_records()
+            && self.at_contextual_keyword("record")
+        {
             self.parse_record_declaration();
         }
-        // 'sealed' only before class/interface
-        else if self.at_contextual_keyword("sealed") {
+        // 'sealed'/'permits' (Java 17+, preview in 15/16) are only special in
+        // type modifier positions.
+        else if self.lang_level.supports_sealed()
+            && self.at_contextual_keyword("sealed")
+        {
             self.parse_sealed_class();
         }
         // ... etc
     }
     
     fn at_contextual_keyword(&self, kw: &str) -> bool {
-        self.at(SyntaxKind::Identifier) && self.current_text() == kw
+        // Restricted identifiers may be lexed as dedicated token kinds (e.g.
+        // VarKw/YieldKw/RecordKw) but must still be accepted as identifiers in
+        // most contexts. Treat them as "identifier-like" here.
+        self.current().is_identifier_like() && self.current_text() == kw
     }
 }
 ```
 
 ---
 
+## Java Language Levels and Feature Gates
+
+Nova must parse modern Java syntax *even when the configured language level is older*, then emit **version-aware diagnostics** (e.g., `record` used in a Java 11 module).
+
+Key idea:
+1. Parse a **superset grammar** (Java 21 + selected previews)
+2. Run a **feature-gate pass** over the syntax tree to produce diagnostics based on `JavaLanguageLevel`
+
+This avoids cascaded parse errors and enables high-quality IDE feedback.
+
+```rust
+pub struct ParseOptions {
+    pub language_level: JavaLanguageLevel,
+}
+
+pub fn parse_java(source: &str, opts: ParseOptions) -> Parse {
+    let tree = Parser::new(source, opts).parse();
+
+    // Separate pass that traverses the syntax tree and emits diagnostics:
+    // - "feature requires Java N"
+    // - "preview feature requires --enable-preview"
+    // - optional "preview feature" warning
+    let feature_diags = feature_gate_diagnostics(&tree, opts.language_level);
+
+    Parse { tree, diagnostics: feature_diags }
+}
+```
+
+Feature gating is shared with semantic analysis (some rules are purely semantic). The same `JavaLanguageLevel` value must be used across syntax + semantics to keep diagnostics consistent.
+
+See: [16 - Java Language Levels and Feature Gating](16-java-language-levels.md)
+ 
+---
+ 
 ## Typed Syntax Tree API
 
 ### Generated API

@@ -251,7 +251,7 @@ impl NovaServer {
 ## Nova LSP Extensions
 
 ### Custom Methods
-
+ 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    NOVA LSP EXTENSIONS                           │
@@ -286,9 +286,55 @@ impl NovaServer {
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
+ 
+### Project configuration payload (language level included)
 
+Version-aware analysis requires the client and server to agree on the effective Java language mode per module. `nova/projectConfiguration` should therefore include:
+- detected/overridden **Java language level** (`major` + `preview`)
+- where it came from (config override vs build tool)
+- enough mapping information for per-file language level attribution
+
+Example response shape (illustrative):
+
+```json
+{
+  "modules": [
+    {
+      "id": ":app",
+      "displayName": "app",
+      "sourceRoots": ["file:///ws/app/src/main/java"],
+      "classpath": ["file:///ws/.gradle/caches/.../guava.jar"],
+      "languageLevel": { "major": 17, "preview": false },
+      "languageLevelOrigin": "gradle"
+    },
+    {
+      "id": ":experiments",
+      "displayName": "experiments",
+      "sourceRoots": ["file:///ws/experiments/src/main/java"],
+      "classpath": [],
+      "languageLevel": { "major": 21, "preview": true },
+      "languageLevelOrigin": "nova-config"
+    }
+  ]
+}
+```
+
+The server must store `module → JavaLanguageLevel` and derive `file → JavaLanguageLevel` for all parse/diagnostics queries. See: [16 - Java Language Levels and Feature Gating](16-java-language-levels.md).
+
+### Dynamic updates
+
+Language level can change while the server is running (e.g., `pom.xml` edited, Gradle toolchain updated, or `nova-config` override changed). Nova should handle this like any other incremental input change:
+- rebuild the module configuration
+- invalidate parse/semantic queries for files in affected modules
+- re-publish diagnostics (and refresh semantic tokens/completions as needed)
+
+Triggers:
+- `workspace/didChangeConfiguration` (config overrides)
+- file watching on build files (`pom.xml`, `build.gradle(.kts)`, `MODULE.bazel`/`BUILD`)
+- explicit `nova/reloadProject`
+ 
 ### Extension Implementation
-
+ 
 ```rust
 impl NovaServer {
     fn register_extensions(&self) {

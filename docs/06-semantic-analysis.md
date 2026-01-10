@@ -9,7 +9,7 @@ Semantic analysis transforms raw syntax trees into meaningful program understand
 ---
 
 ## Semantic Analysis Pipeline
-
+ 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    SEMANTIC PIPELINE                             │
@@ -55,9 +55,48 @@ Semantic analysis transforms raw syntax trees into meaningful program understand
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
-
+ 
 ---
-
+ 
+## Java Language Levels in Semantics
+ 
+Java semantics are *versioned*: certain constructs and typing rules only exist in newer releases, and some features are only available when preview is enabled. Nova must apply these rules consistently across:
+- lowering (syntax → HIR)
+- name/type resolution
+- type checking and flow analysis
+- diagnostics
+ 
+The semantic layer should treat `JavaLanguageLevel` as an input to most analysis queries:
+ 
+```rust
+#[query]
+pub fn language_level(db: &dyn Database, file: FileId) -> JavaLanguageLevel {
+    // Derived from the owning module’s configuration (build tool + nova-config)
+    db.module_language_level(db.module_for_file(file))
+}
+ 
+#[query]
+pub fn diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
+    let level = db.language_level(file);
+ 
+    // 1) syntax/feature-gate diags (purely syntactic)
+    // 2) semantic diags (type errors, versioned rules, etc.)
+    let mut diags = db.syntax_diagnostics(file, level);
+    diags.extend(db.semantic_diagnostics(file, level));
+    diags
+}
+```
+ 
+Examples of semantic version gates:
+- `module-info.java` with `level.major < 9` → error “modules require Java 9+”
+- record declaration with `!level.supports_records()` → error or “preview feature requires --enable-preview”
+- sealed type checks (`permits` hierarchy, exhaustiveness) only when `level.supports_sealed()`
+- pattern matching for switch typing rules only when `level.supports_pattern_matching_switch()`
+ 
+See: [16 - Java Language Levels and Feature Gating](16-java-language-levels.md)
+ 
+---
+ 
 ## Item Trees
 
 ### Purpose
@@ -461,7 +500,7 @@ fn is_applicable(
 ## Type Inference
 
 ### Local Variable Type Inference (var)
-
+ 
 ```rust
 #[query]
 pub fn infer_var_type(
@@ -469,11 +508,22 @@ pub fn infer_var_type(
     var: LocalVarId,
 ) -> Type {
     let var_data = db.local_var(var);
-    
+    let level = db.language_level(var_data.file);
+     
     match var_data.kind {
         LocalVarKind::Explicit(ty) => ty,
-        
+         
         LocalVarKind::Var => {
+            if !level.supports_var_local_inference() {
+                // In older language levels `var` is just an identifier, so this
+                // only triggers when the parser has lowered it as LocalVarKind::Var.
+                db.push_diagnostic(var_data.file, Diagnostic::error(
+                    "Local variable type inference requires Java 10+",
+                    var_data.range,
+                ));
+                return Type::Error;
+            }
+ 
             // Infer from initializer
             if let Some(init) = var_data.initializer {
                 db.type_of(init)
