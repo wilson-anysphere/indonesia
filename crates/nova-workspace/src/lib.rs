@@ -38,10 +38,9 @@ impl Workspace {
                 .map(|p| p.to_path_buf())
                 .context("file path has no parent directory")?
         };
-        let root = find_project_root(&root);
         let root = fs::canonicalize(&root)
             .with_context(|| format!("failed to canonicalize {}", root.display()))?;
-        let root = discover_workspace_root(&root);
+        let root = find_project_root(&root);
         Ok(Self { root })
     }
 
@@ -249,15 +248,13 @@ impl Workspace {
         // Always load full project sources so framework diagnostics can see both bean
         // definitions and injection sites, even when diagnostics are requested for a
         // single file.
-        let files = self
-            .project_java_files()
-            .or_else(|_| {
-                if meta.is_dir() {
-                    self.java_files_in(path)
-                } else {
-                    Ok(vec![path.to_path_buf()])
-                }
-            })?;
+        let files = self.project_java_files().or_else(|_| {
+            if meta.is_dir() {
+                self.java_files_in(path)
+            } else {
+                Ok(vec![path.to_path_buf()])
+            }
+        })?;
 
         let mut sources = Vec::with_capacity(files.len());
         for file in &files {
@@ -792,33 +789,6 @@ fn line_col_at(text: &str, byte_idx: usize) -> (usize, usize) {
     }
 
     (line, col)
-}
-
-fn discover_workspace_root(start: &Path) -> PathBuf {
-    let mut current = Some(start);
-    while let Some(dir) = current {
-        if dir.join("pom.xml").is_file() {
-            return dir.to_path_buf();
-        }
-
-        let gradle_markers = [
-            "build.gradle",
-            "build.gradle.kts",
-            "settings.gradle",
-            "settings.gradle.kts",
-        ];
-        if gradle_markers.iter().any(|m| dir.join(m).is_file()) {
-            return dir.to_path_buf();
-        }
-
-        if dir.join("src").is_dir() {
-            return dir.to_path_buf();
-        }
-
-        current = dir.parent();
-    }
-
-    start.to_path_buf()
 }
 
 fn as_u32(value: usize) -> u32 {
