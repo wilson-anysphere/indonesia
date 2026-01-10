@@ -218,3 +218,6 @@ pub mod framework {
         annotation_simple == query_simple
     }
 }
+
+/// Flow-oriented method-body IR used by `nova-flow`.
+pub mod body;
