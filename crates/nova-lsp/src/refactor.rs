@@ -104,3 +104,12 @@ pub fn resolve_extract_member_code_action(
 ) -> Result<(), nova_refactor::ExtractError> {
     nova_ide::refactor::resolve_extract_member_code_action(uri, source, action, name)
 }
+
+/// Build `RefactorInline` code actions for Inline Method.
+pub fn inline_method_code_actions(
+    uri: &Uri,
+    source: &str,
+    position: lsp_types::Position,
+) -> Vec<CodeActionOrCommand> {
+    nova_ide::refactor::inline_method_code_actions(uri, source, position)
+}

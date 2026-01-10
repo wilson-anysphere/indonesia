@@ -31,6 +31,8 @@ pub use project::{
 };
 
 pub use code_intelligence::*;
+pub use refactor::inline_method_code_actions;
+
 /// Spring-specific configuration helpers (config file parsing, metadata lookup,
 /// and `@Value("${...}")` completions/navigation).
 pub mod spring {

@@ -16,6 +16,7 @@ pub mod jdwp {
 
 /// Nova-specific "debugger excellence" extensions.
 pub mod hot_swap;
+pub mod jdwp;
 pub mod smart_step_into;
 
 /// Re-export the JDWP client implementation so consumers can depend only on `nova-dap` for

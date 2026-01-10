@@ -5,7 +5,9 @@
 //! - Move refactorings for Java packages and top-level classes (`move_java`)
 //! - Move refactorings for methods and static members (`move_member`)
 //! - Extract Constant / Extract Field for side-effect-free expressions (`extract_member`)
- 
+//! - Inline Method for simple private methods (`inline_method`)
+
+mod inline_method;
 mod java;
 mod extract_member;
 mod move_member;
@@ -15,6 +17,7 @@ mod safe_delete;
 pub use extract_member::{
     extract_constant, extract_field, ExtractError, ExtractKind, ExtractOptions, ExtractOutcome,
 };
+pub use inline_method::{inline_method, InlineMethodError, InlineMethodOptions};
 pub use move_java::{
     move_class, move_package, FileEdit, FileMove, MoveClassParams, MovePackageParams,
     RefactorError, RefactoringEdit,

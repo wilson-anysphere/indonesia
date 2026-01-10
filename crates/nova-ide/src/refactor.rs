@@ -3,8 +3,13 @@
 //! This module provides a thin bridge between `nova-refactor` and LSP concepts
 //! (code actions, workspace edits, and resolution).
 
-use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit};
-use nova_refactor::{extract_constant, extract_field, ExtractError, ExtractOptions, TextRange};
+use lsp_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+};
+use nova_refactor::{
+    extract_constant, extract_field, inline_method, ExtractError, ExtractOptions, InlineMethodOptions,
+    TextRange,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,7 +35,11 @@ enum ExtractKindDto {
 /// The returned actions are unresolved (they only carry `data`). Clients can
 /// resolve them through `resolve_extract_member_code_action`, optionally
 /// supplying a custom name to support "extract + rename" flows.
-pub fn extract_member_code_actions(uri: &Uri, source: &str, selection: Range) -> Vec<CodeActionOrCommand> {
+pub fn extract_member_code_actions(
+    uri: &Uri,
+    source: &str,
+    selection: Range,
+) -> Vec<CodeActionOrCommand> {
     let selection = lsp_range_to_text_range(source, selection);
     let file = uri.to_string();
 
@@ -52,7 +61,9 @@ pub fn extract_member_code_actions(uri: &Uri, source: &str, selection: Range) ->
             };
 
             let ok = match extract {
-                ExtractKindDto::Constant => extract_constant(&file, source, selection, options.clone()).is_ok(),
+                ExtractKindDto::Constant => {
+                    extract_constant(&file, source, selection, options.clone()).is_ok()
+                }
                 ExtractKindDto::Field => extract_field(&file, source, selection, options.clone()).is_ok(),
             };
             if !ok {
@@ -74,6 +85,47 @@ pub fn extract_member_code_actions(uri: &Uri, source: &str, selection: Range) ->
                 ..CodeAction::default()
             }));
         }
+    }
+
+    actions
+}
+
+/// Provide Inline Method code actions at the given cursor position.
+pub fn inline_method_code_actions(uri: &Uri, source: &str, position: Position) -> Vec<CodeActionOrCommand> {
+    let offset = position_to_offset_utf16(source, position);
+    let file = uri.to_string();
+
+    let mut actions = Vec::new();
+    for (inline_all, title) in [
+        (false, "Inline method"),
+        (true, "Inline method (all usages)"),
+    ] {
+        let options = InlineMethodOptions { inline_all };
+        let Ok(edits) = inline_method(&file, source, offset, options) else {
+            continue;
+        };
+
+        let edits: Vec<TextEdit> = edits
+            .into_iter()
+            .map(|e| TextEdit {
+                range: Range::new(
+                    offset_to_position_utf16(source, e.range.start),
+                    offset_to_position_utf16(source, e.range.end),
+                ),
+                new_text: e.replacement,
+            })
+            .collect();
+
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: title.to_string(),
+            kind: Some(CodeActionKind::REFACTOR_INLINE),
+            edit: Some(WorkspaceEdit {
+                changes: Some(std::collections::HashMap::from([(uri.clone(), edits)])),
+                ..WorkspaceEdit::default()
+            }),
+            is_preferred: Some(!inline_all),
+            ..CodeAction::default()
+        }));
     }
 
     actions
@@ -120,7 +172,10 @@ pub fn resolve_extract_member_code_action(
         .edits
         .into_iter()
         .map(|e| TextEdit {
-            range: Range::new(offset_to_position_utf16(source, e.range.start), offset_to_position_utf16(source, e.range.end)),
+            range: Range::new(
+                offset_to_position_utf16(source, e.range.start),
+                offset_to_position_utf16(source, e.range.end),
+            ),
             new_text: e.replacement,
         })
         .collect();
