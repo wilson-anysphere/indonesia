@@ -44,6 +44,26 @@ fn discovers_junit5_tests_in_maven_fixture() {
         .unwrap();
     assert_eq!(empty.kind, TestKind::Class);
     assert!(empty.children.is_empty());
+
+    let nested = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "com.example.NestedCalculatorTest")
+        .unwrap();
+    assert_eq!(nested.framework, TestFramework::Junit5);
+
+    let addition = nested
+        .children
+        .iter()
+        .find(|t| t.id == "com.example.NestedCalculatorTest$Addition")
+        .unwrap();
+    assert_eq!(addition.kind, TestKind::Class);
+
+    let nested_child_ids: Vec<_> = addition.children.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        nested_child_ids,
+        vec!["com.example.NestedCalculatorTest$Addition#adds"]
+    );
 }
 
 #[test]

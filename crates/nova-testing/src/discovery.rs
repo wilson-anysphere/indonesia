@@ -107,6 +107,7 @@ fn discover_tests_in_file(project_root: &Path, file_path: &Path) -> Result<Vec<T
             package.as_deref(),
             &imports,
             &relative_path,
+            None,
         )? {
             out.push(item);
         }
@@ -121,6 +122,7 @@ fn parse_test_class(
     package: Option<&str>,
     imports: &[String],
     relative_path: &str,
+    enclosing_class_id: Option<&str>,
 ) -> Result<Option<TestItem>> {
     let name_node = node
         .child_by_field_name("name")
@@ -130,9 +132,12 @@ fn parse_test_class(
     };
     let class_name = node_text(source, name_node).to_string();
 
-    let class_id = match package {
-        Some(pkg) => format!("{pkg}.{class_name}"),
-        None => class_name.clone(),
+    let class_id = match enclosing_class_id {
+        Some(parent) => format!("{parent}${class_name}"),
+        None => match package {
+            Some(pkg) => format!("{pkg}.{class_name}"),
+            None => class_name.clone(),
+        },
     };
 
     let class_framework = infer_framework_from_imports(imports);
@@ -141,16 +146,30 @@ fn parse_test_class(
     let body = node
         .child_by_field_name("body")
         .or_else(|| find_named_child(node, "class_body"));
-    let methods = body
-        .map(|body| discover_test_methods(body, source, imports, &class_id, relative_path))
-        .transpose()?
-        .unwrap_or_default();
+    let mut children = Vec::new();
+    if let Some(body) = body {
+        children.extend(discover_test_methods(
+            body,
+            source,
+            imports,
+            &class_id,
+            relative_path,
+        )?);
+        children.extend(discover_nested_test_classes(
+            body,
+            source,
+            package,
+            imports,
+            relative_path,
+            &class_id,
+        )?);
+    }
 
-    if methods.is_empty() && !looks_like_test_class(&class_name, relative_path) {
+    if children.is_empty() && !looks_like_test_class(&class_name, relative_path, enclosing_class_id.is_none()) {
         return Ok(None);
     }
 
-    let class_framework = methods
+    let class_framework = children
         .iter()
         .map(|m| m.framework)
         .find(|f| *f != TestFramework::Unknown)
@@ -166,8 +185,39 @@ fn parse_test_class(
             start: class_pos,
             end: class_pos,
         },
-        children: methods,
+        children,
     }))
+}
+
+fn discover_nested_test_classes(
+    class_body: Node<'_>,
+    source: &str,
+    package: Option<&str>,
+    imports: &[String],
+    relative_path: &str,
+    enclosing_class_id: &str,
+) -> Result<Vec<TestItem>> {
+    let mut out = Vec::new();
+    let mut cursor = class_body.walk();
+    for child in class_body.named_children(&mut cursor) {
+        if child.kind() != "class_declaration" {
+            continue;
+        }
+
+        if let Some(item) = parse_test_class(
+            child,
+            source,
+            package,
+            imports,
+            relative_path,
+            Some(enclosing_class_id),
+        )? {
+            out.push(item);
+        }
+    }
+
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
 }
 
 fn discover_test_methods(
@@ -304,7 +354,7 @@ fn infer_framework_for_test_annotation(
     None
 }
 
-fn looks_like_test_class(class_name: &str, relative_path: &str) -> bool {
+fn looks_like_test_class(class_name: &str, relative_path: &str, allow_path_heuristic: bool) -> bool {
     if class_name.ends_with("Test")
         || class_name.ends_with("Tests")
         || class_name.ends_with("TestCase")
@@ -313,7 +363,7 @@ fn looks_like_test_class(class_name: &str, relative_path: &str) -> bool {
     {
         return true;
     }
-    relative_path.ends_with("Test.java") || relative_path.ends_with("Tests.java")
+    allow_path_heuristic && (relative_path.ends_with("Test.java") || relative_path.ends_with("Tests.java"))
 }
 
 fn parse_java(source: &str) -> Result<tree_sitter::Tree> {
