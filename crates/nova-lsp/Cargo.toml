@@ -15,6 +15,7 @@ dist = true
 anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
+nova-ai = { path = "../nova-ai" }
 nova-apt = { path = "../nova-apt" }
 nova-build = { path = "../nova-build" }
 nova-config = { path = "../nova-config" }
