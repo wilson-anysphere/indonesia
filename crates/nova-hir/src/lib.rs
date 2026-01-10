@@ -126,3 +126,95 @@ impl LocalVarDecl {
         Self { name: name.into() }
     }
 }
+
+/// Additional HIR data structures used by framework analyzers (e.g. Lombok).
+///
+/// The core HIR in this crate is currently focused on scope building/name
+/// resolution. Frameworks frequently need a richer, annotation-aware view of a
+/// class even when we are not running annotation processors.
+pub mod framework {
+    use nova_types::{Parameter, Type};
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub struct Annotation {
+        pub name: String,
+    }
+
+    impl Annotation {
+        pub fn new(name: impl Into<String>) -> Self {
+            let mut name = name.into();
+            if let Some(stripped) = name.strip_prefix('@') {
+                name = stripped.to_string();
+            }
+            Self { name }
+        }
+
+        pub fn matches(&self, query: &str) -> bool {
+            annotation_matches(&self.name, query)
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct FieldData {
+        pub name: String,
+        pub ty: Type,
+        pub is_static: bool,
+        pub is_final: bool,
+        pub annotations: Vec<Annotation>,
+    }
+
+    impl FieldData {
+        pub fn has_annotation(&self, name: &str) -> bool {
+            self.annotations.iter().any(|a| a.matches(name))
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MethodData {
+        pub name: String,
+        pub return_type: Type,
+        pub params: Vec<Parameter>,
+        pub is_static: bool,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ConstructorData {
+        pub params: Vec<Parameter>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ClassData {
+        pub name: String,
+        pub annotations: Vec<Annotation>,
+        pub fields: Vec<FieldData>,
+        pub methods: Vec<MethodData>,
+        pub constructors: Vec<ConstructorData>,
+    }
+
+    impl ClassData {
+        pub fn has_annotation(&self, name: &str) -> bool {
+            self.annotations.iter().any(|a| a.matches(name))
+        }
+    }
+
+    impl Default for ClassData {
+        fn default() -> Self {
+            Self {
+                name: String::new(),
+                annotations: Vec::new(),
+                fields: Vec::new(),
+                methods: Vec::new(),
+                constructors: Vec::new(),
+            }
+        }
+    }
+
+    fn annotation_matches(annotation: &str, query: &str) -> bool {
+        if annotation == query {
+            return true;
+        }
+        let annotation_simple = annotation.rsplit('.').next().unwrap_or(annotation);
+        let query_simple = query.rsplit('.').next().unwrap_or(query);
+        annotation_simple == query_simple
+    }
+}

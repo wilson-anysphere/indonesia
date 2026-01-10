@@ -6,6 +6,7 @@ members = [
     "crates/nova-index",
     "crates/nova-framework",
     "crates/nova-framework-jpa",
+    "crates/nova-framework-lombok",
     "crates/nova-project",
     "crates/nova-types",
     "crates/nova-vfs",
