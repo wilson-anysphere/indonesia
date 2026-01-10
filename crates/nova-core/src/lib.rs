@@ -3,6 +3,7 @@
 //! This crate is intentionally small and dependency-free.
 
 use std::fmt;
+use std::path::PathBuf;
 
 /// The current Nova version.
 ///
@@ -292,3 +293,12 @@ impl fmt::Debug for StaticMemberId {
     }
 }
 
+/// Workspace/project-level configuration.
+///
+/// This is intentionally minimal for now. Downstream crates (e.g. the resolver)
+/// can grow this as Nova's configuration model evolves.
+#[derive(Clone, Debug, Default)]
+pub struct ProjectConfig {
+    /// Optional override for the JDK installation to use.
+    pub jdk_home: Option<PathBuf>,
+}
