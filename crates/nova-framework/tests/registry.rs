@@ -1,6 +1,7 @@
 use nova_framework::{
-    AnalyzerRegistry, CompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer, FrameworkData, InlayHint,
-    MemoryDatabase, NavigationTarget, OtherFrameworkData, Symbol, VirtualField, VirtualMember,
+    AnalyzerRegistry, CompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer,
+    FrameworkData, InlayHint, MemoryDatabase, NavigationTarget, OtherFrameworkData, Symbol,
+    VirtualField, VirtualMember,
 };
 use nova_hir::framework::ClassData;
 use nova_types::{CompletionItem, Diagnostic, ProjectId, Span, Type};
@@ -154,9 +155,61 @@ fn classpath_queries_accept_internal_and_binary_names() {
 
     db.add_classpath_class(project, "org.example.Foo");
 
-    assert!(FrameworkDatabase::has_class_on_classpath(&db, project, "org.example.Foo"));
-    assert!(FrameworkDatabase::has_class_on_classpath(&db, project, "org/example/Foo"));
+    assert!(FrameworkDatabase::has_class_on_classpath(
+        &db,
+        project,
+        "org.example.Foo"
+    ));
+    assert!(FrameworkDatabase::has_class_on_classpath(
+        &db,
+        project,
+        "org/example/Foo"
+    ));
 
-    assert!(FrameworkDatabase::has_class_on_classpath_prefix(&db, project, "org.example."));
-    assert!(FrameworkDatabase::has_class_on_classpath_prefix(&db, project, "org/example/"));
+    assert!(FrameworkDatabase::has_class_on_classpath_prefix(
+        &db,
+        project,
+        "org.example."
+    ));
+    assert!(FrameworkDatabase::has_class_on_classpath_prefix(
+        &db,
+        project,
+        "org/example/"
+    ));
+}
+
+#[test]
+fn analyzers_can_read_file_text_via_database() {
+    #[derive(Clone, Copy)]
+    struct TextLenAnalyzer;
+
+    impl FrameworkAnalyzer for TextLenAnalyzer {
+        fn applies_to(&self, _db: &dyn nova_framework::Database, _project: ProjectId) -> bool {
+            true
+        }
+
+        fn diagnostics(
+            &self,
+            db: &dyn nova_framework::Database,
+            file: nova_vfs::FileId,
+        ) -> Vec<Diagnostic> {
+            let len = db.file_text(file).map_or(0, |t| t.len());
+            vec![Diagnostic::warning(
+                "TEST_FILE_TEXT",
+                format!("len={len}"),
+                None,
+            )]
+        }
+    }
+
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+    let file = db.add_file_with_text(project, "abc");
+
+    let mut registry = AnalyzerRegistry::new();
+    registry.register(Box::new(TextLenAnalyzer));
+
+    let diags = registry.framework_diagnostics(&db, file);
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].message, "len=3");
 }

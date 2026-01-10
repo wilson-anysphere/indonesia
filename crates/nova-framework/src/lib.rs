@@ -35,6 +35,14 @@ pub trait Database {
     fn project_of_class(&self, class: ClassId) -> ProjectId;
     fn project_of_file(&self, file: FileId) -> ProjectId;
 
+    /// Returns the UTF-8 contents of `file` if the database has them available.
+    ///
+    /// Framework analyzers should treat a `None` return as "no text available"
+    /// and either return no results or fall back to structural information (HIR).
+    fn file_text(&self, _file: FileId) -> Option<&str> {
+        None
+    }
+
     fn has_dependency(&self, project: ProjectId, group: &str, artifact: &str) -> bool;
     fn has_class_on_classpath(&self, project: ProjectId, binary_name: &str) -> bool;
     fn has_class_on_classpath_prefix(&self, project: ProjectId, prefix: &str) -> bool;
@@ -49,6 +57,7 @@ pub struct MemoryDatabase {
     class_data: HashMap<ClassId, ClassData>,
     class_project: HashMap<ClassId, ProjectId>,
     file_project: HashMap<FileId, ProjectId>,
+    file_text: HashMap<FileId, String>,
     dependencies: HashMap<ProjectId, HashSet<DependencyCoordinate>>,
     classpath_classes: HashMap<ProjectId, HashSet<String>>,
 }
@@ -69,6 +78,16 @@ impl MemoryDatabase {
         self.next_file += 1;
         self.file_project.insert(id, project);
         id
+    }
+
+    pub fn add_file_with_text(&mut self, project: ProjectId, text: impl Into<String>) -> FileId {
+        let id = self.add_file(project);
+        self.set_file_text(id, text);
+        id
+    }
+
+    pub fn set_file_text(&mut self, file: FileId, text: impl Into<String>) {
+        self.file_text.insert(file, text.into());
     }
 
     pub fn add_dependency(&mut self, project: ProjectId, group: &str, artifact: &str) {
@@ -113,6 +132,10 @@ impl Database for MemoryDatabase {
             .file_project
             .get(&file)
             .expect("unknown FileId passed to db.project_of_file()")
+    }
+
+    fn file_text(&self, file: FileId) -> Option<&str> {
+        self.file_text.get(&file).map(String::as_str)
     }
 
     fn has_dependency(&self, project: ProjectId, group: &str, artifact: &str) -> bool {
