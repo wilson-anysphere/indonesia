@@ -215,10 +215,29 @@ impl TypeIndex for JdkIndex {
     }
 
     fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
-        self.static_members
+        if let Some(found) = self
+            .static_members
             .get(owner.as_str())
             .and_then(|m| m.get(name.as_str()))
             .cloned()
+        {
+            return Some(found);
+        }
+
+        let symbols = self.symbols.as_ref()?;
+        let needle = name.as_str();
+        let stub = symbols.lookup_type(owner.as_str()).ok().flatten()?;
+
+        let found = stub
+            .fields
+            .iter()
+            .any(|f| f.name == needle && is_static(f.access_flags))
+            || stub
+                .methods
+                .iter()
+                .any(|m| m.name == needle && is_static(m.access_flags));
+
+        found.then(|| StaticMemberId::new(format!("{}::{needle}", owner.as_str())))
     }
 }
 
@@ -227,6 +246,11 @@ impl TypeProvider for JdkIndex {
         let stub = JdkIndex::lookup_type(self, binary_name).ok().flatten()?;
         Some(TypeDefStub::from(stub.as_ref()))
     }
+}
+
+fn is_static(access_flags: u16) -> bool {
+    const ACC_STATIC: u16 = 0x0008;
+    access_flags & ACC_STATIC != 0
 }
 // === Minimal class/method/type model (used by nova-types) ====================
 

@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use nova_core::ProjectConfig;
+use nova_core::{Name, ProjectConfig, StaticMemberId, TypeIndex, TypeName};
 use nova_jdk::{JdkIndex, JdkInstallation};
 use nova_types::TypeProvider;
 use tempfile::tempdir;
@@ -71,6 +71,20 @@ fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Err
             .iter()
             .any(|m| m.name == "<init>" && m.descriptor == "()V"),
         "TypeProvider stub should include class members"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn resolves_static_member_from_jmod_stub() -> Result<(), Box<dyn std::error::Error>> {
+    let index = JdkIndex::from_jdk_root(fake_jdk_root())?;
+
+    let owner = TypeName::from("java.lang.Custom");
+    let member = Name::from("FOO");
+    assert_eq!(
+        index.resolve_static_member(&owner, &member),
+        Some(StaticMemberId::new("java.lang.Custom::FOO"))
     );
 
     Ok(())

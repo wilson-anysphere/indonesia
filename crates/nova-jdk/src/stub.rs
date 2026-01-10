@@ -4,6 +4,7 @@ pub struct JdkFieldStub {
     pub name: String,
     /// JVM descriptor, e.g. `I` or `Ljava/lang/String;`.
     pub descriptor: String,
+    /// Optional generic signature string from the `Signature` attribute.
     pub signature: Option<String>,
 }
 
@@ -13,6 +14,7 @@ pub struct JdkMethodStub {
     pub name: String,
     /// JVM method descriptor, e.g. `(Ljava/lang/String;)V`.
     pub descriptor: String,
+    /// Optional generic signature string from the `Signature` attribute.
     pub signature: Option<String>,
 }
 
@@ -25,6 +27,7 @@ pub struct JdkClassStub {
     pub access_flags: u16,
     pub super_internal_name: Option<String>,
     pub interfaces_internal_names: Vec<String>,
+    /// Optional generic signature string from the `Signature` attribute.
     pub signature: Option<String>,
     pub fields: Vec<JdkFieldStub>,
     pub methods: Vec<JdkMethodStub>,

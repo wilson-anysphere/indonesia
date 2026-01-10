@@ -14,11 +14,8 @@ nova-config = { path = "../nova-config" }
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
-nova-ai = { path = "../nova-ai" }
 nova-decompile = { path = "../nova-decompile" }
-nova-ai = { path = "../nova-ai" }
 nova-ide = { path = "../nova-ide" }
-nova-ai = { path = "../nova-ai" }
 nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
 nova-memory = { path = "../nova-memory" }
