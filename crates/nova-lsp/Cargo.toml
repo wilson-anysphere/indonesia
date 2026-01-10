@@ -13,6 +13,7 @@ nova-config = { path = "../nova-config" }
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
+nova-ai = { path = "../nova-ai" }
 nova-decompile = { path = "../nova-decompile" }
 nova-ide = { path = "../nova-ide" }
 nova-db = { path = "../nova-db" }
@@ -25,6 +26,7 @@ nova-testing = { path = "../nova-testing" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 nova-router = { path = "../nova-router" }
 nova-build-bazel = { path = "../nova-build-bazel" }
+nova-jdwp = { path = "../nova-jdwp" }
 lsp-types = "0.97"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

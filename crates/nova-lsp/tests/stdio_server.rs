@@ -224,6 +224,129 @@ fn stdio_server_handles_debug_configurations_request() {
     assert!(status.success());
 }
 
+#[test]
+fn stdio_server_handles_generated_sources_request() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/java/generatedSources",
+            "params": { "projectRoot": fixture.to_string_lossy() }
+        }),
+    );
+
+    let resp = read_jsonrpc_message(&mut stdout);
+    let result = resp.get("result").cloned().expect("result");
+    let modules = result
+        .get("modules")
+        .and_then(|v| v.as_array())
+        .expect("modules array");
+    assert!(!modules.is_empty());
+    let roots = modules[0]
+        .get("roots")
+        .and_then(|v| v.as_array())
+        .expect("roots array");
+    assert!(roots.iter().any(|root| {
+        root.get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| p.contains("target/generated-sources/annotations"))
+    }));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_handles_run_annotation_processing_request() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/java/runAnnotationProcessing",
+            "params": { "projectRoot": fixture.to_string_lossy() }
+        }),
+    );
+
+    let resp = read_jsonrpc_message(&mut stdout);
+    let result = resp.get("result").cloned().expect("result");
+    let progress = result
+        .get("progress")
+        .and_then(|v| v.as_array())
+        .expect("progress array");
+    assert!(progress
+        .iter()
+        .any(|p| p.as_str() == Some("Running annotation processing")));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
 #[cfg(unix)]
 #[test]
 fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
