@@ -7,9 +7,11 @@ edition = "2021"
 nova-format = { path = "../nova-format" }
 nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
-regex = "1"
 nova-types = { path = "../nova-types" }
+lsp-types = "0.97"
+regex = "1"
 serde = { version = "1.0", features = ["derive"] }
+similar = "2.4"
 thiserror = "1.0"
 tree-sitter = "0.20"
 tree-sitter-java = "0.20"

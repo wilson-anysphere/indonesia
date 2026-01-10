@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use nova_index::{
-    Index, ReferenceCandidate, ReferenceKind, Symbol, SymbolId, SymbolKind, TextRange,
+    Index, ReferenceCandidate, ReferenceKind, SymbolId, SymbolKind, TextRange,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -41,9 +41,27 @@ pub struct Usage {
     pub kind: UsageKind,
 }
 
+/// Serializable snapshot of a symbol targeted by Safe Delete.
+///
+/// We intentionally avoid re-exporting `nova-index`'s internal symbol types here
+/// because `nova-index` contains multiple symbol representations (search index vs
+/// sketch parser) and not all of them are `serde`-friendly.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SafeDeleteSymbol {
+    pub id: SymbolId,
+    pub kind: SymbolKind,
+    pub name: String,
+    pub container: Option<String>,
+    pub file: String,
+    pub name_range: TextRange,
+    pub decl_range: TextRange,
+    pub is_override: bool,
+    pub extends: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SafeDeleteReport {
-    pub target: Symbol,
+    pub target: SafeDeleteSymbol,
     pub usages: Vec<Usage>,
 }
 
@@ -80,15 +98,27 @@ pub fn safe_delete(
         .cloned()
         .ok_or(SafeDeleteError::TargetNotFound)?;
 
-    match target_symbol.kind {
-        SymbolKind::Method => safe_delete_method(index, &target_symbol, mode),
+    let target_snapshot = SafeDeleteSymbol {
+        id: target_symbol.id,
+        kind: target_symbol.kind,
+        name: target_symbol.name.clone(),
+        container: target_symbol.container.clone(),
+        file: target_symbol.file.clone(),
+        name_range: target_symbol.name_range,
+        decl_range: target_symbol.decl_range,
+        is_override: target_symbol.is_override,
+        extends: target_symbol.extends.clone(),
+    };
+
+    match target_snapshot.kind {
+        SymbolKind::Method => safe_delete_method(index, &target_snapshot, mode),
         other => Err(SafeDeleteError::UnsupportedSymbolKind(other)),
     }
 }
 
 fn safe_delete_method(
     index: &Index,
-    target: &Symbol,
+    target: &SafeDeleteSymbol,
     mode: SafeDeleteMode,
 ) -> Result<SafeDeleteOutcome, SafeDeleteError> {
     let candidates = index.find_name_candidates(&target.name);
@@ -169,7 +199,7 @@ fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
 
 fn verify_method_usage(
     index: &Index,
-    target: &Symbol,
+    target: &SafeDeleteSymbol,
     candidate: &ReferenceCandidate,
 ) -> Option<Usage> {
     let text = index.file_text(&candidate.file)?;
@@ -215,7 +245,7 @@ fn verify_method_usage(
     })
 }
 
-fn find_override_usages(index: &Index, target: &Symbol) -> Vec<Usage> {
+fn find_override_usages(index: &Index, target: &SafeDeleteSymbol) -> Vec<Usage> {
     if target.container.is_none() {
         return Vec::new();
     };

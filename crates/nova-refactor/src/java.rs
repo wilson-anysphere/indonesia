@@ -273,3 +273,6 @@ pub fn list_methods(text: &str, class: &ClassBlock) -> Vec<MethodSig> {
     }
     methods
 }
+
+// Semantic refactoring test database / helpers.
+pub use crate::java_semantic::{InMemoryJavaDatabase, JavaSymbolKind, SymbolId};
