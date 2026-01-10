@@ -33,6 +33,7 @@ pub mod extensions;
 pub mod extract_method;
 pub mod refactor;
 pub mod handlers;
+pub mod formatting;
 
 mod cancellation;
 mod diagnostics;
@@ -96,6 +97,10 @@ pub struct MemoryStatusResponse {
     pub report: nova_memory::MemoryReport,
 }
 
+pub const DOCUMENT_FORMATTING_METHOD: &str = "textDocument/formatting";
+pub const DOCUMENT_RANGE_FORMATTING_METHOD: &str = "textDocument/rangeFormatting";
+pub const DOCUMENT_ON_TYPE_FORMATTING_METHOD: &str = "textDocument/onTypeFormatting";
+
 /// Dispatch a Nova custom request (`nova/*`) by method name.
 ///
 /// This helper is designed to be embedded in whichever LSP transport is used
@@ -121,6 +126,25 @@ pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<
         BUILD_DIAGNOSTICS_METHOD => extensions::build::handle_build_diagnostics(params),
         _ => Err(NovaLspError::InvalidParams(format!(
             "unknown (stateless) method: {method}"
+        ))),
+    }
+}
+
+/// Handle formatting-related LSP requests.
+///
+/// Nova's full LSP server implementation will own document state; this helper takes the current
+/// document text as an explicit argument so it can be embedded into different transports.
+pub fn handle_formatting_request(
+    method: &str,
+    params: serde_json::Value,
+    text: &str,
+) -> Result<serde_json::Value> {
+    match method {
+        DOCUMENT_FORMATTING_METHOD => formatting::handle_document_formatting(params, text),
+        DOCUMENT_RANGE_FORMATTING_METHOD => formatting::handle_range_formatting(params, text),
+        DOCUMENT_ON_TYPE_FORMATTING_METHOD => formatting::handle_on_type_formatting(params, text),
+        _ => Err(NovaLspError::InvalidParams(format!(
+            "unknown formatting method: {method}"
         ))),
     }
 }

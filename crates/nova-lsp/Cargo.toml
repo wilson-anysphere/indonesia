@@ -22,6 +22,8 @@ nova-memory = { path = "../nova-memory" }
 nova-project = { path = "../nova-project" }
 nova-refactor = { path = "../nova-refactor" }
 nova-scheduler = { path = "../nova-scheduler" }
+nova-format = { path = "../nova-format" }
+nova-syntax = { path = "../nova-syntax" }
 nova-testing = { path = "../nova-testing" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 nova-router = { path = "../nova-router" }

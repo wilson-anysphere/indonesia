@@ -126,12 +126,18 @@ fn handle_request(
 ) -> std::io::Result<serde_json::Value> {
     match method {
         "initialize" => {
-            // Minimal initialize response. We intentionally advertise no standard
-            // capabilities yet; editor integrations can still call custom `nova/*`
-            // requests directly.
+            // Minimal initialize response. We advertise the handful of standard
+            // capabilities that Nova supports today; editor integrations can
+            // still call custom `nova/*` requests directly.
             let result = json!({
                 "capabilities": {
                     "textDocumentSync": { "openClose": true, "change": 1 },
+                    "documentFormattingProvider": true,
+                    "documentRangeFormattingProvider": true,
+                    "documentOnTypeFormattingProvider": {
+                        "firstTriggerCharacter": "}",
+                        "moreTriggerCharacter": [";"]
+                    },
                     "codeActionProvider": {
                         "codeActionKinds": [
                             CODE_ACTION_KIND_EXPLAIN,
@@ -188,6 +194,43 @@ fn handle_request(
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+            })
+        }
+        nova_lsp::DOCUMENT_FORMATTING_METHOD
+        | nova_lsp::DOCUMENT_RANGE_FORMATTING_METHOD
+        | nova_lsp::DOCUMENT_ON_TYPE_FORMATTING_METHOD => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+
+            let uri = params
+                .get("textDocument")
+                .and_then(|doc| doc.get("uri"))
+                .and_then(|uri| uri.as_str());
+            let Some(uri) = uri else {
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32602, "message": "missing textDocument.uri" }
+                }));
+            };
+            let Some(text) = state.documents.get(uri) else {
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32602, "message": format!("unknown document: {uri}") }
+                }));
+            };
+
+            Ok(match nova_lsp::handle_formatting_request(method, params, text) {
+                Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                Err(err) => {
+                    let (code, message) = match err {
+                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                    };
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                }
             })
         }
         _ => {

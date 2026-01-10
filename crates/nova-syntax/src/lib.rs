@@ -44,10 +44,19 @@ impl TextRange {
     }
 }
 
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GreenToken {
     pub kind: SyntaxKind,
     pub range: TextRange,
+}
+
+impl GreenToken {
+    pub fn text<'a>(&self, source: &'a str) -> &'a str {
+        let start = self.range.start as usize;
+        let end = self.range.end as usize;
+        &source[start..end]
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,16 +115,21 @@ impl ParseResult {
     }
 }
 
+/// Alias used by formatting integrations.
+///
+/// The parser currently produces a flat `ParseResult`, so this is sufficient.
+pub type SyntaxTree = ParseResult;
+
+fn is_whitespace(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'\r')
+}
+
 fn is_ident_start(b: u8) -> bool {
     matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$')
 }
 
 fn is_ident_continue(b: u8) -> bool {
     is_ident_start(b) || matches!(b, b'0'..=b'9')
-}
-
-fn is_whitespace(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\n' | b'\r')
 }
 
 /// Parse source text into a persistent, lossless green tree and error list.
@@ -169,6 +183,34 @@ pub fn parse(text: &str) -> ParseResult {
             } else {
                 SyntaxKind::BlockComment
             }
+        } else if b == b'\'' {
+            i += 1;
+            let mut terminated = false;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'\\' => {
+                        // Skip escape.
+                        i += 1;
+                        if i < bytes.len() {
+                            i += 1;
+                        }
+                    }
+                    b'\'' => {
+                        i += 1;
+                        terminated = true;
+                        break;
+                    }
+                    b'\n' => break,
+                    _ => i += 1,
+                }
+            }
+            if !terminated {
+                errors.push(ParseError {
+                    message: "Unterminated char literal".to_string(),
+                    range: TextRange::new(start, i),
+                });
+            }
+            SyntaxKind::CharLiteral
         } else if is_ident_start(b) {
             i += 1;
             while i < bytes.len() && is_ident_continue(bytes[i]) {

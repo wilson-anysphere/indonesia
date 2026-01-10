@@ -1,5 +1,6 @@
 use nova_testing::schema::TestDiscoverResponse;
 use pretty_assertions::assert_eq;
+use serde::Deserialize;
 use serde_json::json;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -10,6 +11,46 @@ use std::process::{Command, Stdio};
 #[cfg(unix)]
 use std::thread;
 use tempfile::TempDir;
+
+#[derive(Debug, Clone, Deserialize)]
+struct LspPosition {
+    line: u32,
+    character: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LspRange {
+    start: LspPosition,
+    end: LspPosition,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LspTextEdit {
+    range: LspRange,
+    #[serde(rename = "newText")]
+    new_text: String,
+}
+
+fn apply_lsp_text_edits(original: &str, edits: &[LspTextEdit]) -> String {
+    if edits.is_empty() {
+        return original.to_string();
+    }
+
+    let index = nova_core::LineIndex::new(original);
+    let core_edits: Vec<nova_core::TextEdit> = edits
+        .iter()
+        .map(|edit| {
+            let range = nova_core::Range::new(
+                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
+                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
+            );
+            let range = index.text_range(original, range).expect("valid range");
+            nova_core::TextEdit::new(range, edit.new_text.clone())
+        })
+        .collect();
+
+    nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
+}
 
 #[test]
 fn stdio_server_handles_test_discover_request() {
@@ -70,6 +111,77 @@ fn stdio_server_handles_test_discover_request() {
     );
     let _shutdown_resp = read_jsonrpc_message(&mut stdout);
 
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_handles_document_formatting_request() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    let uri = "file:///test/Foo.java";
+    let text = "class Foo{void m(){int x=1;}}\n";
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": { "textDocument": { "uri": uri, "text": text } }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": { "uri": uri },
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }
+        }),
+    );
+
+    let formatting_resp = read_jsonrpc_message(&mut stdout);
+    let result = formatting_resp.get("result").cloned().expect("result");
+    let edits: Vec<LspTextEdit> = serde_json::from_value(result).expect("decode text edits");
+    let formatted = apply_lsp_text_edits(text, &edits);
+
+    assert_eq!(
+        formatted,
+        "class Foo {\n    void m() {\n        int x=1;\n    }\n}\n"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
