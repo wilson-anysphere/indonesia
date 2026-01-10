@@ -217,6 +217,54 @@ fn strip_quotes(lit: &str) -> &str {
     }
 }
 
+/// Diagnose all JPQL query strings found in the provided Java source.
+///
+/// This is a best-effort mapper: JPQL diagnostics are produced relative to the
+/// query string, then translated into byte spans within the Java source string.
+pub fn jpql_diagnostics_in_java_source(java_source: &str, model: &EntityModel) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+
+    for (query, lit_span) in extract_jpql_strings(java_source) {
+        // `lit_span` covers the quote characters. We map query spans to the
+        // underlying literal content (start after the opening quote).
+        let content_start = lit_span.start.saturating_add(1);
+
+        for mut diag in jpql_diagnostics(&query, model) {
+            if let Some(span) = diag.span {
+                diag.span = Some(Span::new(
+                    content_start.saturating_add(span.start),
+                    content_start.saturating_add(span.end),
+                ));
+            } else {
+                diag.span = Some(lit_span);
+            }
+            diags.push(diag);
+        }
+    }
+
+    diags
+}
+
+/// Provide JPQL completions for a cursor located inside a Java string literal
+/// used in `@Query(...)` / `@NamedQuery(query=...)`.
+pub fn jpql_completions_in_java_source(
+    java_source: &str,
+    cursor: usize,
+    model: &EntityModel,
+) -> Vec<CompletionItem> {
+    for (query, lit_span) in extract_jpql_strings(java_source) {
+        let content_start = lit_span.start.saturating_add(1);
+        let content_end_exclusive = lit_span.end.saturating_sub(1);
+
+        if cursor >= content_start && cursor <= content_end_exclusive {
+            let query_cursor = cursor.saturating_sub(content_start);
+            return jpql_completions(&query, query_cursor, model);
+        }
+    }
+
+    Vec::new()
+}
+
 pub fn jpql_completions(query: &str, cursor: usize, model: &EntityModel) -> Vec<CompletionItem> {
     let tokens = tokenize_jpql(query);
     jpql_completions_tokens(&tokens, cursor, model)

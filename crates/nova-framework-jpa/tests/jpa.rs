@@ -1,4 +1,4 @@
-use nova_framework_jpa::{analyze_java_sources, jpql_completions};
+use nova_framework_jpa::{analyze_java_sources, jpql_completions, jpql_completions_in_java_source};
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -133,4 +133,66 @@ fn jpql_completion_suggests_entities_and_fields() {
     let items = jpql_completions(q2, q2.len(), &analysis.model);
     assert!(items.iter().any(|i| i.label == "name"));
     assert!(items.iter().any(|i| i.label == "id"));
+}
+
+#[test]
+fn jpql_diagnostics_are_mapped_to_java_source_spans() {
+    let entity = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+        }
+    "#;
+
+    let repo = r#"
+        import org.springframework.data.jpa.repository.Query;
+
+        public interface UserRepo {
+            @Query("SELECT u FROM Unknown u")
+            void load();
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[entity, repo]);
+    let diag = analysis
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "JPQL_UNKNOWN_ENTITY")
+        .expect("expected JPQL_UNKNOWN_ENTITY diagnostic");
+
+    let span = diag.span.expect("expected diagnostic span");
+    assert_eq!(&repo[span.start..span.end], "Unknown");
+}
+
+#[test]
+fn jpql_completion_works_inside_java_source_strings() {
+    let entity = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+            private String name;
+        }
+    "#;
+
+    let repo = r#"
+        import org.springframework.data.jpa.repository.Query;
+
+        public interface UserRepo {
+            @Query("SELECT u FROM User u WHERE u.")
+            void load();
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[entity, repo]);
+    let cursor = repo.find("u.").unwrap() + 2;
+    let items = jpql_completions_in_java_source(repo, cursor, &analysis.model);
+
+    assert!(items.iter().any(|i| i.label == "id"));
+    assert!(items.iter().any(|i| i.label == "name"));
 }

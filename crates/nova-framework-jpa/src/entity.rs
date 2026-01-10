@@ -74,7 +74,7 @@ pub struct AnalysisResult {
 }
 
 /// Parse and validate entities across multiple Java sources.
-pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
+pub(crate) fn analyze_entities(sources: &[&str]) -> AnalysisResult {
     let mut entities: Vec<Entity> = Vec::new();
     let mut diagnostics = Vec::new();
 
