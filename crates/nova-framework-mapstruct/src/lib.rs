@@ -75,6 +75,16 @@ pub struct MapperModel {
     pub name: String,
     pub name_span: Span,
     pub component_model: ComponentModel,
+    /// Resolved implementation class name (after applying MapStruct placeholders).
+    ///
+    /// MapStruct defaults this to `<CLASS_NAME>Impl`, but it can be overridden via
+    /// `@Mapper(implementationName = "...")`.
+    pub implementation_name: String,
+    /// Resolved implementation package (after applying MapStruct placeholders).
+    ///
+    /// MapStruct defaults this to the mapper's own package, but it can be
+    /// overridden via `@Mapper(implementationPackage = "...")`.
+    pub implementation_package: Option<String>,
     pub methods: Vec<MappingMethodModel>,
 }
 
@@ -134,7 +144,10 @@ impl FrameworkAnalyzer for MapStructAnalyzer {
 /// `has_mapstruct_dependency` should be set based on build metadata (Maven/Gradle).
 /// When false, this function will emit a `MAPSTRUCT_MISSING_DEPENDENCY` error if
 /// `@Mapper` usage is detected.
-pub fn analyze_workspace(project_root: &Path, has_mapstruct_dependency: bool) -> std::io::Result<AnalysisResult> {
+pub fn analyze_workspace(
+    project_root: &Path,
+    has_mapstruct_dependency: bool,
+) -> std::io::Result<AnalysisResult> {
     let roots = source_roots(project_root);
     let mut java_files = Vec::new();
     for root in &roots {
@@ -168,7 +181,10 @@ pub fn analyze_workspace(project_root: &Path, has_mapstruct_dependency: bool) ->
     for mapper in &result.mappers {
         let mut seen: HashMap<(String, String), Span> = HashMap::new();
         for method in &mapper.methods {
-            let key = (method.source_type.qualified_name(), method.target_type.qualified_name());
+            let key = (
+                method.source_type.qualified_name(),
+                method.target_type.qualified_name(),
+            );
             if let Some(prev) = seen.get(&key) {
                 result.diagnostics.push(FileDiagnostic {
                     file: mapper.file.clone(),
@@ -190,13 +206,15 @@ pub fn analyze_workspace(project_root: &Path, has_mapstruct_dependency: bool) ->
     // Unmapped target properties (best-effort, file-system based).
     for mapper in &result.mappers {
         for method in &mapper.methods {
-            let Some(source_props) =
-                properties_for_type(project_root, &roots, &method.source_type).ok().flatten()
+            let Some(source_props) = properties_for_type(project_root, &roots, &method.source_type)
+                .ok()
+                .flatten()
             else {
                 continue;
             };
-            let Some(target_props) =
-                properties_for_type(project_root, &roots, &method.target_type).ok().flatten()
+            let Some(target_props) = properties_for_type(project_root, &roots, &method.target_type)
+                .ok()
+                .flatten()
             else {
                 continue;
             };
@@ -205,10 +223,8 @@ pub fn analyze_workspace(project_root: &Path, has_mapstruct_dependency: bool) ->
                 continue;
             }
 
-            let mut mapped: HashSet<String> = source_props
-                .intersection(&target_props)
-                .cloned()
-                .collect();
+            let mut mapped: HashSet<String> =
+                source_props.intersection(&target_props).cloned().collect();
             for mapping in &method.mappings {
                 mapped.insert(mapping.target.clone());
             }
@@ -327,7 +343,10 @@ fn collect_java_files_inner(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Res
         if path.is_dir() {
             // Avoid walking build output roots while scanning sources.
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if matches!(name, "target" | "build" | "out" | ".git" | ".gradle" | ".idea") {
+            if matches!(
+                name,
+                "target" | "build" | "out" | ".git" | ".gradle" | ".idea"
+            ) {
                 continue;
             }
             collect_java_files_inner(&path, out)?;
@@ -489,9 +508,12 @@ fn parse_literal(input: &str) -> Option<String> {
     Some(input.to_string())
 }
 
-fn discover_mappers_in_source(file: &Path, source: &str) -> Result<Vec<MapperModel>, std::io::Error> {
-    let tree = parse_java(source)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+fn discover_mappers_in_source(
+    file: &Path,
+    source: &str,
+) -> Result<Vec<MapperModel>, std::io::Error> {
+    let tree =
+        parse_java(source).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     let package = package_of_source(tree.root_node(), source);
 
     let mut out = Vec::new();
@@ -543,14 +565,29 @@ fn parse_mapper_decl(
     let name = node_text(source, name_node).to_string();
     let name_span = Span::new(name_node.start_byte(), name_node.end_byte());
 
-    let component_model = match mapper_annotation.args.get("componentModel").map(String::as_str) {
-        Some("spring") => ComponentModel::Spring,
-        Some("cdi") => ComponentModel::Cdi,
-        Some(other) => ComponentModel::Other(other.to_string()),
-        None => ComponentModel::Default,
-    };
-
     let package = default_package.map(str::to_string);
+    let component_model = mapper_annotation
+        .args
+        .get("componentModel")
+        .map(String::as_str)
+        .map(parse_component_model)
+        .unwrap_or(ComponentModel::Default);
+
+    let implementation_name = mapper_annotation
+        .args
+        .get("implementationName")
+        .map(String::as_str)
+        .unwrap_or("<CLASS_NAME>Impl")
+        .replace("<CLASS_NAME>", &name);
+
+    let implementation_package = mapper_annotation
+        .args
+        .get("implementationPackage")
+        .map(String::as_str)
+        .unwrap_or("<PACKAGE_NAME>");
+
+    let implementation_package =
+        apply_package_name_placeholder(implementation_package, package.as_deref());
 
     let methods = parse_mapper_methods(file, source, node, package.as_deref());
 
@@ -560,8 +597,45 @@ fn parse_mapper_decl(
         name,
         name_span,
         component_model,
+        implementation_name,
+        implementation_package,
         methods,
     })
+}
+
+fn parse_component_model(raw: &str) -> ComponentModel {
+    // MapStruct allows passing either a literal string ("spring") or one of the
+    // `MappingConstants.ComponentModel.*` constants.
+    let normalized = raw
+        .trim()
+        .rsplit('.')
+        .next()
+        .unwrap_or(raw)
+        .trim()
+        .to_lowercase();
+
+    match normalized.as_str() {
+        "spring" => ComponentModel::Spring,
+        "cdi" => ComponentModel::Cdi,
+        "default" => ComponentModel::Default,
+        other => ComponentModel::Other(other.to_string()),
+    }
+}
+
+fn apply_package_name_placeholder(pattern: &str, mapper_package: Option<&str>) -> Option<String> {
+    let mapper_package = mapper_package.unwrap_or("");
+    let mut pkg = pattern.replace("<PACKAGE_NAME>", mapper_package);
+    if pkg.starts_with('.') {
+        pkg = pkg.trim_start_matches('.').to_string();
+    }
+    if pkg.ends_with('.') {
+        pkg = pkg.trim_end_matches('.').to_string();
+    }
+    if pkg.is_empty() {
+        None
+    } else {
+        Some(pkg)
+    }
 }
 
 fn parse_mapper_methods(
@@ -603,7 +677,9 @@ fn parse_mapping_method(
     let name = node_text(source, name_node).to_string();
     let name_span = Span::new(name_node.start_byte(), name_node.end_byte());
 
-    let return_node = node.child_by_field_name("type").or_else(|| infer_type_node(node))?;
+    let return_node = node
+        .child_by_field_name("type")
+        .or_else(|| infer_type_node(node))?;
     let return_type_raw = node_text(source, return_node);
     let return_type = parse_java_type(return_type_raw, default_package);
     if return_type.name == "void" {
@@ -665,7 +741,10 @@ fn annotation_string_value_span(annotation: &Annotation, key: &str) -> Option<(S
 
     let start_in_ann = idx + key.len() + eq_idx + 1 + quote_idx + 1;
     let end_in_ann = start_in_ann + value.len();
-    let span = Span::new(annotation.span.start + start_in_ann, annotation.span.start + end_in_ann);
+    let span = Span::new(
+        annotation.span.start + start_in_ann,
+        annotation.span.start + end_in_ann,
+    );
 
     Some((value, span))
 }
@@ -681,7 +760,9 @@ fn parse_formal_parameter_types(
         if child.kind() != "formal_parameter" {
             continue;
         }
-        let Some(ty_node) = child.child_by_field_name("type").or_else(|| infer_type_node(child))
+        let Some(ty_node) = child
+            .child_by_field_name("type")
+            .or_else(|| infer_type_node(child))
         else {
             continue;
         };
@@ -742,9 +823,9 @@ fn goto_generated_method(
     mapper: &MapperModel,
     method: &MappingMethodModel,
 ) -> std::io::Result<Option<NavigationTarget>> {
-    let impl_name = format!("{}Impl", mapper.name);
+    let impl_name = mapper.implementation_name.as_str();
     let package_path = mapper
-        .package
+        .implementation_package
         .as_deref()
         .unwrap_or("")
         .replace('.', "/");
@@ -766,7 +847,8 @@ fn goto_generated_method(
         }
     }
 
-    // Fallback: scan generated roots for a file named `<MapperName>Impl.java`.
+    // Fallback: scan generated roots for a file named `<MapperName>Impl.java` (or
+    // custom implementation name if configured).
     for root in discover_generated_source_roots(project_root) {
         for file in collect_java_files(&root)? {
             if file
@@ -860,8 +942,8 @@ fn find_type_file(
 
 fn find_method_name_span_in_file(path: &Path, method_name: &str) -> std::io::Result<Option<Span>> {
     let text = std::fs::read_to_string(path)?;
-    let tree = parse_java(&text)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tree =
+        parse_java(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     let mut found = None;
     visit_nodes(tree.root_node(), &mut |node| {
@@ -991,8 +1073,8 @@ fn properties_for_type(
         return Ok(None);
     };
     let text = std::fs::read_to_string(&file)?;
-    let tree = parse_java(&text)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let tree =
+        parse_java(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     Ok(Some(collect_properties_in_class(
         tree.root_node(),
