@@ -382,7 +382,7 @@ impl CodeReviewer {
 │  • Small language model (1-3B params)                           │
 │  • ~2-6GB model size                                            │
 │  • For simple completions and explanations                      │
-│  • Runs on CPU or GPU                                           │
+│  • Runs on CPU (GPU optional, faster)                           │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```

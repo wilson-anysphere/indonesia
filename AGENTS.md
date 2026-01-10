@@ -1,5 +1,28 @@
 # Project Nova: Building a Superior Java Language Server
 
+## ⚠️ CRITICAL: Memory Is the Only Hard Constraint
+
+**Before running agents at scale, read the [Operational Guide](docs/00-operational-guide.md).**
+
+When running hundreds of concurrent agents on a shared system (e.g., 192 vCPU / 1.5TB RAM / 110TB Disk):
+
+| Resource | Approach |
+|----------|----------|
+| **CPU** | Let it burst. Scheduler handles contention fine. Use `-j$(nproc)`. |
+| **Disk I/O** | Let it burst. NVMe handles parallel access. |
+| **Memory** | **HARD LIMIT 4GB per agent.** Exceeding = machine death. |
+| **Swap** | **DISABLED.** Swap + 300 agents = cascading slowdown = brick. |
+
+**Key Rules:**
+1. **NO SWAP** - Set `memory.swap.max=0` in cgroups. Non-negotiable.
+2. **FAIL FAST** - Let OOM killer terminate individual agents, not the system.
+3. **GO FAST** - Don't be tepid. Use all cores for builds. Only memory matters.
+4. **MONITOR** - System memory >85% = stop spawning. >95% = start killing.
+
+See [docs/00-operational-guide.md](docs/00-operational-guide.md) for setup scripts, cgroup configuration, and emergency procedures.
+
+---
+
 ## Executive Summary
 
 This document outlines a comprehensive plan to build **Nova**, a next-generation Java Language Server Protocol (LSP) implementation that aims to surpass the capabilities of IntelliJ IDEA and other existing Java development tools. This is not an incremental improvement—it's a fundamental rethinking of what a Java language server can be.
@@ -29,6 +52,9 @@ This plan is organized into detailed linked documents covering every aspect of t
 Binding architectural choices (libraries, core patterns, invariants) are tracked as **Architecture Decision Records**:
 
 - [Architecture + ADR index](docs/architecture.md)
+
+### Part 0: Operations (READ FIRST)
+- **[00 - Operational Guide](docs/00-operational-guide.md)** - **CRITICAL**: Resource limits, timeouts, cgroups, monitoring for high-concurrency execution
 
 ### Part I: Understanding the Problem Space
 - **[01 - Problem Analysis: What Makes IntelliJ Excellent](docs/01-problem-analysis.md)** - Deep technical analysis of IntelliJ's architecture and what makes it superior
