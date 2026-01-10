@@ -396,36 +396,106 @@ fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, Clas
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
-    let mut out = Vec::new();
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        if !file.is_file() {
-            continue;
-        }
-        let name = file.name().to_owned();
+    match kind {
+        ZipKind::Jmod => {
+            let mut out = Vec::new();
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i)?;
+                if !file.is_file() {
+                    continue;
+                }
+                let name = file.name().to_owned();
 
-        if !name.ends_with(".class") {
-            continue;
-        }
+                if !name.ends_with(".class") {
+                    continue;
+                }
 
-        if name.starts_with("META-INF/") {
-            continue;
-        }
+                // JMODs place class files under `classes/`.
+                if !name.starts_with("classes/") {
+                    continue;
+                }
 
-        if matches!(kind, ZipKind::Jmod) && !name.starts_with("classes/") {
-            continue;
+                let mut bytes = Vec::with_capacity(file.size() as usize);
+                file.read_to_end(&mut bytes)?;
+                let cf = ClassFile::parse(&bytes)?;
+                if is_ignored_class(&cf.this_class) {
+                    continue;
+                }
+                out.push(stub_from_classfile(cf));
+            }
+            Ok(out)
         }
+        ZipKind::Jar => {
+            // JARs can be multi-release, where version-specific class files live
+            // under `META-INF/versions/<n>/...`.
+            //
+            // For now we:
+            // - index base classes normally
+            // - index multi-release classes only if the base class is missing,
+            //   preferring the highest version present
+            // This avoids accidentally overriding base classes when Nova doesn't
+            // know the target JDK for the project.
+            let mut best: HashMap<String, (u32, ClasspathClassStub)> = HashMap::new();
 
-        let mut bytes = Vec::with_capacity(file.size() as usize);
-        file.read_to_end(&mut bytes)?;
-        let cf = ClassFile::parse(&bytes)?;
-        if is_ignored_class(&cf.this_class) {
-            continue;
+            for i in 0..archive.len() {
+                let mut file = archive.by_index(i)?;
+                if !file.is_file() {
+                    continue;
+                }
+                let name = file.name().to_owned();
+
+                if !name.ends_with(".class") {
+                    continue;
+                }
+
+                let mr_version = if let Some(rest) = name.strip_prefix("META-INF/versions/") {
+                    let Some((version, _path)) = rest.split_once('/') else {
+                        continue;
+                    };
+                    match version.parse::<u32>() {
+                        Ok(v) => Some(v),
+                        Err(_) => continue,
+                    }
+                } else if name.starts_with("META-INF/") {
+                    continue;
+                } else {
+                    None
+                };
+
+                let mut bytes = Vec::with_capacity(file.size() as usize);
+                file.read_to_end(&mut bytes)?;
+                let cf = ClassFile::parse(&bytes)?;
+                if is_ignored_class(&cf.this_class) {
+                    continue;
+                }
+
+                let stub = stub_from_classfile(cf);
+                let key = stub.binary_name.clone();
+                let version = mr_version.unwrap_or(0);
+
+                match best.get(&key) {
+                    None => {
+                        best.insert(key, (version, stub));
+                    }
+                    Some((existing_version, _)) => {
+                        if *existing_version == 0 {
+                            // Base entry already exists; keep it.
+                            continue;
+                        }
+
+                        if version == 0 || version > *existing_version {
+                            // Prefer base over any MR entry, otherwise pick the highest MR version.
+                            best.insert(key, (version, stub));
+                        }
+                    }
+                }
+            }
+
+            let mut out: Vec<ClasspathClassStub> = best.into_values().map(|(_, stub)| stub).collect();
+            out.sort_by(|a, b| a.binary_name.cmp(&b.binary_name));
+            Ok(out)
         }
-        out.push(stub_from_classfile(cf));
     }
-
-    Ok(out)
 }
 
 fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
@@ -503,6 +573,10 @@ mod tests {
     fn test_jmod() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../nova-jdk/testdata/fake-jdk/jmods/java.base.jmod")
+    }
+
+    fn test_multirelease_jar() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/multirelease.jar")
     }
 
     #[test]
@@ -641,5 +715,12 @@ mod tests {
             .resolve_static_member(&owner, &Name::from("bar"))
             .unwrap();
         assert_eq!(member.as_str(), "com.example.Static::bar");
+    }
+
+    #[test]
+    fn indexes_multi_release_jar_versions_directory() {
+        let index =
+            ClasspathIndex::build(&[ClasspathEntry::Jar(test_multirelease_jar())], None).unwrap();
+        assert!(index.lookup_binary("com.example.mr.MultiReleaseOnly").is_some());
     }
 }
