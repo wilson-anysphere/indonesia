@@ -8,6 +8,7 @@ anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 nova-apt = { path = "../nova-apt" }
+nova-ai = { path = "../nova-ai" }
 nova-build = { path = "../nova-build" }
 nova-config = { path = "../nova-config" }
 nova-cache = { path = "../nova-cache" }

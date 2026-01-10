@@ -133,6 +133,7 @@ fn applicability_detects_spring_via_classpath_marker() {
         java: JavaConfig::default(),
         modules: vec![],
         source_roots: vec![],
+        module_path: vec![],
         classpath: vec![ClasspathEntry {
             kind: ClasspathEntryKind::Directory,
             path: PathBuf::from(tmp.path()),
