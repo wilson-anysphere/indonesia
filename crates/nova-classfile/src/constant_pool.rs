@@ -259,3 +259,18 @@ fn decode_modified_utf8(bytes: &[u8]) -> Result<String> {
     // lossy decoding instead of rejecting the entire classfile.
     Ok(String::from_utf16_lossy(&units))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::decode_modified_utf8;
+
+    #[test]
+    fn decode_modified_utf8_nul_and_surrogate() {
+        // NUL is encoded as 0xC0 0x80.
+        assert_eq!(decode_modified_utf8(&[0xC0, 0x80]).unwrap(), "\0");
+
+        // Unpaired surrogates can appear in classfile modified UTF-8. We decode
+        // lossily instead of rejecting the entire constant.
+        assert_eq!(decode_modified_utf8(&[0xED, 0xA0, 0x80]).unwrap(), "�");
+    }
+}
