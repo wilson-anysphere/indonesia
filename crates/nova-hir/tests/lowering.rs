@@ -331,3 +331,39 @@ class Foo {
     }
     assert!(returns_t);
 }
+
+#[test]
+fn lower_varargs_parameter() {
+    let source = r#"
+class Foo {
+    void m(String... args) {
+        System.out.println(args);
+    }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.methods.len(), 1);
+    let method = &tree.methods[0];
+    assert_eq!(method.name, "m");
+    assert_eq!(method.params.len(), 1);
+    assert_eq!(method.params[0].ty, "String...");
+    assert_eq!(method.params[0].name, "args");
+
+    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let body = body(&db, method_id);
+    let mut call_paths = Vec::new();
+    for (id, expr) in body.exprs.iter() {
+        if let Expr::Call { callee, .. } = expr {
+            let callee_path = expr_path(&body, *callee).unwrap_or_else(|| format!("ExprId({id})"));
+            call_paths.push(callee_path);
+        }
+    }
+    assert!(call_paths.iter().any(|path| path == "System.out.println"));
+    assert!(body.exprs.iter().any(|(_, expr)| matches!(expr, Expr::Name { name, .. } if name == "args")));
+}
