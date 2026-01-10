@@ -19,3 +19,8 @@ test-projects/**
 !test-projects/.gitignore
 !test-projects/README.md
 !test-projects/pins.toml
+
+# Nova persistent cache
+**/.nova-cache/
+
+**/*.rs.bk
