@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use nova_core::ProjectConfig;
 use nova_jdk::{JdkIndex, JdkInstallation};
+use nova_types::TypeProvider;
 use tempfile::tempdir;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -60,6 +61,17 @@ fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Err
 
     let pkgs = index.packages()?;
     assert!(pkgs.contains(&"java.lang".to_owned()));
+
+    let string_def = TypeProvider::lookup_type(&index, "java.lang.String")
+        .expect("TypeProvider should expose java.lang.String when symbols are loaded");
+    assert_eq!(string_def.binary_name, "java.lang.String");
+    assert!(
+        string_def
+            .methods
+            .iter()
+            .any(|m| m.name == "<init>" && m.descriptor == "()V"),
+        "TypeProvider stub should include class members"
+    );
 
     Ok(())
 }

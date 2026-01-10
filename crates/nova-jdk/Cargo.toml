@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 nova-core = { path = "../nova-core" }
 nova-classfile = { path = "../nova-classfile" }
+nova-types = { path = "../nova-types" }
 once_cell = "1"
 thiserror = "1"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }

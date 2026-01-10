@@ -17,10 +17,54 @@ use std::sync::Arc;
 use nova_core::{
     Name, PackageName, ProjectConfig, QualifiedName, StaticMemberId, TypeIndex, TypeName,
 };
+use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
 pub use discovery::{JdkDiscoveryError, JdkInstallation};
 pub use index::JdkIndexError;
 pub use stub::{JdkClassStub, JdkFieldStub, JdkMethodStub};
+
+impl From<&JdkFieldStub> for FieldStub {
+    fn from(value: &JdkFieldStub) -> Self {
+        FieldStub {
+            name: value.name.clone(),
+            descriptor: value.descriptor.clone(),
+            signature: None,
+            access_flags: value.access_flags,
+        }
+    }
+}
+
+impl From<&JdkMethodStub> for MethodStub {
+    fn from(value: &JdkMethodStub) -> Self {
+        MethodStub {
+            name: value.name.clone(),
+            descriptor: value.descriptor.clone(),
+            signature: None,
+            access_flags: value.access_flags,
+        }
+    }
+}
+
+impl From<&JdkClassStub> for TypeDefStub {
+    fn from(value: &JdkClassStub) -> Self {
+        TypeDefStub {
+            binary_name: value.binary_name.clone(),
+            access_flags: value.access_flags,
+            super_binary_name: value
+                .super_internal_name
+                .as_deref()
+                .map(crate::stub::internal_to_binary),
+            interfaces: value
+                .interfaces_internal_names
+                .iter()
+                .map(|i| crate::stub::internal_to_binary(i))
+                .collect(),
+            signature: None,
+            fields: value.fields.iter().map(FieldStub::from).collect(),
+            methods: value.methods.iter().map(MethodStub::from).collect(),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct JdkIndex {
@@ -171,5 +215,12 @@ impl TypeIndex for JdkIndex {
             .get(owner.as_str())
             .and_then(|m| m.get(name.as_str()))
             .cloned()
+    }
+}
+
+impl TypeProvider for JdkIndex {
+    fn lookup_type(&self, binary_name: &str) -> Option<TypeDefStub> {
+        let stub = JdkIndex::lookup_type(self, binary_name).ok().flatten()?;
+        Some(TypeDefStub::from(stub.as_ref()))
     }
 }
