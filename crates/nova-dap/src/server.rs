@@ -16,6 +16,10 @@ pub struct DapServer<C: JdwpClient> {
     db: RootDatabase,
     jdwp: C,
     breakpoints: HashMap<PathBuf, Vec<u32>>,
+    thread_ids: HashMap<i64, u64>,
+    next_thread_id: i64,
+    frame_ids: HashMap<i64, u64>,
+    next_frame_id: i64,
     should_exit: bool,
 }
 
@@ -32,6 +36,10 @@ impl<C: JdwpClient> DapServer<C> {
             db: RootDatabase::new(),
             jdwp,
             breakpoints: HashMap::new(),
+            thread_ids: HashMap::new(),
+            next_thread_id: 1,
+            frame_ids: HashMap::new(),
+            next_frame_id: 1,
             should_exit: false,
         }
     }
@@ -182,17 +190,26 @@ impl<C: JdwpClient> DapServer<C> {
 
         let mut dap_breakpoints = Vec::new();
         for bp in resolved {
-            if bp.verified {
+            let mut verified = bp.verified;
+            let mut message: Option<String> = None;
+            if verified {
                 if let Some(class) = &bp.enclosing_class {
-                let _ = self
-                    .jdwp
-                    .set_line_breakpoint(class, bp.enclosing_method.as_deref(), bp.resolved_line);
+                    if let Err(err) =
+                        self.jdwp
+                            .set_line_breakpoint(class, bp.enclosing_method.as_deref(), bp.resolved_line)
+                    {
+                        verified = false;
+                        message = Some(err.to_string());
+                    }
+                } else {
+                    verified = false;
+                    message = Some("Unable to determine enclosing class for breakpoint".to_string());
                 }
             }
-
             dap_breakpoints.push(json!({
-                "verified": bp.verified,
+                "verified": verified,
                 "line": bp.resolved_line,
+                "message": message,
             }));
         }
 
@@ -202,18 +219,71 @@ impl<C: JdwpClient> DapServer<C> {
     }
 
     fn threads(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
-        let threads = json!({
-            "threads": [
-                {"id": 1, "name": "Main Thread"}
-            ]
-        });
+        let threads = match self.jdwp.threads() {
+            Ok(threads) => {
+                let mut dap_threads = Vec::new();
+                for thread in threads {
+                    let dap_id = self.alloc_thread_id(thread.id);
+                    dap_threads.push(json!({
+                        "id": dap_id,
+                        "name": thread.name,
+                    }));
+                }
+                json!({ "threads": dap_threads })
+            }
+            Err(_) => json!({
+                "threads": [
+                    {"id": 1, "name": "Main Thread"}
+                ]
+            }),
+        };
+
         self.simple_ok(request, Some(threads))
     }
 
     fn stack_trace(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Args {
+            thread_id: i64,
+        }
+
+        let args: Args = serde_json::from_value(
+            request
+                .arguments
+                .clone()
+                .context("stackTrace requires arguments")?,
+        )?;
+
+        let Some(jdwp_thread_id) = self.thread_ids.get(&args.thread_id).copied() else {
+            let body = json!({ "stackFrames": [], "totalFrames": 0 });
+            return self.simple_ok(request, Some(body));
+        };
+
+        let frames = match self.jdwp.stack_frames(jdwp_thread_id) {
+            Ok(frames) => frames,
+            Err(_) => {
+                let body = json!({ "stackFrames": [], "totalFrames": 0 });
+                return self.simple_ok(request, Some(body));
+            }
+        };
+
+        let mut dap_frames = Vec::new();
+        for frame in frames {
+            let dap_frame_id = self.alloc_frame_id(frame.id);
+            let source = frame.source_path.as_ref().map(|name| json!({ "name": name }));
+            dap_frames.push(json!({
+                "id": dap_frame_id,
+                "name": frame.name,
+                "source": source,
+                "line": frame.line as i64,
+                "column": 1,
+            }));
+        }
+
         let body = json!({
-            "stackFrames": [],
-            "totalFrames": 0
+            "stackFrames": dap_frames,
+            "totalFrames": dap_frames.len(),
         });
         self.simple_ok(request, Some(body))
     }
@@ -241,6 +311,31 @@ impl<C: JdwpClient> DapServer<C> {
     }
 
     fn execution_control(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Args {
+            #[serde(default)]
+            thread_id: Option<i64>,
+        }
+
+        let args: Args = request
+            .arguments
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or(Args { thread_id: None });
+
+        if let Some(thread_id) = args.thread_id.and_then(|id| self.thread_ids.get(&id).copied()) {
+            let _ = match request.command.as_str() {
+                "continue" => self.jdwp.r#continue(thread_id),
+                "pause" => self.jdwp.pause(thread_id),
+                "next" => self.jdwp.next(thread_id),
+                "stepIn" => self.jdwp.step_in(thread_id),
+                "stepOut" => self.jdwp.step_out(thread_id),
+                _ => Ok(()),
+            };
+        }
+
         // Best-effort: acknowledge the request so the client can continue
         // interacting with the session.
         let body = match request.command.as_str() {
@@ -258,5 +353,35 @@ impl<C: JdwpClient> DapServer<C> {
     fn simple_ok(&mut self, request: &Request, body: Option<serde_json::Value>) -> anyhow::Result<Vec<serde_json::Value>> {
         let response = Response::success(self.alloc_seq(), request, body);
         Ok(vec![serde_json::to_value(response)?])
+    }
+
+    fn alloc_thread_id(&mut self, jdwp_thread_id: u64) -> i64 {
+        if let Some(existing) = self
+            .thread_ids
+            .iter()
+            .find_map(|(dap, jdwp)| (*jdwp == jdwp_thread_id).then_some(*dap))
+        {
+            return existing;
+        }
+
+        let id = self.next_thread_id;
+        self.next_thread_id = self.next_thread_id.saturating_add(1);
+        self.thread_ids.insert(id, jdwp_thread_id);
+        id
+    }
+
+    fn alloc_frame_id(&mut self, jdwp_frame_id: u64) -> i64 {
+        if let Some(existing) = self
+            .frame_ids
+            .iter()
+            .find_map(|(dap, jdwp)| (*jdwp == jdwp_frame_id).then_some(*dap))
+        {
+            return existing;
+        }
+
+        let id = self.next_frame_id;
+        self.next_frame_id = self.next_frame_id.saturating_add(1);
+        self.frame_ids.insert(id, jdwp_frame_id);
+        id
     }
 }

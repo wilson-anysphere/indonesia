@@ -19,6 +19,7 @@ pub fn collect_breakpoint_sites(java_source: &str) -> Vec<BreakpointSite> {
     let mut in_block_comment = false;
     let mut brace_depth: usize = 0;
 
+    let mut current_package: Option<String> = None;
     let mut current_class: Option<String> = None;
     let mut current_method: Option<String> = None;
     let mut method_body_depth: Option<usize> = None;
@@ -57,6 +58,20 @@ pub fn collect_breakpoint_sites(java_source: &str) -> Vec<BreakpointSite> {
                     method_body_depth = None;
                 }
             }
+            continue;
+        }
+
+        if current_package.is_none() && line.starts_with("package ") {
+            if let Some(pkg) = line
+                .strip_prefix("package ")
+                .and_then(|rest| rest.strip_suffix(';'))
+                .map(str::trim)
+            {
+                if !pkg.is_empty() {
+                    current_package = Some(pkg.to_string());
+                }
+            }
+            brace_depth = update_brace_depth(brace_depth, raw_line);
             continue;
         }
 
@@ -101,9 +116,16 @@ pub fn collect_breakpoint_sites(java_source: &str) -> Vec<BreakpointSite> {
         };
 
         if inside_method && is_executable_line(line) {
+            let enclosing_class = current_class.as_ref().map(|class| {
+                if let Some(pkg) = &current_package {
+                    format!("{pkg}.{class}")
+                } else {
+                    class.clone()
+                }
+            });
             sites.push(BreakpointSite {
                 line: line_no,
-                enclosing_class: current_class.clone(),
+                enclosing_class,
                 enclosing_method: current_method.clone(),
             });
         }
