@@ -115,11 +115,21 @@ impl SymbolSearchIndex {
                 // For longer queries, a missing trigram intersection likely means no
                 // substring match exists. Fall back to a (bounded) scan to still
                 // support acronym-style queries.
-                let scan_limit = 50_000usize.min(self.symbols.len());
-                strategy = CandidateStrategy::FullScan;
-                candidates_considered = scan_limit;
-                for id in 0..scan_limit {
-                    self.score_candidate(id as SymbolId, &mut matcher, &mut results);
+                let key = q_bytes[0].to_ascii_lowercase();
+                let bucket = &self.prefix1[key as usize];
+                if !bucket.is_empty() {
+                    strategy = CandidateStrategy::Prefix;
+                    candidates_considered = bucket.len();
+                    for &id in bucket {
+                        self.score_candidate(id, &mut matcher, &mut results);
+                    }
+                } else {
+                    let scan_limit = 50_000usize.min(self.symbols.len());
+                    strategy = CandidateStrategy::FullScan;
+                    candidates_considered = scan_limit;
+                    for id in 0..scan_limit {
+                        self.score_candidate(id as SymbolId, &mut matcher, &mut results);
+                    }
                 }
             } else {
                 strategy = CandidateStrategy::Trigram;
