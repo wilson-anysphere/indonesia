@@ -4,6 +4,31 @@
 
 use std::fmt;
 
+/// 1-based line number in a source file.
+///
+/// Nova uses different coordinate systems depending on the integration point:
+/// - LSP uses 0-based lines/characters (`Position` below).
+/// - DAP uses 1-based lines/columns (breakpoints, stack traces).
+///
+/// `Line` is a small convenience alias used by debugger-adjacent code.
+pub type Line = u32;
+
+/// 0-based column number in a source file.
+pub type Column = u32;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct LineColumn {
+    pub line: Line,
+    pub column: Column,
+}
+
+impl LineColumn {
+    #[inline]
+    pub const fn new(line: Line, column: Column) -> Self {
+        Self { line, column }
+    }
+}
+
 /// A position in a text document expressed as (line, UTF-16 code unit offset).
 ///
 /// This matches the Language Server Protocol definition.
@@ -114,7 +139,11 @@ impl PackageName {
     }
 
     pub fn to_dotted(&self) -> String {
-        self.0.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(".")
+        self.0
+            .iter()
+            .map(|n| n.as_str())
+            .collect::<Vec<_>>()
+            .join(".")
     }
 }
 
@@ -144,7 +173,11 @@ impl QualifiedName {
     }
 
     pub fn to_dotted(&self) -> String {
-        self.0.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(".")
+        self.0
+            .iter()
+            .map(|n| n.as_str())
+            .collect::<Vec<_>>()
+            .join(".")
     }
 
     pub fn last(&self) -> Option<&Name> {

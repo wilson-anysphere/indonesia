@@ -10,6 +10,9 @@ members = [
     "crates/nova-jdk",
     "crates/nova-resolve",
     "crates/nova-classfile",
+    "crates/nova-db",
+    "crates/nova-ide",
+    "crates/nova-dap",
 ]
 resolver = "2"
 
