@@ -40,6 +40,34 @@ fn can_rename(capabilities: &ClientCapabilities) -> bool {
         && edit.document_changes.unwrap_or(false)
 }
 
+fn can_create(capabilities: &ClientCapabilities) -> bool {
+    let Some(workspace) = &capabilities.workspace else {
+        return false;
+    };
+    let Some(edit) = &workspace.workspace_edit else {
+        return false;
+    };
+    edit.resource_operations
+        .as_ref()
+        .map(|ops| ops.contains(&ResourceOperationKind::Create))
+        .unwrap_or(false)
+        && edit.document_changes.unwrap_or(false)
+}
+
+fn can_delete(capabilities: &ClientCapabilities) -> bool {
+    let Some(workspace) = &capabilities.workspace else {
+        return false;
+    };
+    let Some(edit) = &workspace.workspace_edit else {
+        return false;
+    };
+    edit.resource_operations
+        .as_ref()
+        .map(|ops| ops.contains(&ResourceOperationKind::Delete))
+        .unwrap_or(false)
+        && edit.document_changes.unwrap_or(false)
+}
+
 pub fn workspace_edit_from_refactor(
     root_uri: &Uri,
     original_files: &HashMap<PathBuf, String>,
@@ -74,6 +102,56 @@ pub fn workspace_edit_from_refactor(
                     new_text: mv.new_contents.clone(),
                 })],
             }));
+        }
+
+        for fe in &edit.file_edits {
+            let uri = join_uri(root_uri, &fe.path);
+            let old_contents = original_files
+                .get(&fe.path)
+                .map(String::as_str)
+                .unwrap_or_default();
+            ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
+                edits: vec![lsp_types::OneOf::Left(TextEdit {
+                    range: full_document_range(old_contents),
+                    new_text: fe.new_contents.clone(),
+                })],
+            }));
+        }
+
+        WorkspaceEdit {
+            changes: None,
+            document_changes: Some(DocumentChanges::Operations(ops)),
+            change_annotations: None,
+        }
+    } else if can_create(capabilities) && can_delete(capabilities) {
+        let mut ops: Vec<DocumentChangeOperation> = Vec::new();
+
+        for mv in &edit.file_moves {
+            let old_uri = join_uri(root_uri, &mv.old_path);
+            let new_uri = join_uri(root_uri, &mv.new_path);
+
+            ops.push(DocumentChangeOperation::Op(ResourceOp::Create(lsp_types::CreateFile {
+                uri: new_uri.clone(),
+                options: None,
+                annotation_id: None,
+            })));
+
+            ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: new_uri,
+                    version: None,
+                },
+                edits: vec![lsp_types::OneOf::Left(TextEdit {
+                    range: full_document_range(""),
+                    new_text: mv.new_contents.clone(),
+                })],
+            }));
+
+            ops.push(DocumentChangeOperation::Op(ResourceOp::Delete(lsp_types::DeleteFile {
+                uri: old_uri,
+                options: None,
+            })));
         }
 
         for fe in &edit.file_edits {
@@ -337,6 +415,59 @@ mod tests {
             panic!("expected document change operations");
         };
         assert!(ops.iter().any(|op| matches!(
+            op,
+            DocumentChangeOperation::Op(ResourceOp::Rename(_))
+        )));
+    }
+
+    #[test]
+    fn workspace_edit_uses_create_delete_when_rename_not_supported() {
+        let mut original = HashMap::new();
+        original.insert(
+            PathBuf::from("src/main/java/com/foo/A.java"),
+            "package com.foo;\n\npublic class A {}\n".to_string(),
+        );
+
+        let edit = RefactoringEdit {
+            file_moves: vec![nova_refactor::FileMove {
+                old_path: PathBuf::from("src/main/java/com/foo/A.java"),
+                new_path: PathBuf::from("src/main/java/com/bar/A.java"),
+                new_contents: "package com.bar;\n\npublic class A {}\n".to_string(),
+            }],
+            file_edits: Vec::new(),
+        };
+
+        let caps = ClientCapabilities {
+            workspace: Some(WorkspaceClientCapabilities {
+                workspace_edit: Some(WorkspaceEditClientCapabilities {
+                    document_changes: Some(true),
+                    resource_operations: Some(vec![
+                        ResourceOperationKind::Create,
+                        ResourceOperationKind::Delete,
+                    ]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let root: Uri = "file:///workspace/".parse().unwrap();
+        let ws_edit = workspace_edit_from_refactor(&root, &original, &edit, &caps);
+
+        let Some(DocumentChanges::Operations(ops)) = ws_edit.document_changes else {
+            panic!("expected document change operations");
+        };
+
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            DocumentChangeOperation::Op(ResourceOp::Create(_))
+        )));
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            DocumentChangeOperation::Op(ResourceOp::Delete(_))
+        )));
+        assert!(!ops.iter().any(|op| matches!(
             op,
             DocumentChangeOperation::Op(ResourceOp::Rename(_))
         )));
