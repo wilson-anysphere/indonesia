@@ -176,7 +176,22 @@ fn pick_completion_marker(text: &str, candidates: &[&str]) -> usize {
         }
     }
 
-    // Fallback: pick the first '.' in the file.
+    // Fallback: try to pick a `.` outside of `package ...;` / `import ...;` lines.
+    let mut cursor = 0usize;
+    for chunk in text.split_inclusive('\n') {
+        let line = chunk.trim_end_matches('\n').trim_end_matches('\r');
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("package ") || trimmed.starts_with("import ") {
+            cursor += chunk.len();
+            continue;
+        }
+        if let Some(dot) = line.find('.') {
+            return cursor + dot + 1;
+        }
+        cursor += chunk.len();
+    }
+
+    // Final fallback: pick the first '.' in the file.
     let Some((dot, _)) = text.match_indices('.').next() else {
         panic!("expected file to contain a '.' for completion");
     };
@@ -283,6 +298,39 @@ fn guava_smoke() {
         &text,
         &["Preconditions.", "Objects.", "MoreObjects.", "Strings."],
     );
+
+    let completions = completion_at(&text, offset);
+    assert!(
+        completions.iter().any(|c| c == "toString"),
+        "expected member completion to contain toString, got: {completions:?}"
+    );
+}
+
+#[test]
+#[ignore]
+fn maven_resolver_smoke() {
+    let root = require_fixture("maven-resolver");
+    let config = load_project(&root).expect("load project config");
+
+    let parsed = parse_java_files(&config);
+    assert!(parsed.len() > 50, "expected some java files");
+
+    let index = WorkspaceIndex::from_parsed(&parsed);
+    assert!(
+        !index.workspace_symbols("RepositorySystem").is_empty(),
+        "expected to find RepositorySystem in workspace symbols"
+    );
+
+    let repo_system = index
+        .find_exact("org.eclipse.aether.RepositorySystem")
+        .or_else(|| index.workspace_symbols("RepositorySystem").into_iter().next())
+        .expect("expected to find RepositorySystem symbol in workspace index");
+
+    let file = repo_system.file.clone();
+    assert!(file.exists(), "expected {file:?} to exist");
+
+    let text = read_utf8(&file);
+    let offset = pick_completion_marker(&text, &["Collections.", "Objects.", "System."]);
 
     let completions = completion_at(&text, offset);
     assert!(

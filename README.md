@@ -55,6 +55,11 @@ nova parse <file>
 Some ignored integration tests validate Nova's project loading and analysis passes against real OSS Java projects.
 The fixture repositories are **not** checked into git; they are cloned locally under `test-projects/`.
 
+Currently pinned fixtures:
+- `spring-petclinic`
+- `guava`
+- `maven-resolver`
+
 ### Download / update fixtures
 
 ```bash

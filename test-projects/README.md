@@ -9,3 +9,7 @@ Clone them with:
 
 Pinned revisions are recorded in `pins.toml`.
 
+Currently pinned fixtures:
+- `spring-petclinic`
+- `guava`
+- `maven-resolver`

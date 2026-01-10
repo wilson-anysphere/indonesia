@@ -11,3 +11,8 @@ rev = "ab1d5364a0a49d260b52bea2bfdfe804d8a36f7a"
 url = "https://github.com/google/guava.git"
 # v33.5.0
 rev = "8868c096cfdabbe38170b6e395369c315cfb72a1"
+
+[maven-resolver]
+url = "https://github.com/apache/maven-resolver.git"
+# maven-resolver-2.0.9
+rev = "13e91652bbebdb33ad3df81d22f568eeb4e66e34"
