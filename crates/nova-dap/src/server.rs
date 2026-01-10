@@ -420,7 +420,19 @@ impl<C: JdwpClient> DapServer<C> {
         )?;
 
         let variables = if args.variables_reference == 1 {
-            Vec::new()
+            vec![crate::dap::types::Variable {
+                name: "<locals>".to_string(),
+                value: "<not implemented>".to_string(),
+                type_: None,
+                variables_reference: 0,
+                evaluate_name: None,
+                presentation_hint: Some(crate::dap::types::VariablePresentationHint {
+                    kind: Some("virtual".to_string()),
+                    attributes: Some(vec!["invalid".to_string()]),
+                    visibility: None,
+                    lazy: None,
+                }),
+            }]
         } else {
             self.session.variables(args.variables_reference)?
         };
@@ -510,6 +522,20 @@ impl<C: JdwpClient> DapServer<C> {
         let wait_for_stop = request.command == "continue";
 
         let mut outgoing = self.simple_ok(request, body)?;
+        if request.command == "continue" {
+            let mut continued_body = serde_json::Map::new();
+            continued_body.insert("allThreadsContinued".to_string(), json!(true));
+            if let Some(thread_id) = args.thread_id {
+                continued_body.insert("threadId".to_string(), json!(thread_id));
+            }
+
+            outgoing.messages.push(serde_json::to_value(Event::new(
+                self.alloc_seq(),
+                "continued",
+                Some(serde_json::Value::Object(continued_body)),
+            ))?);
+        }
+
         if request.command == "pause" {
             let mut stopped_body = serde_json::Map::new();
             stopped_body.insert("reason".to_string(), json!("pause"));
@@ -589,7 +615,13 @@ impl<C: JdwpClient> DapServer<C> {
 
     fn disconnect(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         self.should_exit = true;
-        self.simple_ok(request, None)
+        let mut outgoing = self.simple_ok(request, None)?;
+        outgoing.messages.push(serde_json::to_value(Event::new(
+            self.alloc_seq(),
+            "terminated",
+            None,
+        ))?);
+        Ok(outgoing)
     }
 
     fn simple_ok(&mut self, request: &Request, body: Option<serde_json::Value>) -> anyhow::Result<Outgoing> {
@@ -753,6 +785,10 @@ mod tests {
 
     fn response_body(message: &Value) -> Option<&Value> {
         message.get("body")
+    }
+
+    fn event_name(message: &Value) -> Option<&str> {
+        message.get("event").and_then(|value| value.as_str())
     }
 
     #[test]
@@ -948,5 +984,59 @@ public class Main {
             .map(|t| t["label"].as_str().unwrap())
             .collect();
         assert_eq!(labels, vec!["bar()", "qux()", "baz()", "foo()"]);
+    }
+
+    #[test]
+    fn disconnect_emits_terminated_event() {
+        let server = DapServer::new(MockJdwp::default());
+        let mut server = server;
+
+        let disconnect = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "disconnect".into(),
+            arguments: Some(json!({})),
+        };
+
+        let outgoing = server.handle_request(&disconnect).unwrap();
+        assert!(server.should_exit);
+        assert_eq!(outgoing.messages.len(), 2);
+        assert_eq!(outgoing.messages[0]["type"], "response");
+        assert_eq!(event_name(&outgoing.messages[1]).unwrap(), "terminated");
+    }
+
+    #[test]
+    fn continue_emits_continued_event() {
+        let mut jdwp = MockJdwp::default();
+        jdwp.threads.push(ThreadInfo {
+            id: 42,
+            name: "main".into(),
+        });
+
+        let mut server = DapServer::new(jdwp);
+
+        let threads_req = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "threads".into(),
+            arguments: None,
+        };
+        let threads_resp = server.handle_request(&threads_req).unwrap();
+        let threads = response_body(&threads_resp.messages[0]).unwrap()["threads"]
+            .as_array()
+            .unwrap();
+        let dap_thread_id = threads[0]["id"].as_i64().unwrap();
+
+        let continue_req = Request {
+            seq: 2,
+            type_: "request".into(),
+            command: "continue".into(),
+            arguments: Some(json!({ "threadId": dap_thread_id })),
+        };
+        let outgoing = server.handle_request(&continue_req).unwrap();
+        assert!(outgoing.wait_for_stop);
+        assert_eq!(outgoing.messages.len(), 2);
+        assert_eq!(outgoing.messages[0]["type"], "response");
+        assert_eq!(event_name(&outgoing.messages[1]).unwrap(), "continued");
     }
 }
