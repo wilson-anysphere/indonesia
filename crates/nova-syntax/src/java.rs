@@ -945,6 +945,31 @@ impl Parser {
         if self.at_kind(TokenKind::LParen) {
             let params = self.parse_param_list();
             self.skip_throws_clause();
+            if self.at_keyword("default") {
+                // Annotation type element default value: `int value() default 1;`
+                self.bump();
+                while !self.is_eof() && !self.at_kind(TokenKind::Semi) {
+                    if self.at_kind(TokenKind::LParen) {
+                        self.skip_balanced(TokenKind::LParen, TokenKind::RParen);
+                        continue;
+                    }
+                    if self.at_kind(TokenKind::LBrace) {
+                        self.skip_balanced(TokenKind::LBrace, TokenKind::RBrace);
+                        continue;
+                    }
+                    self.bump();
+                }
+                let semi = self.expect_kind(TokenKind::Semi);
+                let range = Span::new(start, semi.range.end);
+                return Some(ast::MemberDecl::Method(ast::MethodDecl {
+                    return_ty,
+                    name: name.text,
+                    name_range: name.range,
+                    params,
+                    body: None,
+                    range,
+                }));
+            }
             if self.at_kind(TokenKind::Semi) {
                 let semi = self.bump().unwrap();
                 let range = Span::new(start, semi.range.end);

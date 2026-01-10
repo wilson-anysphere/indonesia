@@ -36,7 +36,7 @@ import java.util.*;
 import static java.lang.Math.*;
 
 @interface Marker {
-    int value();
+    int value() default 1;
 }
 
 class Foo {
