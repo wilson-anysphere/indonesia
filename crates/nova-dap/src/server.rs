@@ -785,9 +785,6 @@ public class Main {
                 name: "m".into(),
                 source_path: Some("Main.java".into()),
                 line: 5,
-                type_id: 0,
-                method_id: 0,
-                code_index: 0,
             }],
         );
 
