@@ -1,6 +1,6 @@
-use nova_modules::{Exports, ModuleInfo, ModuleName, Opens, Provides, Requires, Uses};
+use nova_modules::{Exports, ModuleInfo, ModuleKind, ModuleName, Opens, Provides, Requires, Uses};
 
-use crate::constant_pool::{CpInfo, ConstantPool};
+use crate::constant_pool::{ConstantPool, CpInfo};
 use crate::error::{Error, Result};
 use crate::reader::Reader;
 
@@ -153,6 +153,7 @@ fn parse_module_attribute(reader: &mut Reader<'_>, cp: &ConstantPool) -> Result<
     }
 
     Ok(ModuleInfo {
+        kind: ModuleKind::Explicit,
         name,
         is_open,
         requires,
@@ -195,4 +196,3 @@ impl ConstantPoolExt for ConstantPool {
         }
     }
 }
-

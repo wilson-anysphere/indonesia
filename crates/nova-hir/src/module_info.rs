@@ -1,6 +1,6 @@
 //! Lowering support for `module-info.java`.
 
-use nova_modules::{Exports, ModuleInfo, ModuleName, Opens, Provides, Requires, Uses};
+use nova_modules::{Exports, ModuleInfo, ModuleKind, ModuleName, Opens, Provides, Requires, Uses};
 use nova_syntax::{parse_module_info, ModuleDecl, ModuleDirective, ModuleInfoParseError};
 use thiserror::Error;
 
@@ -52,6 +52,7 @@ pub fn lower_module_decl(decl: &ModuleDecl) -> ModuleInfo {
     }
 
     ModuleInfo {
+        kind: ModuleKind::Explicit,
         name: ModuleName::new(decl.name.as_str()),
         is_open: decl.is_open,
         requires,
@@ -61,4 +62,3 @@ pub fn lower_module_decl(decl: &ModuleDecl) -> ModuleInfo {
         provides,
     }
 }
-

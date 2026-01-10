@@ -4,6 +4,10 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 
 pub const JAVA_BASE: &str = "java.base";
+/// Sentinel module name used to model the classpath "unnamed module".
+///
+/// This string is intentionally not a valid Java module name.
+pub const UNNAMED_MODULE: &str = "<unnamed>";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ModuleName(String);
@@ -13,12 +17,20 @@ impl ModuleName {
         Self(name.into())
     }
 
+    pub fn unnamed() -> Self {
+        Self::new(UNNAMED_MODULE)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
     pub fn is_java_base(&self) -> bool {
         self.0 == JAVA_BASE
+    }
+
+    pub fn is_unnamed(&self) -> bool {
+        self.0 == UNNAMED_MODULE
     }
 }
 
@@ -28,8 +40,20 @@ impl fmt::Display for ModuleName {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleKind {
+    /// A module with an explicit `module-info.{java,class}` descriptor.
+    Explicit,
+    /// A named module synthesized from a JAR on the module path without
+    /// `module-info.class` (or with `Automatic-Module-Name`).
+    Automatic,
+    /// The classpath "unnamed module".
+    Unnamed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleInfo {
+    pub kind: ModuleKind,
     pub name: ModuleName,
     pub is_open: bool,
     pub requires: Vec<Requires>,
@@ -41,14 +65,20 @@ pub struct ModuleInfo {
 
 impl ModuleInfo {
     pub fn exports_package_to(&self, package: &str, to: &ModuleName) -> bool {
-        if &self.name == to {
-            return true;
-        }
+        match self.kind {
+            // Automatic modules export (and open) all packages to everyone.
+            ModuleKind::Automatic | ModuleKind::Unnamed => true,
+            ModuleKind::Explicit => {
+                if &self.name == to {
+                    return true;
+                }
 
-        self.exports.iter().any(|exports| {
-            exports.package == package
-                && (exports.to.is_empty() || exports.to.iter().any(|m| m == to))
-        })
+                self.exports.iter().any(|exports| {
+                    exports.package == package
+                        && (exports.to.is_empty() || exports.to.iter().any(|m| m == to))
+                })
+            }
+        }
     }
 }
 
@@ -82,7 +112,7 @@ pub struct Provides {
     pub implementations: Vec<String>,
 }
 
-/// Workspace-level representation of named modules.
+/// Workspace-level representation of modules.
 #[derive(Debug, Default, Clone)]
 pub struct ModuleGraph {
     modules: HashMap<ModuleName, ModuleInfo>,
@@ -117,6 +147,21 @@ impl ModuleGraph {
         out.insert(from.clone());
         out.insert(ModuleName::new(JAVA_BASE));
 
+        // The unnamed module (classpath) and automatic modules read every *named*
+        // module. We also treat automatic modules as a best-effort stand-in for
+        // `requires transitive *`, so any module that can read an automatic
+        // module ends up reading every named module as well.
+        if from.is_unnamed() {
+            self.add_all_named_modules(&mut out);
+            return out;
+        }
+        if let Some(info) = self.get(from) {
+            if matches!(info.kind, ModuleKind::Unnamed | ModuleKind::Automatic) {
+                self.add_all_named_modules(&mut out);
+                return out;
+            }
+        }
+
         let mut queue = VecDeque::new();
         queue.push_back(from.clone());
 
@@ -124,6 +169,11 @@ impl ModuleGraph {
             let Some(info) = self.get(&current) else {
                 continue;
             };
+
+            if matches!(info.kind, ModuleKind::Unnamed | ModuleKind::Automatic) {
+                self.add_all_named_modules(&mut out);
+                break;
+            }
 
             let follow_all = current == *from;
             for req in &info.requires {
@@ -145,6 +195,14 @@ impl ModuleGraph {
             return true;
         }
         self.readable_modules(from).contains(to)
+    }
+
+    fn add_all_named_modules(&self, out: &mut BTreeSet<ModuleName>) {
+        for (name, info) in &self.modules {
+            if info.kind != ModuleKind::Unnamed {
+                out.insert(name.clone());
+            }
+        }
     }
 }
 
@@ -179,5 +237,122 @@ mod tests {
 
         ws.resolve_fqcn(from, "com.example.b.hidden.Hidden")
             .expect("type should be accessible when package is exported");
+    }
+
+    fn module(
+        kind: super::ModuleKind,
+        name: &str,
+        requires: Vec<super::Requires>,
+    ) -> super::ModuleInfo {
+        super::ModuleInfo {
+            kind,
+            name: super::ModuleName::new(name),
+            is_open: false,
+            requires,
+            exports: Vec::new(),
+            opens: Vec::new(),
+            uses: Vec::new(),
+            provides: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unnamed_reads_all_named_modules() {
+        let mut graph = super::ModuleGraph::new();
+        graph.insert(module(super::ModuleKind::Explicit, "a", Vec::new()));
+        graph.insert(module(super::ModuleKind::Explicit, "b", Vec::new()));
+        graph.insert(module(super::ModuleKind::Automatic, "auto", Vec::new()));
+        graph.insert(module(
+            super::ModuleKind::Unnamed,
+            super::UNNAMED_MODULE,
+            Vec::new(),
+        ));
+
+        let unnamed = super::ModuleName::unnamed();
+        for named in ["a", "b", "auto"] {
+            assert!(
+                graph.can_read(&unnamed, &super::ModuleName::new(named)),
+                "unnamed should read {named}"
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_reads_all_named_modules() {
+        let mut graph = super::ModuleGraph::new();
+        graph.insert(module(super::ModuleKind::Explicit, "a", Vec::new()));
+        graph.insert(module(super::ModuleKind::Explicit, "b", Vec::new()));
+        graph.insert(module(super::ModuleKind::Automatic, "auto", Vec::new()));
+        graph.insert(module(
+            super::ModuleKind::Unnamed,
+            super::UNNAMED_MODULE,
+            Vec::new(),
+        ));
+
+        let auto = super::ModuleName::new("auto");
+        for named in ["a", "b", "auto"] {
+            assert!(
+                graph.can_read(&auto, &super::ModuleName::new(named)),
+                "automatic should read {named}"
+            );
+        }
+
+        assert!(
+            !graph.can_read(&auto, &super::ModuleName::unnamed()),
+            "named modules should not read the unnamed module"
+        );
+    }
+
+    #[test]
+    fn explicit_requires_controls_readability() {
+        let mut graph = super::ModuleGraph::new();
+        graph.insert(module(
+            super::ModuleKind::Explicit,
+            "a",
+            vec![super::Requires {
+                module: super::ModuleName::new("b"),
+                is_transitive: false,
+                is_static: false,
+            }],
+        ));
+        graph.insert(module(
+            super::ModuleKind::Explicit,
+            "b",
+            vec![super::Requires {
+                module: super::ModuleName::new("c"),
+                is_transitive: false,
+                is_static: false,
+            }],
+        ));
+        graph.insert(module(super::ModuleKind::Explicit, "c", Vec::new()));
+
+        let a = super::ModuleName::new("a");
+        assert!(graph.can_read(&a, &super::ModuleName::new("b")));
+        assert!(
+            !graph.can_read(&a, &super::ModuleName::new("c")),
+            "non-transitive requires should not propagate"
+        );
+
+        // Mark b -> c as transitive and ensure it becomes readable.
+        graph.insert(module(
+            super::ModuleKind::Explicit,
+            "b",
+            vec![super::Requires {
+                module: super::ModuleName::new("c"),
+                is_transitive: true,
+                is_static: false,
+            }],
+        ));
+        assert!(
+            graph.can_read(&a, &super::ModuleName::new("c")),
+            "transitive requires should propagate"
+        );
+    }
+
+    #[test]
+    fn automatic_exports_are_unrestricted() {
+        let auto = module(super::ModuleKind::Automatic, "auto", Vec::new());
+        assert!(auto.exports_package_to("com.example", &super::ModuleName::new("someone")));
+        assert!(auto.exports_package_to("com.example.internal", &super::ModuleName::new("someone")));
     }
 }
