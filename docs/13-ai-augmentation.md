@@ -1,0 +1,682 @@
+# 13 - AI Augmentation
+
+[← Back to Main Document](../AGENTS.md) | [Previous: Debugging Integration](12-debugging-integration.md)
+
+## Overview
+
+AI integration is a key differentiator for Nova. Unlike retrofitting AI onto existing architectures, Nova is designed from the ground up to leverage machine learning for enhanced intelligence.
+
+---
+
+## AI Integration Philosophy
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    AI INTEGRATION PRINCIPLES                     │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. AUGMENT, DON'T REPLACE                                      │
+│     AI enhances traditional analysis, doesn't substitute it.    │
+│     Semantic analysis provides ground truth; AI adds insights.  │
+│                                                                  │
+│  2. GRACEFUL DEGRADATION                                         │
+│     Nova must work fully without AI services.                   │
+│     AI features are enhancements, not requirements.             │
+│                                                                  │
+│  3. PRIVACY-CONSCIOUS                                            │
+│     Local models preferred where possible.                      │
+│     Clear user control over data sent externally.               │
+│     Code snippets anonymized when sent to services.             │
+│                                                                  │
+│  4. PREDICTABLE LATENCY                                          │
+│     AI operations should not block interactive features.        │
+│     Async processing with fallback to non-AI results.           │
+│                                                                  │
+│  5. TRANSPARENT                                                  │
+│     Clear indication when AI is involved.                       │
+│     Explanations for AI-driven suggestions.                     │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## AI Feature Categories
+
+### 1. Enhanced Code Completion
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    AI COMPLETION                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  TRADITIONAL COMPLETION                                         │
+│  • Based on type system and scope                               │
+│  • All valid completions, alphabetically sorted                 │
+│                                                                  │
+│  AI-ENHANCED COMPLETION                                         │
+│  • Ranked by likelihood of selection                            │
+│  • Context-aware (what you're trying to do)                     │
+│  • Multi-token completions (method chains)                      │
+│  • Pattern-based suggestions                                    │
+│                                                                  │
+│  EXAMPLE:                                                       │
+│  List<String> names = people.stream().|                         │
+│                                                                  │
+│  Traditional: collect, count, distinct, filter, findAny...      │
+│  AI-ranked:   filter, map, collect (based on context)           │
+│  AI multi:    filter(p -> p.isActive()).map(Person::getName)    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Implementation
+
+```rust
+pub struct AiCompletionProvider {
+    /// Local ranking model
+    local_model: CompletionRanker,
+    
+    /// Optional cloud model for advanced completions
+    cloud_model: Option<CloudCompletionService>,
+    
+    /// Completion cache
+    cache: LruCache<CompletionContext, Vec<ScoredCompletion>>,
+}
+
+impl AiCompletionProvider {
+    pub async fn rank_completions(
+        &self,
+        ctx: &CompletionContext,
+        items: Vec<CompletionItem>,
+    ) -> Vec<CompletionItem> {
+        // Build feature vector from context
+        let features = self.extract_features(ctx);
+        
+        // Score each item with local model
+        let mut scored: Vec<_> = items.into_iter()
+            .map(|item| {
+                let score = self.local_model.score(&features, &item);
+                (item, score)
+            })
+            .collect();
+        
+        // Sort by score
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        
+        // Optionally enhance top results with cloud model
+        if let Some(cloud) = &self.cloud_model {
+            if ctx.wants_multi_token {
+                let enhanced = cloud.enhance_completions(ctx, &scored[..10]).await;
+                scored.splice(0..0, enhanced);
+            }
+        }
+        
+        scored.into_iter().map(|(item, _)| item).collect()
+    }
+    
+    fn extract_features(&self, ctx: &CompletionContext) -> FeatureVector {
+        FeatureVector {
+            // Contextual features
+            receiver_type: ctx.receiver_type.clone(),
+            expected_type: ctx.expected_type.clone(),
+            in_method: ctx.enclosing_method.clone(),
+            in_class: ctx.enclosing_class.clone(),
+            
+            // Positional features
+            prefix_length: ctx.prefix.len(),
+            line_context: ctx.line_text.clone(),
+            
+            // Historical features
+            recent_completions: ctx.recent_selections.clone(),
+            file_patterns: ctx.file_completion_patterns.clone(),
+            
+            // Semantic features
+            visible_types: ctx.visible_types.clone(),
+            import_suggestions: ctx.potential_imports.clone(),
+        }
+    }
+}
+```
+
+### 2. Intelligent Code Generation
+
+```rust
+pub struct CodeGenerator {
+    llm: LlmClient,
+    context_builder: ContextBuilder,
+}
+
+impl CodeGenerator {
+    /// Generate method implementation from signature and context
+    pub async fn generate_method_body(
+        &self,
+        method: &MethodSignature,
+        class_context: &ClassContext,
+    ) -> Result<String> {
+        // Build rich context
+        let context = self.context_builder.build(ContextRequest {
+            focal_method: method,
+            class_info: class_context,
+            include_related_methods: true,
+            include_field_info: true,
+            include_superclass_methods: true,
+            max_tokens: 2000,
+        });
+        
+        // Generate with LLM
+        let prompt = format!(
+            "Given the following Java class context:\n{}\n\n\
+             Implement the method:\n{}\n\n\
+             The implementation should:",
+            context,
+            format_method_signature(method),
+        );
+        
+        let generated = self.llm.generate(&prompt).await?;
+        
+        // Validate generated code
+        let validated = self.validate_and_fix(generated, method)?;
+        
+        Ok(validated)
+    }
+    
+    /// Generate unit test for method
+    pub async fn generate_test(
+        &self,
+        method: &Method,
+        test_framework: TestFramework,
+    ) -> Result<String> {
+        let context = self.context_builder.build_for_testing(method);
+        
+        let prompt = format!(
+            "Generate a {} test for the following method:\n{}\n\n\
+             Include tests for:\n\
+             - Normal cases\n\
+             - Edge cases\n\
+             - Error conditions",
+            test_framework.name(),
+            context,
+        );
+        
+        self.llm.generate(&prompt).await
+    }
+}
+```
+
+### 3. Natural Language Code Search
+
+```rust
+pub struct SemanticSearch {
+    /// Embedding model
+    embedder: EmbeddingModel,
+    
+    /// Vector index
+    index: VectorIndex,
+}
+
+impl SemanticSearch {
+    /// Search code using natural language
+    pub async fn search(&self, query: &str) -> Vec<SearchResult> {
+        // Embed query
+        let query_embedding = self.embedder.embed(query).await?;
+        
+        // Find similar code
+        let candidates = self.index.search(&query_embedding, 50);
+        
+        // Re-rank with more context
+        let results = self.rerank(query, candidates).await;
+        
+        results
+    }
+    
+    /// Index codebase for search
+    pub async fn index_project(&self, db: &dyn Database) {
+        for file in db.project_files() {
+            for method in db.methods_in_file(file) {
+                // Create rich representation
+                let text = self.create_searchable_text(db, method);
+                
+                // Generate embedding
+                let embedding = self.embedder.embed(&text).await?;
+                
+                // Store in index
+                self.index.insert(method.id, embedding, MethodMetadata {
+                    name: method.name.clone(),
+                    class: method.class.clone(),
+                    file: file,
+                    range: method.range,
+                });
+            }
+        }
+    }
+    
+    fn create_searchable_text(&self, db: &dyn Database, method: &Method) -> String {
+        // Combine multiple representations
+        format!(
+            "{}\n{}\n{}\n{}",
+            method.name,
+            method.javadoc.unwrap_or_default(),
+            format_signature(&method),
+            summarize_body(&method.body),
+        )
+    }
+}
+```
+
+### 4. Intelligent Error Explanation
+
+```rust
+pub struct ErrorExplainer {
+    llm: LlmClient,
+}
+
+impl ErrorExplainer {
+    /// Explain compiler error in plain language
+    pub async fn explain_error(&self, error: &Diagnostic) -> ErrorExplanation {
+        // Get context around error
+        let context = self.get_error_context(error);
+        
+        let prompt = format!(
+            "Explain this Java compiler error to a developer:\n\n\
+             Error: {}\n\n\
+             Code context:\n{}\n\n\
+             Provide:\n\
+             1. What the error means\n\
+             2. Why it happened\n\
+             3. How to fix it",
+            error.message,
+            context,
+        );
+        
+        let explanation = self.llm.generate(&prompt).await?;
+        
+        // Extract structured explanation
+        ErrorExplanation {
+            summary: extract_summary(&explanation),
+            cause: extract_cause(&explanation),
+            fixes: extract_fixes(&explanation),
+            examples: extract_examples(&explanation),
+        }
+    }
+    
+    /// Suggest fix for error
+    pub async fn suggest_fix(&self, error: &Diagnostic) -> Vec<CodeFix> {
+        // Use Nova's semantic info + AI to generate fixes
+        let semantic_fixes = self.semantic_fixes(error);
+        let ai_fixes = self.ai_generated_fixes(error).await;
+        
+        // Merge and deduplicate
+        merge_fixes(semantic_fixes, ai_fixes)
+    }
+}
+```
+
+### 5. Code Review Assistant
+
+```rust
+pub struct CodeReviewer {
+    llm: LlmClient,
+    static_analyzer: StaticAnalyzer,
+}
+
+impl CodeReviewer {
+    /// Review code changes
+    pub async fn review_changes(&self, diff: &GitDiff) -> CodeReview {
+        // Static analysis first
+        let static_issues = self.static_analyzer.analyze(diff);
+        
+        // AI review for higher-level issues
+        let ai_review = self.ai_review(diff).await?;
+        
+        CodeReview {
+            issues: merge_issues(static_issues, ai_review.issues),
+            suggestions: ai_review.suggestions,
+            summary: ai_review.summary,
+        }
+    }
+    
+    async fn ai_review(&self, diff: &GitDiff) -> AiReviewResult {
+        let prompt = format!(
+            "Review this Java code change:\n\n{}\n\n\
+             Consider:\n\
+             - Correctness\n\
+             - Performance implications\n\
+             - Security concerns\n\
+             - Code style and maintainability\n\
+             - Missing error handling\n\
+             - Test coverage",
+            format_diff(diff),
+        );
+        
+        let response = self.llm.generate(&prompt).await?;
+        parse_review_response(&response)
+    }
+}
+```
+
+---
+
+## Model Architecture
+
+### Local Models
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    LOCAL MODELS                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  COMPLETION RANKING                                              │
+│  • Small transformer or gradient boosting                       │
+│  • ~10MB model size                                             │
+│  • <1ms inference                                               │
+│  • Trained on completion logs                                   │
+│                                                                  │
+│  EMBEDDING MODEL                                                 │
+│  • Sentence transformer variant                                 │
+│  • ~100MB model size                                            │
+│  • ~10ms per embedding                                          │
+│  • For semantic search                                          │
+│                                                                  │
+│  SIMPLE CODE MODEL                                               │
+│  • Small language model (1-3B params)                           │
+│  • ~2-6GB model size                                            │
+│  • For simple completions and explanations                      │
+│  • Runs on CPU or GPU                                           │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Cloud Models
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CLOUD INTEGRATION                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  SUPPORTED PROVIDERS                                            │
+│  • OpenAI (GPT-4, GPT-4-turbo)                                  │
+│  • Anthropic (Claude)                                           │
+│  • Google (Gemini)                                              │
+│  • Azure OpenAI                                                 │
+│  • Self-hosted (Ollama, vLLM)                                   │
+│                                                                  │
+│  USE CASES                                                      │
+│  • Complex code generation                                      │
+│  • Extended explanations                                        │
+│  • Code review                                                  │
+│  • Documentation generation                                     │
+│                                                                  │
+│  PRIVACY CONTROLS                                               │
+│  • Opt-in per feature                                          │
+│  • Code anonymization option                                    │
+│  • Enterprise proxy support                                     │
+│  • Usage logging and audit                                      │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Model Configuration
+
+```rust
+pub struct AiConfig {
+    /// Local models configuration
+    pub local: LocalModelConfig,
+    
+    /// Cloud provider configuration
+    pub cloud: Option<CloudConfig>,
+    
+    /// Privacy settings
+    pub privacy: PrivacyConfig,
+    
+    /// Feature toggles
+    pub features: AiFeatures,
+}
+
+pub struct LocalModelConfig {
+    /// Path to local models
+    pub model_dir: PathBuf,
+    
+    /// Use GPU if available
+    pub use_gpu: bool,
+    
+    /// Maximum memory for models
+    pub max_memory: usize,
+}
+
+pub struct CloudConfig {
+    pub provider: CloudProvider,
+    pub api_key: Secret<String>,
+    pub endpoint: Option<Url>,
+    pub model: String,
+    pub max_tokens: usize,
+    pub timeout: Duration,
+}
+
+pub struct PrivacyConfig {
+    /// Never send code to cloud
+    pub local_only: bool,
+    
+    /// Anonymize identifiers before sending
+    pub anonymize_code: bool,
+    
+    /// Exclude certain paths
+    pub excluded_paths: Vec<PathBuf>,
+    
+    /// Log all AI interactions
+    pub audit_logging: bool,
+}
+```
+
+---
+
+## Context Building
+
+```rust
+/// Build optimal context for LLM queries
+pub struct ContextBuilder {
+    db: Arc<dyn Database>,
+    max_tokens: usize,
+}
+
+impl ContextBuilder {
+    pub fn build(&self, request: ContextRequest) -> String {
+        let mut budget = self.max_tokens;
+        let mut context = String::new();
+        
+        // Priority 1: Focal code (always include)
+        let focal = self.format_focal_code(&request);
+        context.push_str(&focal);
+        budget -= count_tokens(&focal);
+        
+        // Priority 2: Direct dependencies
+        let deps = self.format_dependencies(&request, budget / 3);
+        context.push_str(&deps);
+        budget -= count_tokens(&deps);
+        
+        // Priority 3: Related code by semantic similarity
+        let related = self.find_related_code(&request, budget / 2);
+        context.push_str(&related);
+        budget -= count_tokens(&related);
+        
+        // Priority 4: Documentation and comments
+        let docs = self.format_documentation(&request, budget);
+        context.push_str(&docs);
+        
+        context
+    }
+    
+    fn find_related_code(&self, request: &ContextRequest, budget: usize) -> String {
+        // Use embeddings to find semantically similar code
+        let focal_embedding = self.embed_code(&request.focal_code);
+        
+        let similar = self.db.semantic_search()
+            .search_by_embedding(&focal_embedding, 10);
+        
+        // Select within budget
+        let mut result = String::new();
+        let mut used = 0;
+        
+        for item in similar {
+            let formatted = self.format_code_snippet(&item);
+            let tokens = count_tokens(&formatted);
+            
+            if used + tokens > budget {
+                break;
+            }
+            
+            result.push_str(&formatted);
+            result.push('\n');
+            used += tokens;
+        }
+        
+        result
+    }
+}
+```
+
+---
+
+## Privacy and Security
+
+```rust
+/// Code anonymization for privacy
+pub struct CodeAnonymizer {
+    /// Mapping of original to anonymized names
+    name_map: HashMap<String, String>,
+}
+
+impl CodeAnonymizer {
+    pub fn anonymize(&mut self, code: &str) -> String {
+        let parsed = parse_java(code);
+        let mut result = code.to_string();
+        
+        // Anonymize identifiers
+        for ident in parsed.identifiers() {
+            if self.should_anonymize(&ident) {
+                let anon = self.get_or_create_anon_name(&ident.name);
+                result = result.replace(&ident.name, &anon);
+            }
+        }
+        
+        // Anonymize string literals
+        for string in parsed.string_literals() {
+            if self.looks_like_sensitive(&string.value) {
+                result = result.replace(&string.text, "\"[REDACTED]\"");
+            }
+        }
+        
+        result
+    }
+    
+    fn should_anonymize(&self, ident: &Identifier) -> bool {
+        // Keep standard library names
+        if is_standard_library(&ident.name) {
+            return false;
+        }
+        
+        // Keep common patterns (get, set, is, etc.)
+        if is_common_pattern(&ident.name) {
+            return false;
+        }
+        
+        true
+    }
+    
+    fn get_or_create_anon_name(&mut self, original: &str) -> String {
+        if let Some(anon) = self.name_map.get(original) {
+            return anon.clone();
+        }
+        
+        // Generate meaningful anonymous name
+        let prefix = infer_type(original); // "method", "class", "field", etc.
+        let anon = format!("{}_{}", prefix, self.name_map.len());
+        self.name_map.insert(original.to_string(), anon.clone());
+        anon
+    }
+}
+```
+
+---
+
+## Integration Points
+
+```rust
+impl NovaServer {
+    /// Integrate AI into LSP handlers
+    async fn completion_with_ai(
+        &self,
+        params: CompletionParams,
+    ) -> Result<CompletionResponse> {
+        // Get traditional completions
+        let items = self.db.read().completions_at(params.file, params.position);
+        
+        // AI ranking (fast, local)
+        let ranked = self.ai.rank_completions(&params, items).await;
+        
+        // Optional: AI multi-token completions (async, might use cloud)
+        if self.config.ai.features.multi_token_completion {
+            tokio::spawn(async move {
+                let multi = self.ai.multi_token_completions(&params).await;
+                self.send_additional_completions(multi);
+            });
+        }
+        
+        Ok(CompletionResponse::List(CompletionList {
+            is_incomplete: true, // More coming
+            items: ranked,
+        }))
+    }
+    
+    /// AI-powered code action
+    async fn ai_code_actions(
+        &self,
+        params: CodeActionParams,
+    ) -> Vec<CodeAction> {
+        let mut actions = Vec::new();
+        
+        // Generate method body
+        if let Some(method) = self.db.read().empty_method_at(params.range) {
+            actions.push(CodeAction {
+                title: "Generate method body with AI".into(),
+                kind: Some(CodeActionKind::QUICKFIX),
+                command: Some(command("nova.ai.generateMethod", [method.id])),
+                ..Default::default()
+            });
+        }
+        
+        // Explain error
+        if let Some(diagnostic) = params.context.diagnostics.first() {
+            actions.push(CodeAction {
+                title: "Explain this error".into(),
+                kind: Some(CodeActionKind::new("nova.explain")),
+                command: Some(command("nova.ai.explainError", [diagnostic])),
+                ..Default::default()
+            });
+        }
+        
+        // Generate tests
+        if let Some(method) = self.db.read().method_at(params.range.start) {
+            actions.push(CodeAction {
+                title: "Generate tests with AI".into(),
+                kind: Some(CodeActionKind::new("nova.test")),
+                command: Some(command("nova.ai.generateTests", [method.id])),
+                ..Default::default()
+            });
+        }
+        
+        actions
+    }
+}
+```
+
+---
+
+## Next Steps
+
+1. → [Testing Strategy](14-testing-strategy.md): Quality assurance
+2. → [Work Breakdown](15-work-breakdown.md): Project organization
+
+---
+
+[← Previous: Debugging Integration](12-debugging-integration.md) | [Next: Testing Strategy →](14-testing-strategy.md)
