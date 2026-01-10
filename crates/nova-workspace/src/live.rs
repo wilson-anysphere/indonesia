@@ -205,7 +205,7 @@ impl Workspace {
     pub fn new(config: WorkspaceConfig, client: Arc<dyn WorkspaceClient>) -> Self {
         Self {
             file_ids: Arc::new(Mutex::new(FileIdRegistry::new())),
-            overlay: OverlayFs::new(LocalFs),
+            overlay: OverlayFs::new(LocalFs::new()),
             db: Arc::new(Mutex::new(WorkspaceDb::default())),
             indexer: Arc::new(Mutex::new(WorkspaceIndexer::default())),
             client,
