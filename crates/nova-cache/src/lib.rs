@@ -22,6 +22,7 @@ mod util;
 
 pub use ast_cache::{AstArtifactCache, FileAstArtifacts, AST_ARTIFACT_SCHEMA_VERSION};
 pub use cache_dir::{CacheConfig, CacheDir};
+pub use cache_dir::deps_cache_dir;
 pub use derived_cache::DerivedArtifactCache;
 pub use error::CacheError;
 pub use fingerprint::{Fingerprint, ProjectSnapshot};

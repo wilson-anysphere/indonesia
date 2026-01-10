@@ -7,6 +7,7 @@ members = [
     "crates/nova-build",
     "crates/nova-build-bazel",
     "crates/nova-cache",
+    "crates/nova-deps-cache",
     "crates/nova-memory",
     "crates/nova-classfile",
     "crates/nova-classpath",

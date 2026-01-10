@@ -7,6 +7,7 @@ use nova_cache::{
     CachePackageInstallOutcome,
 };
 use nova_perf::{compare_runs, load_criterion_directory, BenchRun, ThresholdConfig};
+use nova_deps_cache::DependencyIndexStore;
 use nova_workspace::{
     CacheStatus, DiagnosticsReport, IndexReport, ParseResult, Workspace, WorkspaceSymbol,
 };
@@ -33,6 +34,8 @@ enum Command {
     Diagnostics(DiagnosticsArgs),
     /// Workspace symbol search (defaults to current directory)
     Symbols(SymbolsArgs),
+    /// Manage global dependency (JAR/JMOD) indexes
+    Deps(DepsArgs),
     /// Manage persistent cache (defaults to `~/.nova/cache/<project-hash>/`, override with `NOVA_CACHE_DIR`)
     Cache(CacheArgs),
     /// Performance tools (cached perf report + benchmark comparison)
@@ -102,6 +105,28 @@ struct SymbolsArgs {
 struct CacheArgs {
     #[command(subcommand)]
     command: CacheCommand,
+}
+
+#[derive(Args)]
+struct DepsArgs {
+    #[command(subcommand)]
+    command: DepsCommand,
+}
+
+#[derive(Subcommand)]
+enum DepsCommand {
+    /// Pre-build and store a dependency index bundle for a JAR/JMOD.
+    Index {
+        jar: PathBuf,
+    },
+    /// Pack the global dependency index store into a .tar.gz archive.
+    Pack {
+        output: PathBuf,
+    },
+    /// Install dependency index bundles from a .tar.gz archive.
+    Install {
+        archive: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -251,6 +276,51 @@ fn run(cli: Cli) -> Result<i32> {
             print_output(&results, args.json)?;
             Ok(0)
         }
+        Command::Deps(args) => match args.command {
+            DepsCommand::Index { jar } => {
+                let store = DependencyIndexStore::from_env()?;
+                let stats = nova_classpath::IndexingStats::default();
+
+                let entry = if jar.extension().and_then(|e| e.to_str()) == Some("jmod") {
+                    nova_classpath::ClasspathEntry::Jmod(jar.clone())
+                } else {
+                    nova_classpath::ClasspathEntry::Jar(jar.clone())
+                };
+
+                let index = nova_classpath::ClasspathIndex::build_with_deps_store(
+                    &[entry],
+                    None,
+                    Some(&store),
+                    Some(&stats),
+                )?;
+
+                let sha = nova_deps_cache::sha256_hex(&jar)?;
+                println!(
+                    "indexed {} ({} classes, sha256 {})",
+                    jar.display(),
+                    index.len(),
+                    sha
+                );
+                println!(
+                    "deps cache hits: {}, class parses: {}",
+                    stats.deps_cache_hits(),
+                    stats.classfiles_parsed()
+                );
+                Ok(0)
+            }
+            DepsCommand::Pack { output } => {
+                let store = DependencyIndexStore::from_env()?;
+                store.pack(&output)?;
+                println!("packed dependency indexes to {}", output.display());
+                Ok(0)
+            }
+            DepsCommand::Install { archive } => {
+                let store = DependencyIndexStore::from_env()?;
+                store.install(&archive)?;
+                println!("installed dependency indexes from {}", archive.display());
+                Ok(0)
+            }
+        },
         Command::Cache(args) => {
             match args.command {
                 CacheCommand::Clean(args) => {

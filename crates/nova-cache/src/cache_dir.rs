@@ -76,6 +76,24 @@ impl CacheDir {
     }
 }
 
+/// Returns the global dependency cache directory.
+///
+/// This directory is shared across projects and is intended for caches that are
+/// keyed by dependency artifact content (e.g. JAR/JMOD classpath stubs).
+///
+/// By default this is `~/.nova/cache/deps`, but it respects
+/// `CacheConfig.cache_root_override` (and therefore `NOVA_CACHE_DIR`).
+pub fn deps_cache_dir(config: &CacheConfig) -> Result<PathBuf, CacheError> {
+    let base = match &config.cache_root_override {
+        Some(root) => root.clone(),
+        None => default_cache_root()?,
+    };
+
+    let root = base.join("deps");
+    std::fs::create_dir_all(&root)?;
+    Ok(root)
+}
+
 fn default_cache_root() -> Result<PathBuf, CacheError> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -84,4 +102,3 @@ fn default_cache_root() -> Result<PathBuf, CacheError> {
 
     Ok(home.join(".nova").join("cache"))
 }
-

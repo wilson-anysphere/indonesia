@@ -6,6 +6,7 @@ use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,7 @@ use thiserror::Error;
 
 use nova_classfile::{parse_module_info_class, ClassFile};
 use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
+use nova_deps_cache::{DepsClassStub, DepsFieldStub, DepsMethodStub, DependencyIndexBundle, DependencyIndexStore};
 use nova_modules::ModuleInfo;
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
@@ -26,6 +28,35 @@ pub enum ClasspathError {
     ClassFile(#[from] nova_classfile::Error),
     #[error("bincode error: {0}")]
     Bincode(#[from] Box<bincode::ErrorKind>),
+}
+
+/// Optional indexing counters used by tests and the CLI.
+#[derive(Debug, Default)]
+pub struct IndexingStats {
+    classfiles_parsed: AtomicUsize,
+    deps_cache_hits: AtomicUsize,
+}
+
+impl IndexingStats {
+    pub fn classfiles_parsed(&self) -> usize {
+        self.classfiles_parsed.load(Ordering::Relaxed)
+    }
+
+    pub fn deps_cache_hits(&self) -> usize {
+        self.deps_cache_hits.load(Ordering::Relaxed)
+    }
+}
+
+fn record_parsed(stats: Option<&IndexingStats>) {
+    if let Some(stats) = stats {
+        stats.classfiles_parsed.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn record_deps_cache_hit(stats: Option<&IndexingStats>) {
+    if let Some(stats) = stats {
+        stats.deps_cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -230,17 +261,35 @@ pub struct ClasspathIndex {
 
 impl ClasspathIndex {
     pub fn build(entries: &[ClasspathEntry], cache_dir: Option<&Path>) -> Result<Self, ClasspathError> {
+        let deps_store = DependencyIndexStore::from_env().ok();
+        Self::build_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
+    }
+
+    pub fn build_with_deps_store(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
         let mut stubs_by_binary = HashMap::new();
         let mut internal_to_binary = HashMap::new();
 
         for entry in entries {
             let entry = entry.normalize()?;
-            let fingerprint = entry.fingerprint()?;
-
-            let stubs = if let Some(cache_dir) = cache_dir {
-                persist::load_or_build_entry(cache_dir, &entry, fingerprint, || index_entry(&entry))?
-            } else {
-                index_entry(&entry)?
+            let stubs = match &entry {
+                ClasspathEntry::ClassDir(_) => {
+                    let fingerprint = entry.fingerprint()?;
+                    if let Some(cache_dir) = cache_dir {
+                        persist::load_or_build_entry(cache_dir, &entry, fingerprint, || {
+                            index_entry(&entry, deps_store, stats)
+                        })?
+                    } else {
+                        index_entry(&entry, deps_store, stats)?
+                    }
+                }
+                ClasspathEntry::Jar(_) | ClasspathEntry::Jmod(_) => {
+                    index_entry(&entry, deps_store, stats)?
+                }
             };
 
             for stub in stubs {
@@ -265,6 +314,10 @@ impl ClasspathIndex {
             packages_sorted: packages.into_iter().collect(),
             internal_to_binary,
         })
+    }
+
+    pub fn len(&self) -> usize {
+        self.stubs_by_binary.len()
     }
 
     pub fn lookup_binary(&self, binary_name: &str) -> Option<&ClasspathClassStub> {
@@ -367,11 +420,15 @@ impl TypeIndex for ClasspathIndex {
     }
 }
 
-fn index_entry(entry: &ClasspathEntry) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
+fn index_entry(
+    entry: &ClasspathEntry,
+    deps_store: Option<&DependencyIndexStore>,
+    stats: Option<&IndexingStats>,
+) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
     match entry {
         ClasspathEntry::ClassDir(dir) => index_class_dir(dir),
-        ClasspathEntry::Jar(path) => index_zip(path, ZipKind::Jar),
-        ClasspathEntry::Jmod(path) => index_zip(path, ZipKind::Jmod),
+        ClasspathEntry::Jar(path) => index_zip_with_deps_cache(path, ZipKind::Jar, deps_store, stats),
+        ClasspathEntry::Jmod(path) => index_zip_with_deps_cache(path, ZipKind::Jmod, deps_store, stats),
     }
 }
 
@@ -438,7 +495,44 @@ fn read_module_info_from_zip(path: &Path, kind: ZipKind) -> Result<Option<Module
     Ok(None)
 }
 
-fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
+fn index_zip_with_deps_cache(
+    path: &Path,
+    kind: ZipKind,
+    deps_store: Option<&DependencyIndexStore>,
+    stats: Option<&IndexingStats>,
+) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
+    let Some(store) = deps_store else {
+        return index_zip(path, kind, stats);
+    };
+
+    let jar_sha256 = match nova_deps_cache::sha256_hex(path) {
+        Ok(sha) => sha,
+        Err(_) => {
+            // If hashing fails for any reason, fall back to parsing without
+            // caching (hashing reads the same underlying file).
+            return index_zip(path, kind, stats);
+        }
+    };
+
+    match store.try_load(&jar_sha256) {
+        Ok(Some(bundle)) => {
+            record_deps_cache_hit(stats);
+            return Ok(bundle.classes.into_iter().map(ClasspathClassStub::from).collect());
+        }
+        Ok(None) => {}
+        Err(_) => {}
+    }
+
+    let stubs = index_zip(path, kind, stats)?;
+
+    let bundle = bundle_from_classpath_stubs(jar_sha256, &stubs);
+    // Best-effort cache write; indexing should still succeed if persistence fails.
+    let _ = store.store(&bundle);
+
+    Ok(stubs)
+}
+
+fn index_zip(path: &Path, kind: ZipKind, stats: Option<&IndexingStats>) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
@@ -463,6 +557,7 @@ fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, Clas
 
                 let mut bytes = Vec::with_capacity(file.size() as usize);
                 file.read_to_end(&mut bytes)?;
+                record_parsed(stats);
                 let cf = ClassFile::parse(&bytes)?;
                 if is_ignored_class(&cf.this_class) {
                     continue;
@@ -518,6 +613,7 @@ fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, Clas
 
                 let mut bytes = Vec::with_capacity(file.size() as usize);
                 file.read_to_end(&mut bytes)?;
+                record_parsed(stats);
                 let cf = ClassFile::parse(&bytes)?;
                 if is_ignored_class(&cf.this_class) {
                     continue;
@@ -635,6 +731,117 @@ fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
     }
 }
 
+fn deps_field_stub(value: &ClasspathFieldStub) -> DepsFieldStub {
+    DepsFieldStub {
+        name: value.name.clone(),
+        descriptor: value.descriptor.clone(),
+        signature: value.signature.clone(),
+        access_flags: value.access_flags,
+        annotations: value.annotations.clone(),
+    }
+}
+
+fn deps_method_stub(value: &ClasspathMethodStub) -> DepsMethodStub {
+    DepsMethodStub {
+        name: value.name.clone(),
+        descriptor: value.descriptor.clone(),
+        signature: value.signature.clone(),
+        access_flags: value.access_flags,
+        annotations: value.annotations.clone(),
+    }
+}
+
+fn deps_class_stub(value: &ClasspathClassStub) -> DepsClassStub {
+    DepsClassStub {
+        binary_name: value.binary_name.clone(),
+        internal_name: value.internal_name.clone(),
+        access_flags: value.access_flags,
+        super_binary_name: value.super_binary_name.clone(),
+        interfaces: value.interfaces.clone(),
+        signature: value.signature.clone(),
+        annotations: value.annotations.clone(),
+        fields: value.fields.iter().map(deps_field_stub).collect(),
+        methods: value.methods.iter().map(deps_method_stub).collect(),
+    }
+}
+
+fn bundle_from_classpath_stubs(jar_sha256: String, stubs: &[ClasspathClassStub]) -> DependencyIndexBundle {
+    let mut classes: Vec<DepsClassStub> = stubs.iter().map(deps_class_stub).collect();
+    classes.sort_by(|a, b| a.binary_name.cmp(&b.binary_name));
+
+    let binary_names_sorted: Vec<String> = classes.iter().map(|c| c.binary_name.clone()).collect();
+
+    let mut packages = BTreeSet::new();
+    let mut package_prefixes = BTreeSet::new();
+    for name in &binary_names_sorted {
+        if let Some((pkg, _)) = name.rsplit_once('.') {
+            packages.insert(pkg.to_string());
+
+            let mut acc = String::new();
+            for (i, part) in pkg.split('.').enumerate() {
+                if i > 0 {
+                    acc.push('.');
+                }
+                acc.push_str(part);
+                package_prefixes.insert(acc.clone());
+            }
+        }
+    }
+
+    DependencyIndexBundle {
+        jar_sha256,
+        classes,
+        packages: packages.into_iter().collect(),
+        package_prefixes: package_prefixes.into_iter().collect(),
+        trigram_index: nova_deps_cache::build_trigram_index(&binary_names_sorted),
+        binary_names_sorted,
+    }
+}
+
+impl From<DepsFieldStub> for ClasspathFieldStub {
+    fn from(value: DepsFieldStub) -> Self {
+        Self {
+            name: value.name,
+            descriptor: value.descriptor,
+            signature: value.signature,
+            access_flags: value.access_flags,
+            annotations: value.annotations,
+        }
+    }
+}
+
+impl From<DepsMethodStub> for ClasspathMethodStub {
+    fn from(value: DepsMethodStub) -> Self {
+        Self {
+            name: value.name,
+            descriptor: value.descriptor,
+            signature: value.signature,
+            access_flags: value.access_flags,
+            annotations: value.annotations,
+        }
+    }
+}
+
+impl From<DepsClassStub> for ClasspathClassStub {
+    fn from(value: DepsClassStub) -> Self {
+        Self {
+            binary_name: value.binary_name,
+            internal_name: value.internal_name,
+            access_flags: value.access_flags,
+            super_binary_name: value.super_binary_name,
+            interfaces: value.interfaces,
+            signature: value.signature,
+            annotations: value.annotations,
+            fields: value.fields.into_iter().map(ClasspathFieldStub::from).collect(),
+            methods: value
+                .methods
+                .into_iter()
+                .map(ClasspathMethodStub::from)
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -667,9 +874,12 @@ mod tests {
     #[test]
     fn lookup_type_from_jar() {
         let tmp = TempDir::new().unwrap();
-        let index = ClasspathIndex::build(
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let index = ClasspathIndex::build_with_deps_store(
             &[ClasspathEntry::Jar(test_jar())],
             Some(tmp.path()),
+            Some(&deps_store),
+            None,
         )
         .unwrap();
 
@@ -693,21 +903,36 @@ mod tests {
 
     #[test]
     fn lookup_type_from_class_dir() {
-        let index =
-            ClasspathIndex::build(&[ClasspathEntry::ClassDir(test_class_dir())], None).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let index = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::ClassDir(test_class_dir())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
         assert!(index.lookup_binary("com.example.dep.Bar").is_some());
     }
 
     #[test]
     fn package_prefix_search() {
-        let index = ClasspathIndex::build(&[ClasspathEntry::Jar(test_jar())], None).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let index =
+            ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(test_jar())], None, Some(&deps_store), None)
+                .unwrap();
         let pkgs = index.packages_with_prefix("com.example");
         assert!(pkgs.contains(&"com.example.dep".to_string()));
     }
 
     #[test]
     fn lookup_type_from_jmod() {
-        let index = ClasspathIndex::build(&[ClasspathEntry::Jmod(test_jmod())], None).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let index =
+            ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jmod(test_jmod())], None, Some(&deps_store), None)
+                .unwrap();
         assert!(index.lookup_binary("java.lang.String").is_some());
         assert!(index.lookup_internal("java/lang/String").is_some());
         assert!(index.packages_with_prefix("java").contains(&"java.lang".to_string()));
@@ -715,7 +940,11 @@ mod tests {
 
     #[test]
     fn prefix_search_accepts_internal_separators() {
-        let index = ClasspathIndex::build(&[ClasspathEntry::Jar(test_jar())], None).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let index =
+            ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(test_jar())], None, Some(&deps_store), None)
+                .unwrap();
         let classes = index.class_names_with_prefix("com/example/dep/F");
         assert!(classes.contains(&"com.example.dep.Foo".to_string()));
         let packages = index.packages_with_prefix("com/example");
@@ -728,9 +957,10 @@ mod tests {
         let entry = ClasspathEntry::Jar(test_jar()).normalize().unwrap();
         let fingerprint = entry.fingerprint().unwrap();
 
-        let stubs_first =
-            persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || index_entry(&entry))
-                .unwrap();
+        let stubs_first = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
+            index_entry(&entry, None, None)
+        })
+        .unwrap();
         assert!(stubs_first.iter().any(|s| s.binary_name == "com.example.dep.Foo"));
 
         let stubs_cached = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
@@ -743,7 +973,11 @@ mod tests {
 
     #[test]
     fn resolve_type_returns_typename() {
-        let index = ClasspathIndex::build(&[ClasspathEntry::Jar(test_jar())], None).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let index =
+            ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(test_jar())], None, Some(&deps_store), None)
+                .unwrap();
         let ty = index
             .resolve_type(&QualifiedName::from_dotted("com.example.dep.Foo"))
             .unwrap();
@@ -804,16 +1038,97 @@ mod tests {
 
     #[test]
     fn indexes_multi_release_jar_versions_directory() {
-        let index =
-            ClasspathIndex::build(&[ClasspathEntry::Jar(test_multirelease_jar())], None).unwrap();
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let index = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_multirelease_jar())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
         assert!(index.lookup_binary("com.example.mr.MultiReleaseOnly").is_some());
     }
 
     #[test]
     fn ignores_versions_directory_without_multi_release_manifest() {
-        let index =
-            ClasspathIndex::build(&[ClasspathEntry::Jar(test_not_multirelease_jar())], None)
-                .unwrap();
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+        let index = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_not_multirelease_jar())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
         assert!(index.lookup_binary("com.example.mr.MultiReleaseOnly").is_none());
+    }
+
+    #[test]
+    fn dependency_bundle_is_reused_across_runs() {
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+
+        let stats_first = IndexingStats::default();
+        let _ = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            Some(&stats_first),
+        )
+        .unwrap();
+
+        assert!(stats_first.classfiles_parsed() > 0);
+        assert_eq!(stats_first.deps_cache_hits(), 0);
+
+        let sha = nova_deps_cache::sha256_hex(&test_jar()).unwrap();
+        assert!(deps_store.bundle_path(&sha).exists());
+
+        let stats_second = IndexingStats::default();
+        let _ = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            Some(&stats_second),
+        )
+        .unwrap();
+
+        assert_eq!(stats_second.classfiles_parsed(), 0);
+        assert_eq!(stats_second.deps_cache_hits(), 1);
+    }
+
+    #[test]
+    fn corrupted_bundle_is_ignored_and_rebuilt() {
+        let tmp = TempDir::new().unwrap();
+        let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+
+        let stats_first = IndexingStats::default();
+        let _ = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            Some(&stats_first),
+        )
+        .unwrap();
+
+        let sha = nova_deps_cache::sha256_hex(&test_jar()).unwrap();
+        let bundle_path = deps_store.bundle_path(&sha);
+        assert!(bundle_path.exists());
+
+        let file = std::fs::OpenOptions::new().write(true).open(&bundle_path).unwrap();
+        file.set_len(10).unwrap();
+
+        let stats_second = IndexingStats::default();
+        let _ = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            Some(&stats_second),
+        )
+        .unwrap();
+
+        assert!(stats_second.classfiles_parsed() > 0);
+        assert_eq!(stats_second.deps_cache_hits(), 0);
+        assert!(deps_store.try_load(&sha).unwrap().is_some());
     }
 }

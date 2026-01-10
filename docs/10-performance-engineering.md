@@ -486,6 +486,25 @@ nova cache fetch <project-root> https://example.com/nova-cache.tar.zst
     path: nova-cache.tar.zst
 ```
 
+### Shared dependency indexes (global)
+
+Project caches alone still waste work: Maven Central/JDK dependencies are shared across many workspaces and re-indexing them per project is unnecessary. Nova maintains a **global dependency index store** keyed by the dependency artifact's **content hash**:
+
+```
+~/.nova/cache/deps/<sha256>/classpath.idx
+```
+
+Each bundle contains:
+- Class stubs (methods/fields/descriptors/signatures/annotations)
+- Package listing and package-prefix index
+- Optional trigram index for fuzzy class name lookup
+
+Bundles are written atomically and guarded by a lockfile to avoid corruption when multiple Nova processes index the same JAR concurrently.
+
+CLI helpers:
+- `nova deps index <jar>` (prebuild a bundle)
+- `nova deps pack <out.tar.gz>` / `nova deps install <archive.tar.gz>` (team/CI sharing)
+
 ### Cache Versioning
 
 ```rust

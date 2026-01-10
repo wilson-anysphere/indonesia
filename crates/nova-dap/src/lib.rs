@@ -11,6 +11,7 @@ pub mod server;
 
 /// Nova-specific "debugger excellence" extensions.
 pub mod hot_swap;
+/// Re-exports of the JDWP client facade consumed by debugger-adjacent integrations (e.g. LSP).
 pub mod jdwp;
 pub mod smart_step_into;
 
@@ -25,11 +26,6 @@ pub mod error;
 pub mod format;
 pub mod object_registry;
 pub mod session;
-
-/// Re-export the JDWP client façade consumed by debugger-adjacent integrations (e.g. LSP).
-pub mod jdwp {
-    pub use nova_jdwp::*;
-}
 
 pub use crate::dap::types::{EvaluateResult, OutputEvent, Scope, Variable, VariablePresentationHint};
 pub use crate::error::{DebugError, DebugResult};

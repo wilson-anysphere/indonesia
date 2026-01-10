@@ -13,6 +13,7 @@ fn help_mentions_core_commands() {
         predicate::str::contains("index")
             .and(predicate::str::contains("diagnostics"))
             .and(predicate::str::contains("symbols"))
+            .and(predicate::str::contains("deps"))
             .and(predicate::str::contains("cache"))
             .and(predicate::str::contains("perf"))
             .and(predicate::str::contains("parse")),

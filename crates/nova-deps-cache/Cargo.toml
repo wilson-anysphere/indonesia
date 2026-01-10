@@ -1,0 +1,21 @@
+[package]
+name = "nova-deps-cache"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+flate2 = "1"
+fs2 = "0.4"
+hex = "0.4"
+rkyv = { version = "0.7", features = ["validation"] }
+sha2 = "0.10"
+tar = "0.4"
+thiserror = "1"
+walkdir = "2.5"
+
+nova-cache = { path = "../nova-cache" }
+nova-storage = { path = "../nova-storage" }
+
+[dev-dependencies]
+tempfile = "3"
