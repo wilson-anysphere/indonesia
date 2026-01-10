@@ -16,6 +16,29 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
 6. [0006 — Path/URI normalization and virtual document schemes](adr/0006-uri-normalization.md)
 7. [0007 — Crate boundaries and dependency policy](adr/0007-crate-boundaries-and-dependencies.md)
 
+## Where to look in code
+
+The ADRs are normative; these pointers are only meant to make it easy to find the current implementations.
+
+- **ADR 0001 (Salsa / incremental engine)**:
+  - `crates/nova-db/src/salsa.rs` — `ra_ap_salsa` query groups, snapshots, cancellation checkpoints
+- **ADR 0002 (Rowan syntax trees)**:
+  - `crates/nova-syntax/` — parser/lexer + `rowan` integration (`syntax_kind.rs`, `parser.rs`, `ast.rs`)
+- **ADR 0003 (LSP/DAP transport)**:
+  - `crates/nova-lsp/` — current LSP binary + JSON-RPC framing helpers
+  - `crates/nova-dap/src/dap/codec.rs` — DAP `Content-Length` framing
+- **ADR 0004 (Concurrency model)**:
+  - `crates/nova-scheduler/` — Tokio + Rayon orchestration patterns and cancellation primitives
+- **ADR 0005 (Persistence)**:
+  - `crates/nova-storage/` — validated `rkyv` archives + mmap support
+  - `crates/nova-index/src/persistence.rs` — index load/save built on `nova-storage`
+  - `crates/nova-cache/` — small derived caches (currently `serde`/`bincode`)
+- **ADR 0006 (URIs / document identity)**:
+  - `crates/nova-core/src/path.rs` — `file:` URI <-> path conversion and normalization
+  - `crates/nova-vfs/src/path.rs` and `crates/nova-vfs/src/archive.rs` — VFS path model (local + jar/jmod)
+- **ADR 0007 (crate boundaries)**:
+  - `Cargo.toml` workspace members + `crates/` tree
+
 ## Current repo status vs ADRs
 
 This repository contains working code **and** forward-looking design docs. Some subsystems are still scaffolding and may not yet match the ADR decisions. The intent is:

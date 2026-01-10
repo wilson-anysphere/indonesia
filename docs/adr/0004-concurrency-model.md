@@ -53,6 +53,18 @@ Adopt a **snapshot reads + single-writer updates** model.
 - Tokens are passed down to long-running operations and checked at boundaries.
 - Salsa queries remain pure; cancellation must not become an implicit input to queries.
 
+#### Interaction with Salsa cancellation
+
+Salsa provides a cooperative cancellation mechanism:
+
+- query implementations should call `db.unwind_if_cancelled()` at well-defined checkpoints,
+- the writer path can request cancellation by issuing a (synthetic) write, causing other threads to unwind.
+
+In this repository, the Salsa database in `crates/nova-db` exposes `QueryDatabase::request_cancellation()` to trigger that behavior. Protocol-layer cancellation (e.g., `$/cancelRequest`) should generally:
+
+1. mark the request’s cancellation token, and
+2. request Salsa cancellation so in-flight queries unwind promptly.
+
 ## Alternatives considered
 
 ### A. Fully actor-based server (single-threaded DB + message passing)

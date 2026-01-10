@@ -45,12 +45,16 @@ Implement a small **Nova-owned DAP message loop** (Content-Length framed JSON me
 ### Cancellation strategy
 
 - LSP cancellation:
-  - implement `$/cancelRequest` by associating a `CancellationToken` with each in-flight request,
+  - implement `$/cancelRequest` by associating a cancellation token with each in-flight request,
   - request handlers MUST check cancellation at well-defined boundaries (before heavy work, between phases, inside loops over files),
   - if cancelled, return JSON-RPC error `RequestCancelled`.
 - DAP cancellation:
   - implement DAP `cancel` request similarly for long-running operations (e.g., evaluate, stackTrace in huge frames),
   - background JDWP work is also cancellable via the same token mechanism.
+
+Implementation note:
+
+- Prefer `tokio_util::sync::CancellationToken` as the shared token type (already re-exported by `crates/nova-scheduler`).
 
 ## Alternatives considered
 
