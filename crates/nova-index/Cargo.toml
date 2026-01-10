@@ -1,0 +1,15 @@
+[package]
+name = "nova-index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bincode = "1"
+nova-cache = { path = "../nova-cache" }
+nova-core = { path = "../nova-core" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
+

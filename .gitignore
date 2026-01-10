@@ -2,6 +2,10 @@
 **/target/
 .DS_Store
 
+# Editor junk
+**/*.swp
+**/*.swo
+
 # Cargo lockfiles are kept local for faster iteration.
 Cargo.lock
 

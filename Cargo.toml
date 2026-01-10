@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/nova-core",
+    "crates/nova-cache",
+    "crates/nova-index",
     "crates/nova-framework",
     "crates/nova-framework-jpa",
     "crates/nova-project",

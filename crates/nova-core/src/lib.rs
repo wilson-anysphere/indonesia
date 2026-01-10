@@ -4,6 +4,11 @@
 
 use std::fmt;
 
+/// The current Nova version.
+///
+/// Used for on-disk cache compatibility checks (indexes, caches, metadata).
+pub const NOVA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// 1-based line number in a source file.
 ///
 /// Nova uses different coordinate systems depending on the integration point:
