@@ -37,7 +37,7 @@ fn infer_simple_identity() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(res) = resolve_method_call(&env, &call) else {
+    let MethodResolution::Found(res) = resolve_method_call(&mut env, &call) else {
         panic!("expected method resolution success");
     };
     assert_eq!(res.inferred_type_args, vec![Type::class(string, vec![])]);
@@ -78,7 +78,7 @@ fn infer_from_return_context() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(res) = resolve_method_call(&env, &call) else {
+    let MethodResolution::Found(res) = resolve_method_call(&mut env, &call) else {
         panic!("expected method resolution success");
     };
     assert_eq!(res.inferred_type_args, vec![Type::class(string, vec![])]);
@@ -117,7 +117,7 @@ fn inferred_type_respects_bounds() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(res) = resolve_method_call(&env, &call) else {
+    let MethodResolution::Found(res) = resolve_method_call(&mut env, &call) else {
         panic!("expected method resolution success");
     };
     assert_eq!(res.inferred_type_args, vec![Type::class(integer, vec![])]);

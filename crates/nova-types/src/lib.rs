@@ -541,15 +541,26 @@ impl TypeStore {
             type_params: vec![list_e],
             super_class: None,
             interfaces: vec![],
-            methods: vec![MethodDef {
-                name: "get".to_string(),
-                type_params: vec![],
-                params: vec![Type::Primitive(PrimitiveType::Int)],
-                return_type: Type::TypeVar(list_e),
-                is_static: false,
-                is_varargs: false,
-                is_abstract: true,
-            }],
+            methods: vec![
+                MethodDef {
+                    name: "get".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::Primitive(PrimitiveType::Int)],
+                    return_type: Type::TypeVar(list_e),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                },
+                MethodDef {
+                    name: "add".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::TypeVar(list_e)],
+                    return_type: Type::Primitive(PrimitiveType::Boolean),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: true,
+                },
+            ],
         });
 
         // java.util.ArrayList<E> implements List<E>
@@ -1361,15 +1372,17 @@ enum MethodPhase {
     Varargs,
 }
 
-pub fn resolve_method_call(env: &dyn TypeEnv, call: &MethodCall<'_>) -> MethodResolution {
+pub fn resolve_method_call(env: &mut TypeStore, call: &MethodCall<'_>) -> MethodResolution {
     let mut receiver = call.receiver.clone();
     if let Type::Named(name) = &receiver {
         if let Some(id) = env.lookup_class(name) {
             receiver = Type::class(id, vec![]);
         }
     }
+    receiver = env.capture_conversion(&receiver);
 
-    let candidates = collect_method_candidates(env, &receiver, call.name);
+    let env_ro: &TypeStore = &*env;
+    let candidates = collect_method_candidates(env_ro, &receiver, call.name);
 
     if candidates.is_empty() {
         return MethodResolution::NotFound;
@@ -1378,14 +1391,14 @@ pub fn resolve_method_call(env: &dyn TypeEnv, call: &MethodCall<'_>) -> MethodRe
     for phase in [MethodPhase::Strict, MethodPhase::Loose, MethodPhase::Varargs] {
         let applicable: Vec<ResolvedMethod> = candidates
             .iter()
-            .filter_map(|cand| check_applicability(env, cand, call, phase))
+            .filter_map(|cand| check_applicability(env_ro, cand, call, phase))
             .collect();
 
         if applicable.is_empty() {
             continue;
         }
 
-        return match most_specific(env, &applicable, call.args.len()) {
+        return match most_specific(env_ro, &applicable, call.args.len()) {
             Some(best) => MethodResolution::Found(best.clone()),
             None => MethodResolution::Ambiguous(applicable),
         };
@@ -2249,7 +2262,7 @@ pub enum Expr {
     },
 }
 
-pub fn type_of(env: &dyn TypeEnv, expr: &Expr) -> Type {
+pub fn type_of(env: &mut TypeStore, expr: &Expr) -> Type {
     match expr {
         Expr::Null => Type::Null,
         Expr::Int(_) => Type::Primitive(PrimitiveType::Int),
@@ -2392,7 +2405,7 @@ mod tests {
             explicit_type_args: vec![],
         };
 
-        let MethodResolution::Found(found) = resolve_method_call(&env, &call) else {
+        let MethodResolution::Found(found) = resolve_method_call(&mut env, &call) else {
             panic!("expected method to be resolved");
         };
         assert_eq!(found.params, vec![Type::class(string, vec![])]);
