@@ -206,6 +206,13 @@ pub fn move_package(
     files: &BTreeMap<PathBuf, String>,
     params: MovePackageParams,
 ) -> Result<RefactoringEdit, RefactorError> {
+    nova_project::validate_package_name(&params.old_package).map_err(|e| {
+        RefactorError::IllegalPackageName {
+            package: params.old_package.clone(),
+            reason: e.to_string(),
+        }
+    })?;
+
     nova_project::validate_package_name(&params.new_package).map_err(|e| {
         RefactorError::IllegalPackageName {
             package: params.new_package.clone(),
