@@ -38,6 +38,7 @@ nova diagnostics <path> --json
 # Workspace symbol search (defaults to current directory)
 nova symbols <query>
 nova symbols <query> --path <workspace>
+nova symbols <query> --limit 50
 
 # Cache management
 nova cache status
