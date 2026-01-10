@@ -11,6 +11,7 @@ walkdir = "2.5.0"
 serde = { version = "1", features = ["derive"] }
 nova-config = { path = "../nova-config" }
 nova-modules = { path = "../nova-modules" }
+nova-syntax = { path = "../nova-syntax" }
 
 [dev-dependencies]
 tempfile = "3.10.1"

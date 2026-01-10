@@ -132,6 +132,7 @@ fn applicability_detects_spring_via_classpath_marker() {
         build_system: BuildSystem::Simple,
         java: JavaConfig::default(),
         modules: vec![],
+        jpms_modules: vec![],
         source_roots: vec![],
         module_path: vec![],
         classpath: vec![ClasspathEntry {

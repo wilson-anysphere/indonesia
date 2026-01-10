@@ -2,7 +2,6 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use regex::Regex;
-use nova_modules::ModuleName;
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
@@ -20,10 +19,11 @@ pub(crate) fn load_gradle_project(
         .find(|p| p.is_file());
 
     let module_names = if let Some(settings_path) = settings_path {
-        let contents = std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
-            path: settings_path.clone(),
-            source,
-        })?;
+        let contents =
+            std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
+                path: settings_path.clone(),
+                source,
+            })?;
         parse_gradle_settings_modules(&contents)
     } else {
         vec![".".to_string()]
@@ -55,14 +55,24 @@ pub(crate) fn load_gradle_project(
         };
 
         modules.push(Module {
-            name: ModuleName::new(module_display_name),
+            name: module_display_name,
             root: module_root.clone(),
         });
 
         let _module_java = parse_gradle_java_config(&module_root).unwrap_or(root_java);
 
-        push_source_root(&mut source_roots, &module_root, SourceRootKind::Main, "src/main/java");
-        push_source_root(&mut source_roots, &module_root, SourceRootKind::Test, "src/test/java");
+        push_source_root(
+            &mut source_roots,
+            &module_root,
+            SourceRootKind::Main,
+            "src/main/java",
+        );
+        push_source_root(
+            &mut source_roots,
+            &module_root,
+            SourceRootKind::Test,
+            "src/test/java",
+        );
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             &module_root,
@@ -92,7 +102,6 @@ pub(crate) fn load_gradle_project(
 
         // Dependency extraction is best-effort; useful for later external jar resolution.
         dependencies.extend(parse_gradle_dependencies(&module_root));
-
     }
 
     // Add user-provided classpath entries for unresolved dependencies (Gradle).
@@ -113,11 +122,14 @@ pub(crate) fn load_gradle_project(
     sort_dedup_classpath(&mut classpath);
     sort_dedup_dependencies(&mut dependencies);
 
+    let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
+
     Ok(ProjectConfig {
         workspace_root: root.to_path_buf(),
         build_system: BuildSystem::Gradle,
         java: root_java,
         modules,
+        jpms_modules,
         source_roots,
         module_path,
         classpath,

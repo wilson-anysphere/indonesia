@@ -10,6 +10,7 @@ mod bazel;
 mod discover;
 mod generated;
 mod gradle;
+mod jpms;
 mod maven;
 mod model;
 pub mod package;

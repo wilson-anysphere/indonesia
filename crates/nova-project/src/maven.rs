@@ -2,14 +2,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use regex::Regex;
-use nova_modules::ModuleName;
-
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaVersion, Module,
     OutputDir, OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
+use regex::Regex;
 
 pub(crate) fn load_maven_project(
     root: &Path,
@@ -54,7 +52,9 @@ pub(crate) fn load_maven_project(
         };
 
         let effective = EffectivePom::from_raw(&module_pom, Some(&parent_effective));
-        let module_java = effective.java.unwrap_or(parent_effective.java.unwrap_or_default());
+        let module_java = effective
+            .java
+            .unwrap_or(parent_effective.java.unwrap_or_default());
 
         let module_display_name = if module_name == "." {
             root_pom
@@ -66,13 +66,23 @@ pub(crate) fn load_maven_project(
         };
 
         modules.push(Module {
-            name: ModuleName::new(module_display_name),
+            name: module_display_name,
             root: module_root.clone(),
         });
 
         // Maven standard source layout.
-        push_source_root(&mut source_roots, &module_root, SourceRootKind::Main, "src/main/java");
-        push_source_root(&mut source_roots, &module_root, SourceRootKind::Test, "src/test/java");
+        push_source_root(
+            &mut source_roots,
+            &module_root,
+            SourceRootKind::Main,
+            "src/main/java",
+        );
+        push_source_root(
+            &mut source_roots,
+            &module_root,
+            SourceRootKind::Test,
+            "src/test/java",
+        );
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             &module_root,
@@ -133,11 +143,14 @@ pub(crate) fn load_maven_project(
     sort_dedup_classpath(&mut classpath);
     sort_dedup_dependencies(&mut dependencies);
 
+    let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
+
     Ok(ProjectConfig {
         workspace_root: root.to_path_buf(),
         build_system: BuildSystem::Maven,
         java,
         modules,
+        jpms_modules,
         source_roots,
         module_path,
         classpath,
@@ -194,9 +207,7 @@ impl EffectivePom {
             .or_else(|| raw.parent.as_ref().and_then(|p| p.version.clone()))
             .or_else(|| parent.and_then(|p| p.version.clone()));
 
-        let mut properties = parent
-            .map(|p| p.properties.clone())
-            .unwrap_or_default();
+        let mut properties = parent.map(|p| p.properties.clone()).unwrap_or_default();
         properties.extend(raw.properties.clone());
 
         if let Some(v) = group_id.as_ref() {
@@ -428,7 +439,10 @@ fn resolve_placeholders(text: &str, props: &BTreeMap<String, String>) -> String 
 
     re.replace_all(text, |caps: &regex::Captures<'_>| {
         let key = &caps[1];
-        props.get(key).cloned().unwrap_or_else(|| caps[0].to_string())
+        props
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| caps[0].to_string())
     })
     .into_owned()
 }

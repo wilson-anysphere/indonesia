@@ -103,8 +103,20 @@ pub struct Dependency {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Module {
+    /// Human-friendly (build-tool) module name, e.g. Maven artifact ID / Gradle project name.
+    ///
+    /// This is **not** the JPMS module name from `module-info.java`. For JPMS module
+    /// roots, see [`JpmsModuleRoot`].
+    pub name: String,
+    pub root: PathBuf,
+}
+
+/// A JPMS module root discovered in the workspace (i.e. it has a `module-info.java`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct JpmsModuleRoot {
     pub name: ModuleName,
     pub root: PathBuf,
+    pub module_info: PathBuf,
 }
 
 /// An aggregated view of the workspace's build configuration.
@@ -115,6 +127,8 @@ pub struct ProjectConfig {
     pub java: JavaConfig,
 
     pub modules: Vec<Module>,
+    /// JPMS module roots within this workspace.
+    pub jpms_modules: Vec<JpmsModuleRoot>,
 
     pub source_roots: Vec<SourceRoot>,
     /// JPMS module-path entries (Java 9+). Dependencies here may be resolved as named modules.

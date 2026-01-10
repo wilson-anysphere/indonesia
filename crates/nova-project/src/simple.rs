@@ -5,7 +5,6 @@ use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, ProjectConfig, SourceRoot,
     SourceRootKind, SourceRootOrigin,
 };
-use nova_modules::ModuleName;
 
 pub(crate) fn load_simple_project(
     root: &Path,
@@ -56,20 +55,22 @@ pub(crate) fn load_simple_project(
     classpath.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
     classpath.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
 
+    let modules = vec![Module {
+        name: root
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("root")
+            .to_string(),
+        root: root.to_path_buf(),
+    }];
+    let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
+
     Ok(ProjectConfig {
         workspace_root: root.to_path_buf(),
         build_system: BuildSystem::Simple,
         java: JavaConfig::default(),
-        modules: vec![Module {
-            name: ModuleName::new(
-                root
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("root")
-                .to_string(),
-            ),
-            root: root.to_path_buf(),
-        }],
+        modules,
+        jpms_modules,
         source_roots,
         module_path: Vec::new(),
         classpath,
