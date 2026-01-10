@@ -83,3 +83,7 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
         _ => handle_custom_request(method, params),
     }
 }
+
+pub mod refactor;
+
+pub use refactor::{safe_delete_code_action, RefactorResponse};

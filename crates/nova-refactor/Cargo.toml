@@ -1,0 +1,12 @@
+[package]
+name = "nova-refactor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nova-index = { path = "../nova-index" }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+
+[dev-dependencies]
+pretty_assertions = "1.4"
