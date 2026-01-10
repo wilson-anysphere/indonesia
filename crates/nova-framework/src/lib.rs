@@ -3,6 +3,7 @@
 //! Framework analyzers (Spring, Lombok, etc.) augment core resolution by
 //! providing additional members and metadata that are generated at compile time.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use nova_hir::framework::ClassData;
@@ -122,18 +123,52 @@ impl Database for MemoryDatabase {
     }
 
     fn has_class_on_classpath(&self, project: ProjectId, binary_name: &str) -> bool {
-        self.classpath_classes
-            .get(&project)
-            .map(|classes| classes.contains(binary_name))
-            .unwrap_or(false)
+        let Some(classes) = self.classpath_classes.get(&project) else {
+            return false;
+        };
+
+        if classes.contains(binary_name) {
+            return true;
+        }
+
+        // Be tolerant of callers mixing Java binary names (`java.lang.String`) and
+        // JVM internal names (`java/lang/String`).
+        if let Some(alt) = normalize_name_separators(binary_name) {
+            if classes.contains(alt.as_ref()) {
+                return true;
+            }
+        }
+
+        false
     }
 
     fn has_class_on_classpath_prefix(&self, project: ProjectId, prefix: &str) -> bool {
-        self.classpath_classes
-            .get(&project)
-            .map(|classes| classes.iter().any(|name| name.starts_with(prefix)))
-            .unwrap_or(false)
+        let Some(classes) = self.classpath_classes.get(&project) else {
+            return false;
+        };
+
+        if classes.iter().any(|name| name.starts_with(prefix)) {
+            return true;
+        }
+
+        if let Some(alt) = normalize_name_separators(prefix) {
+            if classes.iter().any(|name| name.starts_with(alt.as_ref())) {
+                return true;
+            }
+        }
+
+        false
     }
+}
+
+fn normalize_name_separators(value: &str) -> Option<Cow<'_, str>> {
+    if value.contains('/') {
+        return Some(Cow::Owned(value.replace('/', ".")));
+    }
+    if value.contains('.') {
+        return Some(Cow::Owned(value.replace('.', "/")));
+    }
+    None
 }
 
 /// Virtual members provided by a framework analyzer (e.g. Lombok).

@@ -1,5 +1,5 @@
 use nova_framework::{
-    AnalyzerRegistry, CompletionContext, FrameworkAnalyzer, FrameworkData, InlayHint,
+    AnalyzerRegistry, CompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer, FrameworkData, InlayHint,
     MemoryDatabase, NavigationTarget, OtherFrameworkData, Symbol, VirtualField, VirtualMember,
 };
 use nova_hir::framework::ClassData;
@@ -145,4 +145,18 @@ fn aggregates_only_applicable_analyzers() {
 
     let data = registry.framework_data(&db, file_a);
     assert_eq!(data.len(), 2);
+}
+
+#[test]
+fn classpath_queries_accept_internal_and_binary_names() {
+    let mut db = MemoryDatabase::new();
+    let project = db.add_project();
+
+    db.add_classpath_class(project, "org.example.Foo");
+
+    assert!(FrameworkDatabase::has_class_on_classpath(&db, project, "org.example.Foo"));
+    assert!(FrameworkDatabase::has_class_on_classpath(&db, project, "org/example/Foo"));
+
+    assert!(FrameworkDatabase::has_class_on_classpath_prefix(&db, project, "org.example."));
+    assert!(FrameworkDatabase::has_class_on_classpath_prefix(&db, project, "org/example/"));
 }
