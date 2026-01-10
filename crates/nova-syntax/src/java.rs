@@ -782,6 +782,17 @@ impl Parser {
                             | "strictfp"
                     )
             }) {
+                if self.at_keyword("non")
+                    && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Minus)
+                    && self
+                        .peek_n(2)
+                        .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "sealed")
+                {
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    continue;
+                }
                 if self.at_keyword("static") && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LBrace) {
                     break;
                 }

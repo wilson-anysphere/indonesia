@@ -367,3 +367,21 @@ class Foo {
     assert!(call_paths.iter().any(|path| path == "System.out.println"));
     assert!(body.exprs.iter().any(|(_, expr)| matches!(expr, Expr::Name { name, .. } if name == "args")));
 }
+
+#[test]
+fn lower_non_sealed_class() {
+    let source = "non-sealed class Foo {}";
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.items.len(), 1);
+    let class_id = match tree.items[0] {
+        nova_hir::item_tree::Item::Class(id) => id,
+        _ => panic!("expected class item"),
+    };
+    assert_eq!(tree.class(class_id).name, "Foo");
+}
