@@ -11,6 +11,7 @@
 mod analysis;
 mod applicability;
 mod completions;
+mod config;
 
 pub use analysis::{
     analyze_java_sources, AnalysisResult, Bean, BeanKind, BeanModel, InjectionKind, InjectionPoint,
@@ -20,6 +21,13 @@ pub use analysis::{
 pub use applicability::is_spring_applicable;
 pub use completions::{
     profile_completions, property_keys_from_configs, qualifier_completions, value_completions,
+};
+
+pub use config::{
+    completions_for_value_placeholder, diagnostics_for_config_file,
+    goto_definition_for_value_placeholder, ConfigLocation, SpringWorkspaceIndex,
+    SPRING_CONFIG_TYPE_MISMATCH, SPRING_DEPRECATED_CONFIG_KEY, SPRING_DUPLICATE_CONFIG_KEY,
+    SPRING_UNKNOWN_CONFIG_KEY,
 };
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};

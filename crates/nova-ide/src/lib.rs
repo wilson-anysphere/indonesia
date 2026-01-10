@@ -26,3 +26,11 @@ pub use project::{
 };
 
 pub use code_intelligence::*;
+/// Spring-specific configuration helpers (config file parsing, metadata lookup,
+/// and `@Value("${...}")` completions/navigation).
+pub mod spring {
+    pub use nova_framework_spring::{
+        completions_for_value_placeholder, diagnostics_for_config_file,
+        goto_definition_for_value_placeholder, SpringWorkspaceIndex,
+    };
+}

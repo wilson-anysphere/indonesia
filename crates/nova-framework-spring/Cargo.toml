@@ -11,6 +11,9 @@ nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
 nova-resolve = { path = "../nova-resolve" }
 nova-types = { path = "../nova-types" }
+nova-config-metadata = { path = "../nova-config-metadata" }
+nova-properties = { path = "../nova-properties" }
+nova-yaml = { path = "../nova-yaml" }
 
 tree-sitter = "0.20"
 tree-sitter-java = "0.20"
