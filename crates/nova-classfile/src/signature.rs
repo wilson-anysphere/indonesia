@@ -418,4 +418,62 @@ mod tests {
             Some(TypeSignature::TypeVariable("U".to_string()))
         );
     }
+
+    #[test]
+    fn parse_method_signature_with_throws() {
+        let sig = parse_method_signature("<T:Ljava/lang/Throwable;>()V^TT;").unwrap();
+        assert_eq!(sig.type_parameters.len(), 1);
+        assert_eq!(sig.type_parameters[0].name, "T");
+        assert!(sig.parameters.is_empty());
+        assert!(sig.return_type.is_none());
+        assert_eq!(sig.throws, vec![TypeSignature::TypeVariable("T".into())]);
+    }
+
+    #[test]
+    fn parse_class_type_signature_with_inner_segments_and_wildcards() {
+        let ty = parse_field_signature(
+            "Ljava/util/Map<Ljava/lang/String;Ljava/lang/Integer;>.Entry<*>;",
+        )
+        .unwrap();
+        let TypeSignature::Class(ct) = ty else {
+            panic!("expected class type signature");
+        };
+        assert_eq!(ct.internal_name(), "java/util/Map$Entry");
+        assert_eq!(ct.package, vec![String::from("java"), String::from("util")]);
+        assert_eq!(ct.segments.len(), 2);
+        assert_eq!(ct.segments[0].name, "Map");
+        assert_eq!(ct.segments[0].type_arguments.len(), 2);
+        assert_eq!(ct.segments[1].name, "Entry");
+        assert_eq!(ct.segments[1].type_arguments, vec![TypeArgument::Any]);
+    }
+
+    #[test]
+    fn parse_class_type_signature_with_variance() {
+        let ty = parse_field_signature("Ljava/util/List<+Ljava/lang/Number;>;").unwrap();
+        let TypeSignature::Class(ct) = ty else {
+            panic!("expected class type signature");
+        };
+        assert_eq!(ct.internal_name(), "java/util/List");
+        assert_eq!(ct.segments.len(), 1);
+        assert_eq!(ct.segments[0].type_arguments.len(), 1);
+        let TypeArgument::Extends(inner) = &ct.segments[0].type_arguments[0] else {
+            panic!("expected extends type argument");
+        };
+        let TypeSignature::Class(inner) = inner.as_ref() else {
+            panic!("expected class type");
+        };
+        assert_eq!(inner.internal_name(), "java/lang/Number");
+
+        let ty = parse_field_signature("Ljava/util/List<-Ljava/lang/Number;>;").unwrap();
+        let TypeSignature::Class(ct) = ty else {
+            panic!("expected class type signature");
+        };
+        let TypeArgument::Super(inner) = &ct.segments[0].type_arguments[0] else {
+            panic!("expected super type argument");
+        };
+        let TypeSignature::Class(inner) = inner.as_ref() else {
+            panic!("expected class type");
+        };
+        assert_eq!(inner.internal_name(), "java/lang/Number");
+    }
 }
