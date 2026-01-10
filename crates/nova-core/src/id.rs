@@ -36,6 +36,7 @@ macro_rules! define_id {
 
 define_id!(FileId);
 define_id!(ProjectId);
+define_id!(SourceRootId);
 define_id!(ModuleId);
 
 define_id!(TypeId);

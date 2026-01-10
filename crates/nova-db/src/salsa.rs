@@ -31,7 +31,7 @@ use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
 use nova_project::ProjectConfig;
 use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
 
-use crate::{FileId, ProjectId};
+use crate::{FileId, ProjectId, SourceRootId};
 
 /// The parsed syntax tree type exposed by the database.
 pub type SyntaxTree = GreenNode;
@@ -68,6 +68,13 @@ pub trait NovaInputs: ra_salsa::Database {
     /// Per-project configuration input (classpath, source roots, language level, ...).
     #[ra_salsa::input]
     fn project_config(&self, project: ProjectId) -> Arc<ProjectConfig>;
+
+    /// Source root identifier for a file.
+    ///
+    /// This is typically assigned by the workspace/project loader after mapping
+    /// `FileId` to a `ProjectConfig` source root.
+    #[ra_salsa::input]
+    fn source_root(&self, file: FileId) -> SourceRootId;
 }
 
 #[ra_salsa::query_group(NovaSyntaxStorage)]
@@ -430,11 +437,16 @@ impl Database {
         let text = Arc::new(text.into());
         let mut db = self.inner.write();
         db.set_file_exists(file, true);
+        db.set_source_root(file, SourceRootId::from_raw(0));
         db.set_file_content(file, text);
     }
 
     pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
         self.inner.write().set_project_config(project, config);
+    }
+
+    pub fn set_source_root(&self, file: FileId, root: SourceRootId) {
+        self.inner.write().set_source_root(file, root);
     }
 }
 

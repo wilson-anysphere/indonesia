@@ -17,7 +17,7 @@ use std::sync::Arc;
 use nova_cache::{
     AstArtifactCache, CacheConfig, CacheDir, CacheError, FileAstArtifacts, Fingerprint,
 };
-pub use nova_core::{FileId, ProjectId};
+pub use nova_core::{FileId, ProjectId, SourceRootId};
 use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
 use nova_syntax::{parse as syntax_parse, ParseResult};
 
