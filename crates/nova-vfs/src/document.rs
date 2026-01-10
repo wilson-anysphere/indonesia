@@ -1,6 +1,6 @@
 use std::fmt;
 
-use nova_core::{Position, Range, TextEdit};
+use nova_core::{Position, Range, TextEdit, TextRange, TextSize};
 
 /// An LSP-style content change.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,10 +93,7 @@ impl Document {
             Some(range) => (*range, change.text.clone()),
             None => {
                 let end = self.end_position();
-                (
-                    Range::new(Position::new(0, 0), end),
-                    change.text.clone(),
-                )
+                (Range::new(Position::new(0, 0), end), change.text.clone())
             }
         };
 
@@ -109,7 +106,12 @@ impl Document {
         self.text.replace_range(start..end, &replacement);
         self.line_offsets = compute_line_offsets(&self.text);
 
-        Ok(TextEdit::new(range, replacement))
+        let start = u32::try_from(start).map_err(|_| DocumentError::InvalidRange)?;
+        let end = u32::try_from(end).map_err(|_| DocumentError::InvalidRange)?;
+        Ok(TextEdit::new(
+            TextRange::new(TextSize::from(start), TextSize::from(end)),
+            replacement,
+        ))
     }
 
     fn end_position(&self) -> Position {
@@ -200,8 +202,11 @@ mod tests {
         assert_eq!(doc.text(), "hello nova\n");
         assert_eq!(doc.version(), 2);
         assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].range, range);
-        assert_eq!(edits[0].new_text, "nova");
+        assert_eq!(
+            edits[0].range,
+            TextRange::new(TextSize::from(6), TextSize::from(11))
+        );
+        assert_eq!(edits[0].replacement, "nova");
     }
 
     #[test]
@@ -214,7 +219,7 @@ mod tests {
         assert_eq!(edits.len(), 1);
         assert_eq!(
             edits[0].range,
-            Range::new(Position::new(0, 0), Position::new(2, 0))
+            TextRange::new(TextSize::from(0), TextSize::from(4))
         );
     }
 

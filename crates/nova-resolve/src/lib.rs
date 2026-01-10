@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use nova_core::{Name, PackageId, PackageName, QualifiedName, StaticMemberId, TypeId, TypeIndex};
+use nova_core::{Name, PackageId, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_hir::{Block, CompilationUnit, ImportDecl, MethodDecl, Stmt, TypeDecl};
 
 pub type ScopeId = usize;
@@ -17,7 +17,7 @@ pub enum Resolution {
     Parameter,
     Field,
     Method,
-    Type(TypeId),
+    Type(TypeName),
     Package(PackageId),
     StaticMember(StaticMemberId),
 }
@@ -38,7 +38,7 @@ pub struct ScopeData {
     parent: Option<ScopeId>,
     kind: ScopeKind,
     values: HashMap<Name, Resolution>,
-    types: HashMap<Name, TypeId>,
+    types: HashMap<Name, TypeName>,
 }
 
 impl ScopeData {
@@ -63,7 +63,7 @@ pub enum ScopeKind {
     },
     File,
     Class {
-        type_id: TypeId,
+        type_id: TypeName,
     },
     Method,
     Block,
@@ -88,13 +88,17 @@ impl<'a> Resolver<'a> {
         self
     }
 
-    fn resolve_type_in_index(&self, name: &QualifiedName) -> Option<TypeId> {
+    fn resolve_type_in_index(&self, name: &QualifiedName) -> Option<TypeName> {
         self.classpath
             .and_then(|cp| cp.resolve_type(name))
             .or_else(|| self.jdk.resolve_type(name))
     }
 
-    fn resolve_type_in_package_index(&self, package: &PackageName, name: &Name) -> Option<TypeId> {
+    fn resolve_type_in_package_index(
+        &self,
+        package: &PackageName,
+        name: &Name,
+    ) -> Option<TypeName> {
         self.classpath
             .and_then(|cp| cp.resolve_type_in_package(package, name))
             .or_else(|| self.jdk.resolve_type_in_package(package, name))
@@ -105,14 +109,14 @@ impl<'a> Resolver<'a> {
             || self.jdk.package_exists(package)
     }
 
-    fn resolve_static_member(&self, owner: &TypeId, name: &Name) -> Option<StaticMemberId> {
+    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
         self.classpath
             .and_then(|cp| cp.resolve_static_member(owner, name))
             .or_else(|| self.jdk.resolve_static_member(owner, name))
     }
 
     /// Resolve a qualified name as a type.
-    pub fn resolve_qualified_name(&self, path: &QualifiedName) -> Option<TypeId> {
+    pub fn resolve_qualified_name(&self, path: &QualifiedName) -> Option<TypeName> {
         self.resolve_type_in_index(path)
     }
 
@@ -169,7 +173,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolve a type name via the file's imports and package.
-    pub fn resolve_import(&self, file: &CompilationUnit, name: &Name) -> Option<TypeId> {
+    pub fn resolve_import(&self, file: &CompilationUnit, name: &Name) -> Option<TypeName> {
         self.resolve_import_types(&file.imports, file.package.as_ref(), name)
             .or_else(|| {
                 file.package
@@ -186,7 +190,7 @@ impl<'a> Resolver<'a> {
         imports: &[ImportDecl],
         current_package: Option<&PackageName>,
         name: &Name,
-    ) -> Option<TypeId> {
+    ) -> Option<TypeName> {
         // 1) Explicit single-type imports (shadow star imports).
         for import in imports {
             if let ImportDecl::TypeSingle { ty, alias } = import {
@@ -328,7 +332,7 @@ impl<'a> ScopeBuilder<'a> {
         for prim in primitives {
             self.scopes[universe]
                 .types
-                .insert(Name::from(prim), TypeId::from(prim));
+                .insert(Name::from(prim), TypeName::from(prim));
         }
 
         // Populate common java.lang types from the JDK index.
@@ -349,14 +353,14 @@ impl<'a> ScopeBuilder<'a> {
         file_scope: ScopeId,
         package: Option<&PackageName>,
         ty: &TypeDecl,
-    ) -> TypeId {
+    ) -> TypeName {
         let fq = match package {
             Some(pkg) if !pkg.segments().is_empty() => {
                 format!("{}.{}", pkg.to_dotted(), ty.name.as_str())
             }
             _ => ty.name.as_str().to_string(),
         };
-        let id = TypeId::new(fq);
+        let id = TypeName::new(fq);
         self.scopes[file_scope]
             .types
             .insert(ty.name.clone(), id.clone());
@@ -396,7 +400,7 @@ impl<'a> ScopeBuilder<'a> {
             let nested_fq = format!("{}${}", type_id.as_str(), nested.name.as_str());
             self.scopes[class_scope]
                 .types
-                .insert(nested.name.clone(), TypeId::new(nested_fq));
+                .insert(nested.name.clone(), TypeName::new(nested_fq));
         }
 
         for method in &ty.methods {
@@ -409,7 +413,7 @@ impl<'a> ScopeBuilder<'a> {
     fn build_method_scopes(
         &mut self,
         parent: ScopeId,
-        owner: &TypeId,
+        owner: &TypeName,
         method: &MethodDecl,
     ) -> ScopeId {
         let method_scope = self.alloc_scope(Some(parent), ScopeKind::Method);
@@ -720,19 +724,19 @@ mod tests {
 
     #[derive(Default)]
     struct TestIndex {
-        types: HashMap<String, TypeId>,
-        package_to_types: HashMap<String, HashMap<String, TypeId>>,
+        types: HashMap<String, TypeName>,
+        package_to_types: HashMap<String, HashMap<String, TypeName>>,
         packages: HashSet<String>,
     }
 
     impl TestIndex {
-        fn add_type(&mut self, package: &str, name: &str) -> TypeId {
+        fn add_type(&mut self, package: &str, name: &str) -> TypeName {
             let fq = if package.is_empty() {
                 name.to_string()
             } else {
                 format!("{package}.{name}")
             };
-            let id = TypeId::new(fq.clone());
+            let id = TypeName::new(fq.clone());
             self.types.insert(fq, id.clone());
             self.packages.insert(package.to_string());
             self.package_to_types
@@ -744,11 +748,11 @@ mod tests {
     }
 
     impl TypeIndex for TestIndex {
-        fn resolve_type(&self, name: &QualifiedName) -> Option<TypeId> {
+        fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
             self.types.get(&name.to_dotted()).cloned()
         }
 
-        fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeId> {
+        fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
             self.package_to_types
                 .get(&package.to_dotted())
                 .and_then(|m| m.get(name.as_str()))
@@ -816,7 +820,10 @@ mod tests {
         let result = build_scopes(&jdk, &unit);
         let resolver = Resolver::new(&jdk);
         let res = resolver.resolve_name(&result.scopes, result.file_scope, &Name::from("List"));
-        assert_eq!(res, Some(Resolution::Type(TypeId::from("java.util.List"))));
+        assert_eq!(
+            res,
+            Some(Resolution::Type(TypeName::from("java.util.List")))
+        );
     }
 
     #[test]
@@ -829,7 +836,7 @@ mod tests {
         let res = resolver.resolve_name(&result.scopes, result.file_scope, &Name::from("String"));
         assert_eq!(
             res,
-            Some(Resolution::Type(TypeId::from("java.lang.String")))
+            Some(Resolution::Type(TypeName::from("java.lang.String")))
         );
     }
 
@@ -880,7 +887,7 @@ mod tests {
         let unit = CompilationUnit::new(None);
         assert_eq!(
             resolver.resolve_import(&unit, &Name::from("String")),
-            Some(TypeId::from("java.lang.String"))
+            Some(TypeName::from("java.lang.String"))
         );
     }
 

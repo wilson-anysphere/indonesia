@@ -14,7 +14,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use nova_core::{Name, PackageName, ProjectConfig, QualifiedName, StaticMemberId, TypeId, TypeIndex};
+use nova_core::{
+    Name, PackageName, ProjectConfig, QualifiedName, StaticMemberId, TypeIndex, TypeName,
+};
 
 pub use discovery::{JdkDiscoveryError, JdkInstallation};
 pub use index::JdkIndexError;
@@ -23,8 +25,8 @@ pub use stub::{JdkClassStub, JdkFieldStub, JdkMethodStub};
 #[derive(Debug, Default)]
 pub struct JdkIndex {
     // Built-in, dependency-free index used for unit tests / bootstrapping.
-    types: HashMap<String, TypeId>,
-    package_to_types: HashMap<String, HashMap<String, TypeId>>,
+    types: HashMap<String, TypeName>,
+    package_to_types: HashMap<String, HashMap<String, TypeName>>,
     packages: HashSet<String>,
     static_members: HashMap<String, HashMap<String, StaticMemberId>>,
 
@@ -101,7 +103,7 @@ impl JdkIndex {
         } else {
             format!("{package}.{name}")
         };
-        let ty = TypeId::new(fq.clone());
+        let ty = TypeName::new(fq.clone());
         self.types.insert(fq.clone(), ty.clone());
         self.packages.insert(package.to_string());
         self.package_to_types
@@ -122,17 +124,17 @@ impl JdkIndex {
 }
 
 impl TypeIndex for JdkIndex {
-    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeId> {
+    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
         if let Some(symbols) = &self.symbols {
             if let Ok(Some(stub)) = symbols.lookup_type(&name.to_dotted()) {
-                return Some(TypeId::new(stub.binary_name.clone()));
+                return Some(TypeName::new(stub.binary_name.clone()));
             }
         }
 
         self.types.get(&name.to_dotted()).cloned()
     }
 
-    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeId> {
+    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
         if let Some(symbols) = &self.symbols {
             let dotted = if package.segments().is_empty() {
                 name.as_str().to_string()
@@ -141,7 +143,7 @@ impl TypeIndex for JdkIndex {
             };
 
             if let Ok(Some(stub)) = symbols.lookup_type(&dotted) {
-                return Some(TypeId::new(stub.binary_name.clone()));
+                return Some(TypeName::new(stub.binary_name.clone()));
             }
         }
 
@@ -164,11 +166,10 @@ impl TypeIndex for JdkIndex {
         self.packages.contains(&package.to_dotted())
     }
 
-    fn resolve_static_member(&self, owner: &TypeId, name: &Name) -> Option<StaticMemberId> {
+    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
         self.static_members
             .get(owner.as_str())
             .and_then(|m| m.get(name.as_str()))
             .cloned()
     }
 }
-

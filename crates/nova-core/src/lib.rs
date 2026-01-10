@@ -1,6 +1,11 @@
-//! Core shared types for Nova.
-//!
-//! This crate is intentionally small and dependency-free.
+//! Shared, dependency-minimized core types used across Nova.
+
+pub mod diagnostic;
+pub mod edit;
+pub mod id;
+pub mod name;
+pub mod path;
+pub mod text;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -10,10 +15,20 @@ use std::path::{Path, PathBuf};
 /// Used for on-disk cache compatibility checks (indexes, caches, metadata).
 pub const NOVA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub use diagnostic::{Location, RelatedDiagnostic, Severity};
+pub use edit::{apply_text_edits, normalize_text_edits, EditError, TextEdit, WorkspaceEdit};
+pub use id::*;
+pub use name::{InternedName, Name, NameInterner, SymbolName};
+pub use path::{file_uri_to_path, path_to_file_uri, AbsPathBuf, PathToUriError, UriToPathError};
+pub use text::{LineCol, LineIndex, Position, Range, TextRange, TextSize};
+
+#[cfg(feature = "lsp")]
+pub use path::{lsp_uri_to_path, path_to_lsp_uri};
+
 /// 1-based line number in a source file.
 ///
 /// Nova uses different coordinate systems depending on the integration point:
-/// - LSP uses 0-based lines/characters (`Position` below).
+/// - LSP uses 0-based lines/characters (`Position`).
 /// - DAP uses 1-based lines/columns (breakpoints, stack traces).
 ///
 /// `Line` is a small convenience alias used by debugger-adjacent code.
@@ -32,96 +47,6 @@ impl LineColumn {
     #[inline]
     pub const fn new(line: Line, column: Column) -> Self {
         Self { line, column }
-    }
-}
-
-/// A position in a text document expressed as (line, UTF-16 code unit offset).
-///
-/// This matches the Language Server Protocol definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Position {
-    pub line: u32,
-    pub character: u32,
-}
-
-impl Position {
-    #[inline]
-    pub const fn new(line: u32, character: u32) -> Self {
-        Self { line, character }
-    }
-}
-
-/// A half-open range in a text document expressed with LSP positions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Range {
-    pub start: Position,
-    pub end: Position,
-}
-
-impl Range {
-    #[inline]
-    pub const fn new(start: Position, end: Position) -> Self {
-        Self { start, end }
-    }
-
-    #[inline]
-    pub const fn point(pos: Position) -> Self {
-        Self { start: pos, end: pos }
-    }
-}
-
-/// A textual edit described by a range replacement.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TextEdit {
-    pub range: Range,
-    pub new_text: String,
-}
-
-impl TextEdit {
-    #[inline]
-    pub fn new(range: Range, new_text: impl Into<String>) -> Self {
-        Self {
-            range,
-            new_text: new_text.into(),
-        }
-    }
-}
-
-/// A simple (unqualified) identifier.
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Name(String);
-
-impl Name {
-    pub fn new(name: impl Into<String>) -> Self {
-        Self(name.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Debug for Name {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Name").field(&self.0).finish()
-    }
-}
-
-impl fmt::Display for Name {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl From<&str> for Name {
-    fn from(value: &str) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<String> for Name {
-    fn from(value: String) -> Self {
-        Self(value)
     }
 }
 
@@ -160,7 +85,9 @@ impl PackageName {
 
 impl fmt::Debug for PackageName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("PackageName").field(&self.to_dotted()).finish()
+        f.debug_tuple("PackageName")
+            .field(&self.to_dotted())
+            .finish()
     }
 }
 
@@ -206,11 +133,13 @@ impl fmt::Debug for QualifiedName {
 
 /// A resolved type identifier.
 ///
-/// For now this is the fully qualified Java name, e.g. `java.lang.String`.
+/// In the full Nova project this will likely be a stable numeric ID.
+/// For the current prototype, it's represented as the fully-qualified Java name
+/// (e.g. `java.lang.String`).
 #[derive(Clone, PartialEq, Eq, Hash)]
-pub struct TypeId(String);
+pub struct TypeName(String);
 
-impl TypeId {
+impl TypeName {
     pub fn new(name: impl Into<String>) -> Self {
         Self(name.into())
     }
@@ -220,19 +149,19 @@ impl TypeId {
     }
 }
 
-impl fmt::Debug for TypeId {
+impl fmt::Debug for TypeName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("TypeId").field(&self.0).finish()
+        f.debug_tuple("TypeName").field(&self.0).finish()
     }
 }
 
-impl fmt::Display for TypeId {
+impl fmt::Display for TypeName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl From<&str> for TypeId {
+impl From<&str> for TypeName {
     fn from(value: &str) -> Self {
         Self::new(value)
     }
@@ -261,10 +190,10 @@ impl fmt::Debug for PackageId {
 /// A very small abstraction over a source of types (JDK, project classpath, etc).
 pub trait TypeIndex {
     /// Resolve a fully qualified type name.
-    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeId>;
+    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName>;
 
     /// Resolve a type by package + simple name.
-    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeId>;
+    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName>;
 
     /// Resolve a package (used for qualified-name resolution where intermediate segments may be packages).
     fn package_exists(&self, package: &PackageName) -> bool {
@@ -273,7 +202,7 @@ pub trait TypeIndex {
     }
 
     /// Resolve a static field or method member on a type.
-    fn resolve_static_member(&self, owner: &TypeId, name: &Name) -> Option<StaticMemberId> {
+    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
         let _ = (owner, name);
         None
     }
