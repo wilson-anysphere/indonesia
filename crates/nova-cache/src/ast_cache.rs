@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const AST_ARTIFACT_SCHEMA_VERSION: u32 = 1;
+pub const AST_ARTIFACT_SCHEMA_VERSION: u32 = 2;
 
 /// Persisted, per-file syntax + HIR artifacts used to enable near-instant warm
 /// starts.

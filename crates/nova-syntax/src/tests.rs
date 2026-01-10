@@ -70,3 +70,14 @@ fn parser_error_recovery_continues_after_bad_field() {
     assert_eq!(class_count, 2);
 }
 
+#[test]
+fn parse_break_continue_do_while() {
+    let input = "class Foo { void m() { do { continue; } while (true); break; } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::DoWhileStatement));
+    assert!(kinds.contains(&SyntaxKind::ContinueStatement));
+    assert!(kinds.contains(&SyntaxKind::BreakStatement));
+}

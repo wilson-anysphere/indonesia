@@ -523,6 +523,18 @@ impl<'a> Parser<'a> {
                 self.parse_statement();
                 self.builder.finish_node();
             }
+            SyntaxKind::DoKw => {
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::DoWhileStatement.into());
+                self.bump();
+                self.parse_statement();
+                self.expect(SyntaxKind::WhileKw, "expected `while` after `do` body");
+                self.expect(SyntaxKind::LParen, "expected `(` after while");
+                self.parse_expression(0);
+                self.expect(SyntaxKind::RParen, "expected `)`");
+                self.expect(SyntaxKind::Semicolon, "expected `;` after do-while");
+                self.builder.finish_node();
+            }
             SyntaxKind::TryKw => self.parse_try_statement(checkpoint),
             SyntaxKind::ReturnKw => {
                 self.builder
@@ -532,6 +544,27 @@ impl<'a> Parser<'a> {
                     self.parse_expression(0);
                 }
                 self.expect(SyntaxKind::Semicolon, "expected `;` after return");
+                self.builder.finish_node();
+            }
+            SyntaxKind::BreakKw => {
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::BreakStatement.into());
+                self.bump();
+                // Optional label.
+                if self.at_ident_like() {
+                    self.bump();
+                }
+                self.expect(SyntaxKind::Semicolon, "expected `;` after break");
+                self.builder.finish_node();
+            }
+            SyntaxKind::ContinueKw => {
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::ContinueStatement.into());
+                self.bump();
+                if self.at_ident_like() {
+                    self.bump();
+                }
+                self.expect(SyntaxKind::Semicolon, "expected `;` after continue");
                 self.builder.finish_node();
             }
             SyntaxKind::ThrowKw => {
