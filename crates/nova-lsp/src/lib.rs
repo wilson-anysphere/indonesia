@@ -10,6 +10,9 @@
 //!   - `nova/buildProject`
 //!   - `nova/java/classpath`
 //!   - `nova/reloadProject`
+//! - Annotation processing endpoints (backed by `nova-apt`)
+//!   - `nova/java/generatedSources`
+//!   - `nova/java/runAnnotationProcessing`
 //! - Debugger-excellence endpoints
 //!   - `nova/debug/configurations`
 //!   - `nova/debug/hotSwap`
@@ -39,6 +42,8 @@ pub const TEST_DISCOVER_METHOD: &str = "nova/test/discover";
 pub const TEST_RUN_METHOD: &str = "nova/test/run";
 pub const BUILD_PROJECT_METHOD: &str = "nova/buildProject";
 pub const JAVA_CLASSPATH_METHOD: &str = "nova/java/classpath";
+pub const JAVA_GENERATED_SOURCES_METHOD: &str = "nova/java/generatedSources";
+pub const RUN_ANNOTATION_PROCESSING_METHOD: &str = "nova/java/runAnnotationProcessing";
 pub const RELOAD_PROJECT_METHOD: &str = "nova/reloadProject";
 
 pub const DEBUG_CONFIGURATIONS_METHOD: &str = "nova/debug/configurations";
@@ -57,6 +62,8 @@ pub fn handle_custom_request(
         TEST_RUN_METHOD => extensions::test::handle_run(params),
         BUILD_PROJECT_METHOD => extensions::build::handle_build_project(params),
         JAVA_CLASSPATH_METHOD => extensions::build::handle_java_classpath(params),
+        JAVA_GENERATED_SOURCES_METHOD => extensions::apt::handle_generated_sources(params),
+        RUN_ANNOTATION_PROCESSING_METHOD => extensions::apt::handle_run_annotation_processing(params),
         RELOAD_PROJECT_METHOD => extensions::build::handle_reload_project(params),
         _ => Err(NovaLspError::InvalidParams(format!(
             "unknown (stateless) method: {method}"

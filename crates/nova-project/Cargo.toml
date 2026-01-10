@@ -9,6 +9,7 @@ roxmltree = "0.20.0"
 thiserror = "1.0.56"
 walkdir = "2.5.0"
 serde = { version = "1", features = ["derive"] }
+nova-config = { path = "../nova-config" }
 
 [dev-dependencies]
 tempfile = "3.10.1"

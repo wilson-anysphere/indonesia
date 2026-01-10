@@ -1,0 +1,16 @@
+[package]
+name = "nova-apt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nova-build = { path = "../nova-build" }
+nova-config = { path = "../nova-config" }
+nova-core = { path = "../nova-core" }
+nova-project = { path = "../nova-project" }
+
+[dev-dependencies]
+nova-index = { path = "../nova-index" }
+nova-hir = { path = "../nova-hir" }
+nova-jdk = { path = "../nova-jdk" }
+nova-resolve = { path = "../nova-resolve" }

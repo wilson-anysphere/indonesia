@@ -7,6 +7,8 @@ pub mod name;
 pub mod path;
 pub mod text;
 
+pub mod fs;
+
 use std::fmt;
 use std::path::{Path, PathBuf};
 

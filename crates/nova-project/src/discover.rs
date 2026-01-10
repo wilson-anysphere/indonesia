@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use nova_config::NovaConfig;
+
 use crate::{gradle, maven, simple, BuildSystem, ProjectConfig};
 
 #[derive(Debug, Clone, Default)]
@@ -12,6 +14,9 @@ pub struct LoadOptions {
 
     /// Override Maven local repository (`~/.m2/repository`) location.
     pub maven_repo: Option<PathBuf>,
+
+    /// Nova-specific configuration (e.g. generated source roots).
+    pub nova_config: NovaConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,4 +103,3 @@ fn detect_build_system(root: &Path) -> Result<BuildSystem, ProjectError> {
         root: root.to_path_buf(),
     })
 }
-

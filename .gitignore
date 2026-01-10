@@ -9,6 +9,7 @@
 # Editor junk
 **/*.swp
 **/*.swo
+**/*.rs.bk
 
 # Cargo lockfiles are kept local for faster iteration.
 Cargo.lock
@@ -25,5 +26,3 @@ test-projects/**
 
 # Legacy workspace-local cache (the default persistent cache lives in `~/.nova/cache`)
 **/.nova-cache/
-
-**/*.rs.bk

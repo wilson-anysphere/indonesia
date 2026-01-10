@@ -49,9 +49,18 @@ pub enum SourceRootKind {
     Test,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SourceRootOrigin {
+    /// User-authored sources (e.g. `src/main/java`).
+    Source,
+    /// Build-generated sources (annotation processors, codegen plugins, etc).
+    Generated,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceRoot {
     pub kind: SourceRootKind,
+    pub origin: SourceRootOrigin,
     pub path: PathBuf,
 }
 

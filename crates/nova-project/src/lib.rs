@@ -7,6 +7,7 @@
 //! - (future) module graph
 
 mod discover;
+mod generated;
 mod gradle;
 mod maven;
 mod model;

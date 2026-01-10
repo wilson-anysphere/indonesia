@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, ProjectConfig, SourceRoot,
-    SourceRootKind,
+    SourceRootKind, SourceRootOrigin,
 };
 
 pub(crate) fn load_simple_project(
@@ -17,6 +17,7 @@ pub(crate) fn load_simple_project(
     if src_dir.is_dir() {
         source_roots.push(SourceRoot {
             kind: SourceRootKind::Main,
+            origin: SourceRootOrigin::Source,
             path: src_dir,
         });
     }
@@ -25,9 +26,12 @@ pub(crate) fn load_simple_project(
     if src_test_java.is_dir() {
         source_roots.push(SourceRoot {
             kind: SourceRootKind::Test,
+            origin: SourceRootOrigin::Source,
             path: src_test_java,
         });
     }
+
+    crate::generated::append_generated_source_roots(&mut source_roots, root, &options.nova_config);
 
     let mut classpath = Vec::new();
     for entry in &options.classpath_overrides {
@@ -41,8 +45,13 @@ pub(crate) fn load_simple_project(
         });
     }
 
-    source_roots.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
-    source_roots.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+    source_roots.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.kind.cmp(&b.kind))
+            .then(a.origin.cmp(&b.origin))
+    });
+    source_roots.dedup_by(|a, b| a.kind == b.kind && a.origin == b.origin && a.path == b.path);
     classpath.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
     classpath.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
 

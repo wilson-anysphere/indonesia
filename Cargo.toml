@@ -31,6 +31,8 @@ members = [
     "crates/nova-flow",
     "crates/nova-workspace",
     "crates/nova-cli",
+    "crates/nova-config",
+    "crates/nova-apt",
 ]
 
 [workspace.package]

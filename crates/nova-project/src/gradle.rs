@@ -6,7 +6,7 @@ use regex::Regex;
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaVersion, Module,
-    OutputDir, OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind,
+    OutputDir, OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
 
 pub(crate) fn load_gradle_project(
@@ -61,6 +61,11 @@ pub(crate) fn load_gradle_project(
 
         push_source_root(&mut source_roots, &module_root, SourceRootKind::Main, "src/main/java");
         push_source_root(&mut source_roots, &module_root, SourceRootKind::Test, "src/test/java");
+        crate::generated::append_generated_source_roots(
+            &mut source_roots,
+            &module_root,
+            &options.nova_config,
+        );
 
         let main_output = module_root.join("build/classes/java/main");
         let test_output = module_root.join("build/classes/java/test");
@@ -261,13 +266,22 @@ fn push_source_root(
 ) {
     let path = module_root.join(rel);
     if path.is_dir() {
-        out.push(SourceRoot { kind, path });
+        out.push(SourceRoot {
+            kind,
+            origin: SourceRootOrigin::Source,
+            path,
+        });
     }
 }
 
 fn sort_dedup_source_roots(roots: &mut Vec<SourceRoot>) {
-    roots.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
-    roots.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+    roots.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.kind.cmp(&b.kind))
+            .then(a.origin.cmp(&b.origin))
+    });
+    roots.dedup_by(|a, b| a.kind == b.kind && a.origin == b.origin && a.path == b.path);
 }
 
 fn sort_dedup_output_dirs(dirs: &mut Vec<OutputDir>) {
