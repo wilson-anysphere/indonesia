@@ -7,6 +7,7 @@ members = [
     "crates/nova-cache",
     "crates/nova-index",
     "crates/nova-framework",
+    "crates/nova-framework-dagger",
     "crates/nova-framework-jpa",
     "crates/nova-framework-lombok",
     "crates/nova-project",

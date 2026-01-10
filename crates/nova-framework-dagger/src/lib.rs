@@ -1,0 +1,1094 @@
+//! Dagger framework analyzer.
+//!
+//! This crate provides a best-effort, static view of a Dagger-style dependency
+//! injection (DI) graph:
+//!  - extract providers (`@Provides`, `@Binds`, `@Inject` constructors)
+//!  - extract injection sites (constructor parameters, `@Provides` parameters)
+//!  - extract components and their included modules
+//!  - resolve bindings, emitting diagnostics and navigation links
+//!
+//! The implementation is intentionally lightweight: it operates directly on
+//! source text rather than a full Java parser/HIR. This keeps the crate usable
+//! in isolation while the rest of Nova is under construction.
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+
+use nova_core::{Diagnostic as CoreDiagnostic, DiagnosticSeverity, Position, Range};
+use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
+use nova_types::{ClassId, ProjectId};
+
+#[derive(Debug, Default)]
+pub struct DaggerAnalyzer;
+
+impl FrameworkAnalyzer for DaggerAnalyzer {
+    fn applies_to(&self, db: &dyn Database, project: ProjectId) -> bool {
+        // Maven coordinate based detection.
+        if db.has_dependency(project, "com.google.dagger", "dagger")
+            || db.has_dependency(project, "com.google.dagger", "dagger-compiler")
+            || db.has_dependency(project, "com.google.dagger", "dagger-android")
+            || db.has_dependency(project, "com.google.dagger", "hilt-android")
+        {
+            return true;
+        }
+
+        // Fallback: any dagger.* class on the classpath.
+        db.has_class_on_classpath_prefix(project, "dagger.")
+            || db.has_class_on_classpath_prefix(project, "dagger/")
+    }
+
+    fn virtual_members(&self, _db: &dyn Database, _class: ClassId) -> Vec<VirtualMember> {
+        // Dagger does not primarily contribute "virtual members" the way Lombok does.
+        // The interesting part of Dagger support is the binding graph, which is
+        // exposed via `analyze_java_files`.
+        Vec::new()
+    }
+}
+
+/// A Java source file with a stable path for diagnostics/navigation.
+#[derive(Debug, Clone)]
+pub struct JavaSourceFile {
+    pub path: PathBuf,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Location {
+    pub file: PathBuf,
+    pub range: Range,
+}
+
+impl Location {
+    pub fn new(file: PathBuf, range: Range) -> Self {
+        Self { file, range }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum NavigationKind {
+    InjectionToProvider,
+    ProviderToInjection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct NavigationLink {
+    pub kind: NavigationKind,
+    pub from: Location,
+    pub to: Location,
+}
+
+#[derive(Debug, Default)]
+pub struct DaggerAnalysis {
+    pub diagnostics: Vec<CoreDiagnostic>,
+    pub navigation: Vec<NavigationLink>,
+}
+
+/// Analyze a set of Java source files for a Dagger binding graph, producing
+/// diagnostics and navigation links.
+pub fn analyze_java_files(files: &[JavaSourceFile]) -> DaggerAnalysis {
+    analyze_project(files)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BindingKey {
+    ty: String,
+    qualifier: Option<String>,
+}
+
+impl BindingKey {
+    fn display(&self) -> String {
+        match &self.qualifier {
+            Some(q) => format!("{} @{}", self.ty, q),
+            None => self.ty.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Dep {
+    key: BindingKey,
+    span: Location,
+}
+
+#[derive(Debug, Clone)]
+enum ProviderKind {
+    ProvidesMethod { module: String, method: String },
+    BindsMethod { module: String, method: String },
+    InjectConstructor { class: String },
+}
+
+#[derive(Debug, Clone)]
+struct Provider {
+    key: BindingKey,
+    span: Location,
+    deps: Vec<Dep>,
+    scope: Option<String>,
+    kind: ProviderKind,
+}
+
+#[derive(Debug, Clone)]
+struct ModuleInfo {
+    name: String,
+    includes: Vec<String>,
+    providers: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct EntryPoint {
+    key: BindingKey,
+    span: Location,
+}
+
+#[derive(Debug, Clone)]
+struct ComponentInfo {
+    name: String,
+    span: Location,
+    modules: Vec<String>,
+    entry_points: Vec<EntryPoint>,
+    scope: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedProject {
+    modules: HashMap<String, ModuleInfo>,
+    components: Vec<ComponentInfo>,
+    providers: Vec<Provider>,
+}
+
+fn analyze_project(files: &[JavaSourceFile]) -> DaggerAnalysis {
+    let parsed = parse_project(files);
+
+    // If there are no explicit components, we still attempt best-effort graph
+    // traversal by treating every `@Inject` constructor as an entry point.
+    let mut analysis = DaggerAnalysis::default();
+    if parsed.components.is_empty() {
+        let mut visited = HashSet::new();
+        let mut stack = Vec::new();
+        let bindings = build_bindings_for_modules(&parsed, HashSet::new());
+        for provider in &parsed.providers {
+            if matches!(provider.kind, ProviderKind::InjectConstructor { .. }) {
+                resolve_key(
+                    &bindings,
+                    &parsed.providers,
+                    None,
+                    &provider.key,
+                    &provider.span,
+                    &mut visited,
+                    &mut stack,
+                    &mut analysis,
+                );
+            }
+        }
+        return analysis;
+    }
+
+    for component in &parsed.components {
+        let included_modules = component_included_modules(&parsed.modules, &component.modules);
+        let bindings = build_bindings_for_modules(&parsed, included_modules);
+
+        let mut visited = HashSet::new();
+        let mut stack = Vec::new();
+
+        for entry in &component.entry_points {
+            resolve_key(
+                &bindings,
+                &parsed.providers,
+                component.scope.as_deref(),
+                &entry.key,
+                &entry.span,
+                &mut visited,
+                &mut stack,
+                &mut analysis,
+            );
+        }
+    }
+
+    analysis
+}
+
+#[derive(Debug, Clone)]
+struct Bindings {
+    // key -> provider ids
+    providers_for_key: HashMap<BindingKey, Vec<usize>>,
+}
+
+fn build_bindings_for_modules(
+    parsed: &ParsedProject,
+    included_modules: HashSet<String>,
+) -> Bindings {
+    let mut providers_for_key: HashMap<BindingKey, Vec<usize>> = HashMap::new();
+
+    for (module_name, module) in &parsed.modules {
+        if !included_modules.contains(module_name) {
+            continue;
+        }
+        for &provider_id in &module.providers {
+            let provider = &parsed.providers[provider_id];
+            providers_for_key
+                .entry(provider.key.clone())
+                .or_default()
+                .push(provider_id);
+        }
+    }
+
+    // `@Inject` constructors are globally visible to the component.
+    for (provider_id, provider) in parsed.providers.iter().enumerate() {
+        if matches!(provider.kind, ProviderKind::InjectConstructor { .. }) {
+            providers_for_key
+                .entry(provider.key.clone())
+                .or_default()
+                .push(provider_id);
+        }
+    }
+
+    Bindings { providers_for_key }
+}
+
+fn component_included_modules(
+    modules: &HashMap<String, ModuleInfo>,
+    roots: &[String],
+) -> HashSet<String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<String> = roots.iter().cloned().collect();
+
+    while let Some(module_name) = queue.pop_front() {
+        if !seen.insert(module_name.clone()) {
+            continue;
+        }
+        if let Some(module) = modules.get(&module_name) {
+            for include in &module.includes {
+                if !seen.contains(include) {
+                    queue.push_back(include.clone());
+                }
+            }
+        }
+    }
+
+    seen
+}
+
+fn resolve_key(
+    bindings: &Bindings,
+    providers: &[Provider],
+    component_scope: Option<&str>,
+    key: &BindingKey,
+    injection_span: &Location,
+    visited: &mut HashSet<BindingKey>,
+    stack: &mut Vec<BindingKey>,
+    analysis: &mut DaggerAnalysis,
+) {
+    let candidates = bindings.providers_for_key.get(key);
+
+    match candidates {
+        None => {
+            analysis.diagnostics.push(CoreDiagnostic::new(
+                injection_span.file.clone(),
+                injection_span.range,
+                DiagnosticSeverity::Error,
+                format!("Missing binding for {}", key.display()),
+                Some("DAGGER_MISSING_BINDING".to_string()),
+            ));
+            return;
+        }
+        Some(candidates) if candidates.len() > 1 => {
+            analysis.diagnostics.push(CoreDiagnostic::new(
+                injection_span.file.clone(),
+                injection_span.range,
+                DiagnosticSeverity::Error,
+                format!("Duplicate bindings for {}", key.display()),
+                Some("DAGGER_DUPLICATE_BINDING".to_string()),
+            ));
+            return;
+        }
+        Some(candidates) => {
+            let provider_id = candidates[0];
+            let provider = &providers[provider_id];
+
+            analysis.navigation.push(NavigationLink {
+                kind: NavigationKind::InjectionToProvider,
+                from: injection_span.clone(),
+                to: provider.span.clone(),
+            });
+            analysis.navigation.push(NavigationLink {
+                kind: NavigationKind::ProviderToInjection,
+                from: provider.span.clone(),
+                to: injection_span.clone(),
+            });
+
+            if let Some(provider_scope) = provider.scope.as_deref() {
+                if let Some(component_scope) = component_scope {
+                    if component_scope != provider_scope {
+                        analysis.diagnostics.push(CoreDiagnostic::new(
+                            provider.span.file.clone(),
+                            provider.span.range,
+                            DiagnosticSeverity::Warning,
+                            format!(
+                                "Incompatible scope: provider is @{} but component is @{}",
+                                provider_scope, component_scope
+                            ),
+                            Some("DAGGER_INCOMPATIBLE_SCOPE".to_string()),
+                        ));
+                    }
+                } else {
+                    analysis.diagnostics.push(CoreDiagnostic::new(
+                        provider.span.file.clone(),
+                        provider.span.range,
+                        DiagnosticSeverity::Warning,
+                        format!(
+                            "Incompatible scope: provider is @{} but component is unscoped",
+                            provider_scope
+                        ),
+                        Some("DAGGER_INCOMPATIBLE_SCOPE".to_string()),
+                    ));
+                }
+            }
+
+            // Cycle detection and recursive traversal.
+            if stack.contains(key) {
+                analysis.diagnostics.push(CoreDiagnostic::new(
+                    injection_span.file.clone(),
+                    injection_span.range,
+                    DiagnosticSeverity::Error,
+                    format!("Cycle detected while resolving {}", key.display()),
+                    Some("DAGGER_CYCLE".to_string()),
+                ));
+                return;
+            }
+
+            let already_visited = !visited.insert(key.clone());
+            if already_visited {
+                return;
+            }
+
+            stack.push(key.clone());
+            for dep in &provider.deps {
+                resolve_key(
+                    bindings,
+                    providers,
+                    component_scope,
+                    &dep.key,
+                    &dep.span,
+                    visited,
+                    stack,
+                    analysis,
+                );
+            }
+            stack.pop();
+        }
+    }
+}
+
+fn parse_project(files: &[JavaSourceFile]) -> ParsedProject {
+    let mut modules: HashMap<String, ModuleInfo> = HashMap::new();
+    let mut components: Vec<ComponentInfo> = Vec::new();
+    let mut providers: Vec<Provider> = Vec::new();
+
+    for file in files {
+        let parsed = parse_java_file(&file.path, file.text.as_str());
+
+        for module in parsed.modules {
+            let name = module.name.clone();
+            modules.insert(name, module);
+        }
+
+        components.extend(parsed.components);
+
+        // Providers need stable indices; append and rewrite module provider ids.
+        let base = providers.len();
+        providers.extend(parsed.providers);
+
+        for (module_name, provider_ids) in parsed.module_provider_ids {
+            if let Some(module) = modules.get_mut(&module_name) {
+                module
+                    .providers
+                    .extend(provider_ids.into_iter().map(|id| base + id));
+            }
+        }
+    }
+
+    ParsedProject {
+        modules,
+        components,
+        providers,
+    }
+}
+
+#[derive(Debug)]
+struct ParsedJavaFile {
+    modules: Vec<ModuleInfo>,
+    components: Vec<ComponentInfo>,
+    providers: Vec<Provider>,
+    // module name -> provider ids (local to this ParsedJavaFile's providers vec)
+    module_provider_ids: Vec<(String, Vec<usize>)>,
+}
+
+fn parse_java_file(path: &PathBuf, text: &str) -> ParsedJavaFile {
+    let mut modules: Vec<ModuleInfo> = Vec::new();
+    let mut components: Vec<ComponentInfo> = Vec::new();
+    let mut providers: Vec<Provider> = Vec::new();
+    let mut module_provider_ids: Vec<(String, Vec<usize>)> = Vec::new();
+
+    let mut pending_annotations: Vec<Annotation> = Vec::new();
+    let mut type_stack: Vec<TypeContext> = Vec::new();
+    let mut brace_depth: i32 = 0;
+
+    let lines: Vec<&str> = text.lines().collect();
+
+    for (line_idx, raw_line) in lines.iter().enumerate() {
+        let line = raw_line.trim();
+
+        // Count braces for scope tracking.
+        let open = raw_line.matches('{').count() as i32;
+        let close = raw_line.matches('}').count() as i32;
+
+        // An annotation line: collect and continue.
+        if line.starts_with('@') {
+            if let Some(ann) = Annotation::parse(line) {
+                pending_annotations.push(ann);
+            }
+            brace_depth += open - close;
+            while let Some(top) = type_stack.last() {
+                if brace_depth < top.brace_depth {
+                    type_stack.pop();
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Type declarations.
+        if let Some(type_decl) = parse_type_declaration(line) {
+            let kind = if has_annotation(&pending_annotations, "Module") {
+                TypeKind::Module
+            } else if has_annotation(&pending_annotations, "Component")
+                || has_annotation(&pending_annotations, "Subcomponent")
+            {
+                TypeKind::Component
+            } else {
+                TypeKind::Regular
+            };
+
+            let name = type_decl.name.clone();
+
+            if kind == TypeKind::Module {
+                let includes = pending_annotations
+                    .iter()
+                    .find(|a| a.name == "Module")
+                    .and_then(|a| a.args.as_deref())
+                    .map(|args| extract_class_list(args, "includes"))
+                    .unwrap_or_default();
+                modules.push(ModuleInfo {
+                    name: name.clone(),
+                    includes,
+                    providers: Vec::new(),
+                });
+                module_provider_ids.push((name.clone(), Vec::new()));
+            }
+
+            if kind == TypeKind::Component {
+                let component_ann = pending_annotations
+                    .iter()
+                    .find(|a| a.name == "Component" || a.name == "Subcomponent");
+                let modules_list = component_ann
+                    .and_then(|a| a.args.as_deref())
+                    .map(|args| extract_class_list(args, "modules"))
+                    .unwrap_or_default();
+                let scope = extract_scope(&pending_annotations);
+                let span = span_for_token(path, line_idx as u32, raw_line, &type_decl.name)
+                    .unwrap_or_else(|| fallback_span(path, line_idx as u32));
+                components.push(ComponentInfo {
+                    name: name.clone(),
+                    span,
+                    modules: modules_list,
+                    entry_points: Vec::new(),
+                    scope,
+                });
+            }
+
+            type_stack.push(TypeContext {
+                name,
+                kind,
+                // The type body starts after its opening `{`. When the brace is on the
+                // following line, we still need a non-zero depth to be able to pop the
+                // context once the body closes.
+                brace_depth: if open > 0 {
+                    brace_depth + open
+                } else {
+                    brace_depth + 1
+                },
+            });
+            pending_annotations.clear();
+
+            brace_depth += open - close;
+            while let Some(top) = type_stack.last() {
+                if brace_depth < top.brace_depth {
+                    type_stack.pop();
+                } else {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Member parsing inside types.
+        if let Some(current_type) = type_stack.last().cloned() {
+            match current_type.kind {
+                TypeKind::Module => {
+                    if has_annotation(&pending_annotations, "Provides")
+                        || has_annotation(&pending_annotations, "Binds")
+                    {
+                        if let Some(method) =
+                            parse_method_signature(raw_line, line_idx as u32, path)
+                        {
+                            let qualifier = extract_qualifier(&pending_annotations);
+                            let scope = extract_scope(&pending_annotations);
+                            let key = BindingKey {
+                                ty: normalize_type(&method.return_type),
+                                qualifier,
+                            };
+                            let deps = method
+                                .params
+                                .into_iter()
+                                .map(|param| Dep {
+                                    key: BindingKey {
+                                        ty: normalize_type(&param.ty),
+                                        qualifier: param.qualifier,
+                                    },
+                                    span: param.span,
+                                })
+                                .collect();
+
+                            let kind = if has_annotation(&pending_annotations, "Provides") {
+                                ProviderKind::ProvidesMethod {
+                                    module: current_type.name.clone(),
+                                    method: method.name.clone(),
+                                }
+                            } else {
+                                ProviderKind::BindsMethod {
+                                    module: current_type.name.clone(),
+                                    method: method.name.clone(),
+                                }
+                            };
+
+                            providers.push(Provider {
+                                key,
+                                span: method.name_span,
+                                deps,
+                                scope,
+                                kind,
+                            });
+
+                            if let Some((_name, provider_ids)) = module_provider_ids
+                                .iter_mut()
+                                .find(|(name, _)| name == &current_type.name)
+                            {
+                                provider_ids.push(providers.len() - 1);
+                            }
+                        }
+                        pending_annotations.clear();
+                    }
+                }
+                TypeKind::Component => {
+                    if let Some(method) = parse_component_method(raw_line, line_idx as u32, path) {
+                        if let Some(component) =
+                            components.iter_mut().find(|c| c.name == current_type.name)
+                        {
+                            // Qualifier annotations can be present on the component method itself.
+                            let qualifier = extract_qualifier(&pending_annotations);
+                            match method.kind {
+                                ComponentMethodKind::Provision { return_type, span } => {
+                                    component.entry_points.push(EntryPoint {
+                                        key: BindingKey {
+                                            ty: normalize_type(&return_type),
+                                            qualifier,
+                                        },
+                                        span,
+                                    });
+                                }
+                                ComponentMethodKind::MembersInjection { param_types } => {
+                                    for param in param_types {
+                                        component.entry_points.push(EntryPoint {
+                                            key: BindingKey {
+                                                ty: normalize_type(&param.ty),
+                                                qualifier: param.qualifier.clone(),
+                                            },
+                                            span: param.span,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        pending_annotations.clear();
+                    }
+                }
+                TypeKind::Regular => {
+                    if has_annotation(&pending_annotations, "Inject") {
+                        // `@Inject` constructor or field.
+                        if let Some(method) = parse_constructor_signature(
+                            raw_line,
+                            line_idx as u32,
+                            path,
+                            &current_type.name,
+                        ) {
+                            let deps = method
+                                .params
+                                .into_iter()
+                                .map(|param| Dep {
+                                    key: BindingKey {
+                                        ty: normalize_type(&param.ty),
+                                        qualifier: param.qualifier,
+                                    },
+                                    span: param.span,
+                                })
+                                .collect();
+                            let key = BindingKey {
+                                ty: current_type.name.clone(),
+                                qualifier: None,
+                            };
+                            providers.push(Provider {
+                                key,
+                                span: method.name_span,
+                                deps,
+                                scope: extract_scope(&pending_annotations),
+                                kind: ProviderKind::InjectConstructor {
+                                    class: current_type.name.clone(),
+                                },
+                            });
+                            pending_annotations.clear();
+                        } else if let Some(field) =
+                            parse_field_declaration(raw_line, line_idx as u32, path)
+                        {
+                            // We don't currently model member injection graphs; treat fields as
+                            // dependencies of the class if we later support `void inject(T)`.
+                            // For now, ignore.
+                            let _ = field;
+                            pending_annotations.clear();
+                        }
+                    }
+                }
+            }
+        }
+
+        // Brace depth maintenance and type stack unwinding.
+        brace_depth += open - close;
+        while let Some(top) = type_stack.last() {
+            if brace_depth < top.brace_depth {
+                type_stack.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
+    ParsedJavaFile {
+        modules,
+        components,
+        providers,
+        module_provider_ids,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TypeContext {
+    name: String,
+    kind: TypeKind,
+    brace_depth: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypeKind {
+    Module,
+    Component,
+    Regular,
+}
+
+#[derive(Debug, Clone)]
+struct TypeDeclaration {
+    name: String,
+}
+
+fn parse_type_declaration(line: &str) -> Option<TypeDeclaration> {
+    // A very small subset of Java's grammar; sufficient for fixtures:
+    //   "class Foo", "interface Foo", "public class Foo", etc.
+    for keyword in ["class", "interface", "enum"] {
+        if let Some(idx) = line.find(keyword) {
+            let after = &line[idx + keyword.len()..];
+            let name = after
+                .split_whitespace()
+                .next()
+                .map(|s| s.trim_matches('{').trim())
+                .filter(|s| !s.is_empty())?;
+            return Some(TypeDeclaration {
+                name: normalize_type(name),
+            });
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone)]
+struct Annotation {
+    name: String,
+    args: Option<String>,
+}
+
+impl Annotation {
+    fn parse(line: &str) -> Option<Self> {
+        let line = line.trim();
+        if !line.starts_with('@') {
+            return None;
+        }
+        let mut rest = &line[1..];
+        // Strip any trailing comment.
+        if let Some(idx) = rest.find("//") {
+            rest = &rest[..idx];
+        }
+        let rest = rest.trim();
+        let (name, args) = match rest.find('(') {
+            Some(idx) => {
+                let name = rest[..idx].trim();
+                let mut args = rest[idx + 1..].trim();
+                if let Some(end) = args.rfind(')') {
+                    args = &args[..end];
+                }
+                (name, Some(args.trim().to_string()))
+            }
+            None => (rest.trim_end_matches('{').trim(), None),
+        };
+        if name.is_empty() {
+            return None;
+        }
+        Some(Self {
+            name: name.to_string(),
+            args,
+        })
+    }
+}
+
+fn has_annotation(annotations: &[Annotation], name: &str) -> bool {
+    annotations.iter().any(|ann| ann.name == name)
+}
+
+fn extract_scope(annotations: &[Annotation]) -> Option<String> {
+    // Best-effort: recognise the most common built-in scope.
+    if annotations.iter().any(|ann| ann.name == "Singleton") {
+        return Some("Singleton".to_string());
+    }
+    None
+}
+
+fn extract_qualifier(annotations: &[Annotation]) -> Option<String> {
+    // Best-effort: support @Named(...) and treat other custom qualifiers as their
+    // annotation name without trying to validate @Qualifier meta-annotations.
+    for ann in annotations {
+        if ann.name == "Named" {
+            return Some(match &ann.args {
+                Some(args) if !args.is_empty() => format!("Named({})", args.trim()),
+                _ => "Named".to_string(),
+            });
+        }
+    }
+    None
+}
+
+fn extract_class_list(args: &str, attr: &str) -> Vec<String> {
+    // Extract `attr = Foo.class` or `attr = { Foo.class, Bar.class }`.
+    let Some(attr_pos) = args.find(attr) else {
+        return Vec::new();
+    };
+    let after_attr = &args[attr_pos + attr.len()..];
+    let Some(eq_pos) = after_attr.find('=') else {
+        return Vec::new();
+    };
+    let mut rhs = after_attr[eq_pos + 1..].trim();
+
+    // Trim potential trailing attributes.
+    if let Some(idx) = rhs.find(',') {
+        // Only trim if the comma isn't inside braces.
+        let before = &rhs[..idx];
+        if !before.contains('{') {
+            rhs = before.trim();
+        }
+    }
+
+    let rhs = rhs.trim();
+    if rhs.starts_with('{') {
+        let inner = rhs.trim_start_matches('{').trim_end_matches('}').trim();
+        inner
+            .split(',')
+            .filter_map(|item| normalize_class_literal(item))
+            .collect()
+    } else {
+        normalize_class_literal(rhs).into_iter().collect()
+    }
+}
+
+fn normalize_class_literal(input: &str) -> Option<String> {
+    let item = input.trim();
+    if item.is_empty() {
+        return None;
+    }
+    let item = item.trim_end_matches(".class").trim();
+    if item.is_empty() {
+        return None;
+    }
+    Some(normalize_type(item))
+}
+
+fn normalize_type(raw: &str) -> String {
+    let raw = raw.trim();
+    let raw = raw.trim_end_matches(';').trim();
+    let raw = raw.trim_end_matches(',').trim();
+    let raw = raw.trim_end_matches('{').trim();
+
+    // Remove generics.
+    let raw = match raw.find('<') {
+        Some(idx) => &raw[..idx],
+        None => raw,
+    };
+
+    raw.split('.').last().unwrap_or(raw).to_string()
+}
+
+#[derive(Debug, Clone)]
+struct ParsedParam {
+    ty: String,
+    qualifier: Option<String>,
+    span: Location,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedMethodSig {
+    name: String,
+    return_type: String,
+    params: Vec<ParsedParam>,
+    name_span: Location,
+}
+
+fn parse_method_signature(
+    raw_line: &str,
+    line_idx: u32,
+    path: &PathBuf,
+) -> Option<ParsedMethodSig> {
+    let line = raw_line.trim();
+    if !line.contains('(') || !line.contains(')') {
+        return None;
+    }
+    // Ignore control flow.
+    if line.starts_with("if ") || line.starts_with("for ") || line.starts_with("while ") {
+        return None;
+    }
+    let before_paren = line.split('(').next()?.trim();
+    let mut tokens: Vec<&str> = before_paren.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    // Last token is method name, previous token is return type (modifiers may
+    // appear before both).
+    let name = tokens.pop()?.to_string();
+    let return_type = tokens.pop()?.to_string();
+
+    let params = parse_params_from_line(raw_line, line_idx, path)?;
+
+    let name_span = span_for_token(path, line_idx, raw_line, &name)
+        .unwrap_or_else(|| fallback_span(path, line_idx));
+
+    Some(ParsedMethodSig {
+        name,
+        return_type,
+        params,
+        name_span,
+    })
+}
+
+fn parse_constructor_signature(
+    raw_line: &str,
+    line_idx: u32,
+    path: &PathBuf,
+    class_name: &str,
+) -> Option<ParsedMethodSig> {
+    let line = raw_line.trim();
+    if !line.contains('(') || !line.contains(')') {
+        return None;
+    }
+    let before_paren = line.split('(').next()?.trim();
+    let name = before_paren.split_whitespace().last()?.to_string();
+    if normalize_type(&name) != class_name {
+        return None;
+    }
+    let params = parse_params_from_line(raw_line, line_idx, path)?;
+    let name_span = span_for_token(path, line_idx, raw_line, &name)
+        .unwrap_or_else(|| fallback_span(path, line_idx));
+    Some(ParsedMethodSig {
+        name,
+        return_type: class_name.to_string(),
+        params,
+        name_span,
+    })
+}
+
+fn parse_params_from_line(
+    raw_line: &str,
+    line_idx: u32,
+    path: &PathBuf,
+) -> Option<Vec<ParsedParam>> {
+    let start_paren = raw_line.find('(')?;
+    let end_paren = raw_line.rfind(')')?;
+    if end_paren <= start_paren {
+        return None;
+    }
+    let params_str = &raw_line[start_paren + 1..end_paren];
+    let mut params = Vec::new();
+    let mut search_start = start_paren + 1;
+
+    for raw_param in params_str.split(',') {
+        let param = raw_param.trim();
+        if param.is_empty() {
+            continue;
+        }
+
+        // Parse leading annotations (qualifiers) and modifiers.
+        let mut qualifier: Option<String> = None;
+        let mut ty: Option<String> = None;
+        for token in param.split_whitespace() {
+            if token.starts_with('@') {
+                let ann = token.trim_start_matches('@');
+                let name = ann.split('(').next().unwrap_or(ann);
+                if name == "Named" {
+                    qualifier = Some(match ann.split_once('(') {
+                        Some((_name, rest)) => {
+                            format!("Named({})", rest.trim_end_matches(')'))
+                        }
+                        None => "Named".to_string(),
+                    });
+                }
+                continue;
+            }
+            if token == "final" {
+                continue;
+            }
+            // First non-annotation token is the type.
+            ty = Some(token.to_string());
+            break;
+        }
+        let ty = ty?;
+        let ty_normalized = ty.clone();
+
+        let col = find_token_column(raw_line, &ty, search_start)?;
+        search_start = col as usize + ty.len();
+        let span = Location::new(
+            path.clone(),
+            Range::new(
+                Position::new(line_idx, col as u32),
+                Position::new(line_idx, (col + ty.len()) as u32),
+            ),
+        );
+
+        params.push(ParsedParam {
+            ty: ty_normalized,
+            qualifier,
+            span,
+        });
+    }
+
+    Some(params)
+}
+
+fn find_token_column(line: &str, token: &str, from: usize) -> Option<usize> {
+    line[from..].find(token).map(|idx| from + idx)
+}
+
+#[derive(Debug, Clone)]
+struct ParsedField {
+    ty: String,
+    span: Location,
+}
+
+fn parse_field_declaration(raw_line: &str, line_idx: u32, path: &PathBuf) -> Option<ParsedField> {
+    // `Foo bar;`
+    let line = raw_line.trim();
+    if !line.ends_with(';') {
+        return None;
+    }
+    let mut tokens = line.trim_end_matches(';').split_whitespace();
+    let ty = tokens.next()?.to_string();
+    let ty_norm = ty.clone();
+    let col = raw_line.find(&ty)?;
+    let span = Location::new(
+        path.clone(),
+        Range::new(
+            Position::new(line_idx, col as u32),
+            Position::new(line_idx, (col + ty.len()) as u32),
+        ),
+    );
+    Some(ParsedField { ty: ty_norm, span })
+}
+
+#[derive(Debug, Clone)]
+struct ParsedComponentMethod {
+    kind: ComponentMethodKind,
+}
+
+#[derive(Debug, Clone)]
+enum ComponentMethodKind {
+    Provision { return_type: String, span: Location },
+    MembersInjection { param_types: Vec<ParsedParam> },
+}
+
+fn parse_component_method(
+    raw_line: &str,
+    line_idx: u32,
+    path: &PathBuf,
+) -> Option<ParsedComponentMethod> {
+    let line = raw_line.trim();
+    if line.is_empty() || line.starts_with("//") {
+        return None;
+    }
+    if !line.contains('(') || !line.ends_with(';') {
+        return None;
+    }
+    let before_paren = line.split('(').next()?.trim();
+    let mut tokens: Vec<&str> = before_paren.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+    let _method_name = tokens.pop()?;
+    let return_type = tokens.pop()?.to_string();
+    if return_type == "void" {
+        let params = parse_params_from_line(raw_line, line_idx, path)?;
+        return Some(ParsedComponentMethod {
+            kind: ComponentMethodKind::MembersInjection {
+                param_types: params,
+            },
+        });
+    }
+
+    let col = raw_line.find(&return_type)?;
+    let span = Location::new(
+        path.clone(),
+        Range::new(
+            Position::new(line_idx, col as u32),
+            Position::new(line_idx, (col + return_type.len()) as u32),
+        ),
+    );
+    Some(ParsedComponentMethod {
+        kind: ComponentMethodKind::Provision { return_type, span },
+    })
+}
+
+fn span_for_token(path: &PathBuf, line_idx: u32, raw_line: &str, token: &str) -> Option<Location> {
+    let col = raw_line.find(token)?;
+    Some(Location::new(
+        path.clone(),
+        Range::new(
+            Position::new(line_idx, col as u32),
+            Position::new(line_idx, (col + token.len()) as u32),
+        ),
+    ))
+}
+
+fn fallback_span(path: &PathBuf, line_idx: u32) -> Location {
+    Location::new(path.clone(), Range::point(Position::new(line_idx, 0)))
+}
