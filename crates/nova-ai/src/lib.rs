@@ -1,8 +1,10 @@
 //! `nova-ai` provides AI-adjacent functionality for Project Nova.
 //!
-//! This crate is deliberately model-agnostic: it defines configuration and
-//! interfaces, plus baseline non-ML implementations that allow other crates to
-//! integrate AI enhancements behind feature flags.
+//! The crate is deliberately model-agnostic and designed for graceful
+//! degradation:
+//! - Local-only helpers like completion ranking and semantic search
+//! - Privacy utilities (anonymization/redaction) for cloud integrations
+//! - Optional cloud LLM client and higher-level AI actions
 
 mod anonymizer;
 mod completion_ranking;
@@ -10,7 +12,14 @@ mod config;
 mod semantic_search;
 mod util;
 
+pub mod actions;
+pub mod cloud;
+pub mod context;
+pub mod privacy;
+
+pub use actions::AiService;
 pub use anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
+pub use cloud::{CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
 pub use completion_ranking::{
     maybe_rank_completions, rank_completions_with_timeout, BaselineCompletionRanker,
     CompletionRanker,
@@ -18,6 +27,8 @@ pub use completion_ranking::{
 pub use config::{
     AiConfig, AiFeatures, AiTimeouts, CloudConfig, CloudProvider, LocalModelConfig, PrivacyConfig,
 };
+pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedSymbol};
+pub use privacy::{PrivacyMode, RedactionConfig};
 pub use semantic_search::{SearchResult, SemanticSearch, TrigramSemanticSearch};
 
 #[cfg(test)]
@@ -230,3 +241,4 @@ mod tests {
         assert_eq!(results[0].path, PathBuf::from("src/A.java"));
     }
 }
+

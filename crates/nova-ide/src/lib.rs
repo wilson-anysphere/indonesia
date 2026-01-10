@@ -4,6 +4,7 @@
 //! control-flow, etc.). For this repository we only implement the small portion
 //! required by `nova-dap` and Nova's debugging extensions.
 
+pub mod ai;
 pub mod semantics;
 pub mod code_action;
 
@@ -12,6 +13,12 @@ pub mod code_intelligence;
 mod project;
 
 pub use completion::{filter_and_rank_completions, CompletionItem};
+pub use ai::{
+    explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
+    GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, NovaCommand,
+    CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN,
+    COMMAND_EXPLAIN_ERROR, COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
+};
 pub use project::{
     DebugConfiguration, DebugConfigurationKind, DebugConfigurationRequest, JavaClassInfo, Project,
     ProjectDiscoveryError,

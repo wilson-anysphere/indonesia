@@ -9,6 +9,7 @@ nova-build = { path = "../nova-build" }
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
+nova-ai = { path = "../nova-ai" }
 nova-ide = { path = "../nova-ide" }
 nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
@@ -19,8 +20,12 @@ lsp-types = "0.97"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio-util = "0.7"
+url = "2"
 
 [dev-dependencies]
+httpmock = "0.7"
 pretty_assertions = "1.4"
 tempfile = "3.10.1"
 nova-test-utils = { path = "../nova-test-utils" }

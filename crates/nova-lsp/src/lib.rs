@@ -16,6 +16,10 @@
 //! - Debugger-excellence endpoints
 //!   - `nova/debug/configurations`
 //!   - `nova/debug/hotSwap`
+//! - AI augmentation endpoints (implemented in the `nova-lsp` binary)
+//!   - `nova/ai/explainError`
+//!   - `nova/ai/generateMethodBody`
+//!   - `nova/ai/generateTests`
 
 pub mod extensions;
 pub mod extract_method;
@@ -49,6 +53,11 @@ pub const RELOAD_PROJECT_METHOD: &str = "nova/reloadProject";
 
 pub const DEBUG_CONFIGURATIONS_METHOD: &str = "nova/debug/configurations";
 pub const DEBUG_HOT_SWAP_METHOD: &str = "nova/debug/hotSwap";
+
+// AI custom requests (handled by the `nova-lsp` binary).
+pub const AI_EXPLAIN_ERROR_METHOD: &str = "nova/ai/explainError";
+pub const AI_GENERATE_METHOD_BODY_METHOD: &str = "nova/ai/generateMethodBody";
+pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
 
 /// Dispatch a Nova custom request (`nova/*`) by method name.
 ///

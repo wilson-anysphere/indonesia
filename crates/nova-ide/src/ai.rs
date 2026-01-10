@@ -1,0 +1,108 @@
+//! AI-related IDE primitives (code actions + arguments).
+//!
+//! This module is protocol-agnostic: `nova-lsp` is responsible for converting
+//! these types into concrete LSP objects.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const CODE_ACTION_KIND_EXPLAIN: &str = "nova.explain";
+pub const CODE_ACTION_KIND_AI_GENERATE: &str = "nova.ai.generate";
+pub const CODE_ACTION_KIND_AI_TESTS: &str = "nova.ai.tests";
+
+pub const COMMAND_EXPLAIN_ERROR: &str = "nova.ai.explainError";
+pub const COMMAND_GENERATE_METHOD_BODY: &str = "nova.ai.generateMethodBody";
+pub const COMMAND_GENERATE_TESTS: &str = "nova.ai.generateTests";
+
+/// A protocol-agnostic representation of an editor code action.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NovaCodeAction {
+    pub title: String,
+    pub kind: &'static str,
+    pub command: NovaCommand,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NovaCommand {
+    pub name: String,
+    pub arguments: Vec<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExplainErrorArgs {
+    pub diagnostic_message: String,
+
+    /// Optional source snippet around the diagnostic location.
+    pub code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerateMethodBodyArgs {
+    /// The method signature, including modifiers, return type and name.
+    pub method_signature: String,
+
+    /// Optional surrounding context (enclosing class, other members, etc).
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GenerateTestsArgs {
+    /// A description of the test target (method or class signature).
+    pub target: String,
+
+    /// Optional surrounding context.
+    pub context: Option<String>,
+}
+
+pub fn explain_error_action(args: ExplainErrorArgs) -> NovaCodeAction {
+    NovaCodeAction {
+        title: "Explain this error".to_string(),
+        kind: CODE_ACTION_KIND_EXPLAIN,
+        command: NovaCommand {
+            name: COMMAND_EXPLAIN_ERROR.to_string(),
+            arguments: vec![serde_json::to_value(args).expect("ExplainErrorArgs is serializable")],
+        },
+    }
+}
+
+pub fn generate_method_body_action(args: GenerateMethodBodyArgs) -> NovaCodeAction {
+    NovaCodeAction {
+        title: "Generate method body with AI".to_string(),
+        kind: CODE_ACTION_KIND_AI_GENERATE,
+        command: NovaCommand {
+            name: COMMAND_GENERATE_METHOD_BODY.to_string(),
+            arguments: vec![serde_json::to_value(args)
+                .expect("GenerateMethodBodyArgs is serializable")],
+        },
+    }
+}
+
+pub fn generate_tests_action(args: GenerateTestsArgs) -> NovaCodeAction {
+    NovaCodeAction {
+        title: "Generate tests with AI".to_string(),
+        kind: CODE_ACTION_KIND_AI_TESTS,
+        command: NovaCommand {
+            name: COMMAND_GENERATE_TESTS.to_string(),
+            arguments: vec![serde_json::to_value(args).expect("GenerateTestsArgs is serializable")],
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn code_actions_round_trip_arguments() {
+        let action = explain_error_action(ExplainErrorArgs {
+            diagnostic_message: "cannot find symbol".to_string(),
+            code: Some("foo.bar()".to_string()),
+        });
+
+        let args: ExplainErrorArgs =
+            serde_json::from_value(action.command.arguments[0].clone()).unwrap();
+        assert_eq!(args.diagnostic_message, "cannot find symbol");
+        assert_eq!(args.code.as_deref(), Some("foo.bar()"));
+    }
+}
+
