@@ -3,6 +3,16 @@ use std::collections::{HashMap, HashSet};
 use nova_types::{Diagnostic, Span};
 use tree_sitter::{Node, Parser};
 
+pub const JPA_PARSE_ERROR: &str = "JPA_PARSE_ERROR";
+pub const JPA_MISSING_ID: &str = "JPA_MISSING_ID";
+pub const JPA_NO_NOARG_CTOR: &str = "JPA_NO_NOARG_CTOR";
+pub const JPA_REL_INVALID_TARGET_TYPE: &str = "JPA_REL_INVALID_TARGET_TYPE";
+pub const JPA_REL_TARGET_UNKNOWN: &str = "JPA_REL_TARGET_UNKNOWN";
+pub const JPA_REL_TARGET_NOT_ENTITY: &str = "JPA_REL_TARGET_NOT_ENTITY";
+pub const JPA_MAPPEDBY_MISSING: &str = "JPA_MAPPEDBY_MISSING";
+pub const JPA_MAPPEDBY_NOT_RELATIONSHIP: &str = "JPA_MAPPEDBY_NOT_RELATIONSHIP";
+pub const JPA_MAPPEDBY_WRONG_TARGET: &str = "JPA_MAPPEDBY_WRONG_TARGET";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
     pub name: String,
@@ -93,7 +103,7 @@ pub(crate) fn analyze_entities(sources: &[&str]) -> AnalysisResult {
         match parse_entities(src) {
             Ok(mut parsed) => entities.append(&mut parsed),
             Err(err) => diagnostics.push(Diagnostic::error(
-                "JPA_PARSE_ERROR",
+                JPA_PARSE_ERROR,
                 format!("Failed to parse Java source: {err}"),
                 None,
             )),
@@ -686,7 +696,7 @@ fn validate_model(model: &EntityModel) -> Vec<Diagnostic> {
     for entity in model.entities.values() {
         if entity.id_fields().next().is_none() {
             diags.push(Diagnostic::error(
-                "JPA_MISSING_ID",
+                JPA_MISSING_ID,
                 format!(
                     "Entity `{}` does not declare an @Id or @EmbeddedId field",
                     entity.name
@@ -697,7 +707,7 @@ fn validate_model(model: &EntityModel) -> Vec<Diagnostic> {
 
         if entity.has_explicit_ctor && !entity.has_no_arg_ctor {
             diags.push(Diagnostic::warning(
-                "JPA_NO_NOARG_CTOR",
+                JPA_NO_NOARG_CTOR,
                 format!(
                     "Entity `{}` does not declare a non-private no-arg constructor",
                     entity.name
@@ -806,7 +816,7 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
 
             if !relationship_type_matches_field(&rel.kind, &field.ty) {
                 diags.push(Diagnostic::error(
-                    "JPA_REL_INVALID_TARGET_TYPE",
+                    JPA_REL_INVALID_TARGET_TYPE,
                     format!(
                         "Relationship `{}`.{} has incompatible field type `{}` for {:?}",
                         entity.name, field.name, field.ty, rel.kind
@@ -817,7 +827,7 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
 
             let Some(target) = &rel.target_entity else {
                 diags.push(Diagnostic::warning(
-                    "JPA_REL_TARGET_UNKNOWN",
+                    JPA_REL_TARGET_UNKNOWN,
                     format!(
                         "Unable to determine relationship target for `{}`.{}",
                         entity.name, field.name
@@ -829,7 +839,7 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
 
             if model.entity(target).is_none() {
                 diags.push(Diagnostic::error(
-                    "JPA_REL_TARGET_NOT_ENTITY",
+                    JPA_REL_TARGET_NOT_ENTITY,
                     format!(
                         "Relationship `{}`.{} targets `{}`, which is not a known @Entity",
                         entity.name, field.name, target
@@ -842,7 +852,7 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
                 if let Some(target_entity) = model.entity(target) {
                     let Some(mapped_field) = target_entity.field_named(mapped_by) else {
                         diags.push(Diagnostic::error(
-                            "JPA_MAPPEDBY_MISSING",
+                            JPA_MAPPEDBY_MISSING,
                             format!(
                                 "`mappedBy=\"{}\"` on `{}`.{} does not exist on target entity `{}`",
                                 mapped_by, entity.name, field.name, target
@@ -856,7 +866,7 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
                     // relationship back to the declaring entity.
                     let Some(mapped_rel) = &mapped_field.relationship else {
                         diags.push(Diagnostic::warning(
-                            "JPA_MAPPEDBY_NOT_RELATIONSHIP",
+                            JPA_MAPPEDBY_NOT_RELATIONSHIP,
                             format!(
                                 "`mappedBy=\"{}\"` on `{}`.{} refers to `{}`.{}, which is not a relationship field",
                                 mapped_by, entity.name, field.name, target, mapped_by
@@ -869,7 +879,7 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
                     if let Some(mapped_target) = &mapped_rel.target_entity {
                         if mapped_target != &entity.name {
                             diags.push(Diagnostic::warning(
-                                "JPA_MAPPEDBY_WRONG_TARGET",
+                                JPA_MAPPEDBY_WRONG_TARGET,
                                 format!(
                                     "`mappedBy=\"{}\"` on `{}`.{} points at `{}`.{} which targets `{}`, expected `{}`",
                                     mapped_by,

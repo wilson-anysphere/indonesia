@@ -14,10 +14,16 @@ mod jpql;
 
 pub use applicability::is_jpa_applicable;
 pub use applicability::is_jpa_applicable_with_classpath;
-pub use entity::{AnalysisResult, Entity, EntityModel, Field, Relationship, RelationshipKind};
+pub use entity::{
+    AnalysisResult, Entity, EntityModel, Field, Relationship, RelationshipKind,
+    JPA_MAPPEDBY_MISSING, JPA_MAPPEDBY_NOT_RELATIONSHIP, JPA_MAPPEDBY_WRONG_TARGET, JPA_MISSING_ID,
+    JPA_NO_NOARG_CTOR, JPA_PARSE_ERROR, JPA_REL_INVALID_TARGET_TYPE, JPA_REL_TARGET_NOT_ENTITY,
+    JPA_REL_TARGET_UNKNOWN,
+};
 pub use jpql::{
     extract_jpql_strings, jpql_completions, jpql_completions_in_java_source, jpql_diagnostics,
-    jpql_diagnostics_in_java_source, Token, TokenKind,
+    jpql_diagnostics_in_java_source, tokenize_jpql, Token, TokenKind, JPQL_UNKNOWN_ALIAS,
+    JPQL_UNKNOWN_ENTITY, JPQL_UNKNOWN_FIELD,
 };
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};

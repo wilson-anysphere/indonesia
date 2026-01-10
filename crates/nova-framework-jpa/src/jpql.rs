@@ -10,6 +10,10 @@ use regex::Regex;
 
 use crate::entity::EntityModel;
 
+pub const JPQL_UNKNOWN_ENTITY: &str = "JPQL_UNKNOWN_ENTITY";
+pub const JPQL_UNKNOWN_ALIAS: &str = "JPQL_UNKNOWN_ALIAS";
+pub const JPQL_UNKNOWN_FIELD: &str = "JPQL_UNKNOWN_FIELD";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     Ident(String),
@@ -515,7 +519,7 @@ pub fn jpql_diagnostics(query: &str, model: &EntityModel) -> Vec<Diagnostic> {
 
         let Some(entity_name) = alias_map.get(alias) else {
             diags.push(Diagnostic::error(
-                "JPQL_UNKNOWN_ALIAS",
+                JPQL_UNKNOWN_ALIAS,
                 format!("Unknown JPQL alias `{}`", alias),
                 Some(tok.span),
             ));
@@ -539,7 +543,7 @@ pub fn jpql_diagnostics(query: &str, model: &EntityModel) -> Vec<Diagnostic> {
 
             let Some(field) = entity.field_named(segment) else {
                 diags.push(Diagnostic::error(
-                    "JPQL_UNKNOWN_FIELD",
+                    JPQL_UNKNOWN_FIELD,
                     format!("Unknown field `{}` on entity `{}`", segment, entity.name),
                     Some(seg_tok.span),
                 ));
@@ -581,7 +585,7 @@ fn validate_entity_name(
 ) {
     if model.entity_by_jpql_name(entity_name).is_none() {
         diags.push(Diagnostic::error(
-            "JPQL_UNKNOWN_ENTITY",
+            JPQL_UNKNOWN_ENTITY,
             format!("Unknown JPQL entity `{}`", entity_name),
             Some(span),
         ));
