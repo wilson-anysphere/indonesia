@@ -6,6 +6,20 @@ The documents under `docs/` describe Nova's intended design and implementation a
 
 For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
 
+## Technology stack (at a glance)
+
+- Incremental query engine: Salsa via `ra_ap_salsa` (`ra_salsa`) ([ADR 0001](adr/0001-incremental-query-engine.md))
+- Syntax trees: `rowan` red/green trees + typed AST wrappers ([ADR 0002](adr/0002-syntax-tree-rowan.md))
+- Protocol transport:
+  - LSP: target `lsp-server` message loop ([ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md))
+  - DAP: Nova-owned message loop + codec ([ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md))
+- Concurrency: snapshot reads + single-writer updates; Tokio orchestration + Rayon for CPU work ([ADR 0004](adr/0004-concurrency-model.md))
+- Persistence:
+  - `rkyv` + validation for mmap-friendly indexes
+  - `serde`/`bincode` for small caches and metadata
+  ([ADR 0005](adr/0005-persistence-formats.md))
+- Canonical identifiers: structured VFS paths + normalized URIs (`file`, `jar`/`jmod`, `nova`) ([ADR 0006](adr/0006-uri-normalization.md))
+
 ## ADR index
 
 1. [0001 — Incremental query engine (Salsa)](adr/0001-incremental-query-engine.md)
