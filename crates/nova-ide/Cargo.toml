@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 nova-ai = { path = "../nova-ai", optional = true }
 nova-core = { path = "../nova-core" }
+nova-decompile = { path = "../nova-decompile" }
 nova-project = { path = "../nova-project" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-db = { path = "../nova-db" }

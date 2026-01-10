@@ -20,6 +20,7 @@ members = [
     "crates/nova-hir",
     "crates/nova-resolve",
     "crates/nova-classfile",
+    "crates/nova-decompile",
     "crates/nova-classpath",
     "crates/nova-archive",
     "crates/nova-config-metadata",

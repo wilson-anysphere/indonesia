@@ -26,6 +26,7 @@
 //!   - `nova/build/status`
 //!   - `nova/build/diagnostics`
 
+pub mod decompile;
 pub mod extensions;
 pub mod extract_method;
 pub mod refactor;

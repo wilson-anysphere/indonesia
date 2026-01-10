@@ -10,9 +10,10 @@ tokio = { workspace = true }
 nova-apt = { path = "../nova-apt" }
 nova-build = { path = "../nova-build" }
 nova-config = { path = "../nova-config" }
+nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
-nova-ai = { path = "../nova-ai" }
+nova-decompile = { path = "../nova-decompile" }
 nova-ide = { path = "../nova-ide" }
 nova-ai = { path = "../nova-ai", optional = true }
 nova-db = { path = "../nova-db" }

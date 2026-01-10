@@ -2,9 +2,11 @@
 //!
 //! The real Nova project would expose rich semantic queries (symbols, types,
 //! control-flow, etc.). For this repository we only implement the small portion
-//! required by `nova-dap` and Nova's debugging extensions.
+//! required by `nova-dap`, Nova's debugging extensions, and basic navigation
+//! helpers used by the LSP layer.
 
 pub mod ai;
+pub mod decompile;
 pub mod semantics;
 pub mod code_action;
 
@@ -20,6 +22,7 @@ pub use ai::{
 };
 pub use completion::filter_and_rank_completions;
 pub use nova_core::CompletionItem;
+pub use decompile::{decompiled_definition_location, DefinitionLocation};
 pub use project::{
     DebugConfiguration, DebugConfigurationKind, DebugConfigurationRequest, JavaClassInfo, Project,
     ProjectDiscoveryError,
