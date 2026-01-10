@@ -126,6 +126,53 @@ impl<'a> Resolver<'a> {
         self.resolve_type_in_index(path)
     }
 
+    /// Resolve a qualified type name in the context of a scope.
+    ///
+    /// This is a small (but important) extension over [`Resolver::resolve_qualified_name`]:
+    /// Java code frequently refers to nested types through an imported/enclosing
+    /// outer type, e.g. `Map.Entry`, where `Map` is a simple name resolved via
+    /// imports/same-package/java.lang.
+    ///
+    /// The algorithm is:
+    /// 1. Try resolving the path as a fully-qualified name (fast path, supports
+    ///    `java.util.Map.Entry`).
+    /// 2. Otherwise resolve the first segment as a simple type name in `scope`,
+    ///    then append remaining segments as binary nested type separators (`$`)
+    ///    and resolve via the type index (`java.util.Map$Entry`).
+    pub fn resolve_qualified_type_in_scope(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        path: &QualifiedName,
+    ) -> Option<TypeName> {
+        if let Some(ty) = self.resolve_qualified_name(path) {
+            return Some(ty);
+        }
+
+        let segments = path.segments();
+        let (first, rest) = segments.split_first()?;
+
+        if rest.is_empty() {
+            return match self.resolve_name(scopes, scope, first)? {
+                Resolution::Type(ty) => Some(ty),
+                _ => None,
+            };
+        }
+
+        let owner = match self.resolve_name(scopes, scope, first)? {
+            Resolution::Type(ty) => ty,
+            _ => return None,
+        };
+
+        let mut candidate = owner.as_str().to_string();
+        for seg in rest {
+            candidate.push('$');
+            candidate.push_str(seg.as_str());
+        }
+
+        self.resolve_type_in_index(&QualifiedName::from_dotted(&candidate))
+    }
+
     /// Resolve a simple name against a given scope.
     pub fn resolve_name(
         &self,
@@ -1055,5 +1102,29 @@ mod tests {
             resolver.resolve_import(&unit, &Name::from("Entry")),
             Some(TypeName::from("java.util.Map$Entry"))
         );
+    }
+
+    #[test]
+    fn qualified_type_resolves_via_imported_outer() {
+        let jdk = JdkIndex::new();
+        let mut index = TestIndex::default();
+        index.add_type("java.util", "Map");
+        let entry = index.add_type("java.util", "Map$Entry");
+
+        let mut unit = CompilationUnit::new(None);
+        unit.imports.push(ImportDecl::TypeSingle {
+            ty: QualifiedName::from_dotted("java.util.Map"),
+            alias: None,
+        });
+
+        let result = build_scopes(&jdk, &unit);
+        let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+        let resolved = resolver.resolve_qualified_type_in_scope(
+            &result.scopes,
+            result.file_scope,
+            &QualifiedName::from_dotted("Map.Entry"),
+        );
+        assert_eq!(resolved, Some(entry));
     }
 }
