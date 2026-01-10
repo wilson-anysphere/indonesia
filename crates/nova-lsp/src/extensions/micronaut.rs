@@ -13,7 +13,7 @@ pub struct MicronautRequest {
     pub project_root: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpanDto {
     pub start: usize,
@@ -29,7 +29,7 @@ impl From<nova_framework_micronaut::Span> for SpanDto {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MicronautEndpointItem {
     pub method: String,
@@ -37,7 +37,7 @@ pub struct MicronautEndpointItem {
     pub handler: MicronautHandlerLocation,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MicronautHandlerLocation {
     pub file: String,
@@ -46,14 +46,14 @@ pub struct MicronautHandlerLocation {
     pub method_name: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MicronautEndpointsResponse {
     pub schema_version: u32,
     pub endpoints: Vec<MicronautEndpointItem>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MicronautBeanItem {
     pub id: String,
@@ -65,7 +65,7 @@ pub struct MicronautBeanItem {
     pub span: SpanDto,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MicronautBeansResponse {
     pub schema_version: u32,

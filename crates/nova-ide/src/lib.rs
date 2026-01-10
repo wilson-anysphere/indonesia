@@ -47,6 +47,17 @@ pub mod spring {
     };
 }
 
+/// Micronaut-specific helpers (DI / endpoints + `@Value("${...}")` completions).
+pub mod micronaut {
+    pub use nova_framework_micronaut::{
+        analyze_sources, analyze_sources_with_config, collect_config_keys,
+        completions_for_value_placeholder, config_completions, validation_diagnostics, AnalysisResult,
+        Bean, BeanKind, ConfigFile, ConfigFileKind, Endpoint, HandlerLocation, InjectionPoint,
+        InjectionResolution, JavaSource, MicronautAnalyzer, Qualifier,
+        MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH, MICRONAUT_VALIDATION_PRIMITIVE_NONNULL,
+    };
+}
+
 mod db;
 mod navigation;
 mod parse;

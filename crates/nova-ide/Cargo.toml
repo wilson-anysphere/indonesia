@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 nova-framework-spring = { path = "../nova-framework-spring" }
+nova-framework-micronaut = { path = "../nova-framework-micronaut" }
 
 [features]
 ai = ["dep:nova-ai"]

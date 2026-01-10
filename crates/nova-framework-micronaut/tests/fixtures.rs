@@ -1,4 +1,5 @@
 use nova_framework_micronaut::analyze_java_sources;
+use nova_framework_micronaut::{collect_config_keys, completions_for_value_placeholder, ConfigFile};
 use nova_types::Severity;
 use pretty_assertions::assert_eq;
 
@@ -170,3 +171,51 @@ fn diagnostic_circular_dependency() {
     );
 }
 
+#[test]
+fn config_value_placeholder_completions_use_application_keys() {
+    let config_keys = collect_config_keys(&[ConfigFile::properties(
+        "application.properties",
+        "foo.bar=1\nfoo.baz=2\nmicronaut.server.port=8080\n",
+    )]);
+
+    let java = r#"
+        import io.micronaut.context.annotation.Value;
+
+        class C {
+            @Value("${foo.b}")
+            String value;
+        }
+    "#;
+
+    let offset = java
+        .find("${foo.b")
+        .expect("placeholder")
+        + "${foo.b".len();
+
+    let items = completions_for_value_placeholder(java, offset, &config_keys);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(labels.contains(&"foo.bar"));
+    assert!(labels.contains(&"foo.baz"));
+    assert!(!labels.contains(&"micronaut.server.port"));
+}
+
+#[test]
+fn validation_diagnostic_notnull_on_primitive() {
+    let src = r#"
+        import jakarta.validation.constraints.NotNull;
+
+        class Foo {
+            @NotNull int value;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[src]);
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "MICRONAUT_VALIDATION_PRIMITIVE_NONNULL" && d.severity == Severity::Warning),
+        "expected validation warning, got: {:#?}",
+        analysis.diagnostics
+    );
+}

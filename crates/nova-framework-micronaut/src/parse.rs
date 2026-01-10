@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
+use nova_types::Span;
 use tree_sitter::{Node, Parser, Tree};
 
 #[derive(Clone, Debug)]
 pub(crate) struct ParsedAnnotation {
     pub simple_name: String,
     pub args: HashMap<String, String>,
+    pub span: Span,
 }
 
 pub(crate) fn parse_java(source: &str) -> Result<Tree, String> {
@@ -56,10 +58,11 @@ pub(crate) fn collect_annotations(modifiers: Node<'_>, source: &str) -> Vec<Pars
 
 pub(crate) fn parse_annotation(node: Node<'_>, source: &str) -> Option<ParsedAnnotation> {
     let text = node_text(source, node);
-    parse_annotation_text(text)
+    let span = Span::new(node.start_byte(), node.end_byte());
+    parse_annotation_text(text, span)
 }
 
-pub(crate) fn parse_annotation_text(text: &str) -> Option<ParsedAnnotation> {
+pub(crate) fn parse_annotation_text(text: &str, span: Span) -> Option<ParsedAnnotation> {
     let text = text.trim();
     if !text.starts_with('@') {
         return None;
@@ -83,7 +86,11 @@ pub(crate) fn parse_annotation_text(text: &str) -> Option<ParsedAnnotation> {
         parse_annotation_args(args_part, &mut args);
     }
 
-    Some(ParsedAnnotation { simple_name, args })
+    Some(ParsedAnnotation {
+        simple_name,
+        args,
+        span,
+    })
 }
 
 pub(crate) fn parse_annotation_args(args_part: &str, out: &mut HashMap<String, String>) {

@@ -23,11 +23,19 @@ mod beans;
 mod config;
 mod endpoints;
 mod parse;
+mod validation;
 
 pub use applicability::{is_micronaut_applicable, is_micronaut_applicable_with_classpath};
 pub use beans::{Bean, BeanKind, InjectionPoint, InjectionResolution, Qualifier};
-pub use config::{collect_config_keys, config_completions, ConfigFile, ConfigFileKind};
+pub use config::{
+    collect_config_keys, completions_for_value_placeholder, config_completions, ConfigFile,
+    ConfigFileKind,
+};
 pub use endpoints::{Endpoint, HandlerLocation};
+pub use validation::{
+    validation_diagnostics, MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH,
+    MICRONAUT_VALIDATION_PRIMITIVE_NONNULL,
+};
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
 
@@ -71,6 +79,7 @@ pub fn analyze_sources_with_config(sources: &[JavaSource], config_files: &[Confi
     let config_keys = collect_config_keys(config_files);
 
     let mut diagnostics = bean_analysis.diagnostics;
+    diagnostics.extend(validation::validation_diagnostics(sources));
     diagnostics.sort_by_key(|d| (d.code, d.span.map(|s| s.start).unwrap_or(0)));
 
     AnalysisResult {
@@ -137,4 +146,3 @@ impl FrameworkAnalyzer for MicronautAnalyzer {
         Vec::new()
     }
 }
-
