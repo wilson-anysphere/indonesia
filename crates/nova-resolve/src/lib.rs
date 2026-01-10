@@ -146,11 +146,11 @@ impl<'a> Resolver<'a> {
             }
 
             match &data.kind {
-                ScopeKind::Import { imports, package } => {
+                ScopeKind::Import { imports, .. } => {
                     if let Some(res) = self.resolve_static_imports(imports, name) {
                         return Some(res);
                     }
-                    if let Some(ty) = self.resolve_import_types(imports, package.as_ref(), name) {
+                    if let Some(ty) = self.resolve_import_types(imports, name) {
                         return Some(Resolution::Type(ty));
                     }
                 }
@@ -188,7 +188,7 @@ impl<'a> Resolver<'a> {
 
     /// Resolve a type name via the file's imports and package.
     pub fn resolve_import(&self, file: &CompilationUnit, name: &Name) -> Option<TypeName> {
-        self.resolve_import_types(&file.imports, file.package.as_ref(), name)
+        self.resolve_import_types(&file.imports, name)
             .or_else(|| {
                 file.package
                     .as_ref()
@@ -199,12 +199,7 @@ impl<'a> Resolver<'a> {
             })
     }
 
-    fn resolve_import_types(
-        &self,
-        imports: &[ImportDecl],
-        current_package: Option<&PackageName>,
-        name: &Name,
-    ) -> Option<TypeName> {
+    fn resolve_import_types(&self, imports: &[ImportDecl], name: &Name) -> Option<TypeName> {
         // 1) Explicit single-type imports (shadow star imports).
         for import in imports {
             if let ImportDecl::TypeSingle { ty, alias } = import {
@@ -221,13 +216,6 @@ impl<'a> Resolver<'a> {
                 if let Some(ty) = self.resolve_type_in_package_index(package, name) {
                     return Some(ty);
                 }
-            }
-        }
-
-        // 3) Same-package types (after explicit imports).
-        if let Some(pkg) = current_package {
-            if let Some(ty) = self.resolve_type_in_package_index(pkg, name) {
-                return Some(ty);
             }
         }
 

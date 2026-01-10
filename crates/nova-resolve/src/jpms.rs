@@ -236,4 +236,3 @@ fn parse_first_type_name(src: &str) -> Option<String> {
     }
     None
 }
-
