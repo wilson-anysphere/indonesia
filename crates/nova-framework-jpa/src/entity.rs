@@ -361,10 +361,15 @@ fn relationship_from_annotation(ann: &Annotation, _source: &str) -> Option<Relat
         _ => return None,
     };
 
+    let target_entity = ann
+        .args
+        .get("targetEntity")
+        .and_then(|value| parse_class_literal(value));
+
     Some(Relationship {
         kind,
         field_name: String::new(),
-        target_entity: None,
+        target_entity,
         mapped_by: ann.args.get("mappedBy").cloned(),
         span: ann.span,
     })
@@ -542,9 +547,25 @@ fn hydrate_relationship_targets(model: &mut EntityModel) {
             let Some(rel) = field.relationship.as_mut() else {
                 continue;
             };
+            if rel.target_entity.is_some() {
+                continue;
+            }
             rel.target_entity = relationship_target_from_type(&rel.kind, &field.ty, &entity_names);
         }
     }
+}
+
+fn parse_class_literal(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let value = value.strip_suffix(".class").unwrap_or(value);
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.rsplit('.').next().unwrap_or(value).to_string())
 }
 
 fn relationship_target_from_type(

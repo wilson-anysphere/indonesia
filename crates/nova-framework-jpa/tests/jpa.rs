@@ -113,6 +113,68 @@ fn relationship_parsing_and_mappedby_validation() {
 }
 
 #[test]
+fn relationship_target_entity_attribute_is_respected() {
+    let user = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+        import jakarta.persistence.OneToMany;
+        import java.util.List;
+
+        @Entity
+        public class User {
+            @Id
+            private Long id;
+
+            @OneToMany(targetEntity = Post.class, mappedBy = "user")
+            private List posts;
+        }
+    "#;
+
+    let post = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+        import jakarta.persistence.ManyToOne;
+
+        @Entity
+        public class Post {
+            @Id
+            private Long id;
+
+            @ManyToOne
+            private User user;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[user, post]);
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .all(|d| d.severity != nova_framework_jpa::Severity::Error),
+        "unexpected error diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+
+    assert!(
+        !analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "JPA_REL_TARGET_UNKNOWN"),
+        "unexpected JPA_REL_TARGET_UNKNOWN diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+
+    let user_entity = analysis.model.entity("User").unwrap();
+    let posts = user_entity.field_named("posts").unwrap();
+    let rel = posts
+        .relationship
+        .as_ref()
+        .expect("posts should be relationship");
+
+    assert_eq!(rel.target_entity.as_deref(), Some("Post"));
+}
+
+#[test]
 fn jpql_completion_suggests_entities_and_fields() {
     let src = r#"
         import jakarta.persistence.Entity;
