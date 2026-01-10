@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -30,6 +31,7 @@ pub(crate) struct JdkSymbolIndex {
 
     packages: OnceLock<Vec<String>>,
     java_lang: OnceLock<Vec<Arc<JdkClassStub>>>,
+    binary_names_sorted: OnceLock<Vec<String>>,
 }
 
 impl JdkSymbolIndex {
@@ -81,6 +83,7 @@ impl JdkSymbolIndex {
             missing: Mutex::new(HashSet::new()),
             packages: OnceLock::new(),
             java_lang: OnceLock::new(),
+            binary_names_sorted: OnceLock::new(),
         })
     }
 
@@ -206,29 +209,39 @@ impl JdkSymbolIndex {
 
     /// All packages present in the JDK module set.
     pub fn packages(&self) -> Result<Vec<String>, JdkIndexError> {
-        if let Some(pkgs) = self.packages.get() {
-            return Ok(pkgs.clone());
-        }
+        Ok(self.packages_sorted()?.clone())
+    }
 
-        let mut set = BTreeSet::new();
-        for module_idx in 0..self.modules.len() {
-            self.ensure_module_indexed(module_idx)?;
-        }
+    pub fn packages_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
+        let prefix = normalize_binary_prefix(prefix);
+        let pkgs = self.packages_sorted()?;
 
-        for internal in self
-            .class_to_module
-            .lock()
-            .expect("mutex poisoned")
-            .keys()
-        {
-            if let Some((pkg, _)) = internal.rsplit_once('/') {
-                set.insert(internal_to_binary(pkg));
+        let start = pkgs.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
+        let mut out = Vec::new();
+        for pkg in &pkgs[start..] {
+            if pkg.starts_with(prefix.as_ref()) {
+                out.push(pkg.clone());
+            } else {
+                break;
             }
         }
+        Ok(out)
+    }
 
-        let pkgs: Vec<String> = set.into_iter().collect();
-        let _ = self.packages.set(pkgs.clone());
-        Ok(pkgs)
+    pub fn class_names_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
+        let prefix = normalize_binary_prefix(prefix);
+        let names = self.binary_names_sorted()?;
+
+        let start = names.partition_point(|name| name.as_str() < prefix.as_ref());
+        let mut out = Vec::new();
+        for name in &names[start..] {
+            if name.starts_with(prefix.as_ref()) {
+                out.push(name.clone());
+            } else {
+                break;
+            }
+        }
+        Ok(out)
     }
 
     fn insert_stub(&self, stub: Arc<JdkClassStub>) {
@@ -297,6 +310,61 @@ impl JdkSymbolIndex {
         let stub = Arc::new(classfile_to_stub(class_file));
         self.insert_stub(stub.clone());
         Ok(Some(stub))
+    }
+
+    fn packages_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {
+        if let Some(pkgs) = self.packages.get() {
+            return Ok(pkgs);
+        }
+
+        let mut set = BTreeSet::new();
+        for module_idx in 0..self.modules.len() {
+            self.ensure_module_indexed(module_idx)?;
+        }
+
+        for internal in self
+            .class_to_module
+            .lock()
+            .expect("mutex poisoned")
+            .keys()
+        {
+            if let Some((pkg, _)) = internal.rsplit_once('/') {
+                set.insert(internal_to_binary(pkg));
+            }
+        }
+
+        let pkgs: Vec<String> = set.into_iter().collect();
+        let _ = self.packages.set(pkgs);
+        Ok(self
+            .packages
+            .get()
+            .expect("packages OnceLock should be initialized"))
+    }
+
+    fn binary_names_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {
+        if let Some(names) = self.binary_names_sorted.get() {
+            return Ok(names);
+        }
+
+        for module_idx in 0..self.modules.len() {
+            self.ensure_module_indexed(module_idx)?;
+        }
+
+        let mut names: Vec<String> = self
+            .class_to_module
+            .lock()
+            .expect("mutex poisoned")
+            .keys()
+            .map(|internal| internal_to_binary(internal))
+            .collect();
+        names.sort();
+        names.dedup();
+
+        let _ = self.binary_names_sorted.set(names);
+        Ok(self
+            .binary_names_sorted
+            .get()
+            .expect("binary_names_sorted OnceLock should be initialized"))
     }
 }
 
@@ -367,4 +435,12 @@ fn is_direct_java_lang_member(internal_name: &str) -> bool {
     // Also exclude nested classes (`$`) because they are not implicitly
     // imported as unqualified names.
     !rest.contains('/') && !rest.contains('$')
+}
+
+fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
+    if prefix.contains('/') {
+        Cow::Owned(prefix.replace('/', "."))
+    } else {
+        Cow::Borrowed(prefix)
+    }
 }

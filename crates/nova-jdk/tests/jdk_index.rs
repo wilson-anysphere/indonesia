@@ -73,6 +73,19 @@ fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Err
 
     let pkgs = index.packages()?;
     assert!(pkgs.contains(&"java.lang".to_owned()));
+    assert!(index
+        .packages_with_prefix("java.l")?
+        .contains(&"java.lang".to_string()));
+    assert!(index
+        .packages_with_prefix("java/l")?
+        .contains(&"java.lang".to_string()));
+
+    assert!(index
+        .class_names_with_prefix("java.lang.S")?
+        .contains(&"java.lang.String".to_string()));
+    assert!(index
+        .class_names_with_prefix("java/lang/S")?
+        .contains(&"java.lang.String".to_string()));
 
     let string_def = TypeProvider::lookup_type(&index, "java.lang.String")
         .expect("TypeProvider should expose java.lang.String when symbols are loaded");

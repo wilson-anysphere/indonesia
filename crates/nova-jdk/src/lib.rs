@@ -16,6 +16,7 @@ mod stub;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::borrow::Cow;
 
 use nova_core::{
     Name, PackageName, ProjectConfig, QualifiedName, StaticMemberId, TypeIndex, TypeName,
@@ -145,6 +146,58 @@ impl JdkIndex {
         }
     }
 
+    /// All packages starting with `prefix` (binary name style, e.g. `java.ut`).
+    ///
+    /// For convenience this also accepts `/`-separated prefixes (e.g. `java/ut`)
+    /// and normalizes them to dotted form.
+    pub fn packages_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
+        match &self.symbols {
+            Some(symbols) => symbols.packages_with_prefix(prefix),
+            None => {
+                let prefix = normalize_binary_prefix(prefix);
+                let mut pkgs: Vec<String> = self.packages.iter().cloned().collect();
+                pkgs.sort();
+
+                let start = pkgs.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
+                let mut out = Vec::new();
+                for pkg in &pkgs[start..] {
+                    if pkg.starts_with(prefix.as_ref()) {
+                        out.push(pkg.clone());
+                    } else {
+                        break;
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// All class binary names starting with `prefix` (e.g. `java.lang.St`).
+    ///
+    /// This is intended for type-completion/search. It may trigger module
+    /// indexing the first time it is called.
+    pub fn class_names_with_prefix(&self, prefix: &str) -> Result<Vec<String>, JdkIndexError> {
+        match &self.symbols {
+            Some(symbols) => symbols.class_names_with_prefix(prefix),
+            None => {
+                let prefix = normalize_binary_prefix(prefix);
+                let mut names: Vec<String> = self.types.keys().cloned().collect();
+                names.sort();
+
+                let start = names.partition_point(|name| name.as_str() < prefix.as_ref());
+                let mut out = Vec::new();
+                for name in &names[start..] {
+                    if name.starts_with(prefix.as_ref()) {
+                        out.push(name.clone());
+                    } else {
+                        break;
+                    }
+                }
+                Ok(out)
+            }
+        }
+    }
+
     fn add_type(&mut self, package: &str, name: &str) {
         let fq = if package.is_empty() {
             name.to_string()
@@ -251,6 +304,14 @@ impl TypeProvider for JdkIndex {
 fn is_static(access_flags: u16) -> bool {
     const ACC_STATIC: u16 = 0x0008;
     access_flags & ACC_STATIC != 0
+}
+
+fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
+    if prefix.contains('/') {
+        Cow::Owned(prefix.replace('/', "."))
+    } else {
+        Cow::Borrowed(prefix)
+    }
 }
 // === Minimal class/method/type model (used by nova-types) ====================
 
