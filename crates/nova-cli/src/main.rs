@@ -65,36 +65,34 @@ struct SymbolsArgs {
 struct CacheArgs {
     #[command(subcommand)]
     command: CacheCommand,
-    /// Workspace root (defaults to current directory)
-    #[arg(long, default_value = ".")]
-    path: PathBuf,
-    /// Emit JSON suitable for CI
-    #[arg(long)]
-    json: bool,
 }
 
 #[derive(Subcommand)]
 enum CacheCommand {
-    Clean,
-    Status,
-    Warm,
+    Clean(WorkspaceArgs),
+    Status(WorkspaceArgs),
+    Warm(WorkspaceArgs),
 }
 
 #[derive(Args)]
 struct PerfArgs {
     #[command(subcommand)]
     command: PerfCommand,
+}
+
+#[derive(Subcommand)]
+enum PerfCommand {
+    Report(WorkspaceArgs),
+}
+
+#[derive(Args, Clone)]
+struct WorkspaceArgs {
     /// Workspace root (defaults to current directory)
     #[arg(long, default_value = ".")]
     path: PathBuf,
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
-}
-
-#[derive(Subcommand)]
-enum PerfCommand {
-    Report,
 }
 
 #[derive(Args)]
@@ -141,9 +139,9 @@ fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Command::Cache(args) => {
-            let ws = Workspace::open(&args.path)?;
             match args.command {
-                CacheCommand::Clean => {
+                CacheCommand::Clean(args) => {
+                    let ws = Workspace::open(&args.path)?;
                     let cache_root = ws.cache_root()?;
                     ws.cache_clean()?;
                     if !args.json {
@@ -152,11 +150,13 @@ fn run(cli: Cli) -> Result<i32> {
                         print_output(&serde_json::json!({ "ok": true }), true)?;
                     }
                 }
-                CacheCommand::Status => {
+                CacheCommand::Status(args) => {
+                    let ws = Workspace::open(&args.path)?;
                     let status = ws.cache_status()?;
                     print_cache_status(&status, args.json)?;
                 }
-                CacheCommand::Warm => {
+                CacheCommand::Warm(args) => {
+                    let ws = Workspace::open(&args.path)?;
                     let report = ws.cache_warm()?;
                     print_output(&report, args.json)?;
                 }
@@ -164,9 +164,9 @@ fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
         Command::Perf(args) => {
-            let ws = Workspace::open(&args.path)?;
             match args.command {
-                PerfCommand::Report => {
+                PerfCommand::Report(args) => {
+                    let ws = Workspace::open(&args.path)?;
                     let perf = ws.perf_report()?;
                     if args.json {
                         print_output(&PerfEnvelope { perf }, true)?;

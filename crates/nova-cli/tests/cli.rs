@@ -92,10 +92,10 @@ fn index_creates_persistent_cache_and_symbols_work() {
     // `cache status --json` should report metadata and index artifacts.
     let status_output = nova()
         .arg("cache")
+        .arg("status")
         .arg("--path")
         .arg(temp.path())
         .arg("--json")
-        .arg("status")
         .env("NOVA_CACHE_DIR", cache_root.path())
         .output()
         .unwrap();
