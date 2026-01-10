@@ -94,6 +94,11 @@ impl VfsPath {
             VfsPath::Uri(uri) => Some(uri.clone()),
         }
     }
+
+    #[cfg(feature = "lsp")]
+    pub fn to_lsp_uri(&self) -> Option<lsp_types::Uri> {
+        self.to_uri()?.parse().ok()
+    }
 }
 
 impl From<PathBuf> for VfsPath {
@@ -115,6 +120,20 @@ impl fmt::Display for VfsPath {
             VfsPath::Archive(archive) => write!(f, "{archive}"),
             VfsPath::Uri(uri) => write!(f, "{uri}"),
         }
+    }
+}
+
+#[cfg(feature = "lsp")]
+impl From<&lsp_types::Uri> for VfsPath {
+    fn from(value: &lsp_types::Uri) -> Self {
+        VfsPath::uri(value.to_string())
+    }
+}
+
+#[cfg(feature = "lsp")]
+impl From<lsp_types::Uri> for VfsPath {
+    fn from(value: lsp_types::Uri) -> Self {
+        VfsPath::uri(value.to_string())
     }
 }
 
@@ -164,5 +183,16 @@ mod tests {
         let uri = jmod.to_uri().expect("jmod uri");
         let round = VfsPath::uri(uri);
         assert_eq!(round, jmod);
+    }
+
+    #[cfg(feature = "lsp")]
+    #[test]
+    fn lsp_uri_roundtrips_for_local_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Main.java");
+        let vfs_path = VfsPath::local(path.clone());
+        let uri = vfs_path.to_lsp_uri().expect("lsp uri");
+        let round = VfsPath::from(&uri);
+        assert_eq!(round, vfs_path);
     }
 }
