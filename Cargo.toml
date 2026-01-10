@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/nova-core",
+    "crates/nova-vfs",
+]
+resolver = "2"
+
