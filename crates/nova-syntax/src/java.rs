@@ -685,7 +685,7 @@ impl Parser {
             self.bump();
             self.bump();
             let name = self.expect_ident();
-            let (members, body_range, end) = self.parse_type_body(name.text.as_str());
+            let (members, body_range, end) = self.parse_type_body(name.text.as_str(), false);
             let range = Span::new(start, end);
             return Some(ast::TypeDecl::Annotation(ast::AnnotationDecl {
                 name: name.text,
@@ -710,7 +710,8 @@ impl Parser {
         self.bump();
         let name = self.expect_ident();
 
-        let (members, body_range, end) = self.parse_type_body(name.text.as_str());
+        let is_enum = kind == "enum";
+        let (members, body_range, end) = self.parse_type_body(name.text.as_str(), is_enum);
         let range = Span::new(start, end);
 
         match kind.as_str() {
@@ -787,12 +788,16 @@ impl Parser {
         }
     }
 
-    fn parse_type_body(&mut self, type_name: &str) -> (Vec<ast::MemberDecl>, Span, usize) {
+    fn parse_type_body(&mut self, type_name: &str, is_enum: bool) -> (Vec<ast::MemberDecl>, Span, usize) {
         while !self.at_kind(TokenKind::LBrace) && !self.is_eof() {
             self.bump();
         }
         let lbrace = self.expect_kind(TokenKind::LBrace);
         let body_start = lbrace.range.start;
+
+        if is_enum {
+            self.skip_enum_constants();
+        }
 
         let mut members = Vec::new();
         while !self.is_eof() && !self.at_kind(TokenKind::RBrace) {
@@ -806,6 +811,64 @@ impl Parser {
         let rbrace = self.expect_kind(TokenKind::RBrace);
         let body_range = Span::new(body_start, rbrace.range.end);
         (members, body_range, rbrace.range.end)
+    }
+
+    fn skip_enum_constants(&mut self) {
+        // Enum constants must appear first in the body. We don't lower constants
+        // into the semantic `ItemTree` yet, but we still need to skip over them
+        // so subsequent members parse correctly.
+
+        // `enum E { ; ... }` (no constants, explicit separator).
+        if self.at_kind(TokenKind::Semi) {
+            self.bump();
+            return;
+        }
+
+        loop {
+            // Trailing comma before the semicolon separator.
+            if self.at_kind(TokenKind::Semi) {
+                self.bump();
+                break;
+            }
+            if self.at_kind(TokenKind::RBrace) {
+                break;
+            }
+
+            self.skip_modifiers_and_annotations();
+            if !self.at_kind(TokenKind::Ident) {
+                break;
+            }
+
+            // Constant name.
+            self.bump();
+
+            // Optional argument list.
+            if self.at_kind(TokenKind::LParen) {
+                self.skip_balanced(TokenKind::LParen, TokenKind::RParen);
+            }
+
+            // Optional class body for anonymous subclasses.
+            if self.at_kind(TokenKind::LBrace) {
+                self.skip_balanced(TokenKind::LBrace, TokenKind::RBrace);
+            }
+
+            if self.at_kind(TokenKind::Comma) {
+                self.bump();
+                continue;
+            }
+
+            if self.at_kind(TokenKind::Semi) {
+                self.bump();
+                break;
+            }
+
+            if self.at_kind(TokenKind::RBrace) {
+                break;
+            }
+
+            // Error recovery: consume something so we make progress.
+            self.bump();
+        }
     }
 
     fn parse_member_decl(&mut self, enclosing_type: &str) -> Option<ast::MemberDecl> {

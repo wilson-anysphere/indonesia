@@ -183,3 +183,57 @@ class Foo {
         .collect();
     assert_eq!(init_locals, vec!["s"]);
 }
+
+#[test]
+fn lower_enum_skips_constants_and_parses_members() {
+    let source = r#"
+enum E {
+    A, B;
+
+    int field;
+
+    void m() {
+        int x = 1;
+        System.out.println(x);
+    }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.items.len(), 1);
+    let enum_id = match tree.items[0] {
+        nova_hir::item_tree::Item::Enum(id) => id,
+        _ => panic!("expected enum item"),
+    };
+    assert_eq!(tree.enums[enum_id.idx()].name, "E");
+
+    // Enum constants should not be mis-lowered as fields.
+    assert_eq!(tree.fields.len(), 1);
+    assert_eq!(tree.fields[0].name, "field");
+
+    assert_eq!(tree.methods.len(), 1);
+    assert_eq!(tree.methods[0].name, "m");
+
+    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let body = body(&db, method_id);
+    let local_names: Vec<_> = body
+        .locals
+        .iter()
+        .map(|(_, local)| local.name.as_str())
+        .collect();
+    assert_eq!(local_names, vec!["x"]);
+
+    let mut call_paths = Vec::new();
+    for (id, expr) in body.exprs.iter() {
+        if let Expr::Call { callee, .. } = expr {
+            let callee_path = expr_path(&body, *callee).unwrap_or_else(|| format!("ExprId({id})"));
+            call_paths.push(callee_path);
+        }
+    }
+    assert!(call_paths.iter().any(|path| path == "System.out.println"));
+}
