@@ -27,6 +27,16 @@ impl ContentChange {
     }
 }
 
+#[cfg(feature = "lsp")]
+impl From<lsp_types::TextDocumentContentChangeEvent> for ContentChange {
+    fn from(value: lsp_types::TextDocumentContentChangeEvent) -> Self {
+        Self {
+            range: value.range.map(Into::into),
+            text: value.text,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentError {
     DocumentNotOpen,
