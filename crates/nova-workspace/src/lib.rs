@@ -744,3 +744,9 @@ fn current_rss_bytes() -> Option<u64> {
         None
     }
 }
+
+pub mod live;
+
+pub use live::{
+    WatcherHandle, Workspace as LiveWorkspace, WorkspaceClient, WorkspaceConfig as LiveWorkspaceConfig,
+};

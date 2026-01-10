@@ -8,7 +8,14 @@ anyhow = "1"
 nova-cache = { path = "../nova-cache" }
 nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
+crossbeam-channel = "0.5"
+notify = "6.1"
+nova-scheduler = { path = "../nova-scheduler" }
+nova-vfs = { path = "../nova-vfs" }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

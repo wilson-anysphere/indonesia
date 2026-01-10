@@ -30,6 +30,7 @@ members = [
     "crates/nova-lsp",
     "crates/nova-testing",
     "crates/nova-flow",
+    "crates/nova-scheduler",
     "crates/nova-workspace",
     "crates/nova-cli",
     "crates/nova-config",

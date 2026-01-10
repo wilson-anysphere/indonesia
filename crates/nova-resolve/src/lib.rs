@@ -928,7 +928,7 @@ mod tests {
 
         assert_eq!(
             resolver.resolve_import(&unit, &Name::from("Foo")),
-            Some(TypeId::from("com.example.dep.Foo"))
+            Some(TypeName::from("com.example.dep.Foo"))
         );
     }
 }
