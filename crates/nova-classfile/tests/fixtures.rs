@@ -127,6 +127,38 @@ fn parse_inner_classes_attribute() {
 }
 
 #[test]
+fn parse_annotation_numeric_constants() {
+    let bytes = include_bytes!("../testdata/NumbersAnnotated.class");
+    let class = ClassFile::parse(bytes).unwrap();
+    assert_eq!(class.this_class, "com/example/NumbersAnnotated");
+    assert_eq!(class.runtime_visible_annotations.len(), 1);
+
+    let ann = &class.runtime_visible_annotations[0];
+    let mut elems = ann
+        .elements
+        .iter()
+        .map(|(k, v)| (k.as_str(), v))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    assert_eq!(
+        elems.remove("longVal").unwrap(),
+        &ElementValue::Const(ConstValue::Long(42))
+    );
+    assert_eq!(
+        elems.remove("doubleVal").unwrap(),
+        &ElementValue::Const(ConstValue::Double(1.25))
+    );
+    assert_eq!(
+        elems.remove("floatVal").unwrap(),
+        &ElementValue::Const(ConstValue::Float(2.5))
+    );
+    assert_eq!(
+        elems.remove("boolVal").unwrap(),
+        &ElementValue::Const(ConstValue::Boolean(true))
+    );
+}
+
+#[test]
 fn stub_is_best_effort_for_unparseable_signature_attribute() {
     let class = ClassFile {
         minor_version: 0,
