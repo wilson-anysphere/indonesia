@@ -1,13 +1,23 @@
 //! Syntax tree and parsing primitives.
 //!
-//! This crate intentionally keeps the in-memory syntax representation free of
-//! the original file text. Tokens store byte ranges into the current file
-//! contents. Persisted syntax trees are therefore "lossless" as long as the
-//! file fingerprint matches (the DB only loads cached artifacts when the
-//! fingerprint matches).
+//! This crate provides two complementary entry points:
+//! - [`parse`]: produces a small, serializable green tree used by Nova's on-disk
+//!   cache layer (`nova-cache`). Tokens store byte ranges into the source text.
+//! - [`parse_java`]: produces a full-fidelity rowan-based syntax tree suitable
+//!   for interactive IDE features and semantic analysis.
+
+mod ast;
+mod lexer;
+mod parser;
+mod syntax_kind;
+mod util;
+
+pub use ast::*;
+pub use lexer::{lex, Lexer, Token};
+pub use parser::{parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
+pub use syntax_kind::{JavaLanguage, SyntaxKind};
 
 use serde::{Deserialize, Serialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// A half-open byte range within a source file (`start..end`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -30,31 +40,6 @@ impl TextRange {
     pub fn len(self) -> u32 {
         self.end - self.start
     }
-}
-
-/// A minimal set of syntax kinds sufficient for persistence and indexing tests.
-///
-/// The exact set will grow as the Java grammar is implemented.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize_repr, Deserialize_repr,
-)]
-#[repr(u16)]
-pub enum SyntaxKind {
-    CompilationUnit = 0,
-
-    // Trivia
-    Whitespace = 1,
-    LineComment = 2,
-    BlockComment = 3,
-
-    // Tokens
-    Identifier = 10,
-    Number = 11,
-    StringLiteral = 12,
-    Punctuation = 13,
-
-    // Error token / node placeholder.
-    Error = 255,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,8 +119,7 @@ fn is_whitespace(b: u8) -> bool {
 /// Parse source text into a persistent, lossless green tree and error list.
 ///
 /// This is currently a token-level "parser" that produces a flat
-/// `CompilationUnit` node. The structure is sufficient to validate persistence
-/// plumbing and will be replaced by the full Java grammar.
+/// `CompilationUnit` node. The full Java grammar lives under [`parse_java`].
 pub fn parse(text: &str) -> ParseResult {
     let bytes = text.as_bytes();
     let mut i = 0usize;
@@ -218,7 +202,6 @@ pub fn parse(text: &str) -> ParseResult {
             }
             SyntaxKind::StringLiteral
         } else {
-            // One-byte punctuation token (keeps persistence trivial and lossless).
             i += 1;
             SyntaxKind::Punctuation
         };
@@ -230,11 +213,11 @@ pub fn parse(text: &str) -> ParseResult {
     }
 
     ParseResult {
-        root: GreenNode {
-            kind: SyntaxKind::CompilationUnit,
-            text_len: text.len() as u32,
-            children,
-        },
+        root: GreenNode::new(SyntaxKind::CompilationUnit, children),
         errors,
     }
 }
+
+#[cfg(test)]
+mod tests;
+

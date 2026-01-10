@@ -28,6 +28,7 @@ members = [
     "crates/nova-jdwp",
     "crates/nova-build",
     "crates/nova-lsp",
+    "crates/nova-syntax",
     "crates/nova-testing",
     "crates/nova-flow",
     "crates/nova-scheduler",
