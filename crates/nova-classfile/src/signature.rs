@@ -346,6 +346,9 @@ impl<'a> Parser<'a> {
         if self.is_eof() {
             return Err(Error::InvalidSignature(self.sig.to_string()));
         }
+        if start == self.pos {
+            return Err(Error::InvalidSignature(self.sig.to_string()));
+        }
         Ok(self.sig[start..self.pos].to_string())
     }
 

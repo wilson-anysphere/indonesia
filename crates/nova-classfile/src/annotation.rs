@@ -63,9 +63,10 @@ impl ElementValue {
 
                 let cv = match tag {
                     'B' => ConstValue::Byte(value as i8),
-                    'C' => ConstValue::Char(char::from_u32(value as u32).ok_or_else(|| {
-                        Error::MalformedAttribute("RuntimeVisibleAnnotations")
-                    })?),
+                    // Java `char` is a UTF-16 code unit and may contain surrogate
+                    // values. Store the raw `u16` so we don't fail parsing on
+                    // otherwise-valid classfiles.
+                    'C' => ConstValue::Char(value as u16),
                     'I' => ConstValue::Int(value),
                     'S' => ConstValue::Short(value as i16),
                     'Z' => ConstValue::Boolean(value != 0),
@@ -165,7 +166,8 @@ impl ElementValue {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConstValue {
     Byte(i8),
-    Char(char),
+    /// Java `char` (UTF-16 code unit).
+    Char(u16),
     Short(i16),
     Int(i32),
     Long(i64),
