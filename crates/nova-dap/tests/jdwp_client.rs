@@ -1,4 +1,4 @@
-use nova_jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpValue};
+use nova_dap::jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpValue};
 
 #[tokio::test]
 async fn jdwp_client_can_handshake_and_fetch_values() {
