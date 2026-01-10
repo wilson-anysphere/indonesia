@@ -94,3 +94,4 @@ impl ProjectSnapshot {
         &self.file_fingerprints
     }
 }
+

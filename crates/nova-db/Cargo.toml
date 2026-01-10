@@ -4,7 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
+nova-hir = { path = "../nova-hir" }
+nova-syntax = { path = "../nova-syntax" }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lib]
 path = "src/lib.rs"

@@ -12,6 +12,7 @@ members = [
     "crates/nova-types",
     "crates/nova-vfs",
     "crates/nova-hir",
+    "crates/nova-syntax",
     "crates/nova-resolve",
     "crates/nova-classfile",
     "crates/nova-classpath",
