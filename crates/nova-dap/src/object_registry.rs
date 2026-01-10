@@ -8,19 +8,29 @@ use nova_jdwp::ObjectId;
 /// `variablesReference` as an `i32`.
 pub const PINNED_SCOPE_REF: i64 = 0x7fff_ff00;
 
+/// Offset applied to object handles when encoding them as DAP `variablesReference` values.
+///
+/// This avoids collisions with the small integers commonly used for scope roots (e.g. "Locals"
+/// often uses `1`), while keeping the user-visible handle ID stable and small (`@1`, `@2`, ...).
+pub const OBJECT_HANDLE_BASE: i64 = 1000;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectHandle(u32);
 
 impl ObjectHandle {
     pub fn from_variables_reference(variables_reference: i64) -> Option<Self> {
-        if variables_reference <= 0 || variables_reference >= PINNED_SCOPE_REF {
+        if variables_reference <= OBJECT_HANDLE_BASE || variables_reference >= PINNED_SCOPE_REF {
             return None;
         }
-        Some(Self(variables_reference as u32))
+        let raw = variables_reference - OBJECT_HANDLE_BASE;
+        if raw <= 0 {
+            return None;
+        }
+        Some(Self(raw as u32))
     }
 
     pub fn as_variables_reference(self) -> i64 {
-        i64::from(self.0)
+        OBJECT_HANDLE_BASE + i64::from(self.0)
     }
 
     pub fn as_u32(self) -> u32 {
@@ -69,7 +79,7 @@ impl ObjectRegistry {
 
         // Prevent collisions with special scope references.
         assert!(
-            i64::from(next) < PINNED_SCOPE_REF,
+            OBJECT_HANDLE_BASE + i64::from(next) < PINNED_SCOPE_REF,
             "object handle space exhausted"
         );
 
@@ -131,11 +141,7 @@ impl ObjectRegistry {
     }
 
     pub fn handle_from_variables_reference(&self, variables_reference: i64) -> Option<ObjectHandle> {
-        if variables_reference <= 0 || variables_reference >= PINNED_SCOPE_REF {
-            return None;
-        }
-        // This is safe because we gate the range above and handles are u32.
-        let handle = ObjectHandle(variables_reference as u32);
+        let handle = ObjectHandle::from_variables_reference(variables_reference)?;
         self.handle_to_entry.contains_key(&handle).then_some(handle)
     }
 }
