@@ -340,3 +340,27 @@ pub trait ProjectDatabase {
 
 /// Identifier used to refer to a symbol within in-memory indexes.
 pub type SymbolId = u32;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum RequestId {
+    Number(i64),
+    String(Box<str>),
+}
+
+impl From<i64> for RequestId {
+    fn from(value: i64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<String> for RequestId {
+    fn from(value: String) -> Self {
+        Self::String(value.into_boxed_str())
+    }
+}
+
+impl From<&str> for RequestId {
+    fn from(value: &str) -> Self {
+        Self::String(value.into())
+    }
+}

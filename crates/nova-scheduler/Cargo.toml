@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+nova-core = { path = "../nova-core" }
+parking_lot = "0.12"
+rayon = "1.10"
+tokio = { version = "1.37", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"

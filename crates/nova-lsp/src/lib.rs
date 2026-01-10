@@ -29,10 +29,14 @@ pub mod extensions;
 pub mod extract_method;
 pub mod refactor;
 
+mod cancellation;
+mod diagnostics;
 mod distributed;
 mod server;
 pub mod workspace_edit;
 
+pub use cancellation::RequestCancellation;
+pub use diagnostics::DiagnosticsDebouncer;
 pub use distributed::NovaLspFrontend;
 pub use refactor::{safe_delete_code_action, RefactorResponse};
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};

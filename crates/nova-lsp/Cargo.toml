@@ -18,6 +18,7 @@ nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
 nova-refactor = { path = "../nova-refactor" }
+nova-scheduler = { path = "../nova-scheduler" }
 nova-testing = { path = "../nova-testing" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 nova-router = { path = "../nova-router" }

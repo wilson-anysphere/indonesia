@@ -1,6 +1,39 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+mod debouncer;
+mod progress;
+mod scheduler;
+mod task;
+
+pub use debouncer::{KeyedDebouncedHandle, KeyedDebouncer};
+pub use progress::{Progress, ProgressEvent, ProgressId, ProgressReceiver, ProgressSender};
+pub use scheduler::{PoolKind, Scheduler, SchedulerConfig};
+pub use task::{AsyncTask, BlockingTask};
+
+pub use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cancelled;
+
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+impl Cancelled {
+    pub fn check(token: &CancellationToken) -> Result<(), Self> {
+        if token.is_cancelled() {
+            Err(Self)
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// A generic per-category debounce helper.
 ///
 /// Each category has its own debounce duration. Items are buffered until no new
