@@ -58,6 +58,18 @@ impl<F: FileSystem> Vfs<F> {
         ids.get_path(id).cloned()
     }
 
+    /// Rename (or move) a path, preserving the existing `FileId` when possible.
+    pub fn rename_path(&self, from: &VfsPath, to: VfsPath) -> FileId {
+        let mut ids = self.ids.lock().expect("file id registry mutex poisoned");
+        ids.rename_path(from, to)
+    }
+
+    /// Returns all currently-tracked file ids (sorted).
+    pub fn all_file_ids(&self) -> Vec<FileId> {
+        let ids = self.ids.lock().expect("file id registry mutex poisoned");
+        ids.all_file_ids()
+    }
+
     /// Opens an in-memory overlay document and returns its `FileId`.
     pub fn open_document(&self, path: VfsPath, text: String, version: i32) -> FileId {
         let id = self.file_id(path.clone());
@@ -143,5 +155,20 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn vfs_rename_path_preserves_id() {
+        let vfs = Vfs::new(LocalFs::new());
+        let dir = tempfile::tempdir().unwrap();
+        let from = VfsPath::local(dir.path().join("a.java"));
+        let to = VfsPath::local(dir.path().join("b.java"));
+
+        let id = vfs.file_id(from.clone());
+        let moved = vfs.rename_path(&from, to.clone());
+        assert_eq!(id, moved);
+        assert_eq!(vfs.get_id(&from), None);
+        assert_eq!(vfs.get_id(&to), Some(id));
+        assert_eq!(vfs.path_for_id(id), Some(to));
     }
 }
