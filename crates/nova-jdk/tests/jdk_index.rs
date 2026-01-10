@@ -73,6 +73,33 @@ fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Err
         "TypeProvider stub should include class members"
     );
 
+    let list = index
+        .lookup_type("java.util.List")?
+        .expect("java.util.List should be present in testdata");
+    assert_eq!(
+        list.signature.as_deref(),
+        Some("<E:Ljava/lang/Object;>Ljava/lang/Object;")
+    );
+    let get = list
+        .methods
+        .iter()
+        .find(|m| m.name == "get")
+        .expect("fixture should have List.get(int)");
+    assert_eq!(get.signature.as_deref(), Some("(I)TE;"));
+
+    let list_def = TypeProvider::lookup_type(&index, "java.util.List")
+        .expect("TypeProvider should expose java.util.List when symbols are loaded");
+    assert_eq!(
+        list_def.signature.as_deref(),
+        Some("<E:Ljava/lang/Object;>Ljava/lang/Object;")
+    );
+    let get_def = list_def
+        .methods
+        .iter()
+        .find(|m| m.name == "get")
+        .expect("TypeProvider stub should include List.get(int)");
+    assert_eq!(get_def.signature.as_deref(), Some("(I)TE;"));
+
     Ok(())
 }
 
