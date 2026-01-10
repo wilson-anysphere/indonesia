@@ -31,7 +31,7 @@ impl From<&JdkFieldStub> for FieldStub {
         FieldStub {
             name: value.name.clone(),
             descriptor: value.descriptor.clone(),
-            signature: None,
+            signature: value.signature.clone(),
             access_flags: value.access_flags,
         }
     }
@@ -42,7 +42,7 @@ impl From<&JdkMethodStub> for MethodStub {
         MethodStub {
             name: value.name.clone(),
             descriptor: value.descriptor.clone(),
-            signature: None,
+            signature: value.signature.clone(),
             access_flags: value.access_flags,
         }
     }
@@ -62,7 +62,7 @@ impl From<&JdkClassStub> for TypeDefStub {
                 .iter()
                 .map(|i| crate::stub::internal_to_binary(i))
                 .collect(),
-            signature: None,
+            signature: value.signature.clone(),
             fields: value.fields.iter().map(FieldStub::from).collect(),
             methods: value.methods.iter().map(MethodStub::from).collect(),
         }

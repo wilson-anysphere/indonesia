@@ -4,6 +4,7 @@ pub struct JdkFieldStub {
     pub name: String,
     /// JVM descriptor, e.g. `I` or `Ljava/lang/String;`.
     pub descriptor: String,
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,6 +13,7 @@ pub struct JdkMethodStub {
     pub name: String,
     /// JVM method descriptor, e.g. `(Ljava/lang/String;)V`.
     pub descriptor: String,
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +25,7 @@ pub struct JdkClassStub {
     pub access_flags: u16,
     pub super_internal_name: Option<String>,
     pub interfaces_internal_names: Vec<String>,
+    pub signature: Option<String>,
     pub fields: Vec<JdkFieldStub>,
     pub methods: Vec<JdkMethodStub>,
 }
@@ -47,4 +50,3 @@ pub(crate) fn internal_to_binary(internal: &str) -> String {
 pub(crate) fn binary_to_internal(binary: &str) -> String {
     binary.replace('.', "/")
 }
-

@@ -331,6 +331,7 @@ fn classfile_to_stub(class_file: ClassFile) -> JdkClassStub {
         access_flags: class_file.access_flags,
         super_internal_name: class_file.super_class,
         interfaces_internal_names: class_file.interfaces,
+        signature: class_file.signature,
         fields: class_file
             .fields
             .into_iter()
@@ -338,6 +339,7 @@ fn classfile_to_stub(class_file: ClassFile) -> JdkClassStub {
                 access_flags: f.access_flags,
                 name: f.name,
                 descriptor: f.descriptor,
+                signature: f.signature,
             })
             .collect(),
         methods: class_file
@@ -347,6 +349,7 @@ fn classfile_to_stub(class_file: ClassFile) -> JdkClassStub {
                 access_flags: m.access_flags,
                 name: m.name,
                 descriptor: m.descriptor,
+                signature: m.signature,
             })
             .collect(),
     }
