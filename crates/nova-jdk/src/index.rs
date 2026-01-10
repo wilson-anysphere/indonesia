@@ -1,9 +1,10 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nova_classfile::ClassFile;
 use nova_core::ProjectConfig;
+use once_cell::sync::OnceCell;
 use thiserror::Error;
 
 use crate::discovery::{JdkDiscoveryError, JdkInstallation};
@@ -12,11 +13,20 @@ use crate::stub::{binary_to_internal, internal_to_binary};
 use crate::{JdkClassStub, JdkFieldStub, JdkMethodStub};
 
 #[derive(Debug)]
+struct JdkModule {
+    path: PathBuf,
+    indexed: OnceCell<()>,
+}
+
+#[derive(Debug)]
 pub(crate) struct JdkSymbolIndex {
-    modules: Vec<PathBuf>,
+    modules: Vec<JdkModule>,
 
     by_internal: Mutex<HashMap<String, Arc<JdkClassStub>>>,
     by_binary: Mutex<HashMap<String, Arc<JdkClassStub>>>,
+
+    class_to_module: Mutex<HashMap<String, usize>>,
+    missing: Mutex<HashSet<String>>,
 
     packages: OnceLock<Vec<String>>,
     java_lang: OnceLock<Vec<Arc<JdkClassStub>>>,
@@ -39,26 +49,36 @@ impl JdkSymbolIndex {
             return Err(JdkIndexError::MissingJmodsDir { dir: jmods_dir });
         }
 
-        let mut modules: Vec<PathBuf> = std::fs::read_dir(&jmods_dir)?
+        let mut module_paths: Vec<PathBuf> = std::fs::read_dir(&jmods_dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|ext| ext == "jmod"))
             .collect();
 
         // Put `java.base.jmod` first since it's where most core types live.
-        modules.sort_by_key(|p| {
+        module_paths.sort_by_key(|p| {
             let file_name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
             (file_name != "java.base.jmod", file_name.to_owned())
         });
 
-        if modules.is_empty() {
+        if module_paths.is_empty() {
             return Err(JdkIndexError::NoModulesFound { dir: jmods_dir });
         }
+
+        let modules = module_paths
+            .into_iter()
+            .map(|path| JdkModule {
+                path,
+                indexed: OnceCell::new(),
+            })
+            .collect();
 
         Ok(Self {
             modules,
             by_internal: Mutex::new(HashMap::new()),
             by_binary: Mutex::new(HashMap::new()),
+            class_to_module: Mutex::new(HashMap::new()),
+            missing: Mutex::new(HashSet::new()),
             packages: OnceLock::new(),
             java_lang: OnceLock::new(),
         })
@@ -86,21 +106,59 @@ impl JdkSymbolIndex {
             return Ok(Some(stub));
         }
 
-        for module_path in &self.modules {
-            let Some(bytes) = jmod::read_class_bytes(module_path, &internal)? else {
-                continue;
-            };
-
-            let class_file = ClassFile::parse(&bytes)?;
-            if is_non_type_classfile(&class_file.this_class) {
-                return Ok(None);
-            }
-
-            let stub = Arc::new(classfile_to_stub(class_file));
-            self.insert_stub(stub.clone());
-            return Ok(Some(stub));
+        if is_non_type_classfile(&internal) {
+            return Ok(None);
         }
 
+        if self
+            .missing
+            .lock()
+            .expect("mutex poisoned")
+            .contains(&internal)
+        {
+            return Ok(None);
+        }
+
+        if let Some(module_idx) = self
+            .class_to_module
+            .lock()
+            .expect("mutex poisoned")
+            .get(&internal)
+            .copied()
+        {
+            if let Some(stub) = self.load_stub_from_module(module_idx, &internal)? {
+                return Ok(Some(stub));
+            }
+        }
+
+        // Lazily index modules until we locate the class. This avoids opening
+        // and scanning every `.jmod` for each lookup.
+        let mut found_module = None;
+        for module_idx in 0..self.modules.len() {
+            self.ensure_module_indexed(module_idx)?;
+            let module = self
+                .class_to_module
+                .lock()
+                .expect("mutex poisoned")
+                .get(&internal)
+                .copied();
+
+            if module.is_some() {
+                found_module = module;
+                break;
+            }
+        }
+
+        if let Some(module_idx) = found_module {
+            if let Some(stub) = self.load_stub_from_module(module_idx, &internal)? {
+                return Ok(Some(stub));
+            }
+        }
+
+        self.missing
+            .lock()
+            .expect("mutex poisoned")
+            .insert(internal);
         Ok(None)
     }
 
@@ -110,51 +168,24 @@ impl JdkSymbolIndex {
             return Ok(cached.clone());
         }
 
+        // Ensure we can enumerate all `java/lang/*` types without repeatedly
+        // scanning the same modules.
+        for module_idx in 0..self.modules.len() {
+            self.ensure_module_indexed(module_idx)?;
+        }
+
+        let internal_names: Vec<String> = self
+            .class_to_module
+            .lock()
+            .expect("mutex poisoned")
+            .keys()
+            .filter(|internal| internal.starts_with("java/lang/") && is_direct_java_lang_member(internal))
+            .cloned()
+            .collect();
+
         let mut out = Vec::new();
-        for module_path in &self.modules {
-            let mut archive = jmod::open_archive(module_path)?;
-
-            // We avoid `ZipFile` borrow issues by collecting the relevant entry
-            // names first.
-            let entry_names: Vec<String> = archive
-                .file_names()
-                .filter_map(|name| {
-                    let internal = jmod::entry_to_internal_name(name)?;
-                    if internal.starts_with("java/lang/") && is_direct_java_lang_member(internal) {
-                        Some(name.to_owned())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            for entry_name in entry_names {
-                let internal = jmod::entry_to_internal_name(&entry_name)
-                    .expect("entry name came from entry_to_internal_name")
-                    .to_owned();
-
-                if let Some(stub) = self
-                    .by_internal
-                    .lock()
-                    .expect("mutex poisoned")
-                    .get(&internal)
-                    .cloned()
-                {
-                    out.push(stub);
-                    continue;
-                }
-
-                let mut zf = archive.by_name(&entry_name)?;
-                let mut bytes = Vec::with_capacity(zf.size() as usize);
-                std::io::Read::read_to_end(&mut zf, &mut bytes)?;
-
-                let class_file = ClassFile::parse(&bytes)?;
-                if is_non_type_classfile(&class_file.this_class) {
-                    continue;
-                }
-
-                let stub = Arc::new(classfile_to_stub(class_file));
-                self.insert_stub(stub.clone());
+        for internal in internal_names {
+            if let Some(stub) = self.lookup_type(&internal)? {
                 out.push(stub);
             }
         }
@@ -173,20 +204,18 @@ impl JdkSymbolIndex {
         }
 
         let mut set = BTreeSet::new();
-        for module_path in &self.modules {
-            let archive = jmod::open_archive(module_path)?;
-            for entry_name in archive.file_names() {
-                let internal = match jmod::entry_to_internal_name(entry_name) {
-                    Some(v) => v,
-                    None => continue,
-                };
-                if is_non_type_classfile(internal) {
-                    continue;
-                }
+        for module_idx in 0..self.modules.len() {
+            self.ensure_module_indexed(module_idx)?;
+        }
 
-                if let Some((pkg, _)) = internal.rsplit_once('/') {
-                    set.insert(internal_to_binary(pkg));
-                }
+        for internal in self
+            .class_to_module
+            .lock()
+            .expect("mutex poisoned")
+            .keys()
+        {
+            if let Some((pkg, _)) = internal.rsplit_once('/') {
+                set.insert(internal_to_binary(pkg));
             }
         }
 
@@ -204,6 +233,63 @@ impl JdkSymbolIndex {
             .lock()
             .expect("mutex poisoned")
             .insert(stub.binary_name.clone(), stub);
+    }
+
+    fn ensure_module_indexed(&self, module_idx: usize) -> Result<(), JdkIndexError> {
+        self.modules[module_idx]
+            .indexed
+            .get_or_try_init(|| self.index_module(module_idx))?;
+        Ok(())
+    }
+
+    fn index_module(&self, module_idx: usize) -> Result<(), JdkIndexError> {
+        let module_path = &self.modules[module_idx].path;
+        let archive = jmod::open_archive(module_path)?;
+
+        let class_names: Vec<String> = archive
+            .file_names()
+            .filter_map(|name| {
+                let internal = jmod::entry_to_internal_name(name)?;
+                if is_non_type_classfile(internal) {
+                    None
+                } else {
+                    Some(internal.to_owned())
+                }
+            })
+            .collect();
+
+        let mut map = self.class_to_module.lock().expect("mutex poisoned");
+        for internal in class_names {
+            map.entry(internal).or_insert(module_idx);
+        }
+        Ok(())
+    }
+
+    fn load_stub_from_module(
+        &self,
+        module_idx: usize,
+        internal: &str,
+    ) -> Result<Option<Arc<JdkClassStub>>, JdkIndexError> {
+        self.ensure_module_indexed(module_idx)?;
+
+        let module_path = &self.modules[module_idx].path;
+        let Some(bytes) = jmod::read_class_bytes(module_path, internal)? else {
+            // Stale mapping (e.g. mutated filesystem). Remove and treat as not found.
+            self.class_to_module
+                .lock()
+                .expect("mutex poisoned")
+                .remove(internal);
+            return Ok(None);
+        };
+
+        let class_file = ClassFile::parse(&bytes)?;
+        if is_non_type_classfile(&class_file.this_class) {
+            return Ok(None);
+        }
+
+        let stub = Arc::new(classfile_to_stub(class_file));
+        self.insert_stub(stub.clone());
+        Ok(Some(stub))
     }
 }
 
