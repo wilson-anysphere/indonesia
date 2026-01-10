@@ -4,6 +4,7 @@ use std::time::Duration;
 use futures::future::{BoxFuture, FutureExt};
 
 use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
+use nova_fuzzy::{FuzzyMatcher, MatchScore};
 
 use crate::util;
 use crate::AiConfig;
@@ -29,39 +30,16 @@ pub trait CompletionRanker: Send + Sync {
 pub struct BaselineCompletionRanker;
 
 impl BaselineCompletionRanker {
-    fn score(ctx: &CompletionContext, item: &CompletionItem) -> i64 {
-        let prefix = ctx.prefix.as_str();
-        let label = item.label.as_str();
-
-        let mut score: i64 = 0;
-
-        if !prefix.is_empty() {
-            if label.starts_with(prefix) {
-                score += 10_000;
-            } else if label.to_lowercase().starts_with(&prefix.to_lowercase()) {
-                score += 8_000;
-            } else if label.contains(prefix) {
-                score += 4_000;
-            } else if label.to_lowercase().contains(&prefix.to_lowercase()) {
-                score += 2_000;
-            }
-        }
-
-        // Prefer shorter labels when all else is equal (less typing).
-        score -= label.len() as i64;
-
-        // Prefer more "actionable" items.
-        score += match item.kind {
+    fn kind_bonus(kind: CompletionItemKind) -> i32 {
+        match kind {
             CompletionItemKind::Method => 100,
             CompletionItemKind::Field => 80,
             CompletionItemKind::Variable => 70,
             CompletionItemKind::Class => 60,
-            CompletionItemKind::Keyword => 10,
             CompletionItemKind::Snippet => 50,
+            CompletionItemKind::Keyword => 10,
             CompletionItemKind::Other => 0,
-        };
-
-        score
+        }
     }
 }
 
@@ -71,23 +49,37 @@ impl CompletionRanker for BaselineCompletionRanker {
         ctx: &'a CompletionContext,
         mut items: Vec<CompletionItem>,
     ) -> BoxFuture<'a, Vec<CompletionItem>> {
-        // Precompute per-item scores for deterministic sorting.
-        let mut scored: Vec<(CompletionItem, i64)> = items
+        // Use the shared `nova-fuzzy` scorer so baseline ranking is consistent
+        // with other non-AI fuzzy matching facilities in Nova.
+        let mut matcher = FuzzyMatcher::new(&ctx.prefix);
+
+        let mut scored: Vec<(CompletionItem, Option<MatchScore>, i32)> = items
             .drain(..)
             .map(|item| {
-                let score = Self::score(ctx, &item);
-                (item, score)
+                let score = matcher.score(&item.label);
+                let bonus = Self::kind_bonus(item.kind);
+                (item, score, bonus)
             })
             .collect();
 
-        scored.sort_by(
-            |(a_item, a_score), (b_item, b_score)| match b_score.cmp(a_score) {
-                Ordering::Equal => a_item.label.cmp(&b_item.label),
-                other => other,
-            },
-        );
+        scored.sort_by(|(a_item, a_score, a_bonus), (b_item, b_score, b_bonus)| {
+            match (a_score, b_score) {
+                (Some(a_score), Some(b_score)) => b_score
+                    .rank_key()
+                    .cmp(&a_score.rank_key())
+                    .then_with(|| b_bonus.cmp(a_bonus))
+                    .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
+                    .then_with(|| a_item.label.cmp(&b_item.label)),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => b_bonus
+                    .cmp(a_bonus)
+                    .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
+                    .then_with(|| a_item.label.cmp(&b_item.label)),
+            }
+        });
 
-        let ranked: Vec<CompletionItem> = scored.into_iter().map(|(item, _)| item).collect();
+        let ranked: Vec<CompletionItem> = scored.into_iter().map(|(item, _, _)| item).collect();
         futures::future::ready(ranked).boxed()
     }
 }

@@ -253,8 +253,21 @@ fn is_java_keyword(ident: &str) -> bool {
 fn is_standard_library_identifier(ident: &str) -> bool {
     matches!(
         ident,
+        // Common stdlib package segments (for fully-qualified names).
+        "java"
+            | "javax"
+            | "jakarta"
+            | "lang"
+            | "util"
+            | "io"
+            | "net"
+            | "nio"
+            | "time"
+            | "concurrent"
+            | "function"
+            | "stream"
         // java.lang
-        "String"
+            | "String"
             | "Object"
             | "System"
             | "Math"
@@ -270,6 +283,9 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "Exception"
             | "RuntimeException"
             | "Throwable"
+            | "Override"
+            | "SuppressWarnings"
+            | "Deprecated"
             // Collections
             | "List"
             | "Map"
@@ -281,6 +297,9 @@ fn is_standard_library_identifier(ident: &str) -> bool {
             | "Optional"
             | "Stream"
             | "Collectors"
+            | "Collections"
+            | "Arrays"
+            | "Objects"
             // Common fields/methods used in snippets.
             | "out"
             | "err"

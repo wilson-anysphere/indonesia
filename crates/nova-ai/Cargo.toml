@@ -7,4 +7,4 @@ edition = "2021"
 futures = "0.3"
 futures-timer = "3"
 nova-core = { path = "../nova-core" }
-
+nova-fuzzy = { path = "../nova-fuzzy" }

@@ -66,6 +66,27 @@ mod tests {
     }
 
     #[test]
+    fn anonymizer_preserves_stdlib_qualified_names() {
+        let code = r#"
+            import java.util.List;
+
+            class Foo {
+                java.util.List<String> list = null;
+            }
+        "#;
+
+        let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
+            anonymize_identifiers: true,
+            redact_sensitive_strings: true,
+        });
+
+        let out = anonymizer.anonymize(code);
+        assert!(out.contains("java.util.List"));
+        assert!(out.contains("String"));
+        assert!(!out.contains("Foo"));
+    }
+
+    #[test]
     fn ranking_is_deterministic() {
         let ranker = BaselineCompletionRanker;
         let ctx = CompletionContext::new("pri", "");

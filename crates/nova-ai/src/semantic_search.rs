@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use nova_core::ProjectDatabase;
+use nova_fuzzy::{fuzzy_match, MatchKind};
 
 /// A single semantic search match.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,7 +31,8 @@ pub struct TrigramSemanticSearch {
 #[derive(Debug)]
 struct IndexedDocument {
     path: PathBuf,
-    text: String,
+    original: String,
+    normalized: String,
     trigrams: Vec<u32>,
 }
 
@@ -58,7 +60,8 @@ impl SemanticSearch for TrigramSemanticSearch {
             let (normalized, trigrams) = Self::index_text(&text);
             self.docs.push(IndexedDocument {
                 path,
-                text: normalized,
+                original: text,
+                normalized,
                 trigrams,
             });
         }
@@ -72,7 +75,7 @@ impl SemanticSearch for TrigramSemanticSearch {
             .docs
             .iter()
             .filter_map(|doc| {
-                let score = score_match(&normalized_query, &query_trigrams, doc);
+                let score = score_match(query, &normalized_query, &query_trigrams, doc);
                 if score <= 0.0 {
                     return None;
                 }
@@ -80,7 +83,7 @@ impl SemanticSearch for TrigramSemanticSearch {
                 Some(SearchResult {
                     path: doc.path.clone(),
                     score,
-                    snippet: snippet(&doc.text, &normalized_query),
+                    snippet: snippet(&doc.original, &doc.normalized, &normalized_query),
                 })
             })
             .collect();
@@ -98,10 +101,17 @@ impl SemanticSearch for TrigramSemanticSearch {
 }
 
 fn normalize(text: &str) -> String {
-    text.to_ascii_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
+    let mut out = Vec::with_capacity(text.len());
+    for &b in text.as_bytes() {
+        let folded = b.to_ascii_lowercase();
+        if folded.is_ascii_alphanumeric() {
+            out.push(folded);
+        } else {
+            out.push(b' ');
+        }
+    }
+    // Safe because `out` only contains ASCII bytes.
+    String::from_utf8(out).unwrap_or_default()
 }
 
 fn unique_sorted_trigrams(text: &str) -> Vec<u32> {
@@ -150,31 +160,58 @@ fn trigram_jaccard(a: &[u32], b: &[u32]) -> f32 {
     }
 }
 
-fn score_match(query: &str, query_trigrams: &[u32], doc: &IndexedDocument) -> f32 {
-    if query.is_empty() {
+fn score_match(
+    raw_query: &str,
+    normalized_query: &str,
+    query_trigrams: &[u32],
+    doc: &IndexedDocument,
+) -> f32 {
+    if normalized_query.is_empty() {
         return 0.0;
     }
 
     let mut score = trigram_jaccard(query_trigrams, &doc.trigrams);
 
     // Boost exact substring matches (after normalization).
-    if doc.text.contains(query) {
+    if doc.normalized.contains(normalized_query) {
         score += 0.75;
+    }
+
+    // A small boost if the query matches the file path.
+    let path_str = doc.path.to_string_lossy();
+    if let Some(score_path) = fuzzy_match(raw_query, &path_str) {
+        score += match score_path.kind {
+            MatchKind::Prefix => 0.25,
+            MatchKind::Fuzzy => 0.1,
+        };
     }
 
     score
 }
 
-fn snippet(text: &str, query: &str) -> String {
+fn snippet(original: &str, normalized: &str, query: &str) -> String {
     if query.is_empty() {
         return String::new();
     }
 
-    if let Some(pos) = text.find(query) {
-        let start = pos.saturating_sub(30);
-        let end = (pos + query.len() + 30).min(text.len());
-        return text[start..end].trim().to_string();
+    if let Some(pos) = normalized.find(query) {
+        let mut start = pos.saturating_sub(30);
+        let mut end = (pos + query.len() + 30).min(original.len());
+
+        while start > 0 && !original.is_char_boundary(start) {
+            start -= 1;
+        }
+        while end < original.len() && !original.is_char_boundary(end) {
+            end += 1;
+        }
+
+        return original[start..end].trim().to_string();
     }
 
-    text.chars().take(80).collect::<String>().trim().to_string()
+    original
+        .chars()
+        .take(80)
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
