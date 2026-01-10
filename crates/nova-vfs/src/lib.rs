@@ -13,6 +13,7 @@ mod file_id;
 mod fs;
 mod overlay_fs;
 mod path;
+mod vfs;
 mod watch;
 
 pub use archive::{ArchiveKind, ArchivePath, ArchiveReader, StubArchiveReader};
@@ -22,5 +23,5 @@ pub use file_id::{FileId, FileIdRegistry};
 pub use fs::{FileSystem, LocalFs};
 pub use overlay_fs::OverlayFs;
 pub use path::VfsPath;
+pub use vfs::Vfs;
 pub use watch::{FileWatcher, WatchEvent};
-
