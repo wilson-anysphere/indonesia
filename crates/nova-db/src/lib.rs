@@ -11,8 +11,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nova_cache::{
+    AstArtifactCache, CacheConfig, CacheDir, CacheError, FileAstArtifacts, Fingerprint,
+};
 pub use nova_core::{FileId, ProjectId};
-use nova_cache::{AstArtifactCache, CacheConfig, CacheDir, CacheError, FileAstArtifacts, Fingerprint};
 use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
 use nova_syntax::{parse as syntax_parse, ParseResult};
 
@@ -156,13 +158,8 @@ impl AnalysisDatabase {
             .map(|old| old.fingerprint != fingerprint)
             .unwrap_or(true);
 
-        self.files.insert(
-            file_path.clone(),
-            FileData {
-                text,
-                fingerprint,
-            },
-        );
+        self.files
+            .insert(file_path.clone(), FileData { text, fingerprint });
 
         if invalidate {
             self.ast.remove(&file_path);
@@ -317,4 +314,7 @@ mod tests {
 
 pub mod salsa;
 
-pub use salsa::{NovaDatabase, QueryDatabase, QueryStat, QueryStats, Snapshot, SyntaxTree};
+pub use salsa::{
+    Database as SalsaDatabase, NovaDatabase, QueryDatabase, QueryStat, QueryStats, Snapshot,
+    SyntaxTree,
+};

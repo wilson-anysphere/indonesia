@@ -10,6 +10,8 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use parking_lot::RwLock;
+
 use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
 use nova_project::ProjectConfig;
 use nova_syntax::{GreenNode, ParseResult};
@@ -57,6 +59,9 @@ pub trait NovaSyntax: NovaInputs + HasQueryStats {
     /// Further derived query (depends on `item_tree`) used by tests to verify
     /// early-cutoff.
     fn symbol_summary(&self, file: FileId) -> Arc<SymbolSummary>;
+
+    /// Dummy downstream query used by tests to validate early-cutoff behavior.
+    fn symbol_count(&self, file: FileId) -> usize;
 }
 
 fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
@@ -124,6 +129,19 @@ fn symbol_summary(db: &dyn NovaSyntax, file: FileId) -> Arc<SymbolSummary> {
     result
 }
 
+fn symbol_count(db: &dyn NovaSyntax, file: FileId) -> usize {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "symbol_count", ?file).entered();
+
+    db.unwind_if_cancelled();
+
+    let count = db.symbol_summary(file).names.len();
+    db.record_query_stat("symbol_count", start.elapsed());
+    count
+}
+
 /// Read-only snapshot type for concurrent query execution.
 pub type Snapshot = ra_salsa::Snapshot<QueryDatabase>;
 
@@ -189,6 +207,15 @@ impl QueryDatabase {
         ra_salsa::Database::synthetic_write(self, ra_salsa::Durability::LOW);
     }
 
+    /// Create a read-only snapshot for concurrent query execution.
+    ///
+    /// This is also available via the `ra_salsa::ParallelDatabase` trait, but
+    /// we provide it as an inherent method to avoid requiring a trait import.
+    #[inline]
+    pub fn snapshot(&self) -> Snapshot {
+        ra_salsa::ParallelDatabase::snapshot(self)
+    }
+
     /// Snapshot current query timing stats.
     #[inline]
     pub fn query_stats(&self) -> QueryStats {
@@ -246,6 +273,53 @@ impl ra_salsa::ParallelDatabase for QueryDatabase {
     }
 }
 
+/// Thread-safe handle around [`QueryDatabase`].
+///
+/// - Writes are serialized through an internal `RwLock`.
+/// - Reads are expected to happen through snapshots (`Database::snapshot`),
+///   which can then be freely sent to worker threads.
+#[derive(Clone, Default)]
+pub struct Database {
+    inner: Arc<RwLock<QueryDatabase>>,
+}
+
+impl Database {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        self.inner.read().snapshot()
+    }
+
+    pub fn query_stats(&self) -> QueryStats {
+        self.inner.read().query_stats()
+    }
+
+    pub fn request_cancellation(&self) {
+        self.inner.write().request_cancellation();
+    }
+
+    pub fn set_file_exists(&self, file: FileId, exists: bool) {
+        self.inner.write().set_file_exists(file, exists);
+    }
+
+    pub fn set_file_content(&self, file: FileId, content: Arc<String>) {
+        self.inner.write().set_file_content(file, content);
+    }
+
+    pub fn set_file_text(&self, file: FileId, text: impl Into<String>) {
+        let text = Arc::new(text.into());
+        let mut db = self.inner.write();
+        db.set_file_exists(file, true);
+        db.set_file_content(file, text);
+    }
+
+    pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
+        self.inner.write().set_project_config(project, config);
+    }
+}
+
 /// Convenience trait alias that composes Nova's query groups.
 pub trait NovaDatabase: NovaInputs + NovaSyntax {}
 
@@ -254,7 +328,6 @@ impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ra_salsa::ParallelDatabase as _;
 
     fn executions(db: &QueryDatabase, query_name: &str) -> u64 {
         db.query_stats()
@@ -291,23 +364,32 @@ mod tests {
         db.set_file_exists(file, true);
         db.set_file_content(file, Arc::new("class Foo {}".to_string()));
 
-        let first = db.symbol_summary(file);
-        assert_eq!(first.names, vec!["Foo".to_string()]);
+        let first_count = db.symbol_count(file);
+        assert_eq!(first_count, 1);
 
         assert_eq!(executions(&db, "parse"), 1);
         assert_eq!(executions(&db, "item_tree"), 1);
         assert_eq!(executions(&db, "symbol_summary"), 1);
+        assert_eq!(executions(&db, "symbol_count"), 1);
 
-        // Whitespace-only change *after* the class name: parse changes (token ranges),
-        // but the structural `item_tree` remains equal, so `symbol_summary` can be reused.
-        db.set_file_content(file, Arc::new("class Foo {    }".to_string()));
-        let second = db.symbol_summary(file);
+        // Whitespace-only change at the *start* of the file shifts token ranges,
+        // which forces `item_tree` + `symbol_summary` to recompute.
+        //
+        // However, `symbol_summary` is stable (it only contains names), so
+        // `symbol_count` can be reused via early-cutoff.
+        db.set_file_content(file, Arc::new("  class Foo {}".to_string()));
+        let second_count = db.symbol_count(file);
 
-        assert_eq!(second.names, first.names);
+        assert_eq!(second_count, first_count);
         assert_eq!(executions(&db, "parse"), 2);
         assert_eq!(executions(&db, "item_tree"), 2);
         assert_eq!(
             executions(&db, "symbol_summary"),
+            2,
+            "symbol summary must recompute because ItemTree is range-sensitive"
+        );
+        assert_eq!(
+            executions(&db, "symbol_count"),
             1,
             "dependent query should be reused due to early-cutoff"
         );
