@@ -1,9 +1,11 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
+use nova_core::FileId;
+
 use crate::change::ChangeEvent;
 use crate::document::{ContentChange, DocumentError};
-use crate::file_id::{FileId, FileIdRegistry};
+use crate::file_id::FileIdRegistry;
 use crate::fs::FileSystem;
 use crate::overlay_fs::OverlayFs;
 use crate::path::VfsPath;
@@ -131,4 +133,3 @@ mod tests {
         }
     }
 }
-

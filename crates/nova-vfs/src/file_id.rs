@@ -1,20 +1,8 @@
 use std::collections::HashMap;
 
+use nova_core::FileId;
+
 use crate::path::VfsPath;
-
-/// A stable identifier assigned to a file (path/URI).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct FileId(u32);
-
-impl FileId {
-    pub const fn new(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-}
 
 /// Allocates stable `FileId`s for paths and supports reverse lookup.
 #[derive(Debug, Default)]
@@ -34,7 +22,8 @@ impl FileIdRegistry {
             return id;
         }
 
-        let id = FileId::new(self.id_to_path.len() as u32);
+        let raw = u32::try_from(self.id_to_path.len()).expect("too many file ids allocated");
+        let id = FileId::from_raw(raw);
         self.id_to_path.push(path.clone());
         self.path_to_id.insert(path, id);
         id
@@ -47,7 +36,7 @@ impl FileIdRegistry {
 
     /// Returns the path for `id`.
     pub fn get_path(&self, id: FileId) -> Option<&VfsPath> {
-        self.id_to_path.get(id.raw() as usize)
+        self.id_to_path.get(id.to_raw() as usize)
     }
 }
 
@@ -67,4 +56,3 @@ mod tests {
         assert_eq!(registry.get_path(id1), Some(&path));
     }
 }
-

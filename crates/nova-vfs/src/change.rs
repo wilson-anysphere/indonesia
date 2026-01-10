@@ -1,6 +1,5 @@
-use nova_core::TextEdit;
+use nova_core::{FileId, TextEdit};
 
-use crate::file_id::FileId;
 use crate::path::VfsPath;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -45,4 +44,3 @@ impl ChangeEvent {
         }
     }
 }
-
