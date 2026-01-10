@@ -9,6 +9,9 @@
 **/*.swo
 **/*.rs.bk
 
+# Cache packages
+*.tar.zst
+
 # Cargo lockfiles are kept local for faster iteration.
 Cargo.lock
 

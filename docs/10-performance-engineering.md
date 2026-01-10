@@ -441,6 +441,51 @@ impl MemoryManager {
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Cache packaging and team-shared indexes
+
+To accelerate warm starts (especially on CI and for new developer machines), Nova can package a
+project’s persistent cache directory into a single archive and install it elsewhere.
+
+**Package contents (tar.zst):**
+
+- `metadata.json` (Nova version + schema version + project fingerprint + per-file fingerprints)
+- `indexes/`
+- `queries/` (if present)
+- `ast/`
+- `checksums.json` (per-file SHA-256 manifest for corruption detection)
+
+**CLI (prototype):**
+
+```bash
+# Pack cache → single archive
+nova cache pack <project-root> --out nova-cache.tar.zst
+
+# Install archive into local ~/.nova/cache/<project-hash>/
+nova cache install <project-root> nova-cache.tar.zst
+
+# Fetch + install (HTTP/file; S3 behind feature flag)
+nova cache fetch <project-root> https://example.com/nova-cache.tar.zst
+```
+
+**Compatibility policy:**
+
+- Reject if Nova version or schema version mismatch.
+- If the project fingerprint differs, install `indexes/` only (so the rest can be rebuilt locally).
+
+**GitHub Actions example:**
+
+```yaml
+- name: Build Nova cache package
+  run: |
+    cargo run -p nova-cli -- cache pack . --out nova-cache.tar.zst
+
+- name: Upload Nova cache package
+  uses: actions/upload-artifact@v4
+  with:
+    name: nova-cache
+    path: nova-cache.tar.zst
+```
+
 ### Cache Versioning
 
 ```rust

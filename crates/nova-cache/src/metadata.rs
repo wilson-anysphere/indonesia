@@ -99,3 +99,4 @@ impl CacheMetadata {
         crate::util::atomic_write(path.as_ref(), &json)
     }
 }
+

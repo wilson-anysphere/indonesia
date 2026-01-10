@@ -46,10 +46,26 @@ impl Fingerprint {
 
     /// Create a fingerprint intended to identify a project directory.
     ///
-    /// Today this is derived from the project's canonicalized root path; in the
-    /// future it can incorporate configuration and build graph fingerprints.
+    /// For sharing caches across machines/CI, we prefer a stable identifier that
+    /// survives different checkout locations:
+    ///
+    /// - if `NOVA_PROJECT_ID` is set, hash that value
+    /// - else if a git `remote.origin.url` is available, hash that URL
+    /// - else fall back to hashing the canonicalized root path
     pub fn for_project_root(project_root: impl AsRef<Path>) -> Result<Self, CacheError> {
         let canonical = std::fs::canonicalize(project_root)?;
+
+        if let Some(id) = std::env::var_os("NOVA_PROJECT_ID") {
+            let id = id.to_string_lossy();
+            if !id.trim().is_empty() {
+                return Ok(Self::from_bytes(id.as_bytes()));
+            }
+        }
+
+        if let Some(origin) = git_origin_url(&canonical) {
+            return Ok(Self::from_bytes(origin.as_bytes()));
+        }
+
         Ok(Self::from_bytes(canonical.to_string_lossy().as_bytes()))
     }
 
@@ -137,3 +153,33 @@ impl ProjectSnapshot {
     }
 }
 
+fn git_origin_url(project_root: &Path) -> Option<String> {
+    let config_path = project_root.join(".git").join("config");
+    let config = std::fs::read_to_string(config_path).ok()?;
+
+    let mut in_origin = false;
+    for raw_line in config.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+
+        if line.starts_with('[') && line.ends_with(']') {
+            in_origin = line.contains("remote \"origin\"") || line.contains("remote 'origin'");
+            continue;
+        }
+
+        if !in_origin {
+            continue;
+        }
+
+        let mut parts = line.splitn(2, '=');
+        let key = parts.next()?.trim();
+        let value = parts.next()?.trim();
+        if key == "url" && !value.is_empty() {
+            return Some(format!("git:{value}"));
+        }
+    }
+
+    None
+}

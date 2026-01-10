@@ -44,6 +44,11 @@ nova cache status
 nova cache warm --path <workspace>
 nova cache clean --path <workspace>
 
+# Cache packaging (team-shared warm starts)
+nova cache pack <path> --out nova-cache.tar.zst
+nova cache install <path> nova-cache.tar.zst
+nova cache fetch <path> https://example.com/nova-cache.tar.zst
+
 # Performance report (reads the persisted cache `perf.json`)
 nova perf report --path <workspace>
 
@@ -54,6 +59,28 @@ nova parse <file>
 Cache location:
 - default: `~/.nova/cache/<project-hash>/`
 - override: set `NOVA_CACHE_DIR` (the project hash is still appended)
+
+### Cache packaging (shared indexes)
+
+Nova’s persistent cache directory can be packaged into a single archive and installed elsewhere to
+accelerate warm starts (e.g. developers consuming CI-built indexes).
+
+The archive format is `tar.zst` and includes `checksums.json` (SHA-256 per-file manifest) for
+corruption detection.
+
+GitHub Actions example:
+
+```yaml
+- name: Build Nova cache package
+  run: |
+    cargo run -p nova-cli -- cache pack . --out nova-cache.tar.zst
+
+- name: Upload Nova cache package
+  uses: actions/upload-artifact@v4
+  with:
+    name: nova-cache
+    path: nova-cache.tar.zst
+```
 
 ## Real-world fixture projects (optional)
 

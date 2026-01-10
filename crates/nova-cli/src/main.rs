@@ -1,5 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use nova_cache::{
+    fetch_cache_package, install_cache_package, pack_cache_package, CacheConfig, CacheDir,
+    CachePackageInstallOutcome,
+};
 use nova_perf::{compare_runs, load_criterion_directory, BenchRun, ThresholdConfig};
 use nova_workspace::{
     CacheStatus, DiagnosticsReport, IndexReport, ParseResult, Workspace, WorkspaceSymbol,
@@ -78,6 +82,50 @@ enum CacheCommand {
     Clean(WorkspaceArgs),
     Status(WorkspaceArgs),
     Warm(WorkspaceArgs),
+
+    /// Package a project's persistent cache directory into a single tar.zst archive.
+    Pack(CachePackArgs),
+    /// Install a packaged cache archive for a project.
+    Install(CacheInstallArgs),
+    /// Fetch a cache package from a URL (http/https/file/s3) and install it.
+    Fetch(CacheFetchArgs),
+}
+
+#[derive(Args)]
+struct CachePackArgs {
+    /// Workspace root (defaults to current directory)
+    #[arg(default_value = ".")]
+    path: PathBuf,
+    /// Output archive path (.tar.zst recommended).
+    #[arg(long)]
+    out: PathBuf,
+    /// Emit JSON suitable for CI
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct CacheInstallArgs {
+    /// Workspace root (defaults to current directory)
+    #[arg(default_value = ".")]
+    path: PathBuf,
+    /// Cache package file (.tar.zst).
+    package: PathBuf,
+    /// Emit JSON suitable for CI
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct CacheFetchArgs {
+    /// Workspace root (defaults to current directory)
+    #[arg(default_value = ".")]
+    path: PathBuf,
+    /// URL to fetch (http(s)://..., file://..., s3://...).
+    url: String,
+    /// Emit JSON suitable for CI
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -197,6 +245,63 @@ fn run(cli: Cli) -> Result<i32> {
                     let ws = Workspace::open(&args.path)?;
                     let report = ws.cache_warm()?;
                     print_output(&report, args.json)?;
+                }
+                CacheCommand::Pack(args) => {
+                    let ws = Workspace::open(&args.path)?;
+                    let cache_dir = CacheDir::new(ws.root(), CacheConfig::from_env())?;
+                    pack_cache_package(&cache_dir, &args.out)?;
+                    if args.json {
+                        print_output(
+                            &serde_json::json!({ "ok": true, "out": args.out }),
+                            true,
+                        )?;
+                    } else {
+                        println!(
+                            "cache: packed {} -> {}",
+                            cache_dir.root().display(),
+                            args.out.display()
+                        );
+                    }
+                }
+                CacheCommand::Install(args) => {
+                    let ws = Workspace::open(&args.path)?;
+                    let cache_dir = CacheDir::new(ws.root(), CacheConfig::from_env())?;
+                    let outcome = install_cache_package(&cache_dir, &args.package)?;
+                    if args.json {
+                        print_output(
+                            &serde_json::json!({ "ok": true, "outcome": format!("{outcome:?}") }),
+                            true,
+                        )?;
+                    } else {
+                        match outcome {
+                            CachePackageInstallOutcome::Full => {
+                                println!("cache: installed full package")
+                            }
+                            CachePackageInstallOutcome::IndexesOnly { .. } => {
+                                println!("cache: installed indexes only (fingerprint mismatch)")
+                            }
+                        }
+                    }
+                }
+                CacheCommand::Fetch(args) => {
+                    let ws = Workspace::open(&args.path)?;
+                    let cache_dir = CacheDir::new(ws.root(), CacheConfig::from_env())?;
+                    let outcome = fetch_cache_package(&cache_dir, &args.url)?;
+                    if args.json {
+                        print_output(
+                            &serde_json::json!({ "ok": true, "outcome": format!("{outcome:?}") }),
+                            true,
+                        )?;
+                    } else {
+                        match outcome {
+                            CachePackageInstallOutcome::Full => {
+                                println!("cache: fetched and installed full package")
+                            }
+                            CachePackageInstallOutcome::IndexesOnly { .. } => {
+                                println!("cache: fetched and installed indexes only (fingerprint mismatch)")
+                            }
+                        }
+                    }
                 }
             }
             Ok(0)

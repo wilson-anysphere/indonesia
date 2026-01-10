@@ -9,6 +9,11 @@ pub mod breakpoints;
 pub mod dap;
 pub mod server;
 
+/// Re-export the JDWP client facade used by the DAP/LSP layers.
+pub mod jdwp {
+    pub use nova_jdwp::{JdwpClient, JdwpError, TcpJdwpClient};
+}
+
 /// Nova-specific "debugger excellence" extensions.
 pub mod hot_swap;
 pub mod smart_step_into;

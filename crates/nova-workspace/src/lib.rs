@@ -122,7 +122,7 @@ impl Workspace {
         let start = Instant::now();
 
         let files = self.project_java_files()?;
-        let snapshot = ProjectSnapshot::new_fast(&self.root, files).with_context(|| {
+        let snapshot = ProjectSnapshot::new(&self.root, files).with_context(|| {
             format!(
                 "failed to build project snapshot for {}",
                 self.root.display()

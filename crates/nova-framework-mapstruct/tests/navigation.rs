@@ -12,6 +12,28 @@ fn fixture_custom_impl_project_root() -> PathBuf {
 #[test]
 fn goto_definition_mapper_method_to_generated_impl() {
     let root = fixture_project_root();
+    // Fixture tests need a generated mapper implementation on disk to validate
+    // navigation into annotation-processor output. We create a tiny stub under
+    // the conventional Maven generated sources path.
+    let generated_dir = root.join("target/generated-sources/annotations/com/example");
+    std::fs::create_dir_all(&generated_dir).unwrap();
+    let generated_file = generated_dir.join("CarMapperImpl.java");
+    if !generated_file.exists() {
+        std::fs::write(
+            &generated_file,
+            r#"package com.example;
+
+public class CarMapperImpl implements CarMapper {
+  @Override
+  public CarDto carToCarDto(Car car) {
+    return new CarDto();
+  }
+}
+"#,
+        )
+        .unwrap();
+    }
+
     let mapper_file = root.join("src/main/java/com/example/CarMapper.java");
     let mapper_text = std::fs::read_to_string(&mapper_file).unwrap();
     let offset = mapper_text
