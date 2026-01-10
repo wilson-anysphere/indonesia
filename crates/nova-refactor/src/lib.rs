@@ -11,8 +11,11 @@ pub use move_java::{
     move_class, move_package, FileEdit, FileMove, MoveClassParams, MovePackageParams,
     RefactorError, RefactoringEdit,
 };
+pub mod extract_method;
+
+pub use nova_index::TextRange;
+
 pub use safe_delete::{
     apply_edits, safe_delete, SafeDeleteError, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteReport,
     SafeDeleteTarget, TextEdit, Usage, UsageKind,
 };
-

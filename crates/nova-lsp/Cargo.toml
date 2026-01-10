@@ -23,3 +23,4 @@ thiserror = "1.0"
 [dev-dependencies]
 pretty_assertions = "1.4"
 tempfile = "3.10.1"
+nova-test-utils = { path = "../nova-test-utils" }

@@ -18,6 +18,7 @@
 //!   - `nova/debug/hotSwap`
 
 pub mod extensions;
+pub mod extract_method;
 
 mod server;
 pub mod workspace_edit;

@@ -8,6 +8,9 @@ nova-index = { path = "../nova-index" }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
 nova-project = { path = "../nova-project" }
+tree-sitter = "0.20"
+tree-sitter-java = "0.20"
 
 [dev-dependencies]
 pretty_assertions = "1.4"
+nova-test-utils = { path = "../nova-test-utils" }

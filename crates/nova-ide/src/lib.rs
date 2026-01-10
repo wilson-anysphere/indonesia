@@ -5,6 +5,7 @@
 //! required by `nova-dap` and Nova's debugging extensions.
 
 pub mod semantics;
+pub mod code_action;
 
 mod completion;
 pub mod code_intelligence;
