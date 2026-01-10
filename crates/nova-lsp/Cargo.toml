@@ -17,7 +17,6 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 nova-ai = { path = "../nova-ai" }
 nova-apt = { path = "../nova-apt" }
-nova-ai = { path = "../nova-ai" }
 nova-build = { path = "../nova-build" }
 nova-config = { path = "../nova-config" }
 nova-cache = { path = "../nova-cache" }
@@ -39,6 +38,7 @@ nova-remote-proto = { path = "../nova-remote-proto" }
 nova-router = { path = "../nova-router" }
 nova-build-bazel = { path = "../nova-build-bazel" }
 nova-framework-micronaut = { path = "../nova-framework-micronaut" }
+nova-framework-mapstruct = { path = "../nova-framework-mapstruct" }
 lsp-types = "0.97"
 nova-workspace = { path = "../nova-workspace" }
 schemars = "0.8"

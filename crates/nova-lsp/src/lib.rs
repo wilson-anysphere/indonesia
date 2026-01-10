@@ -57,6 +57,8 @@ pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_re
 
 use nova_dap::hot_swap::{BuildSystem, JdwpRedefiner};
 use thiserror::Error;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 #[derive(Debug, Error)]
 pub enum NovaLspError {
@@ -222,6 +224,38 @@ pub fn goto_definition(
     file: nova_db::FileId,
     position: lsp_types::Position,
 ) -> Option<lsp_types::Location> {
+    // Best-effort MapStruct support: allow "go to definition" from a mapper method
+    // (or `@Mapping(target="...")`) into generated sources when they exist on disk.
+    //
+    // This intentionally does not require the generated sources to be loaded into
+    // Nova's in-memory databases, mirroring IntelliJ-style navigation into
+    // annotation-processor output.
+    let text = db.file_content(file);
+    if looks_like_mapstruct_file(text) {
+        let file_path = db.file_path(file);
+        let offset = position_to_offset(text, position);
+        if let (Some(file_path), Some(offset)) = (file_path, offset) {
+            let root = find_project_root(file_path);
+            if let Ok(targets) = nova_framework_mapstruct::goto_definition(&root, file_path, offset) {
+                if let Some(target) = targets.first() {
+                    if let Some(uri) = uri_from_file_path(&target.file) {
+                        let range = std::fs::read_to_string(&target.file)
+                            .ok()
+                            .map(|target_text| {
+                                span_to_lsp_range(
+                                    &target_text,
+                                    target.span.start,
+                                    target.span.end,
+                                )
+                            })
+                            .unwrap_or_else(zero_range);
+                        return Some(lsp_types::Location { uri, range });
+                    }
+                }
+            }
+        }
+    }
+
     nova_ide::goto_definition(db, file, position)
 }
 
@@ -246,4 +280,121 @@ pub fn server_capabilities() -> ServerCapabilities {
         type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
         ..ServerCapabilities::default()
     }
+}
+
+fn looks_like_mapstruct_file(text: &str) -> bool {
+    // Cheap substring checks before we do any filesystem work.
+    text.contains("@Mapper")
+        || text.contains("@org.mapstruct.Mapper")
+        || text.contains("@Mapping")
+        || text.contains("org.mapstruct")
+}
+
+fn position_to_offset(text: &str, position: lsp_types::Position) -> Option<usize> {
+    let mut line: u32 = 0;
+    let mut col_utf16: u32 = 0;
+    let mut offset: usize = 0;
+
+    for ch in text.chars() {
+        if line == position.line && col_utf16 == position.character {
+            return Some(offset);
+        }
+
+        offset += ch.len_utf8();
+        if ch == '\n' {
+            line += 1;
+            col_utf16 = 0;
+        } else {
+            col_utf16 += ch.len_utf16() as u32;
+        }
+    }
+
+    if line == position.line && col_utf16 == position.character {
+        Some(offset)
+    } else {
+        None
+    }
+}
+
+fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
+    let mut line: u32 = 0;
+    let mut col_utf16: u32 = 0;
+    let mut cur: usize = 0;
+
+    for ch in text.chars() {
+        if cur >= offset {
+            break;
+        }
+        cur += ch.len_utf8();
+        if ch == '\n' {
+            line += 1;
+            col_utf16 = 0;
+        } else {
+            col_utf16 += ch.len_utf16() as u32;
+        }
+    }
+
+    lsp_types::Position {
+        line,
+        character: col_utf16,
+    }
+}
+
+fn span_to_lsp_range(text: &str, start: usize, end: usize) -> lsp_types::Range {
+    lsp_types::Range {
+        start: offset_to_position(text, start),
+        end: offset_to_position(text, end),
+    }
+}
+
+fn zero_range() -> lsp_types::Range {
+    lsp_types::Range {
+        start: lsp_types::Position::new(0, 0),
+        end: lsp_types::Position::new(0, 0),
+    }
+}
+
+fn find_project_root(path: &Path) -> PathBuf {
+    let start = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or(path)
+    };
+
+    if let Some(root) = nova_project::bazel_workspace_root(start) {
+        return root;
+    }
+
+    let mut current = start;
+    loop {
+        if looks_like_project_root(current) {
+            return current.to_path_buf();
+        }
+        let Some(parent) = current.parent() else {
+            return start.to_path_buf();
+        };
+        if parent == current {
+            return start.to_path_buf();
+        }
+        current = parent;
+    }
+}
+
+fn looks_like_project_root(dir: &Path) -> bool {
+    if dir.join("pom.xml").is_file() {
+        return true;
+    }
+    if dir.join("build.gradle").is_file()
+        || dir.join("build.gradle.kts").is_file()
+        || dir.join("settings.gradle").is_file()
+        || dir.join("settings.gradle.kts").is_file()
+    {
+        return true;
+    }
+    dir.join("src").is_dir()
+}
+
+fn uri_from_file_path(path: &Path) -> Option<lsp_types::Uri> {
+    let url = url::Url::from_file_path(path).ok()?;
+    lsp_types::Uri::from_str(url.as_str()).ok()
 }
