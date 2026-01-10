@@ -49,8 +49,8 @@ impl MavenBuild {
         module_relative: Option<&Path>,
         cache: &BuildCache,
     ) -> Result<Classpath> {
-        let fingerprint =
-            BuildFileFingerprint::from_files(project_root, collect_maven_build_files(project_root)?)?;
+        let pom_files = collect_maven_build_files(project_root)?;
+        let fingerprint = BuildFileFingerprint::from_files(project_root, pom_files.clone())?;
         let module_key = module_relative
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "<root>".to_string());
@@ -62,6 +62,36 @@ impl MavenBuild {
             &module_key,
         )? {
             if let Some(entries) = cached.classpath {
+                return Ok(Classpath::new(entries));
+            }
+        }
+
+        // If the caller asked for the root classpath and we detect multiple
+        // Maven modules, return a best-effort union of module classpaths. This
+        // is more useful for language-server indexing than the aggregator POM's
+        // own classpath (which is often empty for `<packaging>pom</packaging>`).
+        if module_relative.is_none() {
+            let modules = discover_maven_modules(project_root, &pom_files);
+            if !modules.is_empty() {
+                let mut entries = Vec::new();
+                for module in modules {
+                    let cp = self.classpath(project_root, Some(&module), cache)?;
+                    entries.extend(cp.entries);
+                }
+
+                let mut seen = std::collections::HashSet::new();
+                entries.retain(|p| seen.insert(p.clone()));
+
+                cache.update_module(
+                    project_root,
+                    BuildSystemKind::Maven,
+                    &fingerprint,
+                    &module_key,
+                    |m| {
+                        m.classpath = Some(entries.clone());
+                    },
+                )?;
+
                 return Ok(Classpath::new(entries));
             }
         }
@@ -93,9 +123,15 @@ impl MavenBuild {
             }
         }
 
-        cache.update_module(project_root, BuildSystemKind::Maven, &fingerprint, &module_key, |m| {
-            m.classpath = Some(entries.clone());
-        })?;
+        cache.update_module(
+            project_root,
+            BuildSystemKind::Maven,
+            &fingerprint,
+            &module_key,
+            |m| {
+                m.classpath = Some(entries.clone());
+            },
+        )?;
 
         Ok(Classpath::new(entries))
     }
@@ -106,8 +142,10 @@ impl MavenBuild {
         module_relative: Option<&Path>,
         cache: &BuildCache,
     ) -> Result<BuildResult> {
-        let fingerprint =
-            BuildFileFingerprint::from_files(project_root, collect_maven_build_files(project_root)?)?;
+        let fingerprint = BuildFileFingerprint::from_files(
+            project_root,
+            collect_maven_build_files(project_root)?,
+        )?;
         let module_key = module_relative
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "<root>".to_string());
@@ -116,9 +154,20 @@ impl MavenBuild {
         let combined = combine_output(&output);
         let diagnostics = crate::parse_javac_diagnostics(&combined, "maven");
 
-        cache.update_module(project_root, BuildSystemKind::Maven, &fingerprint, &module_key, |m| {
-            m.diagnostics = Some(diagnostics.iter().map(crate::cache::CachedDiagnostic::from).collect());
-        })?;
+        cache.update_module(
+            project_root,
+            BuildSystemKind::Maven,
+            &fingerprint,
+            &module_key,
+            |m| {
+                m.diagnostics = Some(
+                    diagnostics
+                        .iter()
+                        .map(crate::cache::CachedDiagnostic::from)
+                        .collect(),
+                );
+            },
+        )?;
 
         if output.status.success() || !diagnostics.is_empty() {
             return Ok(BuildResult { diagnostics });
@@ -219,6 +268,29 @@ fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
+fn discover_maven_modules(root: &Path, pom_files: &[PathBuf]) -> Vec<PathBuf> {
+    let root_pom = root.join("pom.xml");
+    let mut modules = Vec::new();
+    for pom in pom_files {
+        if pom == &root_pom {
+            continue;
+        }
+        let Ok(rel) = pom.strip_prefix(root) else {
+            continue;
+        };
+        let Some(dir) = rel.parent() else {
+            continue;
+        };
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        modules.push(dir.to_path_buf());
+    }
+    modules.sort();
+    modules.dedup();
+    modules
+}
+
 fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -260,5 +332,12 @@ mod tests {
             .collect();
         rel.sort();
         assert_eq!(rel, vec!["module-a/pom.xml", "module-b/pom.xml", "pom.xml"]);
+
+        let modules = discover_maven_modules(&root, &files);
+        let rel_modules: Vec<_> = modules
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(rel_modules, vec!["module-a", "module-b"]);
     }
 }
