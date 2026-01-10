@@ -24,6 +24,7 @@ members = [
     "crates/nova-framework-dagger",
     "crates/nova-framework-jpa",
     "crates/nova-framework-lombok",
+    "crates/nova-framework-micronaut",
     "crates/nova-framework-spring",
     "crates/nova-framework-mapstruct",
     "crates/nova-fuzzy",

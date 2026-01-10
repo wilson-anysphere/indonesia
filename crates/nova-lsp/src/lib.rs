@@ -69,6 +69,9 @@ pub const JAVA_GENERATED_SOURCES_METHOD: &str = "nova/java/generatedSources";
 pub const RUN_ANNOTATION_PROCESSING_METHOD: &str = "nova/java/runAnnotationProcessing";
 pub const RELOAD_PROJECT_METHOD: &str = "nova/reloadProject";
 
+pub const MICRONAUT_ENDPOINTS_METHOD: &str = "nova/micronaut/endpoints";
+pub const MICRONAUT_BEANS_METHOD: &str = "nova/micronaut/beans";
+
 pub const DEBUG_CONFIGURATIONS_METHOD: &str = "nova/debug/configurations";
 pub const DEBUG_HOT_SWAP_METHOD: &str = "nova/debug/hotSwap";
 
@@ -105,6 +108,8 @@ pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<
             extensions::apt::handle_run_annotation_processing(params)
         }
         RELOAD_PROJECT_METHOD => extensions::build::handle_reload_project(params),
+        MICRONAUT_ENDPOINTS_METHOD => extensions::micronaut::handle_endpoints(params),
+        MICRONAUT_BEANS_METHOD => extensions::micronaut::handle_beans(params),
         DEBUG_CONFIGURATIONS_METHOD => extensions::debug::handle_debug_configurations(params),
         DEBUG_HOT_SWAP_METHOD => extensions::debug::handle_hot_swap(params),
         BUILD_TARGET_CLASSPATH_METHOD => extensions::build::handle_target_classpath(params),

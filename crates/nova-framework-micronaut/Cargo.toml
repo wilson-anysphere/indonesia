@@ -1,0 +1,19 @@
+[package]
+name = "nova-framework-micronaut"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+nova-framework = { path = "../nova-framework" }
+nova-hir = { path = "../nova-hir" }
+nova-index = { path = "../nova-index" }
+nova-resolve = { path = "../nova-resolve" }
+nova-types = { path = "../nova-types" }
+
+tree-sitter = "0.20"
+tree-sitter-java = "0.20"
+zip = "0.6"
+
+[dev-dependencies]
+pretty_assertions = "1"
