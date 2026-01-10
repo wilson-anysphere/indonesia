@@ -3,11 +3,18 @@ name = "nova-db"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Enable additional `tracing` spans/logs for query execution.
+tracing = []
+
 [dependencies]
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-hir = { path = "../nova-hir" }
+nova-project = { path = "../nova-project" }
 nova-syntax = { path = "../nova-syntax" }
+ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
+tracing = "0.1"
 thiserror = "2"
 
 [dev-dependencies]
@@ -15,4 +22,3 @@ tempfile = "3"
 
 [lib]
 path = "src/lib.rs"
-

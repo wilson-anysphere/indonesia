@@ -1,28 +1,22 @@
-//! Minimal database layer for Nova.
+//! Database layer for Nova.
 //!
-//! Today this crate provides:
+//! This crate currently provides:
 //! - [`RootDatabase`]: a small in-memory file store used by `nova-dap`.
-//! - [`AnalysisDatabase`]: an experimental query facade that supports persisted
-//!   AST/HIR artifacts for fast warm starts.
+//! - [`AnalysisDatabase`]: an experimental, non-Salsa cache facade for warm-start
+//!   parsing and per-file structural summaries.
+//! - [`salsa`]: the Salsa-powered incremental query database and snapshot
+//!   concurrency model described in `docs/04-incremental-computation.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub use nova_core::{FileId, ProjectId};
 use nova_cache::{AstArtifactCache, CacheConfig, CacheDir, CacheError, FileAstArtifacts, Fingerprint};
-use nova_hir::{item_tree, ItemTree, SymbolSummary};
-use nova_syntax::{parse, ParseResult};
+use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
+use nova_syntax::{parse as syntax_parse, ParseResult};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FileId(u32);
-
-impl FileId {
-    pub fn raw(self) -> u32 {
-        self.0
-    }
-}
-
-/// A small in-memory store for file contents keyed by a compact `FileId`.
+/// A small in-memory store for file contents keyed by a compact [`FileId`].
 #[derive(Debug, Default)]
 pub struct RootDatabase {
     next_file_id: u32,
@@ -49,7 +43,7 @@ impl RootDatabase {
             return *id;
         }
 
-        let id = FileId(self.next_file_id);
+        let id = FileId::from_raw(self.next_file_id);
         self.next_file_id = self.next_file_id.saturating_add(1);
         self.path_to_file.insert(path, id);
         id
@@ -192,8 +186,8 @@ impl AnalysisDatabase {
         }
 
         self.parse_count += 1;
-        let parsed = parse(&text);
-        let it = item_tree(&parsed, &text);
+        let parsed = syntax_parse(&text);
+        let it = build_item_tree(&parsed, &text);
         let sym = SymbolSummary::from_item_tree(&it);
 
         let artifacts = FileAstArtifacts {
@@ -306,3 +300,7 @@ mod tests {
         assert_ne!(&*b2, &*b1);
     }
 }
+
+pub mod salsa;
+
+pub use salsa::{NovaDatabase, QueryDatabase, QueryStat, QueryStats, Snapshot, SyntaxTree};
