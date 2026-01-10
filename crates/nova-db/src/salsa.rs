@@ -107,7 +107,11 @@ fn item_tree(db: &dyn NovaSyntax, file: FileId) -> Arc<ItemTree> {
     db.unwind_if_cancelled();
 
     let parse = db.parse(file);
-    let text = db.file_content(file);
+    let text = if db.file_exists(file) {
+        db.file_content(file)
+    } else {
+        Arc::new(String::new())
+    };
     let it = build_item_tree(&parse, text.as_str());
     let result = Arc::new(it);
     db.record_query_stat("item_tree", start.elapsed());
@@ -292,8 +296,18 @@ impl Database {
         self.inner.read().snapshot()
     }
 
+    pub fn with_snapshot<T>(&self, f: impl FnOnce(&Snapshot) -> T) -> T {
+        let snap = self.snapshot();
+        f(&snap)
+    }
+
     pub fn query_stats(&self) -> QueryStats {
         self.inner.read().query_stats()
+    }
+
+    pub fn with_write<T>(&self, f: impl FnOnce(&mut QueryDatabase) -> T) -> T {
+        let mut db = self.inner.write();
+        f(&mut db)
     }
 
     pub fn request_cancellation(&self) {
