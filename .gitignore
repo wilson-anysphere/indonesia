@@ -1,5 +1,6 @@
 /target/
 **/target/
+.DS_Store
 
 # Cargo lockfiles are kept local for faster iteration.
 Cargo.lock
@@ -7,3 +8,9 @@ Cargo.lock
 # Local-only agent files
 scratchpad.md
 handoff.md
+
+# Real-world fixture projects (cloned locally)
+test-projects/**
+!test-projects/.gitignore
+!test-projects/README.md
+!test-projects/pins.toml

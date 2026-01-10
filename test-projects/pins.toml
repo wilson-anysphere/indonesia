@@ -1,0 +1,13 @@
+# Pinned revisions for "real project" fixtures.
+#
+# These projects are cloned locally by `./scripts/clone-test-projects.sh` and are
+# not checked into git.
+
+[spring-petclinic]
+url = "https://github.com/spring-projects/spring-petclinic.git"
+rev = "ab1d5364a0a49d260b52bea2bfdfe804d8a36f7a"
+
+[guava]
+url = "https://github.com/google/guava.git"
+# v33.5.0
+rev = "8868c096cfdabbe38170b6e395369c315cfb72a1"
