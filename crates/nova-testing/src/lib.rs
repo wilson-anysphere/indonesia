@@ -84,6 +84,35 @@
 //! }
 //! ```
 //!
+//! ### `nova/test/debugConfiguration`
+//!
+//! Request ([`schema::TestDebugRequest`]):
+//!
+//! ```json
+//! {
+//!   "projectRoot": "/path/to/project",
+//!   "buildTool": "auto",
+//!   "test": "com.example.CalculatorTest#adds"
+//! }
+//! ```
+//!
+//! Response ([`schema::TestDebugResponse`]):
+//!
+//! ```json
+//! {
+//!   "schemaVersion": 1,
+//!   "tool": "maven",
+//!   "configuration": {
+//!     "schemaVersion": 1,
+//!     "name": "Debug com.example.CalculatorTest#adds",
+//!     "cwd": "/path/to/project",
+//!     "command": "mvn",
+//!     "args": ["-Dmaven.surefire.debug", "-Dtest=com.example.CalculatorTest#adds", "test"],
+//!     "env": {}
+//!   }
+//! }
+//! ```
+//!
 //! Note: for parameterized tests, JUnit XML reports often include per-invocation names
 //! like `parameterizedAdds(int)[1]`. Nova normalizes these back to the base method ID
 //! (`parameterizedAdds`) so the results match discovered `TestItem.id`s, and aggregates

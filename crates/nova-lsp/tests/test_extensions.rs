@@ -1,4 +1,4 @@
-use nova_testing::schema::TestDiscoverResponse;
+use nova_testing::schema::{BuildTool, TestDebugResponse, TestDiscoverResponse};
 use pretty_assertions::assert_eq;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -20,6 +20,34 @@ fn lsp_test_discover_extension_returns_tests() {
         .tests
         .iter()
         .any(|t| t.id == "com.example.CalculatorTest"));
+}
+
+#[test]
+fn lsp_test_debug_configuration_returns_command() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-testing/fixtures/maven-junit5");
+
+    let params = serde_json::json!({
+        "projectRoot": fixture.to_string_lossy(),
+        "buildTool": "auto",
+        "test": "com.example.CalculatorTest#adds",
+    });
+
+    let value = nova_lsp::handle_custom_request(nova_lsp::TEST_DEBUG_CONFIGURATION_METHOD, params)
+        .unwrap();
+    let resp: TestDebugResponse = serde_json::from_value(value).unwrap();
+
+    assert_eq!(resp.schema_version, nova_testing::SCHEMA_VERSION);
+    assert_eq!(resp.tool, BuildTool::Maven);
+    assert_eq!(resp.configuration.command, "mvn");
+    assert_eq!(
+        resp.configuration.args,
+        vec![
+            "-Dmaven.surefire.debug",
+            "-Dtest=com.example.CalculatorTest#adds",
+            "test"
+        ]
+    );
 }
 
 #[test]

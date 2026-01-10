@@ -1,5 +1,5 @@
 use crate::runner::detect_build_tool;
-use crate::schema::{BuildTool, DebugConfiguration};
+use crate::schema::{BuildTool, DebugConfiguration, TestDebugRequest, TestDebugResponse};
 use crate::{Result, SCHEMA_VERSION};
 use std::path::{Path, PathBuf};
 
@@ -60,6 +60,34 @@ pub fn debug_configuration_for_test(
         command,
         args,
         env: Default::default(),
+    })
+}
+
+/// Construct a debug configuration for a test based on an LSP-style request payload.
+pub fn debug_configuration_for_request(req: &TestDebugRequest) -> Result<TestDebugResponse> {
+    if req.project_root.trim().is_empty() {
+        return Err(crate::NovaTestingError::InvalidRequest(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+    if req.test.trim().is_empty() {
+        return Err(crate::NovaTestingError::InvalidRequest(
+            "`test` must not be empty".to_string(),
+        ));
+    }
+
+    let project_root = canonicalize_fallback(Path::new(&req.project_root));
+    let tool = match req.build_tool {
+        BuildTool::Auto => detect_build_tool(&project_root)?,
+        other => other,
+    };
+
+    let configuration = debug_configuration_for_test(&project_root, tool, &req.test)?;
+
+    Ok(TestDebugResponse {
+        schema_version: SCHEMA_VERSION,
+        tool,
+        configuration,
     })
 }
 

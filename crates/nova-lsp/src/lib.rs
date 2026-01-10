@@ -6,6 +6,7 @@
 //! - Testing endpoints (backed by `nova-testing`)
 //!   - `nova/test/discover`
 //!   - `nova/test/run`
+//!   - `nova/test/debugConfiguration`
 //! - Build integration endpoints (backed by `nova-build`)
 //!   - `nova/buildProject`
 //!   - `nova/java/classpath`
@@ -57,6 +58,7 @@ pub type Result<T> = std::result::Result<T, NovaLspError>;
 
 pub const TEST_DISCOVER_METHOD: &str = "nova/test/discover";
 pub const TEST_RUN_METHOD: &str = "nova/test/run";
+pub const TEST_DEBUG_CONFIGURATION_METHOD: &str = "nova/test/debugConfiguration";
 pub const BUILD_PROJECT_METHOD: &str = "nova/buildProject";
 pub const JAVA_CLASSPATH_METHOD: &str = "nova/java/classpath";
 pub const JAVA_GENERATED_SOURCES_METHOD: &str = "nova/java/generatedSources";
@@ -83,6 +85,7 @@ pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<
     match method {
         TEST_DISCOVER_METHOD => extensions::test::handle_discover(params),
         TEST_RUN_METHOD => extensions::test::handle_run(params),
+        TEST_DEBUG_CONFIGURATION_METHOD => extensions::test::handle_debug_configuration(params),
         BUILD_PROJECT_METHOD => extensions::build::handle_build_project(params),
         JAVA_CLASSPATH_METHOD => extensions::build::handle_java_classpath(params),
         JAVA_GENERATED_SOURCES_METHOD => extensions::apt::handle_generated_sources(params),
