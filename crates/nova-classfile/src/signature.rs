@@ -338,7 +338,7 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         while !self.is_eof() && self.peek() != Some(delim) {
             let ch = self.peek().unwrap();
-            if is_forbidden_in_identifier(ch) {
+            if is_forbidden_in_identifier(ch) || is_signature_delimiter(ch) {
                 return Err(Error::InvalidSignature(self.sig.to_string()));
             }
             self.pos += 1;
@@ -375,6 +375,10 @@ impl<'a> Parser<'a> {
 
 fn is_forbidden_in_identifier(ch: char) -> bool {
     matches!(ch, '[' | '^' | '(' | ')' | '*' | '+' | '-')
+}
+
+fn is_signature_delimiter(ch: char) -> bool {
+    matches!(ch, '/' | ';' | '<' | '>' | '.' | ':')
 }
 
 #[cfg(test)]

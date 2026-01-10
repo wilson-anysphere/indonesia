@@ -251,5 +251,8 @@ fn decode_modified_utf8(bytes: &[u8]) -> Result<String> {
         return Err(Error::InvalidModifiedUtf8);
     }
 
-    String::from_utf16(&units).map_err(|_| Error::InvalidModifiedUtf8)
+    // Classfile modified UTF-8 encodes a sequence of UTF-16 code units. Java
+    // strings/identifiers may legally contain unpaired surrogate values, so use
+    // lossy decoding instead of rejecting the entire classfile.
+    Ok(String::from_utf16_lossy(&units))
 }
