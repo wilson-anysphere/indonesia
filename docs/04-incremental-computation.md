@@ -6,6 +6,8 @@
 
 The incremental computation engine is **the core innovation** that enables Nova to surpass IntelliJ. This document describes the query-based architecture that makes true incremental analysis possible.
 
+**Implementation note:** Nova’s incremental query engine is implemented with Salsa via rust-analyzer’s `ra_ap_salsa` crate (imported as `ra_salsa`) in `crates/nova-db` (see [ADR 0001](adr/0001-incremental-query-engine.md)). The code snippets below are illustrative; the concrete macro names/types follow `ra_salsa::*`.
+
 ---
 
 ## The Problem with Traditional Approaches

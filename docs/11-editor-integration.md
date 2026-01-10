@@ -6,6 +6,8 @@
 
 Nova communicates with editors through the Language Server Protocol (LSP). This document covers LSP implementation, custom extensions, and multi-editor support strategy.
 
+**Implementation note:** Protocol stack decisions are captured in [ADR 0003](adr/0003-protocol-frameworks-lsp-dap.md). Some examples below use an `lsp-server`-style message loop; specific APIs in the current codebase may differ while the transport layer is still evolving.
+
 ---
 
 ## LSP Implementation
