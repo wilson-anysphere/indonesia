@@ -592,6 +592,18 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
             let Some(rel) = &field.relationship else {
                 continue;
             };
+
+            if !relationship_type_matches_field(&rel.kind, &field.ty) {
+                diags.push(Diagnostic::error(
+                    "JPA_REL_INVALID_TARGET_TYPE",
+                    format!(
+                        "Relationship `{}`.{} has incompatible field type `{}` for {:?}",
+                        entity.name, field.name, field.ty, rel.kind
+                    ),
+                    Some(rel.span),
+                ));
+            }
+
             let Some(target) = &rel.target_entity else {
                 diags.push(Diagnostic::warning(
                     "JPA_REL_TARGET_UNKNOWN",
@@ -633,4 +645,34 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
     }
 
     diags
+}
+
+fn relationship_type_matches_field(kind: &RelationshipKind, field_ty: &str) -> bool {
+    if field_ty.trim().is_empty() {
+        return true;
+    }
+    match kind {
+        RelationshipKind::OneToMany | RelationshipKind::ManyToMany => {
+            is_collection_like_type(field_ty)
+        }
+        RelationshipKind::ManyToOne | RelationshipKind::OneToOne => {
+            !is_collection_like_type(field_ty)
+        }
+    }
+}
+
+fn is_collection_like_type(ty: &str) -> bool {
+    let ty = ty.trim();
+    debug_assert!(!ty.is_empty());
+    if ty.ends_with("[]") {
+        return true;
+    }
+
+    let base = split_generic_type(ty)
+        .map(|(b, _)| b)
+        .unwrap_or_else(|| ty.to_string());
+    let base = base.trim();
+    let simple = base.rsplit('.').next().unwrap_or(base);
+
+    matches!(simple, "List" | "Set" | "Collection" | "Iterable" | "Map")
 }

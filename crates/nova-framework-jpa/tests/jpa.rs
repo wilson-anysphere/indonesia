@@ -196,3 +196,41 @@ fn jpql_completion_works_inside_java_source_strings() {
     assert!(items.iter().any(|i| i.label == "id"));
     assert!(items.iter().any(|i| i.label == "name"));
 }
+
+#[test]
+fn invalid_relationship_target_type_emits_diagnostic() {
+    let user = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+        import jakarta.persistence.OneToMany;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+
+            // @OneToMany should be a collection type.
+            @OneToMany
+            private Post posts;
+        }
+    "#;
+
+    let post = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class Post {
+            @Id private Long id;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[user, post]);
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "JPA_REL_INVALID_TARGET_TYPE"),
+        "expected JPA_REL_INVALID_TARGET_TYPE diagnostic, got: {:#?}",
+        analysis.diagnostics
+    );
+}
