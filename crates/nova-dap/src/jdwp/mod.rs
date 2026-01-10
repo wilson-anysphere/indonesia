@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
@@ -37,6 +37,33 @@ pub struct StackFrameInfo {
     pub line: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoppedReason {
+    Breakpoint,
+    Step,
+}
+
+impl StoppedReason {
+    pub fn as_dap_reason(self) -> &'static str {
+        match self {
+            StoppedReason::Breakpoint => "breakpoint",
+            StoppedReason::Step => "step",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StoppedEvent {
+    pub reason: StoppedReason,
+    pub thread_id: u64,
+    pub request_id: u32,
+}
+
+#[derive(Debug, Clone)]
+pub enum JdwpEvent {
+    Stopped(StoppedEvent),
+}
+
 /// Minimal, mock-friendly interface for the Java Debug Wire Protocol.
 ///
 /// The implementation included in this repository purposefully keeps the API
@@ -60,6 +87,15 @@ pub trait JdwpClient: Send {
     fn step_out(&mut self, thread_id: u64) -> Result<(), JdwpError>;
     fn pause(&mut self, thread_id: u64) -> Result<(), JdwpError>;
 
+    /// Wait until the next asynchronous event is received from the JVM.
+    ///
+    /// A real debugger would typically run an event loop and forward events to
+    /// the DAP client asynchronously. For now we expose a simple blocking call
+    /// that enables basic breakpoint/step handling.
+    fn wait_for_event(&mut self) -> Result<Option<JdwpEvent>, JdwpError> {
+        Ok(None)
+    }
+
     fn evaluate(&mut self, _expression: &str, _frame_id: u64) -> Result<String, JdwpError> {
         Err(JdwpError::NotImplemented)
     }
@@ -75,6 +111,7 @@ pub struct TcpJdwpClient {
     next_packet_id: u32,
     id_sizes: IdSizes,
     cache: Cache,
+    pending_events: VecDeque<JdwpEvent>,
 }
 
 impl TcpJdwpClient {
@@ -84,6 +121,7 @@ impl TcpJdwpClient {
             next_packet_id: 1,
             id_sizes: IdSizes::default(),
             cache: Cache::default(),
+            pending_events: VecDeque::new(),
         }
     }
 
@@ -109,8 +147,6 @@ impl TcpJdwpClient {
         let id = self.next_packet_id;
         self.next_packet_id = self.next_packet_id.wrapping_add(1);
 
-        let stream = self.stream_mut()?;
-
         let length = 11usize
             .checked_add(data.len())
             .ok_or_else(|| JdwpError::Protocol("packet too large".to_string()))?;
@@ -123,11 +159,19 @@ impl TcpJdwpClient {
         buf.push(command);
         buf.extend_from_slice(data);
 
-        stream.write_all(&buf)?;
-        stream.flush()?;
+        {
+            let stream = self.stream_mut()?;
+            stream.write_all(&buf)?;
+            stream.flush()?;
+        }
 
         loop {
-            match read_packet(stream)? {
+            let packet = {
+                let stream = self.stream_mut()?;
+                read_packet(stream)?
+            };
+
+            match packet {
                 Packet::Reply {
                     id: reply_id,
                     error_code,
@@ -143,11 +187,15 @@ impl TcpJdwpClient {
                     }
                     return Ok(data);
                 }
-                Packet::Command { .. } => {
+                Packet::Command {
+                    command_set,
+                    command,
+                    data,
+                    ..
+                } => {
                     // The JVM can deliver asynchronous events (e.g. breakpoint hits) as
-                    // command packets. `nova-dap` doesn't handle events yet, but we
-                    // must still read and discard them so request/response traffic
-                    // remains aligned.
+                    // command packets. Queue them so the DAP side can surface them.
+                    self.handle_command_packet(command_set, command, &data)?;
                     continue;
                 }
             }
@@ -324,6 +372,98 @@ impl TcpJdwpClient {
 
         Ok(best.map(|(_, loc)| loc))
     }
+
+    fn handle_command_packet(&mut self, command_set: u8, command: u8, data: &[u8]) -> Result<(), JdwpError> {
+        // Event.Composite
+        if command_set != 64 || command != 100 {
+            return Ok(());
+        }
+
+        let mut cursor = Cursor::new(data);
+        let _suspend_policy = cursor.read_u8()?;
+        let events = cursor.read_u32()? as usize;
+
+        for _ in 0..events {
+            let kind = cursor.read_u8()?;
+            let request_id = cursor.read_u32()?;
+
+            match kind {
+                1 => {
+                    // Step
+                    let thread_id = cursor.read_id(self.id_sizes.object_id)?;
+                    // location
+                    let _type_tag = cursor.read_u8()?;
+                    let _type_id = cursor.read_id(self.id_sizes.reference_type_id)?;
+                    let _method_id = cursor.read_id(self.id_sizes.method_id)?;
+                    let _index = cursor.read_i64()?;
+
+                    self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
+                        reason: StoppedReason::Step,
+                        thread_id,
+                        request_id,
+                    }));
+                }
+                2 => {
+                    // Breakpoint
+                    let thread_id = cursor.read_id(self.id_sizes.object_id)?;
+                    // location
+                    let _type_tag = cursor.read_u8()?;
+                    let _type_id = cursor.read_id(self.id_sizes.reference_type_id)?;
+                    let _method_id = cursor.read_id(self.id_sizes.method_id)?;
+                    let _index = cursor.read_i64()?;
+
+                    self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
+                        reason: StoppedReason::Breakpoint,
+                        thread_id,
+                        request_id,
+                    }));
+                }
+                other => {
+                    return Err(JdwpError::Protocol(format!(
+                        "unsupported JDWP event kind {other}"
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn clear_event_request(&mut self, event_kind: u8, request_id: u32) -> Result<(), JdwpError> {
+        let mut body = Vec::new();
+        body.push(event_kind);
+        body.extend_from_slice(&request_id.to_be_bytes());
+        let _ = self.send_command(15, 2, &body)?;
+        Ok(())
+    }
+
+    fn set_step_request(&mut self, thread_id: u64, depth: i32) -> Result<u32, JdwpError> {
+        // EventRequest.Set(STEP)
+        let mut body = Vec::new();
+        body.push(1); // EventKind.STEP
+        body.push(1); // SuspendPolicy.EVENT_THREAD
+        body.extend_from_slice(&(2u32).to_be_bytes()); // modifiers
+
+        // Modifier.Count (1) - trigger once.
+        body.push(1);
+        body.extend_from_slice(&(1u32).to_be_bytes());
+
+        // Modifier.Step (10)
+        body.push(10);
+        write_id(&mut body, self.id_sizes.object_id, thread_id);
+        body.extend_from_slice(&(1i32).to_be_bytes()); // StepSize.LINE
+        body.extend_from_slice(&(depth).to_be_bytes());
+
+        let reply = self.send_command(15, 1, &body)?;
+        let mut cursor = Cursor::new(&reply);
+        let request_id = cursor.read_u32()?;
+        Ok(request_id)
+    }
+
+    fn resume_vm(&mut self) -> Result<(), JdwpError> {
+        let _ = self.send_command(1, 9, &[])?;
+        Ok(())
+    }
 }
 
 impl Default for TcpJdwpClient {
@@ -454,28 +594,67 @@ impl JdwpClient for TcpJdwpClient {
     }
 
     fn r#continue(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
-        let _ = self.send_command(1, 9, &[])?;
-        Ok(())
+        self.resume_vm()
     }
 
     fn next(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
-        let _ = self.stream_mut()?;
-        Err(JdwpError::NotImplemented)
+        let thread_id = _thread_id;
+        let _ = self.set_step_request(thread_id, 1)?; // StepDepth.OVER
+        self.resume_vm()
     }
 
     fn step_in(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
-        let _ = self.stream_mut()?;
-        Err(JdwpError::NotImplemented)
+        let thread_id = _thread_id;
+        let _ = self.set_step_request(thread_id, 0)?; // StepDepth.INTO
+        self.resume_vm()
     }
 
     fn step_out(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
-        let _ = self.stream_mut()?;
-        Err(JdwpError::NotImplemented)
+        let thread_id = _thread_id;
+        let _ = self.set_step_request(thread_id, 2)?; // StepDepth.OUT
+        self.resume_vm()
     }
 
     fn pause(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
         let _ = self.send_command(1, 8, &[])?;
         Ok(())
+    }
+
+    fn wait_for_event(&mut self) -> Result<Option<JdwpEvent>, JdwpError> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Ok(Some(event));
+        }
+
+        loop {
+            let packet = {
+                let stream = match self.stream_mut() {
+                    Ok(stream) => stream,
+                    Err(JdwpError::NotConnected) => return Ok(None),
+                    Err(err) => return Err(err),
+                };
+                read_packet(stream)?
+            };
+
+            match packet {
+                Packet::Reply { .. } => continue,
+                Packet::Command {
+                    command_set,
+                    command,
+                    data,
+                    ..
+                } => {
+                    self.handle_command_packet(command_set, command, &data)?;
+                    if let Some(event) = self.pending_events.pop_front() {
+                        // Step requests are one-shot; clear to avoid accumulating disabled requests.
+                        let JdwpEvent::Stopped(stopped) = &event;
+                        if stopped.reason == StoppedReason::Step {
+                            let _ = self.clear_event_request(1, stopped.request_id);
+                        }
+                        return Ok(Some(event));
+                    }
+                }
+            }
+        }
     }
 }
 

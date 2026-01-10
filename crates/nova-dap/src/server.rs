@@ -1,7 +1,7 @@
 use crate::breakpoints::map_line_breakpoints;
 use crate::dap::codec::{read_json_message, write_json_message};
 use crate::dap::messages::{Event, Request, Response};
-use crate::jdwp::{JdwpClient, TcpJdwpClient};
+use crate::jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
 use anyhow::Context;
 use nova_db::RootDatabase;
 use nova_project::{AttachConfig, LaunchConfig};
@@ -10,6 +10,11 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
+
+struct Outgoing {
+    messages: Vec<serde_json::Value>,
+    wait_for_stop: bool,
+}
 
 pub struct DapServer<C: JdwpClient> {
     next_seq: u64,
@@ -53,17 +58,29 @@ impl<C: JdwpClient> DapServer<C> {
         while let Some(request) = read_json_message::<_, Request>(&mut reader)? {
             let outgoing = match self.handle_request(&request) {
                 Ok(outgoing) => outgoing,
-                Err(err) => vec![serde_json::to_value(Response::error(
-                    self.alloc_seq(),
-                    &request,
-                    err.to_string(),
-                ))?],
+                Err(err) => Outgoing {
+                    messages: vec![serde_json::to_value(Response::error(
+                        self.alloc_seq(),
+                        &request,
+                        err.to_string(),
+                    ))?],
+                    wait_for_stop: false,
+                },
             };
 
-            for msg in outgoing {
+            for msg in outgoing.messages {
                 write_json_message(&mut writer, &msg)?;
             }
             writer.flush()?;
+
+            if outgoing.wait_for_stop {
+                if let Some(event) = self.jdwp.wait_for_event().ok().flatten() {
+                    if let Some(stopped) = self.jdwp_event_to_dap_stopped(event) {
+                        write_json_message(&mut writer, &stopped)?;
+                        writer.flush()?;
+                    }
+                }
+            }
 
             if self.should_exit {
                 break;
@@ -79,7 +96,7 @@ impl<C: JdwpClient> DapServer<C> {
         seq
     }
 
-    fn handle_request(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn handle_request(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         match request.command.as_str() {
             "initialize" => self.initialize(request),
             "launch" => self.launch(request),
@@ -93,15 +110,18 @@ impl<C: JdwpClient> DapServer<C> {
             "evaluate" => self.evaluate(request),
             "continue" | "next" | "stepIn" | "stepOut" | "pause" => self.execution_control(request),
             "disconnect" => self.disconnect(request),
-            _ => Ok(vec![serde_json::to_value(Response::error(
-                self.alloc_seq(),
-                request,
-                format!("Unknown command: {}", request.command),
-            ))?]),
+            _ => Ok(Outgoing {
+                messages: vec![serde_json::to_value(Response::error(
+                    self.alloc_seq(),
+                    request,
+                    format!("Unknown command: {}", request.command),
+                ))?],
+                wait_for_stop: false,
+            }),
         }
     }
 
-    fn initialize(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn initialize(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         let capabilities = json!({
             "supportsConfigurationDoneRequest": true,
             "supportsEvaluateForHovers": true,
@@ -114,10 +134,13 @@ impl<C: JdwpClient> DapServer<C> {
         let response = Response::success(self.alloc_seq(), request, Some(capabilities));
         let initialized_event = Event::new(self.alloc_seq(), "initialized", None);
 
-        Ok(vec![serde_json::to_value(response)?, serde_json::to_value(initialized_event)?])
+        Ok(Outgoing {
+            messages: vec![serde_json::to_value(response)?, serde_json::to_value(initialized_event)?],
+            wait_for_stop: false,
+        })
     }
 
-    fn launch(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn launch(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         let args: LaunchConfig = request
             .arguments
             .clone()
@@ -133,7 +156,7 @@ impl<C: JdwpClient> DapServer<C> {
         self.simple_ok(request, None)
     }
 
-    fn attach(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn attach(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         let args: AttachConfig = serde_json::from_value(
             request
                 .arguments
@@ -146,7 +169,7 @@ impl<C: JdwpClient> DapServer<C> {
         self.simple_ok(request, None)
     }
 
-    fn set_breakpoints(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn set_breakpoints(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         #[derive(Debug, Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Source {
@@ -218,7 +241,7 @@ impl<C: JdwpClient> DapServer<C> {
         self.simple_ok(request, Some(json!({ "breakpoints": dap_breakpoints })))
     }
 
-    fn threads(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn threads(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         let threads = match self.jdwp.threads() {
             Ok(threads) => {
                 let mut dap_threads = Vec::new();
@@ -241,7 +264,7 @@ impl<C: JdwpClient> DapServer<C> {
         self.simple_ok(request, Some(threads))
     }
 
-    fn stack_trace(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn stack_trace(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         #[derive(Debug, Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Args {
@@ -288,7 +311,7 @@ impl<C: JdwpClient> DapServer<C> {
         self.simple_ok(request, Some(body))
     }
 
-    fn scopes(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn scopes(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         let body = json!({
             "scopes": [
                 {"name": "Locals", "presentationHint": "locals", "variablesReference": 1, "expensive": false}
@@ -297,12 +320,12 @@ impl<C: JdwpClient> DapServer<C> {
         self.simple_ok(request, Some(body))
     }
 
-    fn variables(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn variables(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         let body = json!({ "variables": [] });
         self.simple_ok(request, Some(body))
     }
 
-    fn evaluate(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn evaluate(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         let body = json!({
             "result": "Evaluation is not implemented yet",
             "variablesReference": 0
@@ -310,7 +333,7 @@ impl<C: JdwpClient> DapServer<C> {
         self.simple_ok(request, Some(body))
     }
 
-    fn execution_control(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn execution_control(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         #[derive(Debug, Deserialize)]
         #[serde(rename_all = "camelCase")]
         struct Args {
@@ -342,17 +365,27 @@ impl<C: JdwpClient> DapServer<C> {
             "continue" => Some(json!({ "allThreadsContinued": true })),
             _ => None,
         };
-        self.simple_ok(request, body)
+        let wait_for_stop = matches!(
+            request.command.as_str(),
+            "continue" | "next" | "stepIn" | "stepOut"
+        );
+
+        let mut outgoing = self.simple_ok(request, body)?;
+        outgoing.wait_for_stop = wait_for_stop;
+        Ok(outgoing)
     }
 
-    fn disconnect(&mut self, request: &Request) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn disconnect(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
         self.should_exit = true;
         self.simple_ok(request, None)
     }
 
-    fn simple_ok(&mut self, request: &Request, body: Option<serde_json::Value>) -> anyhow::Result<Vec<serde_json::Value>> {
+    fn simple_ok(&mut self, request: &Request, body: Option<serde_json::Value>) -> anyhow::Result<Outgoing> {
         let response = Response::success(self.alloc_seq(), request, body);
-        Ok(vec![serde_json::to_value(response)?])
+        Ok(Outgoing {
+            messages: vec![serde_json::to_value(response)?],
+            wait_for_stop: false,
+        })
     }
 
     fn alloc_thread_id(&mut self, jdwp_thread_id: u64) -> i64 {
@@ -383,5 +416,27 @@ impl<C: JdwpClient> DapServer<C> {
         self.next_frame_id = self.next_frame_id.saturating_add(1);
         self.frame_ids.insert(id, jdwp_frame_id);
         id
+    }
+
+    fn jdwp_event_to_dap_stopped(&mut self, event: JdwpEvent) -> Option<serde_json::Value> {
+        match event {
+            JdwpEvent::Stopped(stopped) => {
+                let dap_thread_id = self.alloc_thread_id(stopped.thread_id);
+                Some(
+                    serde_json::to_value(Event::new(
+                        self.alloc_seq(),
+                        "stopped",
+                        Some(json!({
+                            "reason": stopped.reason.as_dap_reason(),
+                            "threadId": dap_thread_id,
+                            // Breakpoints/steps are configured with `SuspendPolicy.EVENT_THREAD`,
+                            // so only the event thread is stopped.
+                            "allThreadsStopped": false,
+                        })),
+                    ))
+                    .ok()?,
+                )
+            }
+        }
     }
 }
