@@ -4,3 +4,5 @@ src/**
 **/*.map
 tsconfig.json
 .gitignore
+dist/**
+scripts/**

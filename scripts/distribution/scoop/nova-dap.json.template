@@ -1,0 +1,14 @@
+{
+  "version": "<VERSION>",
+  "description": "Nova Java debug adapter (DAP)",
+  "homepage": "https://github.com/<ORG>/<REPO>",
+  "license": "Apache-2.0 OR MIT",
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/<ORG>/<REPO>/releases/download/v<VERSION>/nova-dap-x86_64-pc-windows-msvc.zip",
+      "hash": "<SHA256>"
+    }
+  },
+  "bin": "nova-dap.exe"
+}
+

@@ -22,9 +22,21 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 fn main() -> std::io::Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        eprintln!(
+            "nova-lsp {version}\n\nUsage:\n  nova-lsp [--stdio]\n",
+            version = env!("CARGO_PKG_VERSION")
+        );
+        return Ok(());
+    }
+
     // Accept `--stdio` for compatibility with editor templates. For now we only
-    // support stdio transport.
-    let _ = std::env::args().skip(1).collect::<Vec<_>>();
+    // support stdio transport, and ignore any other args.
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

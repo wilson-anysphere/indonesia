@@ -11,9 +11,14 @@
 
 # Cache packages
 *.tar.zst
+# cargo-dist output
+dist/
 
-# Cargo lockfiles are kept local for faster iteration.
-Cargo.lock
+# Editors / VS Code
+editors/vscode/node_modules/
+editors/vscode/out/
+editors/vscode/dist/
+*.vsix
 
 # Local-only agent files
 scratchpad.md

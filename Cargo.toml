@@ -58,7 +58,14 @@ members = [
 
 [workspace.package]
 edition = "2021"
+# Single source of truth for the Nova version.
+#
+# Release tags MUST match this version prefixed with `v`, e.g. `v0.1.0`.
+version = "0.1.0"
+rust-version = "1.92"
 license = "MIT OR Apache-2.0"
+authors = ["Nova contributors"]
+repository = "https://github.com/wilson-anysphere/indonesia"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -67,3 +74,25 @@ serde = { version = "1", features = ["derive"] }
 tempfile = "3"
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+
+# Config for `dist` (cargo-dist): https://axodotdev.github.io/cargo-dist/
+[workspace.metadata.dist]
+cargo-dist-version = "0.30.3"
+ci = "github"
+installers = ["shell", "powershell"]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+]
+pr-run-mode = "plan"
+allow-dirty = ["ci"]
+checksum = "sha256"
+install-path = "CARGO_HOME"
+hosting = "github"
+install-updater = false
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

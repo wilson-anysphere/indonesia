@@ -1,0 +1,33 @@
+# Homebrew formula template for `nova-lsp`.
+#
+# This is intentionally a template: fill in the URL and sha256 for each release.
+
+class NovaLsp < Formula
+  desc "Nova Java language server (LSP)"
+  homepage "https://github.com/<ORG>/<REPO>"
+  version "<VERSION>"
+
+  on_macos do
+    if Hardware::CPU.arm?
+      url "https://github.com/<ORG>/<REPO>/releases/download/v<VERSION>/nova-lsp-aarch64-apple-darwin.tar.xz"
+      sha256 "<SHA256>"
+    else
+      url "https://github.com/<ORG>/<REPO>/releases/download/v<VERSION>/nova-lsp-x86_64-apple-darwin.tar.xz"
+      sha256 "<SHA256>"
+    end
+  end
+
+  on_linux do
+    url "https://github.com/<ORG>/<REPO>/releases/download/v<VERSION>/nova-lsp-x86_64-unknown-linux-gnu.tar.xz"
+    sha256 "<SHA256>"
+  end
+
+  def install
+    bin.install "nova-lsp"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/nova-lsp --version")
+  end
+end
+

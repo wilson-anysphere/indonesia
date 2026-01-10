@@ -1,14 +1,58 @@
 # Project Nova
 
-Nova is a planned next-generation Java Language Server Protocol (LSP) implementation (`nova-lsp`).
-This repository contains the design documents, Rust crates, editor integration templates,
-and a headless CLI entry point for smoke-testing / CI usage.
+Nova is a next-generation Java Language Server Protocol (LSP) implementation (`nova-lsp`) and
+Debug Adapter Protocol (DAP) implementation (`nova-dap`).
+This repository contains the design documents, Rust crates, editor integrations, and a headless CLI
+entry point for smoke-testing / CI usage.
 
 ## Docs
 
 - High-level overview: [`AGENTS.md`](./AGENTS.md)
 - Architecture decisions (ADRs): [`docs/architecture.md`](./docs/architecture.md)
 - Full document set: [`docs/`](./docs)
+
+## Install
+
+Nova is distributed as standalone binaries (`nova-lsp`, `nova-dap`) and a VS Code extension.
+
+Releases are built with [`cargo-dist`](https://axodotdev.github.io/cargo-dist/) and include:
+- archives for Linux/macOS/Windows
+- SHA-256 checksums
+- shell / PowerShell installers
+
+### Build release artifacts locally
+
+```bash
+cargo install cargo-dist --locked --version 0.30.3
+dist build
+```
+
+Artifacts are written to `target/distrib/`.
+
+### VS Code extension
+
+```bash
+cd editors/vscode
+npm ci
+npm run package
+```
+
+This produces a `.vsix` file in `editors/vscode/dist/`.
+
+### Package manager templates
+
+Homebrew and Scoop templates live in `scripts/distribution/`.
+
+## Versioning & changelog
+
+Nova follows [Semantic Versioning](https://semver.org/). The single source of truth for the current
+version is `Cargo.toml` (`[workspace.package].version`).
+
+- `Cargo.toml`: `0.1.0`
+- Git tag: `v0.1.0`
+
+The VS Code extension version is kept in lockstep with the Nova version (see
+`editors/vscode/scripts/sync-version.mjs`).
 
 ## `nova` CLI
 
@@ -128,3 +172,7 @@ is available on your `$PATH` and supports `--stdio`.
 - VS Code: [`editors/vscode/README.md`](./editors/vscode/README.md)
 - Neovim: [`editors/neovim/README.md`](./editors/neovim/README.md)
 - Emacs: [`editors/emacs/README.md`](./editors/emacs/README.md)
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, workflows, and code style.

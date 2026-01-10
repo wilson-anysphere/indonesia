@@ -1,0 +1,6 @@
+[toolchain]
+# Pin the toolchain to keep CI/dev builds reproducible.
+channel = "1.92.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+

@@ -38,3 +38,18 @@ npm run compile
 
 When the extension is active, Nova registers a VS Code Test Explorer controller.
 Tests are discovered via `nova/test/discover` and can be run from the Test Explorer.
+## Packaging
+
+From the repository root:
+
+```bash
+./scripts/package-vscode.sh
+```
+
+Or manually:
+
+```bash
+cd editors/vscode
+npm ci
+npm run package
+```
