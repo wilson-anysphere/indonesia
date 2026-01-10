@@ -187,6 +187,42 @@ fn index_creates_persistent_cache_and_symbols_work() {
 }
 
 #[test]
+fn index_from_nested_path_detects_bazel_workspace_root() {
+    let workspace = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+
+    workspace.child("WORKSPACE").write_str("# bazel").unwrap();
+    workspace.child("pkg").create_dir_all().unwrap();
+    workspace.child("pkg/BUILD").write_str("# build").unwrap();
+    workspace.child("pkg/src").create_dir_all().unwrap();
+    workspace
+        .child("pkg/src/Foo.java")
+        .write_str("package demo; public class Foo {}")
+        .unwrap();
+
+    let output = nova()
+        .arg("index")
+        .arg(workspace.child("pkg/src/Foo.java").path())
+        .arg("--json")
+        .env("NOVA_CACHE_DIR", cache_root.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        v["root"].as_str().unwrap(),
+        workspace.path().to_str().unwrap(),
+        "expected Bazel workspace root, got: {v:#}"
+    );
+}
+
+#[test]
 fn parse_json_reports_errors_and_exits_nonzero() {
     let temp = TempDir::new().unwrap();
     temp.child("Bad.java")

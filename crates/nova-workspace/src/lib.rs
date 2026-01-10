@@ -116,7 +116,11 @@ impl Workspace {
         self.engine.apply_changes(path, new_version, changes)
     }
 
-    pub fn completions(&self, path: &nova_vfs::VfsPath, offset: usize) -> Vec<nova_types::CompletionItem> {
+    pub fn completions(
+        &self,
+        path: &nova_vfs::VfsPath,
+        offset: usize,
+    ) -> Vec<nova_types::CompletionItem> {
         self.engine.completions(path, offset)
     }
 
@@ -898,6 +902,10 @@ pub use live::{
     WorkspaceConfig as LiveWorkspaceConfig,
 };
 fn find_project_root(start: &Path) -> PathBuf {
+    if let Some(bazel_root) = nova_project::bazel_workspace_root(start) {
+        return bazel_root;
+    }
+
     let mut current = start;
     loop {
         if looks_like_project_root(current) {
