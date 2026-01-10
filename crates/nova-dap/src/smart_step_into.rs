@@ -2,24 +2,26 @@ use serde::{Deserialize, Serialize};
 
 /// A DAP-style step-in target.
 ///
-/// DAP's canonical shape is `{ id, label }`. We add lightweight source
-/// positions (byte columns) to make UIs easier to implement.
+/// DAP's canonical shape is `{ id, label }` with optional source positions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StepInTarget {
     pub id: i64,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub start_column: Option<usize>,
+    pub line: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub end_column: Option<usize>,
+    pub column: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
 }
 
 #[derive(Debug, Clone)]
 struct CallSpan {
     name: String,
     name_start: usize,
-    open_paren: usize,
     close_paren: usize,
 }
 
@@ -102,7 +104,6 @@ pub fn enumerate_step_in_targets_in_line(line: &str) -> Vec<StepInTarget> {
                     calls.push(CallSpan {
                         name,
                         name_start,
-                        open_paren: i,
                         close_paren: usize::MAX,
                     });
                     paren_stack.push(ParenFrame {
@@ -147,8 +148,10 @@ pub fn enumerate_step_in_targets_in_line(line: &str) -> Vec<StepInTarget> {
         .map(|(idx, call)| StepInTarget {
             id: idx as i64,
             label: format!("{}()", call.name),
-            start_column: Some(call.name_start),
-            end_column: Some(call.open_paren + 1),
+            line: None,
+            column: Some((call.name_start.saturating_add(1)) as u32),
+            end_line: None,
+            end_column: Some((call.close_paren.saturating_add(2)) as u32),
         })
         .collect()
 }

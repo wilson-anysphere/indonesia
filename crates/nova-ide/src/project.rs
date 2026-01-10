@@ -3,12 +3,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use once_cell::sync::Lazy;
+use nova_project::ProjectConfig;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ProjectDiscoveryError {
+    #[error(transparent)]
+    Project(#[from] nova_project::ProjectError),
     #[error("failed to read directory `{path}`: {source}")]
     ReadDir {
         path: PathBuf,
@@ -94,8 +97,30 @@ impl Project {
     /// Loads a project by recursively collecting `.java` files under `root`.
     pub fn load_from_dir(root: impl AsRef<Path>) -> Result<Self, ProjectDiscoveryError> {
         let root = root.as_ref().to_path_buf();
+        let (workspace_root, source_roots) = match nova_project::load_project(&root) {
+            Ok(ProjectConfig {
+                workspace_root,
+                source_roots,
+                ..
+            }) => (workspace_root, source_roots),
+            Err(nova_project::ProjectError::UnknownProjectType { .. }) => {
+                // Keep debug configuration discovery working even for ad-hoc folders
+                // that don't have a recognized build tool layout.
+                (root.clone(), Vec::new())
+            }
+            Err(err) => return Err(ProjectDiscoveryError::Project(err)),
+        };
+
         let mut java_files = Vec::new();
-        collect_java_files(&root, &mut java_files)?;
+        if source_roots.is_empty() {
+            collect_java_files(&workspace_root, &mut java_files)?;
+        } else {
+            for root in source_roots {
+                collect_java_files(&root.path, &mut java_files)?;
+            }
+        }
+        java_files.sort();
+        java_files.dedup();
 
         let mut files = Vec::new();
         for path in java_files {
@@ -107,7 +132,7 @@ impl Project {
         }
 
         Ok(Self {
-            root: Some(root),
+            root: Some(workspace_root),
             files,
         })
     }

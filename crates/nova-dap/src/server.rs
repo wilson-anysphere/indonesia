@@ -2,6 +2,7 @@ use crate::breakpoints::map_line_breakpoints;
 use crate::dap::codec::{read_json_message, write_json_message};
 use crate::dap::messages::{Event, Request, Response};
 use crate::jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
+use crate::smart_step_into::enumerate_step_in_targets_in_line;
 use anyhow::Context;
 use nova_db::RootDatabase;
 use nova_project::{AttachConfig, LaunchConfig};
@@ -25,7 +26,14 @@ pub struct DapServer<C: JdwpClient> {
     next_thread_id: i64,
     frame_ids: HashMap<i64, u64>,
     next_frame_id: i64,
+    frame_locations: HashMap<i64, FrameLocation>,
     should_exit: bool,
+}
+
+#[derive(Debug, Clone)]
+struct FrameLocation {
+    source_name: Option<String>,
+    line: u32,
 }
 
 impl Default for DapServer<TcpJdwpClient> {
@@ -45,6 +53,7 @@ impl<C: JdwpClient> DapServer<C> {
             next_thread_id: 1,
             frame_ids: HashMap::new(),
             next_frame_id: 1,
+            frame_locations: HashMap::new(),
             should_exit: false,
         }
     }
@@ -105,6 +114,7 @@ impl<C: JdwpClient> DapServer<C> {
             "configurationDone" => self.simple_ok(request, None),
             "threads" => self.threads(request),
             "stackTrace" => self.stack_trace(request),
+            "stepInTargets" => self.step_in_targets(request),
             "scopes" => self.scopes(request),
             "variables" => self.variables(request),
             "evaluate" => self.evaluate(request),
@@ -125,6 +135,7 @@ impl<C: JdwpClient> DapServer<C> {
         let capabilities = json!({
             "supportsConfigurationDoneRequest": true,
             "supportsEvaluateForHovers": true,
+            "supportsStepInTargetsRequest": true,
             "supportsStepBack": false,
             "supportsDataBreakpoints": false,
             "supportsTerminateRequest": true,
@@ -292,6 +303,7 @@ impl<C: JdwpClient> DapServer<C> {
         };
 
         let mut dap_frames = Vec::new();
+        self.frame_locations.clear();
         for frame in frames {
             let dap_frame_id = self.alloc_frame_id(frame.id);
             let source = frame.source_path.as_ref().map(|name| json!({ "name": name }));
@@ -302,6 +314,13 @@ impl<C: JdwpClient> DapServer<C> {
                 "line": frame.line as i64,
                 "column": 1,
             }));
+            self.frame_locations.insert(
+                dap_frame_id,
+                FrameLocation {
+                    source_name: frame.source_path.clone(),
+                    line: frame.line,
+                },
+            );
         }
 
         let body = json!({
@@ -309,6 +328,63 @@ impl<C: JdwpClient> DapServer<C> {
             "totalFrames": dap_frames.len(),
         });
         self.simple_ok(request, Some(body))
+    }
+
+    fn step_in_targets(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Args {
+            frame_id: i64,
+        }
+
+        let args: Args = serde_json::from_value(
+            request
+                .arguments
+                .clone()
+                .context("stepInTargets requires arguments")?,
+        )?;
+
+        let Some(frame) = self.frame_locations.get(&args.frame_id).cloned() else {
+            return self.simple_ok(request, Some(json!({ "targets": [] })));
+        };
+
+        let Some(source_name) = frame.source_name else {
+            return self.simple_ok(request, Some(json!({ "targets": [] })));
+        };
+
+        let source_path = self
+            .breakpoints
+            .keys()
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name == source_name)
+            })
+            .cloned()
+            .or_else(|| {
+                // Some debug targets embed a full source path in the stack trace.
+                let path = PathBuf::from(&source_name);
+                (path.is_absolute() && path.exists()).then_some(path)
+            });
+
+        let Some(source_path) = source_path else {
+            return self.simple_ok(request, Some(json!({ "targets": [] })));
+        };
+
+        let text = std::fs::read_to_string(&source_path).unwrap_or_default();
+        let line_text = frame
+            .line
+            .checked_sub(1)
+            .and_then(|idx| text.lines().nth(idx as usize))
+            .unwrap_or("");
+
+        let mut targets = enumerate_step_in_targets_in_line(line_text);
+        for target in &mut targets {
+            target.line = Some(frame.line);
+            target.end_line = Some(frame.line);
+        }
+
+        self.simple_ok(request, Some(json!({ "targets": targets })))
     }
 
     fn scopes(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
@@ -452,5 +528,156 @@ impl<C: JdwpClient> DapServer<C> {
                 )
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jdwp::{JdwpError, StackFrameInfo, ThreadInfo};
+    use serde_json::Value;
+    use tempfile::TempDir;
+
+    #[derive(Default)]
+    struct MockJdwp {
+        threads: Vec<ThreadInfo>,
+        frames: HashMap<u64, Vec<StackFrameInfo>>,
+    }
+
+    impl JdwpClient for MockJdwp {
+        fn connect(&mut self, _host: &str, _port: u16) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn set_line_breakpoint(
+            &mut self,
+            _class: &str,
+            _method: Option<&str>,
+            _line: u32,
+        ) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn threads(&mut self) -> Result<Vec<ThreadInfo>, JdwpError> {
+            Ok(self.threads.clone())
+        }
+
+        fn stack_frames(&mut self, thread_id: u64) -> Result<Vec<StackFrameInfo>, JdwpError> {
+            Ok(self.frames.get(&thread_id).cloned().unwrap_or_default())
+        }
+
+        fn r#continue(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn next(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn step_in(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn step_out(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+
+        fn pause(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+            Ok(())
+        }
+    }
+
+    fn response_body(message: &Value) -> Option<&Value> {
+        message.get("body")
+    }
+
+    #[test]
+    fn step_in_targets_returns_calls_for_current_frame_line() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let file_path = root.join("Main.java");
+        std::fs::write(
+            &file_path,
+            r#"package com.example;
+
+public class Main {
+  void m() {
+    foo(bar(), baz(qux()));
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut jdwp = MockJdwp::default();
+        jdwp.threads.push(ThreadInfo {
+            id: 99,
+            name: "main".into(),
+        });
+        jdwp.frames.insert(
+            99,
+            vec![StackFrameInfo {
+                id: 123,
+                name: "m".into(),
+                source_path: Some("Main.java".into()),
+                line: 5,
+            }],
+        );
+
+        let mut server = DapServer::new(jdwp);
+
+        // Seed the source path via setBreakpoints so stepInTargets can resolve the
+        // source file name from the stack trace back to an absolute path.
+        let set_bps = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "setBreakpoints".into(),
+            arguments: Some(json!({
+                "source": { "path": file_path.to_string_lossy() },
+                "breakpoints": [],
+            })),
+        };
+        server.handle_request(&set_bps).unwrap();
+
+        let threads_req = Request {
+            seq: 2,
+            type_: "request".into(),
+            command: "threads".into(),
+            arguments: None,
+        };
+        let threads_resp = server.handle_request(&threads_req).unwrap();
+        let threads = response_body(&threads_resp.messages[0]).unwrap()["threads"]
+            .as_array()
+            .unwrap();
+        let dap_thread_id = threads[0]["id"].as_i64().unwrap();
+
+        let stack_req = Request {
+            seq: 3,
+            type_: "request".into(),
+            command: "stackTrace".into(),
+            arguments: Some(json!({ "threadId": dap_thread_id })),
+        };
+        let stack_resp = server.handle_request(&stack_req).unwrap();
+        let frames = response_body(&stack_resp.messages[0]).unwrap()["stackFrames"]
+            .as_array()
+            .unwrap();
+        let dap_frame_id = frames[0]["id"].as_i64().unwrap();
+
+        let targets_req = Request {
+            seq: 4,
+            type_: "request".into(),
+            command: "stepInTargets".into(),
+            arguments: Some(json!({ "frameId": dap_frame_id })),
+        };
+        let targets_resp = server.handle_request(&targets_req).unwrap();
+        let targets = response_body(&targets_resp.messages[0]).unwrap()["targets"]
+            .as_array()
+            .unwrap();
+
+        let labels: Vec<_> = targets
+            .iter()
+            .map(|t| t["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(labels, vec!["bar()", "qux()", "baz()", "foo()"]);
     }
 }
