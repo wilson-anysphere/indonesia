@@ -148,10 +148,38 @@ fn join_uri(root: &Uri, path: &Path) -> Uri {
         if idx > 0 {
             uri.push('/');
         }
-        uri.push_str(&component.as_os_str().to_string_lossy());
+        let segment = component.as_os_str().to_string_lossy();
+        uri.push_str(&encode_uri_segment(&segment));
     }
 
     uri.parse().expect("joined uri should be valid")
+}
+
+fn encode_uri_segment(segment: &str) -> String {
+    // Encode using RFC 3986 unreserved set: ALPHA / DIGIT / "-" / "." / "_" / "~"
+    let mut out = String::with_capacity(segment.len());
+    for &b in segment.as_bytes() {
+        if is_uri_unreserved(b) {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(hex_digit(b >> 4));
+            out.push(hex_digit(b & 0x0F));
+        }
+    }
+    out
+}
+
+fn is_uri_unreserved(b: u8) -> bool {
+    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~')
+}
+
+fn hex_digit(n: u8) -> char {
+    match n {
+        0..=9 => (b'0' + n) as char,
+        10..=15 => (b'A' + (n - 10)) as char,
+        _ => unreachable!("nibble out of range"),
+    }
 }
 
 fn full_document_range(contents: &str) -> lsp_types::Range {
@@ -184,6 +212,8 @@ mod tests {
     use super::*;
 
     use lsp_types::{WorkspaceClientCapabilities, WorkspaceEditClientCapabilities};
+    use nova_refactor::MoveClassParams;
+    use std::collections::BTreeMap;
 
     #[test]
     fn workspace_edit_includes_rename_operation_when_supported() {
@@ -252,5 +282,63 @@ mod tests {
         let changes = ws_edit.changes.expect("expected changes map");
         let uri = join_uri(&root, Path::new("src/main/java/com/foo/A.java"));
         assert!(changes.contains_key(&uri));
+    }
+
+    #[test]
+    fn join_uri_percent_encodes_path_segments() {
+        let root: Uri = "file:///workspace/".parse().unwrap();
+        let uri = join_uri(&root, Path::new("src/main/java/com/foo/My File.java"));
+        assert_eq!(
+            uri.as_str(),
+            "file:///workspace/src/main/java/com/foo/My%20File.java"
+        );
+    }
+
+    #[test]
+    fn workspace_edit_from_move_class_includes_rename_operation_when_supported() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            PathBuf::from("src/main/java/com/foo/A.java"),
+            "package com.foo;\n\npublic class A {}\n".to_string(),
+        );
+        files.insert(
+            PathBuf::from("src/main/java/com/other/C.java"),
+            "package com.other;\n\nimport com.foo.A;\n\npublic class C { A a; }\n".to_string(),
+        );
+
+        let refactor = nova_refactor::move_class(
+            &files,
+            MoveClassParams {
+                source_path: PathBuf::from("src/main/java/com/foo/A.java"),
+                class_name: "A".into(),
+                target_package: "com.bar".into(),
+            },
+        )
+        .unwrap();
+
+        let original_files: HashMap<PathBuf, String> = files.into_iter().collect();
+
+        let caps = ClientCapabilities {
+            workspace: Some(WorkspaceClientCapabilities {
+                workspace_edit: Some(WorkspaceEditClientCapabilities {
+                    document_changes: Some(true),
+                    resource_operations: Some(vec![ResourceOperationKind::Rename]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let root: Uri = "file:///workspace/".parse().unwrap();
+        let ws_edit = workspace_edit_from_refactor(&root, &original_files, &refactor, &caps);
+
+        let Some(DocumentChanges::Operations(ops)) = ws_edit.document_changes else {
+            panic!("expected document change operations");
+        };
+        assert!(ops.iter().any(|op| matches!(
+            op,
+            DocumentChangeOperation::Op(ResourceOp::Rename(_))
+        )));
     }
 }
