@@ -12,6 +12,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 nova-cache = { path = "../nova-cache" }
+nova-fuzzy = { path = "../nova-fuzzy" }
 nova-index = { path = "../nova-index" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 nova-scheduler = { path = "../nova-scheduler" }

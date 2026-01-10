@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
+use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
     FileText, Revision, RpcMessage, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats,
 };
@@ -22,6 +23,9 @@ use tokio::net::UnixListener;
 mod tls;
 
 pub type Result<T> = anyhow::Result<T>;
+
+const WORKSPACE_SYMBOL_LIMIT: usize = 200;
+const FALLBACK_SCAN_LIMIT: usize = 50_000;
 
 #[derive(Clone, Debug)]
 pub struct SourceRoot {
@@ -152,7 +156,7 @@ struct InProcessRouter {
     layout: WorkspaceLayout,
     global_revision: AtomicU64,
     shard_indexes: Mutex<HashMap<ShardId, ShardIndex>>,
-    global_symbols: RwLock<Vec<Symbol>>,
+    global_symbols: RwLock<GlobalSymbolIndex>,
 }
 
 impl InProcessRouter {
@@ -161,7 +165,7 @@ impl InProcessRouter {
             layout,
             global_revision: AtomicU64::new(0),
             shard_indexes: Mutex::new(HashMap::new()),
-            global_symbols: RwLock::new(Vec::new()),
+            global_symbols: RwLock::new(GlobalSymbolIndex::default()),
         }
     }
 
@@ -239,13 +243,8 @@ impl InProcessRouter {
     }
 
     async fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
-        let query = query.to_ascii_lowercase();
         let guard = self.global_symbols.read().await;
-        guard
-            .iter()
-            .filter(|sym| sym.name.to_ascii_lowercase().contains(&query))
-            .cloned()
-            .collect()
+        guard.search(query, WORKSPACE_SYMBOL_LIMIT)
     }
 }
 
@@ -261,7 +260,7 @@ struct RouterState {
     layout: WorkspaceLayout,
     next_worker_id: AtomicU32,
     global_revision: AtomicU64,
-    global_symbols: RwLock<Vec<Symbol>>,
+    global_symbols: RwLock<GlobalSymbolIndex>,
     shards: Mutex<HashMap<ShardId, ShardState>>,
     notify: Notify,
 }
@@ -334,7 +333,7 @@ impl DistributedRouter {
             layout,
             next_worker_id: AtomicU32::new(1),
             global_revision: AtomicU64::new(max_cached_revision),
-            global_symbols: RwLock::new(Vec::new()),
+            global_symbols: RwLock::new(GlobalSymbolIndex::default()),
             shards: Mutex::new(shards),
             notify: Notify::new(),
         });
@@ -460,13 +459,8 @@ impl DistributedRouter {
     }
 
     async fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
-        let query = query.to_ascii_lowercase();
         let guard = self.state.global_symbols.read().await;
-        guard
-            .iter()
-            .filter(|sym| sym.name.to_ascii_lowercase().contains(&query))
-            .cloned()
-            .collect()
+        guard.search(query, WORKSPACE_SYMBOL_LIMIT)
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -887,9 +881,144 @@ fn build_global_symbols<'a>(
     symbols
 }
 
-async fn write_global_symbols(dst: &RwLock<Vec<Symbol>>, symbols: Vec<Symbol>) {
+#[derive(Debug, Clone)]
+struct GlobalSymbolIndex {
+    symbols: Vec<Symbol>,
+    trigram: TrigramIndex,
+    prefix1: Vec<Vec<u32>>,
+}
+
+impl Default for GlobalSymbolIndex {
+    fn default() -> Self {
+        Self {
+            symbols: Vec::new(),
+            trigram: TrigramIndexBuilder::new().build(),
+            prefix1: vec![Vec::new(); 256],
+        }
+    }
+}
+
+impl GlobalSymbolIndex {
+    fn new(symbols: Vec<Symbol>) -> Self {
+        let mut prefix1: Vec<Vec<u32>> = vec![Vec::new(); 256];
+        let mut builder = TrigramIndexBuilder::new();
+
+        for (id, sym) in symbols.iter().enumerate() {
+            let id_u32: u32 = id
+                .try_into()
+                .unwrap_or_else(|_| panic!("symbol index too large: {id}"));
+
+            builder.insert(id_u32, &sym.name);
+
+            if let Some(&b0) = sym.name.as_bytes().first() {
+                prefix1[b0.to_ascii_lowercase() as usize].push(id_u32);
+            }
+        }
+
+        Self {
+            symbols,
+            trigram: builder.build(),
+            prefix1,
+        }
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Vec<Symbol> {
+        if limit == 0 || self.symbols.is_empty() {
+            return Vec::new();
+        }
+
+        if query.is_empty() {
+            return self.symbols.iter().take(limit).cloned().collect();
+        }
+
+        let query_folded = query.to_ascii_lowercase();
+        let mut matcher = FuzzyMatcher::new(query);
+
+        let mut scored = Vec::new();
+
+        if query_folded.len() < 3 {
+            if let Some(&b0) = query_folded.as_bytes().first() {
+                let bucket = &self.prefix1[b0 as usize];
+                if !bucket.is_empty() {
+                    self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
+                    return self.finish(scored, limit);
+                }
+            }
+
+            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
+            self.score_candidates((0..scan_limit).map(|id| id as u32), &mut matcher, &mut scored);
+            return self.finish(scored, limit);
+        }
+
+        let mut candidates = self.trigram.candidates(&query_folded);
+        if candidates.is_empty() {
+            if let Some(&b0) = query_folded.as_bytes().first() {
+                let bucket = &self.prefix1[b0 as usize];
+                if !bucket.is_empty() {
+                    self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
+                    return self.finish(scored, limit);
+                }
+            }
+
+            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
+            candidates = (0..scan_limit as u32).collect();
+        }
+
+        self.score_candidates(candidates.into_iter(), &mut matcher, &mut scored);
+        self.finish(scored, limit)
+    }
+
+    fn score_candidates(
+        &self,
+        ids: impl IntoIterator<Item = u32>,
+        matcher: &mut FuzzyMatcher,
+        out: &mut Vec<ScoredSymbol>,
+    ) {
+        for id in ids {
+            let Some(sym) = self.symbols.get(id as usize) else {
+                continue;
+            };
+            if let Some(score) = matcher.score(&sym.name) {
+                out.push(ScoredSymbol { id, score });
+            }
+        }
+    }
+
+    fn finish(&self, mut scored: Vec<ScoredSymbol>, limit: usize) -> Vec<Symbol> {
+        scored.sort_by(|a, b| {
+            b.score
+                .rank_key()
+                .cmp(&a.score.rank_key())
+                .then_with(|| {
+                    let a_sym = &self.symbols[a.id as usize];
+                    let b_sym = &self.symbols[b.id as usize];
+                    a_sym
+                        .name
+                        .len()
+                        .cmp(&b_sym.name.len())
+                        .then_with(|| a_sym.name.cmp(&b_sym.name))
+                        .then_with(|| a_sym.path.cmp(&b_sym.path))
+                        .then_with(|| a.id.cmp(&b.id))
+                })
+        });
+
+        scored
+            .into_iter()
+            .take(limit)
+            .filter_map(|s| self.symbols.get(s.id as usize).cloned())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScoredSymbol {
+    id: u32,
+    score: MatchScore,
+}
+
+async fn write_global_symbols(dst: &RwLock<GlobalSymbolIndex>, symbols: Vec<Symbol>) {
     let mut guard = dst.write().await;
-    *guard = symbols;
+    *guard = GlobalSymbolIndex::new(symbols);
 }
 
 async fn collect_java_files(root: &Path) -> Result<Vec<FileText>> {

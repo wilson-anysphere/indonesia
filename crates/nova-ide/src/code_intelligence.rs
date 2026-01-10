@@ -19,6 +19,7 @@ use lsp_types::{
 use std::collections::HashMap;
 
 use nova_db::{Database, FileId};
+use nova_fuzzy::FuzzyMatcher;
 use nova_types::{Diagnostic, Severity, Span};
 
 #[cfg(feature = "ai")]
@@ -258,9 +259,6 @@ fn member_completions(
             ("charAt", "char charAt(int index)"),
             ("isEmpty", "boolean isEmpty()"),
         ] {
-            if !name.starts_with(prefix) {
-                continue;
-            }
             items.push(CompletionItem {
                 label: name.to_string(),
                 kind: Some(CompletionItemKind::METHOD),
@@ -281,25 +279,21 @@ fn general_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<Com
     let mut items = Vec::new();
 
     for m in &analysis.methods {
-        if m.name.starts_with(prefix) {
-            items.push(CompletionItem {
-                label: m.name.clone(),
-                kind: Some(CompletionItemKind::METHOD),
-                insert_text: Some(format!("{}()", m.name)),
-                ..Default::default()
-            });
-        }
+        items.push(CompletionItem {
+            label: m.name.clone(),
+            kind: Some(CompletionItemKind::METHOD),
+            insert_text: Some(format!("{}()", m.name)),
+            ..Default::default()
+        });
     }
 
     for v in &analysis.vars {
-        if v.name.starts_with(prefix) {
-            items.push(CompletionItem {
-                label: v.name.clone(),
-                kind: Some(CompletionItemKind::VARIABLE),
-                detail: Some(v.ty.clone()),
-                ..Default::default()
-            });
-        }
+        items.push(CompletionItem {
+            label: v.name.clone(),
+            kind: Some(CompletionItemKind::VARIABLE),
+            detail: Some(v.ty.clone()),
+            ..Default::default()
+        });
     }
 
     for f in &analysis.fields {
@@ -314,29 +308,51 @@ fn general_completions(db: &dyn Database, file: FileId, prefix: &str) -> Vec<Com
     }
 
     for kw in ["if", "else", "for", "while", "return", "class", "new"] {
-        if kw.starts_with(prefix) {
-            items.push(CompletionItem {
-                label: kw.to_string(),
-                kind: Some(CompletionItemKind::KEYWORD),
-                ..Default::default()
-            });
-        }
+        items.push(CompletionItem {
+            label: kw.to_string(),
+            kind: Some(CompletionItemKind::KEYWORD),
+            ..Default::default()
+        });
     }
 
     rank_completions(prefix, &mut items);
     items
 }
 
-fn rank_completions(prefix: &str, items: &mut [CompletionItem]) {
-    items.sort_by(|a, b| {
-        let a_label = a.label.as_str();
-        let b_label = b.label.as_str();
-        let a_exact = a_label.starts_with(prefix) as u8;
-        let b_exact = b_label.starts_with(prefix) as u8;
-        b_exact
-            .cmp(&a_exact)
-            .then_with(|| a_label.to_lowercase().cmp(&b_label.to_lowercase()))
+fn kind_weight(kind: Option<CompletionItemKind>) -> i32 {
+    match kind {
+        Some(CompletionItemKind::METHOD | CompletionItemKind::FUNCTION | CompletionItemKind::CONSTRUCTOR) => 100,
+        Some(CompletionItemKind::FIELD) => 80,
+        Some(CompletionItemKind::VARIABLE) => 70,
+        Some(CompletionItemKind::CLASS | CompletionItemKind::INTERFACE | CompletionItemKind::ENUM | CompletionItemKind::STRUCT) => 60,
+        Some(CompletionItemKind::SNIPPET) => 50,
+        Some(CompletionItemKind::KEYWORD) => 10,
+        _ => 0,
+    }
+}
+
+fn rank_completions(query: &str, items: &mut Vec<CompletionItem>) {
+    let mut matcher = FuzzyMatcher::new(query);
+
+    let mut scored: Vec<(lsp_types::CompletionItem, nova_fuzzy::MatchScore, i32)> = items
+        .drain(..)
+        .filter_map(|item| {
+            let score = matcher.score(&item.label)?;
+            let weight = kind_weight(item.kind);
+            Some((item, score, weight))
+        })
+        .collect();
+
+    scored.sort_by(|(a_item, a_score, a_weight), (b_item, b_score, b_weight)| {
+        b_score
+            .rank_key()
+            .cmp(&a_score.rank_key())
+            .then_with(|| b_weight.cmp(a_weight))
+            .then_with(|| a_item.label.len().cmp(&b_item.label.len()))
+            .then_with(|| a_item.label.cmp(&b_item.label))
     });
+
+    items.extend(scored.into_iter().map(|(item, _, _)| item));
 }
 
 // -----------------------------------------------------------------------------
