@@ -84,6 +84,11 @@
 //! }
 //! ```
 //!
+//! Note: for parameterized tests, JUnit XML reports often include per-invocation names
+//! like `parameterizedAdds(int)[1]`. Nova normalizes these back to the base method ID
+//! (`parameterizedAdds`) so the results match discovered `TestItem.id`s, and aggregates
+//! multiple invocations into a single `TestCaseResult`.
+//!
 //! ## Debug configurations
 //!
 //! For IDE debug integration (consumed by `nova-dap`), [`debug`] provides helper constructors that
