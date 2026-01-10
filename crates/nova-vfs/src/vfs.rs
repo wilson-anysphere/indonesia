@@ -78,11 +78,26 @@ impl<F: FileSystem> Vfs<F> {
         id
     }
 
+    #[cfg(feature = "lsp")]
+    pub fn open_document_lsp(
+        &self,
+        uri: lsp_types::Uri,
+        text: String,
+        version: i32,
+    ) -> FileId {
+        self.open_document(VfsPath::from(uri), text, version)
+    }
+
     pub fn close_document(&self, path: &VfsPath) {
         if let Some(id) = self.get_id(path) {
             self.open_docs.close(id);
         }
         self.fs.close(path);
+    }
+
+    #[cfg(feature = "lsp")]
+    pub fn close_document_lsp(&self, uri: &lsp_types::Uri) {
+        self.close_document(&VfsPath::from(uri))
     }
 
     /// Applies document edits and returns a `ChangeEvent` describing the update.
@@ -100,6 +115,18 @@ impl<F: FileSystem> Vfs<F> {
             version: new_version,
             edits,
         })
+    }
+
+    #[cfg(feature = "lsp")]
+    pub fn apply_document_changes_lsp(
+        &self,
+        uri: &lsp_types::Uri,
+        new_version: i32,
+        changes: &[lsp_types::TextDocumentContentChangeEvent],
+    ) -> Result<ChangeEvent, DocumentError> {
+        let path = VfsPath::from(uri);
+        let changes: Vec<ContentChange> = changes.iter().cloned().map(ContentChange::from).collect();
+        self.apply_document_changes(&path, new_version, &changes)
     }
 }
 
@@ -170,5 +197,50 @@ mod tests {
         assert_eq!(vfs.get_id(&from), None);
         assert_eq!(vfs.get_id(&to), Some(id));
         assert_eq!(vfs.path_for_id(id), Some(to));
+    }
+
+    #[cfg(feature = "lsp")]
+    #[test]
+    fn vfs_accepts_lsp_document_changes() {
+        let vfs = Vfs::new(LocalFs::new());
+        let dir = tempfile::tempdir().unwrap();
+        let path = VfsPath::local(dir.path().join("Main.java"));
+        let uri = path.to_lsp_uri().unwrap();
+
+        let id = vfs.open_document_lsp(uri.clone(), "hello world".to_string(), 1);
+
+        let change = lsp_types::TextDocumentContentChangeEvent {
+            range: Some(lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 6,
+                },
+                end: lsp_types::Position {
+                    line: 0,
+                    character: 11,
+                },
+            }),
+            range_length: None,
+            text: "nova".to_string(),
+        };
+
+        let evt = vfs.apply_document_changes_lsp(&uri, 2, &[change]).unwrap();
+        assert_eq!(vfs.read_to_string(&VfsPath::from(&uri)).unwrap(), "hello nova");
+
+        match evt {
+            ChangeEvent::DocumentChanged {
+                file_id,
+                version,
+                edits,
+                ..
+            } => {
+                assert_eq!(file_id, id);
+                assert_eq!(version, 2);
+                assert_eq!(edits.len(), 1);
+                assert_eq!(u32::from(edits[0].range.start()), 6);
+                assert_eq!(u32::from(edits[0].range.end()), 11);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }
