@@ -13,7 +13,7 @@ pub type SyntaxNode = rowan::SyntaxNode<JavaLanguage>;
 pub type SyntaxToken = rowan::SyntaxToken<JavaLanguage>;
 pub type SyntaxElement = rowan::SyntaxElement<JavaLanguage>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JavaParseResult {
     pub green: GreenNode,
     pub errors: Vec<ParseError>,

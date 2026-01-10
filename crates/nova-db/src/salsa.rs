@@ -29,7 +29,7 @@ use parking_lot::RwLock;
 
 use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
 use nova_project::ProjectConfig;
-use nova_syntax::{GreenNode, ParseResult};
+use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
 
 use crate::{FileId, ProjectId};
 
@@ -75,6 +75,9 @@ pub trait NovaSyntax: NovaInputs + HasQueryStats {
     /// Parse a file into a syntax tree (memoized and dependency-tracked).
     fn parse(&self, file: FileId) -> Arc<ParseResult>;
 
+    /// Parse a file using the full-fidelity Rowan-based Java grammar.
+    fn parse_java(&self, file: FileId) -> Arc<JavaParseResult>;
+
     /// Convenience query that exposes the syntax tree.
     fn syntax_tree(&self, file: FileId) -> Arc<SyntaxTree>;
 
@@ -117,6 +120,26 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
     let parsed = nova_syntax::parse(text.as_str());
     let result = Arc::new(parsed);
     db.record_query_stat("parse", start.elapsed());
+    result
+}
+
+fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "parse_java", ?file).entered();
+
+    db.unwind_if_cancelled();
+
+    let text = if db.file_exists(file) {
+        db.file_content(file)
+    } else {
+        Arc::new(String::new())
+    };
+
+    let parsed = nova_syntax::parse_java(text.as_str());
+    let result = Arc::new(parsed);
+    db.record_query_stat("parse_java", start.elapsed());
     result
 }
 
