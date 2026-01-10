@@ -9,8 +9,14 @@ use std::path::{Path, PathBuf};
 use super::build::NovaDiagnostic;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NovaGeneratedSourcesParams {
-    pub root: String,
+    /// Workspace root on disk.
+    ///
+    /// Clients should prefer `projectRoot` (camelCase). `root` is accepted for
+    /// backwards compatibility with early experiments.
+    #[serde(alias = "root")]
+    pub project_root: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,7 +52,7 @@ pub struct RunAnnotationProcessingResponse {
 
 pub fn handle_generated_sources(params: serde_json::Value) -> Result<serde_json::Value> {
     let params = parse_params(params)?;
-    let root = PathBuf::from(&params.root);
+    let root = PathBuf::from(&params.project_root);
 
     let (project, config) = load_project_with_default_config(&root)?;
     let apt = AptManager::new(project, config);
@@ -58,7 +64,7 @@ pub fn handle_generated_sources(params: serde_json::Value) -> Result<serde_json:
 
 pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<serde_json::Value> {
     let params = parse_params(params)?;
-    let root = PathBuf::from(&params.root);
+    let root = PathBuf::from(&params.project_root);
 
     let cache_dir = root.join(".nova").join("build-cache");
     let build = BuildManager::new(cache_dir);

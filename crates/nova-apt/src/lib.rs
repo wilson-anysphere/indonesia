@@ -17,8 +17,7 @@ pub fn discover_generated_source_roots(project_root: &Path) -> Vec<PathBuf> {
     let candidates = [
         // Maven
         "target/generated-sources/annotations",
-        "target/generated-sources/annotationProcessor/java/main",
-        "target/generated-sources/annotationProcessor/java/test",
+        "target/generated-test-sources/test-annotations",
         // Gradle
         "build/generated/sources/annotationProcessor/java/main",
         "build/generated/sources/annotationProcessor/java/test",
@@ -239,9 +238,6 @@ impl AptManager {
         let mut roots = Vec::new();
 
         for (kind, path) in candidates {
-            if !path.is_dir() {
-                continue;
-            }
             if !seen.insert(path.clone()) {
                 continue;
             }

@@ -101,3 +101,63 @@ fn lsp_debug_configurations_extension_discovers_main_and_tests() {
 
     assert_eq!(names, vec!["Debug Tests: MainTest", "Run Main"]);
 }
+
+#[test]
+fn lsp_generated_sources_extension_lists_roots() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../nova-apt/testdata/maven_simple");
+
+    let params = serde_json::json!({
+        "projectRoot": fixture.to_string_lossy(),
+    });
+
+    let value = nova_lsp::handle_custom_request(nova_lsp::JAVA_GENERATED_SOURCES_METHOD, params).unwrap();
+
+    assert!(value
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    let modules = value
+        .get("modules")
+        .and_then(|v| v.as_array())
+        .expect("modules array");
+    assert!(!modules.is_empty());
+
+    let roots = modules[0]
+        .get("roots")
+        .and_then(|v| v.as_array())
+        .expect("roots array");
+
+    assert!(roots.iter().any(|root| {
+        root.get("path")
+            .and_then(|v| v.as_str())
+            .is_some_and(|p| p.contains("target/generated-sources/annotations"))
+            && root.get("freshness").and_then(|v| v.as_str()).is_some()
+    }));
+}
+
+#[test]
+fn lsp_run_annotation_processing_extension_reports_progress() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../nova-apt/testdata/maven_simple");
+
+    let params = serde_json::json!({
+        "projectRoot": fixture.to_string_lossy(),
+    });
+
+    let value = nova_lsp::handle_custom_request(
+        nova_lsp::RUN_ANNOTATION_PROCESSING_METHOD,
+        params,
+    )
+    .unwrap();
+
+    let progress = value
+        .get("progress")
+        .and_then(|v| v.as_array())
+        .expect("progress array");
+    assert!(!progress.is_empty());
+    assert!(progress
+        .iter()
+        .any(|p| p.as_str() == Some("Running annotation processing")));
+}
