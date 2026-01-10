@@ -21,6 +21,10 @@ use crate::{FileId, ProjectId};
 /// The parsed syntax tree type exposed by the database.
 pub type SyntaxTree = GreenNode;
 
+#[cfg(test)]
+static INTERRUPTIBLE_WORK_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Database functionality needed by query implementations to record timing stats.
 pub trait HasQueryStats {
     fn record_query_stat(&self, query_name: &'static str, duration: Duration);
@@ -62,6 +66,13 @@ pub trait NovaSyntax: NovaInputs + HasQueryStats {
 
     /// Dummy downstream query used by tests to validate early-cutoff behavior.
     fn symbol_count(&self, file: FileId) -> usize;
+
+    /// Debug query used to validate request cancellation behavior.
+    ///
+    /// Real queries (type-checking, indexing, etc.) should periodically call
+    /// `db.unwind_if_cancelled()` while doing expensive work; this query exists
+    /// as a lightweight fixture for that pattern.
+    fn interruptible_work(&self, file: FileId, steps: u32) -> u64;
 }
 
 fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
@@ -144,6 +155,28 @@ fn symbol_count(db: &dyn NovaSyntax, file: FileId) -> usize {
     let count = db.symbol_summary(file).names.len();
     db.record_query_stat("symbol_count", start.elapsed());
     count
+}
+
+fn interruptible_work(db: &dyn NovaSyntax, file: FileId, steps: u32) -> u64 {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "interruptible_work", ?file, steps).entered();
+
+    #[cfg(test)]
+    INTERRUPTIBLE_WORK_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let mut acc: u64 = 0;
+    for i in 0..steps {
+        if i % 256 == 0 {
+            db.unwind_if_cancelled();
+        }
+        acc = acc.wrapping_add(i as u64 ^ file.to_raw() as u64);
+        std::hint::black_box(acc);
+    }
+
+    db.record_query_stat("interruptible_work", start.elapsed());
+    acc
 }
 
 /// Read-only snapshot type for concurrent query execution.
@@ -342,6 +375,7 @@ impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering;
 
     fn executions(db: &QueryDatabase, query_name: &str) -> u64 {
         db.query_stats()
@@ -428,5 +462,34 @@ mod tests {
 
         assert_eq!(from_snap1, vec!["Foo".to_string()]);
         assert_eq!(from_snap1, from_snap2);
+    }
+
+    #[test]
+    fn request_cancellation_unwinds_inflight_queries() {
+        INTERRUPTIBLE_WORK_STARTED.store(false, Ordering::SeqCst);
+
+        let mut db = QueryDatabase::default();
+        let file = FileId::from_raw(1);
+        db.set_file_exists(file, true);
+        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+
+        let snap = db.snapshot();
+        let handle = std::thread::spawn(move || {
+            ra_salsa::Cancelled::catch(|| snap.interruptible_work(file, 5_000_000))
+        });
+
+        while !INTERRUPTIBLE_WORK_STARTED.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+
+        // This will block until `snap` is dropped; cancellation ensures that the
+        // worker thread unwinds and releases its snapshot.
+        db.request_cancellation();
+
+        let result = handle.join().expect("worker thread panicked");
+        assert!(
+            result.is_err(),
+            "expected salsa query to unwind with Cancelled after request_cancellation"
+        );
     }
 }
