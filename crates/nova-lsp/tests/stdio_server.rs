@@ -71,6 +71,61 @@ fn stdio_server_handles_test_discover_request() {
     assert!(status.success());
 }
 
+#[test]
+fn stdio_server_discovers_tests_in_simple_project_fixture() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-testing/fixtures/simple-junit5");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/test/discover",
+            "params": { "projectRoot": fixture.to_string_lossy() }
+        }),
+    );
+
+    let discover_resp = read_jsonrpc_message(&mut stdout);
+    let result = discover_resp.get("result").cloned().expect("result");
+    let resp: TestDiscoverResponse = serde_json::from_value(result).expect("decode response");
+    assert!(resp.tests.iter().any(|t| t.id == "com.example.SimpleTest"));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
 fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
     let bytes = serde_json::to_vec(message).expect("serialize");
     write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");

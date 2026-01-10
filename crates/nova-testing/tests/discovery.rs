@@ -67,3 +67,22 @@ fn discovers_junit4_tests_in_gradle_fixture() {
         vec!["com.example.LegacyCalculatorTest#legacyAdds"]
     );
 }
+
+#[test]
+fn discovers_junit5_tests_in_simple_fixture() {
+    let root = fixture_root("simple-junit5");
+    let resp = discover_tests(&TestDiscoverRequest {
+        project_root: root.to_string_lossy().to_string(),
+    })
+    .unwrap();
+
+    let simple = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "com.example.SimpleTest")
+        .unwrap();
+
+    assert_eq!(simple.framework, TestFramework::Junit5);
+    let child_ids: Vec<_> = simple.children.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(child_ids, vec!["com.example.SimpleTest#itWorks"]);
+}
