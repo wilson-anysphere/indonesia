@@ -285,21 +285,40 @@ fn jpql_completions_tokens(
     cursor: usize,
     model: &EntityModel,
 ) -> Vec<CompletionItem> {
-    if let Some((alias, _)) = dot_context(tokens, cursor) {
+    if let Some((root_alias, path)) = path_context(tokens, cursor) {
         let alias_map = build_alias_map(tokens, model);
-        if let Some(entity_name) = alias_map.get(&alias) {
-            if let Some(entity) = model.entity(entity_name) {
-                let mut items: Vec<_> = entity
-                    .fields
-                    .iter()
-                    .filter(|f| !f.is_transient && !f.is_static)
-                    .map(|f| CompletionItem::new(f.name.clone()))
-                    .collect();
-                items.sort_by(|a, b| a.label.cmp(&b.label));
-                return items;
-            }
+
+        let Some(mut entity) = alias_map
+            .get(&root_alias)
+            .and_then(|entity_name| model.entity(entity_name))
+        else {
+            return Vec::new();
+        };
+
+        for segment in &path {
+            let Some(field) = entity.field_named(segment) else {
+                return Vec::new();
+            };
+            let Some(rel) = &field.relationship else {
+                return Vec::new();
+            };
+            let Some(target) = &rel.target_entity else {
+                return Vec::new();
+            };
+            let Some(next_entity) = model.entity(target) else {
+                return Vec::new();
+            };
+            entity = next_entity;
         }
-        return Vec::new();
+
+        let mut items: Vec<_> = entity
+            .fields
+            .iter()
+            .filter(|f| !f.is_transient && !f.is_static)
+            .map(|f| CompletionItem::new(f.name.clone()))
+            .collect();
+        items.sort_by(|a, b| a.label.cmp(&b.label));
+        return items;
     }
 
     if entity_context(tokens, cursor) {
@@ -314,8 +333,8 @@ fn jpql_completions_tokens(
     Vec::new()
 }
 
-fn dot_context(tokens: &[Token], cursor: usize) -> Option<(String, Span)> {
-    // Find the most recent `alias .` before the cursor.
+fn path_context(tokens: &[Token], cursor: usize) -> Option<(String, Vec<String>)> {
+    // Find the most recent `ident ( . ident )* .` before the cursor.
     let mut dot_idx = None;
     for (idx, tok) in tokens.iter().enumerate() {
         if tok.span.end > cursor {
@@ -326,11 +345,31 @@ fn dot_context(tokens: &[Token], cursor: usize) -> Option<(String, Span)> {
         }
     }
     let dot_idx = dot_idx?;
-    let alias_tok = tokens.get(dot_idx.checked_sub(1)?)?;
-    let TokenKind::Ident(alias) = &alias_tok.kind else {
+
+    let mut idents_rev = Vec::new();
+    let mut idx = dot_idx.checked_sub(1)?;
+
+    loop {
+        let tok = tokens.get(idx)?;
+        let TokenKind::Ident(ident) = &tok.kind else {
+            return None;
+        };
+        idents_rev.push(ident.clone());
+
+        let Some(dot_pos) = idx.checked_sub(1) else {
+            break;
+        };
+        if tokens.get(dot_pos).map(|t| &t.kind) != Some(&TokenKind::Dot) {
+            break;
+        }
+        idx = dot_pos.checked_sub(1)?;
+    }
+
+    idents_rev.reverse();
+    let Some((root, rest)) = idents_rev.split_first() else {
         return None;
     };
-    Some((alias.clone(), alias_tok.span))
+    Some((root.clone(), rest.to_vec()))
 }
 
 fn entity_context(tokens: &[Token], cursor: usize) -> bool {
@@ -401,40 +440,89 @@ pub fn jpql_diagnostics(query: &str, model: &EntityModel) -> Vec<Diagnostic> {
         }
     }
 
-    // Validate dotted field references.
-    for i in 0..tokens.len() {
-        if tokens[i].kind != TokenKind::Dot {
+    // Validate dotted path expressions (`alias.field` and `alias.rel.field`).
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let Some(tok) = tokens.get(i) else {
+            break;
+        };
+        let TokenKind::Ident(alias) = &tok.kind else {
+            i += 1;
+            continue;
+        };
+        if tokens.get(i + 1).map(|t| &t.kind) != Some(&TokenKind::Dot) {
+            i += 1;
             continue;
         }
-        let Some(alias_tok) = tokens.get(i.wrapping_sub(1)) else {
+        let Some(field_tok) = tokens.get(i + 2) else {
+            i += 1;
             continue;
         };
-        let Some(field_tok) = tokens.get(i + 1) else {
+        let TokenKind::Ident(_) = &field_tok.kind else {
+            i += 1;
             continue;
         };
-        let (TokenKind::Ident(alias), TokenKind::Ident(field)) = (&alias_tok.kind, &field_tok.kind)
-        else {
+
+        // Only consider alias lookups at the start of a path expression. This
+        // avoids treating `u.user.name` as two independent `alias.field`
+        // expressions (`u.user` and `user.name`).
+        let start_of_path = i == 0 || tokens.get(i - 1).map(|t| &t.kind) != Some(&TokenKind::Dot);
+        if !start_of_path {
+            i += 1;
             continue;
-        };
+        }
 
         let Some(entity_name) = alias_map.get(alias) else {
             diags.push(Diagnostic::error(
                 "JPQL_UNKNOWN_ALIAS",
                 format!("Unknown JPQL alias `{}`", alias),
-                Some(alias_tok.span),
+                Some(tok.span),
             ));
+            i += 1;
             continue;
         };
 
-        if let Some(entity) = model.entity(entity_name) {
-            if entity.field_named(field).is_none() {
+        let mut current_entity = model.entity(entity_name);
+        let mut j = i + 2;
+        while j < tokens.len() {
+            let Some(seg_tok) = tokens.get(j) else {
+                break;
+            };
+            let TokenKind::Ident(segment) = &seg_tok.kind else {
+                break;
+            };
+
+            let Some(entity) = current_entity else {
+                break;
+            };
+
+            let Some(field) = entity.field_named(segment) else {
                 diags.push(Diagnostic::error(
                     "JPQL_UNKNOWN_FIELD",
-                    format!("Unknown field `{}` on entity `{}`", field, entity_name),
-                    Some(field_tok.span),
+                    format!("Unknown field `{}` on entity `{}`", segment, entity.name),
+                    Some(seg_tok.span),
                 ));
+                break;
+            };
+
+            // If this is the start of a longer path, try to resolve the segment
+            // as a relationship and continue.
+            if tokens.get(j + 1).map(|t| &t.kind) == Some(&TokenKind::Dot) {
+                let Some(rel) = &field.relationship else {
+                    break;
+                };
+                let Some(target) = &rel.target_entity else {
+                    break;
+                };
+                current_entity = model.entity(target);
+                j += 2;
+                continue;
             }
+
+            break;
         }
+
+        i = j;
     }
 
     diags

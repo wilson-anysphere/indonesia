@@ -200,6 +200,50 @@ fn jpql_completion_handles_join_alias() {
 }
 
 #[test]
+fn jpql_completion_handles_nested_paths() {
+    let user = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+            private String name;
+        }
+    "#;
+
+    let post = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+        import jakarta.persistence.ManyToOne;
+
+        @Entity
+        public class Post {
+            @Id private Long id;
+
+            @ManyToOne
+            private User user;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[user, post]);
+
+    let query = "SELECT p FROM Post p WHERE p.user.";
+    let items = jpql_completions(query, query.len(), &analysis.model);
+    assert!(items.iter().any(|i| i.label == "id"));
+    assert!(items.iter().any(|i| i.label == "name"));
+
+    let diags = nova_framework_jpa::jpql_diagnostics(
+        "SELECT p FROM Post p WHERE p.user.name = 'x'",
+        &analysis.model,
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == "JPQL_UNKNOWN_ALIAS"),
+        "unexpected alias diagnostics: {diags:#?}"
+    );
+}
+
+#[test]
 fn jpql_diagnostics_are_mapped_to_java_source_spans() {
     let entity = r#"
         import jakarta.persistence.Entity;
