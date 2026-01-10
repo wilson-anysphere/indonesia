@@ -24,6 +24,18 @@ impl EnvVarGuard {
         std::env::set_var(key, value);
         Self { key, prev }
     }
+
+    fn set_os(key: &'static str, value: &OsString) -> Self {
+        let prev = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, prev }
+    }
+
+    fn unset(key: &'static str) -> Self {
+        let prev = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, prev }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -158,6 +170,94 @@ fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Er
     std::fs::create_dir_all(&jre_dir)?;
 
     let _java_home = EnvVarGuard::set("JAVA_HOME", &jre_dir);
+    let install = JdkInstallation::discover(None)?;
+    assert_eq!(install.root(), root);
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[test]
+fn discovery_falls_back_to_java_on_path_via_java_home_property() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let temp = tempdir()?;
+    let root = temp.path();
+
+    let jmods_dir = root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+
+    let jre_dir = root.join("jre");
+    std::fs::create_dir_all(&jre_dir)?;
+
+    let bin_dir = root.join("bin");
+    std::fs::create_dir_all(&bin_dir)?;
+    let java_path = bin_dir.join("java");
+    let script = format!(
+        "#!/usr/bin/env sh\nif [ \"$1\" = \"-XshowSettings:properties\" ] && [ \"$2\" = \"-version\" ]; then\n  echo \"    java.home = {}\" 1>&2\nfi\nexit 0\n",
+        jre_dir.display()
+    );
+    std::fs::write(&java_path, script)?;
+    let mut perms = std::fs::metadata(&java_path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&java_path, perms)?;
+
+    let _java_home = EnvVarGuard::unset("JAVA_HOME");
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<std::path::PathBuf> = vec![bin_dir];
+    paths.extend(std::env::split_paths(&old_path));
+    let new_path = std::env::join_paths(paths)?;
+    let _path_guard = EnvVarGuard::set_os("PATH", &new_path);
+
+    let install = JdkInstallation::discover(None)?;
+    assert_eq!(install.root(), root);
+
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[test]
+fn discovery_falls_back_to_java_on_path_via_symlink_resolution() -> Result<(), Box<dyn std::error::Error>>
+{
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let temp = tempdir()?;
+    let root = temp.path();
+
+    let jmods_dir = root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+
+    let bin_dir = root.join("bin");
+    std::fs::create_dir_all(&bin_dir)?;
+    let java_path = bin_dir.join("java");
+    // No `java.home` output so discovery must use the `bin/java -> root` heuristic.
+    std::fs::write(&java_path, "#!/usr/bin/env sh\nexit 0\n")?;
+    let mut perms = std::fs::metadata(&java_path)?.permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&java_path, perms)?;
+
+    let _java_home = EnvVarGuard::unset("JAVA_HOME");
+
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths: Vec<std::path::PathBuf> = vec![bin_dir];
+    paths.extend(std::env::split_paths(&old_path));
+    let new_path = std::env::join_paths(paths)?;
+    let _path_guard = EnvVarGuard::set_os("PATH", &new_path);
+
     let install = JdkInstallation::discover(None)?;
     assert_eq!(install.root(), root);
 
