@@ -11,8 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use nova_classfile::ClassFile;
+use nova_classfile::{parse_module_info_class, ClassFile};
 use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
+use nova_modules::ModuleInfo;
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
 #[derive(Debug, Error)]
@@ -71,6 +72,17 @@ impl ClasspathEntry {
     pub fn path(&self) -> &Path {
         match self {
             ClasspathEntry::ClassDir(p) | ClasspathEntry::Jar(p) | ClasspathEntry::Jmod(p) => p,
+        }
+    }
+
+    /// Best-effort JPMS module descriptor discovery for this entry.
+    ///
+    /// Returns `Ok(None)` if the entry does not contain a `module-info.class`.
+    pub fn module_info(&self) -> Result<Option<ModuleInfo>, ClasspathError> {
+        match self {
+            ClasspathEntry::ClassDir(dir) => read_module_info_from_dir(dir),
+            ClasspathEntry::Jar(path) => read_module_info_from_zip(path, ZipKind::Jar),
+            ClasspathEntry::Jmod(path) => read_module_info_from_zip(path, ZipKind::Jmod),
         }
     }
 }
@@ -390,6 +402,40 @@ fn index_class_dir(dir: &Path) -> Result<Vec<ClasspathClassStub>, ClasspathError
 enum ZipKind {
     Jar,
     Jmod,
+}
+
+fn read_module_info_from_dir(dir: &Path) -> Result<Option<ModuleInfo>, ClasspathError> {
+    let path = dir.join("module-info.class");
+    if !path.is_file() {
+        return Ok(None);
+    }
+
+    let bytes = std::fs::read(path)?;
+    Ok(Some(parse_module_info_class(&bytes)?))
+}
+
+fn read_module_info_from_zip(path: &Path, kind: ZipKind) -> Result<Option<ModuleInfo>, ClasspathError> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    let candidates: &[&str] = match kind {
+        ZipKind::Jar => &["module-info.class", "META-INF/versions/9/module-info.class"],
+        ZipKind::Jmod => &["classes/module-info.class"],
+    };
+
+    for candidate in candidates {
+        match archive.by_name(candidate) {
+            Ok(mut entry) => {
+                let mut bytes = Vec::with_capacity(entry.size() as usize);
+                entry.read_to_end(&mut bytes)?;
+                return Ok(Some(parse_module_info_class(&bytes)?));
+            }
+            Err(zip::result::ZipError::FileNotFound) => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    Ok(None)
 }
 
 fn index_zip(path: &Path, kind: ZipKind) -> Result<Vec<ClasspathClassStub>, ClasspathError> {

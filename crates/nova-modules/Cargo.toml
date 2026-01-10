@@ -1,0 +1,11 @@
+[package]
+name = "nova-modules"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = "1.0"
+
+[dev-dependencies]
+nova-resolve = { path = "../nova-resolve" }
+

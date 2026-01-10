@@ -5,6 +5,7 @@ use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, ProjectConfig, SourceRoot,
     SourceRootKind, SourceRootOrigin,
 };
+use nova_modules::ModuleName;
 
 pub(crate) fn load_simple_project(
     root: &Path,
@@ -60,14 +61,17 @@ pub(crate) fn load_simple_project(
         build_system: BuildSystem::Simple,
         java: JavaConfig::default(),
         modules: vec![Module {
-            name: root
+            name: ModuleName::new(
+                root
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or("root")
                 .to_string(),
+            ),
             root: root.to_path_buf(),
         }],
         source_roots,
+        module_path: Vec::new(),
         classpath,
         output_dirs: Vec::new(),
         dependencies: Vec::new(),

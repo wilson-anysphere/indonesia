@@ -29,6 +29,7 @@ members = [
     "crates/nova-framework-mapstruct",
     "crates/nova-fuzzy",
     "crates/nova-hir",
+    "crates/nova-modules",
     "crates/nova-ide",
     "crates/nova-index",
     "crates/nova-types",

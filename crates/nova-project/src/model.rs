@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use nova_modules::ModuleName;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BuildSystem {
     Maven,
@@ -101,7 +103,7 @@ pub struct Dependency {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Module {
-    pub name: String,
+    pub name: ModuleName,
     pub root: PathBuf,
 }
 
@@ -115,6 +117,8 @@ pub struct ProjectConfig {
     pub modules: Vec<Module>,
 
     pub source_roots: Vec<SourceRoot>,
+    /// JPMS module-path entries (Java 9+). Dependencies here may be resolved as named modules.
+    pub module_path: Vec<ClasspathEntry>,
     pub classpath: Vec<ClasspathEntry>,
     pub output_dirs: Vec<OutputDir>,
     pub dependencies: Vec<Dependency>,

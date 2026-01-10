@@ -229,3 +229,10 @@ pub fn parse(text: &str) -> ParseResult {
 mod tests;
 /// Experimental Java AST used by semantic lowering passes.
 pub mod java;
+
+pub mod module_info;
+
+pub use module_info::{
+    parse_module_info, DirectiveName, ExportsDecl, ModuleDecl, ModuleDirective,
+    ModuleInfoParseError, Name, OpensDecl, ProvidesDecl, RequiresDecl, UsesDecl,
+};

@@ -13,6 +13,7 @@ zip = { version = "0.6", default-features = false, features = ["deflate"] }
 nova-classfile = { path = "../nova-classfile" }
 nova-core = { path = "../nova-core" }
 nova-project = { path = "../nova-project" }
+nova-modules = { path = "../nova-modules" }
 nova-types = { path = "../nova-types" }
 
 [dev-dependencies]

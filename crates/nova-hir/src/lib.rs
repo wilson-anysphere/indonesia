@@ -346,4 +346,4 @@ pub mod ids;
 pub mod item_tree;
 pub mod lowering;
 pub mod queries;
-
+pub mod module_info;

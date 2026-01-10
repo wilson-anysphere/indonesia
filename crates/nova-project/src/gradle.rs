@@ -2,6 +2,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use regex::Regex;
+use nova_modules::ModuleName;
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
@@ -33,6 +34,7 @@ pub(crate) fn load_gradle_project(
     let mut output_dirs = Vec::new();
     let mut dependencies = Vec::new();
     let mut classpath = Vec::new();
+    let mut module_path = Vec::new();
 
     // Best-effort: parse Java level and deps from build scripts.
     let root_java = parse_gradle_java_config(root).unwrap_or_default();
@@ -53,7 +55,7 @@ pub(crate) fn load_gradle_project(
         };
 
         modules.push(Module {
-            name: module_display_name,
+            name: ModuleName::new(module_display_name),
             root: module_root.clone(),
         });
 
@@ -107,6 +109,7 @@ pub(crate) fn load_gradle_project(
 
     sort_dedup_source_roots(&mut source_roots);
     sort_dedup_output_dirs(&mut output_dirs);
+    sort_dedup_classpath(&mut module_path);
     sort_dedup_classpath(&mut classpath);
     sort_dedup_dependencies(&mut dependencies);
 
@@ -116,6 +119,7 @@ pub(crate) fn load_gradle_project(
         java: root_java,
         modules,
         source_roots,
+        module_path,
         classpath,
         output_dirs,
         dependencies,

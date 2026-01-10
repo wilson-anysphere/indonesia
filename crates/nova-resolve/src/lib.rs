@@ -4,6 +4,8 @@
 //! simplified `nova-hir` structures and provides name resolution for locals,
 //! members and imports (including the implicit `java.lang.*` import).
 
+pub mod jpms;
+
 use std::collections::HashMap;
 
 use nova_core::{Name, PackageId, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
