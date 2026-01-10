@@ -508,11 +508,75 @@ impl TypeStore {
             interfaces: vec![],
             methods: vec![],
         });
+        let number = store.add_class(ClassDef {
+            name: "java.lang.Number".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        });
+        let _boolean = store.add_class(ClassDef {
+            name: "java.lang.Boolean".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        });
+        let _byte = store.add_class(ClassDef {
+            name: "java.lang.Byte".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(number, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        });
+        let _short = store.add_class(ClassDef {
+            name: "java.lang.Short".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(number, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        });
+        let _character = store.add_class(ClassDef {
+            name: "java.lang.Character".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(object, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        });
         let integer = store.add_class(ClassDef {
             name: "java.lang.Integer".to_string(),
             kind: ClassKind::Class,
             type_params: vec![],
-            super_class: Some(Type::class(object, vec![])),
+            super_class: Some(Type::class(number, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        });
+        let _long = store.add_class(ClassDef {
+            name: "java.lang.Long".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(number, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        });
+        let _float = store.add_class(ClassDef {
+            name: "java.lang.Float".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(number, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        });
+        let _double = store.add_class(ClassDef {
+            name: "java.lang.Double".to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(Type::class(number, vec![])),
             interfaces: vec![],
             methods: vec![],
         });
@@ -1104,6 +1168,44 @@ pub fn method_invocation_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -
                     conv.warnings.push(TypeWarning::Unchecked(UncheckedReason::RawConversion));
                 }
                 return Some(conv);
+            }
+        }
+
+        // Widening primitive conversion followed by boxing (e.g. `int` -> `long` -> `Long`).
+        if to.is_reference() {
+            let numeric_targets = [
+                PrimitiveType::Byte,
+                PrimitiveType::Short,
+                PrimitiveType::Char,
+                PrimitiveType::Int,
+                PrimitiveType::Long,
+                PrimitiveType::Float,
+                PrimitiveType::Double,
+            ];
+            for widened in numeric_targets {
+                if widened == p {
+                    continue;
+                }
+                if !primitive_widening(p, widened) {
+                    continue;
+                }
+                let Some(boxed) = boxing_type(env, widened) else {
+                    continue;
+                };
+                if boxed == to {
+                    return Some(
+                        Conversion::new(ConversionStep::WideningPrimitive).push_step(ConversionStep::Boxing),
+                    );
+                }
+                if boxed.is_reference() && is_subtype(env, &boxed, &to) {
+                    let mut conv = Conversion::new(ConversionStep::WideningPrimitive)
+                        .push_step(ConversionStep::Boxing)
+                        .push_step(ConversionStep::WideningReference);
+                    if raw_warning(env, &boxed, &to) {
+                        conv.warnings.push(TypeWarning::Unchecked(UncheckedReason::RawConversion));
+                    }
+                    return Some(conv);
+                }
             }
         }
     }

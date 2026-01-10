@@ -47,6 +47,20 @@ fn boxing_and_widening_reference() {
 }
 
 #[test]
+fn widening_then_boxing_to_different_wrapper() {
+    let env = TypeStore::with_minimal_jdk();
+
+    let int_ty = Type::Primitive(PrimitiveType::Int);
+    let long_wrapper = Type::class(env.class_id("java.lang.Long").unwrap(), vec![]);
+
+    let conv = method_invocation_conversion(&env, &int_ty, &long_wrapper).unwrap();
+    assert_eq!(
+        conv.steps,
+        vec![ConversionStep::WideningPrimitive, ConversionStep::Boxing]
+    );
+}
+
+#[test]
 fn unboxing_and_widening_primitive() {
     let env = TypeStore::with_minimal_jdk();
 
