@@ -1,5 +1,6 @@
 use crate::{NovaLspError, Result};
 use nova_build::{BuildError, BuildManager, BuildResult, Classpath};
+use nova_cache::{CacheConfig, CacheDir};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -270,7 +271,9 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
             ));
         };
 
-        let cache_path = workspace_root.join(".nova-cache/bazel.json");
+        let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
+            .map(|dir| dir.queries_dir().join("bazel.json"))
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
         let runner = nova_build_bazel::DefaultCommandRunner::default();
         let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
             .and_then(|ws| ws.with_cache_path(cache_path))
@@ -421,4 +424,3 @@ mod tests {
         assert_eq!(params.project_path.as_deref(), Some(":app"));
     }
 }
-
