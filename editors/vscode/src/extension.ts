@@ -1,12 +1,18 @@
 import * as vscode from 'vscode';
 import { LanguageClient, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
 import * as path from 'path';
+import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
 let testOutput: vscode.OutputChannel | undefined;
 let testController: vscode.TestController | undefined;
 const vscodeTestItemsById = new Map<string, vscode.TestItem>();
+
+let aiRefreshInProgress = false;
+let lastCompletionContextId: string | undefined;
+const aiItemsByContextId = new Map<string, vscode.CompletionItem[]>();
+const aiRequestsInFlight = new Set<string>();
 
 type TestKind = 'class' | 'test';
 
@@ -60,13 +66,75 @@ export function activate(context: vscode.ExtensionContext) {
     args: ['--stdio'],
   };
 
+  const documentSelector: vscode.DocumentSelector = [
+    { scheme: 'file', language: 'java' },
+    { scheme: 'untitled', language: 'java' },
+  ];
+
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [
-      { scheme: 'file', language: 'java' },
-      { scheme: 'untitled', language: 'java' },
-    ],
+    documentSelector,
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher('**/*.java'),
+    },
+    middleware: {
+      provideCompletionItem: async (document, position, completionContext, token, next) => {
+        const result = await next(document, position, completionContext, token);
+
+        if (!client || aiRefreshInProgress) {
+          return result;
+        }
+
+        const baseItems = Array.isArray(result) ? result : result?.items;
+        if (!baseItems?.length) {
+          return result;
+        }
+
+        const contextId = getCompletionContextId(baseItems);
+        if (!contextId) {
+          return result;
+        }
+
+        lastCompletionContextId = contextId;
+
+        if (aiItemsByContextId.has(contextId) || aiRequestsInFlight.has(contextId)) {
+          return result;
+        }
+
+        aiRequestsInFlight.add(contextId);
+
+        void (async () => {
+          try {
+            if (!client || !clientStart) {
+              return;
+            }
+
+            await clientStart;
+            const more = await requestMoreCompletions(client, baseItems);
+            if (!more?.length) {
+              return;
+            }
+
+            // Ensure AI items appear above "normal" completions without disrupting normal sorting.
+            for (const item of more) {
+              item.sortText = item.sortText ?? '0';
+            }
+
+            aiItemsByContextId.set(contextId, more);
+
+            // Re-trigger suggestions once to surface async results.
+            aiRefreshInProgress = true;
+            try {
+              await vscode.commands.executeCommand('editor.action.triggerSuggest');
+            } finally {
+              aiRefreshInProgress = false;
+            }
+          } finally {
+            aiRequestsInFlight.delete(contextId);
+          }
+        })();
+
+        return result;
+      },
     },
   };
 
@@ -96,6 +164,23 @@ export function activate(context: vscode.ExtensionContext) {
   testController.resolveHandler = async () => {
     await refreshTests();
   };
+
+  context.subscriptions.push(
+    vscode.languages.registerCompletionItemProvider(documentSelector, {
+      provideCompletionItems: () => {
+        const enabled = vscode.workspace.getConfiguration('nova').get<boolean>('aiCompletions.enabled', true);
+        if (!enabled) {
+          return undefined;
+        }
+
+        if (!lastCompletionContextId) {
+          return undefined;
+        }
+
+        return aiItemsByContextId.get(lastCompletionContextId);
+      },
+    }),
+  );
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.organizeImports', async () => {

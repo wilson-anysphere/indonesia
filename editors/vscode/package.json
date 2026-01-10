@@ -36,7 +36,23 @@
         "command": "nova.runTest",
         "title": "Nova: Run Test"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Nova",
+      "properties": {
+        "nova.aiCompletions.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Nova AI multi-token completions via nova/completion/more."
+        },
+        "nova.aiCompletions.maxItems": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Maximum number of AI completion items to request."
+        }
+      }
+    }
   },
   "scripts": {
     "sync-version": "node scripts/sync-version.mjs",

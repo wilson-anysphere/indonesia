@@ -3454,6 +3454,7 @@ dependencies = [
 name = "nova-ide"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "lsp-types",
  "nova-ai",
  "nova-config",
@@ -3522,6 +3523,7 @@ name = "nova-lsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "httpmock",
  "lsp-types",
  "nova-ai",

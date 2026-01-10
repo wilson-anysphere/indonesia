@@ -8,6 +8,8 @@
 
 mod anonymizer;
 mod client;
+mod completion;
+mod completion_context;
 mod completion_ranking;
 mod config;
 mod error;
@@ -32,6 +34,8 @@ pub use actions::AiService;
 pub use anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
 pub use client::AiClient;
 pub use cloud::{CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
+pub use completion::{AdditionalEdit, MultiTokenCompletion, MultiTokenInsertTextFormat};
+pub use completion_context::{CompletionContextBuilder, MultiTokenCompletionContext};
 pub use completion_ranking::{
     maybe_rank_completions, rank_completions_with_timeout, BaselineCompletionRanker,
     CompletionRanker,
@@ -43,6 +47,7 @@ pub use error::AiError;
 pub use features::NovaAi;
 pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedSymbol};
 pub use privacy::{PrivacyMode, RedactionConfig};
+pub use provider::MultiTokenCompletionProvider;
 pub use semantic_search::{SearchResult, SemanticSearch, TrigramSemanticSearch};
 pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
 

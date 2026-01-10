@@ -8,6 +8,7 @@ nova-ai = { path = "../nova-ai", optional = true }
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-decompile = { path = "../nova-decompile" }
+futures = "0.3"
 nova-project = { path = "../nova-project" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-db = { path = "../nova-db" }

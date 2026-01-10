@@ -46,6 +46,12 @@ mod diagnostics;
 mod distributed;
 mod server;
 pub mod workspace_edit;
+#[cfg(feature = "ai")]
+mod completion_more;
+#[cfg(feature = "ai")]
+mod requests;
+#[cfg(feature = "ai")]
+mod to_lsp;
 
 pub use code_action::{AiCodeAction, AiCodeActionExecutor, CodeActionError, CodeActionOutcome};
 pub use cancellation::RequestCancellation;
@@ -58,6 +64,10 @@ pub use refactor::{
 };
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
 pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
+#[cfg(feature = "ai")]
+pub use completion_more::{CompletionContextId, NovaCompletionResponse, NovaCompletionService};
+#[cfg(feature = "ai")]
+pub use requests::{MoreCompletionsParams, MoreCompletionsResult, NOVA_COMPLETION_MORE_METHOD};
 
 use nova_dap::hot_swap::{BuildSystem, JdwpRedefiner};
 use thiserror::Error;

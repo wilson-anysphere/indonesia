@@ -14,7 +14,6 @@ pub mod hot_swap;
 /// Re-exports of the JDWP client facade consumed by debugger-adjacent integrations (e.g. LSP).
 pub mod jdwp;
 pub mod smart_step_into;
-
 // The `jdwp` module is a thin re-export wrapper over `nova-jdwp` so downstream
 // crates can depend on `nova-dap` alone for JDWP integrations.
 /// Debugger UX helpers (return values, stable object IDs, rich formatting).

@@ -66,3 +66,25 @@ mod parse;
 mod text;
 
 pub use crate::db::{Database, DatabaseSnapshot};
+
+#[cfg(feature = "ai")]
+mod config;
+#[cfg(feature = "ai")]
+mod engine;
+#[cfg(feature = "ai")]
+mod merge;
+#[cfg(feature = "ai")]
+mod model;
+#[cfg(feature = "ai")]
+mod validation;
+
+#[cfg(feature = "ai")]
+pub use config::CompletionConfig;
+#[cfg(feature = "ai")]
+pub use engine::CompletionEngine;
+#[cfg(feature = "ai")]
+pub use merge::merge_completions;
+#[cfg(feature = "ai")]
+pub use model::{CompletionSource, NovaCompletionItem};
+#[cfg(feature = "ai")]
+pub use validation::validate_ai_completion;
