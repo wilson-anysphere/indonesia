@@ -275,6 +275,12 @@ use lsp_types::{
 #[must_use]
 pub fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
+        document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
+        document_range_formatting_provider: Some(lsp_types::OneOf::Left(true)),
+        document_on_type_formatting_provider: Some(lsp_types::DocumentOnTypeFormattingOptions {
+            first_trigger_character: "}".to_string(),
+            more_trigger_character: Some(vec![";".to_string()]),
+        }),
         implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
         declaration_provider: Some(DeclarationCapability::Simple(true)),
         type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
