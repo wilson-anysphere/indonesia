@@ -54,57 +54,62 @@ impl ItemTreeLower {
         match decl {
             syntax::TypeDecl::Class(class) => {
                 let id = ClassId::new(self.file, self.tree.classes.len() as u32);
-                let members = self.lower_members(&class.members);
                 self.tree.classes.push(Class {
                     name: class.name.clone(),
                     range: class.range,
                     body_range: class.body_range,
-                    members,
+                    members: Vec::new(),
                 });
+                let members = self.lower_members(&class.members);
+                self.tree.classes[id.idx()].members = members;
                 Item::Class(id)
             }
             syntax::TypeDecl::Interface(interface) => {
                 let id = InterfaceId::new(self.file, self.tree.interfaces.len() as u32);
-                let members = self.lower_members(&interface.members);
                 self.tree.interfaces.push(Interface {
                     name: interface.name.clone(),
                     range: interface.range,
                     body_range: interface.body_range,
-                    members,
+                    members: Vec::new(),
                 });
+                let members = self.lower_members(&interface.members);
+                self.tree.interfaces[id.idx()].members = members;
                 Item::Interface(id)
             }
             syntax::TypeDecl::Enum(enm) => {
                 let id = EnumId::new(self.file, self.tree.enums.len() as u32);
-                let members = self.lower_members(&enm.members);
                 self.tree.enums.push(Enum {
                     name: enm.name.clone(),
                     range: enm.range,
                     body_range: enm.body_range,
-                    members,
+                    members: Vec::new(),
                 });
+                let members = self.lower_members(&enm.members);
+                self.tree.enums[id.idx()].members = members;
                 Item::Enum(id)
             }
             syntax::TypeDecl::Record(record) => {
                 let id = RecordId::new(self.file, self.tree.records.len() as u32);
-                let members = self.lower_members(&record.members);
                 self.tree.records.push(Record {
                     name: record.name.clone(),
                     range: record.range,
                     body_range: record.body_range,
-                    members,
+                    members: Vec::new(),
                 });
+                let members = self.lower_members(&record.members);
+                self.tree.records[id.idx()].members = members;
                 Item::Record(id)
             }
             syntax::TypeDecl::Annotation(annotation) => {
                 let id = AnnotationId::new(self.file, self.tree.annotations.len() as u32);
-                let members = self.lower_members(&annotation.members);
                 self.tree.annotations.push(Annotation {
                     name: annotation.name.clone(),
                     range: annotation.range,
                     body_range: annotation.body_range,
-                    members,
+                    members: Vec::new(),
                 });
+                let members = self.lower_members(&annotation.members);
+                self.tree.annotations[id.idx()].members = members;
                 Item::Annotation(id)
             }
         }

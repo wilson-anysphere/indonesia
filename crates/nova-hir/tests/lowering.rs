@@ -35,6 +35,10 @@ import java.util.List;
 import java.util.*;
 import static java.lang.Math.*;
 
+@interface Marker {
+    int value();
+}
+
 class Foo {
     int field;
 
@@ -42,6 +46,10 @@ class Foo {
         int x = a;
         bar(x);
     }
+
+    class Inner {}
+
+    @interface InnerAnn {}
 
     void bar(int y) {
         int z = y + 1;
@@ -74,20 +82,46 @@ class Foo {
         .iter()
         .any(|import| import.is_static && import.is_star && import.path == "java.lang.Math"));
 
-    assert_eq!(tree.items.len(), 1);
-    let class_id = match tree.items[0] {
-        nova_hir::item_tree::Item::Class(id) => id,
-        _ => panic!("expected class item"),
-    };
+    assert!(tree
+        .items
+        .iter()
+        .any(|item| matches!(item, nova_hir::item_tree::Item::Annotation(_))));
+    assert!(tree
+        .items
+        .iter()
+        .any(|item| matches!(item, nova_hir::item_tree::Item::Class(_))));
+
+    let class_id = tree
+        .items
+        .iter()
+        .find_map(|item| match *item {
+            nova_hir::item_tree::Item::Class(id) => Some(id),
+            _ => None,
+        })
+        .expect("Foo class");
     let class = tree.class(class_id);
     assert_eq!(class.name, "Foo");
 
+    assert!(class
+        .members
+        .iter()
+        .any(|member| matches!(member, nova_hir::item_tree::Member::Type(_))));
+
     assert_eq!(tree.fields.len(), 1);
     assert_eq!(tree.fields[0].name, "field");
-    assert_eq!(tree.methods.len(), 1);
-    assert_eq!(tree.methods[0].name, "bar");
+    assert!(tree.methods.iter().any(|method| method.name == "value"));
+    assert!(tree
+        .methods
+        .iter()
+        .any(|method| method.name == "value" && method.body_range.is_none()));
+    assert!(tree.methods.iter().any(|method| method.name == "bar"));
 
-    let bar_id = nova_hir::ids::MethodId::new(file, 0);
+    let bar_index = tree
+        .methods
+        .iter()
+        .position(|method| method.name == "bar")
+        .expect("bar method");
+    let bar_id = nova_hir::ids::MethodId::new(file, bar_index as u32);
     let body = body(&db, bar_id);
 
     let local_names: Vec<_> = body

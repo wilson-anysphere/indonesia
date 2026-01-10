@@ -745,6 +745,12 @@ impl Parser {
     fn skip_modifiers_and_annotations(&mut self) {
         loop {
             if self.at_kind(TokenKind::At) {
+                if self
+                    .peek_n(1)
+                    .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "interface")
+                {
+                    break;
+                }
                 self.bump();
                 if self.peek().is_some_and(|t| t.kind == TokenKind::Ident) {
                     self.parse_qualified_name();
@@ -1244,4 +1250,3 @@ impl Parser {
         (text, end)
     }
 }
-
