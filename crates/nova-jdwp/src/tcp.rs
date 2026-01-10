@@ -4,8 +4,18 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::{
-    JdwpClient, JdwpError, JdwpEvent, StackFrameInfo, StopReason, StoppedEvent, ThreadId, ThreadInfo,
+    JdwpClient, JdwpError, JdwpEvent, JdwpValue, JdwpVariable, ObjectId, ObjectKindPreview,
+    ObjectPreview, ObjectRef, StackFrameInfo, StopReason, StoppedEvent, ThreadId, ThreadInfo,
 };
+
+const ERROR_INVALID_OBJECT: u16 = 20;
+const EVENT_KIND_STEP: u8 = 1;
+const EVENT_KIND_BREAKPOINT: u8 = 2;
+const EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE: u8 = 42;
+const SUSPEND_POLICY_NONE: u8 = 0;
+const MODIFIER_THREAD_ONLY: u8 = 3;
+const ARRAY_PREVIEW_SAMPLE: usize = 3;
+const ARRAY_CHILD_SAMPLE: usize = 25;
 
 /// A very small JDWP client.
 ///
@@ -19,6 +29,9 @@ pub struct TcpJdwpClient {
     id_sizes: IdSizes,
     cache: Cache,
     pending_events: VecDeque<JdwpEvent>,
+    pending_return_values: HashMap<ThreadId, JdwpValue>,
+    active_step_requests: HashMap<ThreadId, u32>,
+    active_method_exit_requests: HashMap<ThreadId, u32>,
 }
 
 impl TcpJdwpClient {
@@ -29,6 +42,9 @@ impl TcpJdwpClient {
             id_sizes: IdSizes::default(),
             cache: Cache::default(),
             pending_events: VecDeque::new(),
+            pending_return_values: HashMap::new(),
+            active_step_requests: HashMap::new(),
+            active_method_exit_requests: HashMap::new(),
         }
     }
 
@@ -200,6 +216,239 @@ impl TcpJdwpClient {
         Ok(self.cache.methods.get(&type_id).unwrap())
     }
 
+    fn signature_for_type(&mut self, type_id: u64) -> Result<&str, JdwpError> {
+        if !self.cache.signatures.contains_key(&type_id) {
+            let mut body = Vec::new();
+            write_id(&mut body, self.id_sizes.reference_type_id, type_id);
+
+            // ReferenceType/Signature
+            let reply = self.send_command(2, 1, &body)?;
+            let mut cursor = Cursor::new(&reply);
+            let signature = cursor.read_string()?;
+            self.cache.signatures.insert(type_id, signature);
+        }
+
+        Ok(self
+            .cache
+            .signatures
+            .get(&type_id)
+            .map(String::as_str)
+            .expect("just inserted"))
+    }
+
+    fn fields_for_type(&mut self, type_id: u64) -> Result<&[FieldInfo], JdwpError> {
+        if !self.cache.fields.contains_key(&type_id) {
+            let mut body = Vec::new();
+            write_id(&mut body, self.id_sizes.reference_type_id, type_id);
+
+            // ReferenceType/Fields
+            let reply = self.send_command(2, 4, &body)?;
+            let mut cursor = Cursor::new(&reply);
+            let count = cursor.read_u32()? as usize;
+
+            let mut fields = Vec::with_capacity(count);
+            for _ in 0..count {
+                let field_id = cursor.read_id(self.id_sizes.field_id)?;
+                let name = cursor.read_string()?;
+                let signature = cursor.read_string()?;
+                let _mod_bits = cursor.read_u32()?;
+                fields.push(FieldInfo {
+                    id: field_id,
+                    name,
+                    signature,
+                });
+            }
+
+            self.cache.fields.insert(type_id, fields);
+        }
+
+        Ok(self
+            .cache
+            .fields
+            .get(&type_id)
+            .map(Vec::as_slice)
+            .expect("just inserted"))
+    }
+
+    fn reference_type_for_object(&mut self, object_id: ObjectId) -> Result<(u8, u64), JdwpError> {
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.object_id, object_id);
+
+        // ObjectReference/ReferenceType
+        let reply = match self.send_command(9, 1, &body) {
+            Ok(reply) => reply,
+            Err(JdwpError::CommandFailed { error_code }) if error_code == ERROR_INVALID_OBJECT => {
+                return Err(JdwpError::InvalidObjectId(object_id));
+            }
+            Err(err) => return Err(err),
+        };
+
+        let mut cursor = Cursor::new(&reply);
+        let type_tag = cursor.read_u8()?;
+        let type_id = cursor.read_id(self.id_sizes.reference_type_id)?;
+        Ok((type_tag, type_id))
+    }
+
+    fn set_method_exit_with_return_value_request(&mut self, thread_id: ThreadId) -> Result<u32, JdwpError> {
+        // EventRequest.Set(METHOD_EXIT_WITH_RETURN_VALUE)
+        let mut body = Vec::new();
+        body.push(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE);
+        body.push(SUSPEND_POLICY_NONE);
+        body.extend_from_slice(&(1u32).to_be_bytes()); // modifiers
+
+        // Modifier.ThreadOnly (3)
+        body.push(MODIFIER_THREAD_ONLY);
+        write_id(&mut body, self.id_sizes.object_id, thread_id);
+
+        let reply = self.send_command(15, 1, &body)?;
+        let mut cursor = Cursor::new(&reply);
+        Ok(cursor.read_u32()?)
+    }
+
+    fn string_value(&mut self, object_id: ObjectId) -> Result<String, JdwpError> {
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.object_id, object_id);
+
+        // StringReference/Value
+        let reply = match self.send_command(10, 1, &body) {
+            Ok(reply) => reply,
+            Err(JdwpError::CommandFailed { error_code }) if error_code == ERROR_INVALID_OBJECT => {
+                return Err(JdwpError::InvalidObjectId(object_id));
+            }
+            Err(err) => return Err(err),
+        };
+        let mut cursor = Cursor::new(&reply);
+        cursor.read_string()
+    }
+
+    fn array_length(&mut self, object_id: ObjectId) -> Result<usize, JdwpError> {
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.object_id, object_id);
+
+        // ArrayReference/Length
+        let reply = match self.send_command(13, 1, &body) {
+            Ok(reply) => reply,
+            Err(JdwpError::CommandFailed { error_code }) if error_code == ERROR_INVALID_OBJECT => {
+                return Err(JdwpError::InvalidObjectId(object_id));
+            }
+            Err(err) => return Err(err),
+        };
+        let mut cursor = Cursor::new(&reply);
+        Ok(cursor.read_u32()? as usize)
+    }
+
+    fn array_get_values(
+        &mut self,
+        object_id: ObjectId,
+        first_index: i32,
+        length: i32,
+    ) -> Result<Vec<JdwpValue>, JdwpError> {
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.object_id, object_id);
+        body.extend_from_slice(&first_index.to_be_bytes());
+        body.extend_from_slice(&length.to_be_bytes());
+
+        // ArrayReference/GetValues
+        let reply = match self.send_command(13, 2, &body) {
+            Ok(reply) => reply,
+            Err(JdwpError::CommandFailed { error_code }) if error_code == ERROR_INVALID_OBJECT => {
+                return Err(JdwpError::InvalidObjectId(object_id));
+            }
+            Err(err) => return Err(err),
+        };
+
+        let mut cursor = Cursor::new(&reply);
+        let tag = cursor.read_u8()?;
+        let count = cursor.read_u32()? as usize;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(self.read_value_with_tag(&mut cursor, tag)?);
+        }
+        Ok(values)
+    }
+
+    fn object_get_values(&mut self, object_id: ObjectId, fields: &[FieldInfo]) -> Result<Vec<JdwpValue>, JdwpError> {
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.object_id, object_id);
+        body.extend_from_slice(&(fields.len() as u32).to_be_bytes());
+        for field in fields {
+            write_id(&mut body, self.id_sizes.field_id, field.id);
+        }
+
+        // ObjectReference/GetValues
+        let reply = match self.send_command(9, 2, &body) {
+            Ok(reply) => reply,
+            Err(JdwpError::CommandFailed { error_code }) if error_code == ERROR_INVALID_OBJECT => {
+                return Err(JdwpError::InvalidObjectId(object_id));
+            }
+            Err(err) => return Err(err),
+        };
+
+        let mut cursor = Cursor::new(&reply);
+        let count = cursor.read_u32()? as usize;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(self.read_tagged_value(&mut cursor)?);
+        }
+        Ok(values)
+    }
+
+    fn read_tagged_value(&mut self, cursor: &mut Cursor<'_>) -> Result<JdwpValue, JdwpError> {
+        let tag = cursor.read_u8()?;
+        self.read_value_with_tag(cursor, tag)
+    }
+
+    fn read_value_with_tag(&mut self, cursor: &mut Cursor<'_>, tag: u8) -> Result<JdwpValue, JdwpError> {
+        match tag {
+            b'V' => Ok(JdwpValue::Void),
+            b'Z' => Ok(JdwpValue::Boolean(cursor.read_u8()? != 0)),
+            b'B' => Ok(JdwpValue::Byte(cursor.read_u8()? as i8)),
+            b'S' => Ok(JdwpValue::Short(cursor.read_i16()?)),
+            b'I' => Ok(JdwpValue::Int(cursor.read_i32()?)),
+            b'J' => Ok(JdwpValue::Long(cursor.read_i64()?)),
+            b'F' => Ok(JdwpValue::Float(cursor.read_f32()?)),
+            b'D' => Ok(JdwpValue::Double(cursor.read_f64()?)),
+            b'C' => Ok(JdwpValue::Char(cursor.read_java_char()?)),
+            b's' => {
+                let id = cursor.read_id(self.id_sizes.object_id)?;
+                if id == 0 {
+                    Ok(JdwpValue::Null)
+                } else {
+                    Ok(JdwpValue::Object(ObjectRef {
+                        id,
+                        runtime_type: "java.lang.String".to_string(),
+                    }))
+                }
+            }
+            b'[' => {
+                let id = cursor.read_id(self.id_sizes.object_id)?;
+                if id == 0 {
+                    Ok(JdwpValue::Null)
+                } else {
+                    Ok(JdwpValue::Object(ObjectRef {
+                        id,
+                        runtime_type: "java.lang.Object[]".to_string(),
+                    }))
+                }
+            }
+            b'L' => {
+                let id = cursor.read_id(self.id_sizes.object_id)?;
+                if id == 0 {
+                    Ok(JdwpValue::Null)
+                } else {
+                    Ok(JdwpValue::Object(ObjectRef {
+                        id,
+                        runtime_type: "java.lang.Object".to_string(),
+                    }))
+                }
+            }
+            other => Err(JdwpError::Protocol(format!(
+                "unsupported JDWP value tag {}",
+                other as char
+            ))),
+        }
+    }
+
     fn line_table_for_method(&mut self, type_id: u64, method_id: u64) -> Result<&Vec<(u64, u32)>, JdwpError> {
         if !self.cache.line_tables.contains_key(&(type_id, method_id)) {
             let mut body = Vec::new();
@@ -366,12 +615,13 @@ impl TcpJdwpClient {
         let _suspend_policy = cursor.read_u8()?;
         let events = cursor.read_u32()? as usize;
 
+        let mut stopped_events = Vec::new();
         for _ in 0..events {
             let kind = cursor.read_u8()?;
             let request_id = cursor.read_u32()?;
 
             match kind {
-                1 => {
+                EVENT_KIND_STEP => {
                     // Step
                     let thread_id = cursor.read_id(self.id_sizes.object_id)?;
                     // location
@@ -380,15 +630,9 @@ impl TcpJdwpClient {
                     let _method_id = cursor.read_id(self.id_sizes.method_id)?;
                     let _index = cursor.read_i64()?;
 
-                    self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
-                        reason: StopReason::Step,
-                        thread_id,
-                        request_id,
-                        return_value: None,
-                        expression_value: None,
-                    }));
+                    stopped_events.push((StopReason::Step, thread_id, request_id));
                 }
-                2 => {
+                EVENT_KIND_BREAKPOINT => {
                     // Breakpoint
                     let thread_id = cursor.read_id(self.id_sizes.object_id)?;
                     // location
@@ -397,13 +641,19 @@ impl TcpJdwpClient {
                     let _method_id = cursor.read_id(self.id_sizes.method_id)?;
                     let _index = cursor.read_i64()?;
 
-                    self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
-                        reason: StopReason::Breakpoint,
-                        thread_id,
-                        request_id,
-                        return_value: None,
-                        expression_value: None,
-                    }));
+                    stopped_events.push((StopReason::Breakpoint, thread_id, request_id));
+                }
+                EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE => {
+                    // MethodExitWithReturnValue
+                    let thread_id = cursor.read_id(self.id_sizes.object_id)?;
+                    // location
+                    let _type_tag = cursor.read_u8()?;
+                    let _type_id = cursor.read_id(self.id_sizes.reference_type_id)?;
+                    let _method_id = cursor.read_id(self.id_sizes.method_id)?;
+                    let _index = cursor.read_i64()?;
+
+                    let value = self.read_tagged_value(&mut cursor)?;
+                    self.pending_return_values.insert(thread_id, value);
                 }
                 other => {
                     return Err(JdwpError::Protocol(format!(
@@ -411,6 +661,17 @@ impl TcpJdwpClient {
                     )));
                 }
             }
+        }
+
+        for (reason, thread_id, request_id) in stopped_events {
+            let return_value = self.pending_return_values.remove(&thread_id);
+            self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
+                reason,
+                thread_id,
+                request_id,
+                return_value,
+                expression_value: None,
+            }));
         }
 
         Ok(())
@@ -526,17 +787,57 @@ impl JdwpClient for TcpJdwpClient {
     }
 
     fn next(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
-        let _ = self.set_step_request(thread_id, 1)?; // StepDepth.OVER
+        if let Some(prev) = self.active_step_requests.remove(&thread_id) {
+            let _ = self.clear_event_request(EVENT_KIND_STEP, prev);
+        }
+        if let Some(prev) = self.active_method_exit_requests.remove(&thread_id) {
+            let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, prev);
+        }
+        self.pending_return_values.remove(&thread_id);
+
+        // Best-effort: if METHOD_EXIT_WITH_RETURN_VALUE isn't supported, still step.
+        if let Ok(request_id) = self.set_method_exit_with_return_value_request(thread_id) {
+            self.active_method_exit_requests.insert(thread_id, request_id);
+        }
+
+        let request_id = self.set_step_request(thread_id, 1)?; // StepDepth.OVER
+        self.active_step_requests.insert(thread_id, request_id);
         self.resume_vm()
     }
 
     fn step_in(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
-        let _ = self.set_step_request(thread_id, 0)?; // StepDepth.INTO
+        if let Some(prev) = self.active_step_requests.remove(&thread_id) {
+            let _ = self.clear_event_request(EVENT_KIND_STEP, prev);
+        }
+        if let Some(prev) = self.active_method_exit_requests.remove(&thread_id) {
+            let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, prev);
+        }
+        self.pending_return_values.remove(&thread_id);
+
+        if let Ok(request_id) = self.set_method_exit_with_return_value_request(thread_id) {
+            self.active_method_exit_requests.insert(thread_id, request_id);
+        }
+
+        let request_id = self.set_step_request(thread_id, 0)?; // StepDepth.INTO
+        self.active_step_requests.insert(thread_id, request_id);
         self.resume_vm()
     }
 
     fn step_out(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
-        let _ = self.set_step_request(thread_id, 2)?; // StepDepth.OUT
+        if let Some(prev) = self.active_step_requests.remove(&thread_id) {
+            let _ = self.clear_event_request(EVENT_KIND_STEP, prev);
+        }
+        if let Some(prev) = self.active_method_exit_requests.remove(&thread_id) {
+            let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, prev);
+        }
+        self.pending_return_values.remove(&thread_id);
+
+        if let Ok(request_id) = self.set_method_exit_with_return_value_request(thread_id) {
+            self.active_method_exit_requests.insert(thread_id, request_id);
+        }
+
+        let request_id = self.set_step_request(thread_id, 2)?; // StepDepth.OUT
+        self.active_step_requests.insert(thread_id, request_id);
         self.resume_vm()
     }
 
@@ -545,8 +846,133 @@ impl JdwpClient for TcpJdwpClient {
         Ok(())
     }
 
+    fn preview_object(&mut self, object_id: ObjectId) -> Result<ObjectPreview, JdwpError> {
+        let (_tag, type_id) = self.reference_type_for_object(object_id)?;
+        let signature = self.signature_for_type(type_id)?.to_string();
+        let runtime_type = signature_to_type_name(&signature);
+
+        if signature == "Ljava/lang/String;" {
+            return Ok(ObjectPreview {
+                runtime_type,
+                kind: ObjectKindPreview::String {
+                    value: self.string_value(object_id)?,
+                },
+            });
+        }
+
+        if signature.starts_with('[') {
+            let length = self.array_length(object_id)?;
+            let sample_len = length.min(ARRAY_PREVIEW_SAMPLE);
+            let sample = if sample_len == 0 {
+                Vec::new()
+            } else {
+                self.array_get_values(object_id, 0, sample_len as i32)?
+            };
+
+            let element_sig = signature.strip_prefix('[').unwrap_or(&signature);
+            let element_type = signature_to_type_name(element_sig);
+            return Ok(ObjectPreview {
+                runtime_type,
+                kind: ObjectKindPreview::Array {
+                    element_type,
+                    length,
+                    sample,
+                },
+            });
+        }
+
+        Ok(ObjectPreview {
+            runtime_type,
+            kind: ObjectKindPreview::Plain,
+        })
+    }
+
+    fn object_children(&mut self, object_id: ObjectId) -> Result<Vec<JdwpVariable>, JdwpError> {
+        let (_tag, type_id) = self.reference_type_for_object(object_id)?;
+        let signature = self.signature_for_type(type_id)?.to_string();
+
+        if signature.starts_with('[') {
+            let length = self.array_length(object_id)?;
+            let sample_len = length.min(ARRAY_CHILD_SAMPLE);
+            let element_sig = signature.strip_prefix('[').unwrap_or(&signature);
+            let element_type = signature_to_type_name(element_sig);
+            let mut vars = Vec::new();
+            vars.push(JdwpVariable {
+                name: "length".to_string(),
+                value: JdwpValue::Int(length as i32),
+                static_type: Some("int".to_string()),
+                evaluate_name: None,
+            });
+            if sample_len > 0 {
+                let values = self.array_get_values(object_id, 0, sample_len as i32)?;
+                for (idx, value) in values.into_iter().enumerate() {
+                    vars.push(JdwpVariable {
+                        name: format!("[{idx}]"),
+                        value,
+                        static_type: Some(element_type.clone()),
+                        evaluate_name: None,
+                    });
+                }
+            }
+            return Ok(vars);
+        }
+
+        let fields: Vec<_> = self.fields_for_type(type_id)?.to_vec();
+        if fields.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let values = self.object_get_values(object_id, &fields)?;
+        Ok(fields
+            .into_iter()
+            .zip(values)
+            .map(|(field, value)| JdwpVariable {
+                name: field.name,
+                value,
+                static_type: Some(signature_to_type_name(&field.signature)),
+                evaluate_name: None,
+            })
+            .collect())
+    }
+
+    fn disable_collection(&mut self, object_id: ObjectId) -> Result<(), JdwpError> {
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.object_id, object_id);
+
+        // ObjectReference/DisableCollection
+        match self.send_command(9, 7, &body) {
+            Ok(_) => Ok(()),
+            Err(JdwpError::CommandFailed { error_code }) if error_code == ERROR_INVALID_OBJECT => {
+                Err(JdwpError::InvalidObjectId(object_id))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn enable_collection(&mut self, object_id: ObjectId) -> Result<(), JdwpError> {
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.object_id, object_id);
+
+        // ObjectReference/EnableCollection
+        match self.send_command(9, 8, &body) {
+            Ok(_) => Ok(()),
+            Err(JdwpError::CommandFailed { error_code }) if error_code == ERROR_INVALID_OBJECT => {
+                Err(JdwpError::InvalidObjectId(object_id))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
     fn wait_for_event(&mut self) -> Result<Option<JdwpEvent>, JdwpError> {
         if let Some(event) = self.pending_events.pop_front() {
+            let JdwpEvent::Stopped(stopped) = &event;
+            if let Some(step_request) = self.active_step_requests.remove(&stopped.thread_id) {
+                let _ = self.clear_event_request(EVENT_KIND_STEP, step_request);
+            }
+            if let Some(exit_request) = self.active_method_exit_requests.remove(&stopped.thread_id) {
+                let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, exit_request);
+                self.pending_return_values.remove(&stopped.thread_id);
+            }
             return Ok(Some(event));
         }
 
@@ -570,10 +996,16 @@ impl JdwpClient for TcpJdwpClient {
                 } => {
                     self.handle_command_packet(command_set, command, &data)?;
                     if let Some(event) = self.pending_events.pop_front() {
-                        // Step requests are one-shot; clear to avoid accumulating disabled requests.
                         let JdwpEvent::Stopped(stopped) = &event;
-                        if stopped.reason == StopReason::Step {
-                            let _ = self.clear_event_request(1, stopped.request_id);
+                        if let Some(step_request) = self.active_step_requests.remove(&stopped.thread_id) {
+                            let _ = self.clear_event_request(EVENT_KIND_STEP, step_request);
+                        }
+                        if let Some(exit_request) = self.active_method_exit_requests.remove(&stopped.thread_id) {
+                            let _ = self.clear_event_request(
+                                EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
+                                exit_request,
+                            );
+                            self.pending_return_values.remove(&stopped.thread_id);
                         }
                         return Ok(Some(event));
                     }
@@ -585,6 +1017,7 @@ impl JdwpClient for TcpJdwpClient {
 
 #[derive(Debug, Clone, Copy)]
 struct ClassInfo {
+    #[allow(dead_code)]
     tag: u8,
     type_id: u64,
 }
@@ -619,11 +1052,20 @@ struct Cache {
     methods: HashMap<u64, HashMap<u64, MethodInfo>>,
     line_tables: HashMap<(u64, u64), Vec<(u64, u32)>>,
     source_files: HashMap<u64, String>,
+    signatures: HashMap<u64, String>,
+    fields: HashMap<u64, Vec<FieldInfo>>,
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct MethodInfo {
+    id: u64,
+    name: String,
+    signature: String,
+}
+
+#[derive(Debug, Clone)]
+struct FieldInfo {
     id: u64,
     name: String,
     signature: String,
@@ -690,6 +1132,38 @@ fn class_name_to_signature(class: &str) -> String {
     format!("L{internal};")
 }
 
+fn signature_to_type_name(signature: &str) -> String {
+    let mut sig = signature;
+    let mut dims = 0usize;
+    while let Some(rest) = sig.strip_prefix('[') {
+        dims += 1;
+        sig = rest;
+    }
+
+    let base = if let Some(class) = sig.strip_prefix('L').and_then(|s| s.strip_suffix(';')) {
+        class.replace('/', ".")
+    } else {
+        match sig.as_bytes().first().copied() {
+            Some(b'B') => "byte".to_string(),
+            Some(b'C') => "char".to_string(),
+            Some(b'D') => "double".to_string(),
+            Some(b'F') => "float".to_string(),
+            Some(b'I') => "int".to_string(),
+            Some(b'J') => "long".to_string(),
+            Some(b'S') => "short".to_string(),
+            Some(b'Z') => "boolean".to_string(),
+            Some(b'V') => "void".to_string(),
+            _ => "<unknown>".to_string(),
+        }
+    };
+
+    let mut out = base;
+    for _ in 0..dims {
+        out.push_str("[]");
+    }
+    out
+}
+
 fn write_id(buf: &mut Vec<u8>, size: usize, value: u64) {
     let bytes = value.to_be_bytes();
     let start = bytes.len().saturating_sub(size);
@@ -739,9 +1213,38 @@ impl<'a> Cursor<'a> {
         Ok(u32::from_be_bytes(bytes.try_into().unwrap()))
     }
 
+    fn read_u16(&mut self) -> Result<u16, JdwpError> {
+        let bytes = self.read_exact(2)?;
+        Ok(u16::from_be_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_i16(&mut self) -> Result<i16, JdwpError> {
+        Ok(self.read_u16()? as i16)
+    }
+
+    fn read_i32(&mut self) -> Result<i32, JdwpError> {
+        let bytes = self.read_exact(4)?;
+        Ok(i32::from_be_bytes(bytes.try_into().unwrap()))
+    }
+
     fn read_i64(&mut self) -> Result<i64, JdwpError> {
         let bytes = self.read_exact(8)?;
         Ok(i64::from_be_bytes(bytes.try_into().unwrap()))
+    }
+
+    fn read_f32(&mut self) -> Result<f32, JdwpError> {
+        let bits = self.read_u32()?;
+        Ok(f32::from_bits(bits))
+    }
+
+    fn read_f64(&mut self) -> Result<f64, JdwpError> {
+        let bytes = self.read_exact(8)?;
+        Ok(f64::from_bits(u64::from_be_bytes(bytes.try_into().unwrap())))
+    }
+
+    fn read_java_char(&mut self) -> Result<char, JdwpError> {
+        let code_unit = self.read_u16()? as u32;
+        Ok(std::char::from_u32(code_unit).unwrap_or('\u{FFFD}'))
     }
 
     fn read_id(&mut self, size: usize) -> Result<u64, JdwpError> {
@@ -768,6 +1271,53 @@ mod tests {
     fn class_signature_conversion() {
         assert_eq!(class_name_to_signature("com.example.Foo"), "Lcom/example/Foo;");
         assert_eq!(class_name_to_signature("Foo"), "LFoo;");
+    }
+
+    #[test]
+    fn method_exit_return_value_is_attached_to_next_step_stop() {
+        let mut client = TcpJdwpClient::new();
+
+        // Composite event packet with:
+        //  - Step
+        //  - MethodExitWithReturnValue(int 123)
+        //
+        // Order is intentionally "step first" to ensure we attach return values
+        // after reading all events in the composite.
+        let thread_id = 99u64;
+        let type_id = 1u64;
+        let method_id = 2u64;
+        let index = 0i64;
+
+        let mut data = Vec::new();
+        data.push(0); // SuspendPolicy.NONE
+        data.extend_from_slice(&(2u32).to_be_bytes()); // events
+
+        // Step event.
+        data.push(EVENT_KIND_STEP);
+        data.extend_from_slice(&(11u32).to_be_bytes()); // request id
+        write_id(&mut data, client.id_sizes.object_id, thread_id);
+        data.push(1); // type tag
+        write_id(&mut data, client.id_sizes.reference_type_id, type_id);
+        write_id(&mut data, client.id_sizes.method_id, method_id);
+        data.extend_from_slice(&index.to_be_bytes());
+
+        // MethodExitWithReturnValue event.
+        data.push(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE);
+        data.extend_from_slice(&(12u32).to_be_bytes()); // request id
+        write_id(&mut data, client.id_sizes.object_id, thread_id);
+        data.push(1); // type tag
+        write_id(&mut data, client.id_sizes.reference_type_id, type_id);
+        write_id(&mut data, client.id_sizes.method_id, method_id);
+        data.extend_from_slice(&index.to_be_bytes());
+        data.push(b'I');
+        data.extend_from_slice(&(123i32).to_be_bytes());
+
+        client.handle_command_packet(64, 100, &data).unwrap();
+
+        let event = client.pending_events.pop_front().unwrap();
+        let JdwpEvent::Stopped(stopped) = event;
+        assert_eq!(stopped.reason, StopReason::Step);
+        assert_eq!(stopped.return_value, Some(JdwpValue::Int(123)));
     }
 
     #[test]
