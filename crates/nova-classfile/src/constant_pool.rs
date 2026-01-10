@@ -154,6 +154,9 @@ impl ConstantPool {
             // Long/Double take up two slots.
             match entries[i].as_ref().unwrap() {
                 CpInfo::Long(_) | CpInfo::Double(_) => {
+                    if i + 1 >= count {
+                        return Err(Error::Other("malformed constant pool"));
+                    }
                     i += 2;
                 }
                 _ => i += 1,
