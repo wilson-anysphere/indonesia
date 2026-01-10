@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 nova-cache = { path = "../nova-cache" }
+nova-fuzzy = { path = "../nova-fuzzy" }
 nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
 crossbeam-channel = "0.5"

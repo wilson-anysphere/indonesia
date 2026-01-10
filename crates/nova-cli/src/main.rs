@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use nova_workspace::{CacheStatus, DiagnosticsReport, IndexReport, ParseResult, Workspace};
+use nova_workspace::{
+    CacheStatus, DiagnosticsReport, IndexReport, ParseResult, Workspace, WorkspaceSymbol,
+};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -247,6 +249,16 @@ fn print_output<T: Serialize + 'static>(value: &T, json: bool) -> Result<()> {
             print!("{}", result.tree);
             for e in &result.errors {
                 println!("error:{}:{}: {}", e.line, e.column, e.message);
+            }
+        } else if let Some(symbols) = any.downcast_ref::<Vec<WorkspaceSymbol>>() {
+            for sym in symbols {
+                if sym.locations.is_empty() {
+                    println!("{}", sym.name);
+                    continue;
+                }
+                for loc in &sym.locations {
+                    println!("{} {}:{}:{}", sym.name, loc.file, loc.line, loc.column);
+                }
             }
         } else {
             let out = serde_json::to_string_pretty(value)?;

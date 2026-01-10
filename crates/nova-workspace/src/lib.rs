@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
+use nova_fuzzy::FuzzyMatcher;
 use nova_index::{load_indexes, save_indexes, ProjectIndexes, SymbolLocation};
 use nova_project::ProjectError;
 use regex::Regex;
@@ -290,17 +291,24 @@ impl Workspace {
         save_indexes(&cache_dir, &snapshot, &indexes).context("failed to persist indexes")?;
         self.write_cache_perf(&cache_dir, &metrics)?;
 
-        let q = query.to_lowercase();
-        let mut results = Vec::new();
+        let mut matcher = FuzzyMatcher::new(query);
+        let mut scored = Vec::new();
         for (name, locations) in &indexes.symbols.symbols {
-            if name.to_lowercase().contains(&q) {
-                results.push(WorkspaceSymbol {
-                    name: name.clone(),
-                    locations: locations.clone(),
-                });
+            if let Some(score) = matcher.score(name) {
+                scored.push((score.rank_key(), name.clone(), locations.clone()));
             }
         }
-        Ok(results)
+
+        scored.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.len().cmp(&b.1.len()))
+                .then_with(|| a.1.cmp(&b.1))
+        });
+
+        Ok(scored
+            .into_iter()
+            .map(|(_, name, locations)| WorkspaceSymbol { name, locations })
+            .collect())
     }
 
     pub fn parse_file(&self, file: impl AsRef<Path>) -> Result<ParseResult> {
