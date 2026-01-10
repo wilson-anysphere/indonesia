@@ -16,6 +16,7 @@ const SUSPEND_POLICY_NONE: u8 = 0;
 const MODIFIER_THREAD_ONLY: u8 = 3;
 const ARRAY_PREVIEW_SAMPLE: usize = 3;
 const ARRAY_CHILD_SAMPLE: usize = 25;
+const FIELD_MODIFIER_STATIC: u32 = 0x0008;
 
 /// A very small JDWP client.
 ///
@@ -251,11 +252,12 @@ impl TcpJdwpClient {
                 let field_id = cursor.read_id(self.id_sizes.field_id)?;
                 let name = cursor.read_string()?;
                 let signature = cursor.read_string()?;
-                let _mod_bits = cursor.read_u32()?;
+                let mod_bits = cursor.read_u32()?;
                 fields.push(FieldInfo {
                     id: field_id,
                     name,
                     signature,
+                    mod_bits,
                 });
             }
 
@@ -881,6 +883,166 @@ impl JdwpClient for TcpJdwpClient {
             });
         }
 
+        // Primitive wrapper previews (Integer, Long, etc.) by reading their `value` field.
+        if matches!(
+            runtime_type.as_str(),
+            "java.lang.Boolean"
+                | "java.lang.Byte"
+                | "java.lang.Character"
+                | "java.lang.Double"
+                | "java.lang.Float"
+                | "java.lang.Integer"
+                | "java.lang.Long"
+                | "java.lang.Short"
+        ) {
+            if let Ok(children) = self.object_children(object_id) {
+                if let Some(value) = children
+                    .iter()
+                    .find(|v| v.name == "value")
+                    .map(|v| v.value.clone())
+                {
+                    return Ok(ObjectPreview {
+                        runtime_type,
+                        kind: ObjectKindPreview::PrimitiveWrapper {
+                            value: Box::new(value),
+                        },
+                    });
+                }
+            }
+        }
+
+        // Optional preview by reading its `value` field.
+        if runtime_type == "java.util.Optional" {
+            if let Ok(children) = self.object_children(object_id) {
+                if let Some(value) = children.iter().find(|v| v.name == "value").map(|v| v.value.clone()) {
+                    return Ok(ObjectPreview {
+                        runtime_type,
+                        kind: ObjectKindPreview::Optional {
+                            value: match value {
+                                JdwpValue::Null => None,
+                                other => Some(Box::new(other)),
+                            },
+                        },
+                    });
+                }
+            }
+        }
+
+        // Collection previews via best-effort field introspection for common JDK implementations.
+        if runtime_type == "java.util.ArrayList" {
+            if let Ok(children) = self.object_children(object_id) {
+                let size = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+                    ("size", JdwpValue::Int(size)) => Some(*size as usize),
+                    _ => None,
+                });
+                let element_data = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+                    ("elementData", JdwpValue::Object(obj)) => Some(obj.id),
+                    _ => None,
+                });
+
+                if let (Some(size), Some(array_id)) = (size, element_data) {
+                    let sample_len = size.min(ARRAY_PREVIEW_SAMPLE);
+                    let sample = if sample_len == 0 {
+                        Vec::new()
+                    } else if let Ok(values) = self.array_get_values(array_id, 0, sample_len as i32) {
+                        values
+                    } else {
+                        Vec::new()
+                    };
+
+                    return Ok(ObjectPreview {
+                        runtime_type,
+                        kind: ObjectKindPreview::List { size, sample },
+                    });
+                }
+            }
+        }
+
+        if runtime_type == "java.util.HashMap" {
+            if let Ok(children) = self.object_children(object_id) {
+                let size = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+                    ("size", JdwpValue::Int(size)) => Some(*size as usize),
+                    _ => None,
+                });
+                let table = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+                    ("table", JdwpValue::Object(obj)) => Some(obj.id),
+                    _ => None,
+                });
+
+                if let (Some(size), Some(table_id)) = (size, table) {
+                    let mut sample = Vec::new();
+                    if let Ok(table_len) = self.array_length(table_id) {
+                        let scan = table_len.min(64);
+                        if scan > 0 {
+                            if let Ok(buckets) = self.array_get_values(table_id, 0, scan as i32) {
+                                for bucket in buckets {
+                                    if sample.len() >= ARRAY_PREVIEW_SAMPLE {
+                                        break;
+                                    }
+                                    let JdwpValue::Object(mut node) = bucket else {
+                                        continue;
+                                    };
+                                    // Traverse collision chain (bounded).
+                                    for _ in 0..16 {
+                                        if sample.len() >= ARRAY_PREVIEW_SAMPLE {
+                                            break;
+                                        }
+                                        let Ok(node_fields) = self.object_children(node.id) else {
+                                            break;
+                                        };
+                                        let key = node_fields
+                                            .iter()
+                                            .find(|v| v.name == "key")
+                                            .map(|v| v.value.clone())
+                                            .unwrap_or(JdwpValue::Null);
+                                        let value = node_fields
+                                            .iter()
+                                            .find(|v| v.name == "value")
+                                            .map(|v| v.value.clone())
+                                            .unwrap_or(JdwpValue::Null);
+                                        sample.push((key, value));
+                                        match node_fields.iter().find(|v| v.name == "next").map(|v| &v.value) {
+                                            Some(JdwpValue::Object(next)) => node = next.clone(),
+                                            _ => break,
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    return Ok(ObjectPreview {
+                        runtime_type,
+                        kind: ObjectKindPreview::Map { size, sample },
+                    });
+                }
+            }
+        }
+
+        if runtime_type == "java.util.HashSet" {
+            if let Ok(children) = self.object_children(object_id) {
+                let map = children.iter().find_map(|v| match (&v.name[..], &v.value) {
+                    ("map", JdwpValue::Object(obj)) => Some(obj.id),
+                    _ => None,
+                });
+
+                if let Some(map_id) = map {
+                    // Reuse HashMap's preview by pulling the keys out of the sampled entries.
+                    if let Ok(ObjectPreview {
+                        kind: ObjectKindPreview::Map { size, sample },
+                        ..
+                    }) = self.preview_object(map_id)
+                    {
+                        let sample = sample.into_iter().map(|(k, _)| k).collect();
+                        return Ok(ObjectPreview {
+                            runtime_type,
+                            kind: ObjectKindPreview::Set { size, sample },
+                        });
+                    }
+                }
+            }
+        }
+
         Ok(ObjectPreview {
             runtime_type,
             kind: ObjectKindPreview::Plain,
@@ -917,7 +1079,12 @@ impl JdwpClient for TcpJdwpClient {
             return Ok(vars);
         }
 
-        let fields: Vec<_> = self.fields_for_type(type_id)?.to_vec();
+        let fields: Vec<_> = self
+            .fields_for_type(type_id)?
+            .iter()
+            .filter(|field| field.mod_bits & FIELD_MODIFIER_STATIC == 0)
+            .cloned()
+            .collect();
         if fields.is_empty() {
             return Ok(Vec::new());
         }
@@ -1069,6 +1236,7 @@ struct FieldInfo {
     id: u64,
     name: String,
     signature: String,
+    mod_bits: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
