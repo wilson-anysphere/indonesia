@@ -15,7 +15,6 @@ nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
 nova-decompile = { path = "../nova-decompile" }
 nova-ide = { path = "../nova-ide" }
-nova-ai = { path = "../nova-ai", optional = true }
 nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
@@ -33,7 +32,7 @@ tokio-util = "0.7"
 url = "2"
 
 [features]
-ai = ["dep:nova-ai", "nova-ide/ai"]
+ai = ["nova-ide/ai"]
 
 [dev-dependencies]
 httpmock = "0.7"
