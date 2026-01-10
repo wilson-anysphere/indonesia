@@ -562,4 +562,23 @@ mod tests {
         let packages = index.packages_with_prefix("com/example");
         assert!(packages.contains(&"com.example.dep".to_string()));
     }
+
+    #[test]
+    fn entry_index_is_cached_by_fingerprint() {
+        let tmp = TempDir::new().unwrap();
+        let entry = ClasspathEntry::Jar(test_jar()).normalize().unwrap();
+        let fingerprint = entry.fingerprint().unwrap();
+
+        let stubs_first =
+            persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || index_entry(&entry))
+                .unwrap();
+        assert!(stubs_first.iter().any(|s| s.binary_name == "com.example.dep.Foo"));
+
+        let stubs_cached = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
+            panic!("expected cache hit, but builder was invoked")
+        })
+        .unwrap();
+
+        assert_eq!(stubs_first.len(), stubs_cached.len());
+    }
 }
