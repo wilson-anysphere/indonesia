@@ -10,6 +10,10 @@ pub(crate) fn append_generated_source_roots(
     module_root: &Path,
     config: &NovaConfig,
 ) {
+    if !config.generated_sources.enabled {
+        return;
+    }
+
     let mut candidates: Vec<(SourceRootKind, PathBuf)> = Vec::new();
 
     if let Some(override_roots) = &config.generated_sources.override_roots {

@@ -2,6 +2,7 @@ use nova_build::{BuildManager, BuildResult};
 use nova_config::NovaConfig;
 use nova_core::fs;
 use nova_project::{BuildSystem, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin};
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -90,20 +91,14 @@ impl AptManager {
         let mut modules = Vec::new();
 
         for module in &self.project.modules {
-            let mut roots = Vec::new();
-
-            for root in self
-                .project
-                .source_roots
-                .iter()
-                .filter(|root| root.origin == SourceRootOrigin::Generated)
-                .filter(|root| root.path.starts_with(&module.root))
-            {
-                roots.push(GeneratedSourceRootStatus {
-                    root: root.clone(),
-                    freshness: self.freshness_for_root(&module.root, root)?,
-                });
-            }
+            let roots = self.generated_roots_for_module(&module.root)?;
+            let roots = roots
+                .into_iter()
+                .map(|root| {
+                    let freshness = self.freshness_for_root(&module.root, &root)?;
+                    Ok(GeneratedSourceRootStatus { root, freshness })
+                })
+                .collect::<io::Result<Vec<_>>>()?;
 
             modules.push(ModuleGeneratedSourcesStatus {
                 module_name: module.name.clone(),
@@ -193,6 +188,70 @@ impl AptManager {
 
         Ok(max_time)
     }
+
+    fn generated_roots_for_module(&self, module_root: &Path) -> io::Result<Vec<SourceRoot>> {
+        let mut candidates: Vec<(SourceRootKind, std::path::PathBuf)> = Vec::new();
+
+        if let Some(override_roots) = &self.config.generated_sources.override_roots {
+            for root in override_roots {
+                let path = if root.is_absolute() {
+                    root.clone()
+                } else {
+                    module_root.join(root)
+                };
+                candidates.push((SourceRootKind::Main, path));
+            }
+        } else {
+            // Maven defaults.
+            candidates.push((
+                SourceRootKind::Main,
+                module_root.join("target/generated-sources/annotations"),
+            ));
+            candidates.push((
+                SourceRootKind::Test,
+                module_root.join("target/generated-test-sources/test-annotations"),
+            ));
+
+            // Gradle defaults.
+            candidates.push((
+                SourceRootKind::Main,
+                module_root.join("build/generated/sources/annotationProcessor/java/main"),
+            ));
+            candidates.push((
+                SourceRootKind::Test,
+                module_root.join("build/generated/sources/annotationProcessor/java/test"),
+            ));
+
+            for root in &self.config.generated_sources.additional_roots {
+                let path = if root.is_absolute() {
+                    root.clone()
+                } else {
+                    module_root.join(root)
+                };
+                candidates.push((SourceRootKind::Main, path));
+            }
+        }
+
+        let mut seen = HashSet::new();
+        let mut roots = Vec::new();
+
+        for (kind, path) in candidates {
+            if !path.is_dir() {
+                continue;
+            }
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+
+            roots.push(SourceRoot {
+                kind,
+                origin: SourceRootOrigin::Generated,
+                path,
+            });
+        }
+
+        Ok(roots)
+    }
 }
 
 fn max_java_mtime(root: &Path) -> io::Result<Option<SystemTime>> {
@@ -249,18 +308,18 @@ mod tests {
     fn does_not_resolve_generated_type_when_generated_roots_excluded() {
         let project_root = fixture_root();
 
-        let config = NovaConfig::default();
+        let mut config = NovaConfig::default();
+        config.generated_sources.enabled = false;
         let mut options = LoadOptions::default();
         options.nova_config = config;
         let project = load_project_with_options(&project_root, &options).unwrap();
 
-        let source_only_roots = project
+        assert!(!project
             .source_roots
             .iter()
-            .filter(|sr| sr.origin == SourceRootOrigin::Source)
-            .cloned()
-            .collect::<Vec<_>>();
-        let index = ClassIndex::build(&source_only_roots).unwrap();
+            .any(|sr| sr.origin == SourceRootOrigin::Generated));
+
+        let index = ClassIndex::build(&project.source_roots).unwrap();
         assert!(!index.contains("com.example.generated.GeneratedHello"));
 
         let mut unit = CompilationUnit::new(Some(PackageName::from_dotted("com.example.app")));
