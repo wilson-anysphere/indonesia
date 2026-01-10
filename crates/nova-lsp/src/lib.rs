@@ -31,6 +31,9 @@ pub type Result<T> = std::result::Result<T, NovaLspError>;
 
 pub const TEST_DISCOVER_METHOD: &str = "nova/test/discover";
 pub const TEST_RUN_METHOD: &str = "nova/test/run";
+pub const BUILD_PROJECT_METHOD: &str = "nova/buildProject";
+pub const JAVA_CLASSPATH_METHOD: &str = "nova/java/classpath";
+pub const RELOAD_PROJECT_METHOD: &str = "nova/reloadProject";
 
 pub const DEBUG_CONFIGURATIONS_METHOD: &str = "nova/debug/configurations";
 pub const DEBUG_HOT_SWAP_METHOD: &str = "nova/debug/hotSwap";
@@ -46,6 +49,9 @@ pub fn handle_custom_request(
     match method {
         TEST_DISCOVER_METHOD => extensions::test::handle_discover(params),
         TEST_RUN_METHOD => extensions::test::handle_run(params),
+        BUILD_PROJECT_METHOD => extensions::build::handle_build_project(params),
+        JAVA_CLASSPATH_METHOD => extensions::build::handle_java_classpath(params),
+        RELOAD_PROJECT_METHOD => extensions::build::handle_reload_project(params),
         _ => Err(NovaLspError::InvalidParams(format!(
             "unknown (stateless) method: {method}"
         ))),

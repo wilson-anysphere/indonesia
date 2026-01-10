@@ -63,6 +63,11 @@ impl Range {
     pub const fn new(start: Position, end: Position) -> Self {
         Self { start, end }
     }
+
+    #[inline]
+    pub const fn point(pos: Position) -> Self {
+        Self { start: pos, end: pos }
+    }
 }
 
 /// A textual edit described by a range replacement.
@@ -301,4 +306,41 @@ impl fmt::Debug for StaticMemberId {
 pub struct ProjectConfig {
     /// Optional override for the JDK installation to use.
     pub jdk_home: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DiagnosticSeverity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+}
+
+/// A diagnostic produced by parsing/analysis/build tooling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    /// File the diagnostic applies to.
+    pub file: PathBuf,
+    pub range: Range,
+    pub severity: DiagnosticSeverity,
+    pub message: String,
+    pub source: Option<String>,
+}
+
+impl Diagnostic {
+    pub fn new(
+        file: PathBuf,
+        range: Range,
+        severity: DiagnosticSeverity,
+        message: impl Into<String>,
+        source: impl Into<Option<String>>,
+    ) -> Self {
+        Self {
+            file,
+            range,
+            severity,
+            message: message.into(),
+            source: source.into(),
+        }
+    }
 }
