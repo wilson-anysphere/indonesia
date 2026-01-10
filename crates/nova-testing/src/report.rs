@@ -2,6 +2,7 @@ use crate::schema::{TestCaseResult, TestFailure, TestStatus};
 use crate::{Result, SCHEMA_VERSION};
 use quick_xml::events::Event;
 use quick_xml::Reader;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -16,7 +17,7 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
     reader.trim_text(true);
 
     let mut buf = Vec::new();
-    let mut cases = Vec::new();
+    let mut cases: BTreeMap<String, TestCaseResult> = BTreeMap::new();
 
     #[derive(Default)]
     struct TempCase {
@@ -103,15 +104,16 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
 
                     let classname = case.classname.unwrap_or_else(|| "<unknown>".to_string());
                     let name = case.name.unwrap_or_else(|| "<unknown>".to_string());
-                    let id = format!("{classname}#{name}");
+                    let id = format!("{classname}#{}", normalize_testcase_name(&name));
                     let duration_ms = case.time_seconds.map(|s| (s * 1000.0).round() as u64);
 
-                    cases.push(TestCaseResult {
+                    let item = TestCaseResult {
                         id,
                         status: case.status,
                         duration_ms,
                         failure: case.failure,
-                    });
+                    };
+                    insert_or_merge(&mut cases, item);
                 }
                 b"skipped" => {
                     if let Some(case) = current_case.as_mut() {
@@ -141,16 +143,17 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
                     if let Some(case) = current_case.take() {
                         let classname = case.classname.unwrap_or_else(|| "<unknown>".to_string());
                         let name = case.name.unwrap_or_else(|| "<unknown>".to_string());
-                        let id = format!("{classname}#{name}");
+                        let id = format!("{classname}#{}", normalize_testcase_name(&name));
 
                         let duration_ms = case.time_seconds.map(|s| (s * 1000.0).round() as u64);
 
-                        cases.push(TestCaseResult {
+                        let item = TestCaseResult {
                             id,
                             status: case.status,
                             duration_ms,
                             failure: case.failure,
-                        });
+                        };
+                        insert_or_merge(&mut cases, item);
                     }
                 }
                 _ => {}
@@ -162,11 +165,75 @@ pub fn parse_junit_report_str(xml: &str) -> Result<Vec<TestCaseResult>> {
         buf.clear();
     }
 
-    Ok(cases)
+    Ok(cases.into_values().collect())
 }
 
 /// Return a schema version marker that can be embedded in reports/tests to ensure the
 /// JSON schema remains stable as the crate evolves.
 pub fn schema_version() -> u32 {
     SCHEMA_VERSION
+}
+
+pub(crate) fn insert_or_merge(into: &mut BTreeMap<String, TestCaseResult>, item: TestCaseResult) {
+    match into.get_mut(&item.id) {
+        Some(existing) => merge_case_results(existing, item),
+        None => {
+            into.insert(item.id.clone(), item);
+        }
+    }
+}
+
+pub(crate) fn merge_case_results(existing: &mut TestCaseResult, incoming: TestCaseResult) {
+    if status_rank(incoming.status) > status_rank(existing.status) {
+        existing.status = incoming.status;
+    }
+
+    existing.duration_ms = match (existing.duration_ms, incoming.duration_ms) {
+        (Some(a), Some(b)) => Some(a.saturating_add(b)),
+        (None, Some(b)) => Some(b),
+        (Some(a), None) => Some(a),
+        (None, None) => None,
+    };
+
+    if existing.failure.is_none() {
+        existing.failure = incoming.failure;
+    }
+}
+
+fn status_rank(status: TestStatus) -> u8 {
+    match status {
+        TestStatus::Failed => 2,
+        TestStatus::Passed => 1,
+        TestStatus::Skipped => 0,
+    }
+}
+
+fn normalize_testcase_name(name: &str) -> String {
+    let original = name.trim();
+    if original.is_empty() {
+        return "<unknown>".to_string();
+    }
+
+    // Strip parameterized suffixes like `methodName[1]` or `methodName(int)[1]`.
+    let mut trimmed = original;
+    if let Some(idx) = trimmed.find('[') {
+        // Only strip when the method prefix exists. If the name starts with `[`,
+        // keep it intact (best-effort).
+        if idx > 0 {
+            trimmed = trimmed[..idx].trim_end();
+        }
+    }
+
+    // Strip signature-like suffixes `methodName(int, String)` or `methodName()`.
+    if let Some(idx) = trimmed.find('(') {
+        if idx > 0 {
+            trimmed = trimmed[..idx].trim_end();
+        }
+    }
+
+    if trimmed.is_empty() {
+        original.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }

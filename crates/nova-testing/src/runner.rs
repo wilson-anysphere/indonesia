@@ -1,4 +1,4 @@
-use crate::report::parse_junit_report;
+use crate::report::{merge_case_results, parse_junit_report};
 use crate::schema::{
     BuildTool, TestCaseResult, TestRunRequest, TestRunResponse, TestRunSummary, TestStatus,
 };
@@ -54,9 +54,16 @@ pub(crate) fn detect_build_tool(project_root: &Path) -> Result<BuildTool> {
         return Ok(BuildTool::Maven);
     }
 
-    let gradle = project_root.join("build.gradle");
-    let gradle_kts = project_root.join("build.gradle.kts");
-    if gradle.exists() || gradle_kts.exists() {
+    let gradle_markers = [
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+    ];
+    if gradle_markers
+        .iter()
+        .any(|marker| project_root.join(marker).exists())
+    {
         return Ok(BuildTool::Gradle);
     }
 
@@ -141,7 +148,12 @@ fn collect_and_parse_reports(project_root: &Path, tool: BuildTool) -> Result<Vec
     let mut by_id: BTreeMap<String, TestCaseResult> = BTreeMap::new();
     for path in xml_files {
         for case in parse_junit_report(&path)? {
-            by_id.insert(case.id.clone(), case);
+            match by_id.get_mut(&case.id) {
+                Some(existing) => merge_case_results(existing, case),
+                None => {
+                    by_id.insert(case.id.clone(), case);
+                }
+            }
         }
     }
 

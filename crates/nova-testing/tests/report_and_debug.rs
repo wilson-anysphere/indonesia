@@ -52,6 +52,24 @@ trace</failure>
 }
 
 #[test]
+fn normalizes_parameterized_testcase_names() {
+    let xml = r#"
+        <testsuite name="com.example.CalculatorTest" tests="2" failures="1" errors="0" skipped="0" time="0.003">
+          <testcase classname="com.example.CalculatorTest" name="parameterizedAdds(int)[1]" time="0.001"/>
+          <testcase classname="com.example.CalculatorTest" name="parameterizedAdds(int)[2]" time="0.002">
+            <failure message="boom" type="java.lang.AssertionError">trace</failure>
+          </testcase>
+        </testsuite>
+    "#;
+
+    let cases = parse_junit_report_str(xml).unwrap();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].id, "com.example.CalculatorTest#parameterizedAdds");
+    assert_eq!(cases[0].status, TestStatus::Failed);
+    assert_eq!(cases[0].duration_ms, Some(3));
+}
+
+#[test]
 fn creates_debug_configuration_for_maven() {
     let root = fixture_root("maven-junit5");
     let cfg =
