@@ -18,6 +18,9 @@ pub struct Field {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entity {
     pub name: String,
+    /// JPQL entity name (defaults to the class name, but can be overridden via
+    /// `@Entity(name = "...")`).
+    pub jpql_name: String,
     pub table: String,
     pub span: Span,
     pub fields: Vec<Field>,
@@ -47,6 +50,14 @@ impl EntityModel {
 
     pub fn entity_names(&self) -> impl Iterator<Item = &String> {
         self.entities.keys()
+    }
+
+    pub fn jpql_entity_names(&self) -> impl Iterator<Item = &String> + '_ {
+        self.entities.values().map(|e| &e.jpql_name)
+    }
+
+    pub fn entity_by_jpql_name(&self, name: &str) -> Option<&Entity> {
+        self.entities.values().find(|e| e.jpql_name == name)
     }
 }
 
@@ -158,6 +169,12 @@ fn parse_entity_class(node: Node<'_>, source: &str) -> Option<Entity> {
         .child_by_field_name("name")
         .or_else(|| find_named_child(node, "identifier"))?;
     let name = node_text(source, name_node).to_string();
+    let jpql_name = annotations
+        .iter()
+        .find(|ann| ann.simple_name == "Entity")
+        .and_then(|ann| ann.args.get("name").cloned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| name.clone());
 
     let table = annotations
         .iter()
@@ -174,6 +191,7 @@ fn parse_entity_class(node: Node<'_>, source: &str) -> Option<Entity> {
 
     Some(Entity {
         name,
+        jpql_name,
         table,
         span,
         fields,

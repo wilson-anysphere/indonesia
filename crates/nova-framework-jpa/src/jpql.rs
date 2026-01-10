@@ -174,11 +174,15 @@ pub fn extract_jpql_strings(java_source: &str) -> Vec<(String, Span)> {
     //
     // Examples:
     //   @Query("select u from User u")
+    //   @Query(nativeQuery = false, value = "select u from User u")
     //   @NamedQuery(name="X", query="select u from User u")
     //
     // We intentionally support both single and double quote literals.
-    static QUERY_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        Regex::new(r#"@Query\s*\(\s*(?:value\s*=\s*)?(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#)
+    static QUERY_POSITIONAL_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new(r#"@Query\s*\(\s*(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#).unwrap()
+    });
+    static QUERY_VALUE_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
+        Regex::new(r#"@Query\s*\([^)]*?\bvalue\s*=\s*(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#)
             .unwrap()
     });
     static NAMED_QUERY_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
@@ -190,7 +194,13 @@ pub fn extract_jpql_strings(java_source: &str) -> Vec<(String, Span)> {
 
     let mut out = Vec::new();
 
-    for cap in QUERY_RE.captures_iter(java_source) {
+    for cap in QUERY_POSITIONAL_RE.captures_iter(java_source) {
+        if let Some(m) = cap.name("lit") {
+            let span = Span::new(m.start(), m.end());
+            out.push((strip_quotes(m.as_str()).to_string(), span));
+        }
+    }
+    for cap in QUERY_VALUE_RE.captures_iter(java_source) {
         if let Some(m) = cap.name("lit") {
             let span = Span::new(m.start(), m.end());
             out.push((strip_quotes(m.as_str()).to_string(), span));
@@ -294,7 +304,7 @@ fn jpql_completions_tokens(
 
     if entity_context(tokens, cursor) {
         let mut items: Vec<_> = model
-            .entity_names()
+            .jpql_entity_names()
             .map(|name| CompletionItem::new(name.clone()))
             .collect();
         items.sort_by(|a, b| a.label.cmp(&b.label));
@@ -379,7 +389,7 @@ pub fn jpql_diagnostics(query: &str, model: &EntityModel) -> Vec<Diagnostic> {
             if let Some(entity_tok) = tokens.get(idx + 1) {
                 if let TokenKind::Ident(entity_name) = &entity_tok.kind {
                     let entity_name = simple_name(entity_name);
-                    if model.entity(&entity_name).is_none() {
+                    if model.entity_by_jpql_name(&entity_name).is_none() {
                         diags.push(Diagnostic::error(
                             "JPQL_UNKNOWN_ENTITY",
                             format!("Unknown JPQL entity `{}`", entity_name),
@@ -444,7 +454,11 @@ fn build_alias_map(tokens: &[Token], model: &EntityModel) -> HashMap<String, Str
                 i += 1;
                 if let Some((entity, alias, next_i)) = parse_entity_alias(tokens, i) {
                     let entity = simple_name(&entity);
-                    map.insert(alias, entity);
+                    let class_name = model
+                        .entity_by_jpql_name(&entity)
+                        .map(|e| e.name.clone())
+                        .unwrap_or(entity);
+                    map.insert(alias, class_name);
                     i = next_i;
                     continue;
                 }
@@ -485,11 +499,18 @@ fn parse_entity_alias(tokens: &[Token], start: usize) -> Option<(String, String,
     let TokenKind::Ident(entity) = &entity_tok.kind else {
         return None;
     };
-    let alias_tok = tokens.get(start + 1)?;
+    let mut idx = start + 1;
+    if matches!(
+        tokens.get(idx).map(|t| &t.kind),
+        Some(TokenKind::Keyword(k)) if k == "AS"
+    ) {
+        idx += 1;
+    }
+    let alias_tok = tokens.get(idx)?;
     let TokenKind::Ident(alias) = &alias_tok.kind else {
         return None;
     };
-    Some((entity.clone(), alias.clone(), start + 2))
+    Some((entity.clone(), alias.clone(), idx + 1))
 }
 
 fn parse_join(
@@ -509,7 +530,14 @@ fn parse_join(
         let TokenKind::Ident(field_name) = &field_tok.kind else {
             return None;
         };
-        let join_alias_tok = tokens.get(start + 3)?;
+        let mut alias_idx = start + 3;
+        if matches!(
+            tokens.get(alias_idx).map(|t| &t.kind),
+            Some(TokenKind::Keyword(k)) if k == "AS"
+        ) {
+            alias_idx += 1;
+        }
+        let join_alias_tok = tokens.get(alias_idx)?;
         let TokenKind::Ident(join_alias) = &join_alias_tok.kind else {
             return None;
         };
@@ -525,15 +553,27 @@ fn parse_join(
         let Some(target) = target else {
             return None;
         };
-        return Some((target, join_alias.clone(), start + 4));
+        return Some((target, join_alias.clone(), alias_idx + 1));
     }
 
     // Entity join: Entity alias
-    let alias_tok = tokens.get(start + 1)?;
+    let mut alias_idx = start + 1;
+    if matches!(
+        tokens.get(alias_idx).map(|t| &t.kind),
+        Some(TokenKind::Keyword(k)) if k == "AS"
+    ) {
+        alias_idx += 1;
+    }
+    let alias_tok = tokens.get(alias_idx)?;
     let TokenKind::Ident(alias) = &alias_tok.kind else {
         return None;
     };
-    Some((simple_name(first_ident), alias.clone(), start + 2))
+    let entity_name = simple_name(first_ident);
+    let class_name = model
+        .entity_by_jpql_name(&entity_name)
+        .map(|e| e.name.clone())
+        .unwrap_or(entity_name);
+    Some((class_name, alias.clone(), alias_idx + 1))
 }
 
 // TODO: Could support deeper semantic understanding (function calls, nested

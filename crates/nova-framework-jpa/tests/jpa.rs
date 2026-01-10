@@ -139,6 +139,67 @@ fn jpql_completion_suggests_entities_and_fields() {
 }
 
 #[test]
+fn jpql_completion_handles_as_alias() {
+    let src = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+            private String name;
+        }
+    "#;
+    let analysis = analyze_java_sources(&[src]);
+
+    let query = "SELECT u FROM User AS u WHERE u.";
+    let items = jpql_completions(query, query.len(), &analysis.model);
+    assert!(items.iter().any(|i| i.label == "id"));
+    assert!(items.iter().any(|i| i.label == "name"));
+}
+
+#[test]
+fn jpql_completion_handles_join_alias() {
+    let user = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+        import jakarta.persistence.OneToMany;
+        import java.util.List;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+
+            @OneToMany(mappedBy = "user")
+            private List<Post> posts;
+        }
+    "#;
+
+    let post = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+        import jakarta.persistence.ManyToOne;
+
+        @Entity
+        public class Post {
+            @Id private Long id;
+
+            private String title;
+
+            @ManyToOne
+            private User user;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[user, post]);
+
+    let query = "SELECT p FROM User u JOIN u.posts AS p WHERE p.";
+    let items = jpql_completions(query, query.len(), &analysis.model);
+    assert!(items.iter().any(|i| i.label == "id"));
+    assert!(items.iter().any(|i| i.label == "title"));
+}
+
+#[test]
 fn jpql_diagnostics_are_mapped_to_java_source_spans() {
     let entity = r#"
         import jakarta.persistence.Entity;
@@ -196,6 +257,63 @@ fn jpql_completion_works_inside_java_source_strings() {
     let cursor = repo.find("u.").unwrap() + 2;
     let items = jpql_completions_in_java_source(repo, cursor, &analysis.model);
 
+    assert!(items.iter().any(|i| i.label == "id"));
+    assert!(items.iter().any(|i| i.label == "name"));
+}
+
+#[test]
+fn jpql_completion_supports_query_value_parameter() {
+    let entity = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity
+        public class User {
+            @Id private Long id;
+            private String name;
+        }
+    "#;
+
+    let repo = r#"
+        import org.springframework.data.jpa.repository.Query;
+
+        public interface UserRepo {
+            @Query(nativeQuery = false, value = "SELECT u FROM User u WHERE u.")
+            void load();
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[entity, repo]);
+    let cursor = repo.find("u.").unwrap() + 2;
+    let items = jpql_completions_in_java_source(repo, cursor, &analysis.model);
+
+    assert!(items.iter().any(|i| i.label == "id"));
+    assert!(items.iter().any(|i| i.label == "name"));
+}
+
+#[test]
+fn jpql_support_respects_entity_name_override() {
+    let entity = r#"
+        import jakarta.persistence.Entity;
+        import jakarta.persistence.Id;
+
+        @Entity(name = "Accounts")
+        public class User {
+            @Id private Long id;
+            private String name;
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[entity]);
+
+    // Entity completion should use the JPQL entity name.
+    let q1 = "SELECT a FROM ";
+    let items = jpql_completions(q1, q1.len(), &analysis.model);
+    assert!(items.iter().any(|i| i.label == "Accounts"));
+
+    // Field completion should still work via alias->class resolution.
+    let q2 = "SELECT a FROM Accounts a WHERE a.";
+    let items = jpql_completions(q2, q2.len(), &analysis.model);
     assert!(items.iter().any(|i| i.label == "id"));
     assert!(items.iter().any(|i| i.label == "name"));
 }
