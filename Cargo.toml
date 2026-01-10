@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/nova-core",
+    "crates/nova-project",
     "crates/nova-vfs",
     "crates/nova-hir",
     "crates/nova-jdk",

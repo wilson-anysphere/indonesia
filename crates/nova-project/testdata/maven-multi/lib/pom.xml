@@ -1,0 +1,19 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>maven-multi</artifactId>
+    <version>1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>lib</artifactId>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
+

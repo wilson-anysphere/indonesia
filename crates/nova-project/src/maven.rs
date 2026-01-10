@@ -1,0 +1,462 @@
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use regex::Regex;
+
+use crate::discover::{LoadOptions, ProjectError};
+use crate::{
+    BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaVersion, Module,
+    OutputDir, OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind,
+};
+
+pub(crate) fn load_maven_project(
+    root: &Path,
+    options: &LoadOptions,
+) -> Result<ProjectConfig, ProjectError> {
+    let root_pom_path = root.join("pom.xml");
+    let root_pom = parse_pom(&root_pom_path)?;
+
+    let module_names = if root_pom.modules.is_empty() {
+        vec![".".to_string()]
+    } else {
+        root_pom.modules.clone()
+    };
+
+    let mut modules = Vec::new();
+    let mut source_roots = Vec::new();
+    let mut output_dirs = Vec::new();
+    let mut dependencies = Vec::new();
+    let mut classpath = Vec::new();
+
+    let parent_effective = EffectivePom::from_raw(&root_pom, None);
+
+    let maven_repo = options
+        .maven_repo
+        .clone()
+        .or_else(default_maven_repo)
+        .unwrap_or_else(|| PathBuf::from(".m2/repository"));
+
+    for module_name in module_names {
+        let module_root = if module_name == "." {
+            root.to_path_buf()
+        } else {
+            root.join(&module_name)
+        };
+
+        let module_pom_path = module_root.join("pom.xml");
+        let module_pom = if module_pom_path.is_file() {
+            parse_pom(&module_pom_path)?
+        } else {
+            RawPom::default()
+        };
+
+        let effective = EffectivePom::from_raw(&module_pom, Some(&parent_effective));
+        let module_java = effective.java.unwrap_or(parent_effective.java.unwrap_or_default());
+
+        let module_display_name = if module_name == "." {
+            root_pom
+                .artifact_id
+                .clone()
+                .unwrap_or_else(|| "root".to_string())
+        } else {
+            module_name.clone()
+        };
+
+        modules.push(Module {
+            name: module_display_name,
+            root: module_root.clone(),
+        });
+
+        // Maven standard source layout.
+        push_source_root(&mut source_roots, &module_root, SourceRootKind::Main, "src/main/java");
+        push_source_root(&mut source_roots, &module_root, SourceRootKind::Test, "src/test/java");
+
+        // Expected output directories even if they don't exist yet (pre-build).
+        let main_output = module_root.join("target/classes");
+        let test_output = module_root.join("target/test-classes");
+        output_dirs.push(OutputDir {
+            kind: OutputDirKind::Main,
+            path: main_output.clone(),
+        });
+        output_dirs.push(OutputDir {
+            kind: OutputDirKind::Test,
+            path: test_output.clone(),
+        });
+
+        classpath.push(ClasspathEntry {
+            kind: ClasspathEntryKind::Directory,
+            path: main_output,
+        });
+        classpath.push(ClasspathEntry {
+            kind: ClasspathEntryKind::Directory,
+            path: test_output,
+        });
+
+        // Dependencies.
+        for dep in effective.dependencies {
+            if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
+                continue;
+            }
+            dependencies.push(dep.clone());
+
+            if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, &dep) {
+                classpath.push(ClasspathEntry {
+                    kind: ClasspathEntryKind::Jar,
+                    path: jar_path,
+                });
+            }
+        }
+
+        // Track the most restrictive Java level as workspace-level.
+        // (For now: pick the max so we don't under-report features used across modules.)
+        // We'll compute final java at end.
+        let _ = module_java;
+    }
+
+    // Compute workspace Java config:
+    // - prefer explicit root config
+    // - otherwise default (17)
+    let java = parent_effective.java.unwrap_or_default();
+
+    // Sort/dedup for stability.
+    sort_dedup_source_roots(&mut source_roots);
+    sort_dedup_output_dirs(&mut output_dirs);
+    sort_dedup_classpath(&mut classpath);
+    sort_dedup_dependencies(&mut dependencies);
+
+    Ok(ProjectConfig {
+        workspace_root: root.to_path_buf(),
+        build_system: BuildSystem::Maven,
+        java,
+        modules,
+        source_roots,
+        classpath,
+        output_dirs,
+        dependencies,
+    })
+}
+
+#[derive(Debug, Default, Clone)]
+struct RawPom {
+    group_id: Option<String>,
+    artifact_id: Option<String>,
+    version: Option<String>,
+    packaging: Option<String>,
+    properties: BTreeMap<String, String>,
+    java: Option<JavaConfig>,
+    dependencies: Vec<Dependency>,
+    dependency_management: Vec<Dependency>,
+    modules: Vec<String>,
+    parent: Option<PomParent>,
+}
+
+#[derive(Debug, Clone)]
+struct PomParent {
+    group_id: Option<String>,
+    version: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct EffectivePom {
+    group_id: Option<String>,
+    artifact_id: Option<String>,
+    version: Option<String>,
+    java: Option<JavaConfig>,
+    properties: BTreeMap<String, String>,
+    dependency_management: BTreeMap<(String, String), Dependency>,
+    dependencies: Vec<Dependency>,
+}
+
+impl EffectivePom {
+    fn from_raw(raw: &RawPom, parent: Option<&EffectivePom>) -> Self {
+        let group_id = raw
+            .group_id
+            .clone()
+            .or_else(|| raw.parent.as_ref().and_then(|p| p.group_id.clone()))
+            .or_else(|| parent.and_then(|p| p.group_id.clone()));
+        let artifact_id = raw
+            .artifact_id
+            .clone()
+            .or_else(|| parent.and_then(|p| p.artifact_id.clone()));
+        let version = raw
+            .version
+            .clone()
+            .or_else(|| raw.parent.as_ref().and_then(|p| p.version.clone()))
+            .or_else(|| parent.and_then(|p| p.version.clone()));
+
+        let mut properties = parent
+            .map(|p| p.properties.clone())
+            .unwrap_or_default();
+        properties.extend(raw.properties.clone());
+
+        if let Some(v) = group_id.as_ref() {
+            properties.insert("project.groupId".to_string(), v.clone());
+            properties.insert("pom.groupId".to_string(), v.clone());
+        }
+        if let Some(v) = artifact_id.as_ref() {
+            properties.insert("project.artifactId".to_string(), v.clone());
+            properties.insert("pom.artifactId".to_string(), v.clone());
+        }
+        if let Some(v) = version.as_ref() {
+            properties.insert("project.version".to_string(), v.clone());
+            properties.insert("pom.version".to_string(), v.clone());
+        }
+
+        // Resolve Java config after properties are merged.
+        let java = raw
+            .java
+            .or_else(|| parent.and_then(|p| p.java))
+            .or_else(|| java_from_properties(&properties));
+
+        let mut dependency_management = parent
+            .map(|p| p.dependency_management.clone())
+            .unwrap_or_default();
+        for dep in &raw.dependency_management {
+            let mut dep = dep.clone();
+            dep.version = dep
+                .version
+                .as_deref()
+                .map(|v| resolve_placeholders(v, &properties));
+            dependency_management.insert((dep.group_id.clone(), dep.artifact_id.clone()), dep);
+        }
+
+        let mut dependencies = Vec::new();
+        for dep in &raw.dependencies {
+            let mut dep = dep.clone();
+            dep.version = dep
+                .version
+                .as_deref()
+                .map(|v| resolve_placeholders(v, &properties))
+                .or_else(|| {
+                    dependency_management
+                        .get(&(dep.group_id.clone(), dep.artifact_id.clone()))
+                        .and_then(|managed| managed.version.clone())
+                });
+            dependencies.push(dep);
+        }
+
+        Self {
+            group_id,
+            artifact_id,
+            version,
+            java,
+            properties,
+            dependency_management,
+            dependencies,
+        }
+    }
+}
+
+fn parse_pom(path: &Path) -> Result<RawPom, ProjectError> {
+    let contents = std::fs::read_to_string(path).map_err(|source| ProjectError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let doc = roxmltree::Document::parse(&contents).map_err(|source| ProjectError::Xml {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let project = doc.root_element();
+
+    let mut pom = RawPom::default();
+    pom.group_id = child_text(&project, "groupId");
+    pom.artifact_id = child_text(&project, "artifactId");
+    pom.version = child_text(&project, "version");
+    pom.packaging = child_text(&project, "packaging");
+
+    if let Some(parent_node) = child_element(&project, "parent") {
+        pom.parent = Some(PomParent {
+            group_id: child_text(&parent_node, "groupId"),
+            version: child_text(&parent_node, "version"),
+        });
+    }
+
+    if let Some(props_node) = child_element(&project, "properties") {
+        for child in props_node.children().filter(|n| n.is_element()) {
+            let key = child.tag_name().name().to_string();
+            if let Some(value) = child.text().map(str::trim).filter(|t| !t.is_empty()) {
+                pom.properties.insert(key, value.to_string());
+            }
+        }
+    }
+
+    pom.java = java_from_properties(&pom.properties);
+
+    // dependencies
+    if let Some(deps_node) = child_element(&project, "dependencies") {
+        pom.dependencies = parse_dependencies(&deps_node);
+    }
+
+    if let Some(dep_mgmt) = child_element(&project, "dependencyManagement") {
+        if let Some(deps_node) = child_element(&dep_mgmt, "dependencies") {
+            pom.dependency_management = parse_dependencies(&deps_node);
+        }
+    }
+
+    // modules
+    if let Some(modules_node) = child_element(&project, "modules") {
+        pom.modules = modules_node
+            .children()
+            .filter(|n| n.is_element() && n.has_tag_name("module"))
+            .filter_map(|n| n.text())
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+    }
+
+    Ok(pom)
+}
+
+fn parse_dependencies(deps_node: &roxmltree::Node<'_, '_>) -> Vec<Dependency> {
+    deps_node
+        .children()
+        .filter(|n| n.is_element() && n.has_tag_name("dependency"))
+        .filter_map(|dep_node| {
+            let group_id = child_text(&dep_node, "groupId")?;
+            let artifact_id = child_text(&dep_node, "artifactId")?;
+            let version = child_text(&dep_node, "version");
+            let scope = child_text(&dep_node, "scope");
+            let classifier = child_text(&dep_node, "classifier");
+            let type_ = child_text(&dep_node, "type");
+
+            Some(Dependency {
+                group_id,
+                artifact_id,
+                version,
+                scope,
+                classifier,
+                type_,
+            })
+        })
+        .collect()
+}
+
+fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> {
+    let release = props
+        .get("maven.compiler.release")
+        .and_then(|v| JavaVersion::parse(v));
+    if let Some(v) = release {
+        return Some(JavaConfig {
+            source: v,
+            target: v,
+        });
+    }
+
+    let source = props
+        .get("maven.compiler.source")
+        .and_then(|v| JavaVersion::parse(v));
+    let target = props
+        .get("maven.compiler.target")
+        .and_then(|v| JavaVersion::parse(v));
+
+    match (source, target) {
+        (Some(source), Some(target)) => Some(JavaConfig { source, target }),
+        (Some(v), None) | (None, Some(v)) => Some(JavaConfig {
+            source: v,
+            target: v,
+        }),
+        (None, None) => None,
+    }
+}
+
+fn default_maven_repo() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+    Some(home.join(".m2/repository"))
+}
+
+fn maven_dependency_jar_path(maven_repo: &Path, dep: &Dependency) -> Option<PathBuf> {
+    let version = dep.version.as_deref()?;
+    if version.contains("${") {
+        return None;
+    }
+
+    let type_ = dep.type_.as_deref().unwrap_or("jar");
+    if type_ != "jar" {
+        return None;
+    }
+
+    let classifier = dep.classifier.as_deref();
+
+    let group_path = dep.group_id.replace('.', "/");
+    let base = maven_repo
+        .join(group_path)
+        .join(&dep.artifact_id)
+        .join(version);
+
+    let file_name = if let Some(classifier) = classifier {
+        format!("{}-{}-{}.jar", dep.artifact_id, version, classifier)
+    } else {
+        format!("{}-{}.jar", dep.artifact_id, version)
+    };
+
+    Some(base.join(file_name))
+}
+
+fn child_element<'a>(
+    node: &'a roxmltree::Node<'a, 'a>,
+    name: &str,
+) -> Option<roxmltree::Node<'a, 'a>> {
+    node.children()
+        .find(|n| n.is_element() && n.tag_name().name() == name)
+}
+
+fn child_text(node: &roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
+    child_element(node, name)
+        .and_then(|n| n.text())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+}
+
+fn resolve_placeholders(text: &str, props: &BTreeMap<String, String>) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"\$\{([^}]+)\}").expect("valid regex"));
+
+    re.replace_all(text, |caps: &regex::Captures<'_>| {
+        let key = &caps[1];
+        props.get(key).cloned().unwrap_or_else(|| caps[0].to_string())
+    })
+    .into_owned()
+}
+
+fn push_source_root(
+    out: &mut Vec<SourceRoot>,
+    module_root: &Path,
+    kind: SourceRootKind,
+    rel: &str,
+) {
+    let path = module_root.join(rel);
+    if path.is_dir() {
+        out.push(SourceRoot { kind, path });
+    }
+}
+
+fn sort_dedup_source_roots(roots: &mut Vec<SourceRoot>) {
+    roots.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
+    roots.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+}
+
+fn sort_dedup_output_dirs(dirs: &mut Vec<OutputDir>) {
+    dirs.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
+    dirs.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+}
+
+fn sort_dedup_classpath(entries: &mut Vec<ClasspathEntry>) {
+    entries.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
+    entries.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+}
+
+fn sort_dedup_dependencies(deps: &mut Vec<Dependency>) {
+    deps.sort_by(|a, b| {
+        a.group_id
+            .cmp(&b.group_id)
+            .then(a.artifact_id.cmp(&b.artifact_id))
+            .then(a.version.cmp(&b.version))
+    });
+    deps.dedup();
+}
