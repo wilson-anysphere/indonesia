@@ -34,6 +34,7 @@ package com.example;
 import java.util.List;
 import java.util.*;
 import static java.lang.Math.*;
+import static java.lang.Math.PI;
 
 @interface Marker {
     int value() default 1;
@@ -73,7 +74,7 @@ class Foo {
     let pkg = tree.package.as_ref().expect("package");
     assert_eq!(pkg.name, "com.example");
 
-    assert_eq!(tree.imports.len(), 3);
+    assert_eq!(tree.imports.len(), 4);
     assert!(tree
         .imports
         .iter()
@@ -86,6 +87,10 @@ class Foo {
         .imports
         .iter()
         .any(|import| import.is_static && import.is_star && import.path == "java.lang.Math"));
+    assert!(tree
+        .imports
+        .iter()
+        .any(|import| import.is_static && !import.is_star && import.path == "java.lang.Math.PI"));
 
     assert!(tree
         .items
