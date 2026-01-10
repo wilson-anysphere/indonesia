@@ -34,6 +34,8 @@ impl Workspace {
                 .map(|p| p.to_path_buf())
                 .context("file path has no parent directory")?
         };
+        let root = fs::canonicalize(&root)
+            .with_context(|| format!("failed to canonicalize {}", root.display()))?;
         Ok(Self { root })
     }
 
