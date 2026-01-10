@@ -22,8 +22,14 @@ pub use semantic_search::{SearchResult, SemanticSearch, TrigramSemanticSearch};
 
 #[cfg(test)]
 mod tests {
-    use futures::executor::block_on;
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
+    use futures::executor::block_on;
+    use futures::future::BoxFuture;
+    use futures::FutureExt;
+
+    use nova_core::ProjectDatabase;
     use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
 
     use super::*;
@@ -96,5 +102,110 @@ mod tests {
             items.clone(),
         ));
         assert_eq!(ranked, items);
+    }
+
+    #[test]
+    fn ranking_times_out_returns_fallback() {
+        struct SlowRanker;
+
+        impl CompletionRanker for SlowRanker {
+            fn rank_completions<'a>(
+                &'a self,
+                _ctx: &'a CompletionContext,
+                items: Vec<CompletionItem>,
+            ) -> BoxFuture<'a, Vec<CompletionItem>> {
+                async move {
+                    futures_timer::Delay::new(Duration::from_millis(50)).await;
+                    let mut items = items;
+                    items.reverse();
+                    items
+                }
+                .boxed()
+            }
+        }
+
+        let ranker = SlowRanker;
+        let ctx = CompletionContext::new("p", "");
+        let items = vec![
+            CompletionItem::new("print", CompletionItemKind::Method),
+            CompletionItem::new("println", CompletionItemKind::Method),
+        ];
+
+        let ranked = block_on(rank_completions_with_timeout(
+            &ranker,
+            &ctx,
+            items.clone(),
+            Duration::from_millis(1),
+        ));
+
+        assert_eq!(ranked, items);
+    }
+
+    #[test]
+    fn ranking_panics_return_fallback() {
+        struct PanicRanker;
+
+        impl CompletionRanker for PanicRanker {
+            fn rank_completions<'a>(
+                &'a self,
+                _ctx: &'a CompletionContext,
+                _items: Vec<CompletionItem>,
+            ) -> BoxFuture<'a, Vec<CompletionItem>> {
+                async move { panic!("boom") }.boxed()
+            }
+        }
+
+        let ranker = PanicRanker;
+        let ctx = CompletionContext::new("p", "");
+        let items = vec![
+            CompletionItem::new("print", CompletionItemKind::Method),
+            CompletionItem::new("println", CompletionItemKind::Method),
+        ];
+
+        let ranked = block_on(rank_completions_with_timeout(
+            &ranker,
+            &ctx,
+            items.clone(),
+            Duration::from_millis(20),
+        ));
+
+        assert_eq!(ranked, items);
+    }
+
+    #[test]
+    fn trigram_search_finds_best_match() {
+        #[derive(Debug)]
+        struct MemDb(Vec<(PathBuf, String)>);
+
+        impl ProjectDatabase for MemDb {
+            fn project_files(&self) -> Vec<PathBuf> {
+                self.0.iter().map(|(p, _)| p.clone()).collect()
+            }
+
+            fn file_text(&self, path: &Path) -> Option<String> {
+                self.0
+                    .iter()
+                    .find(|(p, _)| p == path)
+                    .map(|(_, text)| text.clone())
+            }
+        }
+
+        let db = MemDb(vec![
+            (
+                PathBuf::from("src/A.java"),
+                "class A { void helloWorld() {} }".into(),
+            ),
+            (
+                PathBuf::from("src/B.java"),
+                "class B { void goodbye() {} }".into(),
+            ),
+        ]);
+
+        let mut search = TrigramSemanticSearch::new();
+        search.index_project(&db);
+
+        let results = search.search("helloWorld");
+        assert!(!results.is_empty());
+        assert_eq!(results[0].path, PathBuf::from("src/A.java"));
     }
 }
