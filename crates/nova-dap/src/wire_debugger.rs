@@ -216,7 +216,7 @@ impl Debugger {
         let classes = self.jdwp.all_classes().await?;
         let mut class_candidates = Vec::new();
         for class_info in classes {
-            if self.source_file(class_info.type_id).await.ok().as_deref() == Some(&file) {
+            if self.source_file(class_info.type_id).await.ok().as_deref() == Some(file.as_str()) {
                 class_candidates.push(class_info);
             }
         }
