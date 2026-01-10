@@ -23,6 +23,7 @@ members = [
     "crates/nova-ide",
     "crates/nova-refactor",
     "crates/nova-dap",
+    "crates/nova-jdwp",
     "crates/nova-build",
     "crates/nova-lsp",
     "crates/nova-testing",

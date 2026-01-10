@@ -14,6 +14,7 @@ nova-core = { path = "../nova-core" }
 nova-db = { path = "../nova-db" }
 nova-ide = { path = "../nova-ide" }
 nova-project = { path = "../nova-project" }
+nova-jdwp = { path = "../nova-jdwp" }
 
 [lib]
 path = "src/lib.rs"
