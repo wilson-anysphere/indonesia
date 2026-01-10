@@ -1,5 +1,5 @@
 use nova_vfs::FileId;
-use nova_hir::hir::{Body, Expr, ExprId};
+use nova_hir::hir::{Body, Expr, ExprId, Stmt};
 use nova_hir::queries::{body, constructor_body, initializer_body, item_tree, HirDatabase};
 use std::sync::Arc;
 
@@ -283,4 +283,39 @@ interface I {
         }
     }
     assert!(call_paths.iter().any(|path| path == "System.out.println"));
+}
+
+#[test]
+fn lower_generic_method_with_throws_clause() {
+    let source = r#"
+class Foo {
+    <T> T id(T t) throws Exception {
+        return t;
+    }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    assert_eq!(tree.methods.len(), 1);
+    assert_eq!(tree.methods[0].name, "id");
+    assert!(tree.methods[0].body_range.is_some());
+
+    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let body = body(&db, method_id);
+    assert!(body.locals.is_empty());
+
+    let mut returns_t = false;
+    for (_, stmt) in body.stmts.iter() {
+        if let Stmt::Return { expr: Some(expr), .. } = stmt {
+            if let Expr::Name { name, .. } = &body.exprs[*expr] {
+                returns_t |= name == "t";
+            }
+        }
+    }
+    assert!(returns_t);
 }

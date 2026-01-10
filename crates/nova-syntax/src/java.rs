@@ -880,6 +880,11 @@ impl Parser {
         let start = self.peek()?.range.start;
         self.skip_modifiers_and_annotations();
 
+        // Generic method/constructor type parameters: `<T extends ...>`
+        if self.at_kind(TokenKind::Lt) {
+            self.skip_balanced(TokenKind::Lt, TokenKind::Gt);
+        }
+
         if self.at_keyword("static") && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LBrace) {
             self.bump();
             let body = self.parse_block();
@@ -920,6 +925,7 @@ impl Parser {
             let name = self.expect_ident();
             if name.text == enclosing_type {
                 let params = self.parse_param_list();
+                self.skip_throws_clause();
                 let body = self.parse_block();
                 let range = Span::new(start, body.range.end);
                 return Some(ast::MemberDecl::Constructor(ast::ConstructorDecl {
@@ -938,6 +944,7 @@ impl Parser {
 
         if self.at_kind(TokenKind::LParen) {
             let params = self.parse_param_list();
+            self.skip_throws_clause();
             if self.at_kind(TokenKind::Semi) {
                 let semi = self.bump().unwrap();
                 let range = Span::new(start, semi.range.end);
@@ -984,6 +991,16 @@ impl Parser {
             name_range: name.range,
             range,
         }))
+    }
+
+    fn skip_throws_clause(&mut self) {
+        if !self.at_keyword("throws") {
+            return;
+        }
+        self.bump();
+        while !self.is_eof() && !self.at_kind(TokenKind::LBrace) && !self.at_kind(TokenKind::Semi) {
+            self.bump();
+        }
     }
 
     fn parse_type_ref(&mut self) -> Option<ast::TypeRef> {
