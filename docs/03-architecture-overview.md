@@ -451,7 +451,10 @@ User triggers completion at position
 
 ```rust
 /// Core database trait that all queries use
-pub trait NovaDatabase: salsa::Database {
+///
+/// Note: in this repository Salsa is provided via `ra_ap_salsa` and commonly
+/// imported as `ra_salsa`.
+pub trait NovaDatabase: ra_salsa::Database {
     /// Access to file system abstraction
     fn files(&self) -> &dyn FileSystem;
     
@@ -469,9 +472,9 @@ Queries are organized into logical groups:
 
 ```rust
 /// Syntax-level queries
-#[salsa::query_group(SyntaxDatabaseStorage)]
+#[ra_salsa::query_group(SyntaxDatabaseStorage)]
 pub trait SyntaxDatabase {
-    #[salsa::input]
+    #[ra_salsa::input]
     fn file_content(&self, file: FileId) -> Arc<String>;
     
     fn parse(&self, file: FileId) -> Arc<ParseResult>;
@@ -479,7 +482,7 @@ pub trait SyntaxDatabase {
 }
 
 /// Semantic queries
-#[salsa::query_group(SemanticDatabaseStorage)]  
+#[ra_salsa::query_group(SemanticDatabaseStorage)]  
 pub trait SemanticDatabase: SyntaxDatabase {
     fn resolve_imports(&self, file: FileId) -> Arc<ImportMap>;
     fn file_symbols(&self, file: FileId) -> Arc<SymbolTable>;
@@ -487,7 +490,7 @@ pub trait SemanticDatabase: SyntaxDatabase {
 }
 
 /// Intelligence queries
-#[salsa::query_group(IntelligenceDatabaseStorage)]
+#[ra_salsa::query_group(IntelligenceDatabaseStorage)]
 pub trait IntelligenceDatabase: SemanticDatabase {
     fn completions_at(&self, file: FileId, pos: Position) -> Vec<CompletionItem>;
     fn diagnostics(&self, file: FileId) -> Vec<Diagnostic>;
