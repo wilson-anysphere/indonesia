@@ -143,6 +143,7 @@ pub fn parse(text: &str) -> ParseResult {
             }
             SyntaxKind::LineComment
         } else if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            let is_doc = i + 2 < bytes.len() && bytes[i + 2] == b'*';
             i += 2;
             let mut terminated = false;
             while i + 1 < bytes.len() {
@@ -161,7 +162,11 @@ pub fn parse(text: &str) -> ParseResult {
                     range: TextRange::new(start, i),
                 });
             }
-            SyntaxKind::BlockComment
+            if is_doc {
+                SyntaxKind::DocComment
+            } else {
+                SyntaxKind::BlockComment
+            }
         } else if is_ident_start(b) {
             i += 1;
             while i < bytes.len() && is_ident_continue(bytes[i]) {

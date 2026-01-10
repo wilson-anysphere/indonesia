@@ -485,6 +485,15 @@ impl<'a> Parser<'a> {
     fn parse_statement(&mut self) {
         self.eat_trivia();
         let checkpoint = self.builder.checkpoint();
+        if self.at_ident_like() && self.nth(1) == Some(SyntaxKind::Colon) {
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::LabeledStatement.into());
+            self.bump(); // label
+            self.expect(SyntaxKind::Colon, "expected `:` after label");
+            self.parse_statement();
+            self.builder.finish_node();
+            return;
+        }
         match self.current() {
             SyntaxKind::LBrace => self.parse_block(),
             SyntaxKind::IfKw => {
@@ -500,6 +509,39 @@ impl<'a> Parser<'a> {
                     self.parse_statement();
                 }
                 self.builder.finish_node();
+            }
+            SyntaxKind::SwitchKw => {
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::SwitchStatement.into());
+                self.bump();
+                self.expect(SyntaxKind::LParen, "expected `(` after switch");
+                self.parse_expression(0);
+                self.expect(SyntaxKind::RParen, "expected `)` after switch expression");
+
+                self.builder.start_node(SyntaxKind::SwitchBlock.into());
+                self.expect(SyntaxKind::LBrace, "expected `{` after switch");
+                while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+                    self.eat_trivia();
+                    if self.at(SyntaxKind::CaseKw) || self.at(SyntaxKind::DefaultKw) {
+                        let is_arrow = self.parse_switch_label();
+                        if is_arrow {
+                            // Switch rule body: either a block or a single statement/expression.
+                            self.eat_trivia();
+                            if self.at(SyntaxKind::LBrace) {
+                                self.parse_block();
+                            } else if self.at(SyntaxKind::Semicolon) {
+                                self.bump();
+                            } else {
+                                self.parse_statement();
+                            }
+                        }
+                    } else {
+                        self.parse_statement();
+                    }
+                }
+                self.expect(SyntaxKind::RBrace, "expected `}` after switch block");
+                self.builder.finish_node(); // SwitchBlock
+                self.builder.finish_node(); // SwitchStatement
             }
             SyntaxKind::ForKw => {
                 self.builder
@@ -535,7 +577,32 @@ impl<'a> Parser<'a> {
                 self.expect(SyntaxKind::Semicolon, "expected `;` after do-while");
                 self.builder.finish_node();
             }
+            SyntaxKind::SynchronizedKw => {
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::SynchronizedStatement.into());
+                self.bump();
+                self.expect(SyntaxKind::LParen, "expected `(` after synchronized");
+                self.parse_expression(0);
+                self.expect(
+                    SyntaxKind::RParen,
+                    "expected `)` after synchronized expression",
+                );
+                self.parse_block();
+                self.builder.finish_node();
+            }
             SyntaxKind::TryKw => self.parse_try_statement(checkpoint),
+            SyntaxKind::AssertKw => {
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::AssertStatement.into());
+                self.bump();
+                self.parse_expression(0);
+                if self.at(SyntaxKind::Colon) {
+                    self.bump();
+                    self.parse_expression(0);
+                }
+                self.expect(SyntaxKind::Semicolon, "expected `;` after assert");
+                self.builder.finish_node();
+            }
             SyntaxKind::ReturnKw => {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::ReturnStatement.into());
@@ -604,6 +671,37 @@ impl<'a> Parser<'a> {
                 }
             }
         }
+    }
+
+    fn parse_switch_label(&mut self) -> bool {
+        self.builder.start_node(SyntaxKind::SwitchLabel.into());
+        let is_case = self.at(SyntaxKind::CaseKw);
+        self.bump(); // case/default
+        if is_case {
+            if !self.at(SyntaxKind::Colon) && !self.at(SyntaxKind::Arrow) {
+                self.parse_expression(0);
+                while self.at(SyntaxKind::Comma) {
+                    self.bump();
+                    self.parse_expression(0);
+                }
+            } else {
+                self.error_here("expected case label expression");
+            }
+        }
+
+        let is_arrow = if self.at(SyntaxKind::Arrow) {
+            self.bump();
+            true
+        } else {
+            self.expect(
+                SyntaxKind::Colon,
+                "expected `:` or `->` after switch label",
+            );
+            false
+        };
+
+        self.builder.finish_node();
+        is_arrow
     }
 
     fn parse_try_statement(&mut self, checkpoint: rowan::Checkpoint) {

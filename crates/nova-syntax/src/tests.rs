@@ -81,3 +81,25 @@ fn parse_break_continue_do_while() {
     assert!(kinds.contains(&SyntaxKind::ContinueStatement));
     assert!(kinds.contains(&SyntaxKind::BreakStatement));
 }
+
+#[test]
+fn parse_switch_assert_synchronized_and_labels() {
+    let input = "class Foo { void m(int x) { label: synchronized (this) { assert true; } switch (x) { case 1: break; default: break; case 2 -> { return; } } } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::LabeledStatement));
+    assert!(kinds.contains(&SyntaxKind::SynchronizedStatement));
+    assert!(kinds.contains(&SyntaxKind::AssertStatement));
+    assert!(kinds.contains(&SyntaxKind::SwitchStatement));
+    assert!(kinds.contains(&SyntaxKind::SwitchBlock));
+    assert!(kinds.contains(&SyntaxKind::SwitchLabel));
+}
+
+#[test]
+fn cache_parse_detects_doc_comments() {
+    let parsed = crate::parse("/** doc */ class Foo {}");
+    let kinds: Vec<_> = parsed.tokens().map(|t| t.kind).collect();
+    assert!(kinds.contains(&SyntaxKind::DocComment));
+}
