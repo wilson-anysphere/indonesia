@@ -144,6 +144,8 @@ impl Document {
                 if line_end > line_start && bytes[line_end - 1] == b'\r' {
                     line_end -= 1;
                 }
+            } else if bytes[line_end - 1] == b'\r' {
+                line_end -= 1;
             }
         }
 
@@ -155,9 +157,24 @@ impl Document {
 
 fn compute_line_offsets(text: &str) -> Vec<usize> {
     let mut offsets = vec![0];
-    for (idx, byte) in text.bytes().enumerate() {
-        if byte == b'\n' {
-            offsets.push(idx + 1);
+    let bytes = text.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                offsets.push(i + 1);
+                i += 1;
+            }
+            b'\r' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    offsets.push(i + 2);
+                    i += 2;
+                } else {
+                    offsets.push(i + 1);
+                    i += 1;
+                }
+            }
+            _ => i += 1,
         }
     }
     offsets
@@ -242,6 +259,16 @@ mod tests {
         doc.apply_changes(2, &[ContentChange::replace(range, "X")])
             .unwrap();
         assert_eq!(doc.text(), "aX\r\nb");
+    }
+
+    #[test]
+    fn handles_cr_only_newlines() {
+        let mut doc = Document::new("a\rb", 1);
+        // Line 0 is just "a" (CR is treated as the line terminator).
+        let range = Range::new(Position::new(0, 2), Position::new(0, 2));
+        doc.apply_changes(2, &[ContentChange::replace(range, "X")])
+            .unwrap();
+        assert_eq!(doc.text(), "aX\rb");
     }
 
     #[test]
