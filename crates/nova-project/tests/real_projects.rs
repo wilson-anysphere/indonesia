@@ -141,8 +141,7 @@ fn parse_java_files(config: &ProjectConfig) -> Vec<ParsedJavaFile> {
     let mut parsed = Vec::with_capacity(java_files.len());
 
     for path in java_files {
-        let text = fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("failed to read {path:?}: {err}"));
+        let text = read_text(&path);
 
         let package = package_re
             .captures(&text)
@@ -239,8 +238,10 @@ fn java_keyword_completions() -> Vec<String> {
     .collect()
 }
 
-fn read_utf8(path: &Path) -> String {
-    fs::read_to_string(path).unwrap_or_else(|err| panic!("failed to read {path:?}: {err}"))
+fn read_text(path: &Path) -> String {
+    let bytes =
+        fs::read(path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 #[test]
@@ -263,7 +264,7 @@ fn spring_petclinic_smoke() {
     );
     assert!(app_file.exists(), "expected {app_file:?} to exist");
 
-    let text = read_utf8(&app_file);
+    let text = read_text(&app_file);
     let offset = completion_offset(&text, "SpringApplication.");
     let completions = completion_at(&text, offset);
     assert!(
@@ -293,7 +294,7 @@ fn guava_smoke() {
         "expected Optional file {optional_file:?} to exist"
     );
 
-    let text = read_utf8(&optional_file);
+    let text = read_text(&optional_file);
     let offset = pick_completion_marker(
         &text,
         &["Preconditions.", "Objects.", "MoreObjects.", "Strings."],
@@ -329,7 +330,7 @@ fn maven_resolver_smoke() {
     let file = repo_system.file.clone();
     assert!(file.exists(), "expected {file:?} to exist");
 
-    let text = read_utf8(&file);
+    let text = read_text(&file);
     let offset = pick_completion_marker(&text, &["Collections.", "Objects.", "System."]);
 
     let completions = completion_at(&text, offset);
