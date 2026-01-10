@@ -7,6 +7,7 @@ edition = "2021"
 nova-index = { path = "../nova-index" }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
+nova-project = { path = "../nova-project" }
 
 [dev-dependencies]
 pretty_assertions = "1.4"

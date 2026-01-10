@@ -17,8 +17,10 @@
 pub mod extensions;
 
 mod server;
+pub mod workspace_edit;
 
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
+pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
 
 use nova_dap::hot_swap::{BuildSystem, JdwpRedefiner};
 use thiserror::Error;

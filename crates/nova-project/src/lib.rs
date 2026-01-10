@@ -10,12 +10,17 @@ mod discover;
 mod gradle;
 mod maven;
 mod model;
+pub mod package;
 mod simple;
 
 pub use discover::{
     load_project, load_project_with_options, reload_project, LoadOptions, ProjectError,
 };
 pub use model::*;
+pub use package::{
+    class_to_file_name, infer_source_root, is_valid_package_name, package_to_path,
+    validate_package_name, PackageNameError,
+};
 
 use serde::{Deserialize, Serialize};
 

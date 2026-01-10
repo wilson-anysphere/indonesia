@@ -1,11 +1,18 @@
 //! Refactoring entrypoints for Nova.
 //!
-//! The implementation here is intentionally minimal: it focuses on "Safe Delete"
-//! for method declarations and the usage-analysis/preview flow.
+//! The refactoring engine is still in an early phase. Today this crate exposes:
+//! - Safe Delete for method declarations (`safe_delete`)
+//! - Move refactorings for Java packages and top-level classes (`move_java`)
 
+mod move_java;
 mod safe_delete;
 
+pub use move_java::{
+    move_class, move_package, FileEdit, FileMove, MoveClassParams, MovePackageParams,
+    RefactorError, RefactoringEdit,
+};
 pub use safe_delete::{
     apply_edits, safe_delete, SafeDeleteError, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteReport,
     SafeDeleteTarget, TextEdit, Usage, UsageKind,
 };
+
