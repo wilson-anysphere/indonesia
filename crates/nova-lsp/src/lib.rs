@@ -27,6 +27,8 @@
 //!   - `nova/build/diagnostics`
 
 pub mod decompile;
+pub mod code_action;
+mod ai_codegen;
 pub mod extensions;
 pub mod extract_method;
 pub mod refactor;
@@ -38,6 +40,7 @@ mod distributed;
 mod server;
 pub mod workspace_edit;
 
+pub use code_action::{AiCodeAction, AiCodeActionExecutor, CodeActionError, CodeActionOutcome};
 pub use cancellation::RequestCancellation;
 pub use diagnostics::DiagnosticsDebouncer;
 pub use distributed::NovaLspFrontend;

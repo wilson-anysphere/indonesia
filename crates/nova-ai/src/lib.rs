@@ -19,9 +19,14 @@ mod types;
 mod util;
 
 pub mod actions;
+pub mod cancel;
 pub mod cloud;
 pub mod context;
+pub mod patch;
 pub mod privacy;
+pub mod provider;
+pub mod safety;
+pub mod workspace;
 
 pub use actions::AiService;
 pub use anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
@@ -40,6 +45,12 @@ pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedSymbol};
 pub use privacy::{PrivacyMode, RedactionConfig};
 pub use semantic_search::{SearchResult, SemanticSearch, TrigramSemanticSearch};
 pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
+
+pub use cancel::CancellationToken;
+pub use patch::{parse_structured_patch, Patch, PatchParseError, TextEdit};
+pub use provider::{AiProvider, AiProviderError};
+pub use safety::{PatchSafetyConfig, SafetyError};
+pub use workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
 
 #[cfg(test)]
 mod tests {

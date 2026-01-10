@@ -7,10 +7,12 @@
 
 pub mod ai;
 pub mod analysis;
-pub mod decompile;
-pub mod semantics;
 pub mod code_action;
+pub mod decompile;
+pub mod diagnostics;
 pub mod extensions;
+pub mod format;
+pub mod semantics;
 
 mod completion;
 pub mod code_intelligence;
@@ -26,6 +28,8 @@ pub use ai::{
 pub use completion::filter_and_rank_completions;
 pub use nova_core::CompletionItem;
 pub use decompile::{decompiled_definition_location, DefinitionLocation};
+pub use diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
+pub use format::Formatter;
 pub use project::{
     DebugConfiguration, DebugConfigurationKind, DebugConfigurationRequest, JavaClassInfo, Project,
     ProjectDiscoveryError,

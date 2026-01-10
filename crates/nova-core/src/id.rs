@@ -11,6 +11,11 @@ macro_rules! define_id {
 
         impl $name {
             #[inline]
+            pub const fn new(raw: u32) -> Self {
+                Self::from_raw(raw)
+            }
+
+            #[inline]
             pub const fn from_raw(raw: u32) -> Self {
                 Self(raw)
             }
