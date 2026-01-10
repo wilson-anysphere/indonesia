@@ -77,6 +77,7 @@ These tests are ignored by default because they scan large projects.
 
 ```bash
 cargo test -p nova-project --test real_projects -- --include-ignored
+cargo test -p nova-cli --test real_projects -- --include-ignored
 ```
 
 ### (Optional) Run `javac`/build validation
