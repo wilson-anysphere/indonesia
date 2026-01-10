@@ -9,21 +9,7 @@ use lsp_types::{
 use nova_refactor::RefactoringEdit;
 
 pub fn client_supports_file_operations(capabilities: &ClientCapabilities) -> bool {
-    let Some(workspace) = &capabilities.workspace else {
-        return false;
-    };
-    let Some(edit) = &workspace.workspace_edit else {
-        return false;
-    };
-
-    let supports_document_changes = edit.document_changes.unwrap_or(false);
-    let supports_resource_ops = edit
-        .resource_operations
-        .as_ref()
-        .map(|ops| !ops.is_empty())
-        .unwrap_or(false);
-
-    supports_document_changes && supports_resource_ops
+    can_rename(capabilities) || (can_create(capabilities) && can_delete(capabilities))
 }
 
 fn can_rename(capabilities: &ClientCapabilities) -> bool {
