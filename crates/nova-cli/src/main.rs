@@ -58,6 +58,9 @@ struct SymbolsArgs {
     /// Workspace root (defaults to current directory)
     #[arg(long, default_value = ".")]
     path: PathBuf,
+    /// Maximum number of symbols to return
+    #[arg(long, default_value_t = 200)]
+    limit: usize,
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
@@ -136,7 +139,11 @@ fn run(cli: Cli) -> Result<i32> {
         }
         Command::Symbols(args) => {
             let ws = Workspace::open(&args.path)?;
-            let results = ws.workspace_symbols(&args.query)?;
+            let results = ws
+                .workspace_symbols(&args.query)?
+                .into_iter()
+                .take(args.limit)
+                .collect::<Vec<_>>();
             print_output(&results, args.json)?;
             Ok(0)
         }

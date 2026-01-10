@@ -39,6 +39,7 @@ impl Workspace {
         };
         let root = fs::canonicalize(&root)
             .with_context(|| format!("failed to canonicalize {}", root.display()))?;
+        let root = discover_workspace_root(&root);
         Ok(Self { root })
     }
 
@@ -803,6 +804,33 @@ fn line_col_at(text: &str, byte_idx: usize) -> (usize, usize) {
     (line, col)
 }
 
+fn discover_workspace_root(start: &Path) -> PathBuf {
+    let mut current = Some(start);
+    while let Some(dir) = current {
+        if dir.join("pom.xml").is_file() {
+            return dir.to_path_buf();
+        }
+
+        let gradle_markers = [
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        ];
+        if gradle_markers.iter().any(|m| dir.join(m).is_file()) {
+            return dir.to_path_buf();
+        }
+
+        if dir.join("src").is_dir() {
+            return dir.to_path_buf();
+        }
+
+        current = dir.parent();
+    }
+
+    start.to_path_buf()
+}
+
 fn as_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -839,5 +867,6 @@ fn current_rss_bytes() -> Option<u64> {
 pub mod live;
 
 pub use live::{
-    WatcherHandle, Workspace as LiveWorkspace, WorkspaceClient, WorkspaceConfig as LiveWorkspaceConfig,
+    WatcherHandle, Workspace as LiveWorkspace, WorkspaceClient,
+    WorkspaceConfig as LiveWorkspaceConfig,
 };
