@@ -4,13 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bincode = "1"
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-project = { path = "../nova-project" }
+nova-storage = { path = "../nova-storage" }
+rkyv = { version = "0.7", features = ["validation"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 
 [dev-dependencies]
 tempfile = "3"
+criterion = "0.5"
+
+[[bench]]
+name = "mmap_storage"
+harness = false

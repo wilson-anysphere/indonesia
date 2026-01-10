@@ -6,6 +6,7 @@ members = [
     "crates/nova-fuzzy",
     "crates/nova-cache",
     "crates/nova-index",
+    "crates/nova-storage",
     "crates/nova-framework",
     "crates/nova-framework-dagger",
     "crates/nova-framework-jpa",

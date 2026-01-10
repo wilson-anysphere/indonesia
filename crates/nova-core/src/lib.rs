@@ -17,6 +17,38 @@ use std::path::{Path, PathBuf};
 /// Used for on-disk cache compatibility checks (indexes, caches, metadata).
 pub const NOVA_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Endianness identifier used by persisted artifacts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Endian {
+    Little = 0,
+    Big = 1,
+}
+
+/// Returns the target endianness of the current build.
+#[inline]
+pub const fn target_endian() -> Endian {
+    if cfg!(target_endian = "little") {
+        Endian::Little
+    } else if cfg!(target_endian = "big") {
+        Endian::Big
+    } else {
+        Endian::Little
+    }
+}
+
+/// Returns the target pointer width (32/64) of the current build.
+#[inline]
+pub const fn target_pointer_width() -> u8 {
+    if cfg!(target_pointer_width = "64") {
+        64
+    } else if cfg!(target_pointer_width = "32") {
+        32
+    } else {
+        0
+    }
+}
+
 pub use diagnostic::{Location, RelatedDiagnostic, Severity};
 pub use edit::{apply_text_edits, normalize_text_edits, EditError, TextEdit, WorkspaceEdit};
 pub use id::*;

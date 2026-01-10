@@ -1,6 +1,5 @@
-use crate::indexes::ProjectIndexes;
+use crate::indexes::{AnnotationIndex, InheritanceIndex, ProjectIndexes, ReferenceIndex, SymbolIndex};
 use nova_cache::{CacheDir, CacheMetadata, ProjectSnapshot};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 pub const INDEX_SCHEMA_VERSION: u32 = 1;
@@ -11,15 +10,24 @@ pub enum IndexPersistenceError {
     Cache(#[from] nova_cache::CacheError),
 
     #[error(transparent)]
-    Io(#[from] std::io::Error),
+    Storage(#[from] nova_storage::StorageError),
 
     #[error(transparent)]
-    Bincode(#[from] bincode::Error),
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Clone, Debug)]
 pub struct LoadedIndexes {
     pub indexes: ProjectIndexes,
+    pub invalidated_files: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct LoadedIndexArchives {
+    pub symbols: nova_storage::PersistedArchive<SymbolIndex>,
+    pub references: nova_storage::PersistedArchive<ReferenceIndex>,
+    pub inheritance: nova_storage::PersistedArchive<InheritanceIndex>,
+    pub annotations: nova_storage::PersistedArchive<AnnotationIndex>,
     pub invalidated_files: Vec<String>,
 }
 
@@ -31,10 +39,26 @@ pub fn save_indexes(
     let indexes_dir = cache_dir.indexes_dir();
     std::fs::create_dir_all(&indexes_dir)?;
 
-    write_index_file(indexes_dir.join("symbols.idx"), &indexes.symbols)?;
-    write_index_file(indexes_dir.join("references.idx"), &indexes.references)?;
-    write_index_file(indexes_dir.join("inheritance.idx"), &indexes.inheritance)?;
-    write_index_file(indexes_dir.join("annotations.idx"), &indexes.annotations)?;
+    write_index_file(
+        indexes_dir.join("symbols.idx"),
+        nova_storage::ArtifactKind::SymbolIndex,
+        &indexes.symbols,
+    )?;
+    write_index_file(
+        indexes_dir.join("references.idx"),
+        nova_storage::ArtifactKind::ReferenceIndex,
+        &indexes.references,
+    )?;
+    write_index_file(
+        indexes_dir.join("inheritance.idx"),
+        nova_storage::ArtifactKind::InheritanceIndex,
+        &indexes.inheritance,
+    )?;
+    write_index_file(
+        indexes_dir.join("annotations.idx"),
+        nova_storage::ArtifactKind::AnnotationIndex,
+        &indexes.annotations,
+    )?;
 
     let metadata_path = cache_dir.metadata_path();
     let mut metadata = match CacheMetadata::load(&metadata_path) {
@@ -48,10 +72,15 @@ pub fn save_indexes(
     Ok(())
 }
 
-pub fn load_indexes(
+/// Loads indexes as validated `rkyv` archives backed by an mmap when possible.
+///
+/// Callers that require an owned, mutable `ProjectIndexes` should use
+/// [`load_indexes`]. This function is intended for warm-start queries where the
+/// archived representation can be queried without allocating an owned copy.
+pub fn load_index_archives(
     cache_dir: &CacheDir,
     current_snapshot: &ProjectSnapshot,
-) -> Result<Option<LoadedIndexes>, IndexPersistenceError> {
+) -> Result<Option<LoadedIndexArchives>, IndexPersistenceError> {
     let metadata_path = cache_dir.metadata_path();
     if !metadata_path.exists() {
         return Ok(None);
@@ -68,17 +97,70 @@ pub fn load_indexes(
     }
 
     let indexes_dir = cache_dir.indexes_dir();
-    let Some(symbols) = read_index_file(indexes_dir.join("symbols.idx"))? else {
+
+    let symbols = match open_index_file::<SymbolIndex>(
+        indexes_dir.join("symbols.idx"),
+        nova_storage::ArtifactKind::SymbolIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let references = match open_index_file::<ReferenceIndex>(
+        indexes_dir.join("references.idx"),
+        nova_storage::ArtifactKind::ReferenceIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let inheritance = match open_index_file::<InheritanceIndex>(
+        indexes_dir.join("inheritance.idx"),
+        nova_storage::ArtifactKind::InheritanceIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let annotations = match open_index_file::<AnnotationIndex>(
+        indexes_dir.join("annotations.idx"),
+        nova_storage::ArtifactKind::AnnotationIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+
+    let invalidated = metadata.diff_files(current_snapshot);
+
+    Ok(Some(LoadedIndexArchives {
+        symbols,
+        references,
+        inheritance,
+        annotations,
+        invalidated_files: invalidated,
+    }))
+}
+
+pub fn load_indexes(
+    cache_dir: &CacheDir,
+    current_snapshot: &ProjectSnapshot,
+) -> Result<Option<LoadedIndexes>, IndexPersistenceError> {
+    let Some(archives) = load_index_archives(cache_dir, current_snapshot)? else {
         return Ok(None);
     };
-    let Some(references) = read_index_file(indexes_dir.join("references.idx"))? else {
-        return Ok(None);
+
+    let symbols = match archives.symbols.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
     };
-    let Some(inheritance) = read_index_file(indexes_dir.join("inheritance.idx"))? else {
-        return Ok(None);
+    let references = match archives.references.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
     };
-    let Some(annotations) = read_index_file(indexes_dir.join("annotations.idx"))? else {
-        return Ok(None);
+    let inheritance = match archives.inheritance.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let annotations = match archives.annotations.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
     };
 
     let mut indexes = ProjectIndexes {
@@ -88,58 +170,41 @@ pub fn load_indexes(
         annotations,
     };
 
-    let invalidated = metadata.diff_files(current_snapshot);
-
-    for file in &invalidated {
+    for file in &archives.invalidated_files {
         indexes.invalidate_file(file);
     }
 
     Ok(Some(LoadedIndexes {
         indexes,
-        invalidated_files: invalidated,
+        invalidated_files: archives.invalidated_files,
     }))
 }
 
-#[derive(Serialize, Deserialize)]
-struct PersistedIndex<T> {
-    schema_version: u32,
-    nova_version: String,
-    payload: T,
-}
-
-fn write_index_file<T: Serialize>(path: PathBuf, payload: &T) -> Result<(), IndexPersistenceError> {
-    let persisted = PersistedIndex {
-        schema_version: INDEX_SCHEMA_VERSION,
-        nova_version: nova_core::NOVA_VERSION.to_string(),
+fn write_index_file<T>(
+    path: PathBuf,
+    kind: nova_storage::ArtifactKind,
+    payload: &T,
+) -> Result<(), IndexPersistenceError>
+where
+    T: rkyv::Archive + rkyv::Serialize<rkyv::ser::serializers::AllocSerializer<256>>,
+{
+    nova_storage::write_archive_atomic(
+        &path,
+        kind,
+        INDEX_SCHEMA_VERSION,
         payload,
-    };
-
-    let bytes = bincode::serialize(&persisted)?;
-    nova_cache::atomic_write(&path, &bytes)?;
+        nova_storage::Compression::None,
+    )?;
     Ok(())
 }
 
-fn read_index_file<T: for<'de> Deserialize<'de>>(
-    path: PathBuf,
-) -> Result<Option<T>, IndexPersistenceError> {
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(_) => return Ok(None),
-    };
-    let persisted: PersistedIndex<T> = match bincode::deserialize(&bytes) {
+fn open_index_file<T>(path: PathBuf, kind: nova_storage::ArtifactKind) -> Option<nova_storage::PersistedArchive<T>>
+where
+    T: rkyv::Archive,
+    rkyv::Archived<T>: nova_storage::CheckableArchived,
+{
+    match nova_storage::PersistedArchive::<T>::open_optional(&path, kind, INDEX_SCHEMA_VERSION) {
         Ok(value) => value,
-        Err(_) => return Ok(None),
-    };
-    if persisted.schema_version != INDEX_SCHEMA_VERSION {
-        return Ok(None);
+        Err(_) => None,
     }
-    if persisted.nova_version != nova_core::NOVA_VERSION {
-        return Ok(None);
-    }
-
-    Ok(Some(persisted.payload))
 }
