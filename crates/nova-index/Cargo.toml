@@ -8,8 +8,7 @@ bincode = "1"
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 serde = { version = "1", features = ["derive"] }
-thiserror = "2"
+thiserror = "1"
 
 [dev-dependencies]
 tempfile = "3"
-
