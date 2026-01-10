@@ -1,5 +1,6 @@
 mod persist;
 
+use std::borrow::Cow;
 use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap};
 use std::ffi::OsStr;
 use std::hash::{Hash, Hasher};
@@ -264,11 +265,12 @@ impl ClasspathIndex {
     }
 
     pub fn class_names_with_prefix(&self, prefix: &str) -> Vec<String> {
+        let prefix = normalize_binary_prefix(prefix);
         let names = &self.binary_names_sorted;
-        let start = names.partition_point(|name| name.as_str() < prefix);
+        let start = names.partition_point(|name| name.as_str() < prefix.as_ref());
         let mut out = Vec::new();
         for name in &names[start..] {
-            if name.starts_with(prefix) {
+            if name.starts_with(prefix.as_ref()) {
                 out.push(name.clone());
             } else {
                 break;
@@ -278,17 +280,26 @@ impl ClasspathIndex {
     }
 
     pub fn packages_with_prefix(&self, prefix: &str) -> Vec<String> {
+        let prefix = normalize_binary_prefix(prefix);
         let pkgs = &self.packages_sorted;
-        let start = pkgs.partition_point(|pkg| pkg.as_str() < prefix);
+        let start = pkgs.partition_point(|pkg| pkg.as_str() < prefix.as_ref());
         let mut out = Vec::new();
         for pkg in &pkgs[start..] {
-            if pkg.starts_with(prefix) {
+            if pkg.starts_with(prefix.as_ref()) {
                 out.push(pkg.clone());
             } else {
                 break;
             }
         }
         out
+    }
+}
+
+fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
+    if prefix.contains('/') {
+        Cow::Owned(prefix.replace('/', "."))
+    } else {
+        Cow::Borrowed(prefix)
     }
 }
 
@@ -541,5 +552,14 @@ mod tests {
         assert!(index.lookup_binary("java.lang.String").is_some());
         assert!(index.lookup_internal("java/lang/String").is_some());
         assert!(index.packages_with_prefix("java").contains(&"java.lang".to_string()));
+    }
+
+    #[test]
+    fn prefix_search_accepts_internal_separators() {
+        let index = ClasspathIndex::build(&[ClasspathEntry::Jar(test_jar())], None).unwrap();
+        let classes = index.class_names_with_prefix("com/example/dep/F");
+        assert!(classes.contains(&"com.example.dep.Foo".to_string()));
+        let packages = index.packages_with_prefix("com/example");
+        assert!(packages.contains(&"com.example.dep".to_string()));
     }
 }
