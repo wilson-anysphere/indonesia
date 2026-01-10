@@ -3,9 +3,11 @@ use crate::schema::{
 };
 use crate::util::rel_path_string;
 use crate::{NovaTestingError, Result, SCHEMA_VERSION};
+use nova_project::SourceRootKind;
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tree_sitter::{Node, Parser};
 use walkdir::WalkDir;
 
 const SKIP_DIRS: &[&str] = &[".git", "target", "build", "out", "node_modules"];
@@ -17,18 +19,52 @@ pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse>
         ));
     }
 
-    let project_root = PathBuf::from(&req.project_root);
-    let project_root = project_root.canonicalize().unwrap_or(project_root);
+    let requested_root = PathBuf::from(&req.project_root);
+    let requested_root = requested_root.canonicalize().unwrap_or(requested_root);
+
+    // Use nova-project to find source roots. This keeps discovery scoped to test sources
+    // in Maven/Gradle projects and provides a reasonable fallback for simple projects.
+    let project = nova_project::load_project(&requested_root)
+        .map_err(|err| NovaTestingError::InvalidRequest(err.to_string()))?;
+    let project_root = project.workspace_root;
+
+    let mut roots: Vec<PathBuf> = project
+        .source_roots
+        .iter()
+        .filter(|root| root.kind == SourceRootKind::Test)
+        .map(|root| root.path.clone())
+        .collect();
+
+    if roots.is_empty() {
+        roots = project
+            .source_roots
+            .iter()
+            .map(|root| root.path.clone())
+            .collect();
+    }
 
     let mut tests = Vec::new();
-    for entry in WalkDir::new(&project_root)
+    for root in roots {
+        tests.extend(discover_tests_in_root(&project_root, &root)?);
+    }
+
+    tests.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(TestDiscoverResponse {
+        schema_version: SCHEMA_VERSION,
+        tests,
+    })
+}
+
+fn discover_tests_in_root(project_root: &Path, root: &Path) -> Result<Vec<TestItem>> {
+    let mut tests = Vec::new();
+
+    for entry in WalkDir::new(root)
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| {
             if entry.depth() == 0 {
                 return true;
             }
-
             let name = entry.file_name().to_string_lossy();
             !SKIP_DIRS.iter().any(|skip| skip == &name.as_ref())
         })
@@ -43,60 +79,148 @@ pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse>
             continue;
         }
 
-        if let Some(item) = discover_tests_in_file(&project_root, path)? {
-            tests.push(item);
-        }
+        tests.extend(discover_tests_in_file(project_root, path)?);
     }
 
-    tests.sort_by(|a, b| a.id.cmp(&b.id));
-
-    Ok(TestDiscoverResponse {
-        schema_version: SCHEMA_VERSION,
-        tests,
-    })
+    Ok(tests)
 }
 
-fn discover_tests_in_file(project_root: &Path, file_path: &Path) -> Result<Option<TestItem>> {
+fn discover_tests_in_file(project_root: &Path, file_path: &Path) -> Result<Vec<TestItem>> {
     let content = fs::read_to_string(file_path)?;
     let package = parse_package(&content)?;
     let imports = parse_imports(&content)?;
-    let class_info = parse_first_class(&content)?;
-    let Some((class_name, class_line)) = class_info else {
+    let relative_path = rel_path_string(project_root, file_path);
+
+    let tree = parse_java(&content)?;
+    let root = tree.root_node();
+
+    let mut out = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() != "class_declaration" {
+            continue;
+        }
+
+        if let Some(item) = parse_test_class(
+            child,
+            &content,
+            package.as_deref(),
+            &imports,
+            &relative_path,
+        )? {
+            out.push(item);
+        }
+    }
+
+    Ok(out)
+}
+
+fn parse_test_class(
+    node: Node<'_>,
+    source: &str,
+    package: Option<&str>,
+    imports: &[String],
+    relative_path: &str,
+) -> Result<Option<TestItem>> {
+    let name_node = node
+        .child_by_field_name("name")
+        .or_else(|| find_named_child(node, "identifier"));
+    let Some(name_node) = name_node else {
         return Ok(None);
     };
+    let class_name = node_text(source, name_node).to_string();
 
-    let class_framework = infer_framework_from_imports(&imports);
-    let class_id = match &package {
+    let class_id = match package {
         Some(pkg) => format!("{pkg}.{class_name}"),
         None => class_name.clone(),
     };
 
-    let relative_path = rel_path_string(project_root, file_path);
+    let class_framework = infer_framework_from_imports(imports);
+    let class_pos = ts_point_to_position(name_node.start_position());
 
-    let methods = discover_test_methods(&content, &imports, &class_id, &relative_path)?;
+    let body = node
+        .child_by_field_name("body")
+        .or_else(|| find_named_child(node, "class_body"));
+    let methods = body
+        .map(|body| discover_test_methods(body, source, imports, &class_id, relative_path))
+        .transpose()?
+        .unwrap_or_default();
 
-    if methods.is_empty() && !looks_like_test_class(&class_name, &relative_path) {
+    if methods.is_empty() && !looks_like_test_class(&class_name, relative_path) {
         return Ok(None);
     }
+
+    let class_framework = methods
+        .iter()
+        .map(|m| m.framework)
+        .find(|f| *f != TestFramework::Unknown)
+        .unwrap_or(class_framework);
 
     Ok(Some(TestItem {
         id: class_id,
         label: class_name,
         kind: TestKind::Class,
         framework: class_framework,
-        path: relative_path,
+        path: relative_path.to_string(),
         range: Range {
-            start: Position {
-                line: class_line,
-                character: 0,
-            },
-            end: Position {
-                line: class_line,
-                character: 0,
-            },
+            start: class_pos,
+            end: class_pos,
         },
         children: methods,
     }))
+}
+
+fn discover_test_methods(
+    class_body: Node<'_>,
+    source: &str,
+    imports: &[String],
+    class_id: &str,
+    relative_path: &str,
+) -> Result<Vec<TestItem>> {
+    let mut out = Vec::new();
+    let mut cursor = class_body.walk();
+    for child in class_body.named_children(&mut cursor) {
+        if child.kind() != "method_declaration" {
+            continue;
+        }
+
+        let modifiers = child
+            .child_by_field_name("modifiers")
+            .or_else(|| find_named_child(child, "modifiers"));
+        let annotations = modifiers
+            .map(|m| collect_annotations(m, source))
+            .unwrap_or_default();
+        let Some(framework) = classify_test_annotations(imports, &annotations) else {
+            continue;
+        };
+
+        let name_node = child
+            .child_by_field_name("name")
+            .or_else(|| find_named_child(child, "identifier"));
+        let Some(name_node) = name_node else {
+            continue;
+        };
+
+        let method_name = node_text(source, name_node).to_string();
+        let id = format!("{class_id}#{method_name}");
+        let pos = ts_point_to_position(name_node.start_position());
+
+        out.push(TestItem {
+            id,
+            label: method_name,
+            kind: TestKind::Test,
+            framework,
+            path: relative_path.to_string(),
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            children: Vec::new(),
+        });
+    }
+
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
 }
 
 fn parse_package(content: &str) -> Result<Option<String>> {
@@ -114,20 +238,6 @@ fn parse_imports(content: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-fn parse_first_class(content: &str) -> Result<Option<(String, u32)>> {
-    // Best-effort, matches `class Foo` with optional modifiers.
-    let re = Regex::new(
-        r"(?m)^\s*(?:public|protected|private|abstract|final|static|\s)*\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\b",
-    )?;
-    if let Some(caps) = re.captures(content) {
-        let name = caps.get(1).unwrap().as_str().to_string();
-        let m = caps.get(0).unwrap();
-        let line = content[..m.start()].matches('\n').count() as u32;
-        return Ok(Some((name, line)));
-    }
-    Ok(None)
-}
-
 fn infer_framework_from_imports(imports: &[String]) -> TestFramework {
     if imports.iter().any(|i| i.starts_with("org.junit.jupiter.")) {
         return TestFramework::Junit5;
@@ -141,161 +251,36 @@ fn infer_framework_from_imports(imports: &[String]) -> TestFramework {
     TestFramework::Unknown
 }
 
-fn discover_test_methods(
-    content: &str,
-    imports: &[String],
-    class_id: &str,
-    relative_path: &str,
-) -> Result<Vec<TestItem>> {
-    let mut methods = Vec::new();
-    let mut pending_annotations: Vec<(String, u32)> = Vec::new();
-
-    let mut in_block_comment = false;
-
-    for (idx, original_line) in content.lines().enumerate() {
-        let line_no = idx as u32;
-        let line = strip_comments_line(original_line, &mut in_block_comment);
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if trimmed.starts_with('@') {
-            if let Some(name) = parse_annotation_name(trimmed) {
-                pending_annotations.push((name, line_no));
-            }
-            continue;
-        }
-
-        if pending_annotations.is_empty() {
-            continue;
-        }
-
-        let Some((framework, is_test)) = classify_test_annotations(imports, &pending_annotations)
-        else {
-            // Annotations belong to some other declaration.
-            pending_annotations.clear();
-            continue;
-        };
-        if !is_test {
-            pending_annotations.clear();
-            continue;
-        }
-
-        if let Some(method_name) = extract_method_name(trimmed) {
-            let id = format!("{class_id}#{method_name}");
-            methods.push(TestItem {
-                id,
-                label: method_name,
-                kind: TestKind::Test,
-                framework,
-                path: relative_path.to_string(),
-                range: Range {
-                    start: Position {
-                        line: line_no,
-                        character: 0,
-                    },
-                    end: Position {
-                        line: line_no,
-                        character: 0,
-                    },
-                },
-                children: Vec::new(),
-            });
-            pending_annotations.clear();
-        }
-    }
-
-    methods.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(methods)
-}
-
-fn strip_comments_line(mut line: &str, in_block_comment: &mut bool) -> String {
-    let mut out = String::new();
-    while !line.is_empty() {
-        if *in_block_comment {
-            if let Some(end) = line.find("*/") {
-                line = &line[end + 2..];
-                *in_block_comment = false;
-                continue;
-            }
-            return out;
-        }
-
-        let line_comment = line.find("//");
-        let block_comment = line.find("/*");
-
-        match (line_comment, block_comment) {
-            (None, None) => {
-                out.push_str(line);
-                break;
-            }
-            (Some(lc), None) => {
-                out.push_str(&line[..lc]);
-                break;
-            }
-            (None, Some(bc)) => {
-                out.push_str(&line[..bc]);
-                line = &line[bc + 2..];
-                *in_block_comment = true;
-            }
-            (Some(lc), Some(bc)) => {
-                if lc < bc {
-                    out.push_str(&line[..lc]);
-                    break;
-                }
-                out.push_str(&line[..bc]);
-                line = &line[bc + 2..];
-                *in_block_comment = true;
-            }
-        }
-    }
-    out
-}
-
-fn parse_annotation_name(trimmed_line: &str) -> Option<String> {
-    let after_at = trimmed_line.strip_prefix('@')?;
-    let name: String = after_at
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
-        .collect();
-    if name.is_empty() {
-        return None;
-    }
-    Some(name)
+#[derive(Clone, Debug)]
+struct Annotation {
+    name: String,
+    simple_name: String,
 }
 
 fn classify_test_annotations(
     imports: &[String],
-    annotations: &[(String, u32)],
-) -> Option<(TestFramework, bool)> {
-    let mut is_test = false;
+    annotations: &[Annotation],
+) -> Option<TestFramework> {
     let mut framework = TestFramework::Unknown;
+    let mut is_test = false;
 
-    for (name, _) in annotations {
-        if name == "ParameterizedTest" || name.ends_with(".ParameterizedTest") {
-            is_test = true;
-            framework = TestFramework::Junit5;
+    for ann in annotations {
+        if ann.simple_name == "ParameterizedTest" {
+            return Some(TestFramework::Junit5);
         }
 
-        if name == "Test" || name.ends_with(".Test") {
+        if ann.simple_name == "Test" {
             is_test = true;
-            framework = match infer_framework_for_test_annotation(imports, name) {
-                Some(f) => f,
-                None => framework,
-            };
+            framework = infer_framework_for_test_annotation(imports, &ann.name)
+                .unwrap_or_else(|| infer_framework_from_imports(imports));
         }
     }
 
-    if !is_test {
-        return None;
+    if is_test {
+        Some(framework)
+    } else {
+        None
     }
-
-    if framework == TestFramework::Unknown {
-        framework = infer_framework_from_imports(imports);
-    }
-
-    Some((framework, true))
 }
 
 fn infer_framework_for_test_annotation(
@@ -319,22 +304,6 @@ fn infer_framework_for_test_annotation(
     None
 }
 
-fn extract_method_name(line: &str) -> Option<String> {
-    let paren = line.find('(')?;
-    if line[..paren].contains(" class ") || line.starts_with("class ") {
-        return None;
-    }
-    let before = line[..paren].trim();
-    let last = before.split_whitespace().last()?;
-    if last.is_empty() {
-        return None;
-    }
-    Some(
-        last.trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
-            .to_string(),
-    )
-}
-
 fn looks_like_test_class(class_name: &str, relative_path: &str) -> bool {
     if class_name.ends_with("Test")
         || class_name.ends_with("Tests")
@@ -344,7 +313,72 @@ fn looks_like_test_class(class_name: &str, relative_path: &str) -> bool {
     {
         return true;
     }
-    // Fallback for files following the common `*Test.java` pattern, even if the class name does
-    // not match (e.g. when the file contains a single top-level class but the class name differs).
     relative_path.ends_with("Test.java") || relative_path.ends_with("Tests.java")
+}
+
+fn parse_java(source: &str) -> Result<tree_sitter::Tree> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(tree_sitter_java::language())
+        .map_err(|_| {
+            NovaTestingError::InvalidRequest("tree-sitter-java language load failed".to_string())
+        })?;
+    parser
+        .parse(source, None)
+        .ok_or_else(|| NovaTestingError::InvalidRequest("tree-sitter failed to parse Java".into()))
+}
+
+fn find_named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
+    let mut cursor = node.walk();
+    let result = node
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == kind);
+    result
+}
+
+fn collect_annotations(modifiers: Node<'_>, source: &str) -> Vec<Annotation> {
+    let mut anns = Vec::new();
+    let mut cursor = modifiers.walk();
+    for child in modifiers.named_children(&mut cursor) {
+        if !child.kind().ends_with("annotation") {
+            continue;
+        }
+        if let Some(ann) = parse_annotation(child, source) {
+            anns.push(ann);
+        }
+    }
+    anns
+}
+
+fn parse_annotation(node: Node<'_>, source: &str) -> Option<Annotation> {
+    parse_annotation_text(node_text(source, node))
+}
+
+fn parse_annotation_text(text: &str) -> Option<Annotation> {
+    let text = text.trim();
+    let rest = text.strip_prefix('@')?;
+    let (name_part, _) = rest.split_once('(').unwrap_or((rest, ""));
+    let name = name_part.trim().to_string();
+    let simple_name = name
+        .rsplit('.')
+        .next()
+        .unwrap_or(name_part)
+        .trim()
+        .to_string();
+    if simple_name.is_empty() {
+        return None;
+    }
+
+    Some(Annotation { name, simple_name })
+}
+
+fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
+    &source[node.byte_range()]
+}
+
+fn ts_point_to_position(point: tree_sitter::Point) -> Position {
+    Position {
+        line: point.row as u32,
+        character: point.column as u32,
+    }
 }

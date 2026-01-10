@@ -13,7 +13,9 @@
   ],
   "activationEvents": [
     "onLanguage:java",
-    "onCommand:nova.organizeImports"
+    "onCommand:nova.organizeImports",
+    "onCommand:nova.discoverTests",
+    "onCommand:nova.runTest"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -21,6 +23,14 @@
       {
         "command": "nova.organizeImports",
         "title": "Nova: Organize Imports"
+      },
+      {
+        "command": "nova.discoverTests",
+        "title": "Nova: Discover Tests"
+      },
+      {
+        "command": "nova.runTest",
+        "title": "Nova: Run Test"
       }
     ]
   },
@@ -38,4 +48,3 @@
     "typescript": "^5.3.3"
   }
 }
-
