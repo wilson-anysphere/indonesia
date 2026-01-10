@@ -1,9 +1,13 @@
 use nova_testing::schema::TestDiscoverResponse;
 use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use tempfile::TempDir;
 
 #[test]
 fn stdio_server_handles_test_discover_request() {
@@ -119,6 +123,136 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
     );
     let _shutdown_resp = read_jsonrpc_message(&mut stdout);
 
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[cfg(unix)]
+#[test]
+fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
+    let temp = TempDir::new().expect("tempdir");
+    let root = temp.path().join("maven-project");
+    fs::create_dir_all(&root).expect("create project dir");
+
+    fs::write(
+        root.join("pom.xml"),
+        r#"<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.example</groupId>
+  <artifactId>demo</artifactId>
+  <version>1.0-SNAPSHOT</version>
+</project>
+"#,
+    )
+    .expect("write pom");
+
+    let dep_dir = root.join("deps");
+    fs::create_dir_all(&dep_dir).expect("create deps");
+    let dep1 = dep_dir.join("dep1.jar");
+    let dep2 = dep_dir.join("dep2.jar");
+    fs::write(&dep1, "").expect("write dep1");
+    fs::write(&dep2, "").expect("write dep2");
+
+    // Provide a fake `mvn` executable on PATH so the test doesn't depend on a
+    // system Maven installation.
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
+    let mvn_path = bin_dir.join("mvn");
+    fs::write(
+        &mvn_path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' '[\"{}\",\"{}\"]'\n",
+            dep1.display(),
+            dep2.display()
+        ),
+    )
+    .expect("write fake mvn");
+    let mut perms = fs::metadata(&mvn_path).expect("stat mvn").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&mvn_path, perms).expect("chmod mvn");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("PATH", bin_dir.to_string_lossy().to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    let expected = vec![
+        root.join("target/classes").to_string_lossy().to_string(),
+        dep1.to_string_lossy().to_string(),
+        dep2.to_string_lossy().to_string(),
+    ];
+
+    // 1) initial request should invoke our fake Maven and populate the cache.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/java/classpath",
+            "params": { "projectRoot": root.to_string_lossy() }
+        }),
+    );
+    let classpath_resp = read_jsonrpc_message(&mut stdout);
+    let result = classpath_resp.get("result").cloned().expect("result");
+    let classpath = result
+        .get("classpath")
+        .and_then(|v| v.as_array())
+        .expect("classpath array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(classpath, expected);
+
+    // 2) remove the fake Maven binary; subsequent requests should still succeed
+    //    thanks to the fingerprinted cache.
+    fs::remove_file(&mvn_path).expect("remove fake mvn");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "nova/java/classpath",
+            "params": { "projectRoot": root.to_string_lossy() }
+        }),
+    );
+    let cached_resp = read_jsonrpc_message(&mut stdout);
+    let result = cached_resp.get("result").cloned().expect("result");
+    let classpath = result
+        .get("classpath")
+        .and_then(|v| v.as_array())
+        .expect("classpath array")
+        .iter()
+        .map(|v| v.as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(classpath, expected);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
