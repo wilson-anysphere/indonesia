@@ -15,7 +15,7 @@ mod jpql;
 pub use applicability::is_jpa_applicable;
 pub use applicability::is_jpa_applicable_with_classpath;
 pub use entity::{
-    AnalysisResult, Entity, EntityModel, Field, Relationship, RelationshipKind,
+    AnalysisResult, Entity, EntityModel, Field, Relationship, RelationshipKind, SourceDiagnostic,
     JPA_MAPPEDBY_MISSING, JPA_MAPPEDBY_NOT_RELATIONSHIP, JPA_MAPPEDBY_WRONG_TARGET, JPA_MISSING_ID,
     JPA_NO_NOARG_CTOR, JPA_PARSE_ERROR, JPA_REL_INVALID_TARGET_TYPE, JPA_REL_TARGET_NOT_ENTITY,
     JPA_REL_TARGET_UNKNOWN,
@@ -35,10 +35,13 @@ pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
 /// - JPQL validations within `@Query(...)` / `@NamedQuery(query=...)` strings (`JPQL_*`)
 pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
     let mut result = entity::analyze_entities(sources);
-    for src in sources {
-        result
-            .diagnostics
-            .extend(jpql::jpql_diagnostics_in_java_source(src, &result.model));
+    for (source_idx, src) in sources.iter().enumerate() {
+        for diagnostic in jpql::jpql_diagnostics_in_java_source(src, &result.model) {
+            result.diagnostics.push(SourceDiagnostic {
+                source: source_idx,
+                diagnostic,
+            });
+        }
     }
     result
 }

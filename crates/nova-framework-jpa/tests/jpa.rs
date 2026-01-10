@@ -51,7 +51,7 @@ fn missing_id_emits_diagnostic() {
         analysis
             .diagnostics
             .iter()
-            .any(|d| d.code == "JPA_MISSING_ID"),
+            .any(|d| d.diagnostic.code == "JPA_MISSING_ID"),
         "expected JPA_MISSING_ID diagnostic, got: {:#?}",
         analysis.diagnostics
     );
@@ -77,7 +77,7 @@ fn id_on_getter_method_is_recognized() {
         !analysis
             .diagnostics
             .iter()
-            .any(|d| d.code == "JPA_MISSING_ID"),
+            .any(|d| d.diagnostic.code == "JPA_MISSING_ID"),
         "unexpected JPA_MISSING_ID diagnostic, got: {:#?}",
         analysis.diagnostics
     );
@@ -107,7 +107,7 @@ fn lombok_noargs_constructor_suppresses_warning() {
         !analysis
             .diagnostics
             .iter()
-            .any(|d| d.code == nova_framework_jpa::JPA_NO_NOARG_CTOR),
+            .any(|d| d.diagnostic.code == nova_framework_jpa::JPA_NO_NOARG_CTOR),
         "unexpected JPA_NO_NOARG_CTOR diagnostic, got: {:#?}",
         analysis.diagnostics
     );
@@ -151,7 +151,7 @@ fn relationship_parsing_and_mappedby_validation() {
         analysis
             .diagnostics
             .iter()
-            .all(|d| d.severity != nova_framework_jpa::Severity::Error),
+            .all(|d| d.diagnostic.severity != nova_framework_jpa::Severity::Error),
         "unexpected error diagnostics: {:#?}",
         analysis.diagnostics
     );
@@ -206,7 +206,7 @@ fn relationship_target_entity_attribute_is_respected() {
         analysis
             .diagnostics
             .iter()
-            .all(|d| d.severity != nova_framework_jpa::Severity::Error),
+            .all(|d| d.diagnostic.severity != nova_framework_jpa::Severity::Error),
         "unexpected error diagnostics: {:#?}",
         analysis.diagnostics
     );
@@ -215,7 +215,7 @@ fn relationship_target_entity_attribute_is_respected() {
         !analysis
             .diagnostics
             .iter()
-            .any(|d| d.code == "JPA_REL_TARGET_UNKNOWN"),
+            .any(|d| d.diagnostic.code == "JPA_REL_TARGET_UNKNOWN"),
         "unexpected JPA_REL_TARGET_UNKNOWN diagnostics: {:#?}",
         analysis.diagnostics
     );
@@ -265,7 +265,7 @@ fn mappedby_points_to_non_relationship_emits_warning() {
         analysis
             .diagnostics
             .iter()
-            .any(|d| d.code == "JPA_MAPPEDBY_NOT_RELATIONSHIP"),
+            .any(|d| d.diagnostic.code == "JPA_MAPPEDBY_NOT_RELATIONSHIP"),
         "expected JPA_MAPPEDBY_NOT_RELATIONSHIP, got: {:#?}",
         analysis.diagnostics
     );
@@ -491,10 +491,12 @@ fn jpql_diagnostics_are_mapped_to_java_source_spans() {
     let diag = analysis
         .diagnostics
         .iter()
-        .find(|d| d.code == "JPQL_UNKNOWN_ENTITY")
+        .find(|d| d.diagnostic.code == "JPQL_UNKNOWN_ENTITY")
         .expect("expected JPQL_UNKNOWN_ENTITY diagnostic");
 
-    let span = diag.span.expect("expected diagnostic span");
+    assert_eq!(diag.source, 1);
+
+    let span = diag.diagnostic.span.expect("expected diagnostic span");
     assert_eq!(&repo[span.start..span.end], "Unknown");
 }
 
@@ -617,7 +619,7 @@ fn invalid_relationship_target_type_emits_diagnostic() {
         analysis
             .diagnostics
             .iter()
-            .any(|d| d.code == "JPA_REL_INVALID_TARGET_TYPE"),
+            .any(|d| d.diagnostic.code == "JPA_REL_INVALID_TARGET_TYPE"),
         "expected JPA_REL_INVALID_TARGET_TYPE diagnostic, got: {:#?}",
         analysis.diagnostics
     );

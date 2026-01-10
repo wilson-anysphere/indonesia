@@ -14,6 +14,12 @@ pub const JPA_MAPPEDBY_NOT_RELATIONSHIP: &str = "JPA_MAPPEDBY_NOT_RELATIONSHIP";
 pub const JPA_MAPPEDBY_WRONG_TARGET: &str = "JPA_MAPPEDBY_WRONG_TARGET";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceDiagnostic {
+    pub source: usize,
+    pub diagnostic: Diagnostic,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
     pub name: String,
     pub ty: String,
@@ -33,6 +39,7 @@ pub struct Entity {
     pub jpql_name: String,
     pub table: String,
     pub span: Span,
+    pub source: usize,
     pub fields: Vec<Field>,
     pub has_explicit_ctor: bool,
     pub has_no_arg_ctor: bool,
@@ -91,22 +98,25 @@ pub struct Relationship {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnalysisResult {
     pub model: EntityModel,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<SourceDiagnostic>,
 }
 
 /// Parse and validate entities across multiple Java sources.
 pub(crate) fn analyze_entities(sources: &[&str]) -> AnalysisResult {
     let mut entities: Vec<Entity> = Vec::new();
-    let mut diagnostics = Vec::new();
+    let mut diagnostics: Vec<SourceDiagnostic> = Vec::new();
 
-    for src in sources {
-        match parse_entities(src) {
+    for (source_idx, src) in sources.iter().enumerate() {
+        match parse_entities(src, source_idx) {
             Ok(mut parsed) => entities.append(&mut parsed),
-            Err(err) => diagnostics.push(Diagnostic::error(
-                JPA_PARSE_ERROR,
-                format!("Failed to parse Java source: {err}"),
-                None,
-            )),
+            Err(err) => diagnostics.push(SourceDiagnostic {
+                source: source_idx,
+                diagnostic: Diagnostic::error(
+                    JPA_PARSE_ERROR,
+                    format!("Failed to parse Java source: {err}"),
+                    None,
+                ),
+            }),
         }
     }
 
@@ -125,14 +135,14 @@ pub(crate) fn analyze_entities(sources: &[&str]) -> AnalysisResult {
     AnalysisResult { model, diagnostics }
 }
 
-fn parse_entities(source: &str) -> Result<Vec<Entity>, String> {
+fn parse_entities(source: &str, source_idx: usize) -> Result<Vec<Entity>, String> {
     let tree = parse_java(source)?;
     let root = tree.root_node();
     let mut out = Vec::new();
 
     visit_nodes(root, &mut |node| {
         if node.kind() == "class_declaration" {
-            if let Some(entity) = parse_entity_class(node, source) {
+            if let Some(entity) = parse_entity_class(node, source, source_idx) {
                 out.push(entity);
             }
         }
@@ -162,7 +172,7 @@ fn visit_nodes<'a, F: FnMut(Node<'a>)>(node: Node<'a>, f: &mut F) {
     }
 }
 
-fn parse_entity_class(node: Node<'_>, source: &str) -> Option<Entity> {
+fn parse_entity_class(node: Node<'_>, source: &str, source_idx: usize) -> Option<Entity> {
     let modifiers = node
         .child_by_field_name("modifiers")
         .or_else(|| find_named_child(node, "modifiers"));
@@ -212,6 +222,7 @@ fn parse_entity_class(node: Node<'_>, source: &str) -> Option<Entity> {
         jpql_name,
         table,
         span,
+        source: source_idx,
         fields,
         has_explicit_ctor,
         has_no_arg_ctor,
@@ -698,30 +709,36 @@ fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
     &source[node.byte_range()]
 }
 
-fn validate_model(model: &EntityModel) -> Vec<Diagnostic> {
+fn validate_model(model: &EntityModel) -> Vec<SourceDiagnostic> {
     let mut diags = Vec::new();
 
     for entity in model.entities.values() {
         if entity.id_fields().next().is_none() {
-            diags.push(Diagnostic::error(
-                JPA_MISSING_ID,
-                format!(
-                    "Entity `{}` does not declare an @Id or @EmbeddedId field",
-                    entity.name
+            diags.push(SourceDiagnostic {
+                source: entity.source,
+                diagnostic: Diagnostic::error(
+                    JPA_MISSING_ID,
+                    format!(
+                        "Entity `{}` does not declare an @Id or @EmbeddedId field",
+                        entity.name
+                    ),
+                    Some(entity.span),
                 ),
-                Some(entity.span),
-            ));
+            });
         }
 
         if entity.has_explicit_ctor && !entity.has_no_arg_ctor {
-            diags.push(Diagnostic::warning(
-                JPA_NO_NOARG_CTOR,
-                format!(
-                    "Entity `{}` does not declare a non-private no-arg constructor",
-                    entity.name
+            diags.push(SourceDiagnostic {
+                source: entity.source,
+                diagnostic: Diagnostic::warning(
+                    JPA_NO_NOARG_CTOR,
+                    format!(
+                        "Entity `{}` does not declare a non-private no-arg constructor",
+                        entity.name
+                    ),
+                    Some(entity.span),
                 ),
-                Some(entity.span),
-            ));
+            });
         }
     }
 
@@ -813,7 +830,7 @@ fn split_generic_type(ty: &str) -> Option<(String, String)> {
     Some((base, first.to_string()))
 }
 
-fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
+fn validate_relationships(model: &EntityModel) -> Vec<SourceDiagnostic> {
     let mut diags = Vec::new();
 
     for entity in model.entities.values() {
@@ -823,83 +840,101 @@ fn validate_relationships(model: &EntityModel) -> Vec<Diagnostic> {
             };
 
             if !relationship_type_matches_field(&rel.kind, &field.ty) {
-                diags.push(Diagnostic::error(
-                    JPA_REL_INVALID_TARGET_TYPE,
-                    format!(
-                        "Relationship `{}`.{} has incompatible field type `{}` for {:?}",
-                        entity.name, field.name, field.ty, rel.kind
+                diags.push(SourceDiagnostic {
+                    source: entity.source,
+                    diagnostic: Diagnostic::error(
+                        JPA_REL_INVALID_TARGET_TYPE,
+                        format!(
+                            "Relationship `{}`.{} has incompatible field type `{}` for {:?}",
+                            entity.name, field.name, field.ty, rel.kind
+                        ),
+                        Some(rel.span),
                     ),
-                    Some(rel.span),
-                ));
+                });
             }
 
             let Some(target) = &rel.target_entity else {
-                diags.push(Diagnostic::warning(
-                    JPA_REL_TARGET_UNKNOWN,
-                    format!(
-                        "Unable to determine relationship target for `{}`.{}",
-                        entity.name, field.name
+                diags.push(SourceDiagnostic {
+                    source: entity.source,
+                    diagnostic: Diagnostic::warning(
+                        JPA_REL_TARGET_UNKNOWN,
+                        format!(
+                            "Unable to determine relationship target for `{}`.{}",
+                            entity.name, field.name
+                        ),
+                        Some(rel.span),
                     ),
-                    Some(rel.span),
-                ));
+                });
                 continue;
             };
 
             if model.entity(target).is_none() {
-                diags.push(Diagnostic::error(
-                    JPA_REL_TARGET_NOT_ENTITY,
-                    format!(
-                        "Relationship `{}`.{} targets `{}`, which is not a known @Entity",
-                        entity.name, field.name, target
+                diags.push(SourceDiagnostic {
+                    source: entity.source,
+                    diagnostic: Diagnostic::error(
+                        JPA_REL_TARGET_NOT_ENTITY,
+                        format!(
+                            "Relationship `{}`.{} targets `{}`, which is not a known @Entity",
+                            entity.name, field.name, target
+                        ),
+                        Some(rel.span),
                     ),
-                    Some(rel.span),
-                ));
+                });
             }
 
             if let Some(mapped_by) = &rel.mapped_by {
                 if let Some(target_entity) = model.entity(target) {
                     let Some(mapped_field) = target_entity.field_named(mapped_by) else {
-                        diags.push(Diagnostic::error(
-                            JPA_MAPPEDBY_MISSING,
-                            format!(
-                                "`mappedBy=\"{}\"` on `{}`.{} does not exist on target entity `{}`",
-                                mapped_by, entity.name, field.name, target
+                        diags.push(SourceDiagnostic {
+                            source: entity.source,
+                            diagnostic: Diagnostic::error(
+                                JPA_MAPPEDBY_MISSING,
+                                format!(
+                                    "`mappedBy=\"{}\"` on `{}`.{} does not exist on target entity `{}`",
+                                    mapped_by, entity.name, field.name, target
+                                ),
+                                Some(rel.span),
                             ),
-                            Some(rel.span),
-                        ));
+                        });
                         continue;
                     };
 
                     // Best-effort: validate that the mappedBy field looks like a
                     // relationship back to the declaring entity.
                     let Some(mapped_rel) = &mapped_field.relationship else {
-                        diags.push(Diagnostic::warning(
-                            JPA_MAPPEDBY_NOT_RELATIONSHIP,
-                            format!(
-                                "`mappedBy=\"{}\"` on `{}`.{} refers to `{}`.{}, which is not a relationship field",
-                                mapped_by, entity.name, field.name, target, mapped_by
+                        diags.push(SourceDiagnostic {
+                            source: entity.source,
+                            diagnostic: Diagnostic::warning(
+                                JPA_MAPPEDBY_NOT_RELATIONSHIP,
+                                format!(
+                                    "`mappedBy=\"{}\"` on `{}`.{} refers to `{}`.{}, which is not a relationship field",
+                                    mapped_by, entity.name, field.name, target, mapped_by
+                                ),
+                                Some(rel.span),
                             ),
-                            Some(rel.span),
-                        ));
+                        });
                         continue;
                     };
 
                     if let Some(mapped_target) = &mapped_rel.target_entity {
                         if mapped_target != &entity.name {
-                            diags.push(Diagnostic::warning(
-                                JPA_MAPPEDBY_WRONG_TARGET,
-                                format!(
-                                    "`mappedBy=\"{}\"` on `{}`.{} points at `{}`.{} which targets `{}`, expected `{}`",
-                                    mapped_by,
-                                    entity.name,
-                                    field.name,
-                                    target,
-                                    mapped_by,
-                                    mapped_target,
-                                    entity.name
+                            diags.push(SourceDiagnostic {
+                                source: entity.source,
+                                diagnostic: Diagnostic::warning(
+                                    JPA_MAPPEDBY_WRONG_TARGET,
+                                    format!(
+                                        "`mappedBy=\"{}\"` on `{}`.{} points at `{}`.{} which targets `{}`, expected `{}`",
+                                        mapped_by,
+                                        entity.name,
+                                        field.name,
+                                        target,
+                                        mapped_by,
+                                        mapped_target,
+                                        entity.name
+                                    ),
+                                    Some(rel.span),
                                 ),
-                                Some(rel.span),
-                            ));
+                            });
                         }
                     }
                 }

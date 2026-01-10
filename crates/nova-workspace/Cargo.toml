@@ -11,6 +11,7 @@ crossbeam-channel = "0.5"
 notify = "6.1"
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-framework-spring = { path = "../nova-framework-spring" }
+nova-framework-jpa = { path = "../nova-framework-jpa" }
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-db = { path = "../nova-db" }

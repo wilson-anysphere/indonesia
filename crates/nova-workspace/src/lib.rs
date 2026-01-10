@@ -381,6 +381,7 @@ impl Workspace {
         }
 
         diagnostics.extend(self.spring_diagnostics(&sources, requested_file.as_deref())?);
+        diagnostics.extend(self.jpa_diagnostics(&sources, requested_file.as_deref())?);
 
         let summary = DiagnosticsSummary::from_diagnostics(&diagnostics);
         Ok(DiagnosticsReport {
@@ -434,6 +435,78 @@ impl Workspace {
                 nova_framework_spring::Severity::Error => Severity::Error,
                 nova_framework_spring::Severity::Warning => Severity::Warning,
                 nova_framework_spring::Severity::Info => Severity::Warning,
+            };
+
+            let display_path = file_path
+                .strip_prefix(&self.root)
+                .unwrap_or(file_path.as_path())
+                .to_path_buf();
+
+            diags.push(Diagnostic {
+                file: display_path,
+                line,
+                column,
+                severity,
+                code: Some(source_diag.diagnostic.code.to_string()),
+                message: source_diag.diagnostic.message,
+            });
+        }
+
+        Ok(diags)
+    }
+
+    fn jpa_diagnostics(
+        &self,
+        sources: &[(PathBuf, String)],
+        requested_file: Option<&Path>,
+    ) -> Result<Vec<Diagnostic>> {
+        let config = match nova_project::load_project(&self.root) {
+            Ok(config) => Some(config),
+            Err(ProjectError::UnknownProjectType { .. }) => None,
+            Err(err) => {
+                return Err(anyhow::anyhow!(err))
+                    .with_context(|| format!("failed to load project at {}", self.root.display()))
+            }
+        };
+
+        let Some(config) = config else {
+            return Ok(Vec::new());
+        };
+
+        let dep_strings: Vec<String> = config
+            .dependencies
+            .iter()
+            .map(|d| format!("{}:{}", d.group_id, d.artifact_id))
+            .collect();
+        let dep_refs: Vec<&str> = dep_strings.iter().map(String::as_str).collect();
+        let classpath: Vec<&Path> = config.classpath.iter().map(|e| e.path.as_path()).collect();
+        let texts: Vec<&str> = sources.iter().map(|(_, text)| text.as_str()).collect();
+
+        if !nova_framework_jpa::is_jpa_applicable_with_classpath(&dep_refs, &classpath, &texts) {
+            return Ok(Vec::new());
+        }
+
+        let analysis = nova_framework_jpa::analyze_java_sources(&texts);
+
+        let mut diags = Vec::new();
+        for source_diag in analysis.diagnostics {
+            let Some((file_path, file_text)) = sources.get(source_diag.source) else {
+                continue;
+            };
+            if requested_file.is_some_and(|requested| requested != file_path.as_path()) {
+                continue;
+            }
+
+            let (line, column) = source_diag
+                .diagnostic
+                .span
+                .map(|span| line_col_at(file_text, span.start))
+                .unwrap_or((1, 1));
+
+            let severity = match source_diag.diagnostic.severity {
+                nova_framework_jpa::Severity::Error => Severity::Error,
+                nova_framework_jpa::Severity::Warning => Severity::Warning,
+                nova_framework_jpa::Severity::Info => Severity::Warning,
             };
 
             let display_path = file_path
