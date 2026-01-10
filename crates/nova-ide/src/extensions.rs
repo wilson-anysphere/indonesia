@@ -125,7 +125,7 @@ where
         let mut completions =
             crate::code_intelligence::completions(self.db.as_ref(), file, position);
         let text = self.db.file_content(file);
-        let offset = crate::code_intelligence::position_to_offset(text, position);
+        let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
 
         let extension_items = self.completions(cancel, file, offset).into_iter().map(|item| {
             lsp_types::CompletionItem {
@@ -137,6 +137,63 @@ where
 
         completions.extend(extension_items);
         completions
+    }
+
+    /// Combine Nova's built-in refactor code actions with extension-provided code actions.
+    pub fn code_actions_lsp(
+        &self,
+        cancel: CancellationToken,
+        file: nova_ext::FileId,
+        span: Option<Span>,
+    ) -> Vec<lsp_types::CodeActionOrCommand> {
+        let mut actions = Vec::new();
+
+        let source = self.db.file_content(file);
+        let uri = self
+            .db
+            .file_path(file)
+            .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
+            .and_then(|path| nova_core::path_to_file_uri(&path).ok())
+            .and_then(|uri| uri.parse().ok());
+
+        if let (Some(uri), Some(span)) = (uri, span) {
+            let selection = crate::text::span_to_lsp_range(source, span);
+
+            actions.extend(crate::refactor::extract_member_code_actions(
+                &uri,
+                source,
+                selection,
+            ));
+
+            if let Some(action) = crate::code_action::extract_method_code_action(
+                source,
+                uri.clone(),
+                selection,
+            ) {
+                actions.push(lsp_types::CodeActionOrCommand::CodeAction(action));
+            }
+
+            actions.extend(crate::refactor::inline_method_code_actions(
+                &uri,
+                source,
+                selection.start,
+            ));
+        }
+
+        let extension_actions = self
+            .code_actions(cancel, file, span)
+            .into_iter()
+            .map(|action| {
+                let kind = action.kind.map(lsp_types::CodeActionKind::from);
+                lsp_types::CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
+                    title: action.title,
+                    kind,
+                    ..lsp_types::CodeAction::default()
+                })
+            });
+        actions.extend(extension_actions);
+
+        actions
     }
 }
 
@@ -162,7 +219,7 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
         let mut completions =
             crate::code_intelligence::completions(self.db.as_ref(), file, position);
         let text = self.db.file_content(file);
-        let offset = crate::code_intelligence::position_to_offset(text, position);
+        let offset = crate::text::position_to_offset(text, position).unwrap_or(text.len());
 
         let extension_items = self.completions(cancel, file, offset).into_iter().map(|item| {
             lsp_types::CompletionItem {
@@ -174,6 +231,63 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
 
         completions.extend(extension_items);
         completions
+    }
+
+    /// Combine Nova's built-in refactor code actions with extension-provided code actions.
+    pub fn code_actions_lsp(
+        &self,
+        cancel: CancellationToken,
+        file: nova_ext::FileId,
+        span: Option<Span>,
+    ) -> Vec<lsp_types::CodeActionOrCommand> {
+        let mut actions = Vec::new();
+
+        let source = self.db.file_content(file);
+        let uri = self
+            .db
+            .file_path(file)
+            .and_then(|path| nova_core::AbsPathBuf::new(path.to_path_buf()).ok())
+            .and_then(|path| nova_core::path_to_file_uri(&path).ok())
+            .and_then(|uri| uri.parse().ok());
+
+        if let (Some(uri), Some(span)) = (uri, span) {
+            let selection = crate::text::span_to_lsp_range(source, span);
+
+            actions.extend(crate::refactor::extract_member_code_actions(
+                &uri,
+                source,
+                selection,
+            ));
+
+            if let Some(action) = crate::code_action::extract_method_code_action(
+                source,
+                uri.clone(),
+                selection,
+            ) {
+                actions.push(lsp_types::CodeActionOrCommand::CodeAction(action));
+            }
+
+            actions.extend(crate::refactor::inline_method_code_actions(
+                &uri,
+                source,
+                selection.start,
+            ));
+        }
+
+        let extension_actions = self
+            .code_actions(cancel, file, span)
+            .into_iter()
+            .map(|action| {
+                let kind = action.kind.map(lsp_types::CodeActionKind::from);
+                lsp_types::CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
+                    title: action.title,
+                    kind,
+                    ..lsp_types::CodeAction::default()
+                })
+            });
+        actions.extend(extension_actions);
+
+        actions
     }
 }
 
@@ -378,5 +492,67 @@ class A {
         let labels: Vec<_> = completions.iter().map(|c| c.label.as_str()).collect();
         assert!(labels.contains(&"length"));
         assert!(labels.contains(&"extraCompletion"));
+    }
+
+    #[test]
+    fn combines_builtin_and_extension_code_actions() {
+        use nova_db::RootDatabase;
+
+        struct ExtraActionProvider;
+        impl CodeActionProvider<dyn nova_db::Database + Send + Sync> for ExtraActionProvider {
+            fn id(&self) -> &str {
+                "extra.actions"
+            }
+
+            fn provide_code_actions(
+                &self,
+                _ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+                _params: CodeActionParams,
+            ) -> Vec<CodeAction> {
+                vec![CodeAction {
+                    title: "extra action".to_string(),
+                    kind: Some("quickfix".to_string()),
+                }]
+            }
+        }
+
+        let mut db = RootDatabase::new();
+        let file = db.file_id_for_path(PathBuf::from("/actions.java"));
+        let source = r#"
+class A {
+  void m() {
+    int x = 1 + 2;
+  }
+}
+"#;
+        db.set_file_text(file, source.to_string());
+
+        let selection_start = source.find("1 + 2").expect("selection start");
+        let selection_end = selection_start + "1 + 2".len();
+        let selection = Span::new(selection_start, selection_end);
+
+        let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+        let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+        ide.registry_mut()
+            .register_code_action_provider(Arc::new(ExtraActionProvider))
+            .unwrap();
+
+        let actions = ide.code_actions_lsp(CancellationToken::new(), file, Some(selection));
+        let titles: Vec<_> = actions
+            .iter()
+            .filter_map(|action| match action {
+                lsp_types::CodeActionOrCommand::CodeAction(action) => Some(action.title.as_str()),
+                lsp_types::CodeActionOrCommand::Command(command) => Some(command.title.as_str()),
+            })
+            .collect();
+
+        assert!(
+            titles.iter().any(|t| t.contains("Extract constant")),
+            "expected built-in extract constant action; got {titles:?}"
+        );
+        assert!(
+            titles.iter().any(|t| *t == "extra action"),
+            "expected extension action; got {titles:?}"
+        );
     }
 }
