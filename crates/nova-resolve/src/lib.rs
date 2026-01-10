@@ -373,7 +373,13 @@ impl<'a> ScopeBuilder<'a> {
         package: Option<&PackageName>,
         ty: &TypeDecl,
     ) -> ScopeId {
-        let type_id = self.declare_top_level_type(parent, package, ty);
+        // Ensure the type is declared in the file scope before building the class scope.
+        // This avoids order-dependence when multiple top-level types reference each other.
+        let type_id = self.scopes[parent]
+            .types
+            .get(&ty.name)
+            .cloned()
+            .unwrap_or_else(|| self.declare_top_level_type(parent, package, ty));
         let class_scope = self.alloc_scope(
             Some(parent),
             ScopeKind::Class {
@@ -930,5 +936,26 @@ mod tests {
             resolver.resolve_import(&unit, &Name::from("Foo")),
             Some(TypeName::from("com.example.dep.Foo"))
         );
+    }
+
+    #[test]
+    fn nested_type_resolves_in_class_scope() {
+        let jdk = JdkIndex::new();
+
+        let mut outer = TypeDecl::new("C");
+        outer.nested_types.push(TypeDecl::new("Inner"));
+        outer.methods.push(MethodDecl::new("m"));
+
+        let unit = CompilationUnit {
+            package: None,
+            imports: Vec::new(),
+            types: vec![outer],
+        };
+        let result = build_scopes(&jdk, &unit);
+
+        let resolver = Resolver::new(&jdk);
+        let method_scope = *result.method_scopes.get("C#m").expect("method scope");
+        let res = resolver.resolve_name(&result.scopes, method_scope, &Name::from("Inner"));
+        assert_eq!(res, Some(Resolution::Type(TypeName::from("C$Inner"))));
     }
 }
