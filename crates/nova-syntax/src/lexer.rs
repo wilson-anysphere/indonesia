@@ -347,7 +347,7 @@ impl<'a> Lexer<'a> {
         let mut is_float = false;
 
         // Fractional part.
-        if self.peek_byte(0) == Some(b'.') && matches!(self.peek_byte(1), Some(b'0'..=b'9')) {
+        if self.peek_byte(0) == Some(b'.') && self.peek_byte(1) != Some(b'.') {
             is_float = true;
             self.pos += 1;
             self.consume_digits(base.max(10));

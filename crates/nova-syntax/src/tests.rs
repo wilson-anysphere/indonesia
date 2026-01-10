@@ -45,6 +45,24 @@ fn lexer_trivia_and_literals() {
 }
 
 #[test]
+fn lexer_accepts_float_with_trailing_dot() {
+    let input = "double x = 1.;";
+    let tokens = dump_tokens(input);
+    let expected = vec![
+        (SyntaxKind::DoubleKw, "double".into()),
+        (SyntaxKind::Whitespace, " ".into()),
+        (SyntaxKind::Identifier, "x".into()),
+        (SyntaxKind::Whitespace, " ".into()),
+        (SyntaxKind::Eq, "=".into()),
+        (SyntaxKind::Whitespace, " ".into()),
+        (SyntaxKind::DoubleLiteral, "1.".into()),
+        (SyntaxKind::Semicolon, ";".into()),
+        (SyntaxKind::Eof, "".into()),
+    ];
+    assert_eq!(tokens, expected);
+}
+
+#[test]
 fn parse_class_snapshot() {
     let input = "class Foo {\n  int x = 1;\n  Foo() { return; }\n  int add(int a, int b) { return a + b; }\n}\n";
     let result = parse_java(input);
