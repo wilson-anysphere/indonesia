@@ -280,11 +280,13 @@ impl<C: JdwpClient> DapServer<C> {
                     message = Some("Unable to determine enclosing class for breakpoint".to_string());
                 }
             }
-            dap_breakpoints.push(json!({
-                "verified": verified,
-                "line": bp.resolved_line,
-                "message": message,
-            }));
+            let mut breakpoint = serde_json::Map::new();
+            breakpoint.insert("verified".to_string(), json!(verified));
+            breakpoint.insert("line".to_string(), json!(bp.resolved_line));
+            if let Some(message) = message {
+                breakpoint.insert("message".to_string(), json!(message));
+            }
+            dap_breakpoints.push(serde_json::Value::Object(breakpoint));
         }
 
         self.breakpoints.insert(path_buf, requested);
