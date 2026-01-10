@@ -64,7 +64,7 @@ impl MemoryDatabase {
     }
 
     pub fn add_file(&mut self, project: ProjectId) -> FileId {
-        let id = FileId::new(self.next_file);
+        let id = FileId::from_raw(self.next_file);
         self.next_file += 1;
         self.file_project.insert(id, project);
         id

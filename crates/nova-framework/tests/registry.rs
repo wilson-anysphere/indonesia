@@ -55,7 +55,7 @@ impl FrameworkAnalyzer for FakeAnalyzer {
     ) -> Vec<NavigationTarget> {
         let file = match *symbol {
             Symbol::File(file) => file,
-            Symbol::Class(_) => nova_vfs::FileId::new(0),
+            Symbol::Class(_) => nova_vfs::FileId::from_raw(0),
         };
 
         vec![NavigationTarget {
