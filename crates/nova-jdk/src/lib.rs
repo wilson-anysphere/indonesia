@@ -4,6 +4,9 @@
 //! without requiring a system JDK. For richer semantic analysis, Nova can ingest
 //! a real JDK's `.jmod` modules and expose class/member stubs via
 //! [`JdkIndex::lookup_type`] and [`JdkIndex::java_lang_symbols`].
+//!
+//! For `nova-types` unit tests, this crate also exposes [`minimal_jdk`], a tiny
+//! semantic class/type model of a few key JDK types.
 
 mod discovery;
 mod index;
@@ -65,6 +68,7 @@ impl From<&JdkClassStub> for TypeDefStub {
         }
     }
 }
+// === Name/type index (used by nova-resolve) ==================================
 
 #[derive(Debug, Default)]
 pub struct JdkIndex {
@@ -223,4 +227,147 @@ impl TypeProvider for JdkIndex {
         let stub = JdkIndex::lookup_type(self, binary_name).ok().flatten()?;
         Some(TypeDefStub::from(stub.as_ref()))
     }
+}
+// === Minimal class/method/type model (used by nova-types) ====================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassKind {
+    Class,
+    Interface,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeRef {
+    /// A named class/interface type with optional type arguments.
+    Named(&'static str, Vec<TypeRef>),
+    /// A reference to a type parameter in the current scope.
+    TypeParam(&'static str),
+    Array(Box<TypeRef>),
+    WildcardUnbounded,
+    WildcardExtends(Box<TypeRef>),
+    WildcardSuper(Box<TypeRef>),
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodInfo {
+    pub name: &'static str,
+    pub type_params: Vec<&'static str>,
+    pub params: Vec<TypeRef>,
+    pub return_type: TypeRef,
+    pub is_static: bool,
+    pub is_varargs: bool,
+    pub is_abstract: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassInfo {
+    pub name: &'static str,
+    pub kind: ClassKind,
+    pub type_params: Vec<&'static str>,
+    pub super_class: Option<TypeRef>,
+    pub interfaces: Vec<TypeRef>,
+    pub methods: Vec<MethodInfo>,
+}
+
+pub mod well_known {
+    pub const OBJECT: &str = "java.lang.Object";
+    pub const STRING: &str = "java.lang.String";
+    pub const INTEGER: &str = "java.lang.Integer";
+    pub const CLONEABLE: &str = "java.lang.Cloneable";
+    pub const SERIALIZABLE: &str = "java.io.Serializable";
+
+    pub const LIST: &str = "java.util.List";
+    pub const ARRAY_LIST: &str = "java.util.ArrayList";
+
+    pub const FUNCTION: &str = "java.util.function.Function";
+}
+
+/// A very small, but semantically interesting, subset of the JDK.
+pub fn minimal_jdk() -> Vec<ClassInfo> {
+    use well_known::*;
+    vec![
+        ClassInfo {
+            name: OBJECT,
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: None,
+            interfaces: vec![],
+            methods: vec![],
+        },
+        ClassInfo {
+            name: STRING,
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(TypeRef::Named(OBJECT, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        },
+        ClassInfo {
+            name: INTEGER,
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: Some(TypeRef::Named(OBJECT, vec![])),
+            interfaces: vec![],
+            methods: vec![],
+        },
+        ClassInfo {
+            name: CLONEABLE,
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: None,
+            interfaces: vec![],
+            methods: vec![],
+        },
+        ClassInfo {
+            name: SERIALIZABLE,
+            kind: ClassKind::Interface,
+            type_params: vec![],
+            super_class: None,
+            interfaces: vec![],
+            methods: vec![],
+        },
+        // java.util.List<E>
+        ClassInfo {
+            name: LIST,
+            kind: ClassKind::Interface,
+            type_params: vec!["E"],
+            super_class: None,
+            interfaces: vec![],
+            methods: vec![MethodInfo {
+                name: "get",
+                type_params: vec![],
+                params: vec![TypeRef::Named("int", vec![])],
+                return_type: TypeRef::TypeParam("E"),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        },
+        // java.util.ArrayList<E> implements List<E>
+        ClassInfo {
+            name: ARRAY_LIST,
+            kind: ClassKind::Class,
+            type_params: vec!["E"],
+            super_class: Some(TypeRef::Named(OBJECT, vec![])),
+            interfaces: vec![TypeRef::Named(LIST, vec![TypeRef::TypeParam("E")])],
+            methods: vec![],
+        },
+        // java.util.function.Function<T, R>
+        ClassInfo {
+            name: FUNCTION,
+            kind: ClassKind::Interface,
+            type_params: vec!["T", "R"],
+            super_class: None,
+            interfaces: vec![],
+            methods: vec![MethodInfo {
+                name: "apply",
+                type_params: vec![],
+                params: vec![TypeRef::TypeParam("T")],
+                return_type: TypeRef::TypeParam("R"),
+                is_static: false,
+                is_varargs: false,
+                is_abstract: true,
+            }],
+        },
+    ]
 }

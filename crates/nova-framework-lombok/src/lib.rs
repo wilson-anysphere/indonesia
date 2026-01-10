@@ -93,7 +93,7 @@ impl LombokAnalyzer {
         }
         builder_members.push(VirtualMember::Method(VirtualMethod {
             name: "build".into(),
-            return_type: Type::Class(class),
+            return_type: Type::class(class, vec![]),
             params: Vec::new(),
             is_static: false,
         }));
@@ -390,7 +390,7 @@ mod tests {
         let mut registry = AnalyzerRegistry::new();
         registry.register(Box::new(LombokAnalyzer::new()));
 
-        let members = complete_member_names(&db, &registry, &Type::Class(class_id));
+        let members = complete_member_names(&db, &registry, &Type::class(class_id, vec![]));
         assert!(members.iter().any(|m| m == "getX"), "{members:?}");
     }
 
@@ -419,7 +419,7 @@ mod tests {
         let mut registry = AnalyzerRegistry::new();
         registry.register(Box::new(LombokAnalyzer::new()));
 
-        let foo_ty = Type::Class(class_id);
+        let foo_ty = Type::class(class_id, vec![]);
         let builder_ty =
             resolve_method_call(&db, &registry, &foo_ty, CallKind::Static, "builder", &[])
                 .expect("builder() should resolve");

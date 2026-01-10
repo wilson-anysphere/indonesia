@@ -51,7 +51,6 @@ impl LineColumn {
         Self { line, column }
     }
 }
-
 /// A dotted package name, e.g. `java.lang` or `com.example`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PackageName(Vec<Name>);

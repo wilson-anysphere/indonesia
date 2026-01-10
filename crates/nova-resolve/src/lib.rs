@@ -551,7 +551,7 @@ fn members_of_type(
     ty: &Type,
 ) -> Vec<MemberInfo> {
     match ty {
-        Type::Class(class) => members_of_class(db, registry, *class),
+        Type::Class(nova_types::ClassType { def, .. }) => members_of_class(db, registry, *def),
         Type::VirtualInner { owner, name } => members_of_virtual_inner(db, registry, *owner, name),
         _ => Vec::new(),
     }
@@ -616,7 +616,7 @@ fn methods_of_type(
     ty: &Type,
 ) -> Vec<ResolvedMethod> {
     match ty {
-        Type::Class(class) => methods_of_class(db, registry, *class),
+        Type::Class(nova_types::ClassType { def, .. }) => methods_of_class(db, registry, *def),
         Type::VirtualInner { owner, name } => methods_of_virtual_inner(db, registry, *owner, name),
         _ => Vec::new(),
     }
