@@ -1,7 +1,6 @@
 use std::path::Path;
 
-use nova_modules::ModuleName;
-use nova_syntax::parse_module_info;
+use nova_hir::module_info::lower_module_info_source;
 
 use crate::{JpmsModuleRoot, Module};
 
@@ -18,7 +17,9 @@ pub(crate) fn discover_jpms_modules(modules: &[Module]) -> Vec<JpmsModuleRoot> {
             .cmp(&b.root)
             .then(a.name.as_str().cmp(b.name.as_str()))
     });
-    out.dedup_by(|a, b| a.root == b.root && a.name == b.name && a.module_info == b.module_info);
+    out.dedup_by(|a, b| {
+        a.root == b.root && a.name == b.name && a.module_info == b.module_info && a.info == b.info
+    });
     out
 }
 
@@ -31,11 +32,12 @@ fn discover_jpms_module_root(module_root: &Path) -> Option<JpmsModuleRoot> {
 
     let module_info_path = candidates.into_iter().find(|p| p.is_file())?;
     let src = std::fs::read_to_string(&module_info_path).ok()?;
-    let decl = parse_module_info(&src).ok()?;
+    let info = lower_module_info_source(&src).ok()?;
 
     Some(JpmsModuleRoot {
-        name: ModuleName::new(decl.name.as_str().to_string()),
+        name: info.name.clone(),
         root: module_root.to_path_buf(),
         module_info: module_info_path,
+        info,
     })
 }

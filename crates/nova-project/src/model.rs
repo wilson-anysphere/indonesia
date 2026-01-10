@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use nova_modules::ModuleName;
+use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BuildSystem {
@@ -112,11 +112,12 @@ pub struct Module {
 }
 
 /// A JPMS module root discovered in the workspace (i.e. it has a `module-info.java`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JpmsModuleRoot {
     pub name: ModuleName,
     pub root: PathBuf,
     pub module_info: PathBuf,
+    pub info: ModuleInfo,
 }
 
 /// An aggregated view of the workspace's build configuration.
@@ -136,4 +137,17 @@ pub struct ProjectConfig {
     pub classpath: Vec<ClasspathEntry>,
     pub output_dirs: Vec<OutputDir>,
     pub dependencies: Vec<Dependency>,
+}
+
+impl ProjectConfig {
+    /// Construct a [`ModuleGraph`] for JPMS modules discovered in this workspace.
+    ///
+    /// This graph currently only contains workspace modules (no external module-path entries).
+    pub fn jpms_module_graph(&self) -> ModuleGraph {
+        let mut graph = ModuleGraph::new();
+        for module in &self.jpms_modules {
+            graph.insert(module.info.clone());
+        }
+        graph
+    }
 }

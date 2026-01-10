@@ -3602,8 +3602,8 @@ name = "nova-project"
 version = "0.1.0"
 dependencies = [
  "nova-config",
+ "nova-hir",
  "nova-modules",
- "nova-syntax",
  "regex",
  "roxmltree",
  "serde",

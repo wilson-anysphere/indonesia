@@ -4,7 +4,7 @@
 //! - source roots
 //! - classpath entries (directories/jars)
 //! - Java language level
-//! - (future) module graph
+//! - JPMS module graph (workspace modules only)
 
 mod bazel;
 mod discover;
