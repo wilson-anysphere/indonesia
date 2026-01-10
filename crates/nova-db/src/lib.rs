@@ -339,6 +339,6 @@ mod tests {
 pub mod salsa;
 
 pub use salsa::{
-    Database as SalsaDatabase, NovaDatabase, QueryDatabase, QueryStat, QueryStats, Snapshot,
-    SyntaxTree,
+    catch_cancelled, Database as SalsaDatabase, NovaDatabase, NovaInputs, NovaSyntax, QueryDatabase,
+    QueryStat, QueryStats, Snapshot, SyntaxTree,
 };
