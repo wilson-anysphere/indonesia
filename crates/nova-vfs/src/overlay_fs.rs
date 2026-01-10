@@ -45,7 +45,7 @@ impl<F: FileSystem> OverlayFs<F> {
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
         let mut docs = self.docs.lock().expect("overlay mutex poisoned");
-        let doc = docs.get_mut(path).ok_or(DocumentError::InvalidPosition)?;
+        let doc = docs.get_mut(path).ok_or(DocumentError::DocumentNotOpen)?;
         doc.apply_changes(new_version, changes)
     }
 
@@ -105,4 +105,3 @@ mod tests {
         assert_eq!(overlay.read_to_string(&vfs_path).unwrap(), "disk");
     }
 }
-

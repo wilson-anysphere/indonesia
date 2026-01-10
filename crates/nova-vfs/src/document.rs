@@ -29,15 +29,15 @@ impl ContentChange {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentError {
+    DocumentNotOpen,
     InvalidRange,
-    InvalidPosition,
 }
 
 impl fmt::Display for DocumentError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            DocumentError::DocumentNotOpen => write!(f, "document not open"),
             DocumentError::InvalidRange => write!(f, "invalid range"),
-            DocumentError::InvalidPosition => write!(f, "invalid position"),
         }
     }
 }
@@ -100,8 +100,8 @@ impl Document {
             }
         };
 
-        let start = self.position_to_offset(range.start)?;
-        let end = self.position_to_offset(range.end)?;
+        let start = self.position_to_offset(range.start);
+        let end = self.position_to_offset(range.end);
         if start > end || end > self.text.len() {
             return Err(DocumentError::InvalidRange);
         }
@@ -119,23 +119,35 @@ impl Document {
         Position::new(last_line, utf16_len(line_text) as u32)
     }
 
-    fn position_to_offset(&self, position: Position) -> Result<usize, DocumentError> {
+    fn position_to_offset(&self, position: Position) -> usize {
         let line = position.line as usize;
-        let line_start = *self
-            .line_offsets
-            .get(line)
-            .ok_or(DocumentError::InvalidPosition)?;
+        if line >= self.line_offsets.len() {
+            return self.text.len();
+        }
 
-        let line_end = if line + 1 < self.line_offsets.len() {
+        let line_start = self.line_offsets[line];
+
+        let mut line_end = if line + 1 < self.line_offsets.len() {
             self.line_offsets[line + 1]
         } else {
             self.text.len()
         };
-        let line_slice = &self.text[line_start..line_end];
 
-        let rel = utf16_column_to_byte_offset(line_slice, position.character)
-            .ok_or(DocumentError::InvalidPosition)?;
-        Ok(line_start + rel)
+        // Exclude the line terminator from column calculations. LSP positions are
+        // defined over the line text, not including `\n` (and also `\r\n`).
+        if line_end > line_start {
+            let bytes = self.text.as_bytes();
+            if bytes[line_end - 1] == b'\n' {
+                line_end -= 1;
+                if line_end > line_start && bytes[line_end - 1] == b'\r' {
+                    line_end -= 1;
+                }
+            }
+        }
+
+        let line_slice = &self.text[line_start..line_end];
+        let rel = utf16_column_to_byte_offset_clamped(line_slice, position.character);
+        line_start + rel
     }
 }
 
@@ -155,24 +167,22 @@ fn utf16_len(s: &str) -> usize {
 
 /// Converts a UTF-16 code unit column into a byte offset into `line`.
 ///
-/// Returns `None` if the column is out of range or splits a surrogate pair.
-fn utf16_column_to_byte_offset(line: &str, column_utf16: u32) -> Option<usize> {
+/// The conversion is *clamped*:
+/// - columns past the end of the line map to the line end
+/// - columns that split a multi-code-unit character map to the start of that character
+fn utf16_column_to_byte_offset_clamped(line: &str, column_utf16: u32) -> usize {
     let mut col: u32 = 0;
     for (idx, ch) in line.char_indices() {
         let ch_len = ch.len_utf16() as u32;
-        if col == column_utf16 {
-            return Some(idx);
+        if col >= column_utf16 {
+            return idx;
         }
         if col + ch_len > column_utf16 {
-            return None;
+            return idx;
         }
-        col += ch_len;
+        col = col.saturating_add(ch_len);
     }
-    if col == column_utf16 {
-        Some(line.len())
-    } else {
-        None
-    }
+    line.len()
 }
 
 #[cfg(test)]
@@ -218,5 +228,24 @@ mod tests {
 
         assert_eq!(doc.text(), "aXb");
     }
-}
 
+    #[test]
+    fn clamps_out_of_bounds_character_offsets() {
+        let mut doc = Document::new("a\r\nb", 1);
+        // Line 0 is just "a" (CRLF is the line terminator and not part of the line).
+        let range = Range::new(Position::new(0, 2), Position::new(0, 2));
+        doc.apply_changes(2, &[ContentChange::replace(range, "X")])
+            .unwrap();
+        assert_eq!(doc.text(), "aX\r\nb");
+    }
+
+    #[test]
+    fn clamps_positions_inside_surrogate_pairs() {
+        let mut doc = Document::new("a𐐀b", 1);
+        // UTF-16 column 2 falls between the surrogate pair code units.
+        let range = Range::new(Position::new(0, 2), Position::new(0, 2));
+        doc.apply_changes(2, &[ContentChange::replace(range, "X")])
+            .unwrap();
+        assert_eq!(doc.text(), "aX𐐀b");
+    }
+}
