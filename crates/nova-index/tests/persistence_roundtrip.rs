@@ -231,3 +231,40 @@ fn indexes_invalidate_deleted_files() {
     assert!(loaded_v2.indexes.symbols.symbols.contains_key("A"));
     assert!(!loaded_v2.indexes.symbols.symbols.contains_key("B"));
 }
+
+#[test]
+fn corrupt_metadata_is_cache_miss() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    std::fs::write(&a, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut indexes = ProjectIndexes::default();
+    indexes.symbols.insert(
+        "A",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+
+    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+
+    std::fs::write(cache_dir.metadata_path(), "this is not json").unwrap();
+
+    let loaded = load_indexes(&cache_dir, &snapshot).unwrap();
+    assert!(loaded.is_none());
+}

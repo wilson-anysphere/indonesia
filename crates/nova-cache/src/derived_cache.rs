@@ -57,8 +57,14 @@ impl DerivedArtifactCache {
             return Ok(None);
         }
 
-        let bytes = std::fs::read(path)?;
-        let persisted: PersistedDerivedValueOwned<T> = bincode::deserialize(&bytes)?;
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(_) => return Ok(None),
+        };
+        let persisted: PersistedDerivedValueOwned<T> = match bincode::deserialize(&bytes) {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
 
         if persisted.schema_version != DERIVED_CACHE_SCHEMA_VERSION {
             return Ok(None);

@@ -56,7 +56,10 @@ pub fn load_indexes(
     if !metadata_path.exists() {
         return Ok(None);
     }
-    let metadata = CacheMetadata::load(metadata_path)?;
+    let metadata = match CacheMetadata::load(metadata_path) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(None),
+    };
     if !metadata.is_compatible() {
         return Ok(None);
     }
@@ -137,7 +140,10 @@ fn read_index_file<T: for<'de> Deserialize<'de>>(
         return Ok(None);
     }
 
-    let bytes = std::fs::read(path)?;
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
     let persisted: PersistedIndex<T> = match bincode::deserialize(&bytes) {
         Ok(value) => value,
         Err(_) => return Ok(None),
