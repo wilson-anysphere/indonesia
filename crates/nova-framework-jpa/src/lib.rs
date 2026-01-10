@@ -13,6 +13,7 @@ mod entity;
 mod jpql;
 
 pub use applicability::is_jpa_applicable;
+pub use applicability::is_jpa_applicable_with_classpath;
 pub use entity::{AnalysisResult, Entity, EntityModel, Field, Relationship, RelationshipKind};
 pub use jpql::{
     extract_jpql_strings, jpql_completions, jpql_completions_in_java_source, jpql_diagnostics,

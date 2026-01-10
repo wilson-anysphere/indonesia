@@ -1,4 +1,7 @@
-use nova_framework_jpa::{analyze_java_sources, jpql_completions, jpql_completions_in_java_source};
+use nova_framework_jpa::{
+    analyze_java_sources, is_jpa_applicable_with_classpath, jpql_completions,
+    jpql_completions_in_java_source,
+};
 use pretty_assertions::assert_eq;
 
 #[test]
@@ -233,4 +236,40 @@ fn invalid_relationship_target_type_emits_diagnostic() {
         "expected JPA_REL_INVALID_TARGET_TYPE diagnostic, got: {:#?}",
         analysis.diagnostics
     );
+}
+
+#[test]
+fn applicability_detects_jpa_on_classpath_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir
+        .path()
+        .join("jakarta")
+        .join("persistence")
+        .join("Entity.class");
+    std::fs::create_dir_all(marker.parent().unwrap()).unwrap();
+    std::fs::write(&marker, b"").unwrap();
+
+    let classpath = vec![dir.path()];
+    assert!(is_jpa_applicable_with_classpath(&[], &classpath, &[]));
+}
+
+#[test]
+fn applicability_detects_jpa_in_jar_classpath_entry() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let jar_path = dir.path().join("jpa.jar");
+
+    let file = std::fs::File::create(&jar_path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file(
+        "jakarta/persistence/Entity.class",
+        zip::write::FileOptions::default(),
+    )
+    .unwrap();
+    zip.write_all(b"").unwrap();
+    zip.finish().unwrap();
+
+    let classpath = vec![jar_path.as_path()];
+    assert!(is_jpa_applicable_with_classpath(&[], &classpath, &[]));
 }
