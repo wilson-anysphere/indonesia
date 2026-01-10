@@ -397,11 +397,11 @@ impl std::error::Error for RegisterError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::traits::DiagnosticProvider;
+    use crate::traits::{CompletionParams, CompletionProvider, DiagnosticProvider};
     use nova_config::NovaConfig;
     use nova_core::FileId;
     use nova_scheduler::CancellationToken;
-    use nova_types::{Diagnostic, ProjectId, Span};
+    use nova_types::{CompletionItem, Diagnostic, ProjectId, Span};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -416,6 +416,10 @@ mod tests {
 
     fn diag(message: &str) -> Diagnostic {
         Diagnostic::warning("TEST", message, Some(Span::new(0, 1)))
+    }
+
+    fn completion(label: &str) -> CompletionItem {
+        CompletionItem::new(label)
     }
 
     #[test]
@@ -553,5 +557,90 @@ mod tests {
             out.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(),
             vec!["1", "2", "1"]
         );
+    }
+
+    #[test]
+    fn completions_are_deterministic_by_provider_id() {
+        struct Provider {
+            id: &'static str,
+            label: &'static str,
+        }
+
+        impl CompletionProvider<()> for Provider {
+            fn id(&self) -> &str {
+                self.id
+            }
+
+            fn provide_completions(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: CompletionParams,
+            ) -> Vec<CompletionItem> {
+                vec![completion(self.label)]
+            }
+        }
+
+        let mut registry_a = ExtensionRegistry::default();
+        registry_a
+            .register_completion_provider(Arc::new(Provider { id: "b", label: "from-b" }))
+            .unwrap();
+        registry_a
+            .register_completion_provider(Arc::new(Provider { id: "a", label: "from-a" }))
+            .unwrap();
+
+        let mut registry_b = ExtensionRegistry::default();
+        registry_b
+            .register_completion_provider(Arc::new(Provider { id: "a", label: "from-a" }))
+            .unwrap();
+        registry_b
+            .register_completion_provider(Arc::new(Provider { id: "b", label: "from-b" }))
+            .unwrap();
+
+        let params = CompletionParams { file: FileId::from_raw(1), offset: 0 };
+        let out_a = registry_a.completions(ctx(), params);
+        let out_b = registry_b.completions(ctx(), params);
+
+        assert_eq!(out_a, out_b);
+        assert_eq!(
+            out_a.into_iter().map(|c| c.label).collect::<Vec<_>>(),
+            vec!["from-a".to_string(), "from-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn filters_inapplicable_providers() {
+        struct Applicable;
+        impl DiagnosticProvider<()> for Applicable {
+            fn id(&self) -> &str {
+                "applicable"
+            }
+
+            fn provide_diagnostics(&self, _ctx: ExtensionContext<()>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+                vec![diag("ok")]
+            }
+        }
+
+        struct Inapplicable;
+        impl DiagnosticProvider<()> for Inapplicable {
+            fn id(&self) -> &str {
+                "inapplicable"
+            }
+
+            fn is_applicable(&self, _ctx: &ExtensionContext<()>) -> bool {
+                false
+            }
+
+            fn provide_diagnostics(&self, _ctx: ExtensionContext<()>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+                vec![diag("should-not-run")]
+            }
+        }
+
+        let mut registry = ExtensionRegistry::default();
+        registry.register_diagnostic_provider(Arc::new(Inapplicable)).unwrap();
+        registry.register_diagnostic_provider(Arc::new(Applicable)).unwrap();
+
+        let out = registry.diagnostics(ctx(), DiagnosticParams { file: FileId::from_raw(1) });
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].message, "ok");
     }
 }
