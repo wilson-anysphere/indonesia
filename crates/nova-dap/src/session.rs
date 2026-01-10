@@ -1,4 +1,4 @@
-use nova_jdwp::{JdwpClient, JdwpError, JdwpValue, StepKind, ThreadId};
+use nova_jdwp::{FrameId, JdwpClient, JdwpError, JdwpValue, StepKind, ThreadId};
 
 use crate::dap::types::{EvaluateResult, OutputEvent, Scope, Variable, VariablePresentationHint};
 use crate::error::{DebugError, DebugResult};
@@ -24,6 +24,13 @@ impl<C: JdwpClient> DebugSession<C> {
     /// useful in tests with [`nova_jdwp::MockJdwpClient`].
     pub fn jdwp_mut(&mut self) -> &mut C {
         &mut self.jdwp
+    }
+
+    pub fn format_value(&mut self, value: &JdwpValue) -> DebugResult<String> {
+        Ok(self
+            .formatter
+            .format_value(&mut self.jdwp, &mut self.objects, value, None)?
+            .value)
     }
 
     pub fn scopes(&self, locals_variables_reference: i64) -> Vec<Scope> {
@@ -82,6 +89,7 @@ impl<C: JdwpClient> DebugSession<C> {
                     })
                 })
                 .collect(),
+            Err(JdwpError::NotImplemented) => Ok(Vec::new()),
             Err(JdwpError::InvalidObjectId(_)) => {
                 self.objects.mark_invalid_object_id(object_id);
                 Ok(vec![Variable {
@@ -102,8 +110,25 @@ impl<C: JdwpClient> DebugSession<C> {
         }
     }
 
-    pub fn evaluate(&mut self, thread_id: ThreadId, expression: &str) -> DebugResult<EvaluateResult> {
-        let value = self.jdwp.evaluate(thread_id, expression)?;
+    pub fn evaluate(&mut self, frame_id: FrameId, expression: &str) -> DebugResult<EvaluateResult> {
+        let value = match self.jdwp.evaluate(expression, frame_id) {
+            Ok(value) => value,
+            Err(JdwpError::NotImplemented) => {
+                return Ok(EvaluateResult {
+                    result: "Evaluation is not implemented yet".to_string(),
+                    type_: None,
+                    variables_reference: 0,
+                    evaluate_name: Some(expression.to_string()),
+                    presentation_hint: Some(VariablePresentationHint {
+                        kind: Some("virtual".to_string()),
+                        attributes: Some(vec!["invalid".to_string()]),
+                        visibility: None,
+                        lazy: None,
+                    }),
+                })
+            }
+            Err(err) => return Err(DebugError::from(err)),
+        };
         let FormattedValue {
             value,
             type_name,
@@ -129,10 +154,10 @@ impl<C: JdwpClient> DebugSession<C> {
             .ok_or(DebugError::UnknownObjectHandle(handle.as_variables_reference()))?;
 
         match self.jdwp.disable_collection(object_id) {
-            Ok(()) => {}
+            Ok(()) | Err(JdwpError::NotImplemented) => {}
             Err(JdwpError::InvalidObjectId(_)) => self.objects.mark_invalid_object_id(object_id),
             Err(err) => return Err(DebugError::from(err)),
-        }
+        };
 
         self.objects.pin(handle);
         Ok(())
@@ -145,13 +170,13 @@ impl<C: JdwpClient> DebugSession<C> {
 
         if let Some(object_id) = self.objects.object_id(handle) {
             match self.jdwp.enable_collection(object_id) {
-                Ok(()) => {}
+                Ok(()) | Err(JdwpError::NotImplemented) => {}
                 Err(JdwpError::InvalidObjectId(_)) => {
                     // Already collected; treat unpin as successful.
                     self.objects.mark_invalid_object_id(object_id)
                 }
                 Err(err) => return Err(DebugError::from(err)),
-            }
+            };
         }
 
         self.objects.unpin(handle);

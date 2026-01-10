@@ -1,11 +1,13 @@
 use crate::breakpoints::map_line_breakpoints;
 use crate::dap::codec::{read_json_message, write_json_message};
 use crate::dap::messages::{Event, Request, Response};
-use crate::jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
+use crate::object_registry::ObjectHandle;
+use crate::session::DebugSession;
 use crate::smart_step_into::enumerate_step_in_targets_in_line;
 use anyhow::Context;
 use nova_db::RootDatabase;
 use nova_project::{AttachConfig, LaunchConfig};
+use nova_jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -20,11 +22,12 @@ struct Outgoing {
 pub struct DapServer<C: JdwpClient> {
     next_seq: u64,
     db: RootDatabase,
-    jdwp: C,
+    session: DebugSession<C>,
     breakpoints: HashMap<PathBuf, Vec<u32>>,
     thread_ids: HashMap<i64, u64>,
     next_thread_id: i64,
     frame_ids: HashMap<i64, u64>,
+    frame_threads: HashMap<i64, u64>,
     next_frame_id: i64,
     frame_locations: HashMap<i64, FrameLocation>,
     should_exit: bool,
@@ -47,11 +50,12 @@ impl<C: JdwpClient> DapServer<C> {
         Self {
             next_seq: 1,
             db: RootDatabase::new(),
-            jdwp,
+            session: DebugSession::new(jdwp),
             breakpoints: HashMap::new(),
             thread_ids: HashMap::new(),
             next_thread_id: 1,
             frame_ids: HashMap::new(),
+            frame_threads: HashMap::new(),
             next_frame_id: 1,
             frame_locations: HashMap::new(),
             should_exit: false,
@@ -83,11 +87,15 @@ impl<C: JdwpClient> DapServer<C> {
             writer.flush()?;
 
             if outgoing.wait_for_stop {
-                if let Some(event) = self.jdwp.wait_for_event().ok().flatten() {
-                    if let Some(stopped) = self.jdwp_event_to_dap_stopped(event) {
-                        write_json_message(&mut writer, &stopped)?;
-                        writer.flush()?;
+                let Some(event) = self.session.jdwp_mut().wait_for_event().ok().flatten() else {
+                    continue;
+                };
+
+                if let Some(mut messages) = self.jdwp_event_to_dap_messages(event) {
+                    for msg in messages.drain(..) {
+                        write_json_message(&mut writer, &msg)?;
                     }
+                    writer.flush()?;
                 }
             }
 
@@ -119,6 +127,7 @@ impl<C: JdwpClient> DapServer<C> {
             "variables" => self.variables(request),
             "evaluate" => self.evaluate(request),
             "continue" | "next" | "stepIn" | "stepOut" | "pause" => self.execution_control(request),
+            "nova/pinObject" => self.pin_object(request),
             "disconnect" => self.disconnect(request),
             _ => Ok(Outgoing {
                 messages: vec![serde_json::to_value(Response::error(
@@ -161,7 +170,7 @@ impl<C: JdwpClient> DapServer<C> {
 
         if let Some(port) = args.port {
             let host = args.host.as_deref().unwrap_or("127.0.0.1");
-            let _ = self.jdwp.connect(host, port);
+            let _ = self.session.jdwp_mut().connect(host, port);
         }
 
         self.simple_ok(request, None)
@@ -176,7 +185,7 @@ impl<C: JdwpClient> DapServer<C> {
         )?;
 
         let host = args.host.as_deref().unwrap_or("127.0.0.1");
-        let _ = self.jdwp.connect(host, args.port);
+        let _ = self.session.jdwp_mut().connect(host, args.port);
         self.simple_ok(request, None)
     }
 
@@ -227,14 +236,15 @@ impl<C: JdwpClient> DapServer<C> {
             let mut verified = bp.verified;
             let mut message: Option<String> = None;
             if verified {
-                if let Some(class) = &bp.enclosing_class {
-                    if let Err(err) =
-                        self.jdwp
-                            .set_line_breakpoint(class, bp.enclosing_method.as_deref(), bp.resolved_line)
-                    {
-                        verified = false;
-                        message = Some(err.to_string());
-                    }
+                    if let Some(class) = &bp.enclosing_class {
+                        if let Err(err) =
+                            self.session
+                                .jdwp_mut()
+                                .set_line_breakpoint(class, bp.enclosing_method.as_deref(), bp.resolved_line)
+                        {
+                            verified = false;
+                            message = Some(err.to_string());
+                        }
                 } else {
                     verified = false;
                     message = Some("Unable to determine enclosing class for breakpoint".to_string());
@@ -253,7 +263,7 @@ impl<C: JdwpClient> DapServer<C> {
     }
 
     fn threads(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
-        let threads = match self.jdwp.threads() {
+        let threads = match self.session.jdwp_mut().threads() {
             Ok(threads) => {
                 let mut dap_threads = Vec::new();
                 for thread in threads {
@@ -294,7 +304,7 @@ impl<C: JdwpClient> DapServer<C> {
             return self.simple_ok(request, Some(body));
         };
 
-        let frames = match self.jdwp.stack_frames(jdwp_thread_id) {
+        let frames = match self.session.jdwp_mut().stack_frames(jdwp_thread_id) {
             Ok(frames) => frames,
             Err(_) => {
                 let body = json!({ "stackFrames": [], "totalFrames": 0 });
@@ -304,6 +314,7 @@ impl<C: JdwpClient> DapServer<C> {
 
         let mut dap_frames = Vec::new();
         self.frame_locations.clear();
+        self.frame_threads.clear();
         for frame in frames {
             let dap_frame_id = self.alloc_frame_id(frame.id);
             let source = frame.source_path.as_ref().map(|name| json!({ "name": name }));
@@ -321,6 +332,7 @@ impl<C: JdwpClient> DapServer<C> {
                     line: frame.line,
                 },
             );
+            self.frame_threads.insert(dap_frame_id, jdwp_thread_id);
         }
 
         let body = json!({
@@ -388,25 +400,80 @@ impl<C: JdwpClient> DapServer<C> {
     }
 
     fn scopes(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
-        let body = json!({
-            "scopes": [
-                {"name": "Locals", "presentationHint": "locals", "variablesReference": 1, "expensive": false}
-            ]
-        });
+        let scopes = self.session.scopes(1);
+        let body = serde_json::to_value(json!({ "scopes": scopes }))?;
         self.simple_ok(request, Some(body))
     }
 
     fn variables(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
-        let body = json!({ "variables": [] });
-        self.simple_ok(request, Some(body))
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Args {
+            variables_reference: i64,
+        }
+
+        let args: Args = serde_json::from_value(
+            request
+                .arguments
+                .clone()
+                .context("variables requires arguments")?,
+        )?;
+
+        let variables = if args.variables_reference == 1 {
+            Vec::new()
+        } else {
+            self.session.variables(args.variables_reference)?
+        };
+
+        self.simple_ok(request, Some(json!({ "variables": variables })))
     }
 
     fn evaluate(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
-        let body = json!({
-            "result": "Evaluation is not implemented yet",
-            "variablesReference": 0
-        });
-        self.simple_ok(request, Some(body))
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Args {
+            expression: String,
+            #[serde(default)]
+            frame_id: Option<i64>,
+        }
+
+        let args: Args = serde_json::from_value(
+            request
+                .arguments
+                .clone()
+                .context("evaluate requires arguments")?,
+        )?;
+
+        let Some(dap_frame_id) = args.frame_id else {
+            return self.simple_ok(
+                request,
+                Some(json!({
+                    "result": "Evaluation requires a frameId",
+                    "variablesReference": 0,
+                })),
+            );
+        };
+
+        let Some(jdwp_frame_id) = self.frame_ids.get(&dap_frame_id).copied() else {
+            return self.simple_ok(
+                request,
+                Some(json!({
+                    "result": "Unknown frameId",
+                    "variablesReference": 0,
+                })),
+            );
+        };
+
+        match self.session.evaluate(jdwp_frame_id, &args.expression) {
+            Ok(eval) => self.simple_ok(request, Some(serde_json::to_value(eval)?)),
+            Err(err) => self.simple_ok(
+                request,
+                Some(json!({
+                    "result": err.to_string(),
+                    "variablesReference": 0,
+                })),
+            ),
+        }
     }
 
     fn execution_control(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
@@ -424,13 +491,12 @@ impl<C: JdwpClient> DapServer<C> {
             .transpose()?
             .unwrap_or(Args { thread_id: None });
 
-        if let Some(thread_id) = args.thread_id.and_then(|id| self.thread_ids.get(&id).copied()) {
+        let jdwp_thread_id = args.thread_id.and_then(|id| self.thread_ids.get(&id).copied());
+
+        if let Some(thread_id) = jdwp_thread_id {
             let _ = match request.command.as_str() {
-                "continue" => self.jdwp.r#continue(thread_id),
-                "pause" => self.jdwp.pause(thread_id),
-                "next" => self.jdwp.next(thread_id),
-                "stepIn" => self.jdwp.step_in(thread_id),
-                "stepOut" => self.jdwp.step_out(thread_id),
+                "continue" => self.session.jdwp_mut().r#continue(thread_id),
+                "pause" => self.session.jdwp_mut().pause(thread_id),
                 _ => Ok(()),
             };
         }
@@ -441,10 +507,7 @@ impl<C: JdwpClient> DapServer<C> {
             "continue" => Some(json!({ "allThreadsContinued": true })),
             _ => None,
         };
-        let wait_for_stop = matches!(
-            request.command.as_str(),
-            "continue" | "next" | "stepIn" | "stepOut"
-        );
+        let wait_for_stop = request.command == "continue";
 
         let mut outgoing = self.simple_ok(request, body)?;
         if request.command == "pause" {
@@ -461,8 +524,67 @@ impl<C: JdwpClient> DapServer<C> {
                 Some(serde_json::Value::Object(stopped_body)),
             ))?);
         }
+
+        if matches!(request.command.as_str(), "next" | "stepIn" | "stepOut") {
+            let Some(thread_id) = jdwp_thread_id else {
+                outgoing.wait_for_stop = false;
+                return Ok(outgoing);
+            };
+
+            let step = match request.command.as_str() {
+                "next" => self.session.step_over(thread_id)?,
+                "stepIn" => self.session.step_in(thread_id)?,
+                "stepOut" => self.session.step_out(thread_id)?,
+                _ => unreachable!(),
+            };
+
+            for output in step.output {
+                outgoing.messages.push(serde_json::to_value(Event::new(
+                    self.alloc_seq(),
+                    "output",
+                    Some(serde_json::to_value(output)?),
+                ))?);
+            }
+
+            if let Some(stopped) = self.stopped_event_to_dap(step.stopped) {
+                outgoing.messages.push(stopped);
+            }
+
+            outgoing.wait_for_stop = false;
+            return Ok(outgoing);
+        }
+
         outgoing.wait_for_stop = wait_for_stop;
         Ok(outgoing)
+    }
+
+    fn pin_object(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
+        #[derive(Debug, Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Args {
+            variables_reference: i64,
+            #[serde(default)]
+            pinned: bool,
+        }
+
+        let args: Args = serde_json::from_value(
+            request
+                .arguments
+                .clone()
+                .context("pinObject requires arguments")?,
+        )?;
+
+        let Some(handle) = ObjectHandle::from_variables_reference(args.variables_reference) else {
+            return self.simple_ok(request, Some(json!({ "pinned": false })));
+        };
+
+        if args.pinned {
+            let _ = self.session.pin_object(handle);
+        } else {
+            let _ = self.session.unpin_object(handle);
+        }
+
+        self.simple_ok(request, Some(json!({ "pinned": args.pinned })))
     }
 
     fn disconnect(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
@@ -508,33 +630,75 @@ impl<C: JdwpClient> DapServer<C> {
         id
     }
 
-    fn jdwp_event_to_dap_stopped(&mut self, event: JdwpEvent) -> Option<serde_json::Value> {
+    fn jdwp_event_to_dap_messages(&mut self, event: JdwpEvent) -> Option<Vec<serde_json::Value>> {
         match event {
             JdwpEvent::Stopped(stopped) => {
-                let dap_thread_id = self.alloc_thread_id(stopped.thread_id);
-                Some(
-                    serde_json::to_value(Event::new(
-                        self.alloc_seq(),
-                        "stopped",
-                        Some(json!({
-                            "reason": stopped.reason.as_dap_reason(),
-                            "threadId": dap_thread_id,
-                            // Breakpoints/steps are configured with `SuspendPolicy.EVENT_THREAD`,
-                            // so only the event thread is stopped.
-                            "allThreadsStopped": false,
-                        })),
-                    ))
-                    .ok()?,
-                )
+                let mut messages = Vec::new();
+
+                if let Some(return_value) = &stopped.return_value {
+                    if let Ok(formatted) = self.session.format_value(return_value) {
+                        messages.push(
+                            serde_json::to_value(Event::new(
+                                self.alloc_seq(),
+                                "output",
+                                Some(serde_json::to_value(crate::dap::types::OutputEvent {
+                                    category: Some("console".to_string()),
+                                    output: format!("Return value: {formatted}\n"),
+                                })
+                                .ok()?),
+                            ))
+                            .ok()?,
+                        );
+                    }
+                }
+
+                if let Some(expr_value) = &stopped.expression_value {
+                    if let Ok(formatted) = self.session.format_value(expr_value) {
+                        messages.push(
+                            serde_json::to_value(Event::new(
+                                self.alloc_seq(),
+                                "output",
+                                Some(serde_json::to_value(crate::dap::types::OutputEvent {
+                                    category: Some("console".to_string()),
+                                    output: format!("Expression value: {formatted}\n"),
+                                })
+                                .ok()?),
+                            ))
+                            .ok()?,
+                        );
+                    }
+                }
+
+                if let Some(stopped) = self.stopped_event_to_dap(stopped) {
+                    messages.push(stopped);
+                }
+
+                Some(messages)
             }
         }
+    }
+
+    fn stopped_event_to_dap(&mut self, stopped: nova_jdwp::StoppedEvent) -> Option<serde_json::Value> {
+        let dap_thread_id = self.alloc_thread_id(stopped.thread_id);
+        serde_json::to_value(Event::new(
+            self.alloc_seq(),
+            "stopped",
+            Some(json!({
+                "reason": stopped.reason.as_dap_reason(),
+                "threadId": dap_thread_id,
+                // Breakpoints/steps are configured with `SuspendPolicy.EVENT_THREAD`,
+                // so only the event thread is stopped.
+                "allThreadsStopped": false,
+            })),
+        ))
+        .ok()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jdwp::{JdwpError, StackFrameInfo, ThreadInfo};
+    use nova_jdwp::{JdwpError, StackFrameInfo, ThreadInfo};
     use serde_json::Value;
     use tempfile::TempDir;
 

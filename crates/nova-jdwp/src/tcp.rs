@@ -3,109 +3,16 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use thiserror::Error;
-
-#[derive(Debug, Error)]
-pub enum JdwpError {
-    #[error("JDWP client is not connected")]
-    NotConnected,
-    #[error("JDWP operation not implemented")]
-    NotImplemented,
-    #[error("JDWP protocol error: {0}")]
-    Protocol(String),
-    #[error("JDWP command failed with error code {error_code}")]
-    CommandFailed { error_code: u16 },
-    #[error(transparent)]
-    Io(#[from] io::Error),
-    #[error("JDWP handshake failed")]
-    HandshakeFailed,
-    #[error("JDWP string was not valid UTF-8")]
-    InvalidUtf8(#[from] std::string::FromUtf8Error),
-}
-
-#[derive(Debug, Clone)]
-pub struct ThreadInfo {
-    pub id: u64,
-    pub name: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct StackFrameInfo {
-    pub id: u64,
-    pub name: String,
-    pub source_path: Option<String>,
-    pub line: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StoppedReason {
-    Breakpoint,
-    Step,
-}
-
-impl StoppedReason {
-    pub fn as_dap_reason(self) -> &'static str {
-        match self {
-            StoppedReason::Breakpoint => "breakpoint",
-            StoppedReason::Step => "step",
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StoppedEvent {
-    pub reason: StoppedReason,
-    pub thread_id: u64,
-    pub request_id: u32,
-}
-
-#[derive(Debug, Clone)]
-pub enum JdwpEvent {
-    Stopped(StoppedEvent),
-}
-
-/// Minimal, mock-friendly interface for the Java Debug Wire Protocol.
-///
-/// The implementation included in this repository purposefully keeps the API
-/// small; it is expected to grow as Nova's debugger matures.
-pub trait JdwpClient: Send {
-    fn connect(&mut self, host: &str, port: u16) -> Result<(), JdwpError>;
-
-    fn set_line_breakpoint(
-        &mut self,
-        class: &str,
-        method: Option<&str>,
-        line: u32,
-    ) -> Result<(), JdwpError>;
-
-    fn threads(&mut self) -> Result<Vec<ThreadInfo>, JdwpError>;
-    fn stack_frames(&mut self, thread_id: u64) -> Result<Vec<StackFrameInfo>, JdwpError>;
-
-    fn r#continue(&mut self, thread_id: u64) -> Result<(), JdwpError>;
-    fn next(&mut self, thread_id: u64) -> Result<(), JdwpError>;
-    fn step_in(&mut self, thread_id: u64) -> Result<(), JdwpError>;
-    fn step_out(&mut self, thread_id: u64) -> Result<(), JdwpError>;
-    fn pause(&mut self, thread_id: u64) -> Result<(), JdwpError>;
-
-    /// Wait until the next asynchronous event is received from the JVM.
-    ///
-    /// A real debugger would typically run an event loop and forward events to
-    /// the DAP client asynchronously. For now we expose a simple blocking call
-    /// that enables basic breakpoint/step handling.
-    fn wait_for_event(&mut self) -> Result<Option<JdwpEvent>, JdwpError> {
-        Ok(None)
-    }
-
-    fn evaluate(&mut self, _expression: &str, _frame_id: u64) -> Result<String, JdwpError> {
-        Err(JdwpError::NotImplemented)
-    }
-}
+use crate::{
+    JdwpClient, JdwpError, JdwpEvent, StackFrameInfo, StopReason, StoppedEvent, ThreadId, ThreadInfo,
+};
 
 /// A very small JDWP client.
 ///
-/// Currently this implements only the initial JDWP handshake. Higher-level
-/// commands (setting breakpoints, querying threads, etc.) are stubbed behind
-/// [`JdwpError::NotImplemented`] while the wire protocol is filled out.
+/// Currently this implements only the initial JDWP handshake plus a handful of
+/// commands needed for early DAP integration. Higher-level commands (value
+/// inspection, object pinning) are left as [`JdwpError::NotImplemented`] while
+/// the wire protocol is filled out.
 pub struct TcpJdwpClient {
     stream: Option<TcpStream>,
     next_packet_id: u32,
@@ -286,34 +193,15 @@ impl TcpJdwpClient {
                     },
                 );
             }
+
             self.cache.methods.insert(type_id, methods);
         }
 
-        Ok(self.cache.methods.get(&type_id).expect("just inserted"))
+        Ok(self.cache.methods.get(&type_id).unwrap())
     }
 
-    fn source_file_for_type(&mut self, type_id: u64) -> Result<Option<String>, JdwpError> {
-        if let Some(name) = self.cache.source_files.get(&type_id) {
-            return Ok(Some(name.clone()));
-        }
-
-        let mut body = Vec::new();
-        write_id(&mut body, self.id_sizes.reference_type_id, type_id);
-
-        let reply = self.send_command(2, 7, &body)?;
-        let mut cursor = Cursor::new(&reply);
-        let name = cursor.read_string()?;
-        self.cache.source_files.insert(type_id, name.clone());
-        Ok(Some(name))
-    }
-
-    fn line_table_for_method(
-        &mut self,
-        type_id: u64,
-        method_id: u64,
-    ) -> Result<&[(u64, u32)], JdwpError> {
-        let key = (type_id, method_id);
-        if !self.cache.line_tables.contains_key(&key) {
+    fn line_table_for_method(&mut self, type_id: u64, method_id: u64) -> Result<&Vec<(u64, u32)>, JdwpError> {
+        if !self.cache.line_tables.contains_key(&(type_id, method_id)) {
             let mut body = Vec::new();
             write_id(&mut body, self.id_sizes.reference_type_id, type_id);
             write_id(&mut body, self.id_sizes.method_id, method_id);
@@ -324,31 +212,105 @@ impl TcpJdwpClient {
             let _end = cursor.read_i64()?;
             let count = cursor.read_u32()? as usize;
 
-            let mut entries = Vec::with_capacity(count);
+            let mut entries = Vec::new();
             for _ in 0..count {
                 let code_index = cursor.read_i64()? as u64;
                 let line = cursor.read_u32()?;
                 entries.push((code_index, line));
             }
-            self.cache.line_tables.insert(key, entries);
+            self.cache.line_tables.insert((type_id, method_id), entries);
         }
 
-        Ok(self
-            .cache
-            .line_tables
-            .get(&key)
-            .expect("just inserted"))
+        Ok(self.cache.line_tables.get(&(type_id, method_id)).unwrap())
     }
 
-    fn resolve_location_for_line(
+    fn source_file_for_type(&mut self, type_id: u64) -> Result<Option<String>, JdwpError> {
+        if let Some(path) = self.cache.source_files.get(&type_id) {
+            return Ok(Some(path.clone()));
+        }
+
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.reference_type_id, type_id);
+
+        let reply = self.send_command(2, 7, &body)?;
+        let mut cursor = Cursor::new(&reply);
+        let file = cursor.read_string()?;
+        self.cache.source_files.insert(type_id, file.clone());
+        Ok(Some(file))
+    }
+
+    fn resume_vm(&mut self) -> Result<(), JdwpError> {
+        let _ = self.send_command(1, 9, &[])?;
+        Ok(())
+    }
+
+    fn clear_event_request(&mut self, event_kind: u8, request_id: u32) -> Result<(), JdwpError> {
+        let mut body = Vec::new();
+        body.push(event_kind);
+        body.extend_from_slice(&request_id.to_be_bytes());
+        let _ = self.send_command(15, 2, &body)?;
+        Ok(())
+    }
+
+    fn set_step_request(&mut self, thread_id: u64, depth: i32) -> Result<u32, JdwpError> {
+        // EventRequest.Set(STEP)
+        let mut body = Vec::new();
+        body.push(1); // EventKind.STEP
+        body.push(1); // SuspendPolicy.EVENT_THREAD
+        body.extend_from_slice(&(2u32).to_be_bytes()); // modifiers
+
+        // Modifier.Count (1) - trigger once.
+        body.push(1);
+        body.extend_from_slice(&(1u32).to_be_bytes());
+
+        // Modifier.Step (10)
+        body.push(10);
+        write_id(&mut body, self.id_sizes.object_id, thread_id);
+        body.extend_from_slice(&(1i32).to_be_bytes()); // StepSize.LINE
+        body.extend_from_slice(&(depth).to_be_bytes());
+
+        let reply = self.send_command(15, 1, &body)?;
+        let mut cursor = Cursor::new(&reply);
+        let request_id = cursor.read_u32()?;
+        Ok(request_id)
+    }
+
+    fn set_breakpoint_request(&mut self, location: Location) -> Result<u32, JdwpError> {
+        // EventRequest.Set(BREAKPOINT)
+        let mut body = Vec::new();
+        body.push(2); // EventKind.BREAKPOINT
+        body.push(1); // SuspendPolicy.EVENT_THREAD
+        body.extend_from_slice(&(1u32).to_be_bytes()); // modifiers
+
+        // Modifier.LocationOnly (7)
+        body.push(7);
+        body.push(1); // TypeTag.CLASS
+        write_id(&mut body, self.id_sizes.reference_type_id, location.type_id);
+        write_id(&mut body, self.id_sizes.method_id, location.method_id);
+        body.extend_from_slice(&(location.index as i64).to_be_bytes());
+
+        let reply = self.send_command(15, 1, &body)?;
+        let mut cursor = Cursor::new(&reply);
+        let request_id = cursor.read_u32()?;
+        Ok(request_id)
+    }
+
+    fn resolve_location(
         &mut self,
-        type_id: u64,
+        class: &str,
         method_name: Option<&str>,
         line: u32,
     ) -> Result<Option<Location>, JdwpError> {
-        let methods = self.methods_for_type(type_id)?.clone();
+        let signature = class_name_to_signature(class);
+        let Some(info) = self.class_by_signature(&signature)? else {
+            return Ok(None);
+        };
+
         let mut best: Option<(u32, Location)> = None;
 
+        // Clone to avoid holding a mutable borrow of `self.cache.methods` while
+        // also looking up line tables (which may populate caches).
+        let methods = self.methods_for_type(info.type_id)?.clone();
         for method in methods.values() {
             if let Some(filter) = method_name {
                 if method.name != filter {
@@ -356,11 +318,10 @@ impl TcpJdwpClient {
                 }
             }
 
-            let table = self.line_table_for_method(type_id, method.id)?;
+            let table = self.line_table_for_method(info.type_id, method.id)?;
             if table.is_empty() {
                 continue;
             }
-
             let mut best_entry: Option<(u32, u64)> = None;
             for &(code_index, entry_line) in table {
                 let dist = if entry_line >= line {
@@ -370,11 +331,9 @@ impl TcpJdwpClient {
                 };
                 match best_entry {
                     None => best_entry = Some((dist, code_index)),
-                    Some((best_dist, best_idx)) => {
+                    Some((best_dist, _)) => {
                         if dist < best_dist || (dist == best_dist && entry_line >= line) {
                             best_entry = Some((dist, code_index));
-                        } else {
-                            let _ = best_idx;
                         }
                     }
                 }
@@ -382,7 +341,7 @@ impl TcpJdwpClient {
 
             if let Some((dist, code_index)) = best_entry {
                 let loc = Location {
-                    type_id,
+                    type_id: info.type_id,
                     method_id: method.id,
                     index: code_index as i64,
                 };
@@ -422,9 +381,11 @@ impl TcpJdwpClient {
                     let _index = cursor.read_i64()?;
 
                     self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
-                        reason: StoppedReason::Step,
+                        reason: StopReason::Step,
                         thread_id,
                         request_id,
+                        return_value: None,
+                        expression_value: None,
                     }));
                 }
                 2 => {
@@ -437,9 +398,11 @@ impl TcpJdwpClient {
                     let _index = cursor.read_i64()?;
 
                     self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
-                        reason: StoppedReason::Breakpoint,
+                        reason: StopReason::Breakpoint,
                         thread_id,
                         request_id,
+                        return_value: None,
+                        expression_value: None,
                     }));
                 }
                 other => {
@@ -450,42 +413,6 @@ impl TcpJdwpClient {
             }
         }
 
-        Ok(())
-    }
-
-    fn clear_event_request(&mut self, event_kind: u8, request_id: u32) -> Result<(), JdwpError> {
-        let mut body = Vec::new();
-        body.push(event_kind);
-        body.extend_from_slice(&request_id.to_be_bytes());
-        let _ = self.send_command(15, 2, &body)?;
-        Ok(())
-    }
-
-    fn set_step_request(&mut self, thread_id: u64, depth: i32) -> Result<u32, JdwpError> {
-        // EventRequest.Set(STEP)
-        let mut body = Vec::new();
-        body.push(1); // EventKind.STEP
-        body.push(1); // SuspendPolicy.EVENT_THREAD
-        body.extend_from_slice(&(2u32).to_be_bytes()); // modifiers
-
-        // Modifier.Count (1) - trigger once.
-        body.push(1);
-        body.extend_from_slice(&(1u32).to_be_bytes());
-
-        // Modifier.Step (10)
-        body.push(10);
-        write_id(&mut body, self.id_sizes.object_id, thread_id);
-        body.extend_from_slice(&(1i32).to_be_bytes()); // StepSize.LINE
-        body.extend_from_slice(&(depth).to_be_bytes());
-
-        let reply = self.send_command(15, 1, &body)?;
-        let mut cursor = Cursor::new(&reply);
-        let request_id = cursor.read_u32()?;
-        Ok(request_id)
-    }
-
-    fn resume_vm(&mut self) -> Result<(), JdwpError> {
-        let _ = self.send_command(1, 9, &[])?;
         Ok(())
     }
 }
@@ -501,15 +428,15 @@ impl JdwpClient for TcpJdwpClient {
         let addr = (host, port)
             .to_socket_addrs()?
             .next()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unable to resolve JDWP address"))?;
-        let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
-        stream.set_nodelay(true)?;
-        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid JDWP address"))?;
 
-        Self::perform_handshake(&mut stream)?;
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(3))?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+
+        Self::perform_handshake(&mut stream.try_clone()?)?;
+
         self.stream = Some(stream);
-
         self.id_sizes = self.id_sizes()?;
         Ok(())
     }
@@ -520,34 +447,13 @@ impl JdwpClient for TcpJdwpClient {
         method: Option<&str>,
         line: u32,
     ) -> Result<(), JdwpError> {
-        let signature = class_name_to_signature(class);
-        let Some(class_info) = self.class_by_signature(&signature)? else {
+        let Some(location) = self.resolve_location(class, method, line)? else {
             return Err(JdwpError::Protocol(format!(
-                "class {class} is not loaded in target JVM"
+                "unable to resolve breakpoint location for {class}:{line}"
             )));
         };
 
-        let Some(location) = self.resolve_location_for_line(class_info.type_id, method, line)? else {
-            return Err(JdwpError::Protocol(format!(
-                "no line table information for {class}:{line}"
-            )));
-        };
-
-        // EventRequest.Set(BREAKPOINT)
-        let mut body = Vec::new();
-        body.push(2); // EventKind.BREAKPOINT
-        body.push(1); // SuspendPolicy.EVENT_THREAD
-        body.extend_from_slice(&(1u32).to_be_bytes()); // modifiers
-
-        body.push(7); // ModifierKind.LocationOnly
-        body.push(class_info.tag);
-        write_id(&mut body, self.id_sizes.reference_type_id, location.type_id);
-        write_id(&mut body, self.id_sizes.method_id, location.method_id);
-        body.extend_from_slice(&(location.index as i64).to_be_bytes());
-
-        let reply = self.send_command(15, 1, &body)?;
-        let mut cursor = Cursor::new(&reply);
-        let _request_id = cursor.read_u32()?;
+        let _ = self.set_breakpoint_request(location)?;
         Ok(())
     }
 
@@ -572,9 +478,7 @@ impl JdwpClient for TcpJdwpClient {
         Ok(threads)
     }
 
-    fn stack_frames(&mut self, _thread_id: u64) -> Result<Vec<StackFrameInfo>, JdwpError> {
-        let thread_id = _thread_id;
-
+    fn stack_frames(&mut self, thread_id: ThreadId) -> Result<Vec<StackFrameInfo>, JdwpError> {
         let mut body = Vec::new();
         write_id(&mut body, self.id_sizes.object_id, thread_id);
         body.extend_from_slice(&(0i32).to_be_bytes()); // startFrame
@@ -617,29 +521,26 @@ impl JdwpClient for TcpJdwpClient {
         Ok(frames)
     }
 
-    fn r#continue(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+    fn r#continue(&mut self, _thread_id: ThreadId) -> Result<(), JdwpError> {
         self.resume_vm()
     }
 
-    fn next(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
-        let thread_id = _thread_id;
+    fn next(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
         let _ = self.set_step_request(thread_id, 1)?; // StepDepth.OVER
         self.resume_vm()
     }
 
-    fn step_in(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
-        let thread_id = _thread_id;
+    fn step_in(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
         let _ = self.set_step_request(thread_id, 0)?; // StepDepth.INTO
         self.resume_vm()
     }
 
-    fn step_out(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
-        let thread_id = _thread_id;
+    fn step_out(&mut self, thread_id: ThreadId) -> Result<(), JdwpError> {
         let _ = self.set_step_request(thread_id, 2)?; // StepDepth.OUT
         self.resume_vm()
     }
 
-    fn pause(&mut self, _thread_id: u64) -> Result<(), JdwpError> {
+    fn pause(&mut self, _thread_id: ThreadId) -> Result<(), JdwpError> {
         let _ = self.send_command(1, 8, &[])?;
         Ok(())
     }
@@ -671,7 +572,7 @@ impl JdwpClient for TcpJdwpClient {
                     if let Some(event) = self.pending_events.pop_front() {
                         // Step requests are one-shot; clear to avoid accumulating disabled requests.
                         let JdwpEvent::Stopped(stopped) = &event;
-                        if stopped.reason == StoppedReason::Step {
+                        if stopped.reason == StopReason::Step {
                             let _ = self.clear_event_request(1, stopped.request_id);
                         }
                         return Ok(Some(event));

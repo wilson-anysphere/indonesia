@@ -263,6 +263,7 @@ fn step_emits_output_events_for_return_values_and_expression_values() {
     jdwp.push_step(Ok(StoppedEvent {
         thread_id: 1,
         reason: StopReason::Step,
+        request_id: 0,
         return_value: Some(JdwpValue::Int(42)),
         expression_value: Some(JdwpValue::Object(ObjectRef {
             id: str_id,
@@ -277,4 +278,3 @@ fn step_emits_output_events_for_return_values_and_expression_values() {
     assert!(output.output[0].output.contains("Return value: 42"));
     assert!(output.output[1].output.contains("Expression value: \"hello\""));
 }
-

@@ -87,6 +87,18 @@ impl ValueFormatter {
 
         let preview = match jdwp.preview_object(object_id) {
             Ok(preview) => preview,
+            Err(JdwpError::NotImplemented) => {
+                return Ok((
+                    format!("{}{handle}", simple_type_name(runtime_type)),
+                    variables_reference,
+                    Some(VariablePresentationHint {
+                        kind: Some("data".to_string()),
+                        attributes: None,
+                        visibility: None,
+                        lazy: None,
+                    }),
+                ));
+            }
             Err(JdwpError::InvalidObjectId(_)) => {
                 objects.mark_invalid_object_id(object_id);
                 let ty = objects

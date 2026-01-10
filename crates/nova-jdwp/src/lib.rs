@@ -1,16 +1,28 @@
-//! Minimal JDWP façade used by `nova-dap` tests.
+//! Java Debug Wire Protocol (JDWP) client façade for Nova.
 //!
-//! This crate is intentionally small: it models only the JDWP surface area
-//! needed for debugger UX work (value previews, stable object IDs, and stepping
-//! outcomes). Real JDWP support can grow behind the same trait without changing
-//! `nova-dap` consumers.
+//! `nova-dap` consumes this crate to speak to the JVM and to power debugger UX
+//! features (return values, stable object IDs, rich previews, and object
+//! pinning).
+//!
+//! The network client (`TcpJdwpClient`) currently implements only a small
+//! subset of JDWP (handshake, thread enumeration, stack frames, basic stepping
+//! and breakpoints). Value inspection APIs intentionally return
+//! [`JdwpError::NotImplemented`] until the underlying wire protocol support is
+//! fleshed out.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+mod mock;
+mod tcp;
+
+use std::io;
 
 use thiserror::Error;
 
-pub type ObjectId = u64;
+pub use mock::{MockJdwpClient, MockObject};
+pub use tcp::TcpJdwpClient;
+
 pub type ThreadId = u64;
+pub type FrameId = u64;
+pub type ObjectId = u64;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum JdwpValue {
@@ -80,6 +92,20 @@ pub struct JdwpVariable {
     pub evaluate_name: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ThreadInfo {
+    pub id: ThreadId,
+    pub name: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct StackFrameInfo {
+    pub id: FrameId,
+    pub name: String,
+    pub source_path: Option<String>,
+    pub line: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepKind {
     Into,
@@ -87,143 +113,137 @@ pub enum StepKind {
     Out,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopReason {
-    Step,
     Breakpoint,
+    Step,
     Exception,
     Other,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+impl StopReason {
+    pub fn as_dap_reason(self) -> &'static str {
+        match self {
+            StopReason::Breakpoint => "breakpoint",
+            StopReason::Step => "step",
+            StopReason::Exception => "exception",
+            StopReason::Other => "pause",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoppedEvent {
-    pub thread_id: ThreadId,
     pub reason: StopReason,
+    pub thread_id: ThreadId,
+    /// JDWP event request id that produced this stop (if known).
+    pub request_id: u32,
     /// Return value observed while stepping (best-effort).
     pub return_value: Option<JdwpValue>,
     /// Value of the last expression on the stepped line (best-effort).
     pub expression_value: Option<JdwpValue>,
 }
 
-#[derive(Error, Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
+pub enum JdwpEvent {
+    Stopped(StoppedEvent),
+}
+
+#[derive(Debug, Error)]
 pub enum JdwpError {
+    #[error("JDWP client is not connected")]
+    NotConnected,
+    #[error("JDWP operation not implemented")]
+    NotImplemented,
+    #[error("JDWP protocol error: {0}")]
+    Protocol(String),
+    #[error("JDWP command failed with error code {error_code}")]
+    CommandFailed { error_code: u16 },
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("JDWP handshake failed")]
+    HandshakeFailed,
+    #[error("JDWP string was not valid UTF-8")]
+    InvalidUtf8(#[from] std::string::FromUtf8Error),
     #[error("invalid object id {0}")]
     InvalidObjectId(ObjectId),
-    #[error("vm disconnected")]
-    VmDisconnected,
     #[error("{0}")]
     Other(String),
 }
 
-pub trait JdwpClient {
-    fn step(&mut self, thread_id: ThreadId, kind: StepKind) -> Result<StoppedEvent, JdwpError>;
-    fn evaluate(&mut self, thread_id: ThreadId, expression: &str) -> Result<JdwpValue, JdwpError>;
-    fn preview_object(&mut self, object_id: ObjectId) -> Result<ObjectPreview, JdwpError>;
-    fn object_children(&mut self, object_id: ObjectId) -> Result<Vec<JdwpVariable>, JdwpError>;
-    fn disable_collection(&mut self, object_id: ObjectId) -> Result<(), JdwpError>;
-    fn enable_collection(&mut self, object_id: ObjectId) -> Result<(), JdwpError>;
-}
+/// Minimal, mock-friendly interface for JDWP.
+///
+/// The network implementation included in this repository purposefully keeps
+/// the wire-level support small; the trait is designed so Nova's DAP layer can
+/// grow richer value inspection without rewriting call sites.
+pub trait JdwpClient: Send {
+    fn connect(&mut self, host: &str, port: u16) -> Result<(), JdwpError>;
 
-#[derive(Clone, Debug)]
-pub struct MockObject {
-    pub preview: ObjectPreview,
-    pub children: Vec<JdwpVariable>,
-}
-
-/// Deterministic, in-memory JDWP test double.
-#[derive(Default)]
-pub struct MockJdwpClient {
-    steps: VecDeque<Result<StoppedEvent, JdwpError>>,
-    evaluations: HashMap<(ThreadId, String), Result<JdwpValue, JdwpError>>,
-    objects: HashMap<ObjectId, MockObject>,
-    collection_disabled: BTreeSet<ObjectId>,
-    pub disable_collection_calls: Vec<ObjectId>,
-    pub enable_collection_calls: Vec<ObjectId>,
-}
-
-impl MockJdwpClient {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn push_step(&mut self, event: Result<StoppedEvent, JdwpError>) {
-        self.steps.push_back(event);
-    }
-
-    pub fn set_evaluation(
+    fn set_line_breakpoint(
         &mut self,
-        thread_id: ThreadId,
-        expression: impl Into<String>,
-        result: Result<JdwpValue, JdwpError>,
-    ) {
-        self.evaluations
-            .insert((thread_id, expression.into()), result);
+        class: &str,
+        method: Option<&str>,
+        line: u32,
+    ) -> Result<(), JdwpError>;
+
+    fn threads(&mut self) -> Result<Vec<ThreadInfo>, JdwpError>;
+    fn stack_frames(&mut self, thread_id: ThreadId) -> Result<Vec<StackFrameInfo>, JdwpError>;
+
+    fn r#continue(&mut self, thread_id: ThreadId) -> Result<(), JdwpError>;
+    fn next(&mut self, thread_id: ThreadId) -> Result<(), JdwpError>;
+    fn step_in(&mut self, thread_id: ThreadId) -> Result<(), JdwpError>;
+    fn step_out(&mut self, thread_id: ThreadId) -> Result<(), JdwpError>;
+    fn pause(&mut self, thread_id: ThreadId) -> Result<(), JdwpError>;
+
+    /// Wait until the next asynchronous event is received from the JVM.
+    ///
+    /// A real debugger would typically run an event loop and forward events to
+    /// the DAP client asynchronously. Nova's current DAP server runs a simple,
+    /// synchronous loop, so we expose a blocking read here.
+    fn wait_for_event(&mut self) -> Result<Option<JdwpEvent>, JdwpError> {
+        Ok(None)
     }
 
-    pub fn insert_object(&mut self, object_id: ObjectId, obj: MockObject) {
-        self.objects.insert(object_id, obj);
-    }
+    /// Convenience helper that performs a step and returns the resulting stop.
+    ///
+    /// This is primarily used by debugger UX code that wants to surface return
+    /// values / expression values alongside the stop event.
+    fn step(&mut self, thread_id: ThreadId, kind: StepKind) -> Result<StoppedEvent, JdwpError> {
+        match kind {
+            StepKind::Into => self.step_in(thread_id)?,
+            StepKind::Over => self.next(thread_id)?,
+            StepKind::Out => self.step_out(thread_id)?,
+        }
 
-    pub fn collect_object(&mut self, object_id: ObjectId) {
-        self.objects.remove(&object_id);
-        self.collection_disabled.remove(&object_id);
-    }
-
-    pub fn is_collection_disabled(&self, object_id: ObjectId) -> bool {
-        self.collection_disabled.contains(&object_id)
-    }
-}
-
-impl JdwpClient for MockJdwpClient {
-    fn step(&mut self, thread_id: ThreadId, _kind: StepKind) -> Result<StoppedEvent, JdwpError> {
-        match self.steps.pop_front() {
-            Some(event) => event,
-            None => Err(JdwpError::Other(format!(
-                "no mock step result queued for thread {thread_id}"
-            ))),
+        loop {
+            match self.wait_for_event()? {
+                Some(JdwpEvent::Stopped(stopped)) => return Ok(stopped),
+                None => {
+                    return Err(JdwpError::Other(
+                        "expected a stopped event after stepping".to_string(),
+                    ))
+                }
+            }
         }
     }
 
-    fn evaluate(&mut self, thread_id: ThreadId, expression: &str) -> Result<JdwpValue, JdwpError> {
-        self.evaluations
-            .get(&(thread_id, expression.to_string()))
-            .cloned()
-            .unwrap_or_else(|| {
-                Err(JdwpError::Other(format!(
-                    "no mock evaluation result queued for `{expression}`"
-                )))
-            })
+    fn evaluate(&mut self, _expression: &str, _frame_id: FrameId) -> Result<JdwpValue, JdwpError> {
+        Err(JdwpError::NotImplemented)
     }
 
-    fn preview_object(&mut self, object_id: ObjectId) -> Result<ObjectPreview, JdwpError> {
-        self.objects
-            .get(&object_id)
-            .map(|o| o.preview.clone())
-            .ok_or(JdwpError::InvalidObjectId(object_id))
+    fn preview_object(&mut self, _object_id: ObjectId) -> Result<ObjectPreview, JdwpError> {
+        Err(JdwpError::NotImplemented)
     }
 
-    fn object_children(&mut self, object_id: ObjectId) -> Result<Vec<JdwpVariable>, JdwpError> {
-        self.objects
-            .get(&object_id)
-            .map(|o| o.children.clone())
-            .ok_or(JdwpError::InvalidObjectId(object_id))
+    fn object_children(&mut self, _object_id: ObjectId) -> Result<Vec<JdwpVariable>, JdwpError> {
+        Err(JdwpError::NotImplemented)
     }
 
-    fn disable_collection(&mut self, object_id: ObjectId) -> Result<(), JdwpError> {
-        if !self.objects.contains_key(&object_id) {
-            return Err(JdwpError::InvalidObjectId(object_id));
-        }
-        self.collection_disabled.insert(object_id);
-        self.disable_collection_calls.push(object_id);
-        Ok(())
+    fn disable_collection(&mut self, _object_id: ObjectId) -> Result<(), JdwpError> {
+        Err(JdwpError::NotImplemented)
     }
 
-    fn enable_collection(&mut self, object_id: ObjectId) -> Result<(), JdwpError> {
-        if !self.objects.contains_key(&object_id) {
-            return Err(JdwpError::InvalidObjectId(object_id));
-        }
-        self.collection_disabled.remove(&object_id);
-        self.enable_collection_calls.push(object_id);
-        Ok(())
+    fn enable_collection(&mut self, _object_id: ObjectId) -> Result<(), JdwpError> {
+        Err(JdwpError::NotImplemented)
     }
 }
