@@ -1,6 +1,7 @@
 mod codec;
 
 use codec::{read_json_message, write_json_message};
+use lsp_types::{Position as LspPosition, Range as LspRange, Uri as LspUri};
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ContextRequest, ProviderKind, RetryConfig};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
@@ -11,7 +12,9 @@ use nova_ide::{
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::fs;
 use std::io::{BufReader, BufWriter};
+use std::path::PathBuf;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -108,14 +111,16 @@ fn handle_request(
                         "codeActionKinds": [
                             CODE_ACTION_KIND_EXPLAIN,
                             CODE_ACTION_KIND_AI_GENERATE,
-                            CODE_ACTION_KIND_AI_TESTS
+                            CODE_ACTION_KIND_AI_TESTS,
+                            "refactor.extract"
                         ]
                     },
                     "executeCommandProvider": {
                         "commands": [
                             COMMAND_EXPLAIN_ERROR,
                             COMMAND_GENERATE_METHOD_BODY,
-                            COMMAND_GENERATE_TESTS
+                            COMMAND_GENERATE_TESTS,
+                            "nova.extractMethod"
                         ]
                     }
                 },
@@ -311,25 +316,32 @@ struct Position {
 }
 
 fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<serde_json::Value, String> {
-    if state.ai.is_none() {
-        return Ok(serde_json::Value::Array(Vec::new()));
-    }
-
     let params: CodeActionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
-    let text = state.documents.get(&params.text_document.uri);
+    let text = load_document_text(state, &params.text_document.uri);
+    let text = text.as_deref();
 
     let mut actions = Vec::new();
 
-    if let Some(diagnostic) = params.context.diagnostics.first() {
-        let code = text.map(|t| extract_snippet(t, &diagnostic.range, 2));
-        let action = explain_error_action(ExplainErrorArgs {
-            diagnostic_message: diagnostic.message.clone(),
-            code,
-        });
-        actions.push(code_action_to_lsp(action));
+    if let Some(text) = text {
+        if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
+            let range = to_lsp_range(&params.range);
+            if let Some(action) = nova_ide::code_action::extract_method_code_action(text, uri, range) {
+                actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+            }
+        }
     }
 
-    if let Some(text) = text {
+    if state.ai.is_some() {
+        if let Some(diagnostic) = params.context.diagnostics.first() {
+            let code = text.map(|t| extract_snippet(t, &diagnostic.range, 2));
+            let action = explain_error_action(ExplainErrorArgs {
+                diagnostic_message: diagnostic.message.clone(),
+                code,
+            });
+            actions.push(code_action_to_lsp(action));
+        }
+
+        if let Some(text) = text {
         if let Some(selected) = extract_range_text(text, &params.range) {
             if let Some(signature) = detect_empty_method_signature(&selected) {
                 let context = Some(extract_snippet(text, &params.range, 8));
@@ -352,6 +364,7 @@ fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<
                 actions.push(code_action_to_lsp(action));
             }
         }
+    }
     }
 
     Ok(serde_json::Value::Array(actions))
@@ -386,6 +399,14 @@ fn handle_execute_command(
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
 
     match params.command.as_str() {
+        "nova.extractMethod" => {
+            let args: nova_ide::code_action::ExtractMethodCommandArgs = parse_first_arg(params.arguments)?;
+            let uri = args.uri.clone();
+            let source = load_document_text(state, uri.as_str())
+                .ok_or_else(|| (-32603, format!("missing document text for `{}`", uri.as_str())))?;
+            let edit = nova_lsp::extract_method::execute(&source, args).map_err(|e| (-32603, e))?;
+            serde_json::to_value(edit).map_err(|e| (-32603, e.to_string()))
+        }
         COMMAND_EXPLAIN_ERROR => {
             let args: ExplainErrorArgs = parse_first_arg(params.arguments)?;
             run_ai_explain_error(args, state, writer)
@@ -399,6 +420,37 @@ fn handle_execute_command(
             run_ai_generate_tests(args, state, writer)
         }
         _ => Err((-32602, format!("unknown command: {}", params.command))),
+    }
+}
+
+fn load_document_text(state: &ServerState, uri: &str) -> Option<String> {
+    state
+        .documents
+        .get(uri)
+        .cloned()
+        .or_else(|| read_file_from_uri(uri))
+}
+
+fn read_file_from_uri(uri: &str) -> Option<String> {
+    let path = path_from_uri(uri)?;
+    fs::read_to_string(path).ok()
+}
+
+fn path_from_uri(uri: &str) -> Option<PathBuf> {
+    let path = uri.strip_prefix("file://")?;
+    Some(PathBuf::from(path))
+}
+
+fn to_lsp_range(range: &Range) -> LspRange {
+    LspRange {
+        start: LspPosition {
+            line: range.start.line,
+            character: range.start.character,
+        },
+        end: LspPosition {
+            line: range.end.line,
+            character: range.end.character,
+        },
     }
 }
 
