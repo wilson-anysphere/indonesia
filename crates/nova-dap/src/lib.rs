@@ -31,3 +31,10 @@ pub use crate::dap::types::{EvaluateResult, OutputEvent, Scope, Variable, Variab
 pub use crate::error::{DebugError, DebugResult};
 pub use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
 pub use crate::session::{DebugSession, StepOutput};
+
+/// Async/Tokio DAP codec helpers (used by the wire-level JDWP adapter).
+pub mod dap_tokio;
+
+/// Experimental DAP server that talks to a real JVM via `nova-jdwp::wire`.
+pub mod wire_debugger;
+pub mod wire_server;

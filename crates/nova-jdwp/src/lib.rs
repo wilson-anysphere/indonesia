@@ -247,3 +247,9 @@ pub trait JdwpClient: Send {
         Err(JdwpError::NotImplemented)
     }
 }
+
+/// Wire-level JDWP client implementation (async, tokio).
+///
+/// This is intentionally namespaced to avoid breaking the existing `nova-jdwp`
+/// mock interfaces used by debugger UX tests.
+pub mod wire;

@@ -9,6 +9,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+tokio = { version = "1", default-features = false, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 
 nova-core = { path = "../nova-core" }
 nova-db = { path = "../nova-db" }
@@ -21,3 +22,4 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 tempfile = "3.10.1"
+nova-jdwp = { path = "../nova-jdwp", features = ["wire-test-support"] }
