@@ -91,9 +91,13 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_type_in_index(&self, name: &QualifiedName) -> Option<TypeName> {
-        self.classpath
-            .and_then(|cp| cp.resolve_type(name))
-            .or_else(|| self.jdk.resolve_type(name))
+        if let Some(classpath) = self.classpath {
+            if let Some(ty) = resolve_type_with_nesting(classpath, name) {
+                return Some(ty);
+            }
+        }
+
+        resolve_type_with_nesting(self.jdk, name)
     }
 
     fn resolve_type_in_package_index(
@@ -164,6 +168,14 @@ impl<'a> Resolver<'a> {
                     {
                         let pkg = append_package(package.as_ref().unwrap(), name).to_dotted();
                         return Some(Resolution::Package(PackageId::new(pkg)));
+                    }
+                }
+                ScopeKind::Universe => {
+                    // `java.lang.*` is always implicitly available (after package + imports).
+                    if let Some(ty) = self
+                        .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
+                    {
+                        return Some(Resolution::Type(ty));
                     }
                 }
                 _ => {}
@@ -253,6 +265,57 @@ fn append_package(base: &PackageName, name: &Name) -> PackageName {
     let mut next = PackageName::from_dotted(&base.to_dotted());
     next.push(name.clone());
     next
+}
+
+fn resolve_type_with_nesting(index: &dyn TypeIndex, name: &QualifiedName) -> Option<TypeName> {
+    index
+        .resolve_type(name)
+        .or_else(|| resolve_nested_type(index, name))
+}
+
+fn resolve_nested_type(index: &dyn TypeIndex, name: &QualifiedName) -> Option<TypeName> {
+    // Java source refers to nested classes as `Outer.Inner`, but classpath/JDK
+    // indices tend to use binary names (`Outer$Inner`). When a qualified name
+    // fails to resolve as-is, try progressively treating the rightmost segments
+    // as nested types.
+    let segments = name.segments();
+    if segments.len() < 2 {
+        return None;
+    }
+
+    // Prefer longer package prefixes first (e.g. `java.util.Map.Entry` should try
+    // `java.util.Map$Entry` before `java$util$Map$Entry`).
+    for split_at in (0..segments.len() - 1).rev() {
+        let type_segments = &segments[split_at..];
+        if type_segments.len() < 2 {
+            continue;
+        }
+
+        let mut candidate = String::new();
+        if split_at > 0 {
+            for (idx, seg) in segments[..split_at].iter().enumerate() {
+                if idx > 0 {
+                    candidate.push('.');
+                }
+                candidate.push_str(seg.as_str());
+            }
+            candidate.push('.');
+        }
+
+        for (idx, seg) in type_segments.iter().enumerate() {
+            if idx > 0 {
+                candidate.push('$');
+            }
+            candidate.push_str(seg.as_str());
+        }
+
+        let candidate = QualifiedName::from_dotted(&candidate);
+        if let Some(ty) = index.resolve_type(&candidate) {
+            return Some(ty);
+        }
+    }
+
+    None
 }
 
 #[derive(Debug)]
@@ -533,24 +596,28 @@ struct ResolvedMethod {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MemberInfo {
-    Field { name: String, ty: Type },
+    Field {
+        name: String,
+        ty: Type,
+    },
     Method {
         name: String,
         return_type: Type,
         params: Vec<Parameter>,
     },
-    Constructor { params: Vec<Parameter> },
-    InnerClass { name: String },
+    Constructor {
+        params: Vec<Parameter>,
+    },
+    InnerClass {
+        name: String,
+    },
 }
 
 fn params_match(params: &[Parameter], args: &[Type]) -> bool {
     if params.len() != args.len() {
         return false;
     }
-    params
-        .iter()
-        .zip(args.iter())
-        .all(|(p, a)| p.ty == *a)
+    params.iter().zip(args.iter()).all(|(p, a)| p.ty == *a)
 }
 
 fn members_of_type(
@@ -595,7 +662,9 @@ fn members_of_class(
     }
 
     for ConstructorData { params } in &class_data.constructors {
-        members.push(MemberInfo::Constructor { params: params.clone() });
+        members.push(MemberInfo::Constructor {
+            params: params.clone(),
+        });
     }
 
     for vm in registry.virtual_members_for_class(db, class) {
@@ -607,7 +676,10 @@ fn members_of_class(
 
 fn push_virtual_member_info(out: &mut Vec<MemberInfo>, vm: VirtualMember) {
     match vm {
-        VirtualMember::Field(f) => out.push(MemberInfo::Field { name: f.name, ty: f.ty }),
+        VirtualMember::Field(f) => out.push(MemberInfo::Field {
+            name: f.name,
+            ty: f.ty,
+        }),
         VirtualMember::Method(m) => out.push(MemberInfo::Method {
             name: m.name,
             return_type: m.return_type,
@@ -925,7 +997,8 @@ mod tests {
     #[test]
     fn resolves_imported_type_from_dependency_jar() {
         let jdk = JdkIndex::new();
-        let classpath = ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
+        let classpath =
+            ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
         let resolver = Resolver::new(&jdk).with_classpath(&classpath);
 
         let mut unit = CompilationUnit::new(None);
@@ -959,5 +1032,40 @@ mod tests {
         let method_scope = *result.method_scopes.get("C#m").expect("method scope");
         let res = resolver.resolve_name(&result.scopes, method_scope, &Name::from("Inner"));
         assert_eq!(res, Some(Resolution::Type(TypeName::from("C$Inner"))));
+    }
+
+    #[test]
+    fn java_lang_lookup_is_not_limited_to_hardcoded_universe_types() {
+        let mut index = TestIndex::default();
+        let foo = index.add_type("java.lang", "Foo");
+
+        let unit = CompilationUnit::new(None);
+        let result = build_scopes(&index, &unit);
+
+        let resolver = Resolver::new(&index);
+        let res = resolver.resolve_name(&result.scopes, result.file_scope, &Name::from("Foo"));
+        assert_eq!(res, Some(Resolution::Type(foo)));
+    }
+
+    #[test]
+    fn qualified_name_resolves_nested_types() {
+        let jdk = JdkIndex::new();
+        let mut index = TestIndex::default();
+        let entry = index.add_type("java.util", "Map$Entry");
+
+        let resolver = Resolver::new(&jdk).with_classpath(&index);
+        let resolved =
+            resolver.resolve_qualified_name(&QualifiedName::from_dotted("java.util.Map.Entry"));
+        assert_eq!(resolved, Some(entry));
+
+        let mut unit = CompilationUnit::new(None);
+        unit.imports.push(ImportDecl::TypeSingle {
+            ty: QualifiedName::from_dotted("java.util.Map.Entry"),
+            alias: None,
+        });
+        assert_eq!(
+            resolver.resolve_import(&unit, &Name::from("Entry")),
+            Some(TypeName::from("java.util.Map$Entry"))
+        );
     }
 }
