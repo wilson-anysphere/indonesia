@@ -3,6 +3,25 @@ use nova_index::Index;
 use nova_refactor::{safe_delete, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget};
 use serde::{Deserialize, Serialize};
 
+pub const MOVE_METHOD_METHOD: &str = "nova/refactor/moveMethod";
+pub const MOVE_STATIC_MEMBER_METHOD: &str = "nova/refactor/moveStaticMember";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveMethodParams {
+    pub from_class: String,
+    pub method_name: String,
+    pub to_class: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveStaticMemberParams {
+    pub from_class: String,
+    pub member_name: String,
+    pub to_class: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum RefactorResponse {

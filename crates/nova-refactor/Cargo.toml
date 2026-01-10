@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+nova-format = { path = "../nova-format" }
 nova-index = { path = "../nova-index" }
+nova-project = { path = "../nova-project" }
+regex = "1"
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
-nova-project = { path = "../nova-project" }
 tree-sitter = "0.20"
 tree-sitter-java = "0.20"
 

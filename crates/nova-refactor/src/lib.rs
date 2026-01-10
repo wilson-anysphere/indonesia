@@ -3,7 +3,10 @@
 //! The refactoring engine is still in an early phase. Today this crate exposes:
 //! - Safe Delete for method declarations (`safe_delete`)
 //! - Move refactorings for Java packages and top-level classes (`move_java`)
+//! - Move refactorings for methods and static members (`move_member`)
 
+mod java;
+mod move_member;
 mod move_java;
 mod safe_delete;
 
@@ -18,4 +21,7 @@ pub use nova_index::TextRange;
 pub use safe_delete::{
     apply_edits, safe_delete, SafeDeleteError, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteReport,
     SafeDeleteTarget, TextEdit, Usage, UsageKind,
+};
+pub use move_member::{
+    move_method, move_static_member, MoveMemberError, MoveMethodParams, MoveStaticMemberParams,
 };
