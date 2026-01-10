@@ -8,7 +8,7 @@ use crate::path::VfsPath;
 #[derive(Debug, Default)]
 pub struct FileIdRegistry {
     path_to_id: HashMap<VfsPath, FileId>,
-    id_to_path: Vec<VfsPath>,
+    id_to_path: Vec<Option<VfsPath>>,
 }
 
 impl FileIdRegistry {
@@ -24,7 +24,7 @@ impl FileIdRegistry {
 
         let raw = u32::try_from(self.id_to_path.len()).expect("too many file ids allocated");
         let id = FileId::from_raw(raw);
-        self.id_to_path.push(path.clone());
+        self.id_to_path.push(Some(path.clone()));
         self.path_to_id.insert(path, id);
         id
     }
@@ -39,11 +39,14 @@ impl FileIdRegistry {
 
         // If the destination path is already known, keep its id and treat this as a delete + modify.
         if let Some(&id_to) = self.path_to_id.get(&to) {
+            if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
+                *slot = None;
+            }
             return id_to;
         }
 
         if let Some(slot) = self.id_to_path.get_mut(id_from.to_raw() as usize) {
-            *slot = to.clone();
+            *slot = Some(to.clone());
         }
         self.path_to_id.insert(to, id_from);
         id_from
@@ -64,7 +67,9 @@ impl FileIdRegistry {
 
     /// Returns the path for `id`.
     pub fn get_path(&self, id: FileId) -> Option<&VfsPath> {
-        self.id_to_path.get(id.to_raw() as usize)
+        self.id_to_path
+            .get(id.to_raw() as usize)
+            .and_then(|path| path.as_ref())
     }
 }
 
@@ -122,5 +127,22 @@ mod tests {
         assert_eq!(registry.get_id(&from), None);
         assert_eq!(registry.get_id(&to), Some(id));
         assert_eq!(registry.get_path(id), Some(&to));
+    }
+
+    #[test]
+    fn rename_path_to_existing_path_keeps_destination_id_and_clears_source_path() {
+        let mut registry = FileIdRegistry::new();
+        let from = VfsPath::local("/tmp/a.java");
+        let to = VfsPath::local("/tmp/b.java");
+        let from_id = registry.file_id(from.clone());
+        let to_id = registry.file_id(to.clone());
+
+        let moved_id = registry.rename_path(&from, to.clone());
+
+        assert_eq!(moved_id, to_id);
+        assert_eq!(registry.get_id(&from), None);
+        assert_eq!(registry.get_id(&to), Some(to_id));
+        assert_eq!(registry.get_path(to_id), Some(&to));
+        assert_eq!(registry.get_path(from_id), None);
     }
 }
