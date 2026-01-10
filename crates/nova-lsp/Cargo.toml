@@ -16,6 +16,7 @@ nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
 nova-ai = { path = "../nova-ai" }
 nova-decompile = { path = "../nova-decompile" }
+nova-ai = { path = "../nova-ai" }
 nova-ide = { path = "../nova-ide" }
 nova-ai = { path = "../nova-ai" }
 nova-db = { path = "../nova-db" }

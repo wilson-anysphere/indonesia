@@ -39,3 +39,10 @@ pub mod spring {
         goto_definition_for_value_placeholder, SpringWorkspaceIndex,
     };
 }
+
+mod db;
+mod navigation;
+mod parse;
+mod text;
+
+pub use crate::db::{Database, DatabaseSnapshot};

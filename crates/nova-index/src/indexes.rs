@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(
     Clone,
@@ -145,9 +145,42 @@ impl InheritanceIndex {
         self.rebuild_maps();
     }
 
+    pub fn extend(&mut self, edges: impl IntoIterator<Item = InheritanceEdge>) {
+        self.edges.extend(edges);
+        self.rebuild_maps();
+    }
+
     pub fn invalidate_file(&mut self, file: &str) {
         self.edges.retain(|edge| edge.file != file);
         self.rebuild_maps();
+    }
+
+    /// Return all known (transitive) subtypes of `base`.
+    #[must_use]
+    pub fn all_subtypes(&self, base: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        let mut queue: VecDeque<String> = self
+            .subtypes
+            .get(base)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        while let Some(next) = queue.pop_front() {
+            if !seen.insert(next.clone()) {
+                continue;
+            }
+            out.push(next.clone());
+            if let Some(children) = self.subtypes.get(&next) {
+                for child in children {
+                    queue.push_back(child.clone());
+                }
+            }
+        }
+
+        out
     }
 
     fn rebuild_maps(&mut self) {
@@ -163,6 +196,16 @@ impl InheritanceIndex {
                 .entry(edge.subtype.clone())
                 .or_default()
                 .push(edge.supertype.clone());
+        }
+
+        // Keep results stable for deterministic tests.
+        for children in self.subtypes.values_mut() {
+            children.sort();
+            children.dedup();
+        }
+        for parents in self.supertypes.values_mut() {
+            parents.sort();
+            parents.dedup();
         }
     }
 }

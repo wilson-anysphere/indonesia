@@ -30,6 +30,7 @@ pub mod decompile;
 pub mod extensions;
 pub mod extract_method;
 pub mod refactor;
+pub mod handlers;
 
 mod cancellation;
 mod diagnostics;
@@ -198,4 +199,19 @@ pub fn diagnostics(
     file: nova_db::FileId,
 ) -> Vec<lsp_types::Diagnostic> {
     nova_ide::file_diagnostics_lsp(db, file)
+}
+
+use lsp_types::{
+    DeclarationCapability, ImplementationProviderCapability, ServerCapabilities,
+    TypeDefinitionProviderCapability,
+};
+
+#[must_use]
+pub fn server_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
+        declaration_provider: Some(DeclarationCapability::Simple(true)),
+        type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
+        ..ServerCapabilities::default()
+    }
 }
