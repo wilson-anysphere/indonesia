@@ -94,4 +94,44 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
     }
+
+    #[test]
+    fn corrupted_payload_is_hash_mismatch() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sample.bin");
+
+        let value = Sample {
+            a: 123,
+            b: "hello".to_string(),
+            values: vec![1, 2, 3, 4],
+        };
+
+        write_archive_atomic(
+            &path,
+            ArtifactKind::AstArtifacts,
+            1,
+            &value,
+            Compression::None,
+        )
+        .unwrap();
+
+        let mut bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() > HEADER_LEN);
+
+        let payload_start = HEADER_LEN;
+        let payload_len = bytes.len() - payload_start;
+        let header = StorageHeader::decode(&bytes[..HEADER_LEN]).unwrap();
+        let offset = (header.content_hash as usize) % payload_len;
+        bytes[payload_start + offset] ^= 0x01;
+
+        std::fs::write(&path, &bytes).unwrap();
+
+        let err = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
+        match err {
+            StorageError::HashMismatch { expected, found } => {
+                assert_ne!(expected, found);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
 }

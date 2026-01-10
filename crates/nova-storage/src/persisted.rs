@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::Path;
 
+use blake3;
 use memmap2::{Mmap, MmapOptions};
 use nova_core::Endian;
 use rkyv::Deserialize;
@@ -55,6 +56,8 @@ pub enum StorageError {
     UnsupportedCompression(u8),
     #[error("payload size {payload_len} does not fit into addressable memory")]
     OversizedPayload { payload_len: u64 },
+    #[error("payload hash mismatch: expected {expected}, found {found}")]
+    HashMismatch { expected: u64, found: u64 },
 }
 
 enum Backing {
@@ -250,6 +253,8 @@ where
             return Err(StorageError::Misaligned { required, got });
         }
 
+        verify_payload_hash(&header, payload)?;
+
         let archived = rkyv::check_archived_root::<T>(payload)
             .map_err(|e| StorageError::Validation(e.to_string()))?;
         let archived = std::ptr::NonNull::from(archived);
@@ -375,4 +380,20 @@ fn aligned_bytes(bytes: &[u8]) -> rkyv::util::AlignedVec {
     let mut aligned = rkyv::util::AlignedVec::with_capacity(bytes.len());
     aligned.extend_from_slice(bytes);
     aligned
+}
+
+fn verify_payload_hash(header: &StorageHeader, payload: &[u8]) -> Result<(), StorageError> {
+    let found = content_hash(payload);
+    if found != header.content_hash {
+        return Err(StorageError::HashMismatch {
+            expected: header.content_hash,
+            found,
+        });
+    }
+    Ok(())
+}
+
+fn content_hash(payload: &[u8]) -> u64 {
+    let hash_bytes = blake3::hash(payload);
+    u64::from_le_bytes(hash_bytes.as_bytes()[..8].try_into().expect("hash slice"))
 }
