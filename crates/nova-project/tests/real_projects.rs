@@ -89,11 +89,12 @@ fn collect_java_files(config: &ProjectConfig) -> Vec<PathBuf> {
         )
     }
 
-    let roots: Vec<PathBuf> = if config.source_roots.is_empty() {
-        vec![config.workspace_root.clone()]
-    } else {
-        config.source_roots.iter().map(|sr| sr.path.clone()).collect()
-    };
+    // Intentionally scan the whole workspace root, not just build-tool source roots.
+    //
+    // Many real projects use non-standard layouts (e.g. Guava uses `src/...` in
+    // Maven modules). For real-world validation we care more about "can we load
+    // and analyze the repo" than strictly respecting the build configuration.
+    let roots: Vec<PathBuf> = vec![config.workspace_root.clone()];
 
     let mut files = Vec::new();
     for root in roots {

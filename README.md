@@ -76,6 +76,9 @@ Currently pinned fixtures:
 These tests are ignored by default because they scan large projects.
 
 ```bash
+# Convenience wrapper (clones fixtures + runs ignored tests)
+./scripts/run-real-project-tests.sh
+
 cargo test -p nova-project --test real_projects -- --include-ignored
 cargo test -p nova-cli --test real_projects -- --include-ignored
 ```
