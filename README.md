@@ -1,12 +1,13 @@
 # Project Nova
 
 Nova is a planned next-generation Java Language Server Protocol (LSP) implementation (`nova-lsp`).
-This repository currently contains the design documents, early Rust crates, editor integration templates,
+This repository contains the design documents, Rust crates, editor integration templates,
 and a headless CLI entry point for smoke-testing / CI usage.
 
 ## Docs
 
 - High-level overview: [`AGENTS.md`](./AGENTS.md)
+- Architecture decisions (ADRs): [`docs/architecture.md`](./docs/architecture.md)
 - Full document set: [`docs/`](./docs)
 
 ## `nova` CLI

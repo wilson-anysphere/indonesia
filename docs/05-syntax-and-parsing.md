@@ -6,6 +6,8 @@
 
 The syntax layer is the foundation of all language intelligence. Nova's parser must handle Java's complex grammar while providing excellent error recovery, incremental reparsing, and lossless representation.
 
+**Implementation note:** Nova will implement the red/green tree using [`rowan`](adr/0002-syntax-tree-rowan.md) (see ADR 0002). The data structures and code snippets in this document are *conceptual*; the concrete APIs will follow rowan’s `GreenNode`/`SyntaxNode` model and typed AST wrapper conventions.
+
 ---
 
 ## Design Goals

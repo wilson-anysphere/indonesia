@@ -21,13 +21,19 @@ IntelliJ IDEA has dominated Java tooling for over two decades. Its excellence co
 5. **Cloud/Remote Development**: Modern development increasingly happens in cloud environments where resource efficiency matters more than ever.
 
 ## Document Structure
-
+ 
 This plan is organized into detailed linked documents covering every aspect of the project:
+
+### Architectural decisions (ADRs)
+
+Binding architectural choices (libraries, core patterns, invariants) are tracked as **Architecture Decision Records**:
+
+- [Architecture + ADR index](docs/architecture.md)
 
 ### Part I: Understanding the Problem Space
 - **[01 - Problem Analysis: What Makes IntelliJ Excellent](docs/01-problem-analysis.md)** - Deep technical analysis of IntelliJ's architecture and what makes it superior
 - **[02 - Current Landscape Analysis](docs/02-current-landscape.md)** - Analysis of existing Java LSPs (Eclipse JDT-LS, etc.) and their limitations
-
+ 
 ### Part II: Architectural Foundation
 - **[03 - Architecture Overview](docs/03-architecture-overview.md)** - High-level system architecture and design principles
 - **[04 - Incremental Computation Engine](docs/04-incremental-computation.md)** - Query-based incremental computation system (the core innovation)
