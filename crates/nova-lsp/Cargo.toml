@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = { workspace = true }
+tokio = { workspace = true }
+
 nova-apt = { path = "../nova-apt" }
 nova-build = { path = "../nova-build" }
 nova-config = { path = "../nova-config" }
@@ -16,6 +19,8 @@ nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
 nova-refactor = { path = "../nova-refactor" }
 nova-testing = { path = "../nova-testing" }
+nova-remote-proto = { path = "../nova-remote-proto" }
+nova-router = { path = "../nova-router" }
 lsp-types = "0.97"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

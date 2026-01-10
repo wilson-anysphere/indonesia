@@ -15,7 +15,6 @@ members = [
     "crates/nova-project",
     "crates/nova-types",
     "crates/nova-vfs",
-    "crates/nova-syntax",
     "crates/nova-hir",
     "crates/nova-syntax",
     "crates/nova-resolve",
@@ -38,7 +37,19 @@ members = [
     "crates/nova-config",
     "crates/nova-apt",
     "crates/nova-test-utils",
+    "crates/nova-remote-proto",
+    "crates/nova-router",
+    "crates/nova-scheduler",
+    "crates/nova-worker",
 ]
 
 [workspace.package]
 edition = "2021"
+
+[workspace.dependencies]
+anyhow = "1"
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+thiserror = "1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }

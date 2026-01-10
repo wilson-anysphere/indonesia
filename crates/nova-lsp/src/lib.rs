@@ -23,10 +23,14 @@
 
 pub mod extensions;
 pub mod extract_method;
+pub mod refactor;
 
+mod distributed;
 mod server;
 pub mod workspace_edit;
 
+pub use distributed::NovaLspFrontend;
+pub use refactor::{safe_delete_code_action, RefactorResponse};
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
 pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
 
@@ -63,10 +67,7 @@ pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
 ///
 /// This helper is designed to be embedded in whichever LSP transport is used
 /// (e.g. `lsp-server`, `tower-lsp`). It only supports stateless endpoints.
-pub fn handle_custom_request(
-    method: &str,
-    params: serde_json::Value,
-) -> Result<serde_json::Value> {
+pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
     match method {
         TEST_DISCOVER_METHOD => extensions::test::handle_discover(params),
         TEST_RUN_METHOD => extensions::test::handle_run(params),
@@ -97,8 +98,8 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
         DEBUG_CONFIGURATIONS_METHOD => serde_json::to_value(server.debug_configurations())
             .map_err(|err| NovaLspError::Internal(err.to_string())),
         DEBUG_HOT_SWAP_METHOD => {
-            let params: HotSwapParams = serde_json::from_value(params)
-                .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+            let params: HotSwapParams =
+                serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
             let hot_swap = hot_swap.ok_or_else(|| {
                 NovaLspError::InvalidParams("hot-swap service is not available".into())
             })?;
@@ -108,10 +109,6 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
         _ => handle_custom_request(method, params),
     }
 }
-
-pub mod refactor;
-
-pub use refactor::{safe_delete_code_action, RefactorResponse};
 
 // -----------------------------------------------------------------------------
 // Core LSP request delegation
@@ -145,6 +142,9 @@ pub fn goto_definition(
 }
 
 /// Delegate diagnostics to `nova-ide`.
-pub fn diagnostics(db: &dyn nova_db::Database, file: nova_db::FileId) -> Vec<lsp_types::Diagnostic> {
+pub fn diagnostics(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+) -> Vec<lsp_types::Diagnostic> {
     nova_ide::file_diagnostics_lsp(db, file)
 }

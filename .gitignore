@@ -25,3 +25,6 @@ test-projects/**
 
 # Legacy workspace-local cache (the default persistent cache lives in `~/.nova/cache`)
 **/.nova-cache/
+
+# Local RPC sockets
+*.sock

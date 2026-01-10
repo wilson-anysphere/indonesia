@@ -1,0 +1,21 @@
+[package]
+name = "nova-router"
+version = "0.1.0"
+edition.workspace = true
+
+[features]
+tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-pemfile"]
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+nova-cache = { path = "../nova-cache" }
+nova-index = { path = "../nova-index" }
+nova-remote-proto = { path = "../nova-remote-proto" }
+nova-scheduler = { path = "../nova-scheduler" }
+
+tokio-rustls = { version = "0.26.0", optional = true }
+rustls = { version = "0.23.18", default-features = false, features = ["std"], optional = true }
+rustls-pemfile = { version = "2.2.0", optional = true }
