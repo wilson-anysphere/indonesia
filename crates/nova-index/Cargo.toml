@@ -7,6 +7,7 @@ edition = "2021"
 bincode = "1"
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
+nova-fuzzy = { path = "../nova-fuzzy" }
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 

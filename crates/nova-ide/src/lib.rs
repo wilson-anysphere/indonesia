@@ -6,8 +6,10 @@
 
 pub mod semantics;
 
+mod completion;
 mod project;
 
+pub use completion::{filter_and_rank_completions, CompletionItem};
 pub use project::{
     DebugConfiguration, DebugConfigurationKind, DebugConfigurationRequest, JavaClassInfo, Project,
     ProjectDiscoveryError,

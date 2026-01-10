@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/nova-core",
     "crates/nova-ai",
+    "crates/nova-fuzzy",
     "crates/nova-cache",
     "crates/nova-index",
     "crates/nova-framework",
@@ -18,7 +19,6 @@ members = [
     "crates/nova-classpath",
     "crates/nova-jdk",
     "crates/nova-db",
-    "crates/nova-index",
     "crates/nova-ide",
     "crates/nova-refactor",
     "crates/nova-dap",

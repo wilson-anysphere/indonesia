@@ -337,3 +337,5 @@ pub trait ProjectDatabase {
     fn file_text(&self, path: &Path) -> Option<String>;
 }
 
+/// Identifier used to refer to a symbol within in-memory indexes.
+pub type SymbolId = u32;

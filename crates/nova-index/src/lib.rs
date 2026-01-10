@@ -3,7 +3,11 @@
 mod indexes;
 mod persistence;
 mod sketch;
+mod symbol_search;
 
 pub use indexes::*;
 pub use persistence::*;
 pub use sketch::*;
+pub use symbol_search::{
+    CandidateStrategy, SearchResult, SearchStats, Symbol, SymbolSearchIndex,
+};

@@ -1,0 +1,11 @@
+[package]
+name = "nova-fuzzy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+
+[[bench]]
+name = "fuzzy"
+harness = false
