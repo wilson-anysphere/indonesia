@@ -2,9 +2,11 @@ use crate::report::{merge_case_results, parse_junit_report};
 use crate::schema::{
     BuildTool, TestCaseResult, TestRunRequest, TestRunResponse, TestRunSummary, TestStatus,
 };
-use crate::util::join_project_path;
 use crate::{NovaTestingError, Result, SCHEMA_VERSION};
 use std::collections::BTreeMap;
+use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::time::{Duration, SystemTime};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use walkdir::WalkDir;
@@ -25,13 +27,16 @@ pub fn run_tests(req: &TestRunRequest) -> Result<TestRunResponse> {
     };
 
     let command = command_for_tests(&project_root, tool, &req.tests);
+    let started_at = SystemTime::now();
     let output = command_output(command)?;
 
     let exit_code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8(output.stdout)?;
     let stderr = String::from_utf8(output.stderr)?;
 
-    let mut tests = collect_and_parse_reports(&project_root, tool)?;
+    let cutoff = started_at.checked_sub(Duration::from_secs(2));
+    let mut tests = collect_and_parse_reports(&project_root, tool, cutoff)?;
+    tests = filter_results_by_request(tests, &req.tests);
     tests.sort_by(|a, b| a.id.cmp(&b.id));
 
     let summary = summarize(&tests);
@@ -116,15 +121,12 @@ fn command_output(mut command: Command) -> Result<std::process::Output> {
         .map_err(|err| NovaTestingError::CommandFailed(format!("{desc}: {err}")))
 }
 
-fn collect_and_parse_reports(project_root: &Path, tool: BuildTool) -> Result<Vec<TestCaseResult>> {
-    let report_dirs: Vec<PathBuf> = match tool {
-        BuildTool::Maven => vec![
-            join_project_path(project_root, "target/surefire-reports"),
-            join_project_path(project_root, "target/failsafe-reports"),
-        ],
-        BuildTool::Gradle => vec![join_project_path(project_root, "build/test-results/test")],
-        BuildTool::Auto => Vec::new(),
-    };
+fn collect_and_parse_reports(
+    project_root: &Path,
+    tool: BuildTool,
+    modified_since: Option<SystemTime>,
+) -> Result<Vec<TestCaseResult>> {
+    let report_dirs = discover_report_dirs(project_root, tool)?;
 
     let mut xml_files = Vec::new();
     for dir in report_dirs {
@@ -137,6 +139,11 @@ fn collect_and_parse_reports(project_root: &Path, tool: BuildTool) -> Result<Vec
                 continue;
             }
             if entry.path().extension().and_then(|e| e.to_str()) == Some("xml") {
+                if let Some(cutoff) = modified_since {
+                    if !is_modified_since(entry.path(), cutoff) {
+                        continue;
+                    }
+                }
                 xml_files.push(entry.path().to_path_buf());
             }
         }
@@ -158,6 +165,112 @@ fn collect_and_parse_reports(project_root: &Path, tool: BuildTool) -> Result<Vec
     }
 
     Ok(by_id.into_values().collect())
+}
+
+fn discover_report_dirs(project_root: &Path, tool: BuildTool) -> Result<Vec<PathBuf>> {
+    let mut dirs = Vec::new();
+    match tool {
+        BuildTool::Maven => {
+            dirs.extend(find_dirs(project_root, |path| {
+                let name = path.file_name().and_then(|s| s.to_str());
+                let is_reports = matches!(name, Some("surefire-reports" | "failsafe-reports"));
+                if !is_reports {
+                    return false;
+                }
+                path.parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(OsStr::to_str)
+                    == Some("target")
+            })?);
+        }
+        BuildTool::Gradle => {
+            // Gradle places JUnit XML under `build/test-results/test` per module.
+            dirs.extend(find_dirs(project_root, |path| {
+                if path.file_name().and_then(|s| s.to_str()) != Some("test") {
+                    return false;
+                }
+                let parent = path
+                    .parent()
+                    .and_then(|p| p.file_name())
+                    .and_then(OsStr::to_str);
+                let grandparent = path
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .and_then(|p| p.file_name())
+                    .and_then(OsStr::to_str);
+                parent == Some("test-results") && grandparent == Some("build")
+            })?);
+        }
+        BuildTool::Auto => {}
+    }
+
+    // For simple projects (no build system), there are no reports to scan.
+    dirs.sort();
+    dirs.dedup();
+    Ok(dirs)
+}
+
+fn find_dirs(project_root: &Path, predicate: impl Fn(&Path) -> bool) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for entry in WalkDir::new(project_root)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            // Don't skip `target`/`build` since those are where reports live.
+            let name = entry.file_name().to_string_lossy();
+            !matches!(
+                name.as_ref(),
+                ".git" | ".gradle" | "node_modules" | ".idea" | "out"
+            )
+        })
+    {
+        let entry = entry.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if predicate(path) {
+            out.push(path.to_path_buf());
+        }
+    }
+    Ok(out)
+}
+
+fn is_modified_since(path: &Path, cutoff: SystemTime) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return true;
+    };
+    let Ok(modified) = meta.modified() else {
+        return true;
+    };
+    modified >= cutoff
+}
+
+fn filter_results_by_request(cases: Vec<TestCaseResult>, requested: &[String]) -> Vec<TestCaseResult> {
+    if requested.is_empty() {
+        return cases;
+    }
+
+    let mut exact = HashSet::<String>::new();
+    let mut prefixes = Vec::<String>::new();
+
+    for req in requested {
+        if req.contains('#') {
+            exact.insert(req.clone());
+        } else {
+            prefixes.push(format!("{req}#"));
+        }
+    }
+
+    cases
+        .into_iter()
+        .filter(|case| {
+            exact.contains(&case.id) || prefixes.iter().any(|prefix| case.id.starts_with(prefix))
+        })
+        .collect()
 }
 
 fn summarize(cases: &[TestCaseResult]) -> TestRunSummary {
