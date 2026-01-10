@@ -1,0 +1,16 @@
+[package]
+name = "nova-framework-quarkus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+nova-core = { path = "../nova-core" }
+nova-framework = { path = "../nova-framework" }
+nova-framework-web = { path = "../nova-framework-web" }
+nova-hir = { path = "../nova-hir" }
+nova-types = { path = "../nova-types" }
+regex = "1"
+zip = "0.6"
+
+[dev-dependencies]
+pretty_assertions = "1"

@@ -23,6 +23,11 @@ pub mod format;
 pub mod object_registry;
 pub mod session;
 
+/// Re-export the JDWP client façade consumed by debugger-adjacent integrations (e.g. LSP).
+pub mod jdwp {
+    pub use nova_jdwp::*;
+}
+
 pub use crate::dap::types::{EvaluateResult, OutputEvent, Scope, Variable, VariablePresentationHint};
 pub use crate::error::{DebugError, DebugResult};
 pub use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};

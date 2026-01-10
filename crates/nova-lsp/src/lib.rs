@@ -14,6 +14,9 @@
 //! - Annotation processing endpoints (backed by `nova-apt`)
 //!   - `nova/java/generatedSources`
 //!   - `nova/java/runAnnotationProcessing`
+//! - Web framework endpoints
+//!   - `nova/web/endpoints`
+//!   - `nova/quarkus/endpoints` (alias)
 //! - Debugger-excellence endpoints
 //!   - `nova/debug/configurations`
 //!   - `nova/debug/hotSwap`
@@ -76,6 +79,8 @@ pub const RELOAD_PROJECT_METHOD: &str = "nova/reloadProject";
 
 pub const MICRONAUT_ENDPOINTS_METHOD: &str = "nova/micronaut/endpoints";
 pub const MICRONAUT_BEANS_METHOD: &str = "nova/micronaut/beans";
+pub const WEB_ENDPOINTS_METHOD: &str = "nova/web/endpoints";
+pub const QUARKUS_ENDPOINTS_METHOD: &str = "nova/quarkus/endpoints";
 
 pub const DEBUG_CONFIGURATIONS_METHOD: &str = "nova/debug/configurations";
 pub const DEBUG_HOT_SWAP_METHOD: &str = "nova/debug/hotSwap";
@@ -109,6 +114,7 @@ pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<
     match method {
         TEST_DISCOVER_METHOD => extensions::test::handle_discover(params),
         TEST_RUN_METHOD => extensions::test::handle_run(params),
+        WEB_ENDPOINTS_METHOD | QUARKUS_ENDPOINTS_METHOD => extensions::web::handle_endpoints(params),
         TEST_DEBUG_CONFIGURATION_METHOD => extensions::test::handle_debug_configuration(params),
         BUILD_PROJECT_METHOD => extensions::build::handle_build_project(params),
         JAVA_CLASSPATH_METHOD => extensions::build::handle_java_classpath(params),

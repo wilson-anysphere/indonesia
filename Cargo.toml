@@ -27,6 +27,8 @@ members = [
     "crates/nova-framework-micronaut",
     "crates/nova-framework-spring",
     "crates/nova-framework-mapstruct",
+    "crates/nova-framework-web",
+    "crates/nova-framework-quarkus",
     "crates/nova-fuzzy",
     "crates/nova-hir",
     "crates/nova-modules",

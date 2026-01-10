@@ -264,7 +264,6 @@ impl Parameter {
         }
     }
 }
-
 // --- External type stubs -----------------------------------------------------
 //
 // Nova's early semantic layers need a way to reason about types that come from
