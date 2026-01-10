@@ -128,7 +128,10 @@ struct ConfigEntry {
 }
 
 fn parse_config_entries(path: &Path, text: &str) -> Vec<ConfigEntry> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or_default();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
     match ext {
         "properties" => nova_properties::parse(text)
             .entries
@@ -155,7 +158,10 @@ fn parse_config_entries(path: &Path, text: &str) -> Vec<ConfigEntry> {
 }
 
 fn text_range_to_span(range: TextRange) -> Span {
-    Span::new(u32::from(range.start()) as usize, u32::from(range.end()) as usize)
+    Span::new(
+        u32::from(range.start()) as usize,
+        u32::from(range.end()) as usize,
+    )
 }
 
 /// Produce Spring configuration diagnostics for a single config file.
@@ -501,6 +507,306 @@ pub fn goto_definition_for_value_placeholder(
     index.definitions_for(&ctx.key).to_vec()
 }
 
+/// Completion inside `application.properties` (key and value positions).
+#[must_use]
+pub fn completions_for_properties_file(
+    path: &Path,
+    text: &str,
+    offset: usize,
+    index: &SpringWorkspaceIndex,
+) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    let mut seen = HashSet::<String>::new();
+
+    let entries = parse_config_entries(path, text);
+    let Some((is_value, key, prefix)) = properties_completion_context(text, offset, &entries)
+    else {
+        return Vec::new();
+    };
+
+    if is_value {
+        if let Some(meta) = index.metadata.property_meta(&key) {
+            let mut candidates: Vec<String> = meta.allowed_values.clone();
+            if candidates.is_empty() && is_boolean_type(meta.ty.as_deref().unwrap_or("")) {
+                candidates.extend(["true".into(), "false".into()]);
+            }
+
+            candidates.sort();
+            candidates.dedup();
+            for value in candidates {
+                if !value.starts_with(&prefix) {
+                    continue;
+                }
+                if seen.insert(value.clone()) {
+                    items.push(CompletionItem {
+                        label: value,
+                        detail: None,
+                    });
+                }
+            }
+        }
+
+        return items;
+    }
+
+    // Key completion.
+    for meta in index.metadata.known_properties(&prefix) {
+        if seen.insert(meta.name.clone()) {
+            items.push(CompletionItem {
+                label: meta.name,
+                detail: meta.ty,
+            });
+        }
+    }
+
+    let mut observed: Vec<_> = index
+        .observed_keys()
+        .filter(|k| k.starts_with(&prefix))
+        .cloned()
+        .collect();
+    observed.sort();
+    observed.dedup();
+    for key in observed {
+        if seen.insert(key.clone()) {
+            items.push(CompletionItem {
+                label: key,
+                detail: None,
+            });
+        }
+    }
+
+    items
+}
+
+/// Completion inside `application.yml` / `application.yaml` for mapping keys.
+///
+/// This is best-effort: it suggests the next YAML segment based on indentation
+/// context and Spring's dotted property keys.
+#[must_use]
+pub fn completions_for_yaml_file(
+    _path: &Path,
+    text: &str,
+    offset: usize,
+    index: &SpringWorkspaceIndex,
+) -> Vec<CompletionItem> {
+    let Some((parent_prefix, typed_prefix)) = yaml_completion_context(text, offset) else {
+        return Vec::new();
+    };
+    let full_prefix = format!("{parent_prefix}{typed_prefix}");
+
+    let mut items = Vec::new();
+    let mut seen = HashSet::<String>::new();
+
+    for meta in index.metadata.known_properties(&full_prefix) {
+        if let Some(segment) = next_yaml_segment(&meta.name, &parent_prefix) {
+            if segment.starts_with(&typed_prefix) && seen.insert(segment.clone()) {
+                items.push(CompletionItem {
+                    label: segment,
+                    detail: None,
+                });
+            }
+        }
+    }
+
+    let mut observed: Vec<_> = index
+        .observed_keys()
+        .filter(|k| k.starts_with(&full_prefix))
+        .cloned()
+        .collect();
+    observed.sort();
+    observed.dedup();
+    for key in observed {
+        if let Some(segment) = next_yaml_segment(&key, &parent_prefix) {
+            if segment.starts_with(&typed_prefix) && seen.insert(segment.clone()) {
+                items.push(CompletionItem {
+                    label: segment,
+                    detail: None,
+                });
+            }
+        }
+    }
+
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items
+}
+
+/// Best-effort "find usages" from a config file key to Java `@Value` usages.
+#[must_use]
+pub fn goto_usages_for_config_key(
+    path: &Path,
+    text: &str,
+    offset: usize,
+    index: &SpringWorkspaceIndex,
+) -> Vec<ConfigLocation> {
+    let Some(key) = config_key_at_offset(path, text, offset) else {
+        return Vec::new();
+    };
+    index.usages_for(&key).to_vec()
+}
+
+fn config_key_at_offset(path: &Path, text: &str, offset: usize) -> Option<String> {
+    let entries = parse_config_entries(path, text);
+    entries
+        .into_iter()
+        .find(|e| e.key_span.start <= offset && offset <= e.key_span.end)
+        .map(|e| e.key)
+}
+
+fn properties_completion_context(
+    text: &str,
+    offset: usize,
+    entries: &[ConfigEntry],
+) -> Option<(bool, String, String)> {
+    // First: use parsed entries (handles continuations/escapes/ranges).
+    for entry in entries {
+        if entry.key_span.start <= offset && offset <= entry.key_span.end {
+            let prefix = text[entry.key_span.start..offset].trim().to_string();
+            return Some((false, entry.key.clone(), prefix));
+        }
+        if entry.value_span.start <= offset && offset <= entry.value_span.end {
+            let prefix = text[entry.value_span.start..offset].trim().to_string();
+            return Some((true, entry.key.clone(), prefix));
+        }
+    }
+
+    // Fallback: guess based on the current line.
+    let (line_start, line_end) = line_bounds(text, offset);
+    let line = text.get(line_start..line_end)?;
+    let trimmed = line.trim_start();
+    if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('!') {
+        return None;
+    }
+
+    let sep_idx = trimmed.find('=').or_else(|| trimmed.find(':'));
+    let sep_idx = sep_idx.map(|idx| line.len() - trimmed.len() + idx);
+
+    let key_start = line_start + (line.len() - trimmed.len());
+    let key_end = line_start + sep_idx.unwrap_or(line.len());
+    let is_value = sep_idx.is_some() && offset >= line_start + sep_idx.unwrap() + 1;
+
+    let key = text
+        .get(key_start..key_end)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if key.is_empty() {
+        return None;
+    }
+
+    if is_value {
+        let value_start = (line_start + sep_idx.unwrap() + 1).min(text.len());
+        let prefix = text[value_start..offset].trim().to_string();
+        Some((true, key, prefix))
+    } else {
+        let prefix = text[key_start..offset].trim().to_string();
+        Some((false, key, prefix))
+    }
+}
+
+fn yaml_completion_context(text: &str, offset: usize) -> Option<(String, String)> {
+    let (line_start, _line_end) = line_bounds(text, offset);
+    let current_line = text.get(line_start..)?;
+    let current_line = current_line
+        .split_once('\n')
+        .map(|(l, _)| l)
+        .unwrap_or(current_line);
+    let current_line = current_line.strip_suffix('\r').unwrap_or(current_line);
+
+    let current_indent = current_line.bytes().take_while(|b| *b == b' ').count();
+
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    for raw in text[..line_start].lines() {
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let indent = raw.bytes().take_while(|b| *b == b' ').count();
+        let trimmed = raw[indent..].trim_end();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Only track mapping keys that open a nested block (`key:` with no value).
+        let Some((key, rest)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim_end();
+        if key.is_empty() {
+            continue;
+        }
+
+        while stack
+            .last()
+            .is_some_and(|(prev_indent, _)| *prev_indent >= indent)
+        {
+            stack.pop();
+        }
+
+        if rest.trim().is_empty() {
+            stack.push((indent, key.to_string()));
+        }
+    }
+
+    while stack
+        .last()
+        .is_some_and(|(prev_indent, _)| *prev_indent >= current_indent)
+    {
+        stack.pop();
+    }
+
+    let mut parent_prefix = stack
+        .iter()
+        .map(|(_, key)| key.as_str())
+        .collect::<Vec<_>>()
+        .join(".");
+    if !parent_prefix.is_empty() {
+        parent_prefix.push('.');
+    }
+
+    let after_indent = &current_line[current_indent..];
+    let after_indent = if let Some(rest) = after_indent.strip_prefix("-") {
+        rest.strip_prefix(' ').unwrap_or(rest)
+    } else {
+        after_indent
+    };
+
+    // Determine the token prefix on the current line.
+    let token_end = offset.saturating_sub(line_start + current_indent);
+    let typed_slice = &after_indent[..token_end.min(after_indent.len())];
+    let typed = typed_slice
+        .split(|c: char| c == ':' || c.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    Some((parent_prefix, typed))
+}
+
+fn next_yaml_segment(full_key: &str, parent_prefix: &str) -> Option<String> {
+    let remainder = full_key.strip_prefix(parent_prefix).unwrap_or(full_key);
+    let end = remainder
+        .find(|c| c == '.' || c == '[')
+        .unwrap_or(remainder.len());
+    let seg = remainder[..end].trim();
+    if seg.is_empty() {
+        None
+    } else {
+        Some(seg.to_string())
+    }
+}
+
+fn line_bounds(text: &str, offset: usize) -> (usize, usize) {
+    let bytes = text.as_bytes();
+    let mut start = offset.min(bytes.len());
+    while start > 0 && bytes[start - 1] != b'\n' {
+        start -= 1;
+    }
+    let mut end = offset.min(bytes.len());
+    while end < bytes.len() && bytes[end] != b'\n' {
+        end += 1;
+    }
+    (start, end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,6 +821,11 @@ mod tests {
                   { "name": "server.port", "type": "java.lang.Integer" },
                   { "name": "spring.main.banner-mode", "type": "java.lang.String",
                     "deprecation": { "level": "warning" }
+                  }
+                ],
+                "hints": [
+                  { "name": "spring.main.banner-mode",
+                    "values": [ { "value": "off" }, { "value": "console" } ]
                   }
                 ]
               }"#,
@@ -545,7 +856,8 @@ class C {
     fn reports_unknown_keys_in_properties_file() {
         let metadata = test_metadata();
         let text = "server.port=8080\nunknown.key=foo\n";
-        let diags = diagnostics_for_config_file(Path::new("application.properties"), text, &metadata);
+        let diags =
+            diagnostics_for_config_file(Path::new("application.properties"), text, &metadata);
 
         assert!(diags.iter().any(|d| d.message.contains("unknown.key")));
         assert!(!diags
@@ -571,7 +883,70 @@ class C {
         let targets = goto_definition_for_value_placeholder(java, offset, &workspace);
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].path, PathBuf::from("application.properties"));
-        assert_eq!(&config[targets[0].span.start..targets[0].span.end], "server.port");
+        assert_eq!(
+            &config[targets[0].span.start..targets[0].span.end],
+            "server.port"
+        );
+    }
+
+    #[test]
+    fn completes_properties_keys_and_values() {
+        let mut workspace = SpringWorkspaceIndex::new(test_metadata());
+        workspace.add_config_file("application.properties", "server.port=8080\n");
+
+        let text = "spr";
+        let offset = text.len();
+        let items = completions_for_properties_file(
+            Path::new("application.properties"),
+            text,
+            offset,
+            &workspace,
+        );
+        assert!(items.iter().any(|i| i.label == "spring.main.banner-mode"));
+
+        let text = "spring.main.banner-mode=o";
+        let offset = text.len();
+        let items = completions_for_properties_file(
+            Path::new("application.properties"),
+            text,
+            offset,
+            &workspace,
+        );
+        assert!(items.iter().any(|i| i.label == "off"));
+    }
+
+    #[test]
+    fn completes_yaml_keys_by_segment() {
+        let workspace = SpringWorkspaceIndex::new(test_metadata());
+        let text = "server:\n  p";
+        let offset = text.len();
+        let items =
+            completions_for_yaml_file(Path::new("application.yml"), text, offset, &workspace);
+        assert!(items.iter().any(|i| i.label == "port"));
+    }
+
+    #[test]
+    fn navigates_from_config_key_to_java_usage() {
+        let mut workspace = SpringWorkspaceIndex::new(test_metadata());
+        let config = "server.port=8080\n";
+        workspace.add_config_file("application.properties", config);
+        let java = r#"
+import org.springframework.beans.factory.annotation.Value;
+class C {
+  @Value("${server.port}")
+  String port;
+}
+"#;
+        workspace.add_java_file("src/main/java/C.java", java);
+
+        let offset = config.find("server.port").unwrap() + "server.".len();
+        let usages = goto_usages_for_config_key(
+            Path::new("application.properties"),
+            config,
+            offset,
+            &workspace,
+        );
+        assert_eq!(usages.len(), 1);
+        assert_eq!(usages[0].path, PathBuf::from("src/main/java/C.java"));
     }
 }
-

@@ -18,6 +18,7 @@ use lsp_types::{
 #[cfg(feature = "ai")]
 use std::collections::HashMap;
 
+use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_fuzzy::FuzzyMatcher;
 use nova_types::{Diagnostic, Severity, Span};
@@ -30,6 +31,75 @@ use nova_core::{
     CompletionItemKind as AiCompletionItemKind,
 };
 
+fn is_spring_properties_file(path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    name.starts_with("application")
+        && path.extension().and_then(|e| e.to_str()) == Some("properties")
+}
+
+fn is_spring_yaml_file(path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    if !name.starts_with("application") {
+        return false;
+    }
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("yml" | "yaml")
+    )
+}
+
+fn spring_workspace_index(db: &dyn Database) -> nova_framework_spring::SpringWorkspaceIndex {
+    let mut index = nova_framework_spring::SpringWorkspaceIndex::new(Default::default());
+
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        let text = db.file_content(file_id);
+        if path.extension().and_then(|e| e.to_str()) == Some("java") {
+            index.add_java_file(path.to_path_buf(), text);
+        } else if is_spring_properties_file(path) || is_spring_yaml_file(path) {
+            index.add_config_file(path.to_path_buf(), text);
+        }
+    }
+
+    index
+}
+
+fn spring_completions_to_lsp(items: Vec<nova_types::CompletionItem>) -> Vec<CompletionItem> {
+    items
+        .into_iter()
+        .map(|item| CompletionItem {
+            label: item.label,
+            kind: Some(CompletionItemKind::PROPERTY),
+            detail: item.detail,
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn spring_location_to_lsp(
+    db: &dyn Database,
+    loc: &nova_framework_spring::ConfigLocation,
+) -> Option<Location> {
+    let uri = uri_from_path(&loc.path)?;
+    let target_text = db
+        .file_id(&loc.path)
+        .map(|id| db.file_content(id).to_string())
+        .or_else(|| std::fs::read_to_string(&loc.path).ok())?;
+
+    Some(Location {
+        uri,
+        range: span_to_lsp_range(&target_text, loc.span),
+    })
+}
+
+fn uri_from_path(path: &std::path::Path) -> Option<lsp_types::Uri> {
+    let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
+    let uri = path_to_file_uri(&abs).ok()?;
+    lsp_types::Uri::from_str(&uri).ok()
+}
+
 // -----------------------------------------------------------------------------
 // Diagnostics
 // -----------------------------------------------------------------------------
@@ -38,8 +108,21 @@ use nova_core::{
 pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
-    // 1) Syntax errors.
     let text = db.file_content(file);
+
+    if let Some(path) = db.file_path(file) {
+        if is_spring_properties_file(path) || is_spring_yaml_file(path) {
+            let index = spring_workspace_index(db);
+            diagnostics.extend(nova_framework_spring::diagnostics_for_config_file(
+                path,
+                text,
+                index.metadata(),
+            ));
+            return diagnostics;
+        }
+    }
+
+    // 1) Syntax errors.
     let parse = nova_syntax::parse(text);
     diagnostics.extend(parse.errors.into_iter().map(|e| {
         Diagnostic::error(
@@ -98,6 +181,33 @@ pub fn file_diagnostics_lsp(db: &dyn Database, file: FileId) -> Vec<lsp_types::D
 pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let offset = position_to_offset(text, position);
+
+    if let Some(path) = db.file_path(file) {
+        if is_spring_properties_file(path) {
+            let index = spring_workspace_index(db);
+            let items =
+                nova_framework_spring::completions_for_properties_file(path, text, offset, &index);
+            return spring_completions_to_lsp(items);
+        }
+        if is_spring_yaml_file(path) {
+            let index = spring_workspace_index(db);
+            let items =
+                nova_framework_spring::completions_for_yaml_file(path, text, offset, &index);
+            return spring_completions_to_lsp(items);
+        }
+    }
+
+    // Spring `@Value("${...}")` completions inside Java source.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        let index = spring_workspace_index(db);
+        let items = nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
+        if !items.is_empty() {
+            return spring_completions_to_lsp(items);
+        }
+    }
 
     let (prefix_start, prefix) = identifier_prefix(text, offset);
 
@@ -362,6 +472,20 @@ fn rank_completions(query: &str, items: &mut Vec<CompletionItem>) {
 pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> Option<Location> {
     let text = db.file_content(file);
     let offset = position_to_offset(text, position);
+
+    // Spring config navigation from `@Value("${foo.bar}")` -> config definition.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        let index = spring_workspace_index(db);
+        let targets =
+            nova_framework_spring::goto_definition_for_value_placeholder(text, offset, &index);
+        if let Some(target) = targets.first() {
+            return spring_location_to_lsp(db, target);
+        }
+    }
+
     let analysis = analyze(text);
     let token = token_at_offset(&analysis.tokens, offset)?;
     if token.kind != TokenKind::Ident {
@@ -389,6 +513,19 @@ pub fn find_references(
 ) -> Vec<Location> {
     let text = db.file_content(file);
     let offset = position_to_offset(text, position);
+
+    if let Some(path) = db.file_path(file) {
+        if is_spring_properties_file(path) || is_spring_yaml_file(path) {
+            let index = spring_workspace_index(db);
+            let targets =
+                nova_framework_spring::goto_usages_for_config_key(path, text, offset, &index);
+            return targets
+                .iter()
+                .filter_map(|t| spring_location_to_lsp(db, t))
+                .collect();
+        }
+    }
+
     let analysis = analyze(text);
     let token = match token_at_offset(&analysis.tokens, offset) {
         Some(t) if t.kind == TokenKind::Ident => t,

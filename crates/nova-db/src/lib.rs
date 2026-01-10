@@ -37,7 +37,18 @@ pub struct RootDatabase {
 pub trait Database {
     fn file_content(&self, file_id: FileId) -> &str;
 
+    /// Best-effort file path lookup for a `FileId`.
     fn file_path(&self, _file_id: FileId) -> Option<&Path> {
+        None
+    }
+
+    /// Return all file IDs currently known to the database.
+    fn all_file_ids(&self) -> Vec<FileId> {
+        Vec::new()
+    }
+
+    /// Look up a `FileId` for an already-known path.
+    fn file_id(&self, _path: &Path) -> Option<FileId> {
         None
     }
 }
@@ -80,6 +91,16 @@ impl Database for RootDatabase {
 
     fn file_path(&self, file_id: FileId) -> Option<&Path> {
         self.path_for_file(file_id)
+    }
+
+    fn all_file_ids(&self) -> Vec<FileId> {
+        let mut ids: Vec<_> = self.files.keys().copied().collect();
+        ids.sort_by_key(|id| id.to_raw());
+        ids
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        self.path_to_file.get(path).copied()
     }
 }
 

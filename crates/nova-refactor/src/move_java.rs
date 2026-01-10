@@ -95,12 +95,13 @@ pub fn move_class(
         }
     })?;
 
-    let source = files
-        .get(&params.source_path)
-        .ok_or_else(|| RefactorError::PublicTypeNotFound {
-            path: params.source_path.clone(),
-            expected: params.class_name.clone(),
-        })?;
+    let source =
+        files
+            .get(&params.source_path)
+            .ok_or_else(|| RefactorError::PublicTypeNotFound {
+                path: params.source_path.clone(),
+                expected: params.class_name.clone(),
+            })?;
 
     let pkg = java_text::parse_package_decl(source)
         .map_err(parse_err)?
@@ -175,8 +176,8 @@ pub fn move_class(
         if path == &params.source_path {
             continue;
         }
-        let mut new_content = java_text::replace_qualified_name(content, &old_fqn, &new_fqn)
-            .map_err(parse_err)?;
+        let mut new_content =
+            java_text::replace_qualified_name(content, &old_fqn, &new_fqn).map_err(parse_err)?;
 
         let file_pkg = file_package_name(&new_content)?;
         let imports = java_text::parse_import_decls(&new_content).map_err(parse_err)?;
@@ -244,9 +245,9 @@ pub fn move_package(
             }
         })?;
 
-        let file_name = path.file_name().ok_or_else(|| {
-            RefactorError::Parse(format!("invalid path `{}`", path.display()))
-        })?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| RefactorError::Parse(format!("invalid path `{}`", path.display())))?;
         let new_path = source_root
             .join(nova_project::package_to_path(&new_pkg))
             .join(file_name);
@@ -480,7 +481,9 @@ where
         };
         let type_names = java_text::find_top_level_type_names(source).map_err(parse_err)?;
         for name in type_names {
-            index.entry(format!("{pkg}.{name}")).or_insert_with(|| path.clone());
+            index
+                .entry(format!("{pkg}.{name}"))
+                .or_insert_with(|| path.clone());
         }
     }
 
@@ -639,11 +642,7 @@ mod java_text {
                     b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => {
                         while let Some(next) = self.peek_byte() {
                             match next {
-                                b'a'..=b'z'
-                                | b'A'..=b'Z'
-                                | b'0'..=b'9'
-                                | b'_'
-                                | b'$' => {
+                                b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$' => {
                                     self.offset += 1;
                                 }
                                 _ => break,
@@ -1099,7 +1098,10 @@ class A {}
         )
         .unwrap_err();
 
-        assert!(matches!(err, RefactorError::DestinationTypeAlreadyExists { .. }));
+        assert!(matches!(
+            err,
+            RefactorError::DestinationTypeAlreadyExists { .. }
+        ));
     }
 
     #[test]
@@ -1258,6 +1260,9 @@ class A {}
         )
         .unwrap_err();
 
-        assert!(matches!(err, RefactorError::DestinationTypeAlreadyExists { .. }));
+        assert!(matches!(
+            err,
+            RefactorError::DestinationTypeAlreadyExists { .. }
+        ));
     }
 }

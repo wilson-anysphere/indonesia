@@ -14,8 +14,8 @@ pub mod extensions;
 pub mod format;
 pub mod semantics;
 
-mod completion;
 pub mod code_intelligence;
+mod completion;
 mod project;
 pub mod refactor;
 
@@ -42,8 +42,10 @@ pub use refactor::inline_method_code_actions;
 /// and `@Value("${...}")` completions/navigation).
 pub mod spring {
     pub use nova_framework_spring::{
-        completions_for_value_placeholder, diagnostics_for_config_file,
-        goto_definition_for_value_placeholder, SpringWorkspaceIndex,
+        completions_for_properties_file, completions_for_value_placeholder,
+        completions_for_yaml_file, diagnostics_for_config_file,
+        goto_definition_for_value_placeholder, goto_usages_for_config_key, ConfigLocation,
+        SpringWorkspaceIndex,
     };
 }
 
