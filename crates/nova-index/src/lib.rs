@@ -2,12 +2,14 @@
 
 mod indexes;
 mod java_types;
+mod memory_cache;
 mod persistence;
 mod sketch;
 mod symbol_search;
 
 pub use indexes::*;
 pub use java_types::*;
+pub use memory_cache::IndexCache;
 pub use persistence::*;
 pub use sketch::*;
 pub use symbol_search::{

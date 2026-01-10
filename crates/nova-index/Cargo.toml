@@ -7,6 +7,7 @@ edition = "2021"
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }
+nova-memory = { path = "../nova-memory" }
 nova-project = { path = "../nova-project" }
 nova-storage = { path = "../nova-storage" }
 rkyv = { version = "0.7", features = ["validation"] }

@@ -9,12 +9,14 @@ use nova_ide::{
     CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN, COMMAND_EXPLAIN_ERROR,
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
+use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -40,6 +42,7 @@ fn main() -> std::io::Result<()> {
         if id.is_none() {
             // Notification.
             handle_notification(method, &message, &mut state)?;
+            flush_memory_status_notifications(&mut writer, &mut state)?;
             continue;
         }
 
@@ -51,18 +54,21 @@ fn main() -> std::io::Result<()> {
 
         let response = handle_request(method, id, params, &mut state, &mut writer)?;
         write_json_message(&mut writer, &response)?;
+        flush_memory_status_notifications(&mut writer, &mut state)?;
     }
 
     Ok(())
 }
 
-#[derive(Debug)]
 struct ServerState {
     shutdown_requested: bool,
     documents: HashMap<String, String>,
     ai: Option<AiService>,
     privacy: nova_ai::PrivacyMode,
     runtime: Option<tokio::runtime::Runtime>,
+    memory: MemoryManager,
+    memory_events: Arc<Mutex<Vec<MemoryEvent>>>,
+    documents_memory: nova_memory::MemoryRegistration,
 }
 
 impl ServerState {
@@ -82,13 +88,32 @@ impl ServerState {
             }
         };
 
+        let memory = MemoryManager::new(MemoryBudget::default_for_system());
+        let memory_events: Arc<Mutex<Vec<MemoryEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        memory.subscribe({
+            let memory_events = memory_events.clone();
+            Arc::new(move |event: MemoryEvent| {
+                memory_events.lock().unwrap().push(event);
+            })
+        });
+        let documents_memory = memory.register_tracker("open_documents", MemoryCategory::Other);
+
         Self {
             shutdown_requested: false,
             documents: HashMap::new(),
             ai,
             privacy,
             runtime,
+            memory,
+            memory_events,
+            documents_memory,
         }
+    }
+
+    fn refresh_document_memory(&mut self) {
+        let total: u64 = self.documents.values().map(|t| t.len() as u64).sum();
+        self.documents_memory.tracker().set_bytes(total);
+        self.memory.enforce();
     }
 }
 
@@ -134,6 +159,16 @@ fn handle_request(
         "shutdown" => {
             state.shutdown_requested = true;
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": serde_json::Value::Null }))
+        }
+        nova_lsp::MEMORY_STATUS_METHOD => {
+            // Force an enforcement pass so the response reflects the current
+            // pressure state and triggers evictions in registered components.
+            let report = state.memory.enforce();
+            let payload = serde_json::to_value(nova_lsp::MemoryStatusResponse { report });
+            Ok(match payload {
+                Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } }),
+            })
         }
         "textDocument/codeAction" => {
             if state.shutdown_requested {
@@ -222,6 +257,7 @@ fn handle_notification(method: &str, message: &serde_json::Value, state: &mut Se
                 state
                     .documents
                     .insert(params.text_document.uri, params.text_document.text);
+                state.refresh_document_memory();
             }
         }
         "textDocument/didChange" => {
@@ -235,10 +271,47 @@ fn handle_notification(method: &str, message: &serde_json::Value, state: &mut Se
                 state
                     .documents
                     .insert(params.text_document.uri, change.text.clone());
+                state.refresh_document_memory();
+            }
+        }
+        "textDocument/didClose" => {
+            let params: DidCloseTextDocumentParams =
+                serde_json::from_value(message.get("params").cloned().unwrap_or_default())
+                    .unwrap_or_else(|_| DidCloseTextDocumentParams {
+                        text_document: VersionedTextDocumentIdentifier { uri: String::new() },
+                    });
+            if !params.text_document.uri.is_empty() {
+                state.documents.remove(&params.text_document.uri);
+                state.refresh_document_memory();
             }
         }
         _ => {}
     }
+    Ok(())
+}
+
+fn flush_memory_status_notifications(
+    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    state: &mut ServerState,
+) -> std::io::Result<()> {
+    let mut events = state.memory_events.lock().unwrap();
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    // Avoid spamming: publish only the latest state.
+    let last = events.pop().expect("checked non-empty");
+    events.clear();
+    drop(events);
+
+    let params = serde_json::to_value(nova_lsp::MemoryStatusResponse { report: last.report })
+        .unwrap_or(serde_json::Value::Null);
+    let notification = json!({
+        "jsonrpc": "2.0",
+        "method": nova_lsp::MEMORY_STATUS_NOTIFICATION,
+        "params": params,
+    });
+    write_json_message(writer, &notification)?;
     Ok(())
 }
 
@@ -260,6 +333,12 @@ struct TextDocumentItem {
 struct DidChangeTextDocumentParams {
     text_document: VersionedTextDocumentIdentifier,
     content_changes: Vec<TextDocumentContentChangeEvent>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DidCloseTextDocumentParams {
+    text_document: VersionedTextDocumentIdentifier,
 }
 
 #[derive(Debug, Clone, Deserialize)]

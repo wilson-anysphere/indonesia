@@ -17,6 +17,7 @@ nova-decompile = { path = "../nova-decompile" }
 nova-ide = { path = "../nova-ide" }
 nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
+nova-memory = { path = "../nova-memory" }
 nova-project = { path = "../nova-project" }
 nova-refactor = { path = "../nova-refactor" }
 nova-scheduler = { path = "../nova-scheduler" }

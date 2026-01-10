@@ -7,6 +7,7 @@ use crate::change::ChangeEvent;
 use crate::document::{ContentChange, DocumentError};
 use crate::file_id::FileIdRegistry;
 use crate::fs::FileSystem;
+use crate::open_documents::OpenDocuments;
 use crate::overlay_fs::OverlayFs;
 use crate::path::VfsPath;
 
@@ -18,6 +19,7 @@ use crate::path::VfsPath;
 pub struct Vfs<F: FileSystem> {
     fs: OverlayFs<F>,
     ids: Arc<Mutex<FileIdRegistry>>,
+    open_docs: Arc<OpenDocuments>,
 }
 
 impl<F: FileSystem> Vfs<F> {
@@ -25,11 +27,17 @@ impl<F: FileSystem> Vfs<F> {
         Self {
             fs: OverlayFs::new(base),
             ids: Arc::new(Mutex::new(FileIdRegistry::new())),
+            open_docs: Arc::new(OpenDocuments::default()),
         }
     }
 
     pub fn overlay(&self) -> &OverlayFs<F> {
         &self.fs
+    }
+
+    /// Returns a shared handle to the set of open document ids.
+    pub fn open_documents(&self) -> Arc<OpenDocuments> {
+        self.open_docs.clone()
     }
 
     /// Returns the stable id for `path`, allocating one if needed.
@@ -54,10 +62,14 @@ impl<F: FileSystem> Vfs<F> {
     pub fn open_document(&self, path: VfsPath, text: String, version: i32) -> FileId {
         let id = self.file_id(path.clone());
         self.fs.open(path, text, version);
+        self.open_docs.open(id);
         id
     }
 
     pub fn close_document(&self, path: &VfsPath) {
+        if let Some(id) = self.get_id(path) {
+            self.open_docs.close(id);
+        }
         self.fs.close(path);
     }
 

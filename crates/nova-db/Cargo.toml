@@ -16,6 +16,7 @@ nova-syntax = { path = "../nova-syntax" }
 parking_lot = "0.12"
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 tracing = "0.1"
+nova-memory = { path = "../nova-memory" }
 thiserror = "2"
 
 [dev-dependencies]

@@ -77,6 +77,14 @@ pub const AI_GENERATE_TESTS_METHOD: &str = "nova/ai/generateTests";
 pub const BUILD_TARGET_CLASSPATH_METHOD: &str = "nova/build/targetClasspath";
 pub const BUILD_STATUS_METHOD: &str = "nova/build/status";
 pub const BUILD_DIAGNOSTICS_METHOD: &str = "nova/build/diagnostics";
+// Performance / memory custom endpoints.
+pub const MEMORY_STATUS_METHOD: &str = "nova/memoryStatus";
+pub const MEMORY_STATUS_NOTIFICATION: &str = "nova/memoryStatusChanged";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MemoryStatusResponse {
+    pub report: nova_memory::MemoryReport,
+}
 
 /// Dispatch a Nova custom request (`nova/*`) by method name.
 ///

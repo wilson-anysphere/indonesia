@@ -7,6 +7,9 @@
 //! - [`salsa`]: the Salsa-powered incremental query database and snapshot
 //!   concurrency model described in `docs/04-incremental-computation.md`.
 
+mod query_cache;
+pub use query_cache::QueryCache;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

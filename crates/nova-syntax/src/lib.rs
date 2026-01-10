@@ -10,12 +10,14 @@ mod ast;
 mod lexer;
 mod parser;
 mod syntax_kind;
+mod tree_store;
 mod util;
 
 pub use ast::*;
 pub use lexer::{lex, Lexer, Token};
 pub use parser::{parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use syntax_kind::{JavaLanguage, SyntaxKind};
+pub use tree_store::SyntaxTreeStore;
 
 use serde::{Deserialize, Serialize};
 
