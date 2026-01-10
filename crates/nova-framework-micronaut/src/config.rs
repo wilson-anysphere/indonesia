@@ -145,61 +145,17 @@ pub fn completions_for_value_placeholder(
 }
 
 fn parse_properties_keys(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') || line.starts_with('!') {
-            continue;
-        }
-        let (key, _) = line
-            .split_once('=')
-            .or_else(|| line.split_once(':'))
-            .unwrap_or((line, ""));
-        let key = key.trim();
-        if !key.is_empty() {
-            out.push(key.to_string());
-        }
-    }
-    out
+    nova_properties::parse(text)
+        .entries
+        .into_iter()
+        .map(|entry| entry.key)
+        .collect()
 }
 
 fn parse_yaml_keys(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut stack: Vec<(usize, String)> = Vec::new();
-
-    for line in text.lines() {
-        if line.trim().is_empty() || line.trim_start().starts_with('#') {
-            continue;
-        }
-        if line.trim_start().starts_with('-') {
-            continue;
-        }
-
-        let indent = line.chars().take_while(|c| c.is_whitespace()).count();
-        let Some((raw_key, _)) = line.trim().split_once(':') else {
-            continue;
-        };
-        let key = raw_key.trim();
-        if key.is_empty() {
-            continue;
-        }
-
-        while let Some((prev, _)) = stack.last() {
-            if *prev < indent {
-                break;
-            }
-            stack.pop();
-        }
-        stack.push((indent, key.to_string()));
-
-        out.push(
-            stack
-                .iter()
-                .map(|(_, k)| k.as_str())
-                .collect::<Vec<_>>()
-                .join("."),
-        );
-    }
-
-    out
+    nova_yaml::parse(text)
+        .entries
+        .into_iter()
+        .map(|entry| entry.key)
+        .collect()
 }
