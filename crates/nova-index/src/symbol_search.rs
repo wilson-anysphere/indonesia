@@ -10,19 +10,11 @@ pub struct Symbol {
 #[derive(Debug, Clone)]
 struct SymbolEntry {
     symbol: Symbol,
-    name_folded: String,
-    qualified_folded: String,
 }
 
 impl SymbolEntry {
     fn new(symbol: Symbol) -> Self {
-        let name_folded = symbol.name.to_ascii_lowercase();
-        let qualified_folded = symbol.qualified_name.to_ascii_lowercase();
-        Self {
-            symbol,
-            name_folded,
-            qualified_folded,
-        }
+        Self { symbol }
     }
 }
 
@@ -64,19 +56,16 @@ impl SymbolSearchIndex {
         let mut builder = TrigramIndexBuilder::new();
         for (id, entry) in entries.iter().enumerate() {
             let id = id as SymbolId;
-            builder.insert(id, &entry.name_folded);
-            builder.insert(id, &entry.qualified_folded);
+            builder.insert(id, &entry.symbol.name);
+            builder.insert(id, &entry.symbol.qualified_name);
         }
         let trigram = builder.build();
 
         let mut prefix1: Vec<Vec<SymbolId>> = vec![Vec::new(); 256];
         for (id, entry) in entries.iter().enumerate() {
-            if entry.name_folded.is_empty() {
-                continue;
+            if let Some(&b0) = entry.symbol.name.as_bytes().first() {
+                prefix1[b0.to_ascii_lowercase() as usize].push(id as SymbolId);
             }
-            let bytes = entry.name_folded.as_bytes();
-            let a = bytes[0];
-            prefix1[a as usize].push(id as SymbolId);
         }
 
         Self {
@@ -86,61 +75,59 @@ impl SymbolSearchIndex {
         }
     }
 
-    fn candidates_for_query(&self, query: &str) -> (CandidateStrategy, Vec<SymbolId>) {
-        let q = query.to_ascii_lowercase();
-        let q_bytes = q.as_bytes();
-        if q_bytes.is_empty() {
-            return (CandidateStrategy::FullScan, Vec::new());
-        }
-
-        if q_bytes.len() < 3 {
-            let a = q_bytes[0];
-            let ids = self.prefix1[a as usize].clone();
-            if !ids.is_empty() {
-                return (CandidateStrategy::Prefix, ids);
-            }
-            let scan_limit = 50_000usize.min(self.symbols.len());
-            let ids = (0..scan_limit as SymbolId).collect();
-            return (CandidateStrategy::FullScan, ids);
-        }
-
-        let candidates = self.trigram.candidates(&q);
-        if candidates.is_empty() {
-            // For longer queries, a missing trigram intersection likely means no
-            // substring match exists. Fall back to a (bounded) scan to still
-            // support acronym-style queries.
-            let scan_limit = 50_000usize.min(self.symbols.len());
-            let ids = (0..scan_limit as SymbolId).collect();
-            return (CandidateStrategy::FullScan, ids);
-        }
-        (CandidateStrategy::Trigram, candidates)
-    }
-
     pub fn search_with_stats(&self, query: &str, limit: usize) -> (Vec<SearchResult>, SearchStats) {
-        let (strategy, candidates) = self.candidates_for_query(query);
+        let q_bytes = query.as_bytes();
+        if q_bytes.is_empty() {
+            return (
+                Vec::new(),
+                SearchStats {
+                    strategy: CandidateStrategy::FullScan,
+                    candidates_considered: 0,
+                },
+            );
+        }
+
+        let strategy: CandidateStrategy;
+        let candidates_considered: usize;
         let mut results = Vec::new();
         let mut matcher = FuzzyMatcher::new(query);
-        for &id in &candidates {
-            let entry = &self.symbols[id as usize];
 
-            // Prefer name matches but allow qualified-name matches too.
-            let mut best = matcher.score(&entry.symbol.name);
-            let qual = matcher.score(&entry.symbol.qualified_name);
-            if let (Some(a), Some(b)) = (best, qual) {
-                if b.rank_key() > a.rank_key() {
-                    best = Some(b);
+        if q_bytes.len() < 3 {
+            let key = q_bytes[0].to_ascii_lowercase();
+            let bucket = &self.prefix1[key as usize];
+            if !bucket.is_empty() {
+                strategy = CandidateStrategy::Prefix;
+                candidates_considered = bucket.len();
+                for &id in bucket {
+                    self.score_candidate(id, &mut matcher, &mut results);
                 }
-            } else if best.is_none() {
-                best = qual;
+            } else {
+                let scan_limit = 50_000usize.min(self.symbols.len());
+                strategy = CandidateStrategy::FullScan;
+                candidates_considered = scan_limit;
+                for id in 0..scan_limit {
+                    self.score_candidate(id as SymbolId, &mut matcher, &mut results);
+                }
             }
-
-            let Some(score) = best else { continue };
-
-            results.push(SearchResult {
-                id,
-                symbol: entry.symbol.clone(),
-                score,
-            });
+        } else {
+            let candidates = self.trigram.candidates(query);
+            if candidates.is_empty() {
+                // For longer queries, a missing trigram intersection likely means no
+                // substring match exists. Fall back to a (bounded) scan to still
+                // support acronym-style queries.
+                let scan_limit = 50_000usize.min(self.symbols.len());
+                strategy = CandidateStrategy::FullScan;
+                candidates_considered = scan_limit;
+                for id in 0..scan_limit {
+                    self.score_candidate(id as SymbolId, &mut matcher, &mut results);
+                }
+            } else {
+                strategy = CandidateStrategy::Trigram;
+                candidates_considered = candidates.len();
+                for id in candidates {
+                    self.score_candidate(id, &mut matcher, &mut results);
+                }
+            }
         }
 
         results.sort_by(|a, b| {
@@ -159,13 +146,41 @@ impl SymbolSearchIndex {
             results,
             SearchStats {
                 strategy,
-                candidates_considered: candidates.len(),
+                candidates_considered,
             },
         )
     }
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchResult> {
         self.search_with_stats(query, limit).0
+    }
+
+    fn score_candidate(
+        &self,
+        id: SymbolId,
+        matcher: &mut FuzzyMatcher,
+        out: &mut Vec<SearchResult>,
+    ) {
+        let entry = &self.symbols[id as usize];
+
+        // Prefer name matches but allow qualified-name matches too.
+        let mut best = matcher.score(&entry.symbol.name);
+        let qual = matcher.score(&entry.symbol.qualified_name);
+        if let (Some(a), Some(b)) = (best, qual) {
+            if b.rank_key() > a.rank_key() {
+                best = Some(b);
+            }
+        } else if best.is_none() {
+            best = qual;
+        }
+
+        let Some(score) = best else { return };
+
+        out.push(SearchResult {
+            id,
+            symbol: entry.symbol.clone(),
+            score,
+        });
     }
 }
 

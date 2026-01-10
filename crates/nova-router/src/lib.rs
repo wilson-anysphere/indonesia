@@ -979,13 +979,14 @@ impl GlobalSymbolIndex {
             return self.symbols.iter().take(limit).cloned().collect();
         }
 
-        let query_folded = query.to_ascii_lowercase();
+        let query_bytes = query.as_bytes();
+        let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
         let mut matcher = FuzzyMatcher::new(query);
 
         let mut scored = Vec::new();
 
-        if query_folded.len() < 3 {
-            if let Some(&b0) = query_folded.as_bytes().first() {
+        if query_bytes.len() < 3 {
+            if let Some(b0) = query_first {
                 let bucket = &self.prefix1[b0 as usize];
                 if !bucket.is_empty() {
                     self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
@@ -998,9 +999,9 @@ impl GlobalSymbolIndex {
             return self.finish(scored, limit);
         }
 
-        let mut candidates = self.trigram.candidates(&query_folded);
+        let mut candidates = self.trigram.candidates(query);
         if candidates.is_empty() {
-            if let Some(&b0) = query_folded.as_bytes().first() {
+            if let Some(b0) = query_first {
                 let bucket = &self.prefix1[b0 as usize];
                 if !bucket.is_empty() {
                     self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
