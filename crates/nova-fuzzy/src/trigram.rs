@@ -183,3 +183,32 @@ impl TrigramIndexBuilder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trigram_candidates_intersect_postings() {
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "foobar");
+        builder.insert(2, "barfoo");
+        let index = builder.build();
+
+        // "foo" appears in both.
+        assert_eq!(index.candidates("foo"), vec![1, 2]);
+
+        // "oob" appears only in "foobar".
+        assert_eq!(index.candidates("foob"), vec![1]);
+    }
+
+    #[test]
+    fn trigrams_are_case_folded() {
+        let mut builder = TrigramIndexBuilder::new();
+        builder.insert(1, "FooBar");
+        let index = builder.build();
+
+        assert_eq!(index.candidates("bar"), vec![1]);
+        assert_eq!(index.candidates("BAR"), vec![1]);
+    }
+}

@@ -1133,3 +1133,63 @@ async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessag
         .context("read message payload")?;
     nova_remote_proto::decode_message(&buf)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_symbol_search_prefers_prefix_matches() {
+        let symbols = vec![
+            Symbol {
+                name: "foobar".into(),
+                path: "a.java".into(),
+            },
+            Symbol {
+                name: "barfoo".into(),
+                path: "b.java".into(),
+            },
+        ];
+
+        let index = GlobalSymbolIndex::new(symbols);
+        let results = index.search("foo", 10);
+        assert_eq!(results[0].name, "foobar");
+    }
+
+    #[test]
+    fn global_symbol_search_supports_acronym_queries() {
+        let symbols = vec![
+            Symbol {
+                name: "FooBar".into(),
+                path: "a.java".into(),
+            },
+            Symbol {
+                name: "foobar".into(),
+                path: "b.java".into(),
+            },
+        ];
+
+        let index = GlobalSymbolIndex::new(symbols);
+        let results = index.search("fb", 10);
+        assert_eq!(results[0].name, "FooBar");
+    }
+
+    #[test]
+    fn global_symbol_search_filters_by_trigrams_for_long_queries() {
+        let symbols = vec![
+            Symbol {
+                name: "HashMap".into(),
+                path: "a.java".into(),
+            },
+            Symbol {
+                name: "FooBar".into(),
+                path: "b.java".into(),
+            },
+        ];
+
+        let index = GlobalSymbolIndex::new(symbols);
+        let results = index.search("Hash", 10);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "HashMap");
+    }
+}
