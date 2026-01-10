@@ -844,6 +844,7 @@ impl From<DepsClassStub> for ClasspathClassStub {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
     use std::path::PathBuf;
 
     use tempfile::TempDir;
@@ -869,6 +870,60 @@ mod tests {
 
     fn test_not_multirelease_jar() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/not-multirelease.jar")
+    }
+
+    fn test_named_module_jar() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/named-module.jar")
+    }
+
+    fn test_named_module_jmod() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/named-module.jmod")
+    }
+
+    #[test]
+    fn reads_module_info_from_jmod_entry() {
+        let entry = ClasspathEntry::Jmod(test_named_module_jmod());
+        let info = entry
+            .module_info()
+            .unwrap()
+            .expect("expected module-info.class in named-module.jmod fixture");
+        assert_eq!(info.name.as_str(), "example.mod");
+    }
+
+    #[test]
+    fn reads_module_info_from_jar_entry() {
+        let entry = ClasspathEntry::Jar(test_named_module_jar());
+        let info = entry
+            .module_info()
+            .unwrap()
+            .expect("expected module-info.class in named-module.jar fixture");
+        assert_eq!(info.name.as_str(), "example.mod");
+    }
+
+    #[test]
+    fn module_info_returns_none_for_regular_jar() {
+        let entry = ClasspathEntry::Jar(test_jar());
+        assert!(entry.module_info().unwrap().is_none());
+    }
+
+    #[test]
+    fn reads_module_info_from_class_dir_entry() {
+        let tmp = TempDir::new().unwrap();
+
+        let file = std::fs::File::open(test_named_module_jar()).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut entry = archive.by_name("module-info.class").unwrap();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+
+        std::fs::write(tmp.path().join("module-info.class"), bytes).unwrap();
+
+        let class_dir = ClasspathEntry::ClassDir(tmp.path().to_path_buf());
+        let info = class_dir
+            .module_info()
+            .unwrap()
+            .expect("expected module-info.class in temp dir");
+        assert_eq!(info.name.as_str(), "example.mod");
     }
 
     #[test]
