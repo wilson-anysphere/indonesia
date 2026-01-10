@@ -240,6 +240,13 @@ impl QueryStatsCollector {
             by_query: guard.clone(),
         }
     }
+
+    fn clear(&self) {
+        self.inner
+            .lock()
+            .expect("query stats mutex poisoned")
+            .clear();
+    }
 }
 
 /// The concrete Salsa database for Nova.
@@ -282,6 +289,10 @@ impl QueryDatabase {
     #[inline]
     pub fn query_stats(&self) -> QueryStats {
         self.stats.snapshot()
+    }
+
+    pub fn clear_query_stats(&self) {
+        self.stats.clear();
     }
 }
 
@@ -369,6 +380,10 @@ impl Database {
 
     pub fn query_stats(&self) -> QueryStats {
         self.inner.read().query_stats()
+    }
+
+    pub fn clear_query_stats(&self) {
+        self.inner.read().clear_query_stats();
     }
 
     pub fn with_write<T>(&self, f: impl FnOnce(&mut QueryDatabase) -> T) -> T {
