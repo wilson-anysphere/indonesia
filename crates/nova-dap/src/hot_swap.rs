@@ -72,15 +72,15 @@ pub trait JdwpRedefiner {
     fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> Result<(), JdwpError>;
 }
 
-impl JdwpRedefiner for crate::jdwp::TcpJdwpClient {
+impl JdwpRedefiner for nova_jdwp::TcpJdwpClient {
     fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> Result<(), JdwpError> {
-        crate::jdwp::TcpJdwpClient::redefine_class(self, class_name, bytecode).map_err(map_jdwp_error)
+        nova_jdwp::TcpJdwpClient::redefine_class(self, class_name, bytecode).map_err(map_jdwp_error)
     }
 }
 
-fn map_jdwp_error(err: crate::jdwp::JdwpError) -> JdwpError {
+fn map_jdwp_error(err: nova_jdwp::JdwpError) -> JdwpError {
     match err {
-        crate::jdwp::JdwpError::CommandFailed { error_code } if is_schema_change(error_code) => {
+        nova_jdwp::JdwpError::CommandFailed { error_code } if is_schema_change(error_code) => {
             JdwpError::SchemaChange(format!(
                 "HotSwap rejected by JVM (JDWP error {error_code})"
             ))

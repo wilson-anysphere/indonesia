@@ -155,8 +155,15 @@ pub fn move_class(
 
     // Moved file: update package declaration and rename file path.
     let moved_contents = update_package_declaration(source, &params.target_package)?;
-    let moved_contents =
-        ensure_imports_for_moved_file(&moved_contents, &pkg.name, &params.source_path, &params.class_name, files)?;
+    let moved_contents = java_text::replace_qualified_name(&moved_contents, &old_fqn, &new_fqn)
+        .map_err(parse_err)?;
+    let moved_contents = ensure_imports_for_moved_file(
+        &moved_contents,
+        &pkg.name,
+        &params.source_path,
+        &params.class_name,
+        files,
+    )?;
     out.file_moves.push(FileMove {
         old_path: params.source_path.clone(),
         new_path: dest_path,
@@ -1126,6 +1133,37 @@ public class B {}
         assert!(moved.contains("package com.bar;"));
         assert!(moved.contains("import com.foo.B;"));
         assert!(moved.contains("B b;"));
+    }
+
+    #[test]
+    fn move_class_updates_self_fully_qualified_references_in_moved_file() {
+        let input = files(vec![(
+            "src/main/java/com/foo/A.java",
+            r#"package com.foo;
+
+public class A {
+    com.foo.A self;
+}
+"#,
+        )]);
+
+        let edit = move_class(
+            &input,
+            MoveClassParams {
+                source_path: PathBuf::from("src/main/java/com/foo/A.java"),
+                class_name: "A".into(),
+                target_package: "com.bar".into(),
+            },
+        )
+        .unwrap();
+
+        let mut applied = input.clone();
+        edit.apply_to(&mut applied, true);
+
+        let moved = &applied[Path::new("src/main/java/com/bar/A.java")];
+        assert!(moved.contains("package com.bar;"));
+        assert!(moved.contains("com.bar.A self;"));
+        assert!(!moved.contains("com.foo.A self;"));
     }
 
     #[test]

@@ -13,6 +13,12 @@ pub mod server;
 pub mod hot_swap;
 pub mod smart_step_into;
 
+/// Re-export the JDWP client implementation so consumers can depend only on `nova-dap` for
+/// debugger-adjacent functionality.
+pub mod jdwp {
+    pub use nova_jdwp::*;
+}
+
 /// Debugger UX helpers (return values, stable object IDs, rich formatting).
 ///
 /// This lives alongside the main `DapServer` implementation so the pieces can
