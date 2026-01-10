@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::archive::{ArchiveReader, StubArchiveReader};
 use crate::path::VfsPath;
@@ -24,10 +25,20 @@ pub trait FileSystem: Send + Sync {
 }
 
 /// Local OS file system implementation.
-#[derive(Debug, Default, Clone)]
-pub struct LocalFs;
+#[derive(Debug, Clone)]
+pub struct LocalFs {
+    archive: Arc<dyn ArchiveReader>,
+}
 
 impl LocalFs {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_archive_reader(archive: Arc<dyn ArchiveReader>) -> Self {
+        Self { archive }
+    }
+
     fn read_dir_local(path: &Path) -> io::Result<Vec<VfsPath>> {
         let mut out = Vec::new();
         for entry in fs::read_dir(path)? {
@@ -38,11 +49,19 @@ impl LocalFs {
     }
 }
 
+impl Default for LocalFs {
+    fn default() -> Self {
+        Self {
+            archive: Arc::new(StubArchiveReader),
+        }
+    }
+}
+
 impl FileSystem for LocalFs {
     fn read_to_string(&self, path: &VfsPath) -> io::Result<String> {
         match path {
             VfsPath::Local(path) => fs::read_to_string(path),
-            VfsPath::Archive(path) => StubArchiveReader.read_to_string(path),
+            VfsPath::Archive(path) => self.archive.read_to_string(path),
             VfsPath::Uri(uri) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("cannot read URI path: {uri}"),
@@ -53,7 +72,7 @@ impl FileSystem for LocalFs {
     fn exists(&self, path: &VfsPath) -> bool {
         match path {
             VfsPath::Local(path) => path.exists(),
-            VfsPath::Archive(path) => StubArchiveReader.exists(path),
+            VfsPath::Archive(path) => self.archive.exists(path),
             VfsPath::Uri(_) => false,
         }
     }

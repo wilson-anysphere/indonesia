@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn vfs_emits_document_change_events() {
-        let vfs = Vfs::new(LocalFs);
+        let vfs = Vfs::new(LocalFs::new());
         let path = VfsPath::uri("file:///tmp/Main.java");
         let id = vfs.open_document(path.clone(), "hello world".to_string(), 1);
 

@@ -46,7 +46,7 @@ impl fmt::Display for ArchivePath {
 ///
 /// This is an abstraction hook; the default implementation in this crate is a
 /// stub that returns `ErrorKind::Unsupported`.
-pub trait ArchiveReader: Send + Sync {
+pub trait ArchiveReader: Send + Sync + fmt::Debug {
     fn read_to_string(&self, path: &ArchivePath) -> io::Result<String>;
 
     fn exists(&self, path: &ArchivePath) -> bool;
@@ -68,4 +68,3 @@ impl ArchiveReader for StubArchiveReader {
         false
     }
 }
-

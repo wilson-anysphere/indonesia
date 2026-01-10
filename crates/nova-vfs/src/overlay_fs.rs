@@ -95,7 +95,7 @@ mod tests {
         fs::write(&file_path, "disk").unwrap();
         let vfs_path = VfsPath::local(file_path.clone());
 
-        let overlay = OverlayFs::new(LocalFs);
+        let overlay = OverlayFs::new(LocalFs::new());
         assert_eq!(overlay.read_to_string(&vfs_path).unwrap(), "disk");
 
         overlay.open(vfs_path.clone(), "overlay".to_string(), 1);
