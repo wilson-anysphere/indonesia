@@ -100,3 +100,39 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
 pub mod refactor;
 
 pub use refactor::{safe_delete_code_action, RefactorResponse};
+
+// -----------------------------------------------------------------------------
+// Core LSP request delegation
+// -----------------------------------------------------------------------------
+
+/// Delegate completion requests to `nova-ide`.
+pub fn completion(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Vec<lsp_types::CompletionItem> {
+    nova_ide::completions(db, file, position)
+}
+
+/// Delegate hover requests to `nova-ide`.
+pub fn hover(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Option<lsp_types::Hover> {
+    nova_ide::hover(db, file, position)
+}
+
+/// Delegate go-to-definition requests to `nova-ide`.
+pub fn goto_definition(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Option<lsp_types::Location> {
+    nova_ide::goto_definition(db, file, position)
+}
+
+/// Delegate diagnostics to `nova-ide`.
+pub fn diagnostics(db: &dyn nova_db::Database, file: nova_db::FileId) -> Vec<lsp_types::Diagnostic> {
+    nova_ide::file_diagnostics_lsp(db, file)
+}

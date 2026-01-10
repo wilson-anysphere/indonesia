@@ -10,6 +10,7 @@ nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-dap = { path = "../nova-dap" }
 nova-ide = { path = "../nova-ide" }
+nova-db = { path = "../nova-db" }
 nova-index = { path = "../nova-index" }
 nova-project = { path = "../nova-project" }
 nova-refactor = { path = "../nova-refactor" }

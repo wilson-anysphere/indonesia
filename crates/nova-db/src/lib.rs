@@ -30,6 +30,14 @@ pub struct RootDatabase {
     files: HashMap<FileId, String>,
 }
 
+/// Minimal query surface needed by IDE features.
+///
+/// In the long term this will be backed by an incremental query engine; for now
+/// we only expose raw file text for analysis.
+pub trait Database {
+    fn file_content(&self, file_id: FileId) -> &str;
+}
+
 impl RootDatabase {
     pub fn new() -> Self {
         Self::default()
@@ -53,6 +61,12 @@ impl RootDatabase {
 
     pub fn file_text(&self, file_id: FileId) -> Option<&str> {
         self.files.get(&file_id).map(String::as_str)
+    }
+}
+
+impl Database for RootDatabase {
+    fn file_content(&self, file_id: FileId) -> &str {
+        self.file_text(file_id).unwrap_or("")
     }
 }
 
@@ -292,4 +306,3 @@ mod tests {
         assert_ne!(&*b2, &*b1);
     }
 }
-

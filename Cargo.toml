@@ -14,6 +14,7 @@ members = [
     "crates/nova-project",
     "crates/nova-types",
     "crates/nova-vfs",
+    "crates/nova-syntax",
     "crates/nova-hir",
     "crates/nova-syntax",
     "crates/nova-resolve",
