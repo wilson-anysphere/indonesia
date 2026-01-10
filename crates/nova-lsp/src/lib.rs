@@ -6,6 +6,10 @@
 //! - Testing endpoints (backed by `nova-testing`)
 //!   - `nova/test/discover`
 //!   - `nova/test/run`
+//! - Build integration endpoints (backed by `nova-build`)
+//!   - `nova/buildProject`
+//!   - `nova/java/classpath`
+//!   - `nova/reloadProject`
 //! - Debugger-excellence endpoints
 //!   - `nova/debug/configurations`
 //!   - `nova/debug/hotSwap`

@@ -5,18 +5,38 @@ use std::path::{Path, PathBuf};
 
 /// Parameters accepted by Nova's build-related extension requests.
 ///
-/// This is intentionally loose; clients can omit `kind` to rely on auto-detect.
+/// This is intentionally loose; clients can omit `buildTool` to rely on
+/// auto-detection.
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NovaProjectParams {
-    pub root: String,
-    #[serde(default)]
-    pub kind: Option<String>,
-    /// For Maven projects, a path relative to `root` identifying the module.
+    /// Workspace root on disk.
+    ///
+    /// Clients should prefer `projectRoot` (camelCase). `root` is accepted for
+    /// backwards compatibility with early experiments.
+    #[serde(alias = "root")]
+    pub project_root: String,
+
+    /// Explicit build tool selection.
+    ///
+    /// Clients should prefer `buildTool`. `kind` is accepted as an alias.
+    #[serde(default, alias = "kind")]
+    pub build_tool: Option<BuildTool>,
+
+    /// For Maven projects, a path relative to `projectRoot` identifying the module.
     #[serde(default)]
     pub module: Option<String>,
     /// For Gradle projects, a Gradle project path (e.g. `:app`).
-    #[serde(default)]
+    #[serde(default, alias = "project_path")]
     pub project_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildTool {
+    Auto,
+    Maven,
+    Gradle,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,7 +140,7 @@ pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Va
     let params = parse_params(params)?;
     let manager = build_manager(&params);
     manager
-        .reload_project(Path::new(&params.root))
+        .reload_project(Path::new(&params.project_root))
         .map_err(map_build_error)?;
     Ok(serde_json::Value::Null)
 }
@@ -130,14 +150,14 @@ fn parse_params(value: serde_json::Value) -> Result<NovaProjectParams> {
 }
 
 fn build_manager(params: &NovaProjectParams) -> BuildManager {
-    let root = PathBuf::from(&params.root);
+    let root = PathBuf::from(&params.project_root);
     let cache_dir = root.join(".nova").join("build-cache");
     BuildManager::new(cache_dir)
 }
 
 fn run_build(build: &BuildManager, params: &NovaProjectParams) -> Result<BuildResult> {
-    let root = PathBuf::from(&params.root);
-    match detect_kind(&root, params.kind.as_deref())? {
+    let root = PathBuf::from(&params.project_root);
+    match detect_kind(&root, params.build_tool)? {
         BuildKind::Maven => build
             .build_maven(&root, params.module.as_deref().map(Path::new))
             .map_err(map_build_error),
@@ -148,8 +168,8 @@ fn run_build(build: &BuildManager, params: &NovaProjectParams) -> Result<BuildRe
 }
 
 fn run_classpath(build: &BuildManager, params: &NovaProjectParams) -> Result<Classpath> {
-    let root = PathBuf::from(&params.root);
-    match detect_kind(&root, params.kind.as_deref())? {
+    let root = PathBuf::from(&params.project_root);
+    match detect_kind(&root, params.build_tool)? {
         BuildKind::Maven => build
             .classpath_maven(&root, params.module.as_deref().map(Path::new))
             .map_err(map_build_error),
@@ -164,15 +184,23 @@ enum BuildKind {
     Gradle,
 }
 
-fn detect_kind(root: &Path, explicit: Option<&str>) -> Result<BuildKind> {
-    if let Some(k) = explicit {
-        return match k {
-            "maven" => Ok(BuildKind::Maven),
-            "gradle" => Ok(BuildKind::Gradle),
-            other => Err(NovaLspError::InvalidParams(format!("unknown kind {other}"))),
+fn detect_kind(root: &Path, explicit: Option<BuildTool>) -> Result<BuildKind> {
+    if let Some(tool) = explicit {
+        return match tool {
+            BuildTool::Maven => Ok(BuildKind::Maven),
+            BuildTool::Gradle => Ok(BuildKind::Gradle),
+            BuildTool::Auto => auto_detect_kind(root),
         };
     }
 
+    auto_detect_kind(root)
+}
+
+fn map_build_error(err: BuildError) -> NovaLspError {
+    NovaLspError::Internal(err.to_string())
+}
+
+fn auto_detect_kind(root: &Path) -> Result<BuildKind> {
     if root.join("pom.xml").exists() {
         return Ok(BuildKind::Maven);
     }
@@ -190,6 +218,21 @@ fn detect_kind(root: &Path, explicit: Option<&str>) -> Result<BuildKind> {
     )))
 }
 
-fn map_build_error(err: BuildError) -> NovaLspError {
-    NovaLspError::Internal(err.to_string())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn params_accepts_project_root_aliases() {
+        let params: NovaProjectParams = serde_json::from_value(serde_json::json!({
+            "root": "/tmp/project",
+            "kind": "maven",
+            "project_path": ":app",
+        }))
+        .unwrap();
+
+        assert_eq!(params.project_root, "/tmp/project");
+        assert_eq!(params.build_tool, Some(BuildTool::Maven));
+        assert_eq!(params.project_path.as_deref(), Some(":app"));
+    }
 }
