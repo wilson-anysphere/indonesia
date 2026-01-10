@@ -371,6 +371,20 @@ impl<C: JdwpClient> DapServer<C> {
         );
 
         let mut outgoing = self.simple_ok(request, body)?;
+        if request.command == "pause" {
+            let mut stopped_body = serde_json::Map::new();
+            stopped_body.insert("reason".to_string(), json!("pause"));
+            stopped_body.insert("allThreadsStopped".to_string(), json!(true));
+            if let Some(thread_id) = args.thread_id {
+                stopped_body.insert("threadId".to_string(), json!(thread_id));
+            }
+
+            outgoing.messages.push(serde_json::to_value(Event::new(
+                self.alloc_seq(),
+                "stopped",
+                Some(serde_json::Value::Object(stopped_body)),
+            ))?);
+        }
         outgoing.wait_for_stop = wait_for_stop;
         Ok(outgoing)
     }
