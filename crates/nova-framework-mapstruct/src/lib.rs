@@ -58,11 +58,22 @@ pub struct PropertyMappingModel {
     pub target_span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappingMethodKind {
+    Create,
+    Update,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappingMethodModel {
     pub file: PathBuf,
     pub name: String,
     pub name_span: Span,
+    pub kind: MappingMethodKind,
+    /// Parameter types in declaration order.
+    pub param_types: Vec<JavaType>,
+    /// Index into `param_types` for an `@MappingTarget` parameter (if present).
+    pub mapping_target_param: Option<usize>,
     pub source_type: JavaType,
     pub target_type: JavaType,
     pub mappings: Vec<PropertyMappingModel>,
@@ -682,18 +693,63 @@ fn parse_mapping_method(
         .or_else(|| infer_type_node(node))?;
     let return_type_raw = node_text(source, return_node);
     let return_type = parse_java_type(return_type_raw, default_package);
-    if return_type.name == "void" {
-        return None;
-    }
 
     let params_node = node
         .child_by_field_name("parameters")
         .or_else(|| find_named_child(node, "formal_parameters"))?;
-    let param_types = parse_formal_parameter_types(params_node, source, default_package);
-    if param_types.len() != 1 {
-        return None;
-    }
-    let source_type = param_types.into_iter().next()?;
+    let params = parse_formal_parameters(params_node, source, default_package);
+    let param_types: Vec<JavaType> = params.iter().map(|p| p.ty.clone()).collect();
+
+    let mapping_target_params: Vec<usize> = params
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, param)| {
+            if param.is_mapping_target {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let source_params: Vec<usize> = params
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, param)| {
+            if !param.is_mapping_target && !param.is_context {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let (kind, mapping_target_param, source_type, target_type) = if return_type.name == "void" {
+        // Update mapping method: `void map(Source src, @MappingTarget Target dst)`
+        if mapping_target_params.len() != 1 || source_params.len() != 1 {
+            return None;
+        }
+        let target_idx = mapping_target_params[0];
+        let source_idx = source_params[0];
+
+        (
+            MappingMethodKind::Update,
+            Some(target_idx),
+            params[source_idx].ty.clone(),
+            params[target_idx].ty.clone(),
+        )
+    } else {
+        // Create mapping method: `Target map(Source src)`
+        if !mapping_target_params.is_empty() || source_params.len() != 1 || param_types.len() != 1 {
+            return None;
+        }
+        let source_idx = source_params[0];
+        (
+            MappingMethodKind::Create,
+            None,
+            params[source_idx].ty.clone(),
+            return_type,
+        )
+    };
 
     let modifiers = node
         .child_by_field_name("modifiers")
@@ -712,10 +768,60 @@ fn parse_mapping_method(
         file: file.to_path_buf(),
         name,
         name_span,
+        kind,
+        param_types,
+        mapping_target_param,
         source_type,
-        target_type: return_type,
+        target_type,
         mappings,
     })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FormalParameterModel {
+    ty: JavaType,
+    is_mapping_target: bool,
+    is_context: bool,
+}
+
+fn parse_formal_parameters(
+    params: Node<'_>,
+    source: &str,
+    default_package: Option<&str>,
+) -> Vec<FormalParameterModel> {
+    let mut out = Vec::new();
+    let mut cursor = params.walk();
+    for child in params.named_children(&mut cursor) {
+        if child.kind() != "formal_parameter" {
+            continue;
+        }
+
+        let Some(ty_node) = child
+            .child_by_field_name("type")
+            .or_else(|| infer_type_node(child))
+        else {
+            continue;
+        };
+        let raw = node_text(source, ty_node);
+        let ty = parse_java_type(raw, default_package);
+
+        let modifiers = child
+            .child_by_field_name("modifiers")
+            .or_else(|| find_named_child(child, "modifiers"));
+        let annotations = modifiers
+            .map(|m| collect_annotations(m, source))
+            .unwrap_or_default();
+
+        let is_mapping_target = annotations.iter().any(|a| a.simple_name == "MappingTarget");
+        let is_context = annotations.iter().any(|a| a.simple_name == "Context");
+
+        out.push(FormalParameterModel {
+            ty,
+            is_mapping_target,
+            is_context,
+        });
+    }
+    out
 }
 
 fn parse_mapping_annotation(annotation: &Annotation) -> Option<PropertyMappingModel> {
@@ -838,7 +944,7 @@ fn goto_generated_method(
     for root in discover_generated_source_roots(project_root) {
         let candidate = root.join(&rel_path);
         if candidate.is_file() {
-            if let Some(span) = find_method_name_span_in_file(&candidate, &method.name)? {
+            if let Some(span) = find_generated_method_span_in_file(&candidate, method)? {
                 return Ok(Some(NavigationTarget {
                     file: candidate,
                     span,
@@ -856,7 +962,7 @@ fn goto_generated_method(
                 .and_then(|s| s.to_str())
                 .is_some_and(|s| s == impl_name)
             {
-                if let Some(span) = find_method_name_span_in_file(&file, &method.name)? {
+                if let Some(span) = find_generated_method_span_in_file(&file, method)? {
                     return Ok(Some(NavigationTarget { file, span }));
                 }
             }
@@ -940,14 +1046,19 @@ fn find_type_file(
     Ok(None)
 }
 
-fn find_method_name_span_in_file(path: &Path, method_name: &str) -> std::io::Result<Option<Span>> {
+fn find_generated_method_span_in_file(
+    path: &Path,
+    method: &MappingMethodModel,
+) -> std::io::Result<Option<Span>> {
     let text = std::fs::read_to_string(path)?;
     let tree =
         parse_java(&text).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let default_package = package_of_source(tree.root_node(), &text);
 
-    let mut found = None;
+    let mut first_by_name = None;
+    let mut exact_match = None;
     visit_nodes(tree.root_node(), &mut |node| {
-        if found.is_some() {
+        if exact_match.is_some() {
             return;
         }
         if node.kind() != "method_declaration" {
@@ -959,12 +1070,64 @@ fn find_method_name_span_in_file(path: &Path, method_name: &str) -> std::io::Res
         let Some(name_node) = name_node else {
             return;
         };
-        if node_text(&text, name_node) == method_name {
-            found = Some(Span::new(name_node.start_byte(), name_node.end_byte()));
+        if node_text(&text, name_node) != method.name {
+            return;
+        }
+
+        let name_span = Span::new(name_node.start_byte(), name_node.end_byte());
+        if first_by_name.is_none() {
+            first_by_name = Some(name_span);
+        }
+
+        let Some(return_node) = node
+            .child_by_field_name("type")
+            .or_else(|| infer_type_node(node))
+        else {
+            return;
+        };
+        let Some(params_node) = node
+            .child_by_field_name("parameters")
+            .or_else(|| find_named_child(node, "formal_parameters"))
+        else {
+            return;
+        };
+
+        let return_type =
+            parse_java_type(node_text(&text, return_node), default_package.as_deref());
+        let param_types =
+            parse_formal_parameter_types(params_node, &text, default_package.as_deref());
+
+        if signature_matches(method, &return_type, &param_types) {
+            exact_match = Some(name_span);
         }
     });
 
-    Ok(found)
+    Ok(exact_match.or(first_by_name))
+}
+
+fn signature_matches(
+    method: &MappingMethodModel,
+    return_type: &JavaType,
+    param_types: &[JavaType],
+) -> bool {
+    if param_types.len() != method.param_types.len() {
+        return false;
+    }
+
+    let return_ok = match method.kind {
+        MappingMethodKind::Create => return_type.name == method.target_type.name,
+        MappingMethodKind::Update => return_type.name == "void",
+    };
+
+    if !return_ok {
+        return false;
+    }
+
+    method
+        .param_types
+        .iter()
+        .zip(param_types.iter())
+        .all(|(a, b)| a.name == b.name)
 }
 
 fn find_property_definition_span(

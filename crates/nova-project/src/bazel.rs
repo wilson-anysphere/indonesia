@@ -5,6 +5,7 @@ use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, ProjectConfig, SourceRoot,
     SourceRootKind, SourceRootOrigin,
 };
+use nova_modules::ModuleName;
 
 pub(crate) fn load_bazel_project(
     root: &Path,
@@ -54,6 +55,8 @@ pub(crate) fn load_bazel_project(
         });
     }
 
+    crate::generated::append_generated_source_roots(&mut source_roots, root, &options.nova_config);
+
     let mut classpath = Vec::new();
     for entry in &options.classpath_overrides {
         classpath.push(ClasspathEntry {
@@ -66,8 +69,13 @@ pub(crate) fn load_bazel_project(
         });
     }
 
-    source_roots.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
-    source_roots.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+    source_roots.sort_by(|a, b| {
+        a.path
+            .cmp(&b.path)
+            .then(a.kind.cmp(&b.kind))
+            .then(a.origin.cmp(&b.origin))
+    });
+    source_roots.dedup_by(|a, b| a.kind == b.kind && a.origin == b.origin && a.path == b.path);
     classpath.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
     classpath.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
 
@@ -76,14 +84,16 @@ pub(crate) fn load_bazel_project(
         build_system: BuildSystem::Bazel,
         java: JavaConfig::default(),
         modules: vec![Module {
-            name: root
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("root")
-                .to_string(),
+            name: ModuleName::new(
+                root.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("root")
+                    .to_string(),
+            ),
             root: root.to_path_buf(),
         }],
         source_roots,
+        module_path: Vec::new(),
         classpath,
         output_dirs: Vec::new(),
         dependencies: Vec::new(),

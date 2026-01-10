@@ -100,7 +100,7 @@ impl AptManager {
                 .collect::<io::Result<Vec<_>>>()?;
 
             modules.push(ModuleGeneratedSourcesStatus {
-                module_name: module.name.clone(),
+                module_name: module.name.to_string(),
                 module_root: module.root.clone(),
                 roots,
             });
