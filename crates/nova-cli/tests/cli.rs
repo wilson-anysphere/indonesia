@@ -66,35 +66,6 @@ fn index_creates_persistent_cache_and_symbols_work() {
     System.out.println("hello");
   }
 }
-
-#[test]
-fn parse_json_reports_errors_and_exits_nonzero() {
-    let temp = TempDir::new().unwrap();
-    temp.child("Bad.java")
-        .write_str("class Bad { int x = ; }")
-        .unwrap();
-
-    let output = nova()
-        .arg("parse")
-        .arg(temp.child("Bad.java").path())
-        .arg("--json")
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.code() == Some(1),
-        "expected exit code 1, got {:?} (stderr: {})",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(v["tree"].as_str().unwrap().contains("CompilationUnit"));
-    assert!(
-        v["errors"].as_array().unwrap().len() > 0,
-        "expected at least one parse error, got: {v:#}"
-    );
-}
 "#,
         )
         .unwrap();
@@ -175,5 +146,34 @@ fn parse_json_reports_errors_and_exits_nonzero() {
                     .any(|loc| loc["file"] == "src/Main.java")
         }),
         "expected Main symbol in results, got: {symbols:#?}"
+    );
+}
+
+#[test]
+fn parse_json_reports_errors_and_exits_nonzero() {
+    let temp = TempDir::new().unwrap();
+    temp.child("Bad.java")
+        .write_str("class Bad { int x = ; }")
+        .unwrap();
+
+    let output = nova()
+        .arg("parse")
+        .arg(temp.child("Bad.java").path())
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.code() == Some(1),
+        "expected exit code 1, got {:?} (stderr: {})",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(v["tree"].as_str().unwrap().contains("CompilationUnit"));
+    assert!(
+        v["errors"].as_array().unwrap().len() > 0,
+        "expected at least one parse error, got: {v:#}"
     );
 }
