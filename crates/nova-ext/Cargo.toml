@@ -14,5 +14,5 @@ nova-scheduler = { path = "../nova-scheduler" }
 
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
-wasmtime = { version = "18.0", optional = true, default-features = false, features = ["cranelift"] }
+wasmtime = { version = "18.0", optional = true }
 wat = { version = "1.0", optional = true }

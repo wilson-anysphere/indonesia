@@ -82,7 +82,7 @@ impl WasmDiagnosticProvider {
 
     fn instantiate(&self) -> Result<(Store<()>, Instance), WasmLoadError> {
         let mut store = Store::new(&self.engine, ());
-        let mut linker = Linker::new(&self.engine);
+        let linker = Linker::new(&self.engine);
         let instance = linker
             .instantiate(&mut store, &self.module)
             .map_err(|e| WasmLoadError::Instantiate(e.to_string()))?;
