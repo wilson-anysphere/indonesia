@@ -756,6 +756,111 @@ mod tests {
     }
 
     #[test]
+    fn object_handles_do_not_collide_with_locals_scope_reference() {
+        use nova_jdwp::{
+            JdwpValue, JdwpVariable, MockJdwpClient, MockObject, ObjectKindPreview, ObjectPreview,
+            ObjectRef,
+        };
+
+        let mut jdwp = MockJdwpClient::new();
+        jdwp.set_threads(vec![ThreadInfo {
+            id: 99,
+            name: "main".into(),
+        }]);
+        jdwp.set_stack_frames(
+            99,
+            vec![StackFrameInfo {
+                id: 123,
+                name: "m".into(),
+                source_path: Some("Main.java".into()),
+                line: 1,
+            }],
+        );
+
+        jdwp.insert_object(
+            100,
+            MockObject {
+                preview: ObjectPreview {
+                    runtime_type: "com.example.Foo".to_string(),
+                    kind: ObjectKindPreview::Plain,
+                },
+                children: vec![JdwpVariable {
+                    name: "x".to_string(),
+                    value: JdwpValue::Int(1),
+                    static_type: Some("int".to_string()),
+                    evaluate_name: Some("foo.x".to_string()),
+                }],
+            },
+        );
+        jdwp.set_evaluation(
+            123,
+            "foo",
+            Ok(JdwpValue::Object(ObjectRef {
+                id: 100,
+                runtime_type: "com.example.Foo".to_string(),
+            })),
+        );
+
+        let mut server = DapServer::new(jdwp);
+
+        let threads_req = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "threads".into(),
+            arguments: None,
+        };
+        let threads_resp = server.handle_request(&threads_req).unwrap();
+        let threads = response_body(&threads_resp.messages[0]).unwrap()["threads"]
+            .as_array()
+            .unwrap();
+        let dap_thread_id = threads[0]["id"].as_i64().unwrap();
+
+        let stack_req = Request {
+            seq: 2,
+            type_: "request".into(),
+            command: "stackTrace".into(),
+            arguments: Some(json!({ "threadId": dap_thread_id })),
+        };
+        let stack_resp = server.handle_request(&stack_req).unwrap();
+        let frames = response_body(&stack_resp.messages[0]).unwrap()["stackFrames"]
+            .as_array()
+            .unwrap();
+        let dap_frame_id = frames[0]["id"].as_i64().unwrap();
+
+        let eval_req = Request {
+            seq: 3,
+            type_: "request".into(),
+            command: "evaluate".into(),
+            arguments: Some(json!({
+                "expression": "foo",
+                "frameId": dap_frame_id,
+            })),
+        };
+        let eval_resp = server.handle_request(&eval_req).unwrap();
+        let vars_ref = response_body(&eval_resp.messages[0]).unwrap()["variablesReference"]
+            .as_i64()
+            .unwrap();
+
+        // Scope locals uses 1; object handles should never collide with it.
+        assert!(vars_ref > crate::object_registry::OBJECT_HANDLE_BASE);
+
+        let vars_req = Request {
+            seq: 4,
+            type_: "request".into(),
+            command: "variables".into(),
+            arguments: Some(json!({ "variablesReference": vars_ref })),
+        };
+        let vars_resp = server.handle_request(&vars_req).unwrap();
+        let variables = response_body(&vars_resp.messages[0]).unwrap()["variables"]
+            .as_array()
+            .unwrap();
+        assert_eq!(variables.len(), 1);
+        assert_eq!(variables[0]["name"], "x");
+        assert_eq!(variables[0]["value"], "1");
+        assert_eq!(variables[0]["evaluateName"], "foo.x");
+    }
+
+    #[test]
     fn step_in_targets_returns_calls_for_current_frame_line() {
         let temp = TempDir::new().unwrap();
         let root = temp.path();
