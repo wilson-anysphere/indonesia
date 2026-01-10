@@ -51,6 +51,24 @@ class A {
 }
 
 #[test]
+fn formats_doc_comments() {
+    let input = "class Foo{\n/** docs */void m(){}\n}\n";
+    let tree = parse(input);
+    let formatted = format_java(&tree, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    /** docs */
+    void m() {
+    }
+}
+"###
+    );
+}
+
+#[test]
 fn range_formatting_preserves_outside_text() {
     let input = "class Foo {\n    void a() { int x=1; }\n    void b(){int y=2;}\n}\n";
     let tree = parse(input);

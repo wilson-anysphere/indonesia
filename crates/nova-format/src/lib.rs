@@ -497,6 +497,18 @@ impl<'a> FormatState<'a> {
                 self.last_sig = None;
                 self.pending_for = false;
             }
+            SyntaxKind::DocComment => {
+                self.write_indent(out);
+                if self.last_sig.is_some() {
+                    self.ensure_space(out);
+                }
+                self.write_block_comment(out, text);
+                // JavaDoc is expected to attach to the following declaration; keep it on its own
+                // line even if the original file had odd spacing.
+                self.ensure_newline(out);
+                self.last_sig = None;
+                self.pending_for = false;
+            }
             SyntaxKind::BlockComment => {
                 self.write_indent(out);
                 if self.last_sig.is_some() {
