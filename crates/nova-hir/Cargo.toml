@@ -9,3 +9,4 @@ nova-types = { path = "../nova-types" }
 nova-syntax = { path = "../nova-syntax" }
 serde = { version = "1", features = ["derive"] }
 serde_repr = "0.1"
+nova-vfs = { path = "../nova-vfs" }

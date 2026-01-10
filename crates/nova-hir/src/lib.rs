@@ -337,3 +337,13 @@ pub fn item_tree(parse: &ParseResult, text: &str) -> ItemTree {
 
     ItemTree { items }
 }
+
+// ---------------------------------------------------------------------
+// Experimental semantic substrate (`ItemTree` + body HIR with stable IDs)
+
+pub mod hir;
+pub mod ids;
+pub mod item_tree;
+pub mod lowering;
+pub mod queries;
+

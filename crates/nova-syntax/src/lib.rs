@@ -220,4 +220,5 @@ pub fn parse(text: &str) -> ParseResult {
 
 #[cfg(test)]
 mod tests;
-
+/// Experimental Java AST used by semantic lowering passes.
+pub mod java;
