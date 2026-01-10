@@ -44,12 +44,12 @@ class Foo {
     int field;
 
     static {
-        int s = 0;
+        final int s = 0;
         System.out.println(s);
     }
 
-    Foo(int a) {
-        int x = a;
+    Foo(final int a) {
+        final int x = a;
         bar(x);
     }
 
@@ -57,8 +57,8 @@ class Foo {
 
     @interface InnerAnn {}
 
-    void bar(int y) {
-        int z = y + 1;
+    void bar(final int y) {
+        final int z = y + 1;
         System.out.println(z);
         return;
     }
@@ -119,6 +119,9 @@ class Foo {
 
     assert_eq!(tree.constructors.len(), 1);
     assert_eq!(tree.constructors[0].name, "Foo");
+    assert_eq!(tree.constructors[0].params.len(), 1);
+    assert_eq!(tree.constructors[0].params[0].ty, "int");
+    assert_eq!(tree.constructors[0].params[0].name, "a");
 
     assert!(tree.initializers.iter().any(|init| init.is_static));
 
@@ -137,6 +140,10 @@ class Foo {
         .position(|method| method.name == "bar")
         .expect("bar method");
     let bar_id = nova_hir::ids::MethodId::new(file, bar_index as u32);
+    let bar_sig = tree.method(bar_id);
+    assert_eq!(bar_sig.params.len(), 1);
+    assert_eq!(bar_sig.params[0].ty, "int");
+    assert_eq!(bar_sig.params[0].name, "y");
     let body = body(&db, bar_id);
 
     let local_names: Vec<_> = body

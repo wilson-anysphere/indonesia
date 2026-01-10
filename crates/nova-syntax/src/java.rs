@@ -1070,7 +1070,21 @@ impl Parser {
         let _lparen = self.expect_kind(TokenKind::LParen);
         let mut params = Vec::new();
         while !self.is_eof() && !self.at_kind(TokenKind::RParen) {
-            if let Some(ty) = self.parse_type_ref() {
+            self.skip_variable_modifiers_and_annotations();
+            if let Some(mut ty) = self.parse_type_ref() {
+                if self.at_kind(TokenKind::Dot)
+                    && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Dot)
+                    && self.peek_n(2).is_some_and(|t| t.kind == TokenKind::Dot)
+                {
+                    let dot1 = self.bump().unwrap();
+                    let dot2 = self.bump().unwrap();
+                    let dot3 = self.bump().unwrap();
+                    ty.text.push_str(&dot1.text);
+                    ty.text.push_str(&dot2.text);
+                    ty.text.push_str(&dot3.text);
+                    ty.range = Span::new(ty.range.start, dot3.range.end);
+                }
+
                 let name = self.expect_ident();
                 let range = Span::new(ty.range.start, name.range.end);
                 params.push(ast::ParamDecl {
@@ -1089,6 +1103,28 @@ impl Parser {
         }
         self.expect_kind(TokenKind::RParen);
         params
+    }
+
+    fn skip_variable_modifiers_and_annotations(&mut self) {
+        loop {
+            if self.at_kind(TokenKind::At) {
+                self.bump();
+                if self.peek().is_some_and(|t| t.kind == TokenKind::Ident) {
+                    self.parse_qualified_name();
+                }
+                if self.at_kind(TokenKind::LParen) {
+                    self.skip_balanced(TokenKind::LParen, TokenKind::RParen);
+                }
+                continue;
+            }
+
+            if self.at_keyword("final") {
+                self.bump();
+                continue;
+            }
+
+            break;
+        }
     }
 
     fn parse_block(&mut self) -> ast::Block {
@@ -1137,23 +1173,8 @@ impl Parser {
             }));
         }
 
-        if self.looks_like_local_var() {
-            let ty = self.parse_type_ref()?;
-            let name = self.expect_ident();
-            let mut initializer = None;
-            if self.at_kind(TokenKind::Eq) {
-                self.bump();
-                initializer = self.parse_expr();
-            }
-            let semi = self.expect_kind(TokenKind::Semi);
-            let range = Span::new(ty.range.start, semi.range.end);
-            return Some(ast::Stmt::LocalVar(ast::LocalVarStmt {
-                ty,
-                name: name.text,
-                name_range: name.range,
-                initializer,
-                range,
-            }));
+        if let Some(local) = self.try_parse_local_var_stmt() {
+            return Some(local);
         }
 
         let expr = self.parse_expr().unwrap_or(ast::Expr::Missing(self.peek()?.range));
@@ -1165,51 +1186,44 @@ impl Parser {
         }))
     }
 
-    fn looks_like_local_var(&self) -> bool {
-        if !self.peek().is_some_and(|t| t.kind == TokenKind::Ident) {
-            return false;
-        }
+    fn try_parse_local_var_stmt(&mut self) -> Option<ast::Stmt> {
+        let start_pos = self.pos;
+        let start = self.peek()?.range.start;
 
-        let mut idx = self.pos;
-        idx += 1;
-
-        while self.tokens.get(idx).is_some_and(|t| t.kind == TokenKind::Dot)
-            && self.tokens.get(idx + 1).is_some_and(|t| t.kind == TokenKind::Ident)
-        {
-            idx += 2;
-        }
-
-        if self.tokens.get(idx).is_some_and(|t| t.kind == TokenKind::Lt) {
-            let mut depth = 0usize;
-            while let Some(tok) = self.tokens.get(idx) {
-                match tok.kind {
-                    TokenKind::Lt => depth += 1,
-                    TokenKind::Gt => {
-                        depth = depth.saturating_sub(1);
-                        if depth == 0 {
-                            idx += 1;
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-                idx += 1;
-                if idx >= self.tokens.len() {
-                    break;
-                }
+        self.skip_variable_modifiers_and_annotations();
+        let ty = match self.parse_type_ref() {
+            Some(ty) => ty,
+            None => {
+                self.pos = start_pos;
+                return None;
             }
+        };
+
+        if !self.peek().is_some_and(|t| t.kind == TokenKind::Ident) {
+            self.pos = start_pos;
+            return None;
+        }
+        let name = self.expect_ident();
+
+        if !self.at_kind(TokenKind::Eq) && !self.at_kind(TokenKind::Semi) {
+            self.pos = start_pos;
+            return None;
         }
 
-        while self.tokens.get(idx).is_some_and(|t| t.kind == TokenKind::LBracket)
-            && self.tokens.get(idx + 1).is_some_and(|t| t.kind == TokenKind::RBracket)
-        {
-            idx += 2;
+        let mut initializer = None;
+        if self.at_kind(TokenKind::Eq) {
+            self.bump();
+            initializer = self.parse_expr();
         }
-
-        self.tokens.get(idx).is_some_and(|t| t.kind == TokenKind::Ident)
-            && self.tokens
-                .get(idx + 1)
-                .is_some_and(|t| matches!(t.kind, TokenKind::Eq | TokenKind::Semi))
+        let semi = self.expect_kind(TokenKind::Semi);
+        let range = Span::new(start, semi.range.end);
+        Some(ast::Stmt::LocalVar(ast::LocalVarStmt {
+            ty,
+            name: name.text,
+            name_range: name.range,
+            initializer,
+            range,
+        }))
     }
 
     fn parse_expr(&mut self) -> Option<ast::Expr> {
