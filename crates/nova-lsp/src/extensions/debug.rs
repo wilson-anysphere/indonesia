@@ -2,7 +2,7 @@ use crate::{NovaLspError, Result};
 use nova_build::BuildManager;
 use nova_dap::hot_swap::{BuildSystem, CompileError, CompileOutput, CompiledClass, HotSwapEngine};
 use nova_ide::Project;
-use nova_jdwp::{JdwpClient, TcpJdwpClient};
+use nova_dap::jdwp::{JdwpClient, TcpJdwpClient};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;

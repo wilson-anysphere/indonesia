@@ -1,12 +1,13 @@
 mod codec;
 
 use codec::{read_json_message, write_json_message};
-use lsp_types::{Position as LspPosition, Range as LspRange, Uri as LspUri};
+use lsp_types::{Position as LspTypesPosition, Range as LspTypesRange, Uri as LspUri};
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ContextRequest, ProviderKind, RetryConfig};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
-    GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
-    CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN, COMMAND_EXPLAIN_ERROR,
+    GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction,
+    CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN,
+    COMMAND_EXPLAIN_ERROR,
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
@@ -437,6 +438,19 @@ struct Position {
     character: u32,
 }
 
+fn to_ide_range(range: &Range) -> nova_ide::LspRange {
+    nova_ide::LspRange {
+        start: nova_ide::LspPosition {
+            line: range.start.line,
+            character: range.start.character,
+        },
+        end: nova_ide::LspPosition {
+            line: range.end.line,
+            character: range.end.character,
+        },
+    }
+}
+
 fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<serde_json::Value, String> {
     let params: CodeActionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let text = load_document_text(state, &params.text_document.uri);
@@ -444,49 +458,63 @@ fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<
 
     let mut actions = Vec::new();
 
+    // Non-AI refactor action(s).
     if let Some(text) = text {
         if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
-            let range = to_lsp_range(&params.range);
+            let range = to_lsp_types_range(&params.range);
             if let Some(action) = nova_ide::code_action::extract_method_code_action(text, uri, range) {
                 actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
             }
         }
     }
 
+    // AI code actions (gracefully degrade when AI isn't configured).
     if state.ai.is_some() {
+        // Explain error (diagnostic-driven).
         if let Some(diagnostic) = params.context.diagnostics.first() {
             let code = text.map(|t| extract_snippet(t, &diagnostic.range, 2));
             let action = explain_error_action(ExplainErrorArgs {
                 diagnostic_message: diagnostic.message.clone(),
                 code,
+                uri: Some(params.text_document.uri.clone()),
+                range: Some(to_ide_range(&diagnostic.range)),
             });
             actions.push(code_action_to_lsp(action));
         }
 
         if let Some(text) = text {
-        if let Some(selected) = extract_range_text(text, &params.range) {
-            if let Some(signature) = detect_empty_method_signature(&selected) {
-                let context = Some(extract_snippet(text, &params.range, 8));
-                let action = generate_method_body_action(GenerateMethodBodyArgs {
-                    method_signature: signature,
-                    context,
-                });
-                actions.push(code_action_to_lsp(action));
-            }
+            if let Some(selected) = extract_range_text(text, &params.range) {
+                // Generate method body (empty method selection).
+                if let Some(signature) = detect_empty_method_signature(&selected) {
+                    let context = Some(extract_snippet(text, &params.range, 8));
+                    let action = generate_method_body_action(GenerateMethodBodyArgs {
+                        method_signature: signature,
+                        context,
+                        uri: Some(params.text_document.uri.clone()),
+                        range: Some(to_ide_range(&params.range)),
+                    });
+                    actions.push(code_action_to_lsp(action));
+                }
 
-            if !selected.trim().is_empty() {
-                let target = selected
-                    .lines()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or(selected.trim())
-                    .trim()
-                    .to_string();
-                let context = Some(extract_snippet(text, &params.range, 8));
-                let action = generate_tests_action(GenerateTestsArgs { target, context });
-                actions.push(code_action_to_lsp(action));
+                // Generate tests (best-effort: offer when there is a non-empty selection).
+                if !selected.trim().is_empty() {
+                    let target = selected
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or(selected.trim())
+                        .trim()
+                        .to_string();
+                    let context = Some(extract_snippet(text, &params.range, 8));
+                    let action = generate_tests_action(GenerateTestsArgs {
+                        target,
+                        context,
+                        uri: Some(params.text_document.uri.clone()),
+                        range: Some(to_ide_range(&params.range)),
+                    });
+                    actions.push(code_action_to_lsp(action));
+                }
             }
         }
-    }
     }
 
     Ok(serde_json::Value::Array(actions))
@@ -563,13 +591,13 @@ fn path_from_uri(uri: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
-fn to_lsp_range(range: &Range) -> LspRange {
-    LspRange {
-        start: LspPosition {
+fn to_lsp_types_range(range: &Range) -> LspTypesRange {
+    LspTypesRange {
+        start: LspTypesPosition {
             line: range.start.line,
             character: range.start.character,
         },
-        end: LspPosition {
+        end: LspTypesPosition {
             line: range.end.line,
             character: range.end.character,
         },
@@ -614,7 +642,14 @@ fn run_ai_explain_error(
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
     send_log_message(writer, "AI: explaining error…")?;
-    let ctx = build_context_request(state, args.code.unwrap_or_default(), None);
+    let ctx = build_context_request_from_args(
+        state,
+        args.uri.as_deref(),
+        args.range,
+        args.code.unwrap_or_default(),
+        /*fallback_enclosing=*/ None,
+        /*include_doc_comments=*/ true,
+    );
     let out = runtime
         .block_on(ai.explain_error(&args.diagnostic_message, ctx, CancellationToken::new()))
         .map_err(|e| (-32603, e.to_string()))?;
@@ -637,10 +672,13 @@ fn run_ai_generate_method_body(
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
     send_log_message(writer, "AI: generating method body…")?;
-    let ctx = build_context_request(
+    let ctx = build_context_request_from_args(
         state,
+        args.uri.as_deref(),
+        args.range,
         args.method_signature.clone(),
         args.context.clone(),
+        /*include_doc_comments=*/ true,
     );
     let out = runtime
         .block_on(ai.generate_method_body(&args.method_signature, ctx, CancellationToken::new()))
@@ -664,7 +702,14 @@ fn run_ai_generate_tests(
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
     send_log_message(writer, "AI: generating tests…")?;
-    let ctx = build_context_request(state, args.target.clone(), args.context.clone());
+    let ctx = build_context_request_from_args(
+        state,
+        args.uri.as_deref(),
+        args.range,
+        args.target.clone(),
+        args.context.clone(),
+        /*include_doc_comments=*/ true,
+    );
     let out = runtime
         .block_on(ai.generate_tests(&args.target, ctx, CancellationToken::new()))
         .map_err(|e| (-32603, e.to_string()))?;
@@ -704,6 +749,34 @@ fn build_context_request(
     }
 }
 
+fn build_context_request_from_args(
+    state: &ServerState,
+    uri: Option<&str>,
+    range: Option<nova_ide::LspRange>,
+    fallback_focal: String,
+    fallback_enclosing: Option<String>,
+    include_doc_comments: bool,
+) -> ContextRequest {
+    if let (Some(uri), Some(range)) = (uri, range) {
+        if let Some(text) = load_document_text(state, uri) {
+            if let Some(selection) = byte_range_for_ide_range(&text, range) {
+                let mut req = ContextRequest::for_java_source_range(
+                    &text,
+                    selection,
+                    800,
+                    state.privacy.clone(),
+                    include_doc_comments,
+                );
+                // Include the URI only when the caller explicitly opted in to paths.
+                req.file_path = Some(uri.to_string());
+                return req;
+            }
+        }
+    }
+
+    build_context_request(state, fallback_focal, fallback_enclosing)
+}
+
 fn parse_first_arg<T: serde::de::DeserializeOwned>(
     mut args: Vec<serde_json::Value>,
 ) -> Result<T, (i32, String)> {
@@ -737,6 +810,24 @@ fn extract_range_text(text: &str, range: &Range) -> Option<String> {
         return None;
     }
     Some(text[start..end].to_string())
+}
+
+fn byte_range_for_ide_range(text: &str, range: nova_ide::LspRange) -> Option<std::ops::Range<usize>> {
+    let start = offset_from_position(
+        text,
+        &Position {
+            line: range.start.line,
+            character: range.start.character,
+        },
+    )?;
+    let end = offset_from_position(
+        text,
+        &Position {
+            line: range.end.line,
+            character: range.end.character,
+        },
+    )?;
+    Some(start..end)
 }
 
 fn offset_from_position(text: &str, pos: &Position) -> Option<usize> {

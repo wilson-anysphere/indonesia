@@ -29,7 +29,6 @@ nova-testing = { path = "../nova-testing" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 nova-router = { path = "../nova-router" }
 nova-build-bazel = { path = "../nova-build-bazel" }
-nova-jdwp = { path = "../nova-jdwp" }
 nova-framework-micronaut = { path = "../nova-framework-micronaut" }
 lsp-types = "0.97"
 nova-workspace = { path = "../nova-workspace" }

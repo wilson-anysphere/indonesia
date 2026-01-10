@@ -28,12 +28,34 @@ pub struct NovaCommand {
     pub arguments: Vec<Value>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspPosition {
+    pub line: u32,
+    pub character: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspRange {
+    pub start: LspPosition,
+    pub end: LspPosition,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExplainErrorArgs {
     pub diagnostic_message: String,
 
     /// Optional source snippet around the diagnostic location.
     pub code: Option<String>,
+
+    /// URI of the document containing the diagnostic.
+    #[serde(default)]
+    pub uri: Option<String>,
+
+    /// Optional range associated with the diagnostic.
+    #[serde(default)]
+    pub range: Option<LspRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -43,6 +65,14 @@ pub struct GenerateMethodBodyArgs {
 
     /// Optional surrounding context (enclosing class, other members, etc).
     pub context: Option<String>,
+
+    /// URI of the document containing the method.
+    #[serde(default)]
+    pub uri: Option<String>,
+
+    /// Range covering the selected method snippet (best-effort).
+    #[serde(default)]
+    pub range: Option<LspRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -52,6 +82,14 @@ pub struct GenerateTestsArgs {
 
     /// Optional surrounding context.
     pub context: Option<String>,
+
+    /// URI of the document containing the selected target.
+    #[serde(default)]
+    pub uri: Option<String>,
+
+    /// Range covering the selected target snippet (best-effort).
+    #[serde(default)]
+    pub range: Option<LspRange>,
 }
 
 pub fn explain_error_action(args: ExplainErrorArgs) -> NovaCodeAction {
@@ -97,12 +135,18 @@ mod tests {
         let action = explain_error_action(ExplainErrorArgs {
             diagnostic_message: "cannot find symbol".to_string(),
             code: Some("foo.bar()".to_string()),
+            uri: Some("file:///Test.java".to_string()),
+            range: Some(LspRange {
+                start: LspPosition { line: 0, character: 0 },
+                end: LspPosition { line: 0, character: 10 },
+            }),
         });
 
         let args: ExplainErrorArgs =
             serde_json::from_value(action.command.arguments[0].clone()).unwrap();
         assert_eq!(args.diagnostic_message, "cannot find symbol");
         assert_eq!(args.code.as_deref(), Some("foo.bar()"));
+        assert_eq!(args.uri.as_deref(), Some("file:///Test.java"));
+        assert!(args.range.is_some());
     }
 }
-
