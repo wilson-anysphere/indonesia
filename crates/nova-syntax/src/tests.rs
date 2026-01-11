@@ -1493,6 +1493,20 @@ fn feature_gate_unnamed_variables_version_matrix() {
 }
 
 #[test]
+fn java8_allows_single_underscore_identifier() {
+    let input = "class Foo { void m() { int _ = 0; Runnable r = (_) -> {}; } }";
+
+    let java8 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_8,
+        },
+    );
+    assert_eq!(java8.result.errors, Vec::new());
+    assert!(java8.diagnostics.is_empty());
+}
+
+#[test]
 fn feature_gate_unnamed_variables_applies_to_local_vars_and_catch_params() {
     let input = r#"
 class Foo {

@@ -372,6 +372,11 @@ fn gate_var_local_inference(
 }
 
 fn gate_unnamed_variables(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+    // Java 8 permits `_` as an identifier (with a warning about Java 9+), so don't treat it as an
+    // unnamed variable/pattern feature-gate in that language level.
+    if level.major <= 8 {
+        return;
+    }
     if level.is_enabled(JavaFeature::UnnamedVariables) {
         return;
     }
