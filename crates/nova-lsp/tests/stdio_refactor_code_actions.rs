@@ -133,6 +133,16 @@ fn stdio_server_resolves_extract_constant_code_action() {
         serde_json::from_value(resolve_resp.get("result").cloned().expect("result"))
             .expect("decode resolved CodeAction");
 
+    assert_eq!(
+        resolved
+            .data
+            .as_ref()
+            .and_then(|data| data.get("uri"))
+            .and_then(|uri| uri.as_str()),
+        Some(uri_string.as_str()),
+        "expected resolved extract constant action to retain `data.uri`"
+    );
+
     let edit = resolved.edit.expect("resolved edit");
     let changes = edit.changes.expect("changes");
     let edits = changes.get(&uri).expect("edits for file");
@@ -296,6 +306,16 @@ fn stdio_server_resolves_extract_field_code_action() {
     let resolved: CodeAction =
         serde_json::from_value(resolve_resp.get("result").cloned().expect("result"))
             .expect("decode resolved CodeAction");
+
+    assert_eq!(
+        resolved
+            .data
+            .as_ref()
+            .and_then(|data| data.get("uri"))
+            .and_then(|uri| uri.as_str()),
+        Some(uri_string.as_str()),
+        "expected resolved extract field action to retain `data.uri`"
+    );
 
     let edit = resolved.edit.expect("resolved edit");
     let changes = edit.changes.expect("changes");
