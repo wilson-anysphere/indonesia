@@ -555,6 +555,8 @@ fn index_view_fast_schema_mismatch_is_cache_miss() {
         metadata.last_updated_millis,
         metadata.project_hash.as_str()
     );
+    // Remove the binary metadata so the loader must fall back to JSON.
+    std::fs::remove_file(cache_dir.metadata_bin_path()).unwrap();
     std::fs::write(cache_dir.metadata_path(), old_schema_json).unwrap();
 
     let view =

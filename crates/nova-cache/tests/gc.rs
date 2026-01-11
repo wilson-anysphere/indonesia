@@ -18,6 +18,7 @@ fn write_project_cache(
         last_updated_millis,
         project_hash: Fingerprint::from_bytes(name.as_bytes()),
         file_fingerprints: BTreeMap::new(),
+        file_metadata_fingerprints: BTreeMap::new(),
     };
     metadata.save(dir.join("metadata.json")).unwrap();
 

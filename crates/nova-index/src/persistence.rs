@@ -625,7 +625,7 @@ pub fn load_index_archives(
     current_snapshot: &ProjectSnapshot,
 ) -> Result<Option<LoadedIndexArchives>, IndexPersistenceError> {
     let metadata_path = cache_dir.metadata_path();
-    if !metadata_path.exists() {
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
     let metadata = match CacheMetadata::load(metadata_path) {
@@ -769,7 +769,7 @@ pub fn load_index_archives_fast(
     files: Vec<PathBuf>,
 ) -> Result<Option<LoadedIndexArchives>, IndexPersistenceError> {
     let metadata_path = cache_dir.metadata_path();
-    if !metadata_path.exists() {
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
     let metadata = match CacheMetadata::load(metadata_path) {

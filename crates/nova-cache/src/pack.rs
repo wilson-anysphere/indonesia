@@ -14,9 +14,9 @@ pub const CACHE_PACKAGE_MANIFEST_PATH: &str = "checksums.json";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CachePackageInstallOutcome {
-    /// Package was installed with `metadata.json`, `indexes/`, `queries/`, and `ast/` (if present).
+    /// Package was installed with `metadata.json`/`metadata.bin`, `indexes/`, `queries/`, and `ast/` (if present).
     Full,
-    /// Only `metadata.json` and `indexes/` were installed because the local project fingerprints
+    /// Only `metadata.json`/`metadata.bin` and `indexes/` were installed because the local project fingerprints
     /// didn't match what the package was built against.
     IndexesOnly { mismatched_files: usize },
 }
@@ -124,13 +124,18 @@ pub fn fetch_cache_package(cache_dir: &CacheDir, url: &str) -> Result<CachePacka
 fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
-    let metadata_path = root.join("metadata.json");
+    let metadata_path = root.join(crate::metadata::CACHE_METADATA_JSON_FILENAME);
     if metadata_path.is_file() {
-        files.push(PathBuf::from("metadata.json"));
+        files.push(PathBuf::from(crate::metadata::CACHE_METADATA_JSON_FILENAME));
     } else {
         return Err(CacheError::MissingArchiveEntry {
-            path: "metadata.json",
+            path: crate::metadata::CACHE_METADATA_JSON_FILENAME,
         });
+    }
+
+    let metadata_bin = root.join(crate::metadata::CACHE_METADATA_BIN_FILENAME);
+    if metadata_bin.is_file() {
+        files.push(PathBuf::from(crate::metadata::CACHE_METADATA_BIN_FILENAME));
     }
 
     for component_dir in ["indexes", "queries", "ast"] {
@@ -268,7 +273,9 @@ fn extract_selected(
 }
 
 fn should_extract(path: &str, full_install: bool) -> bool {
-    if path == "metadata.json" {
+    if path == crate::metadata::CACHE_METADATA_JSON_FILENAME
+        || path == crate::metadata::CACHE_METADATA_BIN_FILENAME
+    {
         return true;
     }
     if path.starts_with("indexes/") {
@@ -437,6 +444,14 @@ fn install_indexes_only(src_dir: &Path, dest_dir: &Path) -> Result<()> {
         replace_file_atomically(&src_metadata, &dest_dir.join("metadata.json"))?;
     }
 
+    let src_metadata_bin = src_dir.join(crate::metadata::CACHE_METADATA_BIN_FILENAME);
+    if src_metadata_bin.is_file() {
+        replace_file_atomically(
+            &src_metadata_bin,
+            &dest_dir.join(crate::metadata::CACHE_METADATA_BIN_FILENAME),
+        )?;
+    }
+
     Ok(())
 }
 
@@ -558,6 +573,7 @@ mod tests {
         assert_eq!(outcome, CachePackageInstallOutcome::Full);
 
         assert!(cache_dir2.metadata_path().is_file());
+        assert!(cache_dir2.metadata_bin_path().is_file());
         assert!(cache_dir2.indexes_dir().join("symbols.idx").is_file());
         assert!(cache_dir2.queries_dir().join("types.cache").is_file());
         assert!(cache_dir2.ast_dir().join("metadata.bin").is_file());

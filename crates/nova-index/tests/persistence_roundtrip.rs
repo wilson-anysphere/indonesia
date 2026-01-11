@@ -263,6 +263,10 @@ fn corrupt_metadata_is_cache_miss() {
 
     save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
+    // Corrupt both the binary and JSON metadata so loading cannot fall back.
+    let bin_path = cache_dir.metadata_bin_path();
+    let bin = std::fs::OpenOptions::new().write(true).open(&bin_path).unwrap();
+    bin.set_len(1).unwrap();
     std::fs::write(cache_dir.metadata_path(), "this is not json").unwrap();
 
     let loaded = load_indexes(&cache_dir, &snapshot).unwrap();
@@ -414,6 +418,8 @@ fn load_indexes_fast_schema_mismatch_is_cache_miss() {
         metadata.last_updated_millis,
         metadata.project_hash.as_str()
     );
+    // Remove the binary metadata so the loader must fall back to JSON.
+    std::fs::remove_file(cache_dir.metadata_bin_path()).unwrap();
     std::fs::write(cache_dir.metadata_path(), old_schema_json).unwrap();
 
     let loaded =

@@ -260,7 +260,10 @@ fn max_total_bytes_evicts_oldest_first() {
     let new_path = entries.into_iter().find(|p| p != &old_path).unwrap();
     rewrite_query_saved_at::<u32>(&new_path, 2);
 
-    let meta_size = std::fs::metadata(cache_dir.metadata_path()).unwrap().len();
+    let meta_size = std::fs::metadata(cache_dir.metadata_path()).unwrap().len()
+        + std::fs::metadata(cache_dir.metadata_bin_path())
+            .unwrap()
+            .len();
     let new_size = std::fs::metadata(&new_path).unwrap().len();
     let limit = meta_size + new_size;
 
@@ -304,7 +307,10 @@ fn indexes_keep_idx_files() {
     let legacy = cache_dir.indexes_dir().join("legacy.tmp");
     std::fs::write(&legacy, b"legacy").unwrap();
 
-    let meta_size = std::fs::metadata(cache_dir.metadata_path()).unwrap().len();
+    let meta_size = std::fs::metadata(cache_dir.metadata_path()).unwrap().len()
+        + std::fs::metadata(cache_dir.metadata_bin_path())
+            .unwrap()
+            .len();
     let idx_size = std::fs::metadata(&idx).unwrap().len();
     let limit = meta_size + idx_size;
 

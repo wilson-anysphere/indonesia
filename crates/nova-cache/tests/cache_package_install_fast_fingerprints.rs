@@ -63,6 +63,7 @@ fn install_uses_indexes_only_when_file_metadata_mismatches() {
     assert_eq!(mismatched_files, 1);
 
     assert!(cache_dir2.metadata_path().is_file());
+    assert!(cache_dir2.metadata_bin_path().is_file());
     assert!(cache_dir2.indexes_dir().join("symbols.idx").is_file());
     assert!(!cache_dir2.queries_dir().join("types.cache").is_file());
     assert!(!cache_dir2.ast_dir().join("metadata.bin").is_file());
