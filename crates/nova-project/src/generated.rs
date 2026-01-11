@@ -3,11 +3,12 @@ use std::path::{Path, PathBuf};
 
 use nova_config::NovaConfig;
 
-use crate::{SourceRoot, SourceRootKind, SourceRootOrigin};
+use crate::{BuildSystem, SourceRoot, SourceRootKind, SourceRootOrigin};
 
 pub(crate) fn append_generated_source_roots(
     roots: &mut Vec<SourceRoot>,
     module_root: &Path,
+    build_system: BuildSystem,
     config: &NovaConfig,
 ) {
     if !config.generated_sources.enabled {
@@ -26,25 +27,48 @@ pub(crate) fn append_generated_source_roots(
             candidates.push((SourceRootKind::Main, path));
         }
     } else {
-        // Maven defaults.
-        candidates.push((
-            SourceRootKind::Main,
-            module_root.join("target/generated-sources/annotations"),
-        ));
-        candidates.push((
-            SourceRootKind::Test,
-            module_root.join("target/generated-test-sources/test-annotations"),
-        ));
-
-        // Gradle defaults.
-        candidates.push((
-            SourceRootKind::Main,
-            module_root.join("build/generated/sources/annotationProcessor/java/main"),
-        ));
-        candidates.push((
-            SourceRootKind::Test,
-            module_root.join("build/generated/sources/annotationProcessor/java/test"),
-        ));
+        match build_system {
+            BuildSystem::Maven => {
+                candidates.push((
+                    SourceRootKind::Main,
+                    module_root.join("target/generated-sources/annotations"),
+                ));
+                candidates.push((
+                    SourceRootKind::Test,
+                    module_root.join("target/generated-test-sources/test-annotations"),
+                ));
+            }
+            BuildSystem::Gradle => {
+                candidates.push((
+                    SourceRootKind::Main,
+                    module_root.join("build/generated/sources/annotationProcessor/java/main"),
+                ));
+                candidates.push((
+                    SourceRootKind::Test,
+                    module_root.join("build/generated/sources/annotationProcessor/java/test"),
+                ));
+            }
+            BuildSystem::Simple => {
+                // Heuristic: include both Maven and Gradle conventions.
+                candidates.push((
+                    SourceRootKind::Main,
+                    module_root.join("target/generated-sources/annotations"),
+                ));
+                candidates.push((
+                    SourceRootKind::Test,
+                    module_root.join("target/generated-test-sources/test-annotations"),
+                ));
+                candidates.push((
+                    SourceRootKind::Main,
+                    module_root.join("build/generated/sources/annotationProcessor/java/main"),
+                ));
+                candidates.push((
+                    SourceRootKind::Test,
+                    module_root.join("build/generated/sources/annotationProcessor/java/test"),
+                ));
+            }
+            BuildSystem::Bazel => {}
+        }
 
         for root in &config.generated_sources.additional_roots {
             let path = if root.is_absolute() {
@@ -58,9 +82,6 @@ pub(crate) fn append_generated_source_roots(
 
     let mut seen = HashSet::new();
     for (kind, path) in candidates {
-        if !path.is_dir() {
-            continue;
-        }
         if !seen.insert(path.clone()) {
             continue;
         }

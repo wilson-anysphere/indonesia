@@ -8,9 +8,13 @@ nova-build = { path = "../nova-build" }
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-project = { path = "../nova-project" }
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
+filetime = "0.2"
 nova-index = { path = "../nova-index" }
 nova-hir = { path = "../nova-hir" }
 nova-jdk = { path = "../nova-jdk" }
 nova-resolve = { path = "../nova-resolve" }
+tempfile.workspace = true

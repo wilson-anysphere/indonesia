@@ -3286,6 +3286,7 @@ dependencies = [
 name = "nova-apt"
 version = "0.1.0"
 dependencies = [
+ "filetime",
  "nova-build",
  "nova-config",
  "nova-core",
@@ -3294,6 +3295,9 @@ dependencies = [
  "nova-jdk",
  "nova-project",
  "nova-resolve",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

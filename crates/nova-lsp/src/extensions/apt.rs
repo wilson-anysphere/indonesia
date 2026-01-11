@@ -1,7 +1,7 @@
 use crate::{NovaLspError, Result};
-use nova_apt::{AptManager, GeneratedSourcesFreshness, ProgressReporter};
+use nova_apt::{AptManager, AptProgressEvent, AptRunTarget, GeneratedSourcesFreshness, ProgressReporter};
 use nova_config::NovaConfig;
-use nova_project::{load_project_with_options, LoadOptions, SourceRootKind};
+use nova_project::{load_project_with_options, BuildSystem, LoadOptions, SourceRootKind};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,6 +26,26 @@ pub struct NovaGeneratedSourcesParams {
     #[serde(default, alias = "project_path")]
     pub project_path: Option<String>,
     /// For Bazel projects, a Bazel target label (e.g. `//app:lib`).
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NovaRunAnnotationProcessingParams {
+    /// Workspace root on disk.
+    #[serde(alias = "root")]
+    pub project_root: String,
+
+    /// For Maven projects, a path relative to `projectRoot` identifying the module.
+    #[serde(default)]
+    pub module: Option<String>,
+
+    /// For Gradle projects, a Gradle project path (e.g. `:app`).
+    #[serde(default, alias = "project_path")]
+    pub project_path: Option<String>,
+
+    /// For Bazel projects, a target label (e.g. `//foo:bar`).
     #[serde(default)]
     pub target: Option<String>,
 }
@@ -70,6 +90,12 @@ pub struct RunAnnotationProcessingResponse {
 pub struct ProgressEvent {
     pub kind: ProgressEventKind,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_root: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -107,7 +133,8 @@ pub fn handle_generated_sources(params: serde_json::Value) -> Result<serde_json:
 }
 
 pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<serde_json::Value> {
-    let params = parse_params(params)?;
+    let params: NovaRunAnnotationProcessingParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
     let root = PathBuf::from(&params.project_root);
 
     let build = super::build_manager_for_root(&root, Duration::from_secs(300));
@@ -116,36 +143,9 @@ pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<ser
     let apt = AptManager::new(project, config);
 
     let mut reporter = VecProgress::default();
-    reporter.begin("Running annotation processing");
-    reporter.report("Invoking build tool");
-
-    let build_result = match apt.project().build_system {
-        nova_project::BuildSystem::Maven => build
-            .build_maven(
-                &apt.project().workspace_root,
-                normalize_maven_module_relative(params.module.as_deref()),
-            )
-            .map_err(map_build_error)?,
-        nova_project::BuildSystem::Gradle => build
-            .build_gradle(
-                &apt.project().workspace_root,
-                params
-                    .project_path
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                    .filter(|p| *p != ":"),
-            )
-            .map_err(map_build_error)?,
-        nova_project::BuildSystem::Bazel | nova_project::BuildSystem::Simple => {
-            nova_build::BuildResult {
-                diagnostics: Vec::new(),
-            }
-        }
-    };
-
-    reporter.report("Build finished");
-    reporter.end();
+    let build_result = apt
+        .run_annotation_processing_for_target(&build, resolve_target(&apt, &params)?, &mut reporter)
+        .map_err(map_build_error)?;
 
     // Reload project + generated roots after the build.
     let (project, config) = load_project_with_workspace_config(&root)?;
@@ -184,6 +184,34 @@ fn load_project_with_workspace_config(
     let project = load_project_with_options(&workspace_root, &options)
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
     Ok((project, config))
+}
+
+fn resolve_target(
+    apt: &AptManager,
+    params: &NovaRunAnnotationProcessingParams,
+) -> Result<AptRunTarget> {
+    let build_system = apt.project().build_system;
+    let target = match build_system {
+        BuildSystem::Maven => params
+            .module
+            .as_deref()
+            .map(|m| AptRunTarget::MavenModule(PathBuf::from(m)))
+            .unwrap_or(AptRunTarget::Workspace),
+        BuildSystem::Gradle => params
+            .project_path
+            .as_deref()
+            .or(params.module.as_deref())
+            .map(|p| AptRunTarget::GradleProject(p.to_string()))
+            .unwrap_or(AptRunTarget::Workspace),
+        BuildSystem::Bazel => params
+            .target
+            .as_deref()
+            .or(params.module.as_deref())
+            .map(|t| AptRunTarget::BazelTarget(t.to_string()))
+            .unwrap_or(AptRunTarget::Workspace),
+        BuildSystem::Simple => AptRunTarget::Workspace,
+    };
+    Ok(target)
 }
 
 fn convert_status(status: nova_apt::GeneratedSourcesStatus) -> GeneratedSourcesResponse {
@@ -261,15 +289,6 @@ fn selected_module_root(
     }
 }
 
-fn normalize_maven_module_relative(module: Option<&str>) -> Option<&Path> {
-    let module = module.map(str::trim)?;
-    if module.is_empty() || module == "." {
-        None
-    } else {
-        Some(Path::new(module))
-    }
-}
-
 fn gradle_project_path_to_dir(project_path: &str) -> PathBuf {
     let trimmed = project_path.trim_matches(':');
     let mut rel = PathBuf::new();
@@ -319,6 +338,22 @@ fn module_index_for_file(file: &Path, modules: &[nova_project::Module]) -> Optio
         .map(|(idx, _)| idx)
 }
 
+impl From<AptProgressEvent> for ProgressEvent {
+    fn from(event: AptProgressEvent) -> Self {
+        Self {
+            kind: match event.kind {
+                nova_apt::AptProgressEventKind::Begin => ProgressEventKind::Begin,
+                nova_apt::AptProgressEventKind::Report => ProgressEventKind::Report,
+                nova_apt::AptProgressEventKind::End => ProgressEventKind::End,
+            },
+            message: event.message,
+            module_name: event.module_name,
+            module_root: event.module_root.map(|p| p.to_string_lossy().to_string()),
+            source_kind: event.source_kind.map(kind_string),
+        }
+    }
+}
+
 #[derive(Default)]
 struct VecProgress {
     events: Vec<String>,
@@ -326,28 +361,9 @@ struct VecProgress {
 }
 
 impl ProgressReporter for VecProgress {
-    fn begin(&mut self, title: &str) {
-        self.events.push(title.to_string());
-        self.structured_events.push(ProgressEvent {
-            kind: ProgressEventKind::Begin,
-            message: title.to_string(),
-        });
-    }
-
-    fn report(&mut self, message: &str) {
-        self.events.push(message.to_string());
-        self.structured_events.push(ProgressEvent {
-            kind: ProgressEventKind::Report,
-            message: message.to_string(),
-        });
-    }
-
-    fn end(&mut self) {
-        self.events.push("done".to_string());
-        self.structured_events.push(ProgressEvent {
-            kind: ProgressEventKind::End,
-            message: "done".to_string(),
-        });
+    fn event(&mut self, event: AptProgressEvent) {
+        self.events.push(event.message.clone());
+        self.structured_events.push(event.into());
     }
 }
 
@@ -444,6 +460,28 @@ mod tests {
             target: None,
         };
         assert_eq!(selected_module_root(&project, &params), None);
+
+        let params = NovaGeneratedSourcesParams {
+            project_root: "/workspace".into(),
+            module: None,
+            project_path: Some(":app".into()),
+            target: None,
+        };
+        assert_eq!(
+            selected_module_root(&project, &params),
+            Some(PathBuf::from("/workspace/app"))
+        );
+
+        let params = NovaGeneratedSourcesParams {
+            project_root: "/workspace".into(),
+            module: None,
+            project_path: Some(":lib:core".into()),
+            target: None,
+        };
+        assert_eq!(
+            selected_module_root(&project, &params),
+            Some(PathBuf::from("/workspace/lib/core"))
+        );
     }
 }
 

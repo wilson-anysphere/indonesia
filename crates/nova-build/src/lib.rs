@@ -67,6 +67,18 @@ pub enum BuildSystemKind {
     Gradle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MavenBuildGoal {
+    Compile,
+    TestCompile,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradleBuildTask {
+    CompileJava,
+    CompileTestJava,
+}
+
 /// A resolved compile classpath.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Classpath {
@@ -283,7 +295,17 @@ impl BuildManager {
         project_root: &Path,
         module_relative: Option<&Path>,
     ) -> Result<BuildResult> {
-        self.maven.build(project_root, module_relative, &self.cache)
+        self.build_maven_goal(project_root, module_relative, MavenBuildGoal::Compile)
+    }
+
+    pub fn build_maven_goal(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        goal: MavenBuildGoal,
+    ) -> Result<BuildResult> {
+        self.maven
+            .build_with_goal(project_root, module_relative, goal, &self.cache)
     }
 
     pub fn java_compile_config_maven(
@@ -318,6 +340,16 @@ impl BuildManager {
         project_root: &Path,
         project_path: Option<&str>,
     ) -> Result<BuildResult> {
-        self.gradle.build(project_root, project_path, &self.cache)
+        self.build_gradle_task(project_root, project_path, GradleBuildTask::CompileJava)
+    }
+
+    pub fn build_gradle_task(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+        task: GradleBuildTask,
+    ) -> Result<BuildResult> {
+        self.gradle
+            .build_with_task(project_root, project_path, task, &self.cache)
     }
 }

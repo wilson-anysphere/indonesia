@@ -2,7 +2,7 @@ use crate::cache::{BuildCache, BuildFileFingerprint, CachedProjectInfo};
 use crate::command::format_command;
 use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
-    DefaultCommandRunner, JavaCompileConfig, Result,
+    DefaultCommandRunner, GradleBuildTask, JavaCompileConfig, Result,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -221,11 +221,21 @@ impl GradleBuild {
         project_path: Option<&str>,
         cache: &BuildCache,
     ) -> Result<BuildResult> {
+        self.build_with_task(project_root, project_path, GradleBuildTask::CompileJava, cache)
+    }
+
+    pub fn build_with_task(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+        task: GradleBuildTask,
+        cache: &BuildCache,
+    ) -> Result<BuildResult> {
         let project_path = project_path.filter(|p| *p != ":");
         let fingerprint = gradle_build_fingerprint(project_root)?;
         let module_key = project_path.unwrap_or("<root>");
 
-        let (program, args, output) = self.run_compile(project_root, project_path)?;
+        let (program, args, output) = self.run_compile(project_root, project_path, task)?;
         let combined = output.combined();
         let diagnostics = crate::parse_javac_diagnostics(&combined, "gradle");
 
@@ -307,23 +317,38 @@ impl GradleBuild {
         &self,
         project_root: &Path,
         project_path: Option<&str>,
+        task: GradleBuildTask,
     ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
         let gradle = self.gradle_executable(project_root);
         let mut args: Vec<String> = Vec::new();
         args.push("--no-daemon".into());
         args.push("--console=plain".into());
 
+        let task_name = match task {
+            GradleBuildTask::CompileJava => "compileJava",
+            GradleBuildTask::CompileTestJava => "compileTestJava",
+        };
+
         match project_path {
             Some(p) => {
-                args.push(format!("{p}:compileJava"));
+                args.push(format!("{p}:{task_name}"));
                 let output = self.runner.run(project_root, &gradle, &args)?;
                 Ok((gradle, args, output))
             }
             None => {
-                let init_script = write_compile_all_java_init_script(project_root)?;
+                let (init_script, root_task) = match task {
+                    GradleBuildTask::CompileJava => (
+                        write_compile_all_java_init_script(project_root)?,
+                        "novaCompileAllJava",
+                    ),
+                    GradleBuildTask::CompileTestJava => (
+                        write_compile_all_test_java_init_script(project_root)?,
+                        "novaCompileAllTestJava",
+                    ),
+                };
                 args.push("--init-script".into());
                 args.push(init_script.to_string_lossy().to_string());
-                args.push("novaCompileAllJava".into());
+                args.push(root_task.to_string());
 
                 let output = self.runner.run(project_root, &gradle, &args);
                 let _ = std::fs::remove_file(&init_script);
@@ -1060,6 +1085,52 @@ gradle.rootProject { root ->
         def compileTasks = []
         root.allprojects { proj ->
             def t = proj.tasks.findByName("compileJava")
+            if (t != null) {
+                compileTasks.add(t)
+            }
+        }
+        novaTaskProvider.configure {
+            dependsOn compileTasks
+        }
+    }
+}
+"#;
+
+    std::fs::write(&path, script)?;
+
+    if !path.exists() {
+        return Err(BuildError::Unsupported(format!(
+            "failed to create init script under {}",
+            project_root.display()
+        )));
+    }
+
+    Ok(path)
+}
+
+fn write_compile_all_test_java_init_script(project_root: &Path) -> Result<PathBuf> {
+    let mut path = std::env::temp_dir();
+    let token = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.push(format!("nova_gradle_compile_all_test_{token}.gradle"));
+
+    // Register a root task that depends on all `compileTestJava` tasks we can find.
+    //
+    // Similar to `write_compile_all_java_init_script`, this helps in multi-project
+    // Gradle builds where the root project is an aggregator.
+    let script = r#"
+gradle.rootProject { root ->
+    def novaTaskProvider = root.tasks.register("novaCompileAllTestJava") {
+        group = "build"
+        description = "Compiles all Java test sources across all projects (Nova helper task)"
+    }
+
+    gradle.projectsEvaluated {
+        def compileTasks = []
+        root.allprojects { proj ->
+            def t = proj.tasks.findByName("compileTestJava")
             if (t != null) {
                 compileTasks.add(t)
             }

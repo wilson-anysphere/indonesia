@@ -175,7 +175,12 @@ fn load_bazel_project_heuristic(
         });
     }
 
-    crate::generated::append_generated_source_roots(&mut source_roots, root, &options.nova_config);
+    crate::generated::append_generated_source_roots(
+        &mut source_roots,
+        root,
+        BuildSystem::Bazel,
+        &options.nova_config,
+    );
 
     let mut dependency_entries = Vec::new();
     for entry in &options.classpath_overrides {
@@ -294,7 +299,12 @@ fn project_config_from_workspace_model(
             path: root.to_path_buf(),
         });
     }
-    crate::generated::append_generated_source_roots(&mut source_roots, root, &options.nova_config);
+    crate::generated::append_generated_source_roots(
+        &mut source_roots,
+        root,
+        BuildSystem::Bazel,
+        &options.nova_config,
+    );
 
     let mut classpath: Vec<ClasspathEntry> = model
         .modules

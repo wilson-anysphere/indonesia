@@ -2,7 +2,7 @@ use crate::cache::{BuildCache, BuildFileFingerprint};
 use crate::command::format_command;
 use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
-    DefaultCommandRunner, JavaCompileConfig, Result,
+    DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,6 +19,8 @@ pub struct MavenConfig {
     pub classpath_args: Vec<String>,
     /// Arguments used to trigger compilation (and thus produce diagnostics).
     pub build_args: Vec<String>,
+    /// Arguments used to trigger test compilation (and thus annotation processing for test sources).
+    pub test_build_args: Vec<String>,
     /// Whether to pass `-am` (also make) when targeting a specific module.
     pub also_make: bool,
 }
@@ -35,6 +37,7 @@ impl Default for MavenConfig {
                 "help:evaluate".into(),
             ],
             build_args: vec!["-q".into(), "-DskipTests".into(), "compile".into()],
+            test_build_args: vec!["-q".into(), "-DskipTests".into(), "test-compile".into()],
             also_make: true,
         }
     }
@@ -342,6 +345,21 @@ impl MavenBuild {
         module_relative: Option<&Path>,
         cache: &BuildCache,
     ) -> Result<BuildResult> {
+        self.build_with_goal(
+            project_root,
+            module_relative,
+            MavenBuildGoal::Compile,
+            cache,
+        )
+    }
+
+    pub fn build_with_goal(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        goal: MavenBuildGoal,
+        cache: &BuildCache,
+    ) -> Result<BuildResult> {
         let fingerprint = BuildFileFingerprint::from_files(
             project_root,
             collect_maven_build_files(project_root)?,
@@ -350,8 +368,11 @@ impl MavenBuild {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "<root>".to_string());
 
-        let (program, args, output) =
-            self.run(project_root, module_relative, &self.config.build_args)?;
+        let goal_args = match goal {
+            MavenBuildGoal::Compile => &self.config.build_args,
+            MavenBuildGoal::TestCompile => &self.config.test_build_args,
+        };
+        let (program, args, output) = self.run(project_root, module_relative, goal_args)?;
         let combined = output.combined();
         let diagnostics = crate::parse_javac_diagnostics(&combined, "maven");
 
