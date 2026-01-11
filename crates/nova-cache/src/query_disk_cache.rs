@@ -5,8 +5,7 @@ use crate::util::{
     BINCODE_PAYLOAD_LIMIT_BYTES,
 };
 use bincode::Options;
-use serde::de::IgnoredAny;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -328,12 +327,11 @@ struct PersistedQueryValue<'a> {
     value: &'a [u8],
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct PersistedQueryValueHeader {
     schema_version: u32,
     nova_version: String,
     saved_at_millis: u64,
-    key: IgnoredAny,
     key_fingerprint: Fingerprint,
 }
 
@@ -348,5 +346,23 @@ fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
 
     let file = std::fs::File::open(path).ok()?;
     let mut reader = BufReader::new(file);
-    bincode_options_limited().deserialize_from(&mut reader).ok()
+    let opts = bincode_options_limited();
+
+    // Bincode is not self-describing, so we must deserialize each prefix field
+    // in the correct order. We intentionally stop before the `value` payload so
+    // GC doesn't need to read the full cached value into memory.
+    let (schema_version, nova_version, saved_at_millis, _key, key_fingerprint): (
+        u32,
+        String,
+        u64,
+        String,
+        Fingerprint,
+    ) = opts.deserialize_from(&mut reader).ok()?;
+
+    Some(PersistedQueryValueHeader {
+        schema_version,
+        nova_version,
+        saved_at_millis,
+        key_fingerprint,
+    })
 }
