@@ -1,3 +1,8 @@
 # Keep the checked-in seed corpus small.
-# libFuzzer will generate new corpus entries named like `id:000000,orig:...`.
-id:*
+#
+# libFuzzer will write new corpus entries directly into the corpus directory.
+# These are typically extensionless (e.g. sha1-like names or `id:...`), while
+# our checked-in seeds are `*.class`.
+*
+!*.class
+!.gitignore
