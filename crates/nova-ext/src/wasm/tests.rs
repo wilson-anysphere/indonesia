@@ -184,6 +184,24 @@ const WAT_CAPABILITY_MISSING_EXPORT: &str = r#"
 )
 "#;
 
+const WAT_UNKNOWN_CAPABILITY_BITS: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 1024))
+
+  (func $nova_ext_alloc (export "nova_ext_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr)
+  )
+  (func $nova_ext_free (export "nova_ext_free") (param i32 i32) nop)
+  (func (export "nova_ext_abi_version") (result i32) (i32.const 1))
+  ;; Unknown bit (0x8000_0000) should be ignored by the host.
+  (func (export "nova_ext_capabilities") (result i32) (i32.const -2147483648))
+)
+"#;
+
 const WAT_BUSY_LOOP: &str = r#"
 (module
   (memory (export "memory") 1)
@@ -390,6 +408,35 @@ fn declared_capability_requires_export() {
         WasmLoadError::MissingExport(name) => assert_eq!(name, "nova_ext_diagnostics"),
         other => panic!("unexpected error: {other:?}"),
     }
+}
+
+#[test]
+fn unknown_capability_bits_are_ignored() {
+    let plugin = Arc::new(
+        WasmPlugin::from_wat(
+            "unknown-bits",
+            WAT_UNKNOWN_CAPABILITY_BITS,
+            WasmPluginConfig::default(),
+        )
+        .expect("load module"),
+    );
+    assert_eq!(plugin.capabilities().bits(), 0);
+
+    let mut registry = ExtensionRegistry::<TestDb>::default();
+    plugin.register(&mut registry).unwrap();
+
+    // Since no known capabilities were set, we should be able to register providers under the same
+    // id without collision.
+    registry
+        .register_diagnostic_provider(Arc::new(DummyDiagProvider {
+            id: plugin.id().to_string(),
+        }))
+        .unwrap();
+    registry
+        .register_completion_provider(Arc::new(DummyCompletionProvider {
+            id: plugin.id().to_string(),
+        }))
+        .unwrap();
 }
 
 #[test]
