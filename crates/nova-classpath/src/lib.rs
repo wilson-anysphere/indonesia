@@ -183,6 +183,36 @@ impl ClasspathEntry {
             },
         }
     }
+
+    /// JPMS module metadata when this entry is treated as a `--module-path` item.
+    ///
+    /// Unlike [`ClasspathEntry::module_meta`], class directories are treated as
+    /// modules on the module path:
+    /// - if they contain `module-info.class`, they are explicit modules
+    /// - otherwise they are treated as automatic modules with a derived name
+    ///
+    /// This is useful for JPMS-aware resolution, where class directories can
+    /// represent exploded modules (e.g. another module's output directory).
+    pub fn module_meta_for_module_path(&self) -> Result<EntryModuleMeta, ClasspathError> {
+        match self {
+            ClasspathEntry::ClassDir(dir) => match self.module_info()? {
+                Some(info) => Ok(EntryModuleMeta {
+                    name: Some(info.name),
+                    kind: ModuleNameKind::Explicit,
+                }),
+                None => {
+                    let name = derive_automatic_module_name_from_path(dir);
+                    let kind = if name.is_some() {
+                        ModuleNameKind::Automatic
+                    } else {
+                        ModuleNameKind::None
+                    };
+                    Ok(EntryModuleMeta { name, kind })
+                }
+            },
+            _ => self.module_meta(),
+        }
+    }
 }
 
 fn jar_module_meta(path: &Path) -> Result<EntryModuleMeta, ClasspathError> {
@@ -508,6 +538,88 @@ impl ModuleAwareClasspathIndex {
         for entry in entries {
             let entry = entry.normalize()?;
             let module_meta = entry.module_meta()?;
+            modules.push((module_meta.name.clone(), module_meta.kind));
+
+            let stubs = match &entry {
+                ClasspathEntry::ClassDir(_) => {
+                    let fingerprint = entry.fingerprint()?;
+                    if let Some(cache_dir) = cache_dir {
+                        persist::load_or_build_entry(cache_dir, &entry, fingerprint, || {
+                            index_entry(&entry, deps_store, stats)
+                        })?
+                    } else {
+                        index_entry(&entry, deps_store, stats)?
+                    }
+                }
+                ClasspathEntry::Jar(_) | ClasspathEntry::Jmod(_) => {
+                    index_entry(&entry, deps_store, stats)?
+                }
+            };
+
+            for stub in stubs {
+                if stubs_by_binary.contains_key(&stub.binary_name) {
+                    continue;
+                }
+
+                let binary_name = stub.binary_name.clone();
+                internal_to_binary.insert(stub.internal_name.clone(), binary_name.clone());
+                stubs_by_binary.insert(binary_name.clone(), stub);
+                type_to_module.insert(binary_name, module_meta.name.clone());
+            }
+        }
+
+        let mut binary_names_sorted: Vec<String> = stubs_by_binary.keys().cloned().collect();
+        binary_names_sorted.sort();
+
+        let mut packages: BTreeSet<String> = BTreeSet::new();
+        for name in &binary_names_sorted {
+            if let Some((pkg, _)) = name.rsplit_once('.') {
+                packages.insert(pkg.to_owned());
+            }
+        }
+
+        let types = ClasspathIndex {
+            stubs_by_binary,
+            binary_names_sorted,
+            packages_sorted: packages.into_iter().collect(),
+            internal_to_binary,
+        };
+
+        Ok(Self {
+            types,
+            type_to_module,
+            modules,
+        })
+    }
+
+    /// Build a module-aware index for entries that are treated as `--module-path`.
+    ///
+    /// This differs from [`ModuleAwareClasspathIndex::build`] in how it handles
+    /// class directories: directories are treated as modules (explicit when they
+    /// contain `module-info.class`, otherwise automatic) instead of being forced
+    /// into the unnamed module.
+    pub fn build_module_path(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, ClasspathError> {
+        let deps_store = DependencyIndexStore::from_env().ok();
+        Self::build_module_path_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
+    }
+
+    pub fn build_module_path_with_deps_store(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        let mut stubs_by_binary = HashMap::new();
+        let mut internal_to_binary = HashMap::new();
+        let mut type_to_module = HashMap::new();
+        let mut modules = Vec::with_capacity(entries.len());
+
+        for entry in entries {
+            let entry = entry.normalize()?;
+            let module_meta = entry.module_meta_for_module_path()?;
             modules.push((module_meta.name.clone(), module_meta.kind));
 
             let stubs = match &entry {
