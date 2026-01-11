@@ -3,7 +3,8 @@ mod codec;
 use codec::{read_json_message, write_json_message};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
-    CompletionList, CompletionParams, Position as LspTypesPosition, Range as LspTypesRange,
+    CompletionList, CompletionParams, DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
+    FileChangeType as LspFileChangeType, Position as LspTypesPosition, Range as LspTypesRange,
     RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
     WorkspaceEdit as LspWorkspaceEdit,
 };
@@ -28,10 +29,10 @@ use nova_index::{Index, SymbolKind};
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
-    FileId, InMemoryJavaDatabase, OrganizeImportsParams, RenameParams as RefactorRenameParams,
-    SafeDeleteTarget, SemanticRefactorError,
+    FileId as RefactorFileId, InMemoryJavaDatabase, OrganizeImportsParams,
+    RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
 };
-use nova_vfs::{ContentChange, Document};
+use nova_vfs::{ContentChange, Document, FileIdRegistry, VfsPath};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -251,11 +252,128 @@ fn parse_config_arg(args: &[String]) -> Option<PathBuf> {
     None
 }
 
+#[derive(Debug, Default)]
+struct AnalysisState {
+    file_ids: FileIdRegistry,
+    file_exists: HashMap<nova_db::FileId, bool>,
+    file_contents: HashMap<nova_db::FileId, String>,
+}
+
+impl AnalysisState {
+    fn path_for_uri(&mut self, uri: &lsp_types::Uri) -> VfsPath {
+        VfsPath::uri(uri.to_string())
+    }
+
+    fn file_id_for_uri(&mut self, uri: &lsp_types::Uri) -> (nova_db::FileId, VfsPath) {
+        let path = self.path_for_uri(uri);
+        let file_id = self.file_ids.file_id(path.clone());
+        (file_id, path)
+    }
+
+    fn file_is_known(&self, file_id: nova_db::FileId) -> bool {
+        self.file_exists.contains_key(&file_id)
+    }
+
+    fn set_overlay_text(&mut self, uri: &lsp_types::Uri, text: String) {
+        let (file_id, _) = self.file_id_for_uri(uri);
+        self.file_exists.insert(file_id, true);
+        self.file_contents.insert(file_id, text);
+    }
+
+    fn mark_missing(&mut self, uri: &lsp_types::Uri) {
+        let (file_id, _) = self.file_id_for_uri(uri);
+        self.file_exists.insert(file_id, false);
+        self.file_contents.remove(&file_id);
+    }
+
+    fn refresh_from_disk(&mut self, uri: &lsp_types::Uri) {
+        let (file_id, path) = self.file_id_for_uri(uri);
+        match &path {
+            VfsPath::Local(path) => match fs::read_to_string(path) {
+                Ok(text) => {
+                    self.file_exists.insert(file_id, true);
+                    self.file_contents.insert(file_id, text);
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    self.file_exists.insert(file_id, false);
+                    self.file_contents.remove(&file_id);
+                }
+                Err(_) => {
+                    // Treat other IO errors as a cache miss; keep previous state.
+                }
+            },
+            _ => {
+                // Non-local paths are not supported in the stdio server.
+            }
+        }
+    }
+
+    fn ensure_loaded(
+        &mut self,
+        open_documents: &HashMap<String, Document>,
+        uri: &lsp_types::Uri,
+    ) -> nova_db::FileId {
+        let (file_id, _path) = self.file_id_for_uri(uri);
+
+        // Overlay always wins, and it shouldn't be overwritten by disk updates.
+        if let Some(doc) = open_documents.get(uri.as_str()) {
+            self.file_exists.insert(file_id, true);
+            self.file_contents.insert(file_id, doc.text().to_owned());
+            return file_id;
+        }
+
+        // If we already have a view of the file (present or missing), keep it until we receive an
+        // explicit notification (didChangeWatchedFiles) telling us it changed.
+        if self.file_is_known(file_id) {
+            return file_id;
+        }
+
+        self.refresh_from_disk(uri);
+        file_id
+    }
+
+    fn exists(&self, file_id: nova_db::FileId) -> bool {
+        self.file_exists.get(&file_id).copied().unwrap_or(false)
+    }
+
+    fn rename_uri(&mut self, from: &lsp_types::Uri, to: &lsp_types::Uri) -> nova_db::FileId {
+        let from_path = self.path_for_uri(from);
+        let to_path = self.path_for_uri(to);
+        let id = self.file_ids.rename_path(&from_path, to_path);
+        // Keep content/existence under the preserved id; callers should refresh content from disk if needed.
+        id
+    }
+}
+
+impl nova_db::Database for AnalysisState {
+    fn file_content(&self, file_id: nova_db::FileId) -> &str {
+        self.file_contents
+            .get(&file_id)
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    fn file_path(&self, file_id: nova_db::FileId) -> Option<&std::path::Path> {
+        self.file_ids
+            .get_path(file_id)
+            .and_then(|path| path.as_local_path())
+    }
+
+    fn all_file_ids(&self) -> Vec<nova_db::FileId> {
+        self.file_ids.all_file_ids()
+    }
+
+    fn file_id(&self, path: &std::path::Path) -> Option<nova_db::FileId> {
+        self.file_ids.get_id(&VfsPath::local(path.to_path_buf()))
+    }
+}
+
 struct ServerState {
     shutdown_requested: bool,
     project_root: Option<PathBuf>,
     documents: HashMap<String, Document>,
     cancelled_requests: HashSet<String>,
+    analysis: AnalysisState,
     ai: Option<AiService>,
     privacy: nova_ai::PrivacyMode,
     ai_config: nova_config::AiConfig,
@@ -324,6 +442,7 @@ impl ServerState {
             project_root: None,
             documents: HashMap::new(),
             cancelled_requests: HashSet::new(),
+            analysis: AnalysisState::default(),
             ai,
             privacy,
             ai_config,
@@ -406,6 +525,12 @@ fn handle_request(
                     "documentOnTypeFormattingProvider": {
                         "firstTriggerCharacter": "}",
                         "moreTriggerCharacter": [";"]
+                    },
+                    "definitionProvider": true,
+                    "diagnosticProvider": {
+                        "identifier": "nova",
+                        "interFileDependencies": false,
+                        "workspaceDiagnostics": false
                     },
                     "renameProvider": { "prepareProvider": true },
                     "codeActionProvider": {
@@ -543,6 +668,26 @@ fn handle_request(
                 Err(err) => {
                     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
                 }
+            })
+        }
+        "textDocument/definition" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_definition(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+            })
+        }
+        "textDocument/diagnostic" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_document_diagnostic(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
             })
         }
         "completionItem/resolve" => {
@@ -889,6 +1034,9 @@ fn handle_notification(
                 return Ok(());
             };
             let uri = params.text_document.uri.to_string();
+            state
+                .analysis
+                .set_overlay_text(&params.text_document.uri, params.text_document.text.clone());
             state.documents.insert(
                 uri,
                 Document::new(params.text_document.text, params.text_document.version),
@@ -920,6 +1068,9 @@ fn handle_notification(
                 );
                 return Ok(());
             }
+            state
+                .analysis
+                .set_overlay_text(&params.text_document.uri, doc.text().to_owned());
             state.refresh_document_memory();
         }
         "textDocument/didClose" => {
@@ -930,6 +1081,52 @@ fn handle_notification(
             };
             state.documents.remove(params.text_document.uri.as_str());
             state.refresh_document_memory();
+            state.analysis.refresh_from_disk(&params.text_document.uri);
+        }
+        "workspace/didChangeWatchedFiles" => {
+            let Ok(params) = serde_json::from_value::<LspDidChangeWatchedFilesParams>(
+                message.get("params").cloned().unwrap_or_default(),
+            ) else {
+                return Ok(());
+            };
+
+            for change in params.changes {
+                let uri = change.uri;
+                if state.documents.contains_key(uri.as_str()) {
+                    continue;
+                }
+
+                match change.typ {
+                    LspFileChangeType::CREATED | LspFileChangeType::CHANGED => {
+                        state.analysis.refresh_from_disk(&uri);
+                    }
+                    LspFileChangeType::DELETED => {
+                        state.analysis.mark_missing(&uri);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        "nova/workspace/renamePath" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct RenamePathParams {
+                from: LspUri,
+                to: LspUri,
+            }
+
+            let Ok(params) = serde_json::from_value::<RenamePathParams>(
+                message.get("params").cloned().unwrap_or_default(),
+            ) else {
+                return Ok(());
+            };
+
+            // If the source buffer is open, treat the rename as a pure path move; the in-memory
+            // overlay remains the source of truth.
+            state.analysis.rename_uri(&params.from, &params.to);
+            if !state.documents.contains_key(params.to.as_str()) {
+                state.analysis.refresh_from_disk(&params.to);
+            }
         }
         _ => {}
     }
@@ -1235,7 +1432,7 @@ fn handle_code_action_resolve(
 }
 
 fn organize_imports_code_action(uri: &LspUri, source: &str) -> Option<CodeAction> {
-    let file = FileId::new(uri.to_string());
+    let file = RefactorFileId::new(uri.to_string());
     let db = InMemoryJavaDatabase::new([(file.clone(), source.to_string())]);
     let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() }).ok()?;
     if edit.is_empty() {
@@ -1281,7 +1478,7 @@ fn handle_java_organize_imports(
         return Err((-32602, format!("unknown document: {}", uri.as_str())));
     };
 
-    let file = FileId::new(uri.to_string());
+    let file = RefactorFileId::new(uri.to_string());
     let db = InMemoryJavaDatabase::new([(file.clone(), source)]);
     let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
         .map_err(|e| (-32603, e.to_string()))?;
@@ -1368,7 +1565,7 @@ fn handle_rename(
         return Err("position out of bounds".to_string());
     };
 
-    let file = FileId::new(uri.to_string());
+    let file = RefactorFileId::new(uri.to_string());
     let db = InMemoryJavaDatabase::new([(file.clone(), source)]);
     let symbol = db
         .symbol_at(&file, offset)
@@ -1387,6 +1584,49 @@ fn handle_rename(
     })?;
 
     workspace_edit_to_lsp(&db, &edit).map_err(|e| e.to_string())
+}
+
+fn handle_definition(params: serde_json::Value, state: &mut ServerState) -> Result<serde_json::Value, String> {
+    let params: TextDocumentPositionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let location = nova_lsp::goto_definition(&state.analysis, file_id, params.position);
+    match location {
+        Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+fn handle_document_diagnostic(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct DocumentDiagnosticParams {
+        text_document: lsp_types::TextDocumentIdentifier,
+    }
+
+    let params: DocumentDiagnosticParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    let diagnostics: Vec<lsp_types::Diagnostic> = if state.analysis.exists(file_id) {
+        nova_lsp::diagnostics(&state.analysis, file_id)
+    } else {
+        Vec::new()
+    };
+
+    Ok(json!({
+        "kind": "full",
+        "resultId": serde_json::Value::Null,
+        "items": diagnostics,
+    }))
 }
 
 #[derive(Debug, Deserialize)]

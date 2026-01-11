@@ -1494,7 +1494,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn target_classpath_uses_build_manager_for_maven() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         let original_path = std::env::var("PATH").unwrap_or_default();
 
         let tmp = TempDir::new().unwrap();
@@ -1561,7 +1561,7 @@ echo \"null\"\n",
     #[test]
     #[cfg(unix)]
     fn target_classpath_uses_build_manager_for_gradle() {
-        let _guard = env_lock().lock().unwrap();
+        let _guard = env_lock().lock().unwrap_or_else(|err| err.into_inner());
         let original_path = std::env::var("PATH").unwrap_or_default();
 
         let tmp = TempDir::new().unwrap();
