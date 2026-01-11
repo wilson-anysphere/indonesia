@@ -720,7 +720,12 @@ mod tests {
         let files = collect_maven_build_files(&root).unwrap();
         let mut rel: Vec<_> = files
             .iter()
-            .map(|p| p.strip_prefix(&root).unwrap().to_string_lossy().to_string())
+            .map(|p| {
+                p.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
             .collect();
         rel.sort();
         assert_eq!(rel, vec!["module-a/pom.xml", "module-b/pom.xml", "pom.xml"]);
@@ -728,7 +733,7 @@ mod tests {
         let modules = discover_maven_modules(&root, &files);
         let rel_modules: Vec<_> = modules
             .iter()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
             .collect();
         assert_eq!(rel_modules, vec!["module-a", "module-b"]);
     }
