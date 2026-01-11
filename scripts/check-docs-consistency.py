@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 
@@ -21,9 +22,17 @@ def check_architecture_map() -> list[str]:
     crates = sorted(p.name for p in crates_dir.iterdir() if p.is_dir())
     doc = read_text(doc_path)
 
-    doc_crates = set(re.findall(r"^### `([^`]+)`\s*$", doc, flags=re.MULTILINE))
+    doc_crates_list = re.findall(r"^### `([^`]+)`\s*$", doc, flags=re.MULTILINE)
+    doc_crates = set(doc_crates_list)
 
     errors: list[str] = []
+
+    duplicates = sorted([c for c, n in Counter(doc_crates_list).items() if n > 1])
+    if duplicates:
+        errors.append(
+            "docs/architecture-map.md contains duplicate crate headings for: "
+            + ", ".join(duplicates)
+        )
 
     missing = [c for c in crates if c not in doc_crates]
     extra = [c for c in sorted(doc_crates) if c not in crates]
@@ -73,10 +82,12 @@ def extract_vscode_methods() -> set[str]:
 def check_protocol_extensions() -> list[str]:
     doc_path = REPO_ROOT / "docs" / "protocol-extensions.md"
     doc = read_text(doc_path)
+    doc_methods_list = [
+        m for m in re.findall(r"^### `([^`]+)`", doc, flags=re.MULTILINE) if m.startswith("nova/")
+    ]
     doc_methods = {
         m
-        for m in re.findall(r"^### `([^`]+)`", doc, flags=re.MULTILINE)
-        if m.startswith("nova/")
+        for m in doc_methods_list
     }
 
     # Collect all `nova/*` method constants exposed by the `nova-lsp` crate.
@@ -90,6 +101,13 @@ def check_protocol_extensions() -> list[str]:
     needed = rust_methods | vscode_methods
 
     errors: list[str] = []
+
+    duplicates = sorted([m for m, n in Counter(doc_methods_list).items() if n > 1])
+    if duplicates:
+        errors.append(
+            "docs/protocol-extensions.md contains duplicate method headings for: "
+            + ", ".join(duplicates)
+        )
 
     missing = sorted(m for m in needed if m not in doc_methods)
     if missing:
