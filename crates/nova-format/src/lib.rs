@@ -433,6 +433,14 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
     let original_lines = split_lines_inclusive(original);
     let formatted_lines = split_lines_inclusive(formatted);
 
+    // The Myers diff algorithm below is quadratic in the worst case (and can require significant
+    // memory when there are few/no matching lines). Range formatting requests are typically small,
+    // so we cap the work and fall back to a single minimal replacement for very large inputs.
+    const MAX_DIFF_LINES: usize = 2000;
+    if original_lines.len().saturating_add(formatted_lines.len()) > MAX_DIFF_LINES {
+        return minimal_text_edit(original, formatted).into_iter().collect();
+    }
+
     if original_lines.len() == formatted_lines.len() {
         let original_offsets = line_offsets(&original_lines);
         let mut edits = Vec::new();
@@ -441,8 +449,8 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
             .zip(formatted_lines.iter())
             .enumerate()
         {
-            if let Some(edit) = minimal_text_edit(original_line, formatted_line) {
-                let base = TextSize::from(original_offsets[idx] as u32);
+            let base = TextSize::from(original_offsets[idx] as u32);
+            for edit in minimal_text_edits_for_line(original_line, formatted_line) {
                 let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
                 edits.push(TextEdit::new(range, edit.replacement));
             }
@@ -450,14 +458,6 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
 
         edits.sort_by_key(|edit| (edit.range.start(), edit.range.end()));
         return edits;
-    }
-
-    // The diff algorithm below is quadratic in the worst case (and can require significant
-    // memory when there are few/no matching lines). Range formatting requests are typically small,
-    // so we cap the work and fall back to a single minimal replacement for very large inputs.
-    const MAX_MYERS_LINES: usize = 2000;
-    if original_lines.len().saturating_add(formatted_lines.len()) > MAX_MYERS_LINES {
-        return minimal_text_edit(original, formatted).into_iter().collect();
     }
 
     let ops = myers_diff_ops(&original_lines, &formatted_lines);
@@ -526,8 +526,8 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
                 let original_line = original_lines[original_line_idx];
                 let formatted_line = formatted_lines[formatted_line_idx];
 
-                if let Some(edit) = minimal_text_edit(original_line, formatted_line) {
-                    let base = TextSize::from(original_offsets[original_line_idx] as u32);
+                let base = TextSize::from(original_offsets[original_line_idx] as u32);
+                for edit in minimal_text_edits_for_line(original_line, formatted_line) {
                     let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
                     edits.push(TextEdit::new(range, edit.replacement));
                 }
@@ -549,6 +549,85 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
     }
 
     edits.sort_by_key(|edit| (edit.range.start(), edit.range.end()));
+    edits
+}
+
+fn minimal_text_edits_for_line(original: &str, formatted: &str) -> Vec<TextEdit> {
+    if original == formatted {
+        return Vec::new();
+    }
+
+    const MAX_MYERS_CHARS: usize = 2048;
+    let (orig_chars, orig_offsets) = chars_with_offsets(original);
+    let (fmt_chars, fmt_offsets) = chars_with_offsets(formatted);
+
+    if orig_chars.len().saturating_add(fmt_chars.len()) > MAX_MYERS_CHARS {
+        return minimal_text_edit(original, formatted).into_iter().collect();
+    }
+
+    let ops = myers_diff_ops(&orig_chars, &fmt_chars);
+    let mut chunks = Vec::new();
+    let mut a_idx = 0usize;
+    let mut b_idx = 0usize;
+    let mut start_a: Option<usize> = None;
+    let mut start_b: Option<usize> = None;
+
+    for op in ops {
+        match op {
+            DiffOp::Equal => {
+                if let (Some(sa), Some(sb)) = (start_a.take(), start_b.take()) {
+                    chunks.push(DiffChunk {
+                        original_start: sa,
+                        original_end: a_idx,
+                        formatted_start: sb,
+                        formatted_end: b_idx,
+                    });
+                }
+                a_idx += 1;
+                b_idx += 1;
+            }
+            DiffOp::Delete => {
+                if start_a.is_none() {
+                    start_a = Some(a_idx);
+                    start_b = Some(b_idx);
+                }
+                a_idx += 1;
+            }
+            DiffOp::Insert => {
+                if start_a.is_none() {
+                    start_a = Some(a_idx);
+                    start_b = Some(b_idx);
+                }
+                b_idx += 1;
+            }
+        }
+    }
+
+    if let (Some(sa), Some(sb)) = (start_a, start_b) {
+        chunks.push(DiffChunk {
+            original_start: sa,
+            original_end: a_idx,
+            formatted_start: sb,
+            formatted_end: b_idx,
+        });
+    }
+
+    let mut edits = Vec::new();
+    for chunk in chunks {
+        let original_start = orig_offsets[chunk.original_start];
+        let original_end = orig_offsets[chunk.original_end];
+        let formatted_start = fmt_offsets[chunk.formatted_start];
+        let formatted_end = fmt_offsets[chunk.formatted_end];
+        let range = TextRange::new(
+            TextSize::from(original_start as u32),
+            TextSize::from(original_end as u32),
+        );
+        edits.push(TextEdit::new(
+            range,
+            formatted[formatted_start..formatted_end].to_string(),
+        ));
+    }
+
     edits
 }
 
@@ -614,6 +693,19 @@ struct DiffChunk {
     formatted_end: usize,
 }
 
+fn chars_with_offsets(text: &str) -> (Vec<char>, Vec<usize>) {
+    let mut chars = Vec::new();
+    let mut offsets = Vec::new();
+    offsets.push(0);
+    let mut offset = 0usize;
+    for ch in text.chars() {
+        chars.push(ch);
+        offset += ch.len_utf8();
+        offsets.push(offset);
+    }
+    (chars, offsets)
+}
+
 fn split_lines_inclusive(text: &str) -> Vec<&str> {
     let bytes = text.as_bytes();
     let mut lines = Vec::new();
@@ -664,6 +756,10 @@ fn line_offsets(lines: &[&str]) -> Vec<usize> {
 }
 
 fn myers_diff_ops<T: Eq>(a: &[T], b: &[T]) -> Vec<DiffOp> {
+    if a.is_empty() && b.is_empty() {
+        return Vec::new();
+    }
+
     let n = a.len() as isize;
     let m = b.len() as isize;
     let max = (n + m) as usize;
