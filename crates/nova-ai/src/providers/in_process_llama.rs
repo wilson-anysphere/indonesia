@@ -121,7 +121,7 @@ impl AiProvider for InProcessLlamaProvider {
         let inner = self.inner.clone();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Result<String, AiError>>();
 
-        tokio::task::spawn_blocking(move || {
+        let _handle = tokio::task::spawn_blocking(move || {
             let mut guard = inner
                 .lock()
                 .expect("in-process llama provider mutex poisoned");
