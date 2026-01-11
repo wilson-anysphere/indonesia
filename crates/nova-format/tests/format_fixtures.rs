@@ -3,6 +3,8 @@ use nova_core::{apply_text_edits, Position};
 use nova_format::{edits_for_on_type_formatting, format_java, FormatConfig};
 use nova_syntax::parse;
 use pretty_assertions::assert_eq;
+use std::fs;
+use std::path::Path;
 
 fn format_with_config(input: &str, config: &FormatConfig) -> String {
     let tree = parse(input);
@@ -17,6 +19,27 @@ fn assert_idempotent(name: &str, input: &str, config: &FormatConfig) {
         formatted, formatted_again,
         "fixture `{name}` is not idempotent"
     );
+}
+
+#[test]
+fn idempotence_corpus_fixtures_default_config() {
+    let config = FormatConfig::default();
+    let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let entries = fs::read_dir(&fixtures_dir).expect("read fixtures directory");
+
+    for entry in entries {
+        let entry = entry.expect("read fixture entry");
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("java") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<unknown>");
+        let input = fs::read_to_string(&path).expect("read fixture");
+        assert_idempotent(name, &input, &config);
+    }
 }
 
 #[test]
