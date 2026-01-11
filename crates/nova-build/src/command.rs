@@ -7,6 +7,8 @@ pub struct CommandOutput {
     pub status: ExitStatus,
     pub stdout: String,
     pub stderr: String,
+    /// Indicates stdout/stderr were truncated due to bounded output capture.
+    pub truncated: bool,
 }
 
 impl CommandOutput {
@@ -70,11 +72,12 @@ impl CommandRunner for DefaultCommandRunner {
 
         let stdout = result.output.stdout;
         let stderr = result.output.stderr;
+        let truncated = result.output.truncated;
 
         if result.timed_out {
             let timeout = self.timeout.unwrap_or_default();
             let mut msg = format!("command `{command}` timed out after {timeout:?}");
-            if result.output.truncated {
+            if truncated {
                 msg.push_str("\n(output truncated)");
             }
             if !stdout.is_empty() {
@@ -90,7 +93,7 @@ impl CommandRunner for DefaultCommandRunner {
 
         if result.cancelled {
             let mut msg = format!("command `{command}` cancelled");
-            if result.output.truncated {
+            if truncated {
                 msg.push_str("\n(output truncated)");
             }
             if !stdout.is_empty() {
@@ -108,6 +111,7 @@ impl CommandRunner for DefaultCommandRunner {
             status: result.status,
             stdout,
             stderr,
+            truncated,
         })
     }
 }

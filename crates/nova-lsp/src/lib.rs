@@ -645,12 +645,47 @@ fn looks_like_project_root(root: &Path) -> bool {
         ".nova",
     ];
 
-    MARKERS.iter().any(|marker| root.join(marker).exists())
+    if MARKERS.iter().any(|marker| root.join(marker).exists())
         // Some users open ad-hoc folders without build files, but still with a conventional Java
         // source layout. Allow those roots to be treated as safe for scanning without accepting a
         // broad `src/` marker that may match too many non-project directories.
         || root.join("src").join("main").join("java").is_dir()
         || root.join("src").join("test").join("java").is_dir()
+    {
+        return true;
+    }
+
+    let src = root.join("src");
+    if !src.is_dir() {
+        return false;
+    }
+
+    // "Simple" projects: accept a `src/` tree that actually contains Java source files
+    // near the top-level. Cap the walk to keep this check cheap even for large trees.
+    let mut inspected = 0usize;
+    for entry in walkdir::WalkDir::new(&src).max_depth(4) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        inspected += 1;
+        if inspected > 2_000 {
+            break;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+        {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn uri_from_file_path(path: &Path) -> Option<lsp_types::Uri> {

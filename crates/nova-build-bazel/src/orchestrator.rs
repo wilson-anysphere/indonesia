@@ -1,0 +1,411 @@
+use crate::bsp::{BazelBspConfig, BspCompileOutcome};
+use anyhow::Result;
+use nova_process::CancellationToken;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::SystemTime;
+
+pub type BazelBuildTaskId = u64;
+
+/// Coarse-grained state for Bazel build tasks.
+///
+/// Mirrors `nova-build`'s `BuildTaskState` so `nova-lsp` can expose a consistent
+/// schema across build systems.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BazelBuildTaskState {
+    Idle,
+    Queued,
+    Running,
+    Success,
+    Failure,
+    Cancelled,
+}
+
+#[derive(Debug, Clone)]
+pub struct BazelBuildRequest {
+    pub targets: Vec<String>,
+    /// BSP launcher configuration. When absent, builds fail with an explanatory error.
+    pub bsp_config: Option<BazelBspConfig>,
+}
+
+impl BazelBuildRequest {
+    pub fn description(&self) -> String {
+        if self.targets.is_empty() {
+            "bazel (no targets)".to_string()
+        } else {
+            format!("bazel ({})", self.targets.join(", "))
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BazelBuildStatusSnapshot {
+    pub state: BazelBuildTaskState,
+    pub active_id: Option<BazelBuildTaskId>,
+    pub queued: usize,
+    pub last_completed_id: Option<BazelBuildTaskId>,
+    pub message: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BazelBuildDiagnosticsSnapshot {
+    pub build_id: Option<BazelBuildTaskId>,
+    pub state: BazelBuildTaskState,
+    pub targets: Vec<String>,
+    pub diagnostics: Vec<nova_core::Diagnostic>,
+    pub error: Option<String>,
+}
+
+pub trait BazelBuildExecutor: Send + Sync + std::fmt::Debug {
+    fn compile(
+        &self,
+        config: &BazelBspConfig,
+        workspace_root: &Path,
+        targets: &[String],
+        cancellation: CancellationToken,
+    ) -> Result<BspCompileOutcome>;
+}
+
+#[derive(Debug, Default)]
+pub struct DefaultBazelBuildExecutor;
+
+impl BazelBuildExecutor for DefaultBazelBuildExecutor {
+    fn compile(
+        &self,
+        config: &BazelBspConfig,
+        workspace_root: &Path,
+        targets: &[String],
+        cancellation: CancellationToken,
+    ) -> Result<BspCompileOutcome> {
+        crate::bsp::bsp_compile_and_collect_diagnostics_outcome_with_cancellation(
+            config,
+            workspace_root,
+            targets,
+            Some(cancellation),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BazelBuildOrchestrator {
+    inner: Arc<Inner>,
+}
+
+#[derive(Debug)]
+struct Inner {
+    workspace_root: PathBuf,
+    executor: Arc<dyn BazelBuildExecutor>,
+    state: Mutex<State>,
+    wake: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct State {
+    next_id: BazelBuildTaskId,
+    queue: VecDeque<QueuedBuild>,
+    running: Option<RunningBuild>,
+    last: Option<CompletedBuild>,
+}
+
+#[derive(Debug, Clone)]
+struct QueuedBuild {
+    id: BazelBuildTaskId,
+    request: BazelBuildRequest,
+    _queued_at: SystemTime,
+}
+
+#[derive(Debug)]
+struct RunningBuild {
+    id: BazelBuildTaskId,
+    request: BazelBuildRequest,
+    started_at: SystemTime,
+    cancel: CancellationToken,
+}
+
+#[derive(Debug, Clone)]
+struct CompletedBuild {
+    id: BazelBuildTaskId,
+    request: BazelBuildRequest,
+    state: BazelBuildTaskState,
+    _started_at: SystemTime,
+    _finished_at: SystemTime,
+    outcome: Option<BspCompileOutcome>,
+    error: Option<String>,
+}
+
+impl BazelBuildOrchestrator {
+    pub fn new(workspace_root: impl Into<PathBuf>) -> Self {
+        Self::with_executor(workspace_root, Arc::new(DefaultBazelBuildExecutor))
+    }
+
+    pub fn with_executor(
+        workspace_root: impl Into<PathBuf>,
+        executor: Arc<dyn BazelBuildExecutor>,
+    ) -> Self {
+        let inner = Arc::new(Inner {
+            workspace_root: workspace_root.into(),
+            executor,
+            state: Mutex::new(State::default()),
+            wake: Condvar::new(),
+        });
+
+        let for_thread = inner.clone();
+        std::thread::Builder::new()
+            .name("nova-bazel-build-orchestrator".to_string())
+            .spawn(move || worker_loop(for_thread))
+            .expect("failed to spawn nova bazel build orchestrator thread");
+
+        Self { inner }
+    }
+
+    /// Enqueue a Bazel build request.
+    ///
+    /// Like `nova-build`'s orchestrator, the queue is bounded to one: enqueueing a new request
+    /// cancels the running build (if any) and replaces any queued work.
+    pub fn enqueue(&self, request: BazelBuildRequest) -> BazelBuildTaskId {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("bazel orchestrator lock poisoned");
+        state.next_id = state.next_id.wrapping_add(1);
+        let id = state.next_id;
+
+        if let Some(running) = state.running.as_ref() {
+            running.cancel.cancel();
+        }
+        state.queue.clear();
+        state.queue.push_back(QueuedBuild {
+            id,
+            request: request.clone(),
+            _queued_at: SystemTime::now(),
+        });
+        self.inner.wake.notify_all();
+        id
+    }
+
+    pub fn cancel(&self) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("bazel orchestrator lock poisoned");
+        if let Some(running) = state.running.as_ref() {
+            running.cancel.cancel();
+        }
+        state.queue.clear();
+        self.inner.wake.notify_all();
+    }
+
+    pub fn reset(&self) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("bazel orchestrator lock poisoned");
+        if let Some(running) = state.running.as_ref() {
+            running.cancel.cancel();
+        }
+        state.queue.clear();
+        state.last = None;
+        self.inner.wake.notify_all();
+    }
+
+    pub fn status(&self) -> BazelBuildStatusSnapshot {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .expect("bazel orchestrator lock poisoned");
+        let (status, active_id, message) = if let Some(running) = state.running.as_ref() {
+            (
+                BazelBuildTaskState::Running,
+                Some(running.id),
+                Some(running.request.description()),
+            )
+        } else if let Some(next) = state.queue.front() {
+            (
+                BazelBuildTaskState::Queued,
+                Some(next.id),
+                Some(next.request.description()),
+            )
+        } else if let Some(last) = state.last.as_ref() {
+            (last.state, Some(last.id), Some(last.request.description()))
+        } else {
+            (BazelBuildTaskState::Idle, None, None)
+        };
+
+        BazelBuildStatusSnapshot {
+            state: status,
+            active_id,
+            queued: state.queue.len(),
+            last_completed_id: state.last.as_ref().map(|b| b.id),
+            message,
+            last_error: state.last.as_ref().and_then(|b| b.error.clone()),
+        }
+    }
+
+    pub fn diagnostics(&self) -> BazelBuildDiagnosticsSnapshot {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .expect("bazel orchestrator lock poisoned");
+        let status = if state.running.is_some() {
+            BazelBuildTaskState::Running
+        } else if !state.queue.is_empty() {
+            BazelBuildTaskState::Queued
+        } else if let Some(last) = state.last.as_ref() {
+            last.state
+        } else {
+            BazelBuildTaskState::Idle
+        };
+
+        let (build_id, targets, diagnostics, error) = match state.last.as_ref() {
+            Some(last) => (
+                Some(last.id),
+                last.request.targets.clone(),
+                last.outcome
+                    .as_ref()
+                    .map(|o| o.diagnostics.clone())
+                    .unwrap_or_default(),
+                last.error.clone(),
+            ),
+            None => (None, Vec::new(), Vec::new(), None),
+        };
+
+        BazelBuildDiagnosticsSnapshot {
+            build_id,
+            state: status,
+            targets,
+            diagnostics,
+            error,
+        }
+    }
+}
+
+fn worker_loop(inner: Arc<Inner>) {
+    loop {
+        let (id, request) = {
+            let mut state = inner
+                .state
+                .lock()
+                .expect("bazel orchestrator lock poisoned");
+            while state.queue.is_empty() {
+                state = inner
+                    .wake
+                    .wait(state)
+                    .expect("bazel orchestrator lock poisoned");
+            }
+            let Some(queued) = state.queue.pop_front() else {
+                continue;
+            };
+
+            let cancel = CancellationToken::new();
+            let started_at = SystemTime::now();
+            state.running = Some(RunningBuild {
+                id: queued.id,
+                request: queued.request.clone(),
+                started_at,
+                cancel: cancel.clone(),
+            });
+
+            (queued.id, queued.request)
+        };
+
+        let (started_at, cancel) = {
+            let state = inner
+                .state
+                .lock()
+                .expect("bazel orchestrator lock poisoned");
+            let running = state
+                .running
+                .as_ref()
+                .expect("running build should be populated");
+            (running.started_at, running.cancel.clone())
+        };
+
+        let (state, outcome, error) = run_build(&inner, &request, cancel.clone());
+        let finished_at = SystemTime::now();
+
+        let mut shared = inner
+            .state
+            .lock()
+            .expect("bazel orchestrator lock poisoned");
+        shared.running = None;
+        shared.last = Some(CompletedBuild {
+            id,
+            request,
+            state,
+            _started_at: started_at,
+            _finished_at: finished_at,
+            outcome,
+            error,
+        });
+
+        if !shared.queue.is_empty() {
+            inner.wake.notify_all();
+        }
+    }
+}
+
+fn run_build(
+    inner: &Inner,
+    request: &BazelBuildRequest,
+    cancellation: CancellationToken,
+) -> (
+    BazelBuildTaskState,
+    Option<BspCompileOutcome>,
+    Option<String>,
+) {
+    if request.targets.is_empty() {
+        return (
+            BazelBuildTaskState::Failure,
+            None,
+            Some("no targets provided".to_string()),
+        );
+    }
+
+    let Some(config) = request.bsp_config.as_ref() else {
+        return (
+            BazelBuildTaskState::Failure,
+            None,
+            Some("BSP not configured (set NOVA_BSP_PROGRAM)".to_string()),
+        );
+    };
+
+    let result = inner.executor.compile(
+        config,
+        &inner.workspace_root,
+        &request.targets,
+        cancellation.clone(),
+    );
+
+    match result {
+        Ok(outcome) => {
+            let state = if cancellation.is_cancelled() {
+                BazelBuildTaskState::Cancelled
+            } else {
+                match outcome.status_code {
+                    3 => BazelBuildTaskState::Cancelled,
+                    2 => BazelBuildTaskState::Failure,
+                    _ => BazelBuildTaskState::Success,
+                }
+            };
+            (state, Some(outcome), None)
+        }
+        Err(err) => {
+            if cancellation.is_cancelled() {
+                return (
+                    BazelBuildTaskState::Cancelled,
+                    None,
+                    Some("cancelled".to_string()),
+                );
+            }
+            (BazelBuildTaskState::Failure, None, Some(err.to_string()))
+        }
+    }
+}

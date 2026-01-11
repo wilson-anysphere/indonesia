@@ -9,6 +9,7 @@ pub mod test;
 pub mod web;
 
 use nova_build::{BuildManager, CommandRunner, DefaultCommandRunner};
+use nova_cache::{CacheConfig, CacheDir};
 use nova_scheduler::CancellationToken;
 use std::{
     io,
@@ -56,7 +57,9 @@ fn build_manager_for_root_with_cancel(
     timeout: Duration,
     cancellation: Option<CancellationToken>,
 ) -> BuildManager {
-    let cache_dir = project_root.join(".nova").join("build-cache");
+    let cache_dir = CacheDir::new(project_root, CacheConfig::from_env())
+        .map(|dir| dir.root().join("build"))
+        .unwrap_or_else(|_| project_root.join(".nova").join("build-cache"));
     let deadline = Instant::now() + timeout;
     let runner: Arc<dyn CommandRunner> = Arc::new(DeadlineCommandRunner {
         deadline,

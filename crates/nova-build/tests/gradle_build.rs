@@ -83,6 +83,7 @@ fn output(code: i32, stdout: &str, stderr: &str) -> CommandOutput {
         status: exit_status(code),
         stdout: stdout.to_string(),
         stderr: stderr.to_string(),
+        truncated: false,
     }
 }
 

@@ -121,6 +121,7 @@ fn maven_classpath_uses_wrapper_and_caches_result() {
         status: success_status(),
         stdout,
         stderr,
+        truncated: false,
     }));
 
     let cache_dir = tmp.path().join("cache");
@@ -165,6 +166,7 @@ fn gradle_classpath_caches_result() {
         status: success_status(),
         stdout,
         stderr: String::new(),
+        truncated: false,
     }));
 
     let cache_dir = tmp.path().join("cache");
@@ -239,6 +241,7 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
             status: success_status(),
             stdout: format!("NOVA_PROJECTS_BEGIN\n{projects}\nNOVA_PROJECTS_END\n"),
             stderr: String::new(),
+            truncated: false,
         },
     );
     outputs.insert(
@@ -247,6 +250,7 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
             status: success_status(),
             stdout: format!("NOVA_JSON_BEGIN\n{root_payload}\nNOVA_JSON_END\n"),
             stderr: String::new(),
+            truncated: false,
         },
     );
     outputs.insert(
@@ -255,6 +259,7 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
             status: success_status(),
             stdout: format!("NOVA_JSON_BEGIN\n{app_payload}\nNOVA_JSON_END\n"),
             stderr: String::new(),
+            truncated: false,
         },
     );
     outputs.insert(
@@ -263,6 +268,7 @@ fn gradle_classpath_unions_subprojects_when_root_has_no_compile_classpath() {
             status: success_status(),
             stdout: format!("NOVA_JSON_BEGIN\n{lib_payload}\nNOVA_JSON_END\n"),
             stderr: String::new(),
+            truncated: false,
         },
     );
 

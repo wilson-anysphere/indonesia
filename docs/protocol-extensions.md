@@ -232,7 +232,8 @@ Unless stated otherwise:
   "projectRoot": "/absolute/path/to/workspace",
   "buildTool": "auto",
   "module": null,
-  "projectPath": null
+  "projectPath": null,
+  "target": null
 }
 ```
 
@@ -242,11 +243,15 @@ Notes:
 - `buildTool` also accepts the legacy alias `kind`.
 - For Maven multi-module projects, `module` is a path relative to `projectRoot`.
 - For Gradle, `projectPath` is the Gradle path (e.g. `":app"`).
+- For Bazel workspaces, `target` is required and should be a Bazel label (e.g. `"//app:lib"`).
 
 #### Response
 
 ```json
 {
+  "schemaVersion": 1,
+  "buildId": 123,
+  "status": "queued",
   "diagnostics": [
     {
       "file": "/absolute/path/to/Foo.java",
@@ -258,6 +263,12 @@ Notes:
   ]
 }
 ```
+
+Notes:
+
+- `buildProject` enqueues a background build and returns immediately.
+- `diagnostics` contains the **last known** diagnostics. Clients should poll `nova/build/status` and
+  `nova/build/diagnostics` to observe the build completion and retrieve updated diagnostics.
 
 ---
 
@@ -530,10 +541,19 @@ Notes:
 #### Response
 
 ```json
-{ "status": "idle" }
+{
+  "schemaVersion": 1,
+  "status": "idle",
+  "buildId": null,
+  "queued": 0,
+  "message": null,
+  "lastError": null
+}
 ```
 
-Status values are `snake_case`: `"idle" | "building" | "failed"`.
+Status values are `snake_case`:
+
+`"idle" | "queued" | "running" | "success" | "failure" | "cancelled"`.
 
 ---
 
@@ -558,15 +578,20 @@ Status values are `snake_case`: `"idle" | "building" | "failed"`.
 
 ```json
 {
+  "schemaVersion": 1,
   "target": null,
+  "status": "idle",
+  "buildId": null,
   "diagnostics": [],
-  "source": null
+  "source": null,
+  "error": null
 }
 ```
 
 Notes:
 
-- For Bazel projects the endpoint returns diagnostics sourced via BSP when configured (see `NOVA_BSP_PROGRAM`).
+- For Bazel projects diagnostics are sourced via BSP when configured (see `NOVA_BSP_PROGRAM`).
+- `status` indicates the state of the background build task (if one has been enqueued).
 
 ---
 

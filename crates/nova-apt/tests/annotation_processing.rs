@@ -54,6 +54,7 @@ impl AptBuildExecutor for RecordingBuildExecutor {
             });
         Ok(BuildResult {
             diagnostics: Vec::new(),
+            ..Default::default()
         })
     }
 
@@ -72,6 +73,7 @@ impl AptBuildExecutor for RecordingBuildExecutor {
             });
         Ok(BuildResult {
             diagnostics: Vec::new(),
+            ..Default::default()
         })
     }
 
@@ -84,6 +86,7 @@ impl AptBuildExecutor for RecordingBuildExecutor {
             });
         Ok(BuildResult {
             diagnostics: Vec::new(),
+            ..Default::default()
         })
     }
 }

@@ -124,6 +124,7 @@ impl MavenBuild {
                 code: output.status.code(),
                 stdout: output.stdout,
                 stderr: output.stderr,
+                output_truncated: output.truncated,
             });
         }
 
@@ -368,6 +369,7 @@ impl MavenBuild {
             MavenBuildGoal::TestCompile => &self.config.test_build_args,
         };
         let (program, args, output) = self.run(project_root, module_relative, goal_args)?;
+        let command = format_command(&program, &args);
         let combined = output.combined();
         let diagnostics = crate::parse_javac_diagnostics(&combined, "maven");
 
@@ -387,15 +389,24 @@ impl MavenBuild {
         )?;
 
         if output.status.success() || !diagnostics.is_empty() {
-            return Ok(BuildResult { diagnostics });
+            return Ok(BuildResult {
+                diagnostics,
+                tool: Some("maven".to_string()),
+                command: Some(command),
+                exit_code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+                output_truncated: output.truncated,
+            });
         }
 
         Err(BuildError::CommandFailed {
             tool: "maven",
-            command: format_command(&program, &args),
+            command,
             code: output.status.code(),
             stdout: output.stdout,
             stderr: output.stderr,
+            output_truncated: output.truncated,
         })
     }
 
@@ -441,6 +452,7 @@ impl MavenBuild {
                 code: output.status.code(),
                 stdout: output.stdout,
                 stderr: output.stderr,
+                output_truncated: output.truncated,
             });
         }
 
@@ -573,6 +585,7 @@ impl MavenBuild {
                 code: output.status.code(),
                 stdout: output.stdout,
                 stderr: output.stderr,
+                output_truncated: output.truncated,
             });
         }
         Ok(output.combined())

@@ -9,6 +9,7 @@
 use crate::aquery::JavaCompileInfo;
 use anyhow::{anyhow, Context, Result};
 use nova_core::{file_uri_to_path, AbsPathBuf, Diagnostic as NovaDiagnostic};
+use nova_process::CancellationToken;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -44,8 +45,64 @@ pub fn bsp_compile_and_collect_diagnostics(
     workspace_root: &Path,
     targets: &[String],
 ) -> Result<Vec<PublishDiagnosticsParams>> {
+    let (_, publish) = bsp_compile_raw_with_cancellation(config, workspace_root, targets, None)?;
+    Ok(publish)
+}
+
+/// Like [`bsp_compile_and_collect_diagnostics`], but supports best-effort cancellation.
+///
+/// Cancellation is implemented by killing the BSP server process tree. This is coarse-grained but
+/// ensures long-running builds do not hang the Nova process indefinitely.
+pub fn bsp_compile_and_collect_diagnostics_with_cancellation(
+    config: &BazelBspConfig,
+    workspace_root: &Path,
+    targets: &[String],
+    cancellation: Option<CancellationToken>,
+) -> Result<Vec<PublishDiagnosticsParams>> {
+    let (_, publish) =
+        bsp_compile_raw_with_cancellation(config, workspace_root, targets, cancellation)?;
+    Ok(publish)
+}
+
+/// Spawn a BSP server, compile the requested targets, and return a compile outcome
+/// (status code + mapped diagnostics).
+pub fn bsp_compile_and_collect_diagnostics_outcome(
+    config: &BazelBspConfig,
+    workspace_root: &Path,
+    targets: &[String],
+) -> Result<BspCompileOutcome> {
+    bsp_compile_and_collect_diagnostics_outcome_with_cancellation(
+        config,
+        workspace_root,
+        targets,
+        None,
+    )
+}
+
+/// Like [`bsp_compile_and_collect_diagnostics_outcome`], but supports best-effort cancellation.
+pub fn bsp_compile_and_collect_diagnostics_outcome_with_cancellation(
+    config: &BazelBspConfig,
+    workspace_root: &Path,
+    targets: &[String],
+    cancellation: Option<CancellationToken>,
+) -> Result<BspCompileOutcome> {
+    let (status_code, publish) =
+        bsp_compile_raw_with_cancellation(config, workspace_root, targets, cancellation)?;
+    let diagnostics = bsp_publish_diagnostics_to_nova_diagnostics(&publish);
+    Ok(BspCompileOutcome {
+        status_code,
+        diagnostics,
+    })
+}
+
+fn bsp_compile_raw_with_cancellation(
+    config: &BazelBspConfig,
+    workspace_root: &Path,
+    targets: &[String],
+    cancellation: Option<CancellationToken>,
+) -> Result<(i32, Vec<PublishDiagnosticsParams>)> {
     if targets.is_empty() {
-        return Ok(Vec::new());
+        return Ok((0, Vec::new()));
     }
 
     let root_abs = nova_core::AbsPathBuf::canonicalize(workspace_root).with_context(|| {
@@ -65,37 +122,66 @@ pub fn bsp_compile_and_collect_diagnostics(
         Duration::from_secs(300),
     )?;
 
+    // Best-effort cancellation: kill the BSP process tree when the token is cancelled.
+    let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
+    let cancel_handle = match (cancellation.clone(), client.child_pid()) {
+        (Some(token), Some(pid)) => Some(thread::spawn(move || {
+            let poll = Duration::from_millis(50);
+            loop {
+                if token.is_cancelled() {
+                    crate::command::kill_process_tree_by_pid(pid);
+                    break;
+                }
+                match cancel_rx.recv_timeout(poll) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                }
+            }
+        })),
+        _ => None,
+    };
+
     // Initialize the BSP session.
-    let _init_result = client.initialize(InitializeBuildParams {
-        display_name: "nova".to_string(),
-        version: nova_core::NOVA_VERSION.to_string(),
-        bsp_version: "2.1.0".to_string(),
-        root_uri,
-        capabilities: ClientCapabilities {
-            language_ids: vec!["java".to_string()],
-        },
-        data: None,
-    })?;
-    client.initialized()?;
+    let result = (|| -> Result<(i32, Vec<PublishDiagnosticsParams>)> {
+        let _init_result = client.initialize(InitializeBuildParams {
+            display_name: "nova".to_string(),
+            version: nova_core::NOVA_VERSION.to_string(),
+            bsp_version: "2.1.0".to_string(),
+            root_uri,
+            capabilities: ClientCapabilities {
+                language_ids: vec!["java".to_string()],
+            },
+            data: None,
+        })?;
+        client.initialized()?;
 
-    // Optional discovery step: fetch targets so we can resolve "labels" (or display names) to
-    // actual BSP build target identifiers.
-    let build_targets = client.build_targets().ok();
+        // Optional discovery step: fetch targets so we can resolve "labels" (or display names) to
+        // actual BSP build target identifiers.
+        let build_targets = client.build_targets().ok();
 
-    let resolved_targets: Vec<BuildTargetIdentifier> = targets
-        .iter()
-        .map(|requested| resolve_build_target_identifier(requested, build_targets.as_ref()))
-        .collect();
+        let resolved_targets: Vec<BuildTargetIdentifier> = targets
+            .iter()
+            .map(|requested| resolve_build_target_identifier(requested, build_targets.as_ref()))
+            .collect();
 
-    let _compile_result = client.compile(CompileParams {
-        targets: resolved_targets,
-    })?;
+        let compile_result = client.compile(CompileParams {
+            targets: resolved_targets,
+        })?;
 
-    // Best-effort graceful shutdown. Servers may still send final diagnostics while responding.
-    let _ = client.shutdown();
-    let _ = client.exit();
+        // Best-effort graceful shutdown. Servers may still send final diagnostics while responding.
+        let _ = client.shutdown();
+        let _ = client.exit();
 
-    Ok(client.drain_diagnostics())
+        Ok((compile_result.status_code, client.drain_diagnostics()))
+    })();
+
+    // Stop the cancellation thread now that the BSP server has exited (or we've given up).
+    let _ = cancel_tx.send(());
+    if let Some(handle) = cancel_handle {
+        let _ = handle.join();
+    }
+
+    result
 }
 
 /// Convert BSP published diagnostics into Nova diagnostics.
@@ -184,6 +270,10 @@ impl BspClient {
         timeout: Duration,
     ) -> Result<Self> {
         Self::spawn_in_dir_inner(program, args, cwd, Some(timeout))
+    }
+
+    pub fn child_pid(&self) -> Option<u32> {
+        self.child.as_ref().map(|child| child.id())
     }
 
     fn spawn_in_dir_inner(

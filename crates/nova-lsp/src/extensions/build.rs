@@ -1,16 +1,167 @@
 use crate::{NovaLspError, Result};
-use nova_build::{BuildError, BuildManager, BuildResult, Classpath, JavaCompileConfig};
+use nova_build::{
+    BuildDiagnosticsSnapshot, BuildError, BuildManager, BuildOrchestrator, BuildRequest,
+    BuildStatusSnapshot, BuildTaskState, Classpath, JavaCompileConfig,
+};
+use nova_build_bazel::{
+    BazelBspConfig, BazelBuildDiagnosticsSnapshot, BazelBuildOrchestrator, BazelBuildRequest,
+    BazelBuildStatusSnapshot, BazelBuildTaskState,
+};
 use nova_cache::{CacheConfig, CacheDir};
 use nova_project::{load_project_with_options, LoadOptions};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
+    collections::HashMap,
     env,
     path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
     time::Duration,
 };
 
 use super::config::{load_workspace_config, load_workspace_config_with_path};
+
+fn build_orchestrators() -> &'static Mutex<HashMap<PathBuf, BuildOrchestrator>> {
+    static ORCHESTRATORS: OnceLock<Mutex<HashMap<PathBuf, BuildOrchestrator>>> = OnceLock::new();
+    ORCHESTRATORS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn bazel_build_orchestrators() -> &'static Mutex<HashMap<PathBuf, BazelBuildOrchestrator>> {
+    static ORCHESTRATORS: OnceLock<Mutex<HashMap<PathBuf, BazelBuildOrchestrator>>> =
+        OnceLock::new();
+    ORCHESTRATORS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn build_orchestrator_if_present(project_root: &Path) -> Option<BuildOrchestrator> {
+    let canonical = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let map = build_orchestrators()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    map.get(&canonical).cloned()
+}
+
+fn bazel_build_orchestrator_if_present(workspace_root: &Path) -> Option<BazelBuildOrchestrator> {
+    let canonical = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let map = bazel_build_orchestrators()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    map.get(&canonical).cloned()
+}
+
+fn build_orchestrator_for_root(project_root: &Path) -> BuildOrchestrator {
+    let canonical = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+
+    {
+        let map = build_orchestrators()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(existing) = map.get(&canonical) {
+            return existing.clone();
+        }
+    }
+
+    let cache_dir = CacheDir::new(&canonical, CacheConfig::from_env())
+        .map(|dir| dir.root().join("build"))
+        .unwrap_or_else(|_| canonical.join(".nova").join("build-cache"));
+    let orchestrator = BuildOrchestrator::new(canonical.clone(), cache_dir);
+
+    let mut map = build_orchestrators()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    map.entry(canonical).or_insert_with(|| orchestrator.clone());
+    orchestrator
+}
+
+fn bazel_build_orchestrator_for_root(workspace_root: &Path) -> BazelBuildOrchestrator {
+    let canonical = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+
+    {
+        let map = bazel_build_orchestrators()
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        if let Some(existing) = map.get(&canonical) {
+            return existing.clone();
+        }
+    }
+
+    let orchestrator = BazelBuildOrchestrator::new(canonical.clone());
+
+    let mut map = bazel_build_orchestrators()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner());
+    map.entry(canonical).or_insert_with(|| orchestrator.clone());
+    orchestrator
+}
+
+fn reset_build_orchestrator(project_root: &Path) {
+    if let Some(orchestrator) = build_orchestrator_if_present(project_root) {
+        orchestrator.reset();
+    }
+}
+
+fn reset_bazel_build_orchestrator(workspace_root: &Path) {
+    if let Some(orchestrator) = bazel_build_orchestrator_if_present(workspace_root) {
+        orchestrator.reset();
+    }
+}
+
+fn bazel_bsp_config_from_env() -> Result<Option<BazelBspConfig>> {
+    // BSP configuration discovery (env-based).
+    //
+    // - NOVA_BSP_PROGRAM: launcher executable (e.g. `bsp4bazel`)
+    // - NOVA_BSP_ARGS: optional args, either:
+    //     - JSON array (e.g. `["--arg1","--arg2"]`)
+    //     - whitespace-separated string (quotes are not interpreted)
+    let Some(program) = env::var("NOVA_BSP_PROGRAM")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+
+    let args = match env::var("NOVA_BSP_ARGS") {
+        Ok(raw) => {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                Vec::new()
+            } else if raw.starts_with('[') {
+                serde_json::from_str::<Vec<String>>(raw).map_err(|err| {
+                    NovaLspError::Internal(format!("invalid NOVA_BSP_ARGS JSON array: {err}"))
+                })?
+            } else {
+                raw.split_whitespace().map(|s| s.to_string()).collect()
+            }
+        }
+        Err(env::VarError::NotPresent) => Vec::new(),
+        Err(err) => {
+            return Err(NovaLspError::Internal(format!(
+                "failed to read NOVA_BSP_ARGS: {err}"
+            )));
+        }
+    };
+
+    Ok(Some(BazelBspConfig { program, args }))
+}
+
+fn map_bazel_task_state(state: BazelBuildTaskState) -> BuildTaskState {
+    match state {
+        BazelBuildTaskState::Idle => BuildTaskState::Idle,
+        BazelBuildTaskState::Queued => BuildTaskState::Queued,
+        BazelBuildTaskState::Running => BuildTaskState::Running,
+        BazelBuildTaskState::Success => BuildTaskState::Success,
+        BazelBuildTaskState::Failure => BuildTaskState::Failure,
+        BazelBuildTaskState::Cancelled => BuildTaskState::Cancelled,
+    }
+}
 
 /// Parameters accepted by Nova's build-related extension requests.
 ///
@@ -38,6 +189,10 @@ pub struct NovaProjectParams {
     /// For Gradle projects, a Gradle project path (e.g. `:app`).
     #[serde(default, alias = "project_path")]
     pub project_path: Option<String>,
+
+    /// For Bazel workspaces, the target (Bazel label) to build.
+    #[serde(default)]
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -89,8 +244,15 @@ pub struct OutputDirs {
     pub test: Vec<String>,
 }
 
+pub const BUILD_PROJECT_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NovaBuildProjectResponse {
+    pub schema_version: u32,
+    pub build_id: u64,
+    pub status: BuildTaskState,
+    #[serde(default)]
     pub diagnostics: Vec<NovaDiagnostic>,
 }
 
@@ -155,11 +317,89 @@ impl From<nova_core::Diagnostic> for NovaDiagnostic {
 
 pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Value> {
     let params = parse_params(params)?;
-    let project_root = PathBuf::from(&params.project_root);
-    let manager = super::build_manager_for_root(&project_root, Duration::from_secs(120));
-    let result = run_build(&manager, &params)?;
+    if params.project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+
+    let requested_root = PathBuf::from(&params.project_root);
+    let project_root = requested_root
+        .canonicalize()
+        .unwrap_or_else(|_| requested_root.clone());
+
+    let allow_bazel = matches!(params.build_tool, None | Some(BuildTool::Auto));
+    let bazel_workspace_root = allow_bazel
+        .then(|| nova_project::bazel_workspace_root(&project_root))
+        .flatten();
+    let bazel_target = params
+        .target
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+
+    if let (Some(workspace_root), Some(target)) = (&bazel_workspace_root, &bazel_target) {
+        let bsp_config = bazel_bsp_config_from_env()?;
+
+        let orchestrator = bazel_build_orchestrator_for_root(workspace_root);
+        let build_id = orchestrator.enqueue(BazelBuildRequest {
+            targets: vec![target.clone()],
+            bsp_config,
+        });
+
+        let status = orchestrator.status();
+        let diagnostics = orchestrator.diagnostics();
+
+        let resp = NovaBuildProjectResponse {
+            schema_version: BUILD_PROJECT_SCHEMA_VERSION,
+            build_id,
+            status: map_bazel_task_state(status.state),
+            diagnostics: diagnostics
+                .diagnostics
+                .into_iter()
+                .map(NovaDiagnostic::from)
+                .collect(),
+        };
+        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+    }
+
+    let kind = match detect_kind(&project_root, params.build_tool) {
+        Ok(kind) => kind,
+        Err(err)
+            if bazel_workspace_root.is_some()
+                && bazel_target.is_none()
+                && matches!(params.build_tool, None | Some(BuildTool::Auto)) =>
+        {
+            return Err(NovaLspError::InvalidParams(
+                "`target` must be provided for Bazel projects".to_string(),
+            ));
+        }
+        Err(err) => return Err(err),
+    };
+    let request = match kind {
+        BuildKind::Maven => BuildRequest::Maven {
+            module_relative: normalize_maven_module_relative(params.module.as_deref())
+                .map(|p| p.to_path_buf()),
+            goal: nova_build::MavenBuildGoal::Compile,
+        },
+        BuildKind::Gradle => BuildRequest::Gradle {
+            project_path: normalize_gradle_project_path(params.project_path.as_deref())
+                .map(|p| p.into_owned()),
+            task: nova_build::GradleBuildTask::CompileJava,
+        },
+    };
+
+    let orchestrator = build_orchestrator_for_root(&project_root);
+    let build_id = orchestrator.enqueue(request);
+    let status = orchestrator.status();
+    let diagnostics = orchestrator.diagnostics();
+
     let resp = NovaBuildProjectResponse {
-        diagnostics: result
+        schema_version: BUILD_PROJECT_SCHEMA_VERSION,
+        build_id,
+        status: status.state,
+        diagnostics: diagnostics
             .diagnostics
             .into_iter()
             .map(NovaDiagnostic::from)
@@ -254,7 +494,27 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
 
 pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Value> {
     let params = parse_params(params)?;
-    let project_root = PathBuf::from(&params.project_root);
+    if params.project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+
+    let requested_root = PathBuf::from(&params.project_root);
+    let project_root = requested_root
+        .canonicalize()
+        .unwrap_or_else(|_| requested_root.clone());
+
+    reset_build_orchestrator(&project_root);
+    if let Some(workspace_root) = nova_project::bazel_workspace_root(&project_root) {
+        reset_bazel_build_orchestrator(&workspace_root);
+
+        if let Ok(cache_dir) = CacheDir::new(&workspace_root, CacheConfig::from_env()) {
+            let cache_path = cache_dir.queries_dir().join("bazel.json");
+            let _ = std::fs::remove_file(cache_path);
+        }
+    }
+
     let manager = super::build_manager_for_root(&project_root, Duration::from_secs(60));
     manager
         .reload_project(&project_root)
@@ -264,24 +524,6 @@ pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Va
 
 fn parse_params(value: serde_json::Value) -> Result<NovaProjectParams> {
     serde_json::from_value(value).map_err(|err| NovaLspError::InvalidParams(err.to_string()))
-}
-
-fn run_build(build: &BuildManager, params: &NovaProjectParams) -> Result<BuildResult> {
-    let root = PathBuf::from(&params.project_root);
-    match detect_kind(&root, params.build_tool)? {
-        BuildKind::Maven => build
-            .build_maven(
-                &root,
-                normalize_maven_module_relative(params.module.as_deref()),
-            )
-            .map_err(map_build_error),
-        BuildKind::Gradle => build
-            .build_gradle(
-                &root,
-                normalize_gradle_project_path(params.project_path.as_deref()).as_deref(),
-            )
-            .map_err(map_build_error),
-    }
 }
 
 fn run_classpath(build: &BuildManager, params: &NovaProjectParams) -> Result<Classpath> {
@@ -1155,28 +1397,100 @@ pub struct BuildStatusParams {
     pub project_root: String,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BuildStatus {
-    Idle,
-    Building,
-    Failed,
-}
+pub const BUILD_STATUS_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildStatusResult {
-    pub status: BuildStatus,
+    pub schema_version: u32,
+    pub status: BuildTaskState,
+    #[serde(default)]
+    pub build_id: Option<u64>,
+    #[serde(default)]
+    pub queued: usize,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 pub fn handle_build_status(params: serde_json::Value) -> Result<serde_json::Value> {
-    let _req: BuildStatusParams = serde_json::from_value(params)
+    let req: BuildStatusParams = serde_json::from_value(params)
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
-    serde_json::to_value(BuildStatusResult {
-        status: BuildStatus::Idle,
-    })
-    .map_err(|err| NovaLspError::Internal(err.to_string()))
+    if req.project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+
+    let requested_root = PathBuf::from(&req.project_root);
+    let requested_root = requested_root
+        .canonicalize()
+        .unwrap_or_else(|_| requested_root.clone());
+
+    let snapshot = build_orchestrator_if_present(&requested_root).map(|o| o.status());
+    if let Some(BuildStatusSnapshot {
+        state,
+        active_id,
+        queued,
+        last_completed_id,
+        message,
+        last_error,
+    }) = snapshot
+    {
+        let resp = BuildStatusResult {
+            schema_version: BUILD_STATUS_SCHEMA_VERSION,
+            status: state,
+            build_id: active_id.or(last_completed_id),
+            queued,
+            message,
+            last_error,
+        };
+        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+    }
+
+    if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
+        let snapshot = bazel_build_orchestrator_if_present(&workspace_root).map(|o| o.status());
+        let resp = match snapshot {
+            Some(BazelBuildStatusSnapshot {
+                state,
+                active_id,
+                queued,
+                last_completed_id,
+                message,
+                last_error,
+            }) => BuildStatusResult {
+                schema_version: BUILD_STATUS_SCHEMA_VERSION,
+                status: map_bazel_task_state(state),
+                build_id: active_id.or(last_completed_id),
+                queued,
+                message,
+                last_error,
+            },
+            None => BuildStatusResult {
+                schema_version: BUILD_STATUS_SCHEMA_VERSION,
+                status: BuildTaskState::Idle,
+                build_id: None,
+                queued: 0,
+                message: None,
+                last_error: None,
+            },
+        };
+
+        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+    }
+
+    let resp = BuildStatusResult {
+        schema_version: BUILD_STATUS_SCHEMA_VERSION,
+        status: BuildTaskState::Idle,
+        build_id: None,
+        queued: 0,
+        message: None,
+        last_error: None,
+    };
+
+    serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1188,137 +1502,103 @@ pub struct BuildDiagnosticsParams {
     pub target: Option<String>,
 }
 
+pub const BUILD_DIAGNOSTICS_SCHEMA_VERSION: u32 = 1;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildDiagnosticsResult {
+    pub schema_version: u32,
     #[serde(default)]
     pub target: Option<String>,
+    pub status: BuildTaskState,
+    #[serde(default)]
+    pub build_id: Option<u64>,
     #[serde(default)]
     pub diagnostics: Vec<NovaDiagnostic>,
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json::Value> {
     let req: BuildDiagnosticsParams = serde_json::from_value(params)
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
+    if req.project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+
     let requested_root = PathBuf::from(&req.project_root);
     let requested_root = requested_root
         .canonicalize()
         .unwrap_or_else(|_| requested_root.clone());
 
-    if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
-        let Some(target) = req.target.clone() else {
-            // Clients may call this endpoint without selecting a target first. For Bazel workspaces
-            // we currently require an explicit target so we can ask the BSP server to compile it.
-            return serde_json::to_value(BuildDiagnosticsResult {
-                target: None,
-                diagnostics: Vec::new(),
-                source: Some("bazel: missing `target` (Bazel label)".to_string()),
-            })
-            .map_err(|err| NovaLspError::Internal(err.to_string()));
+    let snapshot = build_orchestrator_if_present(&requested_root).map(|o| o.diagnostics());
+    if let Some(BuildDiagnosticsSnapshot {
+        build_id,
+        state,
+        diagnostics,
+        error,
+    }) = snapshot
+    {
+        let resp = BuildDiagnosticsResult {
+            schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
+            target: req.target.clone(),
+            status: state,
+            build_id,
+            diagnostics: diagnostics.into_iter().map(NovaDiagnostic::from).collect(),
+            source: None,
+            error,
         };
-
-        // BSP configuration discovery (env-based).
-        //
-        // - NOVA_BSP_PROGRAM: launcher executable (e.g. `bsp4bazel`)
-        // - NOVA_BSP_ARGS: optional args, either:
-        //     - JSON array (e.g. `["--arg1","--arg2"]`)
-        //     - whitespace-separated string (quotes are not interpreted)
-        let Some(program) = env::var("NOVA_BSP_PROGRAM")
-            .ok()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-        else {
-            return serde_json::to_value(BuildDiagnosticsResult {
-                target: Some(target),
-                diagnostics: Vec::new(),
-                source: Some("bazel: BSP not configured (set NOVA_BSP_PROGRAM)".to_string()),
-            })
-            .map_err(|err| NovaLspError::Internal(err.to_string()));
-        };
-
-        let args = match env::var("NOVA_BSP_ARGS") {
-            Ok(raw) => {
-                let raw = raw.trim();
-                if raw.is_empty() {
-                    Vec::new()
-                } else if raw.starts_with('[') {
-                    match serde_json::from_str::<Vec<String>>(raw) {
-                        Ok(args) => args,
-                        Err(err) => {
-                            return serde_json::to_value(BuildDiagnosticsResult {
-                                target: Some(target),
-                                diagnostics: Vec::new(),
-                                source: Some(format!(
-                                    "bazel: invalid NOVA_BSP_ARGS JSON array: {err}"
-                                )),
-                            })
-                            .map_err(|err| NovaLspError::Internal(err.to_string()));
-                        }
-                    }
-                } else {
-                    raw.split_whitespace().map(|s| s.to_string()).collect()
-                }
-            }
-            Err(env::VarError::NotPresent) => Vec::new(),
-            Err(err) => {
-                return Err(NovaLspError::Internal(format!(
-                    "failed to read NOVA_BSP_ARGS: {err}"
-                )));
-            }
-        };
-
-        let config = nova_build_bazel::BazelBspConfig { program, args };
-        let targets = vec![target.clone()];
-        let publish = match nova_build_bazel::bsp_compile_and_collect_diagnostics(
-            &config,
-            &workspace_root,
-            &targets,
-        ) {
-            Ok(params) => params,
-            Err(err) => {
-                return serde_json::to_value(BuildDiagnosticsResult {
-                    target: Some(target),
-                    diagnostics: Vec::new(),
-                    source: Some(format!("bazel: BSP compile failed: {err}")),
-                })
-                .map_err(|err| NovaLspError::Internal(err.to_string()));
-            }
-        };
-
-        let diagnostics = nova_build_bazel::bsp_publish_diagnostics_to_nova_diagnostics(&publish)
-            .into_iter()
-            .map(NovaDiagnostic::from)
-            .collect();
-
-        return serde_json::to_value(BuildDiagnosticsResult {
-            target: Some(target),
-            diagnostics,
-            source: Some("bsp".to_string()),
-        })
-        .map_err(|err| NovaLspError::Internal(err.to_string()));
+        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
     }
 
-    // Maven/Gradle: run an incremental build and return diagnostics from the build layer.
-    let params = NovaProjectParams {
-        project_root: requested_root.to_string_lossy().to_string(),
-        build_tool: None,
-        module: None,
-        project_path: None,
-    };
-    let manager = super::build_manager_for_root(&requested_root, Duration::from_secs(120));
-    let result = run_build(&manager, &params)?;
+    if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
+        let snapshot =
+            bazel_build_orchestrator_if_present(&workspace_root).map(|o| o.diagnostics());
+        let resp = match snapshot {
+            Some(BazelBuildDiagnosticsSnapshot {
+                build_id,
+                state,
+                targets,
+                diagnostics,
+                error,
+            }) => BuildDiagnosticsResult {
+                schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
+                target: req.target.clone().or_else(|| targets.first().cloned()),
+                status: map_bazel_task_state(state),
+                build_id,
+                diagnostics: diagnostics.into_iter().map(NovaDiagnostic::from).collect(),
+                source: Some("bsp".to_string()),
+                error,
+            },
+            None => BuildDiagnosticsResult {
+                schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
+                target: req.target.clone(),
+                status: BuildTaskState::Idle,
+                build_id: None,
+                diagnostics: Vec::new(),
+                source: None,
+                error: None,
+            },
+        };
+
+        return serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()));
+    }
+
     let resp = BuildDiagnosticsResult {
+        schema_version: BUILD_DIAGNOSTICS_SCHEMA_VERSION,
         target: req.target,
-        diagnostics: result
-            .diagnostics
-            .into_iter()
-            .map(NovaDiagnostic::from)
-            .collect(),
+        status: BuildTaskState::Idle,
+        build_id: None,
+        diagnostics: Vec::new(),
         source: None,
+        error: None,
     };
+
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 

@@ -281,6 +281,12 @@ impl AptBuildExecutor for BuildManager {
         if output.status.success() {
             return Ok(BuildResult {
                 diagnostics: Vec::new(),
+                tool: Some("bazel".to_string()),
+                command: Some(format!("bazel build {target}")),
+                exit_code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+                output_truncated: output.truncated,
             });
         }
 
@@ -290,6 +296,7 @@ impl AptBuildExecutor for BuildManager {
             code: output.status.code(),
             stdout: output.stdout,
             stderr: output.stderr,
+            output_truncated: output.truncated,
         })
     }
 }
@@ -1481,9 +1488,7 @@ impl AptManager {
                 (BuildSystem::Gradle, ModuleBuildAction::Gradle { project_path, task }) => build
                     .build_gradle_task(&self.project.workspace_root, project_path.as_deref(), *task)
                     .map_err(|err| err),
-                _ => Ok(BuildResult {
-                    diagnostics: Vec::new(),
-                }),
+                _ => Ok(BuildResult::default()),
             };
 
             match result {
@@ -1603,6 +1608,7 @@ impl AptManager {
                     progress.event(AptProgressEvent::end());
                     Ok(BuildResult {
                         diagnostics: Vec::new(),
+                        ..Default::default()
                     })
                 }
                 _ => Err(BuildError::Unsupported(
@@ -1632,6 +1638,7 @@ impl AptManager {
             progress.event(AptProgressEvent::end());
             return Ok(BuildResult {
                 diagnostics: Vec::new(),
+                ..Default::default()
             });
         }
 
@@ -1649,13 +1656,17 @@ impl AptManager {
                     .build_gradle(&self.project.workspace_root, project_path.as_deref(), task)?,
                 _ => BuildResult {
                     diagnostics: Vec::new(),
+                    ..Default::default()
                 },
             };
             diagnostics.extend(result.diagnostics);
         }
 
         progress.event(AptProgressEvent::end());
-        Ok(BuildResult { diagnostics })
+        Ok(BuildResult {
+            diagnostics,
+            ..Default::default()
+        })
     }
 }
 

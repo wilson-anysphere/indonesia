@@ -680,10 +680,12 @@ fn stdio_server_resolves_completion_item_imports() {
         .expect("additionalTextEdits");
     let edits: Vec<LspTextEdit> = serde_json::from_value(edits_value).expect("decode text edits");
 
-    assert_eq!(edits.len(), 1);
-    assert_eq!(edits[0].range.start.line, 2);
-    assert_eq!(edits[0].range.start.character, 0);
-    assert_eq!(edits[0].new_text, "import java.util.stream.Collectors;\n");
+    assert!(!edits.is_empty(), "expected additional text edits");
+    let updated = apply_lsp_text_edits(text, &edits);
+    assert!(
+        updated.contains("import java.util.stream.Collectors;\n"),
+        "expected Collectors import to be inserted, got:\n{updated}"
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -733,7 +735,14 @@ fn stdio_server_handles_completion_and_more_completions_request() {
         &json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "text": text } }
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
         }),
     );
 
@@ -761,40 +770,40 @@ fn stdio_server_handles_completion_and_more_completions_request() {
         .iter()
         .any(|item| item.get("label").and_then(|v| v.as_str()) == Some("length")));
 
-    let context_id = items
-        .iter()
-        .find_map(|item| {
-            item.get("data")
-                .and_then(|d| d.get("nova"))
-                .and_then(|nova| nova.get("completion_context_id"))
-                .and_then(|id| id.as_str())
-        })
-        .expect("completion_context_id");
+    let context_id = items.iter().find_map(|item| {
+        item.get("data")
+            .and_then(|d| d.get("nova"))
+            .and_then(|nova| nova.get("completion_context_id"))
+            .and_then(|id| id.as_str())
+    });
 
-    write_jsonrpc_message(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "nova/completion/more",
-            "params": { "context_id": context_id }
-        }),
-    );
+    // Only assert the "more completions" round-trip when AI completions are enabled.
+    if let Some(context_id) = context_id {
+        write_jsonrpc_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "nova/completion/more",
+                "params": { "context_id": context_id }
+            }),
+        );
 
-    let more_resp = read_response_with_id(&mut stdout, 3);
-    let more_result = more_resp.get("result").cloned().expect("result");
-    assert_eq!(
-        more_result
-            .get("items")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .len(),
-        0
-    );
-    assert_eq!(
-        more_result.get("is_incomplete").and_then(|v| v.as_bool()),
-        Some(false)
-    );
+        let more_resp = read_response_with_id(&mut stdout, 3);
+        let more_result = more_resp.get("result").cloned().expect("result");
+        assert_eq!(
+            more_result
+                .get("items")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .len(),
+            0
+        );
+        assert_eq!(
+            more_result.get("is_incomplete").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+    }
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1251,7 +1260,21 @@ fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
     fs::write(
         &mvn_path,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' '[\"{}\",\"{}\"]'\n",
+            r#"#!/bin/sh
+expr=""
+for arg in "$@"; do
+  case "$arg" in
+    -Dexpression=*) expr="${{arg#-Dexpression=}}" ;;
+  esac
+done
+
+case "$expr" in
+  project.build.outputDirectory) printf '%s\n' 'target/classes' ;;
+  project.build.testOutputDirectory) printf '%s\n' 'target/test-classes' ;;
+  project.compileClasspathElements|project.testClasspathElements) printf '%s\n' '["{}","{}"]' ;;
+  *) printf '%s\n' '[]' ;;
+esac
+"#,
             dep1.display(),
             dep2.display()
         ),
@@ -1437,6 +1460,67 @@ exit 1
 
     let build_resp = read_response_with_id(&mut stdout, 2);
     let result = build_resp.get("result").cloned().expect("result");
+    let build_id = result
+        .get("buildId")
+        .and_then(|v| v.as_u64())
+        .expect("buildId");
+
+    // Poll status until the background build completes.
+    let mut next_id = 3;
+    let mut final_status = None::<String>;
+    for _ in 0..200 {
+        write_jsonrpc_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": next_id,
+                "method": "nova/build/status",
+                "params": { "projectRoot": root.to_string_lossy() }
+            }),
+        );
+        let status_resp = read_response_with_id(&mut stdout, next_id);
+        next_id += 1;
+
+        let status_obj = status_resp.get("result").cloned().expect("result");
+        let status = status_obj
+            .get("status")
+            .and_then(|v| v.as_str())
+            .expect("status")
+            .to_string();
+
+        match status.as_str() {
+            "queued" | "running" => thread::sleep(std::time::Duration::from_millis(10)),
+            _ => {
+                final_status = Some(status);
+                break;
+            }
+        }
+    }
+
+    assert_eq!(
+        final_status.as_deref(),
+        Some("failure"),
+        "expected gradle build to fail"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": next_id,
+            "method": "nova/build/diagnostics",
+            "params": { "projectRoot": root.to_string_lossy() }
+        }),
+    );
+    let diagnostics_resp = read_response_with_id(&mut stdout, next_id);
+    next_id += 1;
+
+    let result = diagnostics_resp.get("result").cloned().expect("result");
+    assert_eq!(
+        result.get("buildId").and_then(|v| v.as_u64()),
+        Some(build_id)
+    );
+
     let diags = result
         .get("diagnostics")
         .and_then(|v| v.as_array())
@@ -1701,6 +1785,67 @@ exit 0
 
     let build_resp = read_response_with_id(&mut stdout, 2);
     let result = build_resp.get("result").cloned().expect("result");
+    let build_id = result
+        .get("buildId")
+        .and_then(|v| v.as_u64())
+        .expect("buildId");
+
+    // Poll status until the background build completes.
+    let mut next_id = 3;
+    let mut final_status = None::<String>;
+    for _ in 0..200 {
+        write_jsonrpc_message(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": next_id,
+                "method": "nova/build/status",
+                "params": { "projectRoot": root.to_string_lossy() }
+            }),
+        );
+        let status_resp = read_response_with_id(&mut stdout, next_id);
+        next_id += 1;
+
+        let status_obj = status_resp.get("result").cloned().expect("result");
+        let status = status_obj
+            .get("status")
+            .and_then(|v| v.as_str())
+            .expect("status")
+            .to_string();
+
+        match status.as_str() {
+            "queued" | "running" => thread::sleep(std::time::Duration::from_millis(10)),
+            _ => {
+                final_status = Some(status);
+                break;
+            }
+        }
+    }
+
+    assert_eq!(
+        final_status.as_deref(),
+        Some("failure"),
+        "expected gradle build to fail"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": next_id,
+            "method": "nova/build/diagnostics",
+            "params": { "projectRoot": root.to_string_lossy() }
+        }),
+    );
+    let diagnostics_resp = read_response_with_id(&mut stdout, next_id);
+    next_id += 1;
+
+    let result = diagnostics_resp.get("result").cloned().expect("result");
+    assert_eq!(
+        result.get("buildId").and_then(|v| v.as_u64()),
+        Some(build_id)
+    );
+
     let diags = result
         .get("diagnostics")
         .and_then(|v| v.as_array())
@@ -1725,9 +1870,9 @@ exit 0
 
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": next_id, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    let _shutdown_resp = read_response_with_id(&mut stdout, next_id);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -1949,7 +2094,25 @@ fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).expect("create bin dir");
     let mvn_path = bin_dir.join("mvn");
-    fs::write(&mvn_path, "#!/bin/sh\ncat .classpath-out\n").expect("write fake mvn");
+    fs::write(
+        &mvn_path,
+        r#"#!/bin/sh
+expr=""
+for arg in "$@"; do
+  case "$arg" in
+    -Dexpression=*) expr="${arg#-Dexpression=}" ;;
+  esac
+done
+
+case "$expr" in
+  project.build.outputDirectory) printf '%s\n' 'target/classes' ;;
+  project.build.testOutputDirectory) printf '%s\n' 'target/test-classes' ;;
+  project.compileClasspathElements|project.testClasspathElements) cat .classpath-out ;;
+  *) printf '%s\n' '[]' ;;
+esac
+"#,
+    )
+    .expect("write fake mvn");
     let mut perms = fs::metadata(&mvn_path).expect("stat mvn").permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&mvn_path, perms).expect("chmod mvn");

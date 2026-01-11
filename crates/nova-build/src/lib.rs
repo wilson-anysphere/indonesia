@@ -10,6 +10,7 @@ mod gradle;
 mod javac;
 mod maven;
 mod module_graph;
+mod orchestrator;
 
 pub use cache::{BuildCache, BuildFileFingerprint};
 pub use command::{CommandOutput, CommandRunner, DefaultCommandRunner};
@@ -25,6 +26,10 @@ pub use maven::{
     MavenBuild, MavenConfig,
 };
 pub use module_graph::{infer_module_graph, ModuleBuildInfo, ModuleGraph, ModuleId};
+pub use orchestrator::{
+    BuildDiagnosticsSnapshot, BuildOrchestrator, BuildRequest, BuildStatusSnapshot, BuildTaskId,
+    BuildTaskState, CommandRunnerFactory, DefaultCommandRunnerFactory,
+};
 
 use nova_core::Diagnostic;
 use nova_project::AnnotationProcessing;
@@ -39,7 +44,7 @@ pub enum BuildError {
     Io(#[from] std::io::Error),
 
     #[error(
-        "{tool} command `{command}` failed with exit code {code:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        "{tool} command `{command}` failed with exit code {code:?} (output_truncated={output_truncated})\nstdout:\n{stdout}\nstderr:\n{stderr}"
     )]
     CommandFailed {
         tool: &'static str,
@@ -47,6 +52,7 @@ pub enum BuildError {
         code: Option<i32>,
         stdout: String,
         stderr: String,
+        output_truncated: bool,
     },
 
     #[error("failed to parse build output: {0}")]
@@ -225,9 +231,21 @@ impl JavaCompileConfig {
 }
 
 /// Summary of a build invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BuildResult {
     pub diagnostics: Vec<Diagnostic>,
+    /// Best-effort build tool identifier (e.g. `maven`, `gradle`).
+    pub tool: Option<String>,
+    /// Best-effort rendered command line for the build invocation.
+    pub command: Option<String>,
+    /// Exit code reported by the build tool (when available).
+    pub exit_code: Option<i32>,
+    /// Captured stdout from the build tool invocation (bounded).
+    pub stdout: String,
+    /// Captured stderr from the build tool invocation (bounded).
+    pub stderr: String,
+    /// Indicates stdout/stderr were truncated due to bounded output capture.
+    pub output_truncated: bool,
 }
 
 /// High-level entry point for build integration.

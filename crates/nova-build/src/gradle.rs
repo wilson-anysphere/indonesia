@@ -87,6 +87,7 @@ impl GradleBuild {
                 code: output.status.code(),
                 stdout: output.stdout,
                 stderr: output.stderr,
+                output_truncated: output.truncated,
             });
         }
 
@@ -179,6 +180,7 @@ impl GradleBuild {
                 code: output.status.code(),
                 stdout: output.stdout,
                 stderr: output.stderr,
+                output_truncated: output.truncated,
             });
         }
 
@@ -270,6 +272,7 @@ impl GradleBuild {
         let module_key = project_path.unwrap_or("<root>");
 
         let (program, args, output) = self.run_compile(project_root, project_path, task)?;
+        let command = format_command(&program, &args);
         let combined = output.combined();
         let diagnostics = crate::parse_javac_diagnostics(&combined, "gradle");
 
@@ -289,15 +292,24 @@ impl GradleBuild {
         )?;
 
         if output.status.success() || !diagnostics.is_empty() {
-            return Ok(BuildResult { diagnostics });
+            return Ok(BuildResult {
+                diagnostics,
+                tool: Some("gradle".to_string()),
+                command: Some(command),
+                exit_code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+                output_truncated: output.truncated,
+            });
         }
 
         Err(BuildError::CommandFailed {
             tool: "gradle",
-            command: format_command(&program, &args),
+            command,
             code: output.status.code(),
             stdout: output.stdout,
             stderr: output.stderr,
+            output_truncated: output.truncated,
         })
     }
 
@@ -331,6 +343,7 @@ impl GradleBuild {
                 code: output.status.code(),
                 stdout: output.stdout,
                 stderr: output.stderr,
+                output_truncated: output.truncated,
             });
         }
 

@@ -17,6 +17,9 @@ mod workspace;
 #[cfg(any(test, feature = "bsp"))]
 pub mod bsp;
 
+#[cfg(any(test, feature = "bsp"))]
+mod orchestrator;
+
 #[cfg(feature = "bsp")]
 pub use crate::bsp::{BspClient, BspCompileOutcome, BspServerConfig, BspWorkspace};
 
@@ -38,6 +41,12 @@ pub use crate::{
 pub use crate::bsp::{
     bsp_compile_and_collect_diagnostics, bsp_publish_diagnostics_to_nova_diagnostics,
     BazelBspConfig,
+};
+
+#[cfg(any(test, feature = "bsp"))]
+pub use crate::orchestrator::{
+    BazelBuildDiagnosticsSnapshot, BazelBuildExecutor, BazelBuildOrchestrator, BazelBuildRequest,
+    BazelBuildStatusSnapshot, BazelBuildTaskId, BazelBuildTaskState, DefaultBazelBuildExecutor,
 };
 
 #[cfg(feature = "bsp")]
