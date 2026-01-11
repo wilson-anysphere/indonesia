@@ -154,7 +154,7 @@ fn fmt_type_args(env: &dyn TypeEnv, args: &[Type], f: &mut fmt::Formatter<'_>) -
 
 fn fmt_class_id(env: &dyn TypeEnv, id: ClassId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     let Some(class_def) = env.class(id) else {
-        return write!(f, "<class#{}>", id.0);
+        return write!(f, "<class#{}>", id.to_raw());
     };
     fmt_class_name(&class_def.name, f)
 }
@@ -274,4 +274,3 @@ fn fmt_param_list(env: &dyn TypeEnv, params: &[Type], is_varargs: bool, f: &mut 
 fn is_constructor_name(name: &str) -> bool {
     name == "<init>"
 }
-

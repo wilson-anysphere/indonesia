@@ -5,12 +5,25 @@ use crate::util::rel_path_string;
 use crate::{NovaTestingError, Result, SCHEMA_VERSION};
 use nova_core::{LineIndex, TextSize};
 use nova_project::SourceRootKind;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use tree_sitter::{Node, Parser};
-use walkdir::WalkDir;
+
+mod index;
+use index::TestDiscoveryIndex;
 
 const SKIP_DIRS: &[&str] = &[".git", "target", "build", "out", "node_modules"];
+const MAX_CACHED_WORKSPACES: usize = 8;
+
+struct CacheEntry {
+    last_used: Instant,
+    index: Arc<Mutex<TestDiscoveryIndex>>,
+}
+
+static DISCOVERY_CACHE: OnceLock<Mutex<HashMap<PathBuf, CacheEntry>>> = OnceLock::new();
 
 pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse> {
     if req.project_root.trim().is_empty() {
@@ -43,46 +56,67 @@ pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse>
             .collect();
     }
 
-    let mut tests = Vec::new();
-    for root in roots {
-        tests.extend(discover_tests_in_root(&project_root, &root)?);
-    }
+    let index = get_or_create_index(&project_root, roots);
+    let tests = {
+        let mut index = lock_mutex(index.as_ref());
+        index.refresh()?;
+        index.tests()
+    };
 
-    tests.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(TestDiscoverResponse {
         schema_version: SCHEMA_VERSION,
         tests,
     })
 }
 
-fn discover_tests_in_root(project_root: &Path, root: &Path) -> Result<Vec<TestItem>> {
-    let mut tests = Vec::new();
+fn get_or_create_index(workspace_root: &Path, roots: Vec<PathBuf>) -> Arc<Mutex<TestDiscoveryIndex>> {
+    let cache = DISCOVERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
 
-    for entry in WalkDir::new(root)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|entry| {
-            if entry.depth() == 0 {
-                return true;
-            }
-            let name = entry.file_name().to_string_lossy();
-            !SKIP_DIRS.iter().any(|skip| skip == &name.as_ref())
-        })
-    {
-        let entry = entry.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
+    let mut cache = lock_mutex(cache);
+    if let Some(entry) = cache.get_mut(workspace_root) {
+        entry.last_used = Instant::now();
+        let index = entry.index.clone();
+        drop(cache);
 
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("java") {
-            continue;
-        }
+        let mut idx = lock_mutex(index.as_ref());
+        idx.set_source_roots(roots);
+        drop(idx);
 
-        tests.extend(discover_tests_in_file(project_root, path)?);
+        return index;
     }
 
-    Ok(tests)
+    let index = Arc::new(Mutex::new(TestDiscoveryIndex::new(
+        workspace_root.to_path_buf(),
+        roots,
+    )));
+
+    cache.insert(
+        workspace_root.to_path_buf(),
+        CacheEntry {
+            last_used: Instant::now(),
+            index: index.clone(),
+        },
+    );
+    evict_cache(&mut cache);
+
+    index
+}
+
+fn evict_cache(cache: &mut HashMap<PathBuf, CacheEntry>) {
+    if cache.len() <= MAX_CACHED_WORKSPACES {
+        return;
+    }
+
+    let mut entries: Vec<_> = cache
+        .iter()
+        .map(|(path, entry)| (path.clone(), entry.last_used))
+        .collect();
+    entries.sort_by_key(|(_, used_at)| *used_at);
+
+    let excess = cache.len().saturating_sub(MAX_CACHED_WORKSPACES);
+    for (path, _) in entries.into_iter().take(excess) {
+        cache.remove(&path);
+    }
 }
 
 fn discover_tests_in_file(project_root: &Path, file_path: &Path) -> Result<Vec<TestItem>> {
@@ -591,4 +625,10 @@ fn range_for_node(line_index: &LineIndex, source: &str, node: Node<'_>) -> Range
         start: position_for_offset(line_index, source, node.start_byte()),
         end: position_for_offset(line_index, source, node.end_byte()),
     }
+}
+
+fn lock_mutex<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
