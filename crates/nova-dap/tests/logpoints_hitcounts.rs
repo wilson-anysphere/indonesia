@@ -168,7 +168,7 @@ async fn dap_logpoints_emit_output_without_stopping() {
         "setBreakpoints",
         json!({
             "source": { "path": "Main.java" },
-            "breakpoints": [ { "line": 3, "logMessage": "hello" } ],
+            "breakpoints": [ { "line": 3, "logMessage": "hello {x}" } ],
         }),
     )
     .await;
@@ -178,6 +178,7 @@ async fn dap_logpoints_emit_output_without_stopping() {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     assert!(verified);
+    assert_eq!(jdwp.breakpoint_suspend_policy().await, Some(0));
 
     send_request(&mut writer, 4, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 4).await;

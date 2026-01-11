@@ -945,11 +945,19 @@ impl Debugger {
             )
         };
 
+        let is_logpoint = log_message.is_some();
+
         if let Some(hit_expr) = hit_condition.as_deref() {
             match hit_condition_matches(hit_expr, hit_count) {
                 Ok(true) => {}
                 Ok(false) => return Ok(BreakpointDisposition::Continue),
-                Err(_) => return Ok(BreakpointDisposition::Stop),
+                Err(_) => {
+                    return Ok(if is_logpoint {
+                        BreakpointDisposition::Continue
+                    } else {
+                        BreakpointDisposition::Stop
+                    });
+                }
             }
         }
 
@@ -961,15 +969,47 @@ impl Debugger {
                 .is_some_and(|m| log_message_needs_locals(m));
 
         let locals = if needs_locals {
-            let Some(frame) = self.jdwp.frames(thread, 0, 1).await?.into_iter().next() else {
-                return Ok(BreakpointDisposition::Stop);
+            let frame = match self.jdwp.frames(thread, 0, 1).await {
+                Ok(frames) => frames.into_iter().next(),
+                Err(err) => {
+                    // Logpoints are configured with `SuspendPolicy::NONE`, which means the VM
+                    // may reject frame inspection with `THREAD_NOT_SUSPENDED`. In that case, we
+                    // still want to emit the log message rather than turning the logpoint into a
+                    // stop.
+                    if is_logpoint && !matches!(err, JdwpError::Cancelled) {
+                        None
+                    } else {
+                        return Err(err.into());
+                    }
+                }
             };
-            let frame = FrameHandle {
-                thread,
-                frame_id: frame.frame_id,
-                location: frame.location,
-            };
-            Some(self.locals_values(&frame).await?)
+
+            match frame {
+                Some(frame) => {
+                    let frame = FrameHandle {
+                        thread,
+                        frame_id: frame.frame_id,
+                        location: frame.location,
+                    };
+                    match self.locals_values(&frame).await {
+                        Ok(values) => Some(values),
+                        Err(err) => {
+                            if is_logpoint {
+                                None
+                            } else {
+                                return Err(err);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    if is_logpoint {
+                        None
+                    } else {
+                        return Ok(BreakpointDisposition::Stop);
+                    }
+                }
+            }
         } else {
             None
         };
@@ -978,7 +1018,13 @@ impl Debugger {
             match eval_breakpoint_condition(cond, locals.as_ref()) {
                 Ok(true) => {}
                 Ok(false) => return Ok(BreakpointDisposition::Continue),
-                Err(_) => return Ok(BreakpointDisposition::Stop),
+                Err(_) => {
+                    return Ok(if is_logpoint {
+                        BreakpointDisposition::Continue
+                    } else {
+                        BreakpointDisposition::Stop
+                    });
+                }
             }
         }
 

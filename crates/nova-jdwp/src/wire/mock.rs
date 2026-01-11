@@ -301,6 +301,9 @@ pub struct RedefineClassesCall {
 
 // Use a thread object id with the high bit set so DAP implementations that
 // (correctly) bit-cast `u64 <-> i64` are exercised by integration tests.
+//
+// JDWP error codes (subset).
+const ERROR_THREAD_NOT_SUSPENDED: u16 = 13;
 const THREAD_ID: u64 = 0x8000_0000_0000_1001;
 const WORKER_THREAD_ID: u64 = 0x1002;
 const FRAME_ID: u64 = 0x2001;
@@ -584,14 +587,19 @@ async fn handle_packet(
         }
         // ThreadReference.Frames
         (11, 6) => {
-            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
-            let _start = r.read_i32().unwrap_or(0);
-            let _length = r.read_i32().unwrap_or(0);
-            let mut w = JdwpWriter::new();
-            w.write_u32(1);
-            w.write_id(FRAME_ID, sizes.frame_id);
-            w.write_location(&default_location(), sizes);
-            (0, w.into_vec())
+            if *state.breakpoint_suspend_policy.lock().await == Some(0) {
+                // JDWP `Error.THREAD_NOT_SUSPENDED` (the thread is running, so stack frames are unavailable).
+                (ERROR_THREAD_NOT_SUSPENDED, Vec::new())
+            } else {
+                let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+                let _start = r.read_i32().unwrap_or(0);
+                let _length = r.read_i32().unwrap_or(0);
+                let mut w = JdwpWriter::new();
+                w.write_u32(1);
+                w.write_id(FRAME_ID, sizes.frame_id);
+                w.write_location(&default_location(), sizes);
+                (0, w.into_vec())
+            }
         }
         // ReferenceType.SourceFile
         (2, 7) => {
@@ -780,42 +788,47 @@ async fn handle_packet(
         }
         // StackFrame.GetValues
         (16, 1) => {
-            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
-            let _frame_id = r.read_id(sizes.frame_id).unwrap_or(0);
-            let count = r.read_u32().unwrap_or(0) as usize;
-            let mut slots = Vec::with_capacity(count);
-            for _ in 0..count {
-                let slot = r.read_u32().unwrap_or(0);
-                let tag = r.read_u8().unwrap_or(0);
-                slots.push((slot, tag));
-            }
-            let mut w = JdwpWriter::new();
-            w.write_u32(slots.len() as u32);
-            for (slot, tag) in slots {
-                match (slot, tag) {
-                    (0, b'I') => {
-                        w.write_u8(b'I');
-                        w.write_i32(42);
-                    }
-                    (1, _) => {
-                        w.write_u8(b'L');
-                        w.write_object_id(OBJECT_ID, sizes);
-                    }
-                    (2, _) => {
-                        // String values are tagged as `s` (JDWP Tag.STRING) in replies.
-                        w.write_u8(b's');
-                        w.write_object_id(STRING_OBJECT_ID, sizes);
-                    }
-                    (3, _) => {
-                        w.write_u8(b'[');
-                        w.write_object_id(ARRAY_OBJECT_ID, sizes);
-                    }
-                    _ => {
-                        w.write_u8(b'V');
+            if *state.breakpoint_suspend_policy.lock().await == Some(0) {
+                // JDWP `Error.THREAD_NOT_SUSPENDED` (no suspension means frames/locals are unavailable).
+                (ERROR_THREAD_NOT_SUSPENDED, Vec::new())
+            } else {
+                let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+                let _frame_id = r.read_id(sizes.frame_id).unwrap_or(0);
+                let count = r.read_u32().unwrap_or(0) as usize;
+                let mut slots = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let slot = r.read_u32().unwrap_or(0);
+                    let tag = r.read_u8().unwrap_or(0);
+                    slots.push((slot, tag));
+                }
+                let mut w = JdwpWriter::new();
+                w.write_u32(slots.len() as u32);
+                for (slot, tag) in slots {
+                    match (slot, tag) {
+                        (0, b'I') => {
+                            w.write_u8(b'I');
+                            w.write_i32(42);
+                        }
+                        (1, _) => {
+                            w.write_u8(b'L');
+                            w.write_object_id(OBJECT_ID, sizes);
+                        }
+                        (2, _) => {
+                            // String values are tagged as `s` (JDWP Tag.STRING) in replies.
+                            w.write_u8(b's');
+                            w.write_object_id(STRING_OBJECT_ID, sizes);
+                        }
+                        (3, _) => {
+                            w.write_u8(b'[');
+                            w.write_object_id(ARRAY_OBJECT_ID, sizes);
+                        }
+                        _ => {
+                            w.write_u8(b'V');
+                        }
                     }
                 }
+                (0, w.into_vec())
             }
-            (0, w.into_vec())
         }
         // StackFrame.ThisObject
         (16, 3) => {
@@ -1239,7 +1252,9 @@ async fn handle_packet(
     {
         // After a resume, immediately emit a stop event if a request is configured.
         let breakpoint_request = { *state.breakpoint_request.lock().await };
+        let breakpoint_suspend_policy = { *state.breakpoint_suspend_policy.lock().await };
         let step_request = { *state.step_request.lock().await };
+        let step_suspend_policy = { *state.step_suspend_policy.lock().await };
         let method_exit_request = { *state.method_exit_request.lock().await };
         let exception_request = { *state.exception_request.lock().await };
         let thread_start_request = { *state.thread_start_request.lock().await };
@@ -1281,7 +1296,9 @@ async fn handle_packet(
             state,
             id_sizes,
             breakpoint_request,
+            breakpoint_suspend_policy,
             step_request,
+            step_suspend_policy,
             method_exit_request,
             exception_request,
         ) {
@@ -1362,7 +1379,9 @@ fn make_stop_event_packet(
     state: &State,
     id_sizes: &JdwpIdSizes,
     breakpoint_request: Option<i32>,
+    breakpoint_suspend_policy: Option<u8>,
     step_request: Option<i32>,
+    step_suspend_policy: Option<u8>,
     method_exit_request: Option<i32>,
     exception_request: Option<MockExceptionRequest>,
 ) -> Option<Vec<u8>> {
@@ -1372,7 +1391,7 @@ fn make_stop_event_packet(
         }
 
         let mut w = JdwpWriter::new();
-        w.write_u8(1); // suspend policy: event thread
+        w.write_u8(step_suspend_policy.unwrap_or(1)); // suspend policy
         w.write_u32(2); // event count
 
         // Step event first.
@@ -1425,8 +1444,14 @@ fn make_stop_event_packet(
         return None;
     };
 
+    let suspend_policy = match kind {
+        2 => breakpoint_suspend_policy.unwrap_or(1),
+        1 => step_suspend_policy.unwrap_or(1),
+        _ => 1,
+    };
+
     let mut w = JdwpWriter::new();
-    w.write_u8(1); // suspend policy: event thread
+    w.write_u8(suspend_policy); // suspend policy
     w.write_u32(1); // event count
     w.write_u8(kind);
     w.write_i32(request_id);
