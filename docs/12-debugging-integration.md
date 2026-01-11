@@ -594,6 +594,7 @@ impl NovaDebugAdapter {
 
 1. → [AI Augmentation](13-ai-augmentation.md): ML-powered features
 2. → [Testing Strategy](14-testing-strategy.md): Quality assurance
+3. → [Testing Infrastructure](14-testing-infrastructure.md): How to run tests/CI and update fixtures
 
 ---
 

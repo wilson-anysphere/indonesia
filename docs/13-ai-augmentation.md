@@ -670,4 +670,4 @@ impl NovaServer {
 
 ---
 
-[← Previous: Debugging Integration](12-debugging-integration.md) | [Next: Testing Strategy →](14-testing-strategy.md)
+[← Previous: Debugging Integration](12-debugging-integration.md) | [Testing Strategy](14-testing-strategy.md) | [Next: Testing Infrastructure →](14-testing-infrastructure.md)
