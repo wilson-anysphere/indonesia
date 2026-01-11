@@ -130,8 +130,37 @@ async fn dap_can_stop_on_uncaught_exceptions() {
         Some("exception")
     );
 
-    send_request(&mut writer, 6, "disconnect", json!({})).await;
-    let _disc_resp = read_response(&mut reader, 6).await;
+    send_request(
+        &mut writer,
+        6,
+        "exceptionInfo",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+    let exc_info = read_response(&mut reader, 6).await;
+    assert!(exc_info
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert_eq!(
+        exc_info
+            .pointer("/body/exceptionId")
+            .and_then(|v| v.as_str()),
+        Some("java.lang.RuntimeException")
+    );
+    assert_eq!(
+        exc_info.pointer("/body/breakMode").and_then(|v| v.as_str()),
+        Some("unhandled")
+    );
+    assert_eq!(
+        exc_info
+            .pointer("/body/description")
+            .and_then(|v| v.as_str()),
+        Some("mock string")
+    );
+
+    send_request(&mut writer, 7, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 7).await;
 
     server_task.await.unwrap().unwrap();
 }
