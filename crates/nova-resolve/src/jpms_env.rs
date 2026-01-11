@@ -206,7 +206,7 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use nova_hir::module_info::lower_module_info_source;
+    use nova_hir::module_info::lower_module_info_source_strict;
     use nova_jdk::JdkIndex;
     use nova_project::{BuildSystem, JavaConfig, ProjectConfig};
     use nova_project::{JpmsModuleRoot, Module};
@@ -235,9 +235,9 @@ mod tests {
         std::fs::write(mod_b.join("module-info.java"), src_b).unwrap();
         std::fs::write(mod_c.join("module-info.java"), src_c).unwrap();
 
-        let info_a = lower_module_info_source(src_a).unwrap();
-        let info_b = lower_module_info_source(src_b).unwrap();
-        let info_c = lower_module_info_source(src_c).unwrap();
+        let info_a = lower_module_info_source_strict(src_a).unwrap();
+        let info_b = lower_module_info_source_strict(src_b).unwrap();
+        let info_c = lower_module_info_source_strict(src_c).unwrap();
 
         let ws = ProjectConfig {
             workspace_root: tmp.path().to_path_buf(),

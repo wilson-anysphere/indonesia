@@ -17,9 +17,8 @@ use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::{
-    append_package, resolve_type_with_nesting, Resolution, Resolver, ScopeGraph, ScopeId, ScopeKind,
-};
+use crate::{Resolution, ScopeGraph, ScopeId, ScopeKind};
+use crate::scopes::{append_package, resolve_type_with_nesting};
 
 /// A JPMS-aware wrapper around [`crate::Resolver`].
 ///
@@ -31,7 +30,7 @@ use crate::{
 /// If either side is considered "unnamed" (missing module metadata), the type
 /// is treated as accessible, matching traditional classpath semantics.
 pub struct JpmsResolver<'a> {
-    base: Resolver<'a>,
+    jdk: &'a dyn TypeIndex,
     graph: &'a ModuleGraph,
     classpath: &'a ModuleAwareClasspathIndex,
     from: ModuleName,
@@ -44,9 +43,8 @@ impl<'a> JpmsResolver<'a> {
         classpath: &'a ModuleAwareClasspathIndex,
         from: ModuleName,
     ) -> Self {
-        let base = Resolver::new(jdk).with_classpath(classpath);
         Self {
-            base,
+            jdk,
             graph,
             classpath,
             from,
@@ -82,7 +80,7 @@ impl<'a> JpmsResolver<'a> {
             }
         }
 
-        let ty = resolve_type_with_nesting(self.base.jdk, name)?;
+        let ty = resolve_type_with_nesting(self.jdk, name)?;
         self.type_is_accessible(&ty).then_some(ty)
     }
 
@@ -97,16 +95,18 @@ impl<'a> JpmsResolver<'a> {
             }
         }
 
-        let ty = self.base.jdk.resolve_type_in_package(package, name)?;
+        let ty = self.jdk.resolve_type_in_package(package, name)?;
         self.type_is_accessible(&ty).then_some(ty)
     }
 
     fn package_exists(&self, package: &PackageName) -> bool {
-        self.classpath.package_exists(package) || self.base.jdk.package_exists(package)
+        self.classpath.package_exists(package) || self.jdk.package_exists(package)
     }
 
     fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
-        self.base.resolve_static_member(owner, name)
+        self.classpath
+            .resolve_static_member(owner, name)
+            .or_else(|| self.jdk.resolve_static_member(owner, name))
     }
 
     pub fn resolve_qualified_name(&self, path: &QualifiedName) -> Option<TypeName> {
@@ -169,16 +169,16 @@ impl<'a> JpmsResolver<'a> {
         while let Some(id) = current {
             let data = scopes.scope(id);
 
-            if let Some(value) = data.values.get(name) {
+            if let Some(value) = data.values().get(name) {
                 return Some(value.clone());
             }
 
-            if let Some(ty) = data.types.get(name) {
+            if let Some(ty) = data.types().get(name) {
                 // Types declared in the current file/module are always accessible.
                 return Some(Resolution::Type(ty.clone()));
             }
 
-            match &data.kind {
+            match data.kind() {
                 ScopeKind::Import { imports, .. } => {
                     if let Some(res) = self.resolve_static_imports(imports, name) {
                         return Some(res);
@@ -212,7 +212,7 @@ impl<'a> JpmsResolver<'a> {
                 _ => {}
             }
 
-            current = data.parent;
+            current = data.parent();
         }
         None
     }

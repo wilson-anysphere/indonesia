@@ -117,7 +117,7 @@ fn fingerprint_changes_on_maven_extensions_xml_edit() {
 }
 
 #[test]
-fn fingerprint_changes_on_maven_wrapper_script_edit() {
+fn fingerprint_ignores_maven_wrapper_script_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
     std::fs::create_dir_all(&root).unwrap();
@@ -137,7 +137,7 @@ fn fingerprint_changes_on_maven_wrapper_script_edit() {
     let fp2 =
         BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
 
-    assert_ne!(fp1.digest, fp2.digest);
+    assert_eq!(fp1.digest, fp2.digest);
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn fingerprint_changes_on_gradle_wrapper_edit() {
 }
 
 #[test]
-fn fingerprint_changes_on_gradle_wrapper_script_edit() {
+fn fingerprint_ignores_gradle_wrapper_script_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
     std::fs::create_dir_all(&root).unwrap();
@@ -187,7 +187,7 @@ fn fingerprint_changes_on_gradle_wrapper_script_edit() {
     let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
         .unwrap();
 
-    assert_ne!(fp1.digest, fp2.digest);
+    assert_eq!(fp1.digest, fp2.digest);
 }
 
 #[test]

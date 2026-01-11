@@ -45,6 +45,14 @@ impl ScopeData {
     pub fn kind(&self) -> &ScopeKind {
         &self.kind
     }
+
+    pub(crate) fn values(&self) -> &HashMap<Name, Resolution> {
+        &self.values
+    }
+
+    pub(crate) fn types(&self) -> &HashMap<Name, TypeName> {
+        &self.types
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -290,13 +298,16 @@ impl<'a> Resolver<'a> {
     }
 }
 
-fn append_package(base: &PackageName, name: &Name) -> PackageName {
+pub(crate) fn append_package(base: &PackageName, name: &Name) -> PackageName {
     let mut next = PackageName::from_dotted(&base.to_dotted());
     next.push(name.clone());
     next
 }
 
-fn resolve_type_with_nesting(index: &dyn TypeIndex, name: &QualifiedName) -> Option<TypeName> {
+pub(crate) fn resolve_type_with_nesting(
+    index: &dyn TypeIndex,
+    name: &QualifiedName,
+) -> Option<TypeName> {
     index
         .resolve_type(name)
         .or_else(|| resolve_nested_type(index, name))

@@ -13,7 +13,7 @@ use std::thread;
 use tempfile::TempDir;
 
 mod support;
-use support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
+use support::{read_response_with_id, write_jsonrpc_message};
 
 #[derive(Debug, Clone, Deserialize)]
 struct LspPosition {
