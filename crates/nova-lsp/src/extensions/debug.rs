@@ -136,7 +136,7 @@ impl ProjectHotSwapBuild {
                 match self.compiled_class_for_source(file) {
                     Ok(class) => CompileOutput {
                         file: file.clone(),
-                        result: Ok(class),
+                        result: Ok(vec![class]),
                     },
                     Err(msg) => CompileOutput {
                         file: file.clone(),

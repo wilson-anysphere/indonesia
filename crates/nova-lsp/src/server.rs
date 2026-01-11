@@ -184,10 +184,10 @@ mod tests {
             file.clone(),
             CompileOutput {
                 file: file.clone(),
-                result: Ok(CompiledClass {
+                result: Ok(vec![CompiledClass {
                     class_name: "com.example.A".into(),
                     bytecode: vec![1, 2, 3],
-                }),
+                }]),
             },
         );
 

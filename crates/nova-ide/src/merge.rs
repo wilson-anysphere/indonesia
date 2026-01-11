@@ -59,6 +59,8 @@ mod tests {
             ai_max_additional_edits: 3,
             ai_max_tokens: 64,
             ai_timeout_ms: 5_000,
+            ai_max_concurrent_jobs: 4,
+            ai_session_ttl_ms: 30_000,
         };
 
         let standard = vec![

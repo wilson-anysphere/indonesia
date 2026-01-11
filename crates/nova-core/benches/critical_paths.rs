@@ -3,8 +3,9 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use once_cell::sync::Lazy;
 
-use nova_ide::{filter_and_rank_completions, CompletionItem};
-use nova_index::{ReferenceIndex, ReferenceLocation, Symbol, SymbolSearchIndex};
+use nova_ide::filter_and_rank_completions;
+use nova_core::{CompletionItem, CompletionItemKind};
+use nova_index::{ReferenceIndex, ReferenceLocation, SearchSymbol, SymbolSearchIndex};
 
 static SMALL_JAVA: &str = include_str!("fixtures/small.java");
 static MEDIUM_JAVA: &str = include_str!("fixtures/medium.java");
@@ -46,7 +47,7 @@ static COMPLETION_ITEMS: Lazy<Vec<CompletionItem>> = Lazy::new(|| {
     labels.dedup();
     labels
         .into_iter()
-        .map(|label| CompletionItem { label })
+        .map(|label| CompletionItem::new(label, CompletionItemKind::Other))
         .collect()
 });
 
@@ -57,7 +58,7 @@ static SYMBOL_SEARCH_INDEX: Lazy<SymbolSearchIndex> = Lazy::new(|| {
 
 static REFERENCE_INDEX: Lazy<ReferenceIndex> = Lazy::new(|| generate_reference_index(200, 5));
 
-static SYMBOLS_FOR_INDEX_BUILD: Lazy<Vec<Symbol>> = Lazy::new(|| generate_symbols(5_000));
+static SYMBOLS_FOR_INDEX_BUILD: Lazy<Vec<SearchSymbol>> = Lazy::new(|| generate_symbols(5_000));
 static REFS_FOR_INDEX_BUILD: Lazy<Vec<ReferenceLocation>> =
     Lazy::new(|| generate_references(100, 5));
 
@@ -189,9 +190,9 @@ fn find_references(index: &ReferenceIndex, symbol: &str) -> Vec<ReferenceLocatio
     refs
 }
 
-fn generate_symbols(count: usize) -> Vec<Symbol> {
+fn generate_symbols(count: usize) -> Vec<SearchSymbol> {
     (0..count)
-        .map(|i| Symbol {
+        .map(|i| SearchSymbol {
             name: format!("Class{i}"),
             qualified_name: format!("bench.pkg.Class{i}"),
         })

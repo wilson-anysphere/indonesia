@@ -182,27 +182,7 @@ fn derived_artifact_cache_oversized_payload_is_cache_miss() {
     assert_eq!(loaded, None);
 }
 
-fn bincode_options() -> impl bincode::Options {
-    use bincode::Options;
-
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_little_endian()
-        .with_no_limit()
-}
-
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct PersistedDerivedValueOwned<T> {
-    schema_version: u32,
-    query_schema_version: u32,
-    nova_version: String,
-    saved_at_millis: u64,
-    query_name: String,
-    key_fingerprint: Fingerprint,
-    value: T,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 struct PersistedDerivedValueOwned<T> {
     schema_version: u32,
     query_schema_version: u32,

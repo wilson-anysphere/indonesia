@@ -6,7 +6,7 @@ use nova_index::{
     CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
-use nova_db::{FileId, NovaIndexing, PersistenceConfig, SalsaDatabase};
+use nova_db::{FileId, NovaIndexing, SalsaDatabase};
 use nova_memory::{MemoryBudget, MemoryManager};
 use nova_project::ProjectError;
 use nova_syntax::SyntaxNode;

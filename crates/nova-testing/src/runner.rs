@@ -740,30 +740,30 @@ mod tests {
 
     #[test]
     fn prefers_maven_wrapper_when_present() {
-        let root = TempDir::new("maven-wrapper");
+        let root = TempDir::new().unwrap();
         if cfg!(windows) {
-            std::fs::write(root.path.join("mvnw.bat"), "").unwrap();
-            std::fs::write(root.path.join("mvnw.cmd"), "").unwrap();
+            std::fs::write(root.path().join("mvnw.bat"), "").unwrap();
+            std::fs::write(root.path().join("mvnw.cmd"), "").unwrap();
         } else {
-            std::fs::write(root.path.join("mvnw"), "").unwrap();
+            std::fs::write(root.path().join("mvnw"), "").unwrap();
         }
 
-        let cmd = command_for_tests(&root.path, BuildTool::Maven, None, &[]);
+        let cmd = command_for_tests(root.path(), BuildTool::Maven, None, &[]);
         let expected = if cfg!(windows) { "mvnw.cmd" } else { "./mvnw" };
         assert_eq!(cmd.get_program().to_string_lossy(), expected);
     }
 
     #[test]
     fn prefers_gradle_wrapper_when_present() {
-        let root = TempDir::new("gradle-wrapper");
+        let root = TempDir::new().unwrap();
         if cfg!(windows) {
-            std::fs::write(root.path.join("gradlew.cmd"), "").unwrap();
-            std::fs::write(root.path.join("gradlew.bat"), "").unwrap();
+            std::fs::write(root.path().join("gradlew.cmd"), "").unwrap();
+            std::fs::write(root.path().join("gradlew.bat"), "").unwrap();
         } else {
-            std::fs::write(root.path.join("gradlew"), "").unwrap();
+            std::fs::write(root.path().join("gradlew"), "").unwrap();
         }
 
-        let cmd = command_for_tests(&root.path, BuildTool::Gradle, None, &[]);
+        let cmd = command_for_tests(root.path(), BuildTool::Gradle, None, &[]);
         let expected = if cfg!(windows) {
             "gradlew.bat"
         } else {
@@ -774,16 +774,16 @@ mod tests {
 
     #[test]
     fn constructs_module_scoped_maven_command_with_wrapper() {
-        let root = TempDir::new("maven-wrapper-module");
+        let root = TempDir::new().unwrap();
         if cfg!(windows) {
-            std::fs::write(root.path.join("mvnw.bat"), "").unwrap();
-            std::fs::write(root.path.join("mvnw.cmd"), "").unwrap();
+            std::fs::write(root.path().join("mvnw.bat"), "").unwrap();
+            std::fs::write(root.path().join("mvnw.cmd"), "").unwrap();
         } else {
-            std::fs::write(root.path.join("mvnw"), "").unwrap();
+            std::fs::write(root.path().join("mvnw"), "").unwrap();
         }
 
         let cmd = command_for_tests(
-            &root.path,
+            root.path(),
             BuildTool::Maven,
             Some("service-a"),
             &vec!["com.example.DuplicateTest#ok".to_string()],
@@ -809,16 +809,16 @@ mod tests {
 
     #[test]
     fn constructs_module_scoped_gradle_command_with_wrapper() {
-        let root = TempDir::new("gradle-wrapper-module");
+        let root = TempDir::new().unwrap();
         if cfg!(windows) {
-            std::fs::write(root.path.join("gradlew.cmd"), "").unwrap();
-            std::fs::write(root.path.join("gradlew.bat"), "").unwrap();
+            std::fs::write(root.path().join("gradlew.cmd"), "").unwrap();
+            std::fs::write(root.path().join("gradlew.bat"), "").unwrap();
         } else {
-            std::fs::write(root.path.join("gradlew"), "").unwrap();
+            std::fs::write(root.path().join("gradlew"), "").unwrap();
         }
 
         let cmd = command_for_tests(
-            &root.path,
+            root.path(),
             BuildTool::Gradle,
             Some("module-a"),
             &vec!["com.example.DuplicateTest#ok".to_string()],
