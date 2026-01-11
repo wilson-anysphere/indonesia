@@ -2600,6 +2600,8 @@ fn spawn_event_task(
 
             // Some events require consulting debugger state (conditional/log breakpoints).
             let mut breakpoint_disposition: Option<BreakpointDisposition> = None;
+            // Best-effort exception label for DAP's stopped `text` field.
+            let mut exception_text: Option<String> = None;
 
             {
                 let mut guard = debugger.lock().await;
@@ -2633,6 +2635,29 @@ fn spawn_event_task(
                         ) && !is_logpoint
                         {
                             let _ = dbg.continue_(&server_shutdown, Some(*thread as i64)).await;
+                        }
+                    }
+
+                    if let nova_jdwp::wire::JdwpEvent::Exception { thread, .. } = &event {
+                        // Avoid delaying the stopped event for too long; exception details are
+                        // also available via the dedicated `exceptionInfo` request.
+                        if let Ok(Ok(Some(info))) = tokio::time::timeout(
+                            Duration::from_millis(200),
+                            dbg.exception_info(&server_shutdown, *thread as i64),
+                        )
+                        .await
+                        {
+                            let type_name = info
+                                .exception_id
+                                .rsplit(['.', '$'])
+                                .next()
+                                .unwrap_or(info.exception_id.as_str());
+                            exception_text = match info.description.as_deref() {
+                                Some(message) if !message.is_empty() => {
+                                    Some(format!("{type_name}: {message}"))
+                                }
+                                _ => Some(type_name.to_string()),
+                            };
                         }
                     }
                 }
@@ -2674,14 +2699,14 @@ fn spawn_event_task(
                     );
                 }
                 nova_jdwp::wire::JdwpEvent::Exception { thread, .. } => {
-                    send_event(
-                        &tx,
-                        &seq,
-                        "stopped",
-                        Some(
-                            json!({"reason": "exception", "threadId": thread as i64, "allThreadsStopped": false}),
-                        ),
-                    );
+                    let mut body = serde_json::Map::new();
+                    body.insert("reason".to_string(), json!("exception"));
+                    body.insert("threadId".to_string(), json!(thread as i64));
+                    body.insert("allThreadsStopped".to_string(), json!(false));
+                    if let Some(text) = exception_text {
+                        body.insert("text".to_string(), json!(text));
+                    }
+                    send_event(&tx, &seq, "stopped", Some(Value::Object(body)));
                 }
                 nova_jdwp::wire::JdwpEvent::ThreadStart { thread, .. } => {
                     send_event(

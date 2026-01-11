@@ -144,6 +144,15 @@ async fn dap_can_stop_on_uncaught_exceptions() {
         stopped.pointer("/body/reason").and_then(|v| v.as_str()),
         Some("exception")
     );
+    let text = stopped.pointer("/body/text").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        text.contains("RuntimeException"),
+        "expected exception stopped text to mention exception type, got {text:?}"
+    );
+    assert!(
+        text.contains("mock string"),
+        "expected exception stopped text to mention exception message, got {text:?}"
+    );
 
     send_request(
         &mut writer,
