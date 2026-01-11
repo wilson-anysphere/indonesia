@@ -2,13 +2,20 @@ use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::util::{atomic_write, now_millis};
 use bincode::Options;
+use fs2::FileExt as _;
 use nova_hir::{ItemTree, SymbolSummary};
 use nova_syntax::ParseResult;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub const AST_ARTIFACT_SCHEMA_VERSION: u32 = 2;
+
+const METADATA_LOCK_FILE_NAME: &str = "metadata.lock";
+
+static METADATA_UPDATE_MUTEX: Mutex<()> = Mutex::new(());
 
 /// Persisted, per-file syntax + HIR artifacts used to enable near-instant warm
 /// starts.
@@ -80,13 +87,19 @@ struct PersistedAstArtifactsOwned {
 pub struct AstArtifactCache {
     root: PathBuf,
     metadata_path: PathBuf,
+    metadata_lock_path: PathBuf,
 }
 
 impl AstArtifactCache {
     pub fn new(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref().to_path_buf();
         let metadata_path = root.join("metadata.bin");
-        Self { root, metadata_path }
+        let metadata_lock_path = root.join(METADATA_LOCK_FILE_NAME);
+        Self {
+            root,
+            metadata_path,
+            metadata_lock_path,
+        }
     }
 
     pub fn load(
@@ -94,7 +107,7 @@ impl AstArtifactCache {
         file_path: &str,
         fingerprint: &Fingerprint,
     ) -> Result<Option<FileAstArtifacts>, CacheError> {
-        let metadata = self.read_metadata();
+        let metadata = self.read_metadata_for_load();
         if !metadata.is_compatible() {
             return Ok(None);
         }
@@ -161,7 +174,21 @@ impl AstArtifactCache {
         let bytes = encode(&persisted)?;
         atomic_write(&artifact_path, &bytes)?;
 
-        let mut metadata = self.read_metadata();
+        // Serialize read-modify-write updates to `metadata.bin` to avoid lost
+        // updates (and potential `.tmp` races inside `atomic_write`) under
+        // concurrent stores across threads and processes.
+        let _guard = METADATA_UPDATE_MUTEX
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&self.metadata_lock_path)?;
+        lock_file.lock_exclusive()?;
+
+        let mut metadata = self.read_metadata_unlocked();
         if !metadata.is_compatible() {
             metadata = AstCacheMetadata::empty();
         }
@@ -180,7 +207,38 @@ impl AstArtifactCache {
         Ok(())
     }
 
-    fn read_metadata(&self) -> AstCacheMetadata {
+    fn read_metadata_for_load(&self) -> AstCacheMetadata {
+        if !self.metadata_path.exists() {
+            return AstCacheMetadata::empty();
+        }
+
+        // Reads are best-effort: if a writer currently holds the lock, treat as
+        // a cache miss instead of blocking on the hot path.
+        if let Ok(lock_file) = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&self.metadata_lock_path)
+        {
+            match fs2::FileExt::try_lock_shared(&lock_file) {
+                Ok(()) => {
+                    let metadata = self.read_metadata_unlocked();
+                    let _ = lock_file.unlock();
+                    return metadata;
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    return AstCacheMetadata::empty();
+                }
+                Err(_) => {
+                    // If locking isn't supported, fall back to an unlocked read.
+                }
+            }
+        }
+
+        self.read_metadata_unlocked()
+    }
+
+    fn read_metadata_unlocked(&self) -> AstCacheMetadata {
         if !self.metadata_path.exists() {
             return AstCacheMetadata::empty();
         }

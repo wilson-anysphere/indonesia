@@ -3097,6 +3097,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "bincode",
+ "fs2",
  "hex",
  "nova-core",
  "nova-hir",

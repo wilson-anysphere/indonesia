@@ -9,6 +9,7 @@ s3 = ["dep:aws-config", "dep:aws-sdk-s3", "dep:tokio"]
 
 [dependencies]
 bincode = "1"
+fs2 = "0.4"
 hex = "0.4"
 nova-core = { path = "../nova-core" }
 nova-hir = { path = "../nova-hir" }
