@@ -38,6 +38,10 @@ fn ctx(db: Arc<TestDb>) -> ExtensionContext<TestDb> {
     )
 }
 
+fn ctx_with_config(db: Arc<TestDb>, config: NovaConfig) -> ExtensionContext<TestDb> {
+    ExtensionContext::new(db, Arc::new(config), ProjectId::new(0), CancellationToken::new())
+}
+
 const WAT_DIAG_AND_COMPLETIONS: &str = r#"
 (module
   (memory (export "memory") 1)
@@ -383,6 +387,52 @@ fn memory_limit_prevents_unbounded_growth() {
     let diags = plugin.provide_diagnostics(ctx(db), DiagnosticParams { file });
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "grow_failed");
+}
+
+#[test]
+fn nova_config_overrides_wasm_timeout_and_memory_limits() {
+    // Timeout override.
+    let mut plugin_config = WasmPluginConfig::default();
+    plugin_config.timeout = Duration::from_millis(500);
+    let plugin =
+        WasmPlugin::from_wat("busy-config", WAT_BUSY_LOOP, plugin_config).expect("load module");
+
+    let file = FileId::from_raw(1);
+    let db = Arc::new(TestDb {
+        text: "needle".to_string(),
+        path: None,
+    });
+
+    let mut config = NovaConfig::default();
+    config.extensions.wasm_timeout_ms = Some(10);
+
+    let start = Instant::now();
+    let diags = plugin.provide_diagnostics(
+        ctx_with_config(Arc::clone(&db), config),
+        DiagnosticParams { file },
+    );
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "call should be interrupted quickly by NovaConfig override (elapsed={elapsed:?})"
+    );
+    assert!(diags.is_empty());
+
+    // Memory override.
+    let mut plugin_config = WasmPluginConfig::default();
+    plugin_config.max_memory_bytes = 512 * 1024; // allow growth
+    let plugin =
+        WasmPlugin::from_wat("mem-config", WAT_MEMORY_GROW, plugin_config).expect("load module");
+
+    let mut config = NovaConfig::default();
+    config.extensions.wasm_memory_limit_bytes = Some(64 * 1024); // disallow growth
+
+    let diags = plugin.provide_diagnostics(ctx_with_config(db, config), DiagnosticParams { file });
+    assert_eq!(diags.len(), 1);
+    assert_eq!(
+        diags[0].message, "grow_failed",
+        "NovaConfig memory limit should override the plugin config"
+    );
 }
 
 #[derive(Clone)]

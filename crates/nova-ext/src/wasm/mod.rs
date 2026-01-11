@@ -13,6 +13,14 @@
 //! - `nova_ext_capabilities() -> i32` — returns a bitset describing which provider exports are
 //!   implemented by the guest (see [`WasmCapabilities`]).
 //!
+//! Capability bit assignments for ABI v1:
+//!
+//! - `1 << 0`: diagnostics
+//! - `1 << 1`: completions
+//! - `1 << 2`: code actions
+//! - `1 << 3`: navigation
+//! - `1 << 4`: inlay hints
+//!
 //! The host rejects a module if the ABI version is unsupported, or if the module declares a
 //! capability without exporting the corresponding function.
 //!

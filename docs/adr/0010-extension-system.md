@@ -155,6 +155,14 @@ The capability bitset maps directly to export names:
 - `diagnostics` → `nova_ext_diagnostics`
 - `code_actions` → `nova_ext_code_actions`
 
+Capability bit assignments for ABI v1:
+
+- `1 << 0`: diagnostics
+- `1 << 1`: completions
+- `1 << 2`: code actions
+- `1 << 3`: navigation
+- `1 << 4`: inlay hints
+
 Packing/unpacking rule:
 
 - `ptr = (ret & 0xFFFF_FFFF) as u32`
@@ -218,9 +226,10 @@ Example `code_actions` request/response (v1):
 
 ```json
 {
+  "projectId": 0,
+  "fileId": 1,
   "text": "class Foo { void m() { int x = 1 + 2; } }",
-  "span": { "start": 29, "end": 34 },
-  "settings": {}
+  "span": { "start": 29, "end": 34 }
 }
 ```
 

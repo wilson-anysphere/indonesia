@@ -75,6 +75,16 @@ fn unpack_ptr_len(v: u64) -> (u32, u32) {
 }
 
 /// Capability bitset exported by a guest module via `nova_ext_capabilities()`.
+///
+/// # Bit assignments (ABI v1)
+///
+/// - bit 0 (`1 << 0`): diagnostics (`nova_ext_diagnostics`)
+/// - bit 1 (`1 << 1`): completions (`nova_ext_completions`)
+/// - bit 2 (`1 << 2`): code actions (`nova_ext_code_actions`)
+/// - bit 3 (`1 << 3`): navigation (`nova_ext_navigation`)
+/// - bit 4 (`1 << 4`): inlay hints (`nova_ext_inlay_hints`)
+///
+/// Unknown bits are currently ignored by the host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WasmCapabilities(u32);
 
