@@ -360,13 +360,13 @@ mod tests {
     }
 
     #[test]
-    fn cloud_mode_refuses_code_edits_without_opt_in() {
+    fn cloud_mode_refuses_when_anonymization_is_enabled_by_default() {
         let provider = MockAiProvider::new(vec![Ok("{}".into())]);
         let config = CodeGenerationConfig::default();
         let privacy = AiPrivacyConfig {
             local_only: false,
             // Cloud mode defaults to anonymization, but the first refusal reason should
-            // be the missing cloud opt-in flag.
+            // be that anonymization makes patches impossible to apply reliably.
             anonymize: None,
             ..AiPrivacyConfig::default()
         };
@@ -386,7 +386,9 @@ mod tests {
         let err = executor.execute(action, &workspace, &cancel).unwrap_err();
         assert_eq!(provider.call_count(), 0);
         match err {
-            CodeActionError::Codegen(CodeGenerationError::Policy(CodeEditPolicyError::CloudEditsDisabled)) => {}
+            CodeActionError::Codegen(CodeGenerationError::Policy(
+                CodeEditPolicyError::CloudEditsWithAnonymizationEnabled,
+            )) => {}
             other => panic!("unexpected error: {other:?}"),
         }
     }
@@ -420,6 +422,36 @@ mod tests {
             CodeActionError::Codegen(CodeGenerationError::Policy(
                 CodeEditPolicyError::CloudEditsWithAnonymizationEnabled,
             )) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cloud_mode_refuses_without_cloud_opt_in_when_anonymization_disabled() {
+        let provider = MockAiProvider::new(vec![Ok("{}".into())]);
+        let config = CodeGenerationConfig::default();
+        let privacy = AiPrivacyConfig {
+            local_only: false,
+            anonymize: Some(false),
+            ..AiPrivacyConfig::default()
+        };
+
+        let executor = AiCodeActionExecutor::new(&provider, config, privacy);
+        let workspace = example_workspace();
+        let cancel = CancellationToken::default();
+
+        let action = AiCodeAction::GenerateMethodBody {
+            file: "Example.java".into(),
+            insert_range: Range {
+                start: Position { line: 2, character: 0 },
+                end: Position { line: 3, character: 0 },
+            },
+        };
+
+        let err = executor.execute(action, &workspace, &cancel).unwrap_err();
+        assert_eq!(provider.call_count(), 0);
+        match err {
+            CodeActionError::Codegen(CodeGenerationError::Policy(CodeEditPolicyError::CloudEditsDisabled)) => {}
             other => panic!("unexpected error: {other:?}"),
         }
     }

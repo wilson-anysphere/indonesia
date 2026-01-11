@@ -13,8 +13,10 @@ pub enum CodeEditPolicyError {
     CloudEditsDisabled,
 
     #[error(
-        "AI code edits are incompatible with anonymization in cloud mode. Disable anonymization with \
-nova.ai.privacy.anonymize=false (or use nova.ai.privacy.local_only=true)."
+        "AI code edits are disabled when anonymization is enabled in cloud mode (patches cannot be applied reliably). \
+To enable cloud code edits, set nova.ai.privacy.anonymize=false, \
+nova.ai.privacy.allow_cloud_code_edits=true, and \
+nova.ai.privacy.allow_code_edits_without_anonymization=true (or use nova.ai.privacy.local_only=true)."
     )]
     CloudEditsWithAnonymizationEnabled,
 
@@ -34,15 +36,15 @@ pub fn enforce_code_edit_policy(config: &AiPrivacyConfig) -> Result<(), CodeEdit
         return Ok(());
     }
 
-    if !config.allow_cloud_code_edits {
-        return Err(CodeEditPolicyError::CloudEditsDisabled);
-    }
-
     if config.effective_anonymize() {
         // Patches produced against anonymized identifiers cannot reliably apply
         // to the original source. Until Nova has a reversible anonymization
         // pipeline for patches, refuse in this mode.
         return Err(CodeEditPolicyError::CloudEditsWithAnonymizationEnabled);
+    }
+
+    if !config.allow_cloud_code_edits {
+        return Err(CodeEditPolicyError::CloudEditsDisabled);
     }
 
     if !config.allow_code_edits_without_anonymization {
@@ -75,7 +77,7 @@ mod tests {
         };
         assert_eq!(
             enforce_code_edit_policy(&cfg),
-            Err(CodeEditPolicyError::CloudEditsDisabled)
+            Err(CodeEditPolicyError::CloudEditsWithAnonymizationEnabled)
         );
     }
 
@@ -119,4 +121,3 @@ mod tests {
         assert_eq!(enforce_code_edit_policy(&cfg), Ok(()));
     }
 }
-
