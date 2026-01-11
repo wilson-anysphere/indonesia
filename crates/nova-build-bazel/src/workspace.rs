@@ -12,6 +12,34 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Walk upwards from `start` to find the Bazel workspace root.
+///
+/// A workspace root is identified by the presence of one of:
+/// - `WORKSPACE`
+/// - `WORKSPACE.bazel`
+/// - `MODULE.bazel`
+pub fn bazel_workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
+    let start = start.as_ref();
+    let mut dir = if start.is_file() {
+        start.parent()?
+    } else {
+        start
+    };
+
+    loop {
+        if is_bazel_workspace(dir) {
+            return Some(dir.to_path_buf());
+        }
+        dir = dir.parent()?;
+    }
+}
+
+pub fn is_bazel_workspace(root: &Path) -> bool {
+    ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
+        .iter()
+        .any(|marker| root.join(marker).is_file())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BazelWorkspaceDiscovery {
     pub root: PathBuf,
@@ -19,7 +47,7 @@ pub struct BazelWorkspaceDiscovery {
 
 impl BazelWorkspaceDiscovery {
     pub fn discover(start: impl AsRef<Path>) -> Option<Self> {
-        nova_project::bazel_workspace_root(start).map(|root| Self { root })
+        bazel_workspace_root(start).map(|root| Self { root })
     }
 }
 

@@ -3086,7 +3086,6 @@ dependencies = [
  "anyhow",
  "blake3",
  "nova-core",
- "nova-project",
  "serde",
  "serde_json",
  "tempfile",
