@@ -27,6 +27,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **DAP server / debugger UX**: `crates/nova-dap/` (+ `crates/nova-jdwp/`)
 - **Project discovery (Maven/Gradle/Bazel)**: `crates/nova-project/` (+ `crates/nova-build/`, `crates/nova-build-bazel/`)
 - **AI (completion ranking, semantic search, anonymization)**: `crates/nova-ai/` (wired into `nova-ide`/`nova-lsp`)
+- **AI code edits / patch-based codegen**: `crates/nova-ai-codegen/` (structured patch parsing + safety + apply/format/validate)
 - **Parsing / syntax trees**: `crates/nova-syntax/`
 - **Incremental database (Salsa)**: `crates/nova-db/src/salsa/` (see `mod.rs`)
 - **Indexing + persistence**: `crates/nova-index/`, `crates/nova-cache/`, `crates/nova-storage/`
