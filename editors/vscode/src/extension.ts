@@ -1587,7 +1587,13 @@ export async function activate(context: vscode.ExtensionContext) {
           command: 'nova.safeDelete',
           arguments: [{ target: targetId, mode: 'deleteAnyway' }],
         });
+        // `nova.safeDelete` is guarded by the server's safe-mode check; a successful response
+        // implies safe-mode is not active.
+        setSafeModeEnabled?.(false);
       } catch (err) {
+        if (isSafeModeError(err)) {
+          setSafeModeEnabled?.(true);
+        }
         const message = formatError(err);
         void vscode.window.showErrorMessage(`Nova: safe delete failed: ${message}`);
       }
