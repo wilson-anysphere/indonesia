@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nova_core::Name;
-use nova_hir::queries::HirDatabase;
 
 use crate::FileId;
 
@@ -13,7 +12,7 @@ use super::stats::HasQueryStats;
 #[ra_salsa::query_group(NovaResolveStorage)]
 pub trait NovaResolve: NovaHir + HasQueryStats {
     /// Build the scope graph for a file.
-    fn scope_graph(&self, file: FileId) -> Arc<nova_resolve::ScopeBuildResult>;
+    fn scope_graph(&self, file: FileId) -> Arc<nova_resolve::ItemTreeScopeBuildResult>;
 
     /// Resolve `name` starting from `scope`.
     fn resolve_name(
@@ -24,50 +23,15 @@ pub trait NovaResolve: NovaHir + HasQueryStats {
     ) -> Option<nova_resolve::Resolution>;
 }
 
-struct HirDbAdapter<'a>(&'a dyn NovaResolve);
-
-impl HirDatabase for HirDbAdapter<'_> {
-    fn file_text(&self, file: FileId) -> Arc<str> {
-        // `nova-hir`'s standalone query helpers use `Arc<str>`. The Salsa DB keeps
-        // file content as an `Arc<String>`, so we downcast by copying.
-        //
-        // This keeps `nova-resolve` independent of Salsa while still allowing
-        // us to use it from queries.
-        Arc::from(self.0.file_content(file).as_str())
-    }
-
-    fn hir_item_tree(&self, file: FileId) -> Arc<nova_hir::item_tree::ItemTree> {
-        NovaHir::hir_item_tree(self.0, file)
-    }
-
-    fn hir_body(&self, method: nova_hir::ids::MethodId) -> Arc<nova_hir::hir::Body> {
-        NovaHir::hir_body(self.0, method)
-    }
-
-    fn hir_constructor_body(
-        &self,
-        constructor: nova_hir::ids::ConstructorId,
-    ) -> Arc<nova_hir::hir::Body> {
-        NovaHir::hir_constructor_body(self.0, constructor)
-    }
-
-    fn hir_initializer_body(
-        &self,
-        initializer: nova_hir::ids::InitializerId,
-    ) -> Arc<nova_hir::hir::Body> {
-        NovaHir::hir_initializer_body(self.0, initializer)
-    }
-}
-
-fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ScopeBuildResult> {
+fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ItemTreeScopeBuildResult> {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("query", name = "scope_graph", ?file).entered();
 
     cancel::check_cancelled(db);
-    let hir_db = HirDbAdapter(db);
-    let built = nova_resolve::build_scopes(&hir_db, file);
+    let tree = db.hir_item_tree(file);
+    let built = nova_resolve::build_scopes_for_item_tree(file, &tree);
 
     let result = Arc::new(built);
     db.record_query_stat("scope_graph", start.elapsed());

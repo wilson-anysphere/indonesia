@@ -90,7 +90,7 @@ class C {
 }
 
 #[test]
-fn body_only_edit_recomputes_scope_graph() {
+fn body_only_edit_does_not_recompute_resolution() {
     let mut db = SalsaRootDatabase::default();
     let project = ProjectId::from_raw(0);
 
@@ -152,12 +152,12 @@ class C {
 
     assert_eq!(
         executions(&db, "scope_graph"),
-        2,
-        "scope graph recomputes after file text changes (bodies are included)"
+        1,
+        "scope graph should be reused via early-cutoff when only method bodies change"
     );
     assert_eq!(
         executions(&db, "resolve_name"),
-        2,
-        "resolve_name recomputes after file text changes"
+        1,
+        "resolve_name should be reused via early-cutoff"
     );
 }
