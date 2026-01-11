@@ -214,6 +214,11 @@ impl DependencyIndexStore {
 
     pub fn pack(&self, output: &Path) -> Result<(), DepsCacheError> {
         if let Some(parent) = output.parent() {
+            let parent = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
             std::fs::create_dir_all(parent)?;
         }
 
@@ -232,6 +237,14 @@ impl DependencyIndexStore {
                     continue;
                 }
                 if rel.ends_with(LOCK_FILE_NAME) {
+                    continue;
+                }
+                // Skip crashed atomic-write temp files from `write_archive_atomic`, which
+                // uses unique names like `<dest>.tmp.<pid>.<counter>`.
+                if rel.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".tmp") || name.contains(".tmp."))
+                {
                     continue;
                 }
                 if entry.file_type().is_dir() {

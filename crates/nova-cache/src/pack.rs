@@ -35,9 +35,13 @@ pub fn pack_cache_package(cache_dir: &CacheDir, out_file: &Path) -> Result<()> {
         );
     }
 
-    if let Some(parent) = out_file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = out_file.parent().unwrap_or(Path::new("."));
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+    std::fs::create_dir_all(parent)?;
 
     let out = File::create(out_file)?;
     let encoder = zstd::Encoder::new(out, 19)?;
@@ -147,6 +151,12 @@ fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>> {
         for entry in walkdir::WalkDir::new(&path).follow_links(false) {
             let entry = entry?;
             if !entry.file_type().is_file() {
+                continue;
+            }
+            // Skip crashed atomic-write temp files: `atomic_write` uses unique
+            // names like `<dest>.tmp.<pid>.<counter>`.
+            let file_name = entry.file_name().to_string_lossy();
+            if file_name.ends_with(".tmp") || file_name.contains(".tmp.") {
                 continue;
             }
 
@@ -571,6 +581,48 @@ mod tests {
         assert!(cache_dir2.indexes_dir().join("symbols.idx").is_file());
         assert!(cache_dir2.queries_dir().join("types.cache").is_file());
         assert!(cache_dir2.ast_dir().join("metadata.bin").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn pack_skips_atomic_temp_files() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(project_root.join("src/Main.java"), b"class Main {}")?;
+
+        let cache_root = tmp.path().join("cache-root");
+        let cache_dir = CacheDir::new(
+            &project_root,
+            CacheConfig {
+                cache_root_override: Some(cache_root),
+            },
+        )?;
+
+        let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("src/Main.java")])?;
+        let metadata = CacheMetadata::new(&snapshot);
+        metadata.save(cache_dir.metadata_path())?;
+        write_fake_cache(&cache_dir)?;
+
+        // Simulate a crash leaving behind atomic-write tempfiles.
+        std::fs::write(
+            cache_dir.indexes_dir().join("symbols.idx.tmp.123.0"),
+            b"tmp",
+        )?;
+        std::fs::write(
+            cache_dir.queries_dir().join("types.cache.tmp.123.0"),
+            b"tmp",
+        )?;
+        std::fs::write(
+            cache_dir.ast_dir().join("metadata.bin.tmp.123.0"),
+            b"tmp",
+        )?;
+
+        let files = collect_cache_files(cache_dir.root())?;
+        assert!(
+            !files.iter().any(|path| path.to_string_lossy().contains(".tmp.")),
+            "collect_cache_files included atomic-write tempfiles: {files:?}"
+        );
         Ok(())
     }
 
