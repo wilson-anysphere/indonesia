@@ -284,9 +284,10 @@ action {{
     );
     assert_eq!(info.module_path, vec!["mods".to_string()]);
     assert_eq!(info.release.as_deref(), Some("21"));
-    assert!(info.enable_preview);
+    assert!(info.preview);
     assert_eq!(info.output_dir.as_deref(), Some("out/dir"));
-    assert_eq!(info.source.as_deref(), Some("17"));
-    assert_eq!(info.target.as_deref(), Some("17"));
+    // `--release` implies both language level and bytecode target.
+    assert_eq!(info.source.as_deref(), Some("21"));
+    assert_eq!(info.target.as_deref(), Some("21"));
     assert_eq!(info.source_roots, vec!["java/com/example".to_string()]);
 }

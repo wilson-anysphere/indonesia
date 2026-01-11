@@ -33,7 +33,7 @@ pub struct JavaCompileInfo {
     #[serde(default)]
     pub output_dir: Option<String>,
     /// Whether `--enable-preview` is passed.
-    #[serde(default, rename = "enable_preview", alias = "preview")]
+    #[serde(default, alias = "enable_preview")]
     pub preview: bool,
 }
 

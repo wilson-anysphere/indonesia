@@ -297,7 +297,7 @@ fn module_config_from_compile_info(
         release: info.release.as_deref().and_then(JavaVersion::parse),
         source: info.source.as_deref().and_then(JavaVersion::parse),
         target: info.target.as_deref().and_then(JavaVersion::parse),
-        preview: info.enable_preview,
+        preview: info.preview,
     };
 
     ModuleConfig {
