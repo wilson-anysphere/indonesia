@@ -153,10 +153,11 @@ pub fn fetch_cache_package(cache_dir: &CacheDir, url: &str) -> Result<CachePacka
     let temp = tempfile::Builder::new()
         .prefix("nova-cache-")
         .suffix(".tar.zst")
-        .tempfile_in(parent)?;
+        .tempfile_in(parent)?
+        .into_temp_path();
 
-    store.fetch(url, temp.path())?;
-    install_cache_package(cache_dir, temp.path())
+    store.fetch(url, temp.as_ref())?;
+    install_cache_package(cache_dir, temp.as_ref())
 }
 
 fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>> {
