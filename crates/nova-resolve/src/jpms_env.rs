@@ -200,6 +200,7 @@ mod tests {
             classpath: Vec::new(),
             output_dirs: Vec::new(),
             dependencies: Vec::new(),
+            workspace_model: None,
         };
 
         let extra_dir = tmp.path().join("extra-dep-1.2.3");
@@ -275,6 +276,7 @@ mod tests {
             classpath: Vec::new(),
             output_dirs: Vec::new(),
             dependencies: Vec::new(),
+            workspace_model: None,
         };
 
         let jdk = JdkIndex::new();

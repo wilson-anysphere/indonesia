@@ -8,6 +8,7 @@ pub mod jpms;
 pub mod jpms_env;
 pub mod members;
 pub mod scopes;
+pub mod type_ref;
 
 pub use members::{complete_member_names, resolve_method_call, CallKind};
 pub use scopes::{
