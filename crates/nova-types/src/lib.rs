@@ -873,7 +873,7 @@ impl TypeStore {
     pub fn define_class(&mut self, id: ClassId, def: ClassDef) {
         let slot = self
             .classes
-            .get_mut(id.0 as usize)
+            .get_mut(id.to_raw() as usize)
             .unwrap_or_else(|| panic!("define_class: invalid ClassId {:?}", id));
         let expected_name = slot.name.clone();
 
@@ -2101,7 +2101,7 @@ fn type_sort_key(env: &dyn TypeEnv, ty: &Type) -> String {
         Type::Primitive(p) => format!("{p:?}"),
         Type::TypeVar(id) => format!("T{}", id.0),
         Type::Named(name) => format!("named:{name}"),
-        Type::VirtualInner { owner, name } => format!("virtual:{}:{name}", owner.0),
+        Type::VirtualInner { owner, name } => format!("virtual:{}:{name}", owner.to_raw()),
         Type::Array(elem) => format!("{}[]", type_sort_key(env, elem)),
         Type::Wildcard(WildcardBound::Unbounded) => "?".to_string(),
         Type::Wildcard(WildcardBound::Extends(upper)) => {
@@ -2114,7 +2114,7 @@ fn type_sort_key(env: &dyn TypeEnv, ty: &Type) -> String {
             let mut out = env
                 .class(*def)
                 .map(|c| c.name.clone())
-                .unwrap_or_else(|| format!("<class:{}>", def.0));
+                .unwrap_or_else(|| format!("<class:{}>", def.to_raw()));
             if !args.is_empty() {
                 out.push('<');
                 for (idx, arg) in args.iter().enumerate() {
@@ -2346,7 +2346,7 @@ fn lub_via_supertypes(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
         .filter(|d| sups_b.contains_key(d))
         .copied()
         .collect();
-    common_defs.sort_by_key(|id| id.0);
+    common_defs.sort_by_key(|id| id.to_raw());
 
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();

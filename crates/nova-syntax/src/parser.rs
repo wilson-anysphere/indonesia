@@ -9,6 +9,192 @@ use crate::lexer::{lex_with_errors, Token};
 use crate::syntax_kind::{JavaLanguage, SyntaxKind};
 use crate::{ParseError, TextRange};
 
+#[derive(Clone, Copy)]
+struct TokenSet(&'static [SyntaxKind]);
+
+impl TokenSet {
+    const fn new(kinds: &'static [SyntaxKind]) -> Self {
+        Self(kinds)
+    }
+
+    fn contains(self, kind: SyntaxKind) -> bool {
+        self.0.contains(&kind)
+    }
+}
+
+#[derive(Default, Clone, Copy)]
+struct DelimiterDepth {
+    braces: u32,
+    parens: u32,
+    brackets: u32,
+    angles: u32,
+}
+
+impl DelimiterDepth {
+    fn is_zero(self, track_angles: bool) -> bool {
+        self.braces == 0
+            && self.parens == 0
+            && self.brackets == 0
+            && (!track_angles || self.angles == 0)
+    }
+
+    fn update(&mut self, kind: SyntaxKind, track_angles: bool) {
+        match kind {
+            SyntaxKind::LBrace => self.braces += 1,
+            SyntaxKind::RBrace => self.braces = self.braces.saturating_sub(1),
+            SyntaxKind::LParen => self.parens += 1,
+            SyntaxKind::RParen => self.parens = self.parens.saturating_sub(1),
+            SyntaxKind::LBracket => self.brackets += 1,
+            SyntaxKind::RBracket => self.brackets = self.brackets.saturating_sub(1),
+            _ => {}
+        }
+
+        if !track_angles {
+            return;
+        }
+
+        match kind {
+            SyntaxKind::Less => self.angles += 1,
+            SyntaxKind::Greater => self.angles = self.angles.saturating_sub(1),
+            SyntaxKind::RightShift => self.angles = self.angles.saturating_sub(2),
+            SyntaxKind::UnsignedRightShift => self.angles = self.angles.saturating_sub(3),
+            _ => {}
+        }
+    }
+}
+
+const TOP_LEVEL_RECOVERY: TokenSet = TokenSet::new(&[
+    SyntaxKind::PackageKw,
+    SyntaxKind::ImportKw,
+    SyntaxKind::ClassKw,
+    SyntaxKind::InterfaceKw,
+    SyntaxKind::EnumKw,
+    SyntaxKind::RecordKw,
+    SyntaxKind::At,
+    SyntaxKind::PublicKw,
+    SyntaxKind::PrivateKw,
+    SyntaxKind::ProtectedKw,
+    SyntaxKind::StaticKw,
+    SyntaxKind::FinalKw,
+    SyntaxKind::AbstractKw,
+    SyntaxKind::SealedKw,
+    SyntaxKind::NonSealedKw,
+    SyntaxKind::StrictfpKw,
+    SyntaxKind::Semicolon,
+    SyntaxKind::Eof,
+]);
+
+const TYPE_DECL_RECOVERY: TokenSet = TokenSet::new(&[
+    SyntaxKind::RBrace,
+    SyntaxKind::PackageKw,
+    SyntaxKind::ImportKw,
+    SyntaxKind::ClassKw,
+    SyntaxKind::InterfaceKw,
+    SyntaxKind::EnumKw,
+    SyntaxKind::RecordKw,
+    SyntaxKind::At,
+    SyntaxKind::PublicKw,
+    SyntaxKind::PrivateKw,
+    SyntaxKind::ProtectedKw,
+    SyntaxKind::StaticKw,
+    SyntaxKind::FinalKw,
+    SyntaxKind::AbstractKw,
+    SyntaxKind::SealedKw,
+    SyntaxKind::NonSealedKw,
+    SyntaxKind::StrictfpKw,
+    SyntaxKind::Semicolon,
+    SyntaxKind::Eof,
+]);
+
+const MEMBER_RECOVERY: TokenSet = TokenSet::new(&[
+    SyntaxKind::Semicolon,
+    SyntaxKind::RBrace,
+    SyntaxKind::LBrace,
+    SyntaxKind::ClassKw,
+    SyntaxKind::InterfaceKw,
+    SyntaxKind::EnumKw,
+    SyntaxKind::RecordKw,
+    SyntaxKind::At,
+    SyntaxKind::PublicKw,
+    SyntaxKind::PrivateKw,
+    SyntaxKind::ProtectedKw,
+    SyntaxKind::StaticKw,
+    SyntaxKind::FinalKw,
+    SyntaxKind::AbstractKw,
+    SyntaxKind::NativeKw,
+    SyntaxKind::SynchronizedKw,
+    SyntaxKind::TransientKw,
+    SyntaxKind::VolatileKw,
+    SyntaxKind::StrictfpKw,
+    SyntaxKind::DefaultKw,
+    SyntaxKind::SealedKw,
+    SyntaxKind::NonSealedKw,
+    SyntaxKind::VoidKw,
+    SyntaxKind::Identifier,
+    SyntaxKind::BooleanKw,
+    SyntaxKind::ByteKw,
+    SyntaxKind::ShortKw,
+    SyntaxKind::IntKw,
+    SyntaxKind::LongKw,
+    SyntaxKind::CharKw,
+    SyntaxKind::FloatKw,
+    SyntaxKind::DoubleKw,
+    SyntaxKind::Eof,
+]);
+
+const STMT_RECOVERY: TokenSet = TokenSet::new(&[
+    SyntaxKind::Semicolon,
+    SyntaxKind::RBrace,
+    SyntaxKind::LBrace,
+    SyntaxKind::IfKw,
+    SyntaxKind::SwitchKw,
+    SyntaxKind::ForKw,
+    SyntaxKind::WhileKw,
+    SyntaxKind::DoKw,
+    SyntaxKind::TryKw,
+    SyntaxKind::ReturnKw,
+    SyntaxKind::ThrowKw,
+    SyntaxKind::BreakKw,
+    SyntaxKind::ContinueKw,
+    SyntaxKind::AssertKw,
+    SyntaxKind::SynchronizedKw,
+    SyntaxKind::CaseKw,
+    SyntaxKind::DefaultKw,
+    SyntaxKind::Eof,
+]);
+
+const IF_THEN_BLOCK_RECOVERY: TokenSet = TokenSet::new(&[SyntaxKind::ElseKw]);
+
+const TRY_BLOCK_RECOVERY: TokenSet = TokenSet::new(&[SyntaxKind::CatchKw, SyntaxKind::FinallyKw]);
+
+const DO_BODY_RECOVERY: TokenSet = TokenSet::new(&[SyntaxKind::WhileKw]);
+
+const TYPE_ARGUMENT_RECOVERY: TokenSet = TokenSet::new(&[
+    SyntaxKind::Comma,
+    SyntaxKind::Greater,
+    SyntaxKind::RightShift,
+    SyntaxKind::UnsignedRightShift,
+    SyntaxKind::RParen,
+    SyntaxKind::RBracket,
+    SyntaxKind::RBrace,
+    SyntaxKind::Semicolon,
+    SyntaxKind::Eof,
+]);
+
+const ANNOTATION_DEFAULT_RECOVERY: TokenSet =
+    TokenSet::new(&[SyntaxKind::Semicolon, SyntaxKind::RBrace, SyntaxKind::Eof]);
+
+const EXPR_RECOVERY: TokenSet = TokenSet::new(&[
+    SyntaxKind::Semicolon,
+    SyntaxKind::Comma,
+    SyntaxKind::RParen,
+    SyntaxKind::RBracket,
+    SyntaxKind::RBrace,
+    SyntaxKind::Colon,
+    SyntaxKind::Arrow,
+    SyntaxKind::Eof,
+]);
+
 pub type SyntaxNode = rowan::SyntaxNode<JavaLanguage>;
 pub type SyntaxToken = rowan::SyntaxToken<JavaLanguage>;
 pub type SyntaxElement = rowan::SyntaxElement<JavaLanguage>;
@@ -45,6 +231,9 @@ struct Parser<'a> {
     tokens: VecDeque<Token>,
     builder: GreenNodeBuilder<'static>,
     errors: Vec<ParseError>,
+    last_non_trivia_end: u32,
+    last_non_trivia_range: TextRange,
+    last_non_trivia_kind: SyntaxKind,
 }
 
 impl<'a> Parser<'a> {
@@ -62,6 +251,9 @@ impl<'a> Parser<'a> {
             tokens: VecDeque::from(tokens),
             builder: GreenNodeBuilder::new(),
             errors,
+            last_non_trivia_end: 0,
+            last_non_trivia_range: TextRange { start: 0, end: 0 },
+            last_non_trivia_kind: SyntaxKind::Eof,
         }
     }
 
@@ -78,11 +270,13 @@ impl<'a> Parser<'a> {
         }
 
         while !self.at(SyntaxKind::Eof) {
+            let before = self.tokens.len();
             if self.at_type_decl_start() {
                 self.parse_type_declaration();
             } else {
                 self.recover_top_level();
             }
+            self.force_progress(before, TOP_LEVEL_RECOVERY);
         }
 
         self.eat_trivia();
@@ -155,15 +349,7 @@ impl<'a> Parser<'a> {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::Error.into());
                 self.error_here("expected type declaration");
-                self.recover_to(&[
-                    SyntaxKind::PackageKw,
-                    SyntaxKind::ImportKw,
-                    SyntaxKind::ClassKw,
-                    SyntaxKind::InterfaceKw,
-                    SyntaxKind::EnumKw,
-                    SyntaxKind::RecordKw,
-                    SyntaxKind::Eof,
-                ]);
+                self.recover_to(TYPE_DECL_RECOVERY);
                 self.builder.finish_node();
             }
         }
@@ -421,10 +607,61 @@ impl<'a> Parser<'a> {
     fn parse_class_body(&mut self, body_kind: SyntaxKind) {
         self.builder.start_node(body_kind.into());
         self.expect(SyntaxKind::LBrace, "expected `{`");
+
+        let body_indent = if self.last_non_trivia_kind == SyntaxKind::LBrace {
+            self.line_indent(self.last_non_trivia_range.start)
+        } else {
+            let start = self.current_range().start;
+            self.line_indent(start)
+        };
+
         while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            let start = self.current_range().start;
+            let (indent, is_first) = self.line_indent_and_is_first_token(start);
+            if is_first
+                && indent <= body_indent
+                && matches!(
+                    self.current(),
+                    SyntaxKind::PackageKw
+                        | SyntaxKind::ImportKw
+                        | SyntaxKind::ClassKw
+                        | SyntaxKind::InterfaceKw
+                        | SyntaxKind::EnumKw
+                        | SyntaxKind::RecordKw
+                        | SyntaxKind::At
+                        | SyntaxKind::PublicKw
+                        | SyntaxKind::PrivateKw
+                        | SyntaxKind::ProtectedKw
+                        | SyntaxKind::StaticKw
+                        | SyntaxKind::FinalKw
+                        | SyntaxKind::AbstractKw
+                        | SyntaxKind::SealedKw
+                        | SyntaxKind::NonSealedKw
+                        | SyntaxKind::StrictfpKw
+                )
+            {
+                // Likely a missing `}` for the current class body; stop here so we can
+                // continue parsing sibling declarations.
+                break;
+            }
+
+            let before = self.tokens.len();
             self.parse_class_member();
+            self.force_progress(before, MEMBER_RECOVERY);
         }
-        self.expect(SyntaxKind::RBrace, "expected `}`");
+
+        if self.at(SyntaxKind::RBrace) {
+            let start = self.current_range().start;
+            let (indent, is_first) = self.line_indent_and_is_first_token(start);
+            if is_first && indent < body_indent {
+                self.error_here("expected `}` to close class body");
+                self.insert_missing(SyntaxKind::MissingRBrace);
+                self.builder.finish_node();
+                return;
+            }
+        }
+
+        self.expect(SyntaxKind::RBrace, "expected `}` to close class body");
         self.builder.finish_node();
     }
 
@@ -437,7 +674,7 @@ impl<'a> Parser<'a> {
         if self.at(SyntaxKind::LBrace) {
             self.builder
                 .start_node_at(checkpoint, SyntaxKind::InitializerBlock.into());
-            self.parse_block();
+            self.parse_block_with_recovery(MEMBER_RECOVERY);
             self.builder.finish_node();
             return;
         }
@@ -471,7 +708,7 @@ impl<'a> Parser<'a> {
             self.bump(); // name
             self.parse_parameter_list();
             self.parse_throws_opt();
-            self.parse_block();
+            self.parse_block_with_recovery(MEMBER_RECOVERY);
             self.builder.finish_node();
             return;
         }
@@ -488,7 +725,7 @@ impl<'a> Parser<'a> {
                 self.parse_annotation_element_default();
                 self.expect(SyntaxKind::Semicolon, "expected `;` after declaration");
             } else if self.at(SyntaxKind::LBrace) {
-                self.parse_block();
+                self.parse_block_with_recovery(MEMBER_RECOVERY);
             } else {
                 self.expect(SyntaxKind::Semicolon, "expected `;` or method body");
             }
@@ -518,7 +755,7 @@ impl<'a> Parser<'a> {
                     self.parse_annotation_element_default();
                     self.expect(SyntaxKind::Semicolon, "expected `;` after declaration");
                 } else if self.at(SyntaxKind::LBrace) {
-                    self.parse_block();
+                    self.parse_block_with_recovery(MEMBER_RECOVERY);
                 } else {
                     self.expect(SyntaxKind::Semicolon, "expected `;` or method body");
                 }
@@ -655,6 +892,18 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::ArgumentList.into());
         self.expect(SyntaxKind::LParen, "expected `(`");
         while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
+            self.eat_trivia();
+            if self.at(SyntaxKind::Comma) {
+                // `f(, x)` – don't get stuck; treat as a missing expression.
+                self.error_here("expected argument expression");
+                self.bump();
+                continue;
+            }
+            if !can_start_expression(self.current()) {
+                // Common during typing: `@Anno(` followed by the next declaration.
+                self.error_here("expected argument expression");
+                break;
+            }
             self.parse_expression(0);
             if self.at(SyntaxKind::Comma) {
                 self.bump();
@@ -675,7 +924,7 @@ impl<'a> Parser<'a> {
         // If the default value is malformed, skip junk until the terminating `;`
         // to avoid cascading errors.
         if !self.at(SyntaxKind::Semicolon) {
-            self.recover_to(&[SyntaxKind::Semicolon, SyntaxKind::RBrace, SyntaxKind::Eof]);
+            self.recover_to(ANNOTATION_DEFAULT_RECOVERY);
         }
 
         self.builder.finish_node();
@@ -731,12 +980,48 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_block(&mut self) {
+        self.parse_block_with_recovery(TokenSet::new(&[]));
+    }
+
+    fn parse_block_with_recovery(&mut self, recovery: TokenSet) {
         self.builder.start_node(SyntaxKind::Block.into());
         self.expect(SyntaxKind::LBrace, "expected `{`");
+
+        let block_indent = if self.last_non_trivia_kind == SyntaxKind::LBrace {
+            self.line_indent(self.last_non_trivia_range.start)
+        } else {
+            // `{` is missing; fall back to the indent of the first token in the block.
+            let start = self.current_range().start;
+            self.line_indent(start)
+        };
+
         while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            let start = self.current_range().start;
+            let (indent, is_first) = self.line_indent_and_is_first_token(start);
+            if is_first && indent <= block_indent && recovery.contains(self.current()) {
+                break;
+            }
+
+            let before = self.tokens.len();
             self.parse_statement();
+            self.force_progress(before, STMT_RECOVERY);
         }
-        self.expect(SyntaxKind::RBrace, "expected `}`");
+
+        if self.at(SyntaxKind::RBrace) {
+            let start = self.current_range().start;
+            let (indent, is_first) = self.line_indent_and_is_first_token(start);
+            if is_first && indent < block_indent {
+                // A closing brace that is less-indented than the block start is very likely
+                // meant for an outer construct. Insert a missing `}` and let the caller
+                // consume the real one.
+                self.error_here("expected `}` to close block");
+                self.insert_missing(SyntaxKind::MissingRBrace);
+                self.builder.finish_node();
+                return;
+            }
+        }
+
+        self.expect(SyntaxKind::RBrace, "expected `}` to close block");
         self.builder.finish_node();
     }
 
@@ -761,7 +1046,11 @@ impl<'a> Parser<'a> {
                 self.expect(SyntaxKind::LParen, "expected `(` after if");
                 self.parse_expression(0);
                 self.expect(SyntaxKind::RParen, "expected `)`");
-                self.parse_statement();
+                if self.at(SyntaxKind::LBrace) {
+                    self.parse_block_with_recovery(IF_THEN_BLOCK_RECOVERY);
+                } else {
+                    self.parse_statement();
+                }
                 if self.at(SyntaxKind::ElseKw) {
                     self.bump();
                     self.parse_statement();
@@ -779,6 +1068,7 @@ impl<'a> Parser<'a> {
                 self.builder.start_node(SyntaxKind::SwitchBlock.into());
                 self.expect(SyntaxKind::LBrace, "expected `{` after switch");
                 while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+                    let before = self.tokens.len();
                     self.eat_trivia();
                     if self.at(SyntaxKind::CaseKw) || self.at(SyntaxKind::DefaultKw) {
                         let is_arrow = self.parse_switch_label();
@@ -789,6 +1079,14 @@ impl<'a> Parser<'a> {
                                 self.parse_block();
                             } else if self.at(SyntaxKind::Semicolon) {
                                 self.bump();
+                            } else if self.at(SyntaxKind::CaseKw)
+                                || self.at(SyntaxKind::DefaultKw)
+                                || self.at(SyntaxKind::RBrace)
+                                || self.at(SyntaxKind::Eof)
+                            {
+                                // Common during typing: `case 1 ->` followed immediately by
+                                // the next label / closing brace.
+                                self.error_here("expected switch rule body after `->`");
                             } else {
                                 self.parse_statement();
                             }
@@ -796,6 +1094,7 @@ impl<'a> Parser<'a> {
                     } else {
                         self.parse_statement();
                     }
+                    self.force_progress(before, STMT_RECOVERY);
                 }
                 self.expect(SyntaxKind::RBrace, "expected `}` after switch block");
                 self.builder.finish_node(); // SwitchBlock
@@ -827,7 +1126,11 @@ impl<'a> Parser<'a> {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::DoWhileStatement.into());
                 self.bump();
-                self.parse_statement();
+                if self.at(SyntaxKind::LBrace) {
+                    self.parse_block_with_recovery(DO_BODY_RECOVERY);
+                } else {
+                    self.parse_statement();
+                }
                 self.expect(SyntaxKind::WhileKw, "expected `while` after `do` body");
                 self.expect(SyntaxKind::LParen, "expected `(` after while");
                 self.parse_expression(0);
@@ -1234,7 +1537,7 @@ impl<'a> Parser<'a> {
         if self.at(SyntaxKind::LParen) {
             self.parse_resource_specification();
         }
-        self.parse_block();
+        self.parse_block_with_recovery(TRY_BLOCK_RECOVERY);
         while self.at(SyntaxKind::CatchKw) {
             self.builder.start_node(SyntaxKind::CatchClause.into());
             self.bump();
@@ -1252,13 +1555,13 @@ impl<'a> Parser<'a> {
             }
             self.expect_ident_like("expected catch parameter name");
             self.expect(SyntaxKind::RParen, "expected `)` after catch parameter");
-            self.parse_block();
+            self.parse_block_with_recovery(TRY_BLOCK_RECOVERY);
             self.builder.finish_node();
         }
         if self.at(SyntaxKind::FinallyKw) {
             self.builder.start_node(SyntaxKind::FinallyClause.into());
             self.bump();
-            self.parse_block();
+            self.parse_block_with_recovery(TRY_BLOCK_RECOVERY);
             self.builder.finish_node();
         }
         self.builder.finish_node();
@@ -1418,8 +1721,13 @@ impl<'a> Parser<'a> {
                     self.parse_type();
                 }
                 self.builder.finish_node();
-            } else {
+            } else if self.at_type_start() {
                 self.parse_type();
+            } else {
+                self.builder.start_node(SyntaxKind::Error.into());
+                self.error_here("expected type argument");
+                self.recover_to_including_angles(TYPE_ARGUMENT_RECOVERY);
+                self.builder.finish_node();
             }
             self.builder.finish_node();
             if self.at(SyntaxKind::Comma) {
@@ -1444,6 +1752,7 @@ impl<'a> Parser<'a> {
             }
             _ => {
                 self.error_here("expected `>`");
+                self.insert_missing(SyntaxKind::MissingGreater);
             }
         }
     }
@@ -1614,8 +1923,11 @@ impl<'a> Parser<'a> {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::Error.into());
                 self.error_here("expected expression");
-                // Consume one token to ensure progress.
-                if !self.at(SyntaxKind::Eof) {
+                // If we're sitting at a structural delimiter, don't consume it: callers
+                // typically expect to see it and can recover locally.
+                self.eat_trivia();
+                let kind = self.tokens.front().map(|t| t.kind).unwrap_or(SyntaxKind::Eof);
+                if kind != SyntaxKind::Eof && !EXPR_RECOVERY.contains(kind) {
                     self.bump_any();
                 }
                 self.builder.finish_node();
@@ -1953,45 +2265,34 @@ impl<'a> Parser<'a> {
     fn recover_top_level(&mut self) {
         self.builder.start_node(SyntaxKind::Error.into());
         self.error_here("unexpected token at top level");
-        self.recover_to(&[
-            SyntaxKind::PackageKw,
-            SyntaxKind::ImportKw,
-            SyntaxKind::ClassKw,
-            SyntaxKind::InterfaceKw,
-            SyntaxKind::EnumKw,
-            SyntaxKind::RecordKw,
-            SyntaxKind::Eof,
-        ]);
+        self.recover_to(TOP_LEVEL_RECOVERY);
         self.builder.finish_node();
     }
 
     fn recover_to_class_member_boundary(&mut self) {
-        self.recover_to(&[
-            SyntaxKind::Semicolon,
-            SyntaxKind::RBrace,
-            SyntaxKind::ClassKw,
-            SyntaxKind::InterfaceKw,
-            SyntaxKind::EnumKw,
-            SyntaxKind::RecordKw,
-            SyntaxKind::PublicKw,
-            SyntaxKind::PrivateKw,
-            SyntaxKind::ProtectedKw,
-            SyntaxKind::StaticKw,
-            SyntaxKind::FinalKw,
-            SyntaxKind::AbstractKw,
-            SyntaxKind::At,
-        ]);
-        // If we stopped at `;`, consume it to avoid loops.
-        if self.at(SyntaxKind::Semicolon) {
-            self.bump();
-        }
+        self.recover_to(MEMBER_RECOVERY);
     }
 
-    fn recover_to(&mut self, recovery: &[SyntaxKind]) {
-        while !self.at(SyntaxKind::Eof) {
-            if recovery.contains(&self.current()) {
+    fn recover_to(&mut self, recovery: TokenSet) {
+        self.recover_to_inner(recovery, false);
+    }
+
+    fn recover_to_including_angles(&mut self, recovery: TokenSet) {
+        self.recover_to_inner(recovery, true);
+    }
+
+    fn recover_to_inner(&mut self, recovery: TokenSet, track_angles: bool) {
+        let mut depth = DelimiterDepth::default();
+        loop {
+            self.eat_trivia();
+            let kind = self.tokens.front().map(|t| t.kind).unwrap_or(SyntaxKind::Eof);
+            if kind == SyntaxKind::Eof {
                 break;
             }
+            if depth.is_zero(track_angles) && recovery.contains(kind) {
+                break;
+            }
+            depth.update(kind, track_angles);
             self.bump_any();
         }
     }
@@ -2104,6 +2405,11 @@ impl<'a> Parser<'a> {
 
     fn bump_any(&mut self) {
         if let Some(tok) = self.tokens.pop_front() {
+            if !tok.kind.is_trivia() && tok.kind != SyntaxKind::Eof {
+                self.last_non_trivia_end = tok.range.end;
+                self.last_non_trivia_range = tok.range;
+                self.last_non_trivia_kind = tok.kind;
+            }
             let text = tok.text(self.input);
             self.builder.token(tok.kind.into(), text);
         }
@@ -2114,7 +2420,27 @@ impl<'a> Parser<'a> {
             self.bump();
             true
         } else {
-            self.error_here(message);
+            let range = match kind {
+                SyntaxKind::Semicolon => {
+                    let pos = self.last_non_trivia_end;
+                    TextRange { start: pos, end: pos }
+                }
+                _ => self.current_range(),
+            };
+
+            let found = self.current_token_display();
+            self.error_at(range, format!("{message}, found {found}"));
+
+            let missing = match kind {
+                SyntaxKind::Semicolon => Some(SyntaxKind::MissingSemicolon),
+                SyntaxKind::RParen => Some(SyntaxKind::MissingRParen),
+                SyntaxKind::RBrace => Some(SyntaxKind::MissingRBrace),
+                SyntaxKind::RBracket => Some(SyntaxKind::MissingRBracket),
+                _ => None,
+            };
+            if let Some(missing) = missing {
+                self.insert_missing(missing);
+            }
             false
         }
     }
@@ -2129,10 +2455,90 @@ impl<'a> Parser<'a> {
 
     fn error_here(&mut self, message: &str) {
         let range = self.current_range();
-        self.errors.push(ParseError {
-            message: message.to_string(),
-            range,
-        });
+        let found = self.current_token_display();
+        self.error_at(range, format!("{message}, found {found}"));
+    }
+
+    fn error_at(&mut self, range: TextRange, message: String) {
+        self.errors.push(ParseError { message, range });
+    }
+
+    fn insert_missing(&mut self, kind: SyntaxKind) {
+        self.builder.token(kind.into(), "");
+    }
+
+    fn current_token_display(&mut self) -> String {
+        self.eat_trivia();
+        match self.tokens.front() {
+            None => "end of file".to_string(),
+            Some(tok) if tok.kind == SyntaxKind::Eof => "end of file".to_string(),
+            Some(tok) => format!("{:?} `{}`", tok.kind, tok.text(self.input)),
+        }
+    }
+
+    fn force_progress(&mut self, before_len: usize, recovery: TokenSet) {
+        if self.tokens.len() != before_len {
+            return;
+        }
+        if self.at(SyntaxKind::Eof) {
+            return;
+        }
+
+        self.builder.start_node(SyntaxKind::Error.into());
+        self.error_here("unexpected token");
+        // Consume at least one token, then synchronize to the next boundary.
+        self.bump_any();
+        self.recover_to(recovery);
+        self.builder.finish_node();
+    }
+
+    fn line_indent(&self, offset: u32) -> usize {
+        let bytes = self.input.as_bytes();
+        let mut i = (offset as usize).min(bytes.len());
+        while i > 0 {
+            match bytes[i - 1] {
+                b'\n' | b'\r' => break,
+                _ => i -= 1,
+            }
+        }
+
+        let mut indent = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b' ' | b'\t' => {
+                    indent += 1;
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+        indent
+    }
+
+    fn line_indent_and_is_first_token(&self, offset: u32) -> (usize, bool) {
+        let bytes = self.input.as_bytes();
+        let offset = (offset as usize).min(bytes.len());
+
+        let mut i = offset;
+        while i > 0 {
+            match bytes[i - 1] {
+                b'\n' | b'\r' => break,
+                _ => i -= 1,
+            }
+        }
+
+        let mut indent = 0usize;
+        while i < bytes.len() {
+            match bytes[i] {
+                b' ' | b'\t' => {
+                    indent += 1;
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+
+        (indent, i == offset)
     }
 
     fn current_range(&mut self) -> TextRange {

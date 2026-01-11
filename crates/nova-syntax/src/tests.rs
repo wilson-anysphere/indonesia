@@ -1148,3 +1148,154 @@ class Bar {}
 
     assert_eq!(class_count, 2);
 }
+
+#[test]
+fn java_error_recovery_table() {
+    struct Case {
+        name: &'static str,
+        input: &'static str,
+    }
+
+    let cases = [
+        Case {
+            name: "missing_semicolon_after_field",
+            input: r#"
+class Foo {
+  int x = 0
+  int y = 1;
+}
+class Bar {}
+"#,
+        },
+        Case {
+            name: "missing_semicolon_after_local_var",
+            input: r#"
+class Foo {
+  void m() {
+    int x = 0
+    int y = 1;
+  }
+}
+class Bar {}
+"#,
+        },
+        Case {
+            name: "missing_rparen_in_if",
+            input: r#"
+class Foo {
+  void m() {
+    if (true {
+      int x = 0;
+    }
+  }
+}
+class Bar {}
+"#,
+        },
+        Case {
+            name: "missing_rbrace_in_class_body",
+            input: r#"
+class Foo {
+  int x = 0;
+class Bar {}
+"#,
+        },
+        Case {
+            name: "malformed_generic_missing_gt",
+            input: r#"
+import java.util.List;
+class Foo {
+  List<String x;
+}
+class Bar {}
+"#,
+        },
+        Case {
+            name: "malformed_annotation_arg_list",
+            input: r#"
+@interface Anno {}
+
+@Anno(
+class Foo {}
+
+class Bar {}
+"#,
+        },
+        Case {
+            name: "incomplete_switch_rule_arrow",
+            input: r#"
+class Foo {
+  void m(int x) {
+    switch (x) {
+      case 1 ->
+      case 2 -> { }
+    }
+  }
+}
+class Bar {}
+"#,
+        },
+        Case {
+            name: "incomplete_method_missing_rbrace",
+            input: r#"
+class Foo {
+  void m() {
+    int x = 0;
+  // missing closing brace for the method
+  void n() {}
+}
+class Bar {}
+"#,
+        },
+        Case {
+            name: "try_missing_rbrace_before_catch",
+            input: r#"
+class Foo {
+  void m() {
+    try {
+      int x = 0;
+    catch (Exception e) {
+      return;
+    }
+  }
+}
+class Bar {}
+"#,
+        },
+        Case {
+            name: "incomplete_method_missing_rparen_in_params",
+            input: r#"
+class Foo {
+  void m(int x {
+    return;
+  }
+}
+class Bar {}
+"#,
+        },
+    ];
+
+    for case in cases {
+        let result = parse_java(case.input);
+        assert!(
+            !result.errors.is_empty(),
+            "{}: expected at least one error",
+            case.name
+        );
+
+        let root = result.syntax();
+        let top_level_class_count = root
+            .children()
+            .filter(|n| n.kind() == SyntaxKind::ClassDeclaration)
+            .count();
+
+        assert!(
+            top_level_class_count >= 2,
+            "{}: expected to recover enough to parse `class Bar {{}}` as a top-level class (got {} top-level classes)\nerrors: {:#?}\nsyntax:\n{}",
+            case.name,
+            top_level_class_count,
+            result.errors,
+            crate::parser::debug_dump(&root),
+        );
+    }
+}

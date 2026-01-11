@@ -275,6 +275,13 @@ pub enum SyntaxKind {
     Guard,
     CaseLabelElement,
 
+    // --- Synthetic missing tokens (zero-width) ---
+    MissingSemicolon,
+    MissingRParen,
+    MissingRBrace,
+    MissingRBracket,
+    MissingGreater,
+
     __Last,
 }
 
