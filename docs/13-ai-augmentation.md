@@ -439,6 +439,29 @@ completion_ranking_ms = 20
 multi_token_completion_ms = 250
 ```
 
+### Code-editing policy (patches / file edits)
+
+Nova treats **patch-based code edits** (anything that applies edits to files) as higher risk than
+explain-only AI actions. In particular, anonymizing identifiers is great for privacy, but it makes
+LLM-generated patches impossible to apply reliably to the original source.
+
+As a result, Nova refuses AI code edits when:
+
+- `ai.privacy.local_only = false` (cloud mode) **and**
+- anonymization is enabled (the default in cloud mode)
+
+To enable cloud code edits, you must **explicitly opt in** and **disable anonymization**:
+
+```toml
+[ai.privacy]
+local_only = false
+anonymize = false
+allow_cloud_code_edits = true
+allow_code_edits_without_anonymization = true
+```
+
+Explain-only actions are always allowed regardless of these settings.
+
 ---
 
 ## Context Building
