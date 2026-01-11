@@ -744,11 +744,11 @@ impl Database {
     }
 
     pub fn set_project_files(&self, project: ProjectId, files: Arc<Vec<FileId>>) {
-        self.inner.write().set_project_files(project, files);
+        self.inner.lock().set_project_files(project, files);
     }
 
     pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
-        let mut db = self.inner.write();
+        let mut db = self.inner.lock();
         db.set_file_rel_path(file, Arc::clone(&rel_path));
         // Keep the non-tracked file path map in sync so existing persistence
         // caches (AST artifacts, derived caches) can reuse the same keys.
