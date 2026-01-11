@@ -29,10 +29,58 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      # Optional optimization: reuse a cached baseline run from the `perf` workflow on `main`
+      # instead of benching the base commit via a worktree.
+      - name: Find cached baseline run (main)
+        if: github.event_name == 'pull_request' && github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.repo.full_name == github.repository
+        id: baseline-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          api_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/perf.yml/runs?branch=main&per_page=20"
+          run_id="$(
+            curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${api_url}" | \
+              python -c 'import json,os,sys; base=os.environ["BASE_SHA"]; data=json.load(sys.stdin); print(next((str(run["id"]) for run in data.get("workflow_runs", []) if run.get("head_sha")==base and run.get("conclusion")=="success"), ""), end="")' \
+              || true
+          )"
+
+          if [ -n "${run_id}" ]; then
+            echo "run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "No cached baseline artifact found for ${BASE_SHA}; benching base commit instead."
+          fi
+
+      - name: Download cached baseline artifact (main)
+        if: github.event_name == 'pull_request' && steps.baseline-run.outputs.run_id != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: perf-baseline-main
+          path: baseline
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.baseline-run.outputs.run_id }}
+
+      - name: Prepare baseline from artifact
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euxo pipefail
+          if [ -f baseline/perf-current.json ]; then
+            cp baseline/perf-current.json perf-base.json
+          fi
+
       - name: Bench (baseline)
         if: github.event_name == 'pull_request'
         run: |
           set -euxo pipefail
+          if [ -f "${GITHUB_WORKSPACE}/perf-base.json" ]; then
+            echo "perf-base.json already present; skipping baseline bench."
+            exit 0
+          fi
           git worktree add /tmp/nova-perf-base ${{ github.event.pull_request.base.sha }}
           pushd /tmp/nova-perf-base
           cargo bench -p nova-core --bench critical_paths
