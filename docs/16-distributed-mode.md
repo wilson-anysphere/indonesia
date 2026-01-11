@@ -88,8 +88,10 @@ Distributed mode uses the cache directory as a **best-effort warm start** mechan
 - **Persisted:** the per-shard `ShardIndex` (symbols + a few counters), stored as
   `shard_<id>.bin` under `--cache-dir`.
 - **Not persisted:** the shard’s full file contents / in-memory `path -> text` map.
-- Cache entries are versioned and are ignored if the Nova version or router↔worker protocol version
-  changes (workers will cold-start and rebuild the index).
+- Cache entries are versioned and are ignored if the shard cache *format version* or the
+  router↔worker *protocol version* changes (workers will cold-start and rebuild the index).
+  - Note: legacy cache blobs from older Nova versions may additionally be gated on `NOVA_VERSION`
+    during migration.
 
 ### Router startup behavior
 
