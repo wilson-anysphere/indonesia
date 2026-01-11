@@ -170,6 +170,7 @@ impl FrameworkWorkspaceCache {
                 let classpath: Vec<_> = config
                     .classpath
                     .iter()
+                    .chain(config.module_path.iter())
                     .filter(|entry| match entry.kind {
                         nova_project::ClasspathEntryKind::Directory => entry.path.is_dir(),
                         nova_project::ClasspathEntryKind::Jar => entry.path.is_file(),

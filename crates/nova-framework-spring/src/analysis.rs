@@ -1,11 +1,11 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use nova_framework_parse::{
-    collect_annotations, find_named_child, modifier_node, node_text, parse_java, simplify_type,
-    visit_nodes, ParsedAnnotation,
+    collect_annotations, find_named_child, modifier_node, node_text, parse_class_literal, parse_java,
+    simplify_type, visit_nodes, ParsedAnnotation,
 };
 use nova_types::{Diagnostic, Span};
-use tree_sitter::Node;
+use tree_sitter::{Node, Tree};
 
 pub const SPRING_NO_BEAN: &str = "SPRING_NO_BEAN";
 pub const SPRING_AMBIGUOUS_BEAN: &str = "SPRING_AMBIGUOUS_BEAN";
@@ -34,6 +34,9 @@ pub struct Bean {
     pub name: String,
     pub ty: String,
     pub qualifiers: Vec<String>,
+    pub primary: bool,
+    pub profiles: Vec<String>,
+    pub conditional: bool,
     pub location: SourceSpan,
     pub kind: BeanKind,
 }
@@ -48,6 +51,7 @@ pub enum InjectionKind {
 pub struct InjectionPoint {
     pub kind: InjectionKind,
     pub owner_class: String,
+    pub name: String,
     pub ty: String,
     pub qualifier: Option<String>,
     pub location: SourceSpan,
@@ -157,22 +161,30 @@ impl ClassHierarchy {
 
 /// Analyze a set of Java sources for Spring beans and autowiring issues.
 pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
+    let parsed: Vec<Option<Tree>> = sources.iter().map(|src| parse_java(src).ok()).collect();
+
+    let scan_base_packages = discover_component_scan_base_packages(&parsed, sources);
+
     let mut beans = Vec::<Bean>::new();
     let mut injections = Vec::<InjectionPoint>::new();
     let mut hierarchy = ClassHierarchy::default();
 
     // Parse sources and discover beans/injections.
-    for (source_idx, src) in sources.iter().enumerate() {
-        let Ok(tree) = parse_java(src) else {
+    for (source_idx, (tree, src)) in parsed.iter().zip(sources.iter()).enumerate() {
+        let Some(tree) = tree.as_ref() else {
             continue;
         };
         let root = tree.root_node();
+        let package = parse_package_name(root, src).unwrap_or_default();
+        let in_scan = scan_base_packages.is_empty() || package_matches_any(&package, &scan_base_packages);
+
         visit_nodes(root, &mut |node| {
             if node.kind() == "class_declaration" {
                 parse_class_declaration(
                     node,
                     source_idx,
                     src,
+                    in_scan,
                     &mut beans,
                     &mut injections,
                     &mut hierarchy,
@@ -196,6 +208,26 @@ pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
                 let bean = &beans[idx];
                 bean.name == qualifier || bean.qualifiers.iter().any(|q| q == qualifier)
             });
+        } else if candidates.len() > 1 {
+            // `@Primary` disambiguation.
+            let primary: Vec<usize> = candidates
+                .iter()
+                .copied()
+                .filter(|&idx| beans.get(idx).is_some_and(|b| b.primary))
+                .collect();
+            if primary.len() == 1 {
+                candidates = primary;
+            } else {
+                // Best-effort: fall back to by-name resolution when it uniquely matches a bean name.
+                let named: Vec<usize> = candidates
+                    .iter()
+                    .copied()
+                    .filter(|&idx| beans.get(idx).is_some_and(|b| b.name == injection.name))
+                    .collect();
+                if named.len() == 1 {
+                    candidates = named;
+                }
+            }
         }
 
         injection_candidates.push(candidates);
@@ -234,33 +266,58 @@ fn diagnostics(model: &BeanModel) -> Vec<SourceDiagnostic> {
                 source: injection.location.source,
                 diagnostic: Diagnostic::error(
                     SPRING_NO_BEAN,
-                    format!(
-                        "No Spring bean of type `{}` found for injection",
-                        injection.ty
-                    ),
+                    match injection.qualifier.as_deref() {
+                        Some(qualifier) => format!(
+                            "No Spring bean of type `{}` with qualifier `{}` found for injection",
+                            injection.ty, qualifier
+                        ),
+                        None => format!(
+                            "No Spring bean of type `{}` found for injection",
+                            injection.ty
+                        ),
+                    },
                     Some(injection.location.span),
                 ),
             }),
             1 => {}
             _ => {
-                if injection.qualifier.is_none() {
-                    let names = candidates
+                let names = candidates
+                    .iter()
+                    .filter_map(|idx| model.beans.get(*idx).map(|b| b.name.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                let message = if let Some(qualifier) = injection.qualifier.as_deref() {
+                    format!(
+                        "Multiple Spring beans of type `{}` match qualifier `{}` ({names})",
+                        injection.ty, qualifier
+                    )
+                } else {
+                    let primary_count = candidates
                         .iter()
-                        .filter_map(|idx| model.beans.get(*idx).map(|b| b.name.as_str()))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    out.push(SourceDiagnostic {
-                        source: injection.location.source,
-                        diagnostic: Diagnostic::error(
-                            SPRING_AMBIGUOUS_BEAN,
-                            format!(
-                                "Multiple Spring beans of type `{}` found ({names}); use @Qualifier to disambiguate",
-                                injection.ty
-                            ),
-                            Some(injection.location.span),
-                        ),
-                    });
-                }
+                        .filter(|idx| model.beans.get(**idx).is_some_and(|b| b.primary))
+                        .count();
+                    if primary_count > 1 {
+                        format!(
+                            "Multiple @Primary Spring beans of type `{}` found ({names}); use @Qualifier to disambiguate",
+                            injection.ty
+                        )
+                    } else {
+                        format!(
+                            "Multiple Spring beans of type `{}` found ({names}); mark one @Primary or use @Qualifier to disambiguate",
+                            injection.ty
+                        )
+                    }
+                };
+
+                out.push(SourceDiagnostic {
+                    source: injection.location.source,
+                    diagnostic: Diagnostic::error(
+                        SPRING_AMBIGUOUS_BEAN,
+                        message,
+                        Some(injection.location.span),
+                    ),
+                });
             }
         }
     }
@@ -385,6 +442,7 @@ fn parse_class_declaration(
     node: Node<'_>,
     source_idx: usize,
     source: &str,
+    in_scan: bool,
     beans: &mut Vec<Bean>,
     injections: &mut Vec<InjectionPoint>,
     hierarchy: &mut ClassHierarchy,
@@ -419,17 +477,29 @@ fn parse_class_declaration(
         },
     );
 
-    if let Some(bean) = parse_component_bean(&annotations, source_idx, class_span, &class_name) {
+    let bean = in_scan
+        .then(|| parse_component_bean(&annotations, source_idx, class_span, &class_name))
+        .flatten();
+    let is_bean = bean.is_some();
+    if let Some(bean) = bean {
         beans.push(bean);
     }
 
-    let is_configuration = annotations.iter().any(|a| a.simple_name == "Configuration");
+    // `@SpringBootApplication` implies `@Configuration`.
+    let is_configuration = in_scan
+        && annotations.iter().any(|a| {
+            matches!(
+                a.simple_name.as_str(),
+                "Configuration" | "SpringBootApplication" | "TestConfiguration"
+            )
+        });
 
     parse_class_body(
         body,
         source_idx,
         source,
         &class_name,
+        is_bean,
         is_configuration,
         beans,
         injections,
@@ -442,7 +512,14 @@ fn parse_component_bean(
     class_span: Span,
     class_name: &str,
 ) -> Option<Bean> {
-    const STEREOTYPES: &[&str] = &["Component", "Service", "Repository", "Controller"];
+    const STEREOTYPES: &[&str] = &[
+        "Component",
+        "Service",
+        "Repository",
+        "Controller",
+        "Configuration",
+        "SpringBootApplication",
+    ];
     let stereotype = annotations
         .iter()
         .find(|a| STEREOTYPES.contains(&a.simple_name.as_str()))?;
@@ -468,10 +545,17 @@ fn parse_component_bean(
         .filter(|q| !q.is_empty())
         .collect::<Vec<_>>();
 
+    let primary = annotations.iter().any(|a| a.simple_name == "Primary");
+    let profiles = extract_profiles(annotations);
+    let conditional = annotations.iter().any(|a| a.simple_name.starts_with("Conditional"));
+
     Some(Bean {
         name,
         ty: class_name.to_string(),
         qualifiers,
+        primary,
+        profiles,
+        conditional,
         location: SourceSpan {
             source: source_idx,
             span: class_span,
@@ -485,6 +569,7 @@ fn parse_class_body(
     source_idx: usize,
     source: &str,
     class_name: &str,
+    collect_injections: bool,
     is_configuration: bool,
     beans: &mut Vec<Bean>,
     injections: &mut Vec<InjectionPoint>,
@@ -496,10 +581,14 @@ fn parse_class_body(
     for child in body.named_children(&mut cursor) {
         match child.kind() {
             "field_declaration" => {
-                parse_field_injections(child, source_idx, source, class_name, injections)
+                if collect_injections {
+                    parse_field_injections(child, source_idx, source, class_name, injections);
+                }
             }
             "constructor_declaration" => {
-                constructors.push(parse_constructor(child, source_idx, source, class_name))
+                if collect_injections {
+                    constructors.push(parse_constructor(child, source_idx, source, class_name));
+                }
             }
             "method_declaration" if is_configuration => {
                 if let Some(bean) = parse_bean_method(child, source_idx, source) {
@@ -510,7 +599,9 @@ fn parse_class_body(
         }
     }
 
-    parse_constructor_injections(constructors, injections);
+    if collect_injections {
+        parse_constructor_injections(constructors, injections);
+    }
 }
 
 fn parse_field_injections(
@@ -557,10 +648,12 @@ fn parse_field_injections(
         let Some(name_node) = name_node else {
             continue;
         };
+        let name = node_text(source, name_node).to_string();
         let span = Span::new(name_node.start_byte(), name_node.end_byte());
         injections.push(InjectionPoint {
             kind: InjectionKind::Field,
             owner_class: class_name.to_string(),
+            name,
             ty: ty.clone(),
             qualifier: qualifier.clone(),
             location: SourceSpan {
@@ -573,6 +666,7 @@ fn parse_field_injections(
 
 #[derive(Clone, Debug)]
 struct ConstructorParam {
+    name: String,
     ty: String,
     qualifier: Option<String>,
     span: Span,
@@ -640,6 +734,7 @@ fn parse_constructor_param(node: Node<'_>, source: &str) -> Option<ConstructorPa
     let name_node = node
         .child_by_field_name("name")
         .or_else(|| find_named_child(node, "identifier"))?;
+    let name = node_text(source, name_node).to_string();
     let span = Span::new(name_node.start_byte(), name_node.end_byte());
 
     let ty_node = node
@@ -648,6 +743,7 @@ fn parse_constructor_param(node: Node<'_>, source: &str) -> Option<ConstructorPa
     let ty = simplify_type(node_text(source, ty_node));
 
     Some(ConstructorParam {
+        name,
         ty,
         qualifier,
         span,
@@ -669,6 +765,7 @@ fn parse_constructor_injections(ctors: Vec<ConstructorData>, injections: &mut Ve
             injections.push(InjectionPoint {
                 kind: InjectionKind::ConstructorParam,
                 owner_class: ctor.owner_class.clone(),
+                name: param.name.clone(),
                 ty: param.ty.clone(),
                 qualifier: param.qualifier.clone(),
                 location: SourceSpan {
@@ -702,7 +799,7 @@ fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<
         .args
         .get("name")
         .or_else(|| bean_ann.args.get("value"))
-        .cloned()
+        .and_then(|raw| parse_string_list(raw).into_iter().next())
         .filter(|s| !s.is_empty());
     let name = explicit_name.unwrap_or_else(|| method_name.clone());
 
@@ -718,16 +815,290 @@ fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<
         .filter(|q| !q.is_empty())
         .collect::<Vec<_>>();
 
+    let primary = annotations.iter().any(|a| a.simple_name == "Primary");
+    let profiles = extract_profiles(&annotations);
+    let conditional = annotations.iter().any(|a| a.simple_name.starts_with("Conditional"));
+
     Some(Bean {
         name,
         ty,
         qualifiers,
+        primary,
+        profiles,
+        conditional,
         location: SourceSpan {
             source: source_idx,
             span,
         },
         kind: BeanKind::BeanMethod,
     })
+}
+
+fn parse_package_name(root: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        if child.kind() != "package_declaration" {
+            continue;
+        }
+
+        if let Some(name_node) = child.child_by_field_name("name") {
+            let pkg = node_text(source, name_node).trim();
+            if !pkg.is_empty() {
+                return Some(pkg.to_string());
+            }
+        }
+
+        let text = node_text(source, child);
+        let pkg = text
+            .trim()
+            .strip_prefix("package")
+            .unwrap_or(text)
+            .trim()
+            .trim_end_matches(';')
+            .trim();
+        if !pkg.is_empty() {
+            return Some(pkg.to_string());
+        }
+    }
+    None
+}
+
+fn package_matches_any(package: &str, bases: &HashSet<String>) -> bool {
+    bases.iter().any(|base| {
+        if base.is_empty() {
+            package.is_empty()
+        } else {
+            package == base || package.starts_with(&format!("{base}."))
+        }
+    })
+}
+
+fn discover_component_scan_base_packages(
+    parsed: &[Option<Tree>],
+    sources: &[&str],
+) -> HashSet<String> {
+    let mut class_packages = HashMap::<String, String>::new();
+    let mut scan_classes: Vec<(String, Vec<ParsedAnnotation>)> = Vec::new();
+
+    for (tree, src) in parsed.iter().zip(sources.iter()) {
+        let Some(tree) = tree.as_ref() else {
+            continue;
+        };
+        let root = tree.root_node();
+        let package = parse_package_name(root, src).unwrap_or_default();
+
+        visit_nodes(root, &mut |node| {
+            if node.kind() != "class_declaration" {
+                return;
+            }
+
+            let annotations = modifier_node(node)
+                .map(|m| collect_annotations(m, src))
+                .unwrap_or_default();
+
+            let name_node = node
+                .child_by_field_name("name")
+                .or_else(|| find_named_child(node, "identifier"));
+            let Some(name_node) = name_node else {
+                return;
+            };
+            let class_name = node_text(src, name_node).to_string();
+            class_packages
+                .entry(class_name)
+                .or_insert_with(|| package.clone());
+
+            let has_scan = annotations.iter().any(|a| {
+                matches!(a.simple_name.as_str(), "ComponentScan" | "SpringBootApplication")
+            });
+            if has_scan {
+                scan_classes.push((package.clone(), annotations));
+            }
+        });
+    }
+
+    if scan_classes.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut base_packages = HashSet::<String>::new();
+    for (class_package, annotations) in scan_classes {
+        let mut discovered = Vec::new();
+        for ann in &annotations {
+            match ann.simple_name.as_str() {
+                "ComponentScan" => {
+                    discovered.extend(parse_string_list_from_args(&ann.args, &["basePackages", "value"]));
+                    discovered.extend(parse_packages_from_class_literals(
+                        ann.args.get("basePackageClasses").map(String::as_str),
+                        &class_packages,
+                    ));
+                }
+                "SpringBootApplication" => {
+                    discovered.extend(parse_string_list_from_args(
+                        &ann.args,
+                        &["scanBasePackages"],
+                    ));
+                    discovered.extend(parse_packages_from_class_literals(
+                        ann.args
+                            .get("scanBasePackageClasses")
+                            .map(String::as_str),
+                        &class_packages,
+                    ));
+                }
+                _ => {}
+            }
+        }
+
+        if discovered.is_empty() {
+            discovered.push(class_package.clone());
+        }
+
+        for pkg in discovered {
+            let pkg = pkg.trim().trim_end_matches('.').to_string();
+            if !pkg.is_empty() || class_package.is_empty() {
+                base_packages.insert(pkg);
+            }
+        }
+    }
+
+    if base_packages.is_empty() {
+        return HashSet::new();
+    }
+
+    let any_match = class_packages
+        .values()
+        .any(|pkg| package_matches_any(pkg, &base_packages));
+    if any_match {
+        base_packages
+    } else {
+        // If we can't resolve the scan base packages (e.g. non-literal expressions),
+        // avoid false negatives by disabling scan filtering.
+        HashSet::new()
+    }
+}
+
+fn parse_string_list_from_args(args: &HashMap<String, String>, keys: &[&str]) -> Vec<String> {
+    for key in keys {
+        if let Some(raw) = args.get(*key) {
+            let values = parse_string_list(raw);
+            if !values.is_empty() {
+                return values;
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn parse_packages_from_class_literals(
+    raw: Option<&str>,
+    class_packages: &HashMap<String, String>,
+) -> Vec<String> {
+    let Some(raw) = raw else {
+        return Vec::new();
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let inner = trimmed
+        .strip_prefix('{')
+        .and_then(|v| v.strip_suffix('}'))
+        .unwrap_or(trimmed);
+
+    let mut out = Vec::new();
+    for tok in inner.split(',') {
+        let tok = tok.trim();
+        if tok.is_empty() {
+            continue;
+        }
+
+        let without_suffix = tok.strip_suffix(".class").unwrap_or(tok).trim();
+        if without_suffix.is_empty() {
+            continue;
+        }
+
+        if let Some((pkg, _)) = without_suffix.rsplit_once('.') {
+            if !pkg.trim().is_empty() {
+                out.push(pkg.trim().to_string());
+            }
+            continue;
+        }
+
+        if let Some(simple) = parse_class_literal(tok) {
+            if let Some(pkg) = class_packages.get(&simple) {
+                out.push(pkg.clone());
+            }
+        }
+    }
+
+    out
+}
+
+fn parse_string_list(raw: &str) -> Vec<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+
+    // Fast path: extract any quoted string literals.
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut escape = false;
+    for ch in raw.chars() {
+        if in_string {
+            if escape {
+                escape = false;
+                current.push(ch);
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+                current.push(ch);
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+                if !current.is_empty() {
+                    out.push(current.clone());
+                }
+                current.clear();
+                continue;
+            }
+            current.push(ch);
+            continue;
+        }
+
+        if ch == '"' {
+            in_string = true;
+        }
+    }
+    if !out.is_empty() {
+        return out;
+    }
+
+    let inner = raw
+        .strip_prefix('{')
+        .and_then(|v| v.strip_suffix('}'))
+        .unwrap_or(raw)
+        .trim();
+
+    inner
+        .split(',')
+        .map(|s| s.trim().trim_matches('"'))
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn extract_profiles(annotations: &[ParsedAnnotation]) -> Vec<String> {
+    let mut out = Vec::new();
+    for ann in annotations.iter().filter(|a| a.simple_name == "Profile") {
+        if let Some(raw) = ann.args.get("value") {
+            out.extend(parse_string_list(raw));
+        }
+    }
+    out
 }
 
 fn lower_camel_case(name: &str) -> String {

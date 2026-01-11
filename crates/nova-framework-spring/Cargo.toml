@@ -20,5 +20,6 @@ tree-sitter = "0.20"
 zip = "0.6"
 
 [dev-dependencies]
+insta = "1"
 pretty_assertions = "1"
 tempfile = "3"

@@ -3774,6 +3774,7 @@ dependencies = [
 name = "nova-framework-spring"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "nova-config-metadata",
  "nova-core",
  "nova-framework",

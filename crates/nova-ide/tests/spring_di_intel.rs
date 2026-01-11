@@ -309,6 +309,41 @@ class FooImpl2 implements Foo {}
 }
 
 #[test]
+fn spring_goto_definition_from_qualifier_string_jumps_to_matching_bean() {
+    let consumer_path = PathBuf::from("/spring-nav-qualifier/src/main/java/Consumer.java");
+    let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Component;
+
+interface Foo {}
+
+@Component
+class Consumer {
+  @Autowired @Qualifier("special<|>Foo") Foo foo;
+}
+"#;
+
+    let bean_path = PathBuf::from("/spring-nav-qualifier/src/main/java/FooImpl.java");
+    let bean_text = r#"import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.stereotype.Component;
+
+@Component
+@Qualifier("specialFoo")
+class FooImpl implements Foo {}
+"#;
+
+    let (db, file, pos) =
+        fixture_multi(consumer_path, consumer_text, vec![(bean_path, bean_text.to_string())]);
+
+    let loc = goto_definition(&db, file, pos).expect("expected qualifier goto-definition");
+    assert!(
+        loc.uri.as_str().contains("FooImpl.java"),
+        "expected definition URI to point at FooImpl; got {:?}",
+        loc.uri
+    );
+}
+
+#[test]
 fn spring_profile_completion_returns_profiles() {
     let java_path = PathBuf::from("/spring-profile/src/main/java/A.java");
     let java_text = r#"import org.springframework.context.annotation.Profile;

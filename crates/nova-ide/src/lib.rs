@@ -23,6 +23,7 @@ mod jpa_intel;
 mod micronaut_intel;
 mod project;
 pub mod refactor;
+mod spring_config;
 mod spring_di;
 
 pub use ai::{

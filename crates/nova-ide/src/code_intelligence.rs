@@ -30,6 +30,7 @@ use serde_json::json;
 use crate::framework_cache;
 use crate::lombok_intel;
 use crate::micronaut_intel;
+use crate::spring_config;
 use crate::spring_di;
 use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
 
@@ -58,24 +59,6 @@ fn is_spring_yaml_file(path: &std::path::Path) -> bool {
         path.extension().and_then(|e| e.to_str()),
         Some("yml" | "yaml")
     )
-}
-
-fn spring_workspace_index(db: &dyn Database) -> nova_framework_spring::SpringWorkspaceIndex {
-    let mut index = nova_framework_spring::SpringWorkspaceIndex::new(Default::default());
-
-    for file_id in db.all_file_ids() {
-        let Some(path) = db.file_path(file_id) else {
-            continue;
-        };
-        let text = db.file_content(file_id);
-        if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            index.add_java_file(path.to_path_buf(), text);
-        } else if is_spring_properties_file(path) || is_spring_yaml_file(path) {
-            index.add_config_file(path.to_path_buf(), text);
-        }
-    }
-
-    index
 }
 
 fn spring_completions_to_lsp(items: Vec<nova_types::CompletionItem>) -> Vec<CompletionItem> {
@@ -430,11 +413,14 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
 
     if let Some(path) = db.file_path(file) {
         if is_spring_properties_file(path) || is_spring_yaml_file(path) {
-            let index = spring_workspace_index(db);
+            let empty = nova_config_metadata::MetadataIndex::new();
+            let index = spring_config::workspace_index(db, file);
+            let metadata = index
+                .as_deref()
+                .map(nova_framework_spring::SpringWorkspaceIndex::metadata)
+                .unwrap_or(&empty);
             diagnostics.extend(nova_framework_spring::diagnostics_for_config_file(
-                path,
-                text,
-                index.metadata(),
+                path, text, metadata,
             ));
             return diagnostics;
         }
@@ -620,9 +606,15 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
 
     if let Some(path) = db.file_path(file) {
         if is_spring_properties_file(path) {
-            let index = spring_workspace_index(db);
-            let items =
-                nova_framework_spring::completions_for_properties_file(path, text, offset, &index);
+            let Some(index) = spring_config::workspace_index(db, file) else {
+                return Vec::new();
+            };
+            let items = nova_framework_spring::completions_for_properties_file(
+                path,
+                text,
+                offset,
+                index.as_ref(),
+            );
             return decorate_completions(
                 text,
                 prefix_start,
@@ -631,9 +623,11 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             );
         }
         if is_spring_yaml_file(path) {
-            let index = spring_workspace_index(db);
+            let Some(index) = spring_config::workspace_index(db, file) else {
+                return Vec::new();
+            };
             let items =
-                nova_framework_spring::completions_for_yaml_file(path, text, offset, &index);
+                nova_framework_spring::completions_for_yaml_file(path, text, offset, index.as_ref());
             return decorate_completions(
                 text,
                 prefix_start,
@@ -676,9 +670,14 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             // Spring workspace. Micronaut also has `@Value`, so this guard ensures
             // Micronaut projects don't get Spring-key completions.
             if spring_value_completion_applicable(db, file, text) {
-                let index = spring_workspace_index(db);
-                let items =
-                    nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
+                let Some(index) = spring_config::workspace_index(db, file) else {
+                    return Vec::new();
+                };
+                let items = nova_framework_spring::completions_for_value_placeholder(
+                    text,
+                    offset,
+                    index.as_ref(),
+                );
                 if !items.is_empty() {
                     return decorate_completions(
                         text,
@@ -1106,11 +1105,23 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
     {
-        let index = spring_workspace_index(db);
-        let targets =
-            nova_framework_spring::goto_definition_for_value_placeholder(text, offset, &index);
+        let index = spring_config::workspace_index(db, file)?;
+        let targets = nova_framework_spring::goto_definition_for_value_placeholder(
+            text,
+            offset,
+            index.as_ref(),
+        );
         if let Some(target) = targets.first() {
             return spring_location_to_lsp(db, target);
+        }
+
+        // Spring DI navigation from `@Qualifier("...")` -> matching bean.
+        if let Some(targets) = spring_di::qualifier_definition_targets(db, file, offset) {
+            if let Some(target) = targets.first() {
+                if let Some(loc) = spring_source_location_to_lsp(db, target) {
+                    return Some(loc);
+                }
+            }
         }
 
         // Spring DI navigation from injection site -> bean definition.
@@ -1186,9 +1197,15 @@ pub fn find_references(
 
     if let Some(path) = db.file_path(file) {
         if is_spring_properties_file(path) || is_spring_yaml_file(path) {
-            let index = spring_workspace_index(db);
-            let targets =
-                nova_framework_spring::goto_usages_for_config_key(path, text, offset, &index);
+            let Some(index) = spring_config::workspace_index(db, file) else {
+                return Vec::new();
+            };
+            let targets = nova_framework_spring::goto_usages_for_config_key(
+                path,
+                text,
+                offset,
+                index.as_ref(),
+            );
             return targets
                 .iter()
                 .filter_map(|t| spring_location_to_lsp(db, t))

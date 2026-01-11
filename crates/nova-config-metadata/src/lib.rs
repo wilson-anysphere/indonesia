@@ -5,7 +5,7 @@
 //! dependency JARs. This crate ingests those JSON files and provides lookup APIs
 //! used for completions and diagnostics.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use anyhow::Context;
 use nova_archive::Archive;
@@ -31,7 +31,7 @@ pub struct PropertyMeta {
 
 #[derive(Clone, Debug, Default)]
 pub struct MetadataIndex {
-    properties: HashMap<String, PropertyMeta>,
+    properties: BTreeMap<String, PropertyMeta>,
 }
 
 impl MetadataIndex {
@@ -148,16 +148,19 @@ impl MetadataIndex {
         self.properties.get(key)
     }
 
-    #[must_use]
-    pub fn known_properties(&self, prefix: &str) -> Vec<PropertyMeta> {
-        let mut props: Vec<_> = self
-            .properties
-            .values()
-            .filter(|p| p.name.starts_with(prefix))
-            .cloned()
-            .collect();
-        props.sort_by(|a, b| a.name.cmp(&b.name));
-        props
+    /// Iterate over all known properties that begin with `prefix`.
+    ///
+    /// This uses an ordered map internally, so prefix queries are efficient and
+    /// stable without allocating/cloning the entire metadata set.
+    pub fn known_properties<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a PropertyMeta> + 'a {
+        let start = prefix.to_string();
+        self.properties
+            .range(start..)
+            .take_while(move |(name, _)| name.starts_with(prefix))
+            .map(|(_, meta)| meta)
     }
 }
 

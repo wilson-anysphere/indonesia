@@ -200,12 +200,24 @@ pub(crate) fn profile_completion_items(db: &dyn Database, file: FileId) -> Vec<C
 
     // Avoid offering Spring-specific profile completions when the workspace does not
     // appear to be a Spring project (e.g. CDI's `@Profile`).
-    if entry.analysis.is_none() {
+    let Some(analysis) = entry.analysis.as_ref() else {
         return Vec::new();
-    }
+    };
 
     let mut items = nova_framework_spring::profile_completions();
     items.extend(discovered_profile_completions(db, &entry.root));
+    items.extend(
+        analysis
+            .model
+            .beans
+            .iter()
+            .flat_map(|b| b.profiles.iter())
+            .filter(|p| !p.is_empty())
+            .map(|profile| CompletionItem {
+                label: profile.clone(),
+                detail: None,
+            }),
+    );
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items.dedup_by(|a, b| a.label == b.label);
     items
@@ -257,6 +269,52 @@ pub(crate) fn injection_definition_targets(
         })
         .collect::<Vec<_>>();
     Some(locations)
+}
+
+pub(crate) fn qualifier_definition_targets(
+    db: &dyn Database,
+    file: FileId,
+    offset: usize,
+) -> Option<Vec<SpringSourceLocation>> {
+    let source_text = db.file_content(file);
+    if annotation_string_context(source_text, offset) != Some(AnnotationStringContext::Qualifier) {
+        return None;
+    }
+
+    let bytes = source_text.as_bytes();
+    let (start_quote, end_quote) = enclosing_unescaped_string_literal(bytes, offset)?;
+    if !(start_quote < offset && offset <= end_quote) {
+        return None;
+    }
+
+    let value = source_text
+        .get(start_quote + 1..end_quote)
+        .unwrap_or("")
+        .trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let entry = workspace_entry(db, file)?;
+    let analysis = entry.analysis.as_ref()?;
+
+    let mut targets = Vec::new();
+    for bean in &analysis.model.beans {
+        if bean.name == value || bean.qualifiers.iter().any(|q| q == value) {
+            let path = entry.path_for_source_index(bean.location.source)?.clone();
+            targets.push(SpringSourceLocation {
+                path,
+                span: bean.location.span,
+            });
+        }
+    }
+
+    targets.sort_by(|a, b| a.path.cmp(&b.path).then(a.span.start.cmp(&b.span.start)));
+    if targets.is_empty() {
+        None
+    } else {
+        Some(targets)
+    }
 }
 
 pub(crate) fn bean_usage_targets(
@@ -468,7 +526,7 @@ fn discovered_profile_completions(db: &dyn Database, root: &Path) -> Vec<Complet
         .collect()
 }
 
-fn discover_project_root(path: &Path) -> PathBuf {
+pub(crate) fn discover_project_root(path: &Path) -> PathBuf {
     if path.exists() {
         return framework_cache::project_root_for_path(path);
     }

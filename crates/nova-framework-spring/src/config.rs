@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use nova_config_metadata::{MetadataIndex, PropertyMeta};
 use nova_core::TextRange;
@@ -27,7 +28,7 @@ pub struct ConfigLocation {
 
 #[derive(Clone, Debug)]
 pub struct SpringWorkspaceIndex {
-    metadata: MetadataIndex,
+    metadata: Arc<MetadataIndex>,
     definitions: HashMap<String, Vec<ConfigLocation>>,
     usages: HashMap<String, Vec<ConfigLocation>>,
     observed_keys: HashSet<String>,
@@ -36,7 +37,7 @@ pub struct SpringWorkspaceIndex {
 
 impl SpringWorkspaceIndex {
     #[must_use]
-    pub fn new(metadata: MetadataIndex) -> Self {
+    pub fn new(metadata: Arc<MetadataIndex>) -> Self {
         Self {
             metadata,
             definitions: HashMap::new(),
@@ -48,7 +49,7 @@ impl SpringWorkspaceIndex {
 
     #[must_use]
     pub fn metadata(&self) -> &MetadataIndex {
-        &self.metadata
+        self.metadata.as_ref()
     }
 
     pub fn add_config_file(&mut self, path: impl Into<PathBuf>, text: &str) {
@@ -93,7 +94,7 @@ impl SpringWorkspaceIndex {
                 format!("{prefix}.")
             };
             for meta in self.metadata.known_properties(&prefix) {
-                self.observed_keys.insert(meta.name);
+                self.observed_keys.insert(meta.name.clone());
             }
         }
     }
@@ -468,8 +469,8 @@ pub fn completions_for_value_placeholder(
     for meta in index.metadata.known_properties(&ctx.prefix) {
         if seen.insert(meta.name.clone()) {
             items.push(CompletionItem {
-                label: meta.name,
-                detail: meta.ty,
+                label: meta.name.clone(),
+                detail: property_completion_detail(meta),
             });
         }
     }
@@ -477,7 +478,7 @@ pub fn completions_for_value_placeholder(
     // Fall back to observed keys from the workspace.
     let mut observed: Vec<_> = index
         .observed_keys()
-        .filter(|k| k.starts_with(&ctx.prefix))
+        .filter(|k| k.starts_with(&ctx.prefix) && *k != &ctx.key)
         .cloned()
         .collect();
     observed.sort();
@@ -553,8 +554,8 @@ pub fn completions_for_properties_file(
     for meta in index.metadata.known_properties(&prefix) {
         if seen.insert(meta.name.clone()) {
             items.push(CompletionItem {
-                label: meta.name,
-                detail: meta.ty,
+                label: meta.name.clone(),
+                detail: property_completion_detail(meta),
             });
         }
     }
@@ -628,6 +629,53 @@ pub fn completions_for_yaml_file(
 
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items
+}
+
+fn property_completion_detail(meta: &PropertyMeta) -> Option<String> {
+    let mut detail = String::new();
+
+    if let Some(ty) = meta.ty.as_deref().filter(|s| !s.is_empty()) {
+        detail.push_str(ty);
+    }
+
+    if let Some(default) = meta
+        .default_value
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        if !detail.is_empty() {
+            detail.push(' ');
+        }
+        detail.push_str(&format!("(default: {})", default.trim()));
+    }
+
+    if let Some(deprecation) = meta.deprecation.as_ref() {
+        if !detail.is_empty() {
+            detail.push(' ');
+        }
+        detail.push_str("[deprecated");
+        if let Some(replacement) = deprecation.replacement.as_deref().filter(|s| !s.is_empty()) {
+            detail.push_str(&format!(" → {}", replacement));
+        }
+        detail.push(']');
+    }
+
+    if let Some(desc) = meta.description.as_deref() {
+        let desc = desc.lines().next().unwrap_or(desc).trim();
+        if !desc.is_empty() {
+            if !detail.is_empty() {
+                detail.push_str(" — ");
+            }
+            const MAX_CHARS: usize = 80;
+            let mut truncated: String = desc.chars().take(MAX_CHARS).collect();
+            if desc.chars().skip(MAX_CHARS).next().is_some() {
+                truncated.push('…');
+            }
+            detail.push_str(&truncated);
+        }
+    }
+
+    if detail.is_empty() { None } else { Some(detail) }
 }
 
 /// Best-effort "find usages" from a config file key to Java `@Value` usages.
@@ -811,6 +859,7 @@ fn line_bounds(text: &str, offset: usize) -> (usize, usize) {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
 
     fn test_metadata() -> MetadataIndex {
         let mut index = MetadataIndex::new();
@@ -836,7 +885,7 @@ mod tests {
 
     #[test]
     fn completes_spring_properties_in_value_annotation() {
-        let mut workspace = SpringWorkspaceIndex::new(test_metadata());
+        let mut workspace = SpringWorkspaceIndex::new(Arc::new(test_metadata()));
         workspace.add_config_file("application.properties", "server.port=8080\n");
 
         let java = r#"
@@ -867,7 +916,7 @@ class C {
 
     #[test]
     fn navigates_from_value_to_config_definition() {
-        let mut workspace = SpringWorkspaceIndex::new(test_metadata());
+        let mut workspace = SpringWorkspaceIndex::new(Arc::new(test_metadata()));
         let config = "server.port=8080\n";
         workspace.add_config_file("application.properties", config);
 
@@ -891,7 +940,7 @@ class C {
 
     #[test]
     fn completes_properties_keys_and_values() {
-        let mut workspace = SpringWorkspaceIndex::new(test_metadata());
+        let mut workspace = SpringWorkspaceIndex::new(Arc::new(test_metadata()));
         workspace.add_config_file("application.properties", "server.port=8080\n");
 
         let text = "spr";
@@ -917,7 +966,7 @@ class C {
 
     #[test]
     fn completes_yaml_keys_by_segment() {
-        let workspace = SpringWorkspaceIndex::new(test_metadata());
+        let workspace = SpringWorkspaceIndex::new(Arc::new(test_metadata()));
         let text = "server:\n  p";
         let offset = text.len();
         let items =
@@ -927,7 +976,7 @@ class C {
 
     #[test]
     fn navigates_from_config_key_to_java_usage() {
-        let mut workspace = SpringWorkspaceIndex::new(test_metadata());
+        let mut workspace = SpringWorkspaceIndex::new(Arc::new(test_metadata()));
         let config = "server.port=8080\n";
         workspace.add_config_file("application.properties", config);
         let java = r#"
