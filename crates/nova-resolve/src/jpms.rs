@@ -28,7 +28,7 @@ use crate::{Resolution, ScopeGraph, ScopeId, ScopeKind};
 /// - package exports (`exports` / qualified exports)
 ///
 /// If either side is considered "unnamed" (missing module metadata), the type
-/// is treated as accessible, matching traditional classpath semantics.
+/// is treated as belonging to the classpath "unnamed module".
 pub struct JpmsResolver<'a> {
     jdk: &'a nova_jdk::JdkIndex,
     graph: &'a ModuleGraph,
@@ -57,9 +57,9 @@ impl<'a> JpmsResolver<'a> {
         }
 
         // If the type exists in the classpath index but has no module metadata,
-        // treat it as belonging to the unnamed module (i.e. don't enforce JPMS).
+        // treat it as belonging to the classpath "unnamed module".
         if self.classpath.types.lookup_binary(ty.as_str()).is_some() {
-            return None;
+            return Some(ModuleName::unnamed());
         }
 
         self.jdk.module_of_type(ty.as_str())
@@ -508,6 +508,7 @@ mod tests {
 
     use nova_classpath::ClasspathClassStub;
     use nova_jdk::JdkIndex;
+    use nova_modules::ModuleKind;
 
     use super::*;
     use crate::build_scopes;
@@ -583,6 +584,45 @@ mod tests {
         let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Hidden"));
 
         assert_eq!(res, None);
+    }
+
+    #[test]
+    fn classpath_types_are_only_accessible_from_unnamed_module() {
+        let mut graph = ModuleGraph::new();
+        graph.insert(ModuleInfo {
+            name: ModuleName::new("mod.a"),
+            kind: ModuleKind::Explicit,
+            is_open: false,
+            requires: Vec::new(),
+            exports: Vec::new(),
+            opens: Vec::new(),
+            uses: Vec::new(),
+            provides: Vec::new(),
+        });
+
+        let stub = ClasspathClassStub {
+            binary_name: "com.example.Unnamed".to_string(),
+            internal_name: "com/example/Unnamed".to_string(),
+            access_flags: 0,
+            super_binary_name: None,
+            interfaces: Vec::new(),
+            signature: None,
+            annotations: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+        };
+        let classpath = ModuleAwareClasspathIndex::from_stubs([(stub, None)]);
+        let jdk = JdkIndex::new();
+        let ty = QualifiedName::from_dotted("com.example.Unnamed");
+
+        let named = JpmsResolver::new(&jdk, &graph, &classpath, ModuleName::new("mod.a"));
+        assert_eq!(named.resolve_qualified_name(&ty), None);
+
+        let unnamed = JpmsResolver::new(&jdk, &graph, &classpath, ModuleName::unnamed());
+        assert_eq!(
+            unnamed.resolve_qualified_name(&ty),
+            Some(TypeName::from("com.example.Unnamed"))
+        );
     }
 
     #[test]
