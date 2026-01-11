@@ -40,6 +40,13 @@ pub enum TypeResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeLookup {
+    Found(TypeName),
+    Ambiguous(Vec<TypeName>),
+    NotFound,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StaticLookup {
     Found(StaticMemberId),
     Ambiguous(Vec<StaticMemberId>),
@@ -194,6 +201,60 @@ impl<'a> Resolver<'a> {
             0 => StaticLookup::NotFound,
             1 => StaticLookup::Found(candidates.remove(0)),
             _ => StaticLookup::Ambiguous(candidates),
+        }
+    }
+
+    /// Resolve a simple type name via imports and the current package, following
+    /// the JLS precedence rules (6.5 / 7.5) for the type namespace.
+    ///
+    /// Order:
+    /// 1) Single-type imports
+    /// 2) Same-package types
+    /// 3) Type-import-on-demand (`.*`) imports
+    /// 4) Implicit `java.lang.*`
+    ///
+    /// This reports ambiguity (e.g. multiple star imports providing the same
+    /// simple name) instead of picking an arbitrary match.
+    #[must_use]
+    pub fn resolve_import_detailed(
+        &self,
+        imports: &ImportMap,
+        package: Option<&PackageName>,
+        name: &Name,
+    ) -> TypeLookup {
+        match self.resolve_single_type_imports_detailed(imports, name) {
+            TypeLookup::Found(ty) => return TypeLookup::Found(ty),
+            TypeLookup::Ambiguous(types) => return TypeLookup::Ambiguous(types),
+            TypeLookup::NotFound => {}
+        }
+
+        if let Some(pkg) = package {
+            if let Some(ty) = self.resolve_type_in_package_index(pkg, name) {
+                return TypeLookup::Found(ty);
+            }
+        }
+
+        match self.resolve_star_type_imports_detailed(imports, name) {
+            TypeLookup::Found(ty) => return TypeLookup::Found(ty),
+            TypeLookup::Ambiguous(types) => return TypeLookup::Ambiguous(types),
+            TypeLookup::NotFound => {}
+        }
+
+        self.resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
+            .map_or(TypeLookup::NotFound, TypeLookup::Found)
+    }
+
+    /// Compatibility wrapper over [`Resolver::resolve_import_detailed`].
+    #[must_use]
+    pub fn resolve_import(
+        &self,
+        imports: &ImportMap,
+        package: Option<&PackageName>,
+        name: &Name,
+    ) -> Option<TypeName> {
+        match self.resolve_import_detailed(imports, package, name) {
+            TypeLookup::Found(ty) => Some(ty),
+            TypeLookup::Ambiguous(_) | TypeLookup::NotFound => None,
         }
     }
 
@@ -476,39 +537,71 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_single_type_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
-        let mut candidates = Vec::new();
+        match self.resolve_single_type_imports_detailed(imports, name) {
+            TypeLookup::Found(ty) => {
+                NameResolution::Resolved(Resolution::Type(TypeResolution::External(ty)))
+            }
+            TypeLookup::Ambiguous(types) => NameResolution::Ambiguous(
+                types
+                    .into_iter()
+                    .map(|ty| Resolution::Type(TypeResolution::External(ty)))
+                    .collect(),
+            ),
+            TypeLookup::NotFound => NameResolution::Unresolved,
+        }
+    }
+
+    fn resolve_star_type_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
+        match self.resolve_star_type_imports_detailed(imports, name) {
+            TypeLookup::Found(ty) => {
+                NameResolution::Resolved(Resolution::Type(TypeResolution::External(ty)))
+            }
+            TypeLookup::Ambiguous(types) => NameResolution::Ambiguous(
+                types
+                    .into_iter()
+                    .map(|ty| Resolution::Type(TypeResolution::External(ty)))
+                    .collect(),
+            ),
+            TypeLookup::NotFound => NameResolution::Unresolved,
+        }
+    }
+
+    fn resolve_single_type_imports_detailed(&self, imports: &ImportMap, name: &Name) -> TypeLookup {
+        let mut candidates = Vec::<TypeName>::new();
         for import in &imports.type_single {
             if &import.imported != name {
                 continue;
             }
             if let Some(ty) = self.resolve_type_in_index(&import.path) {
-                candidates.push(Resolution::Type(TypeResolution::External(ty)));
-            }
-        }
-
-        match candidates.len() {
-            0 => NameResolution::Unresolved,
-            1 => NameResolution::Resolved(candidates.into_iter().next().unwrap()),
-            _ => NameResolution::Ambiguous(candidates),
-        }
-    }
-
-    fn resolve_star_type_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
-        let mut seen = HashSet::<TypeName>::new();
-        let mut candidates = Vec::new();
-
-        for import in &imports.type_star {
-            if let Some(ty) = self.resolve_type_in_package_index(&import.package, name) {
-                if seen.insert(ty.clone()) {
-                    candidates.push(Resolution::Type(TypeResolution::External(ty)));
+                if !candidates.contains(&ty) {
+                    candidates.push(ty);
                 }
             }
         }
 
         match candidates.len() {
-            0 => NameResolution::Unresolved,
-            1 => NameResolution::Resolved(candidates.into_iter().next().unwrap()),
-            _ => NameResolution::Ambiguous(candidates),
+            0 => TypeLookup::NotFound,
+            1 => TypeLookup::Found(candidates.remove(0)),
+            _ => TypeLookup::Ambiguous(candidates),
+        }
+    }
+
+    fn resolve_star_type_imports_detailed(&self, imports: &ImportMap, name: &Name) -> TypeLookup {
+        let mut seen = HashSet::<TypeName>::new();
+        let mut candidates = Vec::<TypeName>::new();
+
+        for import in &imports.type_star {
+            if let Some(ty) = self.resolve_type_in_package_index(&import.package, name) {
+                if seen.insert(ty.clone()) {
+                    candidates.push(ty);
+                }
+            }
+        }
+
+        match candidates.len() {
+            0 => TypeLookup::NotFound,
+            1 => TypeLookup::Found(candidates.remove(0)),
+            _ => TypeLookup::Ambiguous(candidates),
         }
     }
 
@@ -539,10 +632,13 @@ mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
 
+    use nova_core::FileId;
     use nova_jdk::JdkIndex;
+    use nova_hir::item_tree;
     use nova_types::Span;
 
     use crate::import_map::{StaticSingleImport, StaticStarImport};
+    use crate::scopes::build_scopes_for_item_tree;
 
     #[derive(Default)]
     struct TestIndex {
@@ -661,6 +757,94 @@ mod tests {
                 StaticMemberId::new("q.Util::max"),
             ])
         );
+    }
+
+    #[test]
+    fn same_package_beats_star_import() {
+        let jdk = JdkIndex::new();
+        let mut index = TestIndex::default();
+        let same = index.add_type("p", "Foo");
+        index.add_type("q", "Foo");
+
+        let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+        let mut tree = item_tree::ItemTree::default();
+        tree.package = Some(item_tree::PackageDecl {
+            name: "p".to_string(),
+            range: Span::new(0, 0),
+        });
+        tree.imports.push(item_tree::Import {
+            is_static: false,
+            is_star: true,
+            path: "q".to_string(),
+            range: Span::new(0, 0),
+        });
+
+        let scope_result = build_scopes_for_item_tree(FileId::new(0), &tree);
+        assert_eq!(
+            resolver.resolve_name(&scope_result.scopes, scope_result.file_scope, &Name::from("Foo")),
+            Some(Resolution::Type(TypeResolution::External(same.clone())))
+        );
+
+        let imports = ImportMap::from_item_tree(&tree);
+        let pkg = PackageName::from_dotted("p");
+        assert_eq!(
+            resolver.resolve_import_detailed(&imports, Some(&pkg), &Name::from("Foo")),
+            TypeLookup::Found(same.clone())
+        );
+        assert_eq!(
+            resolver.resolve_import(&imports, Some(&pkg), &Name::from("Foo")),
+            Some(same)
+        );
+    }
+
+    #[test]
+    fn ambiguous_star_import_is_detected() {
+        let jdk = JdkIndex::new();
+        let mut index = TestIndex::default();
+        let foo_a = index.add_type("a", "Foo");
+        let foo_b = index.add_type("b", "Foo");
+        index.add_type("java.lang", "Foo");
+
+        let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+        let mut tree = item_tree::ItemTree::default();
+        tree.imports.push(item_tree::Import {
+            is_static: false,
+            is_star: true,
+            path: "a".to_string(),
+            range: Span::new(0, 0),
+        });
+        tree.imports.push(item_tree::Import {
+            is_static: false,
+            is_star: true,
+            path: "b".to_string(),
+            range: Span::new(0, 0),
+        });
+
+        let scope_result = build_scopes_for_item_tree(FileId::new(0), &tree);
+        assert_eq!(
+            resolver.resolve_name_detailed(
+                &scope_result.scopes,
+                scope_result.file_scope,
+                &Name::from("Foo")
+            ),
+            NameResolution::Ambiguous(vec![
+                Resolution::Type(TypeResolution::External(foo_a.clone())),
+                Resolution::Type(TypeResolution::External(foo_b.clone())),
+            ])
+        );
+        assert_eq!(
+            resolver.resolve_name(&scope_result.scopes, scope_result.file_scope, &Name::from("Foo")),
+            None
+        );
+
+        let imports = ImportMap::from_item_tree(&tree);
+        assert_eq!(
+            resolver.resolve_import_detailed(&imports, None, &Name::from("Foo")),
+            TypeLookup::Ambiguous(vec![foo_a.clone(), foo_b.clone()])
+        );
+        assert_eq!(resolver.resolve_import(&imports, None, &Name::from("Foo")), None);
     }
 }
 
