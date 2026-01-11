@@ -226,7 +226,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 direct_err
                     .as_ref()
                     .map(|err| format!("direct aquery failed: {err}"))
-                    .unwrap_or_else(|| format!("direct aquery returned no Javac actions"))
+                    .unwrap_or_else(|| "direct aquery returned no Javac actions".to_string())
             })?;
         }
 

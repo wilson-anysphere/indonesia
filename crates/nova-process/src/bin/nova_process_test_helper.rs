@@ -38,6 +38,7 @@ fn write_repeated(mut writer: impl Write, mut bytes: usize, fill: u8) -> io::Res
     writer.flush()
 }
 
+#[allow(clippy::zombie_processes)]
 fn spawn_child_sleep(ms: u64) {
     let exe = env::current_exe().unwrap_or_else(|err| {
         eprintln!("failed to resolve current exe: {err}");
@@ -80,4 +81,3 @@ fn main() {
         }
     }
 }
-

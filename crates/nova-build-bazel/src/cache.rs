@@ -11,19 +11,14 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum CompileInfoProvider {
     /// Compile information extracted from `bazel aquery`.
+    #[default]
     Aquery,
     /// Compile information extracted from BSP `buildTarget/javacOptions`.
     Bsp,
-}
-
-impl Default for CompileInfoProvider {
-    fn default() -> Self {
-        Self::Aquery
-    }
 }
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -137,7 +132,7 @@ impl BazelCache {
     pub fn save(&self, path: &Path) -> Result<()> {
         let parent = path
             .parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "path has no parent"))?;
+            .ok_or_else(|| io::Error::other("path has no parent"))?;
         let parent = if parent.as_os_str().is_empty() {
             Path::new(".")
         } else {
@@ -246,7 +241,7 @@ fn digest_files(files: &[FileDigest]) -> Result<Vec<FileDigest>> {
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
     let file_name = dest.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
+        io::Error::other("destination path has no file name")
     })?;
     let pid = std::process::id();
 

@@ -7,10 +7,12 @@ use std::{
 };
 use tempfile::tempdir;
 
+type AqueryFactory = Arc<dyn Fn(&str) -> Box<dyn Read + Send> + Send + Sync>;
+
 #[derive(Clone)]
 struct TestRunner {
     calls: Arc<Mutex<Vec<Vec<String>>>>,
-    aquery_factory: Arc<dyn Fn(&str) -> Box<dyn Read + Send> + Send + Sync>,
+    aquery_factory: AqueryFactory,
 }
 
 impl TestRunner {
@@ -56,7 +58,7 @@ impl CommandRunner for TestRunner {
             .unwrap()
             .push(args.iter().map(|s| s.to_string()).collect());
 
-        match args.get(0).copied() {
+        match args.first().copied() {
             Some("query") => {
                 let stdout = "//:dummy\n".as_bytes().to_vec();
                 let mut reader = BufReader::new(Cursor::new(stdout));
@@ -313,7 +315,7 @@ fn target_compile_info_falls_back_when_direct_aquery_errors() {
             f: impl FnOnce(&mut dyn BufRead) -> Result<R>,
         ) -> Result<R> {
             assert_eq!(program, "bazel");
-            assert_eq!(args.get(0).copied(), Some("query"));
+            assert_eq!(args.first().copied(), Some("query"));
             // Return an empty query result for buildfiles/loadfiles; those are best-effort inputs.
             let mut reader = BufReader::new(Cursor::new(Vec::new()));
             f(&mut reader)
@@ -327,7 +329,7 @@ fn target_compile_info_falls_back_when_direct_aquery_errors() {
             f: impl FnOnce(&mut dyn BufRead) -> Result<std::ops::ControlFlow<R, R>>,
         ) -> Result<R> {
             assert_eq!(program, "bazel");
-            assert_eq!(args.get(0).copied(), Some("aquery"));
+            assert_eq!(args.first().copied(), Some("aquery"));
             let expr = args.get(2).expect("missing aquery expression");
 
             if *expr == self.direct_expr {

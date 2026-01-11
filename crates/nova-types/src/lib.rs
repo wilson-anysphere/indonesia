@@ -2078,9 +2078,9 @@ fn reference_castability(env: &dyn TypeEnv, from: &Type, to: &Type) -> Castabili
     }
 }
 
-fn is_reifiable(env: &dyn TypeEnv, ty: &Type) -> bool {
+fn is_reifiable(_env: &dyn TypeEnv, ty: &Type) -> bool {
     match ty {
-        Type::Array(elem) => is_reifiable(env, elem),
+        Type::Array(elem) => is_reifiable(_env, elem),
         Type::Class(ClassType { def: _, args }) => {
             if args.is_empty() {
                 return true;
@@ -3147,18 +3147,16 @@ fn try_method_invocation(
     // Infer (or apply explicit) method type arguments using the effective parameter pattern.
     let inferred_type_args = if method.type_params.is_empty() {
         Vec::new()
-    } else {
-        if !call.explicit_type_args.is_empty() {
-            if call.explicit_type_args.len() != method.type_params.len() {
-                return Err(MethodCandidateFailureReason::ExplicitTypeArgCountMismatch {
-                    expected: method.type_params.len(),
-                    found: call.explicit_type_args.len(),
-                });
-            }
-            call.explicit_type_args.clone()
-        } else {
-            infer_type_arguments_from_call(env, method, &pattern_params, base_return_type, call)
+    } else if !call.explicit_type_args.is_empty() {
+        if call.explicit_type_args.len() != method.type_params.len() {
+            return Err(MethodCandidateFailureReason::ExplicitTypeArgCountMismatch {
+                expected: method.type_params.len(),
+                found: call.explicit_type_args.len(),
+            });
         }
+        call.explicit_type_args.clone()
+    } else {
+        infer_type_arguments_from_call(env, method, &pattern_params, base_return_type, call)
     };
 
     let method_subst: HashMap<TypeVarId, Type> = method
@@ -3624,7 +3622,7 @@ fn total_conversion_score(method: &ResolvedMethod) -> u32 {
     method.conversions.iter().map(conversion_score).sum()
 }
 
-fn rank_resolved_methods(_env: &dyn TypeEnv, call: &MethodCall<'_>, methods: &mut Vec<ResolvedMethod>) {
+fn rank_resolved_methods(_env: &dyn TypeEnv, call: &MethodCall<'_>, methods: &mut [ResolvedMethod]) {
     methods.sort_by(|a, b| {
         let ka = (
             u8::from(call.call_kind == CallKind::Instance && a.is_static),
