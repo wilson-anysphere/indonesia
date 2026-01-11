@@ -420,16 +420,36 @@ pub mod transport {
             ));
         }
 
-        // Use fallible reservation so allocation failure surfaces as an error rather than
-        // aborting the process.
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Grow the buffer gradually so a peer cannot force us to allocate `len` bytes up-front
+        // and then stall (e.g. by sending only the length prefix). This keeps per-connection
+        // memory bounded by the amount of payload actually received.
         let mut buf = Vec::new();
-        buf.try_reserve_exact(len)
+        buf.try_reserve_exact(len.min(8 * 1024))
             .context("allocate message buffer")?;
-        buf.resize(len, 0);
-        stream
-            .read_exact(&mut buf)
-            .await
-            .context("read message payload")?;
+
+        while buf.len() < len {
+            if buf.capacity() == buf.len() {
+                let new_cap = (buf.capacity().saturating_mul(2)).min(len);
+                buf.try_reserve_exact(new_cap.saturating_sub(buf.capacity()))
+                    .context("allocate message buffer")?;
+            }
+
+            let remaining = len - buf.len();
+            let spare = buf.capacity() - buf.len();
+            let to_read = remaining.min(spare);
+
+            let start = buf.len();
+            buf.resize(start + to_read, 0);
+            stream
+                .read_exact(&mut buf[start..])
+                .await
+                .context("read message payload")?;
+        }
+
         Ok(buf)
     }
 
