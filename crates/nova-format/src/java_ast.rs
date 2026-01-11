@@ -785,7 +785,7 @@ fn needs_space_before(last: Option<&SigToken>, next_text: &str) -> bool {
         return false;
     }
 
-    if matches!(last.text(), "(" | "[" | "." | "@" | "::") {
+    if matches!(last.text(), "(" | "[" | "<" | "." | "@" | "::") {
         return false;
     }
 
@@ -815,7 +815,7 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
     if matches!(next_text, ")" | "]" | "}" | ";" | "," | "." | "::") {
         return false;
     }
-    if matches!(last.text(), "(" | "[" | "." | "@" | "::") {
+    if matches!(last.text(), "(" | "[" | "<" | "." | "@" | "::") {
         return false;
     }
     if next_text == "@" {
