@@ -245,9 +245,62 @@ pub fn parse_expression(input: &str) -> JavaParseResult {
     parser.eat_trivia();
     parser.expect(SyntaxKind::Eof, "expected end of expression");
     parser.builder.finish_node();
-
     JavaParseResult {
         green: parser.builder.finish(),
+        errors: parser.errors,
+    }
+}
+
+pub(crate) fn parse_block_fragment(input: &str) -> JavaParseResult {
+    let mut parser = Parser::new(input);
+    parser.parse_block();
+    JavaParseResult {
+        green: parser.builder.finish(),
+        errors: parser.errors,
+    }
+}
+
+pub(crate) fn parse_switch_block_fragment(input: &str) -> JavaParseResult {
+    let mut parser = Parser::new(input);
+    parser.parse_switch_block();
+    JavaParseResult {
+        green: parser.builder.finish(),
+        errors: parser.errors,
+    }
+}
+
+pub(crate) fn parse_class_body_fragment(input: &str, body_kind: SyntaxKind) -> JavaParseResult {
+    let mut parser = Parser::new(input);
+    parser.parse_class_body(body_kind);
+    JavaParseResult {
+        green: parser.builder.finish(),
+        errors: parser.errors,
+    }
+}
+
+pub(crate) fn parse_class_member_fragment(input: &str) -> JavaParseResult {
+    let mut parser = Parser::new(input);
+    // `parse_class_member` uses `start_node_at`, which requires an open parent
+    // node. Wrap the member in a dummy compilation unit and extract it.
+    parser
+        .builder
+        .start_node(SyntaxKind::CompilationUnit.into());
+    parser.parse_class_member();
+    parser.eat_trivia();
+    parser.expect(SyntaxKind::Eof, "expected end of file");
+    parser.builder.finish_node();
+
+    let wrapper = parser.builder.finish();
+    let member = wrapper
+        .children()
+        .find_map(|child| match child {
+            rowan::NodeOrToken::Node(node) => Some(node.to_owned()),
+            rowan::NodeOrToken::Token(_) => None,
+        })
+        .unwrap_or_else(|| wrapper.clone());
+
+    JavaParseResult {
+        green: member,
         errors: parser.errors,
     }
 }
@@ -1238,40 +1291,7 @@ impl<'a> Parser<'a> {
                 self.expect(SyntaxKind::LParen, "expected `(` after switch");
                 self.parse_expression(0);
                 self.expect(SyntaxKind::RParen, "expected `)` after switch expression");
-
-                self.builder.start_node(SyntaxKind::SwitchBlock.into());
-                self.expect(SyntaxKind::LBrace, "expected `{` after switch");
-                while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
-                    let before = self.tokens.len();
-                    self.eat_trivia();
-                    if self.at(SyntaxKind::CaseKw) || self.at(SyntaxKind::DefaultKw) {
-                        let is_arrow = self.parse_switch_label();
-                        if is_arrow {
-                            // Switch rule body: either a block or a single statement/expression.
-                            self.eat_trivia();
-                            if self.at(SyntaxKind::LBrace) {
-                                self.parse_block();
-                            } else if self.at(SyntaxKind::Semicolon) {
-                                self.bump();
-                            } else if self.at(SyntaxKind::CaseKw)
-                                || self.at(SyntaxKind::DefaultKw)
-                                || self.at(SyntaxKind::RBrace)
-                                || self.at(SyntaxKind::Eof)
-                            {
-                                // Common during typing: `case 1 ->` followed immediately by
-                                // the next label / closing brace.
-                                self.error_here("expected switch rule body after `->`");
-                            } else {
-                                self.parse_statement();
-                            }
-                        }
-                    } else {
-                        self.parse_statement();
-                    }
-                    self.force_progress(before, STMT_RECOVERY);
-                }
-                self.expect(SyntaxKind::RBrace, "expected `}` after switch block");
-                self.builder.finish_node(); // SwitchBlock
+                self.parse_switch_block();
                 self.builder.finish_node(); // SwitchStatement
             }
             SyntaxKind::ForKw => {
@@ -1438,6 +1458,42 @@ impl<'a> Parser<'a> {
 
         self.builder.finish_node();
         is_arrow
+    }
+
+    fn parse_switch_block(&mut self) {
+        self.builder.start_node(SyntaxKind::SwitchBlock.into());
+        self.expect(SyntaxKind::LBrace, "expected `{` after switch");
+        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            let before = self.tokens.len();
+            self.eat_trivia();
+            if self.at(SyntaxKind::CaseKw) || self.at(SyntaxKind::DefaultKw) {
+                let is_arrow = self.parse_switch_label();
+                if is_arrow {
+                    // Switch rule body: either a block or a single statement/expression.
+                    self.eat_trivia();
+                    if self.at(SyntaxKind::LBrace) {
+                        self.parse_block();
+                    } else if self.at(SyntaxKind::Semicolon) {
+                        self.bump();
+                    } else if self.at(SyntaxKind::CaseKw)
+                        || self.at(SyntaxKind::DefaultKw)
+                        || self.at(SyntaxKind::RBrace)
+                        || self.at(SyntaxKind::Eof)
+                    {
+                        // Common during typing: `case 1 ->` followed immediately by the next label
+                        // / closing brace.
+                        self.error_here("expected switch rule body after `->`");
+                    } else {
+                        self.parse_statement();
+                    }
+                }
+            } else {
+                self.parse_statement();
+            }
+            self.force_progress(before, STMT_RECOVERY);
+        }
+        self.expect(SyntaxKind::RBrace, "expected `}` after switch block");
+        self.builder.finish_node(); // SwitchBlock
     }
 
     fn parse_case_label_element(&mut self) {

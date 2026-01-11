@@ -97,6 +97,9 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
         Arc::new(String::new())
     };
 
+    // NOTE: `nova_syntax` supports incremental reparsing (`parse_java_incremental` /
+    // `reparse_java`) by splicing updated green subtrees into the previous tree.
+    // Wiring edit propagation through Salsa inputs is handled separately.
     let parsed = nova_syntax::parse_java(text.as_str());
     let result = Arc::new(parsed);
     db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, text.len() as u64);

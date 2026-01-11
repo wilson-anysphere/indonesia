@@ -1,10 +1,11 @@
 use pretty_assertions::assert_eq;
 
 use crate::{
-    lex, lex_with_errors, parse_expression, parse_java, parse_java_with_options, AstNode,
+    lex, lex_with_errors, parse_expression, parse_java, parse_java_with_options, reparse_java,
+    AstNode,
     CompilationUnit,
     ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions, ProvidesDirective,
-    RequiresDirective, UsesDirective, SyntaxKind,
+    RequiresDirective, TextEdit, TextRange, UsesDirective, SyntaxKind,
 };
 
 fn bless_enabled() -> bool {
@@ -1569,4 +1570,130 @@ fn jpms_module_name_recovers_from_syntax_errors() {
     // Missing trailing semicolon after `requires`.
     let input = "module com.example.mod { requires java.base }";
     assert_eq!(jpms_module_name(input), Some("com.example.mod".to_string()));
+}
+
+fn find_class_by_name(parse: &crate::JavaParseResult, name: &str) -> crate::SyntaxNode {
+    parse
+        .syntax()
+        .descendants()
+        .find(|n| {
+            n.kind() == SyntaxKind::ClassDeclaration
+                && n.descendants_with_tokens().any(|el| {
+                    el.into_token()
+                        .map(|t| t.kind() == SyntaxKind::Identifier && t.text() == name)
+                        .unwrap_or(false)
+                })
+        })
+        .unwrap_or_else(|| panic!("class `{name}` not found"))
+}
+
+fn green_ptr_eq(a: &rowan::GreenNode, b: &rowan::GreenNode) -> bool {
+    let a_ptr = &**a as *const _ as *const ();
+    let b_ptr = &**b as *const _ as *const ();
+    a_ptr == b_ptr
+}
+
+#[test]
+fn incremental_edit_reuses_unchanged_type_subtrees() {
+    let old_text = "class Foo { void m() { int x = 1; } }\nclass Bar {}\n";
+    let old = parse_java(old_text);
+
+    let edit_offset = old_text.find("1").unwrap() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: edit_offset,
+            end: edit_offset + 1,
+        },
+        "2",
+    );
+    let new_text = old_text.replacen('1', "2", 1);
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        green_ptr_eq(&old_bar, &new_bar),
+        "expected unchanged `Bar` subtree to be reused"
+    );
+}
+
+#[test]
+fn incremental_edit_crossing_brace_widens_reparse_root() {
+    let old_text = "class Foo { void m() { { int a; } int b; } }\n";
+    let old = parse_java(old_text);
+
+    // Delete the inner `}`. This should not reparse only the inner block; the `int b;`
+    // statement must become part of the inner block.
+    let brace_offset = old_text.find("} int b").unwrap() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: brace_offset,
+            end: brace_offset + 1,
+        },
+        "",
+    );
+    let mut new_text = old_text.to_string();
+    new_text.replace_range(brace_offset as usize..(brace_offset + 1) as usize, "");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+
+    let b_token = new_parse
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|t| t.kind() == SyntaxKind::Identifier && t.text() == "b")
+        .expect("expected identifier `b`");
+
+    let innermost_block_start = b_token
+        .parent()
+        .unwrap()
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::Block)
+        .map(|n| u32::from(n.text_range().start()))
+        .unwrap();
+
+    let old_b_token = old
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|t| t.kind() == SyntaxKind::Identifier && t.text() == "b")
+        .expect("expected identifier `b`");
+    let old_innermost_block_start = old_b_token
+        .parent()
+        .unwrap()
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::Block)
+        .map(|n| u32::from(n.text_range().start()))
+        .unwrap();
+
+    assert!(
+        innermost_block_start > old_innermost_block_start,
+        "expected `b` to move into a more nested block after deleting the inner brace"
+    );
+}
+
+#[test]
+fn incremental_edit_inside_string_literal_falls_back_to_full_reparse() {
+    let old_text = "class Foo { String s = \"hello\"; }\nclass Bar {}\n";
+    let old = parse_java(old_text);
+
+    let h_offset = old_text.find("hello").unwrap() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: h_offset,
+            end: h_offset + 1,
+        },
+        "H",
+    );
+    let new_text = old_text.replacen("h", "H", 1);
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        !green_ptr_eq(&old_bar, &new_bar),
+        "expected full reparse to allocate a fresh `Bar` subtree"
+    );
 }

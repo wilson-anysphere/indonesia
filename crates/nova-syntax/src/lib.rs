@@ -8,6 +8,7 @@
 
 mod ast;
 mod feature_gate;
+mod incremental;
 mod language_level;
 mod lexer;
 mod parser;
@@ -17,6 +18,7 @@ mod util;
 
 pub use ast::*;
 pub use lexer::{lex, lex_with_errors, LexError, Lexer, Token};
+pub use incremental::{parse_java_incremental, reparse_java};
 pub use parser::{parse_expression, parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
 pub use tree_store::SyntaxTreeStore;
@@ -81,6 +83,33 @@ impl TextRange {
     #[inline]
     pub fn len(self) -> u32 {
         self.end - self.start
+    }
+}
+
+/// A single edit to a UTF-8 source buffer.
+///
+/// The edit uses byte offsets and applies `replacement` over `range` (half-open).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TextEdit {
+    pub range: TextRange,
+    pub replacement: String,
+}
+
+impl TextEdit {
+    pub fn new(range: TextRange, replacement: impl Into<String>) -> Self {
+        Self {
+            range,
+            replacement: replacement.into(),
+        }
+    }
+
+    pub fn insert(offset: u32, text: impl Into<String>) -> Self {
+        Self::new(TextRange { start: offset, end: offset }, text)
+    }
+
+    /// Net byte change produced by this edit (`replacement.len() - range.len()`).
+    pub fn delta(&self) -> isize {
+        self.replacement.len() as isize - self.range.len() as isize
     }
 }
 
