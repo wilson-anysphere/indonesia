@@ -6,6 +6,8 @@
 
 use nova_types::Span;
 
+use crate::{parse_java, SyntaxKind, SyntaxNode, SyntaxToken};
+
 pub mod ast {
     use nova_types::Span;
 
@@ -293,9 +295,10 @@ impl Parse {
 
 #[must_use]
 pub fn parse(text: &str) -> Parse {
-    let tokens = Lexer::new(text, 0).collect();
-    let mut parser = Parser::new(tokens);
-    let compilation_unit = parser.parse_compilation_unit(text.len());
+    let parsed = parse_java(text);
+    let root = parsed.syntax();
+    let lowerer = Lowerer::new(SpanMapper::identity());
+    let compilation_unit = lowerer.lower_compilation_unit(&root, text.len());
     Parse { compilation_unit }
 }
 
@@ -305,1116 +308,825 @@ pub fn parse(text: &str) -> Parse {
 /// returned spans are file-relative.
 #[must_use]
 pub fn parse_block(text: &str, offset: usize) -> ast::Block {
-    let tokens = Lexer::new(text, offset).collect();
-    let mut parser = Parser::new(tokens);
-    parser.parse_block()
+    let prefix = "class __Dummy { void __dummy() ";
+    let suffix = " }";
+    let wrapper = format!("{prefix}{text}{suffix}");
+    let parsed = parse_java(&wrapper);
+    let root = parsed.syntax();
+
+    let block_node = root
+        .descendants()
+        .find(|node| {
+            node.kind() == SyntaxKind::Block && text_size_to_usize(node.text_range().start()) == prefix.len()
+        })
+        .or_else(|| root.descendants().find(|node| node.kind() == SyntaxKind::Block));
+
+    let Some(block_node) = block_node else {
+        return ast::Block {
+            statements: Vec::new(),
+            range: Span::new(offset, offset + text.len()),
+        };
+    };
+
+    let base = text_size_to_usize(block_node.text_range().start());
+    let lowerer = Lowerer::new(SpanMapper { base, offset });
+    lowerer.lower_block(&block_node)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Token {
-    kind: TokenKind,
-    text: String,
-    range: Span,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TokenKind {
-    Ident,
-    IntLiteral,
-    StringLiteral,
-    At,
-    LBrace,
-    RBrace,
-    LParen,
-    RParen,
-    LBracket,
-    RBracket,
-    Semi,
-    Comma,
-    Dot,
-    Star,
-    Eq,
-    Plus,
-    Minus,
-    Slash,
-    Lt,
-    Gt,
-    Unknown,
-}
-
-struct Lexer<'a> {
-    text: &'a str,
+#[derive(Debug, Clone, Copy)]
+struct SpanMapper {
     offset: usize,
-    pos: usize,
+    base: usize,
 }
 
-impl<'a> Lexer<'a> {
-    fn new(text: &'a str, offset: usize) -> Self {
-        Lexer {
-            text,
-            offset,
-            pos: 0,
-        }
+impl SpanMapper {
+    const fn identity() -> Self {
+        Self { offset: 0, base: 0 }
     }
 
-    fn remaining(&self) -> &'a str {
-        &self.text[self.pos..]
+    fn map_range(self, range: text_size::TextRange) -> Span {
+        let start = text_size_to_usize(range.start());
+        let end = text_size_to_usize(range.end());
+        Span::new(
+            self.offset + start.saturating_sub(self.base),
+            self.offset + end.saturating_sub(self.base),
+        )
     }
 
-    fn peek_char(&self) -> Option<char> {
-        self.remaining().chars().next()
+    fn map_node(self, node: &SyntaxNode) -> Span {
+        self.map_range(node.text_range())
     }
 
-    fn bump_char(&mut self) -> Option<char> {
-        let c = self.peek_char()?;
-        self.pos += c.len_utf8();
-        Some(c)
-    }
-
-    fn current_offset(&self) -> usize {
-        self.offset + self.pos
-    }
-
-    fn make_range(&self, start: usize, end_pos: usize) -> Span {
-        Span::new(start, self.offset + end_pos)
-    }
-
-    fn skip_whitespace_and_comments(&mut self) {
-        loop {
-            while matches!(self.peek_char(), Some(c) if c.is_whitespace()) {
-                self.bump_char();
-            }
-
-            let rem = self.remaining();
-            if rem.starts_with("//") {
-                while let Some(c) = self.bump_char() {
-                    if c == '\n' {
-                        break;
-                    }
-                }
-                continue;
-            }
-
-            if rem.starts_with("/*") {
-                self.bump_char();
-                self.bump_char();
-                while !self.remaining().is_empty() && !self.remaining().starts_with("*/") {
-                    self.bump_char();
-                }
-                if self.remaining().starts_with("*/") {
-                    self.bump_char();
-                    self.bump_char();
-                }
-                continue;
-            }
-
-            break;
-        }
-    }
-
-    fn lex_identifier(&mut self) -> String {
-        let mut out = String::new();
-        while let Some(c) = self.peek_char() {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '$' {
-                out.push(c);
-                self.bump_char();
-            } else {
-                break;
-            }
-        }
-        out
-    }
-
-    fn lex_number(&mut self) -> String {
-        let mut out = String::new();
-        while let Some(c) = self.peek_char() {
-            if c.is_ascii_digit() {
-                out.push(c);
-                self.bump_char();
-            } else {
-                break;
-            }
-        }
-        out
-    }
-
-    fn lex_string_literal(&mut self) -> String {
-        let mut out = String::new();
-        // opening quote already consumed
-        out.push('"');
-        while let Some(c) = self.bump_char() {
-            out.push(c);
-            match c {
-                '"' => break,
-                '\\' => {
-                    if let Some(escaped) = self.bump_char() {
-                        out.push(escaped);
-                    }
-                }
-                _ => {}
-            }
-        }
-        out
-    }
-
-    fn next_token(&mut self) -> Option<Token> {
-        self.skip_whitespace_and_comments();
-        if self.remaining().is_empty() {
-            return None;
-        }
-
-        let start = self.current_offset();
-        let ch = self.bump_char().unwrap();
-
-        let (kind, text) = match ch {
-            '{' => (TokenKind::LBrace, "{".to_string()),
-            '}' => (TokenKind::RBrace, "}".to_string()),
-            '(' => (TokenKind::LParen, "(".to_string()),
-            ')' => (TokenKind::RParen, ")".to_string()),
-            '[' => (TokenKind::LBracket, "[".to_string()),
-            ']' => (TokenKind::RBracket, "]".to_string()),
-            ';' => (TokenKind::Semi, ";".to_string()),
-            ',' => (TokenKind::Comma, ",".to_string()),
-            '.' => (TokenKind::Dot, ".".to_string()),
-            '*' => (TokenKind::Star, "*".to_string()),
-            '=' => (TokenKind::Eq, "=".to_string()),
-            '+' => (TokenKind::Plus, "+".to_string()),
-            '-' => (TokenKind::Minus, "-".to_string()),
-            '/' => (TokenKind::Slash, "/".to_string()),
-            '<' => (TokenKind::Lt, "<".to_string()),
-            '>' => (TokenKind::Gt, ">".to_string()),
-            '@' => (TokenKind::At, "@".to_string()),
-            '"' => {
-                let lit = self.lex_string_literal();
-                (TokenKind::StringLiteral, lit)
-            }
-            c if c.is_ascii_digit() => {
-                let mut num = String::new();
-                num.push(c);
-                num.push_str(&self.lex_number());
-                (TokenKind::IntLiteral, num)
-            }
-            c if c.is_ascii_alphabetic() || c == '_' || c == '$' => {
-                let mut ident = String::new();
-                ident.push(c);
-                ident.push_str(&self.lex_identifier());
-                (TokenKind::Ident, ident)
-            }
-            other => (TokenKind::Unknown, other.to_string()),
-        };
-
-        let range = self.make_range(start, self.pos);
-        Some(Token { kind, text, range })
+    fn map_token(self, token: &SyntaxToken) -> Span {
+        self.map_range(token.text_range())
     }
 }
 
-impl Iterator for Lexer<'_> {
-    type Item = Token;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.next_token()
-    }
+struct Lowerer {
+    spans: SpanMapper,
 }
 
-struct Parser {
-    tokens: Vec<Token>,
-    pos: usize,
-}
-
-impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0 }
+impl Lowerer {
+    fn new(spans: SpanMapper) -> Self {
+        Self { spans }
     }
 
-    fn is_eof(&self) -> bool {
-        self.pos >= self.tokens.len()
-    }
+    fn lower_compilation_unit(&self, root: &SyntaxNode, file_len: usize) -> ast::CompilationUnit {
+        let package = root
+            .children()
+            .find(|node| node.kind() == SyntaxKind::PackageDeclaration)
+            .map(|node| self.lower_package_decl(&node));
 
-    fn peek(&self) -> Option<&Token> {
-        self.tokens.get(self.pos)
-    }
+        let imports = root
+            .children()
+            .filter(|node| node.kind() == SyntaxKind::ImportDeclaration)
+            .map(|node| self.lower_import_decl(&node))
+            .collect();
 
-    fn peek_n(&self, n: usize) -> Option<&Token> {
-        self.tokens.get(self.pos + n)
-    }
-
-    fn at_kind(&self, kind: TokenKind) -> bool {
-        self.peek().is_some_and(|token| token.kind == kind)
-    }
-
-    fn at_keyword(&self, keyword: &str) -> bool {
-        self.peek()
-            .is_some_and(|token| token.kind == TokenKind::Ident && token.text == keyword)
-    }
-
-    fn bump(&mut self) -> Option<Token> {
-        if self.is_eof() {
-            return None;
-        }
-        let tok = self.tokens[self.pos].clone();
-        self.pos += 1;
-        Some(tok)
-    }
-
-    fn expect_kind(&mut self, kind: TokenKind) -> Token {
-        match self.bump() {
-            Some(tok) if tok.kind == kind => tok,
-            Some(tok) => tok,
-            None => Token {
-                kind,
-                text: String::new(),
-                range: Span::new(0, 0),
-            },
-        }
-    }
-
-    fn expect_ident(&mut self) -> Token {
-        match self.bump() {
-            Some(tok) if tok.kind == TokenKind::Ident => tok,
-            Some(tok) => tok,
-            None => Token {
-                kind: TokenKind::Ident,
-                text: String::new(),
-                range: Span::new(0, 0),
-            },
-        }
-    }
-
-    fn parse_compilation_unit(&mut self, len: usize) -> ast::CompilationUnit {
-        let start = 0;
-        let end = len;
-
-        let package = if self.at_keyword("package") {
-            Some(self.parse_package_decl())
-        } else {
-            None
-        };
-
-        let mut imports = Vec::new();
-        while self.at_keyword("import") {
-            imports.push(self.parse_import_decl());
-        }
-
-        let mut types = Vec::new();
-        while !self.is_eof() {
-            if let Some(decl) = self.parse_type_decl() {
-                types.push(decl);
-            } else {
-                self.bump();
-            }
-        }
+        let types = root.children().filter_map(|node| self.lower_type_decl(&node)).collect();
 
         ast::CompilationUnit {
             package,
             imports,
             types,
-            range: Span::new(start, end),
+            range: Span::new(0, file_len),
         }
     }
 
-    fn parse_package_decl(&mut self) -> ast::PackageDecl {
-        let kw = self.expect_ident();
-        let (name, _) = self.parse_qualified_name();
-        let semi = if self.at_kind(TokenKind::Semi) {
-            self.bump().unwrap()
-        } else {
-            self.expect_kind(TokenKind::Semi)
-        };
+    fn lower_package_decl(&self, node: &SyntaxNode) -> ast::PackageDecl {
+        let name_node = node.children().find(|child| child.kind() == SyntaxKind::Name);
+        let name = name_node
+            .as_ref()
+            .map(|n| self.collect_non_trivia_text(n))
+            .unwrap_or_default();
         ast::PackageDecl {
             name,
-            range: Span::new(kw.range.start, semi.range.end),
+            range: self.spans.map_node(node),
         }
     }
 
-    fn parse_import_decl(&mut self) -> ast::ImportDecl {
-        let kw = self.expect_ident();
-        let mut is_static = false;
-        if self.at_keyword("static") {
-            is_static = true;
-            self.bump();
-        }
+    fn lower_import_decl(&self, node: &SyntaxNode) -> ast::ImportDecl {
+        let is_static = node
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .any(|tok| tok.kind() == SyntaxKind::StaticKw);
 
-        let mut parts = Vec::new();
-        let first = self.expect_ident();
-        parts.push(first.text);
-
+        let name_node = node.children().find(|child| child.kind() == SyntaxKind::Name);
+        let mut path = name_node
+            .as_ref()
+            .map(|n| self.collect_non_trivia_text(n))
+            .unwrap_or_default();
         let mut is_star = false;
-        while self.at_kind(TokenKind::Dot) {
-            self.bump();
-            if self.at_kind(TokenKind::Star) {
-                self.bump();
-                is_star = true;
-                break;
-            }
-            let part = self.expect_ident();
-            parts.push(part.text);
+        if path.ends_with(".*") {
+            is_star = true;
+            path.truncate(path.len().saturating_sub(2));
         }
-
-        let semi = if self.at_kind(TokenKind::Semi) {
-            self.bump().unwrap()
-        } else {
-            self.expect_kind(TokenKind::Semi)
-        };
 
         ast::ImportDecl {
             is_static,
             is_star,
-            path: parts.join("."),
-            range: Span::new(kw.range.start, semi.range.end),
+            path,
+            range: self.spans.map_node(node),
         }
     }
 
-    fn parse_qualified_name(&mut self) -> (String, Span) {
-        let first = self.expect_ident();
-        let start = first.range.start;
-        let mut end = first.range.end;
-        let mut parts = vec![first.text];
-
-        while self.at_kind(TokenKind::Dot)
-            && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Ident)
-        {
-            self.bump();
-            let part = self.expect_ident();
-            end = part.range.end;
-            parts.push(part.text);
-        }
-
-        (parts.join("."), Span::new(start, end))
-    }
-
-    fn parse_type_decl(&mut self) -> Option<ast::TypeDecl> {
-        let start_pos = self.pos;
-        let start = self.peek()?.range.start;
-
-        self.skip_modifiers_and_annotations();
-
-        if self.at_kind(TokenKind::At)
-            && self
-                .peek_n(1)
-                .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "interface")
-        {
-            self.bump();
-            self.bump();
-            let name = self.expect_ident();
-            let (members, body_range, end) = self.parse_type_body(name.text.as_str(), false);
-            let range = Span::new(start, end);
-            return Some(ast::TypeDecl::Annotation(ast::AnnotationDecl {
-                name: name.text,
-                name_range: name.range,
-                range,
-                body_range,
-                members,
-            }));
-        }
-
-        let kind = match self.peek()? {
-            tok if tok.kind == TokenKind::Ident
-                && matches!(tok.text.as_str(), "class" | "interface" | "enum" | "record") =>
-            {
-                tok.text.clone()
-            }
-            _ => {
-                self.pos = start_pos;
-                return None;
-            }
+    fn lower_type_decl(&self, node: &SyntaxNode) -> Option<ast::TypeDecl> {
+        let body_kind = match node.kind() {
+            SyntaxKind::ClassDeclaration => SyntaxKind::ClassBody,
+            SyntaxKind::InterfaceDeclaration => SyntaxKind::InterfaceBody,
+            SyntaxKind::EnumDeclaration => SyntaxKind::EnumBody,
+            SyntaxKind::RecordDeclaration => SyntaxKind::RecordBody,
+            SyntaxKind::AnnotationTypeDeclaration => SyntaxKind::AnnotationBody,
+            _ => return None,
         };
 
-        self.bump();
-        let name = self.expect_ident();
+        let body = node.children().find(|child| child.kind() == body_kind);
+        let range = self.spans.map_node(node);
+        let body_range = body
+            .as_ref()
+            .map(|n| self.spans.map_node(n))
+            .unwrap_or_else(|| Span::new(range.end, range.end));
 
-        let is_enum = kind == "enum";
-        let (members, body_range, end) = self.parse_type_body(name.text.as_str(), is_enum);
-        let range = Span::new(start, end);
+        let name_token = self.last_ident_like_before(node, body_kind);
+        let name = name_token
+            .as_ref()
+            .map(|tok| tok.text().to_string())
+            .unwrap_or_default();
+        let name_range = name_token
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok))
+            .unwrap_or_else(|| Span::new(range.start, range.start));
 
-        match kind.as_str() {
-            "class" => Some(ast::TypeDecl::Class(ast::ClassDecl {
-                name: name.text,
-                name_range: name.range,
+        let members = body
+            .as_ref()
+            .map(|body| self.lower_members(body, &name))
+            .unwrap_or_default();
+
+        Some(match node.kind() {
+            SyntaxKind::ClassDeclaration => ast::TypeDecl::Class(ast::ClassDecl {
+                name,
+                name_range,
                 range,
                 body_range,
                 members,
-            })),
-            "interface" => Some(ast::TypeDecl::Interface(ast::InterfaceDecl {
-                name: name.text,
-                name_range: name.range,
+            }),
+            SyntaxKind::InterfaceDeclaration => ast::TypeDecl::Interface(ast::InterfaceDecl {
+                name,
+                name_range,
                 range,
                 body_range,
                 members,
-            })),
-            "enum" => Some(ast::TypeDecl::Enum(ast::EnumDecl {
-                name: name.text,
-                name_range: name.range,
+            }),
+            SyntaxKind::EnumDeclaration => ast::TypeDecl::Enum(ast::EnumDecl {
+                name,
+                name_range,
                 range,
                 body_range,
                 members,
-            })),
-            "record" => Some(ast::TypeDecl::Record(ast::RecordDecl {
-                name: name.text,
-                name_range: name.range,
+            }),
+            SyntaxKind::RecordDeclaration => ast::TypeDecl::Record(ast::RecordDecl {
+                name,
+                name_range,
                 range,
                 body_range,
                 members,
-            })),
+            }),
+            SyntaxKind::AnnotationTypeDeclaration => ast::TypeDecl::Annotation(ast::AnnotationDecl {
+                name,
+                name_range,
+                range,
+                body_range,
+                members,
+            }),
+            _ => return None,
+        })
+    }
+
+    fn lower_members(&self, body: &SyntaxNode, enclosing_type: &str) -> Vec<ast::MemberDecl> {
+        body.children()
+            .filter_map(|node| match node.kind() {
+                SyntaxKind::EnumConstant => None,
+                _ => self.lower_member_decl(&node, enclosing_type),
+            })
+            .collect()
+    }
+
+    fn lower_member_decl(
+        &self,
+        node: &SyntaxNode,
+        enclosing_type: &str,
+    ) -> Option<ast::MemberDecl> {
+        match node.kind() {
+            SyntaxKind::FieldDeclaration => Some(ast::MemberDecl::Field(self.lower_field_decl(node))),
+            SyntaxKind::MethodDeclaration => Some(ast::MemberDecl::Method(self.lower_method_decl(node))),
+            SyntaxKind::ConstructorDeclaration => {
+                let decl = self.lower_constructor_decl(node);
+                (decl.name == enclosing_type).then_some(ast::MemberDecl::Constructor(decl))
+            }
+            SyntaxKind::InitializerBlock => Some(ast::MemberDecl::Initializer(self.lower_initializer_decl(node))),
+            SyntaxKind::ClassDeclaration
+            | SyntaxKind::InterfaceDeclaration
+            | SyntaxKind::EnumDeclaration
+            | SyntaxKind::RecordDeclaration
+            | SyntaxKind::AnnotationTypeDeclaration => {
+                self.lower_type_decl(node).map(ast::MemberDecl::Type)
+            }
             _ => None,
         }
     }
 
-    fn skip_modifiers_and_annotations(&mut self) {
-        loop {
-            if self.at_kind(TokenKind::At) {
-                if self
-                    .peek_n(1)
-                    .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "interface")
-                {
-                    break;
-                }
-                self.bump();
-                if self.peek().is_some_and(|t| t.kind == TokenKind::Ident) {
-                    self.parse_qualified_name();
-                }
-                if self.at_kind(TokenKind::LParen) {
-                    self.skip_balanced(TokenKind::LParen, TokenKind::RParen);
-                }
-                continue;
-            }
+    fn lower_field_decl(&self, node: &SyntaxNode) -> ast::FieldDecl {
+        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty = ty_node
+            .as_ref()
+            .map(|n| self.lower_type_ref(n))
+            .unwrap_or_else(|| ast::TypeRef {
+                text: String::new(),
+                range: self.spans.map_node(node),
+            });
 
-            if self.peek().is_some_and(|tok| {
-                tok.kind == TokenKind::Ident
-                    && matches!(
-                        tok.text.as_str(),
-                        "public"
-                            | "protected"
-                            | "private"
-                            | "static"
-                            | "final"
-                            | "abstract"
-                            | "default"
-                            | "synchronized"
-                            | "native"
-                            | "transient"
-                            | "volatile"
-                            | "sealed"
-                            | "non"
-                            | "strictfp"
-                    )
-            }) {
-                if self.at_keyword("non")
-                    && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Minus)
-                    && self
-                        .peek_n(2)
-                        .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "sealed")
-                {
-                    self.bump();
-                    self.bump();
-                    self.bump();
-                    continue;
-                }
-                if self.at_keyword("static")
-                    && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LBrace)
-                {
-                    break;
-                }
-                self.bump();
-                continue;
-            }
+        let declarator = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::VariableDeclaratorList)
+            .and_then(|list| list.children().find(|c| c.kind() == SyntaxKind::VariableDeclarator));
 
-            break;
+        let name_token = declarator
+            .as_ref()
+            .and_then(|decl| self.first_ident_like_token(decl));
+
+        let name = name_token
+            .as_ref()
+            .map(|tok| tok.text().to_string())
+            .unwrap_or_default();
+        let name_range = name_token
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok))
+            .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
+
+        ast::FieldDecl {
+            ty,
+            name,
+            name_range,
+            range: self.spans.map_node(node),
         }
     }
 
-    fn parse_type_body(
-        &mut self,
-        type_name: &str,
-        is_enum: bool,
-    ) -> (Vec<ast::MemberDecl>, Span, usize) {
-        while !self.at_kind(TokenKind::LBrace) && !self.is_eof() {
-            self.bump();
-        }
-        let lbrace = self.expect_kind(TokenKind::LBrace);
-        let body_start = lbrace.range.start;
+    fn lower_method_decl(&self, node: &SyntaxNode) -> ast::MethodDecl {
+        let param_list = node.children().find(|child| child.kind() == SyntaxKind::ParameterList);
+        let name_token = param_list
+            .as_ref()
+            .and_then(|_| self.last_ident_like_before(node, SyntaxKind::ParameterList));
 
-        if is_enum {
-            self.skip_enum_constants();
-        }
+        let name = name_token
+            .as_ref()
+            .map(|tok| tok.text().to_string())
+            .unwrap_or_default();
+        let name_range = name_token
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok))
+            .unwrap_or_else(|| Span::new(self.spans.map_node(node).start, self.spans.map_node(node).start));
 
-        let mut members = Vec::new();
-        while !self.is_eof() && !self.at_kind(TokenKind::RBrace) {
-            if let Some(member) = self.parse_member_decl(type_name) {
-                members.push(member);
-            } else {
-                self.bump();
-            }
-        }
-
-        let rbrace = self.expect_kind(TokenKind::RBrace);
-        let body_range = Span::new(body_start, rbrace.range.end);
-        (members, body_range, rbrace.range.end)
-    }
-
-    fn skip_enum_constants(&mut self) {
-        // Enum constants must appear first in the body. We don't lower constants
-        // into the semantic `ItemTree` yet, but we still need to skip over them
-        // so subsequent members parse correctly.
-
-        // `enum E { ; ... }` (no constants, explicit separator).
-        if self.at_kind(TokenKind::Semi) {
-            self.bump();
-            return;
-        }
-
-        loop {
-            // Trailing comma before the semicolon separator.
-            if self.at_kind(TokenKind::Semi) {
-                self.bump();
-                break;
-            }
-            if self.at_kind(TokenKind::RBrace) {
-                break;
-            }
-
-            self.skip_modifiers_and_annotations();
-            if !self.at_kind(TokenKind::Ident) {
-                break;
-            }
-
-            // Constant name.
-            self.bump();
-
-            // Optional argument list.
-            if self.at_kind(TokenKind::LParen) {
-                self.skip_balanced(TokenKind::LParen, TokenKind::RParen);
-            }
-
-            // Optional class body for anonymous subclasses.
-            if self.at_kind(TokenKind::LBrace) {
-                self.skip_balanced(TokenKind::LBrace, TokenKind::RBrace);
-            }
-
-            if self.at_kind(TokenKind::Comma) {
-                self.bump();
-                continue;
-            }
-
-            if self.at_kind(TokenKind::Semi) {
-                self.bump();
-                break;
-            }
-
-            if self.at_kind(TokenKind::RBrace) {
-                break;
-            }
-
-            // Error recovery: consume something so we make progress.
-            self.bump();
-        }
-    }
-
-    fn parse_member_decl(&mut self, enclosing_type: &str) -> Option<ast::MemberDecl> {
-        let start = self.peek()?.range.start;
-        self.skip_modifiers_and_annotations();
-
-        // Generic method/constructor type parameters: `<T extends ...>`
-        if self.at_kind(TokenKind::Lt) {
-            self.skip_balanced(TokenKind::Lt, TokenKind::Gt);
-        }
-
-        if self.at_keyword("static") && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LBrace)
+        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let return_ty = if let Some(ty_node) = ty_node {
+            self.lower_type_ref(&ty_node)
+        } else if let Some(void_token) = self
+            .direct_token(node, |tok| tok.kind() == SyntaxKind::VoidKw)
         {
-            self.bump();
-            let body = self.parse_block();
-            let range = Span::new(start, body.range.end);
-            return Some(ast::MemberDecl::Initializer(ast::InitializerDecl {
-                is_static: true,
-                body,
-                range,
-            }));
-        }
+            ast::TypeRef {
+                text: void_token.text().to_string(),
+                range: self.spans.map_token(&void_token),
+            }
+        } else {
+            ast::TypeRef {
+                text: String::new(),
+                range: Span::new(name_range.start, name_range.start),
+            }
+        };
 
-        if self.at_kind(TokenKind::LBrace) {
-            let body = self.parse_block();
-            let range = Span::new(start, body.range.end);
-            return Some(ast::MemberDecl::Initializer(ast::InitializerDecl {
-                is_static: false,
-                body,
-                range,
-            }));
-        }
+        let params = param_list
+            .as_ref()
+            .map(|list| self.lower_param_list(list))
+            .unwrap_or_default();
 
-        let is_annotation_type = self.at_kind(TokenKind::At)
-            && self
-                .peek_n(1)
-                .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "interface");
-        let is_nested_type = self.peek().is_some_and(|ty| {
-            ty.kind == TokenKind::Ident
-                && matches!(ty.text.as_str(), "class" | "interface" | "enum" | "record")
+        let body = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Block)
+            .map(|block| self.lower_block(&block));
+
+        ast::MethodDecl {
+            return_ty,
+            name,
+            name_range,
+            params,
+            body,
+            range: self.spans.map_node(node),
+        }
+    }
+
+    fn lower_constructor_decl(&self, node: &SyntaxNode) -> ast::ConstructorDecl {
+        let param_list = node.children().find(|child| child.kind() == SyntaxKind::ParameterList);
+        let name_token = param_list
+            .as_ref()
+            .and_then(|_| self.last_ident_like_before(node, SyntaxKind::ParameterList));
+
+        let name = name_token
+            .as_ref()
+            .map(|tok| tok.text().to_string())
+            .unwrap_or_default();
+        let name_range = name_token
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok))
+            .unwrap_or_else(|| Span::new(self.spans.map_node(node).start, self.spans.map_node(node).start));
+
+        let params = param_list
+            .as_ref()
+            .map(|list| self.lower_param_list(list))
+            .unwrap_or_default();
+
+        let body_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Block);
+        let body = body_node
+            .as_ref()
+            .map(|block| self.lower_block(block))
+            .unwrap_or_else(|| ast::Block {
+                statements: Vec::new(),
+                range: Span::new(name_range.end, name_range.end),
+            });
+
+        ast::ConstructorDecl {
+            name,
+            name_range,
+            params,
+            body,
+            range: self.spans.map_node(node),
+        }
+    }
+
+    fn lower_initializer_decl(&self, node: &SyntaxNode) -> ast::InitializerDecl {
+        let modifiers = node.children().find(|child| child.kind() == SyntaxKind::Modifiers);
+        let is_static = modifiers.as_ref().is_some_and(|mods| {
+            mods.descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .any(|tok| tok.kind() == SyntaxKind::StaticKw)
         });
-        if is_annotation_type || is_nested_type {
-            if let Some(decl) = self.parse_type_decl() {
-                return Some(ast::MemberDecl::Type(decl));
-            }
+
+        let body_node = node.children().find(|child| child.kind() == SyntaxKind::Block);
+        let body = body_node
+            .as_ref()
+            .map(|block| self.lower_block(block))
+            .unwrap_or_else(|| ast::Block {
+                statements: Vec::new(),
+                range: self.spans.map_node(node),
+            });
+
+        ast::InitializerDecl {
+            is_static,
+            body,
+            range: self.spans.map_node(node),
         }
+    }
 
-        if self.peek().is_some_and(|t| t.kind == TokenKind::Ident)
-            && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LParen)
-        {
-            let name = self.expect_ident();
-            if name.text == enclosing_type {
-                let params = self.parse_param_list();
-                self.skip_throws_clause();
-                let body = self.parse_block();
-                let range = Span::new(start, body.range.end);
-                return Some(ast::MemberDecl::Constructor(ast::ConstructorDecl {
-                    name: name.text,
-                    name_range: name.range,
-                    params,
-                    body,
-                    range,
-                }));
-            }
-            self.pos -= 1;
-        }
-
-        let return_ty = self.parse_type_ref()?;
-        let name = self.expect_ident();
-
-        if self.at_kind(TokenKind::LParen) {
-            let params = self.parse_param_list();
-            self.skip_throws_clause();
-            if self.at_keyword("default") {
-                // Annotation type element default value: `int value() default 1;`
-                self.bump();
-                while !self.is_eof() && !self.at_kind(TokenKind::Semi) {
-                    if self.at_kind(TokenKind::LParen) {
-                        self.skip_balanced(TokenKind::LParen, TokenKind::RParen);
-                        continue;
-                    }
-                    if self.at_kind(TokenKind::LBrace) {
-                        self.skip_balanced(TokenKind::LBrace, TokenKind::RBrace);
-                        continue;
-                    }
-                    self.bump();
-                }
-                let semi = self.expect_kind(TokenKind::Semi);
-                let range = Span::new(start, semi.range.end);
-                return Some(ast::MemberDecl::Method(ast::MethodDecl {
-                    return_ty,
-                    name: name.text,
-                    name_range: name.range,
-                    params,
-                    body: None,
-                    range,
-                }));
-            }
-            if self.at_kind(TokenKind::Semi) {
-                let semi = self.bump().unwrap();
-                let range = Span::new(start, semi.range.end);
-                return Some(ast::MemberDecl::Method(ast::MethodDecl {
-                    return_ty,
-                    name: name.text,
-                    name_range: name.range,
-                    params,
-                    body: None,
-                    range,
-                }));
-            }
-
-            let body = if self.at_kind(TokenKind::LBrace) {
-                Some(self.parse_block())
-            } else {
-                None
-            };
-
-            let end = body
-                .as_ref()
-                .map(|b| b.range.end)
-                .or_else(|| self.peek().map(|t| t.range.end))
-                .unwrap_or(name.range.end);
-            let range = Span::new(start, end);
-            return Some(ast::MemberDecl::Method(ast::MethodDecl {
-                return_ty,
-                name: name.text,
-                name_range: name.range,
-                params,
-                body,
-                range,
-            }));
-        }
-
-        while !self.is_eof() && !self.at_kind(TokenKind::Semi) {
-            self.bump();
-        }
-        let semi = self.expect_kind(TokenKind::Semi);
-        let range = Span::new(start, semi.range.end);
-        Some(ast::MemberDecl::Field(ast::FieldDecl {
-            ty: return_ty,
-            name: name.text,
-            name_range: name.range,
+    fn lower_type_ref(&self, node: &SyntaxNode) -> ast::TypeRef {
+        let range = self
+            .non_trivia_span(node)
+            .unwrap_or_else(|| self.spans.map_node(node));
+        ast::TypeRef {
+            text: self.collect_non_trivia_text(node),
             range,
-        }))
-    }
-
-    fn skip_throws_clause(&mut self) {
-        if !self.at_keyword("throws") {
-            return;
-        }
-        self.bump();
-        while !self.is_eof() && !self.at_kind(TokenKind::LBrace) && !self.at_kind(TokenKind::Semi) {
-            self.bump();
         }
     }
 
-    fn parse_type_ref(&mut self) -> Option<ast::TypeRef> {
-        let first = self.peek()?;
-        if first.kind != TokenKind::Ident {
-            return None;
-        }
-        let first = self.expect_ident();
-        let start = first.range.start;
-        let mut end = first.range.end;
-        let mut text = first.text;
+    fn lower_param_list(&self, list: &SyntaxNode) -> Vec<ast::ParamDecl> {
+        list.children()
+            .filter(|child| child.kind() == SyntaxKind::Parameter)
+            .filter_map(|param| self.lower_param_decl(&param))
+            .collect()
+    }
 
-        while self.at_kind(TokenKind::Dot)
-            && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Ident)
-        {
-            let dot = self.bump().unwrap();
-            let part = self.expect_ident();
-            text.push_str(&dot.text);
-            text.push_str(&part.text);
-            end = part.range.end;
-        }
+    fn lower_param_decl(&self, node: &SyntaxNode) -> Option<ast::ParamDecl> {
+        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type)?;
+        let ty = self.lower_type_ref(&ty_node);
 
-        if self.at_kind(TokenKind::Lt) {
-            let (generic_text, generic_end) = self.collect_balanced(TokenKind::Lt, TokenKind::Gt);
-            text.push_str(&generic_text);
-            end = generic_end;
-        }
-
-        while self.at_kind(TokenKind::LBracket) {
-            let lb = self.bump().unwrap();
-            text.push_str(&lb.text);
-            let rb = self.expect_kind(TokenKind::RBracket);
-            text.push_str(&rb.text);
-            end = rb.range.end;
+        let mut seen_type = false;
+        let mut name_token = None;
+        for child in node.children_with_tokens() {
+            if child.as_node().is_some_and(|n| n.kind() == SyntaxKind::Type) {
+                seen_type = true;
+                continue;
+            }
+            if !seen_type {
+                continue;
+            }
+            if let Some(tok) = child.as_token().cloned() {
+                if tok.kind().is_identifier_like() {
+                    name_token = Some(tok);
+                    break;
+                }
+            }
         }
 
-        Some(ast::TypeRef {
-            text,
-            range: Span::new(start, end),
+        let name_token = name_token?;
+        let name = name_token.text().to_string();
+        let name_range = self.spans.map_token(&name_token);
+        let range = Span::new(ty.range.start, name_range.end);
+
+        Some(ast::ParamDecl {
+            ty,
+            name,
+            name_range,
+            range,
         })
     }
 
-    fn parse_param_list(&mut self) -> Vec<ast::ParamDecl> {
-        let _lparen = self.expect_kind(TokenKind::LParen);
-        let mut params = Vec::new();
-        while !self.is_eof() && !self.at_kind(TokenKind::RParen) {
-            self.skip_variable_modifiers_and_annotations();
-            if let Some(mut ty) = self.parse_type_ref() {
-                if self.at_kind(TokenKind::Dot)
-                    && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Dot)
-                    && self.peek_n(2).is_some_and(|t| t.kind == TokenKind::Dot)
-                {
-                    let dot1 = self.bump().unwrap();
-                    let dot2 = self.bump().unwrap();
-                    let dot3 = self.bump().unwrap();
-                    ty.text.push_str(&dot1.text);
-                    ty.text.push_str(&dot2.text);
-                    ty.text.push_str(&dot3.text);
-                    ty.range = Span::new(ty.range.start, dot3.range.end);
-                }
+    fn lower_block(&self, node: &SyntaxNode) -> ast::Block {
+        let statements = node
+            .children()
+            .filter_map(|child| self.lower_stmt(&child))
+            .collect();
 
-                let name = self.expect_ident();
-                let range = Span::new(ty.range.start, name.range.end);
-                params.push(ast::ParamDecl {
-                    ty,
-                    name: name.text,
-                    name_range: name.range,
-                    range,
-                });
-            } else {
-                self.bump();
-            }
-
-            if self.at_kind(TokenKind::Comma) {
-                self.bump();
-            }
-        }
-        self.expect_kind(TokenKind::RParen);
-        params
-    }
-
-    fn skip_variable_modifiers_and_annotations(&mut self) {
-        loop {
-            if self.at_kind(TokenKind::At) {
-                self.bump();
-                if self.peek().is_some_and(|t| t.kind == TokenKind::Ident) {
-                    self.parse_qualified_name();
-                }
-                if self.at_kind(TokenKind::LParen) {
-                    self.skip_balanced(TokenKind::LParen, TokenKind::RParen);
-                }
-                continue;
-            }
-
-            if self.at_keyword("final") {
-                self.bump();
-                continue;
-            }
-
-            break;
-        }
-    }
-
-    fn parse_block(&mut self) -> ast::Block {
-        let lbrace = self.expect_kind(TokenKind::LBrace);
-        let start = lbrace.range.start;
-        let mut statements = Vec::new();
-        while !self.is_eof() && !self.at_kind(TokenKind::RBrace) {
-            if let Some(stmt) = self.parse_stmt() {
-                statements.push(stmt);
-            } else {
-                self.bump();
-            }
-        }
-        let rbrace = self.expect_kind(TokenKind::RBrace);
         ast::Block {
             statements,
-            range: Span::new(start, rbrace.range.end),
+            range: self.spans.map_node(node),
         }
     }
 
-    fn parse_stmt(&mut self) -> Option<ast::Stmt> {
-        if self.at_kind(TokenKind::Semi) {
-            let semi = self.bump().unwrap();
-            return Some(ast::Stmt::Empty(semi.range));
+    fn lower_stmt(&self, node: &SyntaxNode) -> Option<ast::Stmt> {
+        match node.kind() {
+            SyntaxKind::LocalVariableDeclarationStatement => Some(ast::Stmt::LocalVar(self.lower_local_var_stmt(node))),
+            SyntaxKind::ExpressionStatement => Some(ast::Stmt::Expr(self.lower_expr_stmt(node))),
+            SyntaxKind::ReturnStatement => Some(ast::Stmt::Return(self.lower_return_stmt(node))),
+            SyntaxKind::Block => Some(ast::Stmt::Block(self.lower_block(node))),
+            SyntaxKind::EmptyStatement => Some(ast::Stmt::Empty(self.spans.map_node(node))),
+            _ => None,
         }
+    }
 
-        if self.at_kind(TokenKind::LBrace) {
-            let block = self.parse_block();
-            return Some(ast::Stmt::Block(block));
+    fn lower_local_var_stmt(&self, node: &SyntaxNode) -> ast::LocalVarStmt {
+        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty = ty_node
+            .as_ref()
+            .map(|n| self.lower_type_ref(n))
+            .unwrap_or_else(|| ast::TypeRef {
+                text: String::new(),
+                range: self.spans.map_node(node),
+            });
+
+        let declarator = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::VariableDeclaratorList)
+            .and_then(|list| list.children().find(|c| c.kind() == SyntaxKind::VariableDeclarator));
+
+        let name_token = declarator
+            .as_ref()
+            .and_then(|decl| self.first_ident_like_token(decl));
+        let name = name_token
+            .as_ref()
+            .map(|tok| tok.text().to_string())
+            .unwrap_or_default();
+        let name_range = name_token
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok))
+            .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
+
+        let initializer = declarator
+            .as_ref()
+            .and_then(|decl| decl.children().find(|c| is_expression_kind(c.kind())))
+            .map(|expr| self.lower_expr(&expr));
+
+        ast::LocalVarStmt {
+            ty,
+            name,
+            name_range,
+            initializer,
+            range: self.spans.map_node(node),
         }
+    }
 
-        if self.at_keyword("return") {
-            let kw = self.bump().unwrap();
-            if self.at_kind(TokenKind::Semi) {
-                let semi = self.bump().unwrap();
-                return Some(ast::Stmt::Return(ast::ReturnStmt {
-                    expr: None,
-                    range: Span::new(kw.range.start, semi.range.end),
-                }));
-            }
-            let expr = self.parse_expr().unwrap_or(ast::Expr::Missing(kw.range));
-            let semi = self.expect_kind(TokenKind::Semi);
-            return Some(ast::Stmt::Return(ast::ReturnStmt {
-                expr: Some(expr),
-                range: Span::new(kw.range.start, semi.range.end),
-            }));
-        }
+    fn lower_expr_stmt(&self, node: &SyntaxNode) -> ast::ExprStmt {
+        let expr = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
 
-        if let Some(local) = self.try_parse_local_var_stmt() {
-            return Some(local);
-        }
-
-        let expr = self
-            .parse_expr()
-            .unwrap_or(ast::Expr::Missing(self.peek()?.range));
-        let start = expr.range().start;
-        let semi = self.expect_kind(TokenKind::Semi);
-        Some(ast::Stmt::Expr(ast::ExprStmt {
+        ast::ExprStmt {
+            range: self.spans.map_node(node),
             expr,
-            range: Span::new(start, semi.range.end),
-        }))
+        }
     }
 
-    fn try_parse_local_var_stmt(&mut self) -> Option<ast::Stmt> {
-        let start_pos = self.pos;
-        let start = self.peek()?.range.start;
+    fn lower_return_stmt(&self, node: &SyntaxNode) -> ast::ReturnStmt {
+        let expr = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr));
 
-        self.skip_variable_modifiers_and_annotations();
-        let ty = match self.parse_type_ref() {
-            Some(ty) => ty,
-            None => {
-                self.pos = start_pos;
-                return None;
+        ast::ReturnStmt {
+            expr,
+            range: self.spans.map_node(node),
+        }
+    }
+
+    fn lower_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        match node.kind() {
+            SyntaxKind::NameExpression => self.lower_name_expr(node),
+            SyntaxKind::LiteralExpression => self.lower_literal_expr(node),
+            SyntaxKind::MethodCallExpression => self.lower_call_expr(node),
+            SyntaxKind::FieldAccessExpression => self.lower_field_access_expr(node),
+            SyntaxKind::BinaryExpression => self.lower_binary_expr(node),
+            SyntaxKind::ParenthesizedExpression => node
+                .children()
+                .find(|child| is_expression_kind(child.kind()))
+                .map(|expr| self.lower_expr(&expr))
+                .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node))),
+            SyntaxKind::Error => ast::Expr::Missing(self.spans.map_node(node)),
+            _ => ast::Expr::Missing(self.spans.map_node(node)),
+        }
+    }
+
+    fn lower_name_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let mut segments = Vec::new();
+        for tok in node.descendants_with_tokens().filter_map(|el| el.into_token()) {
+            if tok.kind().is_identifier_like() {
+                segments.push((tok.text().to_string(), self.spans.map_token(&tok)));
             }
+        }
+
+        let Some((first, first_range)) = segments.first().cloned() else {
+            return ast::Expr::Missing(self.spans.map_node(node));
         };
 
-        if !self.peek().is_some_and(|t| t.kind == TokenKind::Ident) {
-            self.pos = start_pos;
-            return None;
-        }
-        let name = self.expect_ident();
+        let mut expr = ast::Expr::Name(ast::NameExpr {
+            name: first,
+            range: first_range,
+        });
 
-        if !self.at_kind(TokenKind::Eq) && !self.at_kind(TokenKind::Semi) {
-            self.pos = start_pos;
-            return None;
-        }
-
-        let mut initializer = None;
-        if self.at_kind(TokenKind::Eq) {
-            self.bump();
-            initializer = self.parse_expr();
-        }
-        let semi = self.expect_kind(TokenKind::Semi);
-        let range = Span::new(start, semi.range.end);
-        Some(ast::Stmt::LocalVar(ast::LocalVarStmt {
-            ty,
-            name: name.text,
-            name_range: name.range,
-            initializer,
-            range,
-        }))
-    }
-
-    fn parse_expr(&mut self) -> Option<ast::Expr> {
-        self.parse_binary_expr(0)
-    }
-
-    fn parse_binary_expr(&mut self, min_prec: u8) -> Option<ast::Expr> {
-        let mut lhs = self.parse_postfix_expr()?;
-        loop {
-            let (op, prec) = match self.peek().map(|t| t.kind) {
-                Some(TokenKind::Plus) => (ast::BinaryOp::Add, 10),
-                Some(TokenKind::Minus) => (ast::BinaryOp::Sub, 10),
-                Some(TokenKind::Star) => (ast::BinaryOp::Mul, 20),
-                Some(TokenKind::Slash) => (ast::BinaryOp::Div, 20),
-                _ => break,
-            };
-
-            if prec < min_prec {
-                break;
-            }
-            self.bump();
-            let rhs = self
-                .parse_binary_expr(prec + 1)
-                .unwrap_or(ast::Expr::Missing(lhs.range()));
-            let range = Span::new(lhs.range().start, rhs.range().end);
-            lhs = ast::Expr::Binary(ast::BinaryExpr {
-                op,
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
+        for (name, name_range) in segments.into_iter().skip(1) {
+            let range = Span::new(expr.range().start, name_range.end);
+            expr = ast::Expr::FieldAccess(ast::FieldAccessExpr {
+                receiver: Box::new(expr),
+                name,
+                name_range,
                 range,
             });
         }
-        Some(lhs)
+
+        expr
     }
 
-    fn parse_postfix_expr(&mut self) -> Option<ast::Expr> {
-        let mut expr = self.parse_primary_expr()?;
-        loop {
-            if self.at_kind(TokenKind::Dot) {
-                self.bump();
-                let name = self.expect_ident();
-                let range = Span::new(expr.range().start, name.range.end);
-                expr = ast::Expr::FieldAccess(ast::FieldAccessExpr {
-                    receiver: Box::new(expr),
-                    name: name.text,
-                    name_range: name.range,
-                    range,
-                });
-                continue;
-            }
-
-            if self.at_kind(TokenKind::LParen) {
-                let (args, rparen_end) = self.parse_arg_list();
-                let range = Span::new(expr.range().start, rparen_end);
-                expr = ast::Expr::Call(ast::CallExpr {
-                    callee: Box::new(expr),
-                    args,
-                    range,
-                });
-                continue;
-            }
-
-            break;
-        }
-        Some(expr)
-    }
-
-    fn parse_primary_expr(&mut self) -> Option<ast::Expr> {
-        let tok = self.bump()?;
-        match tok.kind {
-            TokenKind::Ident => Some(ast::Expr::Name(ast::NameExpr {
-                name: tok.text,
-                range: tok.range,
-            })),
-            TokenKind::IntLiteral => Some(ast::Expr::IntLiteral(ast::LiteralExpr {
-                value: tok.text,
-                range: tok.range,
-            })),
-            TokenKind::StringLiteral => Some(ast::Expr::StringLiteral(ast::LiteralExpr {
-                value: tok.text,
-                range: tok.range,
-            })),
-            TokenKind::LParen => {
-                let expr = self.parse_expr().unwrap_or(ast::Expr::Missing(tok.range));
-                self.expect_kind(TokenKind::RParen);
-                Some(expr)
-            }
-            _ => Some(ast::Expr::Missing(tok.range)),
-        }
-    }
-
-    fn parse_arg_list(&mut self) -> (Vec<ast::Expr>, usize) {
-        let lparen = self.expect_kind(TokenKind::LParen);
-        let mut args = Vec::new();
-        while !self.is_eof() && !self.at_kind(TokenKind::RParen) {
-            if let Some(expr) = self.parse_expr() {
-                args.push(expr);
-            } else {
-                self.bump();
-            }
-            if self.at_kind(TokenKind::Comma) {
-                self.bump();
-            }
-        }
-        let rparen = self.expect_kind(TokenKind::RParen);
-        let end = if rparen.kind == TokenKind::RParen {
-            rparen.range.end
-        } else {
-            lparen.range.end
+    fn lower_literal_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let tok = node
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof);
+        let Some(tok) = tok else {
+            return ast::Expr::Missing(self.spans.map_node(node));
         };
-        (args, end)
-    }
 
-    fn skip_balanced(&mut self, open: TokenKind, close: TokenKind) {
-        if !self.at_kind(open) {
-            return;
-        }
-        self.bump();
-        let mut depth = 1usize;
-        while !self.is_eof() && depth > 0 {
-            match self.peek().map(|t| t.kind) {
-                Some(k) if k == open => depth += 1,
-                Some(k) if k == close => depth -= 1,
-                _ => {}
-            }
-            self.bump();
+        let value = tok.text().to_string();
+        let range = self.spans.map_token(&tok);
+        match tok.kind() {
+            SyntaxKind::IntLiteral => ast::Expr::IntLiteral(ast::LiteralExpr { value, range }),
+            SyntaxKind::StringLiteral => ast::Expr::StringLiteral(ast::LiteralExpr { value, range }),
+            _ => ast::Expr::Missing(range),
         }
     }
 
-    fn collect_balanced(&mut self, open: TokenKind, close: TokenKind) -> (String, usize) {
-        if !self.at_kind(open) {
-            return (
-                String::new(),
-                self.peek().map(|t| t.range.start).unwrap_or(0),
-            );
-        }
-        let mut text = String::new();
-        let mut end = self.peek().unwrap().range.end;
-        let mut depth = 0usize;
-        while !self.is_eof() {
-            let tok = self.bump().unwrap();
-            if tok.kind == open {
-                depth += 1;
-            } else if tok.kind == close {
-                depth = depth.saturating_sub(1);
+    fn lower_call_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let arg_list = node.children().find(|child| child.kind() == SyntaxKind::ArgumentList);
+        let callee_node = arg_list.as_ref().and_then(|_| {
+            let mut callee = None;
+            for child in node.children_with_tokens() {
+                if child
+                    .as_node()
+                    .is_some_and(|n| n.kind() == SyntaxKind::ArgumentList)
+                {
+                    break;
+                }
+                if let Some(n) = child.as_node() {
+                    if is_expression_kind(n.kind()) {
+                        callee = Some(n.clone());
+                    }
+                }
             }
-            text.push_str(&tok.text);
-            end = tok.range.end;
-            if depth == 0 {
+            callee
+        });
+
+        let callee = callee_node
+            .as_ref()
+            .map(|expr| self.lower_expr(expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        let args = arg_list
+            .as_ref()
+            .map(|list| {
+                list.children()
+                    .filter(|child| is_expression_kind(child.kind()))
+                    .map(|expr| self.lower_expr(&expr))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ast::Expr::Call(ast::CallExpr {
+            callee: Box::new(callee),
+            args,
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_field_access_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let receiver_node = node.children().find(|child| is_expression_kind(child.kind()));
+        let receiver = receiver_node
+            .as_ref()
+            .map(|expr| self.lower_expr(expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        let name_token = node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| tok.kind().is_identifier_like())
+            .last();
+
+        let Some(name_token) = name_token else {
+            return ast::Expr::Missing(self.spans.map_node(node));
+        };
+
+        let name_range = self.spans.map_token(&name_token);
+        ast::Expr::FieldAccess(ast::FieldAccessExpr {
+            receiver: Box::new(receiver),
+            name: name_token.text().to_string(),
+            name_range,
+            range: Span::new(self.spans.map_node(node).start, name_range.end),
+        })
+    }
+
+    fn lower_binary_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let op_token = node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| matches!(tok.kind(), SyntaxKind::Plus | SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Slash));
+
+        let Some(op_token) = op_token else {
+            return ast::Expr::Missing(self.spans.map_node(node));
+        };
+
+        let op = match op_token.kind() {
+            SyntaxKind::Plus => ast::BinaryOp::Add,
+            SyntaxKind::Minus => ast::BinaryOp::Sub,
+            SyntaxKind::Star => ast::BinaryOp::Mul,
+            SyntaxKind::Slash => ast::BinaryOp::Div,
+            _ => return ast::Expr::Missing(self.spans.map_token(&op_token)),
+        };
+
+        let mut exprs = node
+            .children()
+            .filter(|child| is_expression_kind(child.kind()))
+            .take(2);
+        let lhs = exprs.next().map(|n| self.lower_expr(&n));
+        let rhs = exprs.next().map(|n| self.lower_expr(&n));
+
+        let Some(lhs) = lhs else {
+            return ast::Expr::Missing(self.spans.map_node(node));
+        };
+        let rhs = rhs.unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        ast::Expr::Binary(ast::BinaryExpr {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn collect_non_trivia_text(&self, node: &SyntaxNode) -> String {
+        let mut out = String::new();
+        for tok in node.descendants_with_tokens().filter_map(|el| el.into_token()) {
+            if tok.kind().is_trivia() || tok.kind() == SyntaxKind::Eof {
+                continue;
+            }
+            out.push_str(tok.text());
+        }
+        out
+    }
+
+    fn non_trivia_span(&self, node: &SyntaxNode) -> Option<Span> {
+        let mut tokens = node
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof);
+
+        let first = tokens.next()?;
+        let mut last = first.clone();
+        for tok in tokens {
+            last = tok;
+        }
+
+        let start = self.spans.map_token(&first).start;
+        let end = self.spans.map_token(&last).end;
+        Some(Span::new(start, end))
+    }
+
+    fn first_ident_like_token(&self, node: &SyntaxNode) -> Option<SyntaxToken> {
+        node.children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| tok.kind().is_identifier_like())
+    }
+
+    fn direct_token<F>(&self, node: &SyntaxNode, predicate: F) -> Option<SyntaxToken>
+    where
+        F: Fn(&SyntaxToken) -> bool,
+    {
+        node.children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(predicate)
+    }
+
+    fn last_ident_like_before(&self, node: &SyntaxNode, stop_at: SyntaxKind) -> Option<SyntaxToken> {
+        let mut last = None;
+        for child in node.children_with_tokens() {
+            if child.as_node().is_some_and(|n| n.kind() == stop_at) {
                 break;
             }
+            if let Some(tok) = child.as_token().cloned() {
+                if tok.kind().is_identifier_like() {
+                    last = Some(tok);
+                }
+            }
         }
-        (text, end)
+        last
+    }
+}
+
+fn is_expression_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::LiteralExpression
+            | SyntaxKind::NameExpression
+            | SyntaxKind::ThisExpression
+            | SyntaxKind::SuperExpression
+            | SyntaxKind::ParenthesizedExpression
+            | SyntaxKind::NewExpression
+            | SyntaxKind::MethodCallExpression
+            | SyntaxKind::FieldAccessExpression
+            | SyntaxKind::ArrayAccessExpression
+            | SyntaxKind::UnaryExpression
+            | SyntaxKind::BinaryExpression
+            | SyntaxKind::AssignmentExpression
+            | SyntaxKind::ConditionalExpression
+            | SyntaxKind::LambdaExpression
+            | SyntaxKind::CastExpression
+            | SyntaxKind::Error
+    )
+}
+
+fn text_size_to_usize(size: text_size::TextSize) -> usize {
+    u32::from(size) as usize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_block_uses_wrapper_and_shifts_spans() {
+        let text = "{int x=1;foo(x);}";
+        let offset = 100;
+        let block = parse_block(text, offset);
+
+        assert_eq!(block.range, Span::new(offset, offset + text.len()));
+        assert_eq!(block.statements.len(), 2);
+
+        let ast::Stmt::LocalVar(local) = &block.statements[0] else {
+            panic!("expected local variable statement");
+        };
+        assert_eq!(local.ty.text, "int");
+        assert_eq!(local.name, "x");
+        assert_eq!(local.ty.range, Span::new(offset + 1, offset + 4));
+        assert_eq!(local.name_range, Span::new(offset + 5, offset + 6));
+        assert_eq!(local.range, Span::new(offset + 1, offset + 9));
+
+        let ast::Stmt::Expr(expr_stmt) = &block.statements[1] else {
+            panic!("expected expression statement");
+        };
+        assert_eq!(expr_stmt.range, Span::new(offset + 9, offset + 16));
+
+        let ast::Expr::Call(call) = &expr_stmt.expr else {
+            panic!("expected call expression");
+        };
+        assert_eq!(call.range, Span::new(offset + 9, offset + 15));
+
+        let ast::Expr::Name(callee) = call.callee.as_ref() else {
+            panic!("expected name callee");
+        };
+        assert_eq!(callee.name, "foo");
+        assert_eq!(callee.range, Span::new(offset + 9, offset + 12));
+
+        assert_eq!(call.args.len(), 1);
+        let ast::Expr::Name(arg) = &call.args[0] else {
+            panic!("expected name arg");
+        };
+        assert_eq!(arg.name, "x");
+        assert_eq!(arg.range, Span::new(offset + 13, offset + 14));
     }
 }

@@ -968,6 +968,14 @@ impl<'a> Parser<'a> {
         self.parse_modifiers();
         self.parse_type_parameters_opt();
 
+        // Generic methods/constructors can start with type parameters: `<T> ...`.
+        // We don't model a dedicated `TypeParameters` node yet, but we still
+        // want to consume the token sequence so we can continue parsing the
+        // member declaration.
+        if self.at(SyntaxKind::Less) {
+            self.parse_type_arguments();
+        }
+
         // Initializer blocks.
         if self.at(SyntaxKind::LBrace) {
             self.builder
@@ -2143,6 +2151,10 @@ impl<'a> Parser<'a> {
         }
         while self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
             self.bump();
+            self.bump();
+        }
+        // Varargs parameters: `String... args`.
+        if self.at(SyntaxKind::Ellipsis) {
             self.bump();
         }
         self.builder.finish_node();

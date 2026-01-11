@@ -94,7 +94,6 @@ ast_node!(ExportsDirective, SyntaxKind::ExportsDirective);
 ast_node!(OpensDirective, SyntaxKind::OpensDirective);
 ast_node!(UsesDirective, SyntaxKind::UsesDirective);
 ast_node!(ProvidesDirective, SyntaxKind::ProvidesDirective);
-
 impl CompilationUnit {
     /// Compatibility accessor returning the raw syntax nodes for the top-level type declarations.
     ///
