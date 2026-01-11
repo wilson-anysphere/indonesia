@@ -8,7 +8,7 @@
 
 use crate::aquery::JavaCompileInfo;
 use anyhow::{anyhow, Context, Result};
-use nova_core::{file_uri_to_path, AbsPathBuf, Diagnostic as NovaDiagnostic, DiagnosticSeverity};
+use nova_core::{file_uri_to_path, AbsPathBuf, Diagnostic as NovaDiagnostic};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -112,13 +112,22 @@ pub fn bsp_publish_diagnostics_to_nova_diagnostics(
     out
 }
 
-#[derive(Debug)]
 pub struct BspClient {
     child: Option<Child>,
     stdin: Box<dyn Write + Send>,
     stdout: BufReader<Box<dyn Read + Send>>,
     next_id: i64,
     diagnostics: Vec<PublishDiagnosticsParams>,
+}
+
+impl std::fmt::Debug for BspClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BspClient")
+            .field("has_child", &self.child.is_some())
+            .field("next_id", &self.next_id)
+            .field("diagnostics_len", &self.diagnostics.len())
+            .finish()
+    }
 }
 
 impl BspClient {
@@ -528,7 +537,7 @@ fn collect_nova_diagnostics(
         for diag in params.diagnostics {
             converted.push(NovaDiagnostic::new(
                 path.clone(),
-                bsp_range_to_nova(diag.range),
+                bsp_range_to_nova_range(&diag.range),
                 bsp_severity_to_nova(diag.severity),
                 diag.message,
                 Some(source.to_string()),
@@ -544,32 +553,6 @@ fn collect_nova_diagnostics(
     }
 
     by_file.into_values().flatten().collect()
-}
-
-fn bsp_range_to_nova(range: Range) -> nova_core::Range {
-    nova_core::Range::new(bsp_position_to_nova(range.start), bsp_position_to_nova(range.end))
-}
-
-fn bsp_position_to_nova(pos: Position) -> nova_core::Position {
-    nova_core::Position::new(clamp_i32(pos.line), clamp_i32(pos.character))
-}
-
-fn clamp_i32(value: i32) -> u32 {
-    if value < 0 {
-        0
-    } else {
-        value as u32
-    }
-}
-
-fn bsp_severity_to_nova(severity: Option<i32>) -> DiagnosticSeverity {
-    match severity.unwrap_or(1) {
-        1 => DiagnosticSeverity::Error,
-        2 => DiagnosticSeverity::Warning,
-        3 => DiagnosticSeverity::Information,
-        4 => DiagnosticSeverity::Hint,
-        _ => DiagnosticSeverity::Error,
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

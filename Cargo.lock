@@ -3973,6 +3973,7 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "lsp-types",
+ "nova-core",
  "nova-format",
  "nova-index",
  "nova-project",
