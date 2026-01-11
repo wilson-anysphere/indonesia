@@ -10,10 +10,13 @@ mod javac;
 mod maven;
 
 pub use cache::{BuildCache, BuildFileFingerprint};
-pub use gradle::{parse_gradle_classpath_output, GradleBuild, GradleConfig};
+pub use gradle::{
+    collect_gradle_build_files, parse_gradle_classpath_output, GradleBuild, GradleConfig,
+};
 pub use javac::{parse_javac_diagnostics, JavacDiagnosticFormat};
 pub use maven::{
-    parse_maven_classpath_output, parse_maven_evaluate_scalar_output, MavenBuild, MavenConfig,
+    collect_maven_build_files, parse_maven_classpath_output, parse_maven_evaluate_scalar_output,
+    MavenBuild, MavenConfig,
 };
 
 use nova_core::Diagnostic;

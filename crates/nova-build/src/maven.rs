@@ -559,7 +559,7 @@ fn combine_output(output: &std::process::Output) -> String {
     s
 }
 
-fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_maven_build_files_rec(root, root, &mut out)?;
     // Stable sort for hashing.
@@ -603,11 +603,33 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
         let file_name = file_name.to_string_lossy();
 
         if path.is_dir() {
+            if file_name == ".mvn" {
+                let config = path.join("maven.config");
+                if config.is_file() {
+                    out.push(config);
+                }
+
+                let extensions = path.join("extensions.xml");
+                if extensions.is_file() {
+                    out.push(extensions);
+                }
+
+                let wrapper_props = path
+                    .join("wrapper")
+                    .join("maven-wrapper.properties");
+                if wrapper_props.is_file() {
+                    out.push(wrapper_props);
+                }
+
+                continue;
+            }
+
             if file_name == ".git"
                 || file_name == "target"
+                || file_name == "build"
+                || file_name == ".gradle"
                 || file_name == ".nova"
                 || file_name == ".idea"
-                || file_name == ".mvn"
             {
                 continue;
             }
@@ -615,7 +637,7 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
             continue;
         }
 
-        if file_name == "pom.xml" {
+        if file_name == "pom.xml" || file_name == "mvnw" || file_name == "mvnw.cmd" {
             out.push(path);
         }
     }

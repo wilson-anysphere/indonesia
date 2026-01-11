@@ -306,9 +306,16 @@ allprojects { proj ->
     Ok(path)
 }
 
-fn collect_gradle_build_files(root: &Path) -> Result<Vec<PathBuf>> {
+pub fn collect_gradle_build_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_gradle_build_files_rec(root, root, &mut out)?;
+    // Stable sort for hashing.
+    out.sort_by(|a, b| {
+        let ra = a.strip_prefix(root).unwrap_or(a);
+        let rb = b.strip_prefix(root).unwrap_or(b);
+        ra.cmp(rb)
+    });
+    out.dedup();
     Ok(out)
 }
 
@@ -325,6 +332,7 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
                 || file_name == "build"
                 || file_name == "target"
                 || file_name == ".nova"
+                || file_name == ".idea"
             {
                 continue;
             }
@@ -337,17 +345,14 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             | "build.gradle.kts"
             | "settings.gradle"
             | "settings.gradle.kts"
-            | "gradle.properties" => {
+            | "gradle.properties"
+            | "gradlew"
+            | "gradlew.bat"
+            | "gradle-wrapper.properties" => {
                 out.push(path);
             }
             _ => {}
         }
     }
-    // Ensure stable order for hashing.
-    out.sort_by(|a, b| {
-        let ra = a.strip_prefix(root).unwrap_or(a);
-        let rb = b.strip_prefix(root).unwrap_or(b);
-        ra.cmp(rb)
-    });
     Ok(())
 }

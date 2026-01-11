@@ -1,4 +1,5 @@
 use nova_build::{
+    collect_gradle_build_files, collect_maven_build_files,
     parse_gradle_classpath_output, parse_javac_diagnostics, parse_maven_classpath_output,
     parse_maven_evaluate_scalar_output, BuildFileFingerprint, JavaCompileConfig,
 };
@@ -25,6 +26,62 @@ fn fingerprint_changes_on_pom_edit() {
     )
     .unwrap();
     let fp2 = BuildFileFingerprint::from_files(&root, vec![pom]).unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_changes_on_maven_wrapper_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let wrapper_dir = root.join(".mvn").join("wrapper");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let wrapper_props = wrapper_dir.join("maven-wrapper.properties");
+    std::fs::write(&wrapper_props, "distributionUrl=https://example.invalid/a.zip\n").unwrap();
+
+    let fp1 = BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap())
+        .unwrap();
+    std::fs::write(&wrapper_props, "distributionUrl=https://example.invalid/b.zip\n").unwrap();
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap())
+        .unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_changes_on_gradle_wrapper_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    let wrapper_dir = root.join("gradle").join("wrapper");
+    std::fs::create_dir_all(&wrapper_dir).unwrap();
+    let wrapper_props = wrapper_dir.join("gradle-wrapper.properties");
+    std::fs::write(
+        &wrapper_props,
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.0-bin.zip\n",
+    )
+    .unwrap();
+
+    let fp1 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+    std::fs::write(
+        &wrapper_props,
+        "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.1-bin.zip\n",
+    )
+    .unwrap();
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
 
     assert_ne!(fp1.digest, fp2.digest);
 }
