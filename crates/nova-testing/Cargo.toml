@@ -15,4 +15,6 @@ tree-sitter = "0.20"
 tree-sitter-java = "0.20"
 
 [dev-dependencies]
+filetime = "0.2"
 pretty_assertions = "1.4"
+tempfile = { workspace = true }

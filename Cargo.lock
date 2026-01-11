@@ -3783,12 +3783,14 @@ dependencies = [
 name = "nova-testing"
 version = "0.1.0"
 dependencies = [
+ "filetime",
  "nova-project",
  "pretty_assertions",
  "quick-xml",
  "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tree-sitter",
  "tree-sitter-java",
