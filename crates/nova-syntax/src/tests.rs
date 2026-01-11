@@ -1614,6 +1614,47 @@ fn feature_gate_unnamed_variables_applies_to_lambda_parameters() {
 }
 
 #[test]
+fn ast_variable_declarator_unnamed_pattern_accessor_works() {
+    use crate::{AstNode, VariableDeclarator};
+
+    let input = "class Foo { void m() { int _ = 0; } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let decl = result
+        .syntax()
+        .descendants()
+        .find_map(VariableDeclarator::cast)
+        .expect("expected a variable declarator");
+
+    assert!(decl.name_token().is_none());
+    let unnamed = decl
+        .unnamed_pattern()
+        .expect("expected unnamed pattern in variable declarator");
+    assert_eq!(unnamed.syntax().first_token().unwrap().text(), "_");
+}
+
+#[test]
+fn ast_pattern_unnamed_pattern_accessor_works() {
+    use crate::{AstNode, Pattern};
+
+    let input = "class Foo { void m(Object o) { switch (o) { case _ -> {} default -> {} } } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let pattern = result
+        .syntax()
+        .descendants()
+        .filter_map(Pattern::cast)
+        .find(|p| p.unnamed_pattern().is_some())
+        .expect("expected a wildcard pattern");
+
+    assert!(pattern.type_pattern().is_none());
+    assert!(pattern.record_pattern().is_none());
+    assert!(pattern.unnamed_pattern().is_some());
+}
+
+#[test]
 fn parse_switch_unnamed_wildcard_pattern() {
     let input = r#"
 class Foo {
