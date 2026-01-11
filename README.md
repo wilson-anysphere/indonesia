@@ -243,7 +243,8 @@ If you are troubleshooting the debug adapter process, Nova also supports a custo
 
 - `nova/bugReport`
 
-Compress the directory and attach it to your issue along with reproduction steps. See
+Attach the `.zip` archive (if present) or compress the directory and attach it to your issue along
+with reproduction steps. See
 [`docs/17-observability-and-reliability.md`](./docs/17-observability-and-reliability.md) for details
 (logging, safe mode behavior, bundle contents/redaction).
 
