@@ -70,6 +70,7 @@ struct CompletionSession {
     cancel: CancellationToken,
     ai_state: AiState,
     created_at: Instant,
+    document_uri: Option<String>,
 }
 
 impl CompletionSession {
@@ -161,6 +162,20 @@ impl NovaCompletionService {
         ctx: MultiTokenCompletionContext,
         cancel: CancellationToken,
     ) -> NovaCompletionResponse {
+        self.completion_with_document_uri(ctx, cancel, None)
+    }
+
+    /// Start a completion session tied to a specific document URI.
+    ///
+    /// The LSP server uses this so that completions returned from `nova/completion/more` can be
+    /// resolved via `completionItem/resolve` (which requires the originating document text to
+    /// compute import edits).
+    pub fn completion_with_document_uri(
+        &self,
+        ctx: MultiTokenCompletionContext,
+        cancel: CancellationToken,
+        document_uri: Option<String>,
+    ) -> NovaCompletionResponse {
         self.cancel_all_sessions();
 
         let context_id = CompletionContextId(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -178,11 +193,15 @@ impl NovaCompletionService {
             .map(|item| to_lsp_completion_item(item, &context_id))
             .collect();
 
-        let list = CompletionList {
+        let mut list = CompletionList {
             is_incomplete: supports_ai,
             items: lsp_items,
             ..CompletionList::default()
         };
+
+        if let Some(uri) = document_uri.as_deref() {
+            inject_uri_into_completion_items(&mut list.items, uri);
+        }
 
         if supports_ai {
             let (tx, rx) = oneshot::channel();
@@ -231,6 +250,7 @@ impl NovaCompletionService {
                     cancel,
                     ai_state: AiState::Pending(rx),
                     created_at: Instant::now(),
+                    document_uri,
                 },
             );
         }
@@ -262,11 +282,15 @@ impl NovaCompletionService {
             }
         };
 
+        let document_uri = session.document_uri.clone();
         match &mut session.ai_state {
             AiState::Pending(rx) => match rx.try_recv() {
-                Ok(items) => {
+                Ok(mut items) => {
                     if let Some(session) = sessions.remove(&context_id) {
                         session.cancel();
+                    }
+                    if let Some(uri) = document_uri.as_deref() {
+                        inject_uri_into_completion_items(&mut items, uri);
                     }
                     MoreCompletionsResult {
                         items,
@@ -300,5 +324,17 @@ impl NovaCompletionService {
             }
             None => false,
         }
+    }
+}
+
+fn inject_uri_into_completion_items(items: &mut [lsp_types::CompletionItem], uri: &str) {
+    for item in items {
+        let Some(data) = item.data.as_mut().filter(|data| data.is_object()) else {
+            continue;
+        };
+        if !data.get("nova").is_some_and(|nova| nova.is_object()) {
+            data["nova"] = serde_json::json!({});
+        }
+        data["nova"]["uri"] = serde_json::json!(uri);
     }
 }

@@ -182,6 +182,69 @@ async fn completion_more_returns_multi_token_items_async() {
     assert!(prompts[0].contains("people.stream()."));
 }
 
+#[tokio::test]
+async fn completion_more_injects_document_uri_into_items() {
+    let provider = Arc::new(MockProvider::new());
+    provider.set_response(vec![MultiTokenCompletion {
+        label: "chain".into(),
+        insert_text: "filter(p -> true).collect(Collectors.toList())".into(),
+        format: MultiTokenInsertTextFormat::PlainText,
+        additional_edits: vec![AdditionalEdit::AddImport {
+            path: "java.util.stream.Collectors".into(),
+        }],
+        confidence: 0.9,
+    }]);
+    provider.release();
+
+    let engine = CompletionEngine::new(
+        CompletionConfig::default(),
+        CompletionContextBuilder::new(10_000),
+        Some(provider),
+    );
+    let service = NovaCompletionService::new(engine);
+
+    let uri = "file:///test/Completion.java".to_string();
+    let completion =
+        service.completion_with_document_uri(ctx(), CancellationToken::new(), Some(uri.clone()));
+
+    for item in &completion.list.items {
+        assert_eq!(
+            item.data
+                .as_ref()
+                .and_then(|data| data.get("nova"))
+                .and_then(|nova| nova.get("uri"))
+                .and_then(|value| value.as_str()),
+            Some(uri.as_str()),
+            "standard completion items should carry the originating document URI"
+        );
+    }
+
+    let mut resolved = None;
+    for _ in 0..50 {
+        let poll = service.completion_more(MoreCompletionsParams {
+            context_id: completion.context_id.to_string(),
+        });
+        if !poll.is_incomplete {
+            resolved = Some(poll);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let poll = resolved.expect("AI completions should resolve");
+    assert_eq!(poll.items.len(), 1);
+    assert_eq!(
+        poll.items[0]
+            .data
+            .as_ref()
+            .and_then(|data| data.get("nova"))
+            .and_then(|nova| nova.get("uri"))
+            .and_then(|value| value.as_str()),
+        Some(uri.as_str()),
+        "AI completion items should carry the originating document URI"
+    );
+}
+
 struct CancelAwareProvider {
     started: tokio::sync::Notify,
     cancelled: tokio::sync::Notify,

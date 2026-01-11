@@ -2006,6 +2006,8 @@ fn handle_completion(
 
     #[cfg(feature = "ai")]
     let (completion_context_id, has_more) = {
+        let document_uri = Some(uri.as_str().to_string());
+        let cancel = CancellationToken::new();
         let has_more = state.completion_service.completion_engine().supports_ai();
         let ctx = multi_token_completion_context(&db, file, position);
         let response = if has_more {
@@ -2015,11 +2017,13 @@ fn handle_completion(
                 "AI completions are enabled but the Tokio runtime is unavailable".to_string()
             })?;
             let _guard = runtime.enter();
-            state.completion_service
-                .completion(ctx, CancellationToken::new())
+            state
+                .completion_service
+                .completion_with_document_uri(ctx, cancel.clone(), document_uri.clone())
         } else {
-            state.completion_service
-                .completion(ctx, CancellationToken::new())
+            state
+                .completion_service
+                .completion_with_document_uri(ctx, cancel.clone(), document_uri.clone())
         };
         (Some(response.context_id.to_string()), has_more)
     };
