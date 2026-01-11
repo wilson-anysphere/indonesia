@@ -1,6 +1,5 @@
-use std::ffi::OsStr;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 use tempfile::TempDir;
@@ -149,23 +148,42 @@ fn run_javac_dir<'a>(
 
 /// Convenience helper for tests: locate whether `javac` is available.
 pub fn javac_available() -> bool {
-    which("javac").is_some()
+    Command::new("javac")
+        .arg("-version")
+        .output()
+        .is_ok_and(|out| out.status.success())
 }
 
-fn which(exe: impl AsRef<OsStr>) -> Option<PathBuf> {
-    let exe = exe.as_ref();
-    let path = std::env::var_os("PATH")?;
-    for p in std::env::split_paths(&path) {
-        let candidate = p.join(exe);
-        if is_executable(&candidate) {
-            return Some(candidate);
-        }
+/// Best-effort major version extraction from `javac -version`.
+///
+/// Returns the feature release number (8, 11, 17, 21, ...).
+pub fn javac_version() -> Option<u32> {
+    let out = Command::new("javac").arg("-version").output().ok()?;
+    if !out.status.success() {
+        return None;
     }
-    None
+    let text = if out.stderr.is_empty() {
+        out.stdout
+    } else {
+        out.stderr
+    };
+    parse_javac_version(&String::from_utf8_lossy(&text))
 }
 
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
+fn parse_javac_version(output: &str) -> Option<u32> {
+    let mut it = output.trim().split_whitespace();
+    let tool = it.next()?;
+    if tool != "javac" {
+        return None;
+    }
+    let version = it.next()?;
+    let mut nums = version.split(|c| c == '.' || c == '_');
+    let first = nums.next()?.parse::<u32>().ok()?;
+    if first == 1 {
+        nums.next()?.parse::<u32>().ok()
+    } else {
+        Some(first)
+    }
 }
 
 fn parse_diagnostic_line(line: &str) -> Option<JavacDiagnostic> {
@@ -267,7 +285,7 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_diagnostic_line;
+    use super::{parse_diagnostic_line, parse_javac_version};
 
     #[test]
     fn parses_standard_error() {
@@ -324,5 +342,15 @@ mod tests {
         assert_eq!(diag.column, 1);
         assert_eq!(diag.kind, "error");
         assert_eq!(diag.message, "compiler.err.expected");
+    }
+
+    #[test]
+    fn parses_javac_version_21() {
+        assert_eq!(parse_javac_version("javac 21.0.9\n"), Some(21));
+    }
+
+    #[test]
+    fn parses_javac_version_8() {
+        assert_eq!(parse_javac_version("javac 1.8.0_392"), Some(8));
     }
 }

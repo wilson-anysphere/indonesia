@@ -2,7 +2,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nova_syntax::{parse_java_with_options, JavaLanguageLevel, ParseOptions, SyntaxKind};
-use nova_test_utils::javac::{javac_available, run_javac_files_with_options, JavacOptions};
+use nova_test_utils::javac::{
+    javac_available, javac_version, run_javac_files_with_options, JavacOptions,
+};
 
 fn collect_java_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -30,6 +32,7 @@ fn nova_opts() -> ParseOptions {
     // Match the `javac --release` used for the corpus compilation.
     ParseOptions {
         language_level: JavaLanguageLevel::JAVA_17,
+        ..ParseOptions::default()
     }
 }
 
@@ -37,6 +40,10 @@ fn nova_opts() -> ParseOptions {
 fn javac_corpus_ok() {
     if !javac_available() {
         eprintln!("javac not found in PATH; skipping");
+        return;
+    }
+    if javac_version().is_some_and(|v| v < 17) {
+        eprintln!("javac is too old for --release 17; skipping");
         return;
     }
 
@@ -100,6 +107,10 @@ fn javac_corpus_ok() {
 fn javac_corpus_err() {
     if !javac_available() {
         eprintln!("javac not found in PATH; skipping");
+        return;
+    }
+    if javac_version().is_some_and(|v| v < 17) {
+        eprintln!("javac is too old for --release 17; skipping");
         return;
     }
 
