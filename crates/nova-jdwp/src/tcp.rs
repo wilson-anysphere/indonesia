@@ -4,9 +4,8 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use crate::{
-    JdwpClient, JdwpError, JdwpEvent, JdwpValue, JdwpVariable, ObjectId, ObjectKindPreview,
-    ObjectPreview, ObjectRef, StackFrameInfo, StepKind, StopReason, StoppedEvent, ThreadId,
-    ThreadInfo,
+    FrameId, JdwpClient, JdwpError, JdwpEvent, JdwpValue, JdwpVariable, ObjectId, ObjectKindPreview,
+    ObjectPreview, ObjectRef, StackFrameInfo, StepKind, StopReason, StoppedEvent, ThreadId, ThreadInfo,
 };
 
 const ERROR_INVALID_OBJECT: u16 = 20;
@@ -30,6 +29,7 @@ pub struct TcpJdwpClient {
     next_packet_id: u32,
     id_sizes: IdSizes,
     cache: Cache,
+    frame_contexts: HashMap<FrameId, FrameContext>,
     pending_events: VecDeque<JdwpEvent>,
     pending_return_values: HashMap<ThreadId, JdwpValue>,
     active_step_requests: HashMap<ThreadId, ActiveStepRequest>,
@@ -42,6 +42,14 @@ struct ActiveStepRequest {
     kind: StepKind,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct FrameContext {
+    thread_id: ThreadId,
+    type_id: u64,
+    method_id: u64,
+    code_index: i64,
+}
+
 impl TcpJdwpClient {
     pub fn new() -> Self {
         Self {
@@ -49,6 +57,7 @@ impl TcpJdwpClient {
             next_packet_id: 1,
             id_sizes: IdSizes::default(),
             cache: Cache::default(),
+            frame_contexts: HashMap::new(),
             pending_events: VecDeque::new(),
             pending_return_values: HashMap::new(),
             active_step_requests: HashMap::new(),
@@ -473,10 +482,20 @@ impl TcpJdwpClient {
                     }))
                 }
             }
-            other => Err(JdwpError::Protocol(format!(
-                "unsupported JDWP value tag {}",
-                other as char
-            ))),
+            _other => {
+                // JDWP defines additional object-like tags beyond `L`/`[`/`s` (e.g. thread
+                // references). For the synchronous façade we treat any unknown tag as an
+                // object reference so higher-level code still receives a usable object id.
+                let id = cursor.read_id(self.id_sizes.object_id)?;
+                if id == 0 {
+                    Ok(JdwpValue::Null)
+                } else {
+                    Ok(JdwpValue::Object(ObjectRef {
+                        id,
+                        runtime_type: "java.lang.Object".to_string(),
+                    }))
+                }
+            }
         }
     }
 
@@ -506,6 +525,70 @@ impl TcpJdwpClient {
         }
 
         Ok(self.cache.line_tables.get(&(type_id, method_id)).unwrap())
+    }
+
+    fn variable_table_for_method(
+        &mut self,
+        type_id: u64,
+        method_id: u64,
+    ) -> Result<&[VariableInfo], JdwpError> {
+        if !self.cache.variable_tables.contains_key(&(type_id, method_id)) {
+            let mut body = Vec::new();
+            write_id(&mut body, self.id_sizes.reference_type_id, type_id);
+            write_id(&mut body, self.id_sizes.method_id, method_id);
+            let reply = self.send_command(6, 2, &body)?;
+            let mut cursor = Cursor::new(&reply);
+            let _arg_count = cursor.read_u32()?;
+            let count = cursor.read_u32()? as usize;
+            let mut vars = Vec::with_capacity(count);
+            for _ in 0..count {
+                let code_index = cursor.read_i64()?;
+                let name = cursor.read_string()?;
+                let signature = cursor.read_string()?;
+                let length = cursor.read_u32()? as i64;
+                let slot = cursor.read_u32()?;
+                vars.push(VariableInfo {
+                    code_index,
+                    name,
+                    signature,
+                    length,
+                    slot,
+                });
+            }
+            self.cache.variable_tables.insert((type_id, method_id), vars);
+        }
+
+        Ok(self
+            .cache
+            .variable_tables
+            .get(&(type_id, method_id))
+            .map(Vec::as_slice)
+            .expect("just inserted"))
+    }
+
+    fn stack_frame_get_values(
+        &mut self,
+        thread_id: ThreadId,
+        frame_id: FrameId,
+        slots: &[(u32, &str)],
+    ) -> Result<Vec<JdwpValue>, JdwpError> {
+        let mut body = Vec::new();
+        write_id(&mut body, self.id_sizes.object_id, thread_id);
+        write_id(&mut body, self.id_sizes.frame_id, frame_id);
+        body.extend_from_slice(&(slots.len() as u32).to_be_bytes());
+        for (slot, signature) in slots {
+            body.extend_from_slice(&slot.to_be_bytes());
+            body.push(signature_to_tag(signature));
+        }
+
+        let reply = self.send_command(16, 1, &body)?;
+        let mut cursor = Cursor::new(&reply);
+        let count = cursor.read_u32()? as usize;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            values.push(self.read_tagged_value(&mut cursor)?);
+        }
+        Ok(values)
     }
 
     fn source_file_for_type(&mut self, type_id: u64) -> Result<Option<String>, JdwpError> {
@@ -806,6 +889,16 @@ impl JdwpClient for TcpJdwpClient {
             let method_id = cursor.read_id(self.id_sizes.method_id)?;
             let index = cursor.read_i64()?;
 
+            self.frame_contexts.insert(
+                frame_id,
+                FrameContext {
+                    thread_id,
+                    type_id,
+                    method_id,
+                    code_index: index,
+                },
+            );
+
             let methods = self.methods_for_type(type_id)?;
             let method_name = methods
                 .get(&method_id)
@@ -914,6 +1007,61 @@ impl JdwpClient for TcpJdwpClient {
     fn pause(&mut self, _thread_id: ThreadId) -> Result<(), JdwpError> {
         let _ = self.send_command(1, 8, &[])?;
         Ok(())
+    }
+
+    fn evaluate(&mut self, expression: &str, frame_id: FrameId) -> Result<JdwpValue, JdwpError> {
+        let expression = expression.trim();
+        if !is_java_identifier(expression) {
+            return Err(JdwpError::Other(format!(
+                "unsupported expression: {expression}"
+            )));
+        }
+
+        let context = self
+            .frame_contexts
+            .get(&frame_id)
+            .copied()
+            .ok_or_else(|| JdwpError::Other("unknown frameId".to_string()))?;
+
+        let (slot, signature) = {
+            let vars = self.variable_table_for_method(context.type_id, context.method_id)?;
+            let var = vars
+                .iter()
+                .filter(|var| {
+                    if var.name != expression {
+                        return false;
+                    }
+                    let Some(end) = var.code_index.checked_add(var.length) else {
+                        return false;
+                    };
+                    var.code_index <= context.code_index && context.code_index < end
+                })
+                // If the same identifier is present in multiple scopes, prefer the one
+                // that starts latest (inner-most scope).
+                .max_by_key(|var| var.code_index)
+                .ok_or_else(|| JdwpError::Other(format!("not found: {expression}")))?;
+
+            (var.slot, var.signature.clone())
+        };
+
+        let mut values =
+            self.stack_frame_get_values(context.thread_id, frame_id, &[(slot, signature.as_str())])?;
+
+        let value = values
+            .pop()
+            .ok_or_else(|| JdwpError::Protocol("missing StackFrame.GetValues reply".to_string()))?;
+
+        Ok(match value {
+            JdwpValue::Object(mut obj) => {
+                if let Ok((_tag, type_id)) = self.reference_type_for_object(obj.id) {
+                    if let Ok(signature) = self.signature_for_type(type_id) {
+                        obj.runtime_type = signature_to_type_name(signature);
+                    }
+                }
+                JdwpValue::Object(obj)
+            }
+            other => other,
+        })
     }
 
     fn preview_object(&mut self, object_id: ObjectId) -> Result<ObjectPreview, JdwpError> {
@@ -1303,6 +1451,7 @@ struct Cache {
     source_files: HashMap<u64, String>,
     signatures: HashMap<u64, String>,
     fields: HashMap<u64, Vec<FieldInfo>>,
+    variable_tables: HashMap<(u64, u64), Vec<VariableInfo>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1319,6 +1468,15 @@ struct FieldInfo {
     name: String,
     signature: String,
     mod_bits: u32,
+}
+
+#[derive(Debug, Clone)]
+struct VariableInfo {
+    code_index: i64,
+    name: String,
+    signature: String,
+    length: i64,
+    slot: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1412,6 +1570,26 @@ fn signature_to_type_name(signature: &str) -> String {
         out.push_str("[]");
     }
     out
+}
+
+fn signature_to_tag(signature: &str) -> u8 {
+    signature.as_bytes().first().copied().unwrap_or(b'V')
+}
+
+fn is_java_identifier(expression: &str) -> bool {
+    fn is_start(c: char) -> bool {
+        c == '_' || c == '$' || c.is_ascii_alphabetic()
+    }
+
+    fn is_part(c: char) -> bool {
+        is_start(c) || c.is_ascii_digit()
+    }
+
+    let mut chars = expression.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    is_start(first) && chars.all(is_part)
 }
 
 fn write_id(buf: &mut Vec<u8>, size: usize, value: u64) {
@@ -1518,6 +1696,8 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn class_signature_conversion() {
@@ -1600,5 +1780,226 @@ mod tests {
             }
             other => panic!("expected reply, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn evaluate_supports_identifier_locals() {
+        const THREAD_ID: u64 = 0x1001;
+        const FRAME_ID: u64 = 0x2001;
+        const CLASS_ID: u64 = 0x3001;
+        const METHOD_ID: u64 = 0x4001;
+        const OBJECT_ID: u64 = 0x5001;
+        const OBJECT_CLASS_ID: u64 = 0x6001;
+
+        fn write_reply(stream: &mut TcpStream, id: u32, error_code: u16, payload: &[u8]) {
+            let length = 11usize + payload.len();
+            let mut buf = Vec::with_capacity(length);
+            buf.extend_from_slice(&(length as u32).to_be_bytes());
+            buf.extend_from_slice(&id.to_be_bytes());
+            buf.push(0x80);
+            buf.extend_from_slice(&error_code.to_be_bytes());
+            buf.extend_from_slice(payload);
+            stream.write_all(&buf).unwrap();
+            stream.flush().unwrap();
+        }
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+
+            // Handshake: debugger -> "JDWP-Handshake", server echoes back.
+            const HANDSHAKE: &[u8] = b"JDWP-Handshake";
+            let mut hs = [0u8; HANDSHAKE.len()];
+            stream.read_exact(&mut hs).unwrap();
+            assert_eq!(&hs, HANDSHAKE);
+            stream.write_all(HANDSHAKE).unwrap();
+            stream.flush().unwrap();
+
+            loop {
+                let packet = match read_packet(&mut stream) {
+                    Ok(packet) => packet,
+                    Err(JdwpError::Io(err))
+                        if matches!(
+                            err.kind(),
+                            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(err) => panic!("unexpected server read error: {err:?}"),
+                };
+
+                let Packet::Command {
+                    id,
+                    command_set,
+                    command,
+                    data,
+                } = packet
+                else {
+                    panic!("unexpected reply packet from client");
+                };
+
+                let mut reply = Vec::new();
+                match (command_set, command) {
+                    // VirtualMachine.IDSizes
+                    (1, 7) => {
+                        reply.extend_from_slice(&8u32.to_be_bytes()); // field id size
+                        reply.extend_from_slice(&8u32.to_be_bytes()); // method id size
+                        reply.extend_from_slice(&8u32.to_be_bytes()); // object id size
+                        reply.extend_from_slice(&8u32.to_be_bytes()); // reference type id size
+                        reply.extend_from_slice(&8u32.to_be_bytes()); // frame id size
+                    }
+                    // ThreadReference.Frames
+                    (11, 6) => {
+                        let mut cursor = Cursor::new(&data);
+                        let _thread_id = cursor.read_id(8).unwrap();
+                        let _start = cursor.read_i32().unwrap();
+                        let _length = cursor.read_i32().unwrap();
+
+                        reply.extend_from_slice(&1u32.to_be_bytes());
+                        write_id(&mut reply, 8, FRAME_ID);
+                        reply.push(1); // type tag
+                        write_id(&mut reply, 8, CLASS_ID);
+                        write_id(&mut reply, 8, METHOD_ID);
+                        reply.extend_from_slice(&0i64.to_be_bytes()); // code index
+                    }
+                    // ReferenceType.Methods
+                    (2, 5) => {
+                        let mut cursor = Cursor::new(&data);
+                        let _type_id = cursor.read_id(8).unwrap();
+
+                        reply.extend_from_slice(&1u32.to_be_bytes());
+                        write_id(&mut reply, 8, METHOD_ID);
+                        write_string(&mut reply, "main");
+                        write_string(&mut reply, "()V");
+                        reply.extend_from_slice(&0u32.to_be_bytes());
+                    }
+                    // ReferenceType.SourceFile
+                    (2, 7) => {
+                        let mut cursor = Cursor::new(&data);
+                        let _type_id = cursor.read_id(8).unwrap();
+                        write_string(&mut reply, "Main.java");
+                    }
+                    // Method.LineTable
+                    (6, 1) => {
+                        let mut cursor = Cursor::new(&data);
+                        let _type_id = cursor.read_id(8).unwrap();
+                        let _method_id = cursor.read_id(8).unwrap();
+                        reply.extend_from_slice(&0i64.to_be_bytes());
+                        reply.extend_from_slice(&10i64.to_be_bytes());
+                        reply.extend_from_slice(&1u32.to_be_bytes());
+                        reply.extend_from_slice(&0i64.to_be_bytes()); // code index
+                        reply.extend_from_slice(&3u32.to_be_bytes()); // line
+                    }
+                    // Method.VariableTable
+                    (6, 2) => {
+                        let mut cursor = Cursor::new(&data);
+                        let _type_id = cursor.read_id(8).unwrap();
+                        let _method_id = cursor.read_id(8).unwrap();
+
+                        reply.extend_from_slice(&0u32.to_be_bytes()); // arg count
+                        reply.extend_from_slice(&2u32.to_be_bytes()); // slots
+
+                        // int x (slot 0)
+                        reply.extend_from_slice(&0i64.to_be_bytes());
+                        write_string(&mut reply, "x");
+                        write_string(&mut reply, "I");
+                        reply.extend_from_slice(&10u32.to_be_bytes());
+                        reply.extend_from_slice(&0u32.to_be_bytes());
+
+                        // String obj (slot 1)
+                        reply.extend_from_slice(&0i64.to_be_bytes());
+                        write_string(&mut reply, "obj");
+                        write_string(&mut reply, "Ljava/lang/String;");
+                        reply.extend_from_slice(&10u32.to_be_bytes());
+                        reply.extend_from_slice(&1u32.to_be_bytes());
+                    }
+                    // StackFrame.GetValues
+                    (16, 1) => {
+                        let mut cursor = Cursor::new(&data);
+                        let _thread_id = cursor.read_id(8).unwrap();
+                        let _frame_id = cursor.read_id(8).unwrap();
+                        let count = cursor.read_u32().unwrap() as usize;
+                        let mut requests = Vec::with_capacity(count);
+                        for _ in 0..count {
+                            let slot = cursor.read_u32().unwrap();
+                            let tag = cursor.read_u8().unwrap();
+                            requests.push((slot, tag));
+                        }
+
+                        reply.extend_from_slice(&(requests.len() as u32).to_be_bytes());
+                        for (slot, tag) in requests {
+                            match (slot, tag) {
+                                (0, b'I') => {
+                                    reply.push(b'I');
+                                    reply.extend_from_slice(&42i32.to_be_bytes());
+                                }
+                                (1, _) => {
+                                    reply.push(b'L');
+                                    write_id(&mut reply, 8, OBJECT_ID);
+                                }
+                                _ => {
+                                    reply.push(b'V');
+                                }
+                            }
+                        }
+                    }
+                    // ObjectReference.ReferenceType
+                    (9, 1) => {
+                        let mut cursor = Cursor::new(&data);
+                        let _object_id = cursor.read_id(8).unwrap();
+                        reply.push(1); // ref type tag
+                        write_id(&mut reply, 8, OBJECT_CLASS_ID);
+                    }
+                    // ReferenceType.Signature
+                    (2, 1) => {
+                        let mut cursor = Cursor::new(&data);
+                        let type_id = cursor.read_id(8).unwrap();
+                        if type_id == OBJECT_CLASS_ID {
+                            write_string(&mut reply, "Ljava/lang/String;");
+                        } else {
+                            write_string(&mut reply, "LMain;");
+                        }
+                    }
+                    _ => {
+                        write_reply(&mut stream, id, 1, &[]);
+                        continue;
+                    }
+                }
+
+                write_reply(&mut stream, id, 0, &reply);
+            }
+        });
+
+        let mut client = TcpJdwpClient::new();
+        client.connect("127.0.0.1", port).unwrap();
+
+        let frames = client.stack_frames(THREAD_ID).unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].id, FRAME_ID);
+
+        let context = client.frame_contexts.get(&FRAME_ID).copied().unwrap();
+        assert_eq!(context.thread_id, THREAD_ID);
+        assert_eq!(context.type_id, CLASS_ID);
+        assert_eq!(context.method_id, METHOD_ID);
+        assert_eq!(context.code_index, 0);
+
+        assert_eq!(client.evaluate("x", FRAME_ID).unwrap(), JdwpValue::Int(42));
+
+        match client.evaluate("obj", FRAME_ID).unwrap() {
+            JdwpValue::Object(obj) => {
+                assert_eq!(obj.id, OBJECT_ID);
+                assert_eq!(obj.runtime_type, "java.lang.String");
+            }
+            other => panic!("expected object ref, got {other:?}"),
+        }
+
+        let err = client.evaluate("x+1", FRAME_ID).unwrap_err();
+        assert!(matches!(err, JdwpError::Other(msg) if msg.contains("unsupported expression")));
+
+        drop(client);
+        server.join().unwrap();
     }
 }

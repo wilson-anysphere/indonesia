@@ -4,11 +4,10 @@
 //! features (return values, stable object IDs, rich previews, and object
 //! pinning).
 //!
-//! The network client (`TcpJdwpClient`) currently implements only a small
+//! The network client (`TcpJdwpClient`) intentionally implements only a small
 //! subset of JDWP (handshake, thread enumeration, stack frames, basic stepping
-//! and breakpoints). Value inspection APIs intentionally return
-//! [`JdwpError::NotImplemented`] until the underlying wire protocol support is
-//! fleshed out.
+//! and breakpoints). It also supports limited value inspection (identifier
+//! evaluation + object previews) to enable early DAP features.
 
 mod mock;
 mod tcp;
