@@ -11,7 +11,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose, Engine as _};
-use nova_jdwp::wire::JdwpError;
+use nova_jdwp::wire::{JdwpClient, JdwpError, JdwpValue, ObjectId};
 use nova_scheduler::CancellationToken;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -2606,7 +2606,7 @@ fn spawn_event_task(
             // Some events require consulting debugger state (conditional/log breakpoints).
             let mut breakpoint_disposition: Option<BreakpointDisposition> = None;
             // Best-effort exception label for DAP's stopped `text` field.
-            let mut exception_text: Option<String> = None;
+            let mut exception_context: Option<(JdwpClient, ObjectId)> = None;
 
             {
                 let mut guard = debugger.lock().await;
@@ -2643,30 +2643,27 @@ fn spawn_event_task(
                         }
                     }
 
-                    if let nova_jdwp::wire::JdwpEvent::Exception { thread, .. } = &event {
-                        // Avoid delaying the stopped event for too long; exception details are
-                        // also available via the dedicated `exceptionInfo` request.
-                        if let Ok(Ok(Some(info))) = tokio::time::timeout(
-                            Duration::from_millis(200),
-                            dbg.exception_info(&server_shutdown, *thread as i64),
-                        )
-                        .await
-                        {
-                            let type_name = info
-                                .exception_id
-                                .rsplit(['.', '$'])
-                                .next()
-                                .unwrap_or(info.exception_id.as_str());
-                            exception_text = match info.description.as_deref() {
-                                Some(message) if !message.is_empty() => {
-                                    Some(format!("{type_name}: {message}"))
-                                }
-                                _ => Some(type_name.to_string()),
-                            };
-                        }
+                    if let nova_jdwp::wire::JdwpEvent::Exception { exception, .. } = &event {
+                        exception_context = Some((dbg.jdwp_client(), *exception));
                     }
                 }
             }
+
+            let exception_text = if let Some((jdwp, exception)) = exception_context {
+                // Avoid delaying the stopped event for too long; exception details are also
+                // available via the dedicated `exceptionInfo` request.
+                match tokio::time::timeout(
+                    Duration::from_millis(200),
+                    exception_stopped_text(&jdwp, exception),
+                )
+                .await
+                {
+                    Ok(text) => text,
+                    Err(_elapsed) => None,
+                }
+            } else {
+                None
+            };
 
             match event {
                 nova_jdwp::wire::JdwpEvent::Breakpoint { thread, .. } => {
@@ -2738,4 +2735,68 @@ fn spawn_event_task(
             }
         }
     });
+}
+
+async fn exception_stopped_text(jdwp: &JdwpClient, exception: ObjectId) -> Option<String> {
+    if exception == 0 {
+        return None;
+    }
+
+    let (_ref_type_tag, class_id) = jdwp.object_reference_reference_type(exception).await.ok()?;
+    let sig = jdwp.reference_type_signature(class_id).await.ok()?;
+    let full_type_name = signature_to_object_type_name(&sig)?;
+    let type_name = full_type_name
+        .rsplit(['.', '$'])
+        .next()
+        .unwrap_or(full_type_name.as_str());
+
+    let message = exception_message(jdwp, exception).await;
+    match message.as_deref() {
+        Some(message) if !message.is_empty() => Some(format!("{type_name}: {message}")),
+        _ => Some(type_name.to_string()),
+    }
+}
+
+async fn exception_message(jdwp: &JdwpClient, exception: ObjectId) -> Option<String> {
+    let classes = jdwp.classes_by_signature("Ljava/lang/Throwable;").await.ok()?;
+    let throwable = classes.first()?.type_id;
+    let fields = jdwp.reference_type_fields(throwable).await.ok()?;
+    let field_id = fields
+        .iter()
+        .find(|field| field.name == "detailMessage")
+        .map(|field| field.field_id)?;
+
+    let values = jdwp
+        .object_reference_get_values(exception, &[field_id])
+        .await
+        .ok()?;
+    let value = values.into_iter().next()?;
+    let JdwpValue::Object { id, .. } = value else {
+        return None;
+    };
+    if id == 0 {
+        return None;
+    }
+    let message = jdwp.string_reference_value(id).await.ok()?;
+    if message.is_empty() { None } else { Some(message) }
+}
+
+fn signature_to_object_type_name(sig: &str) -> Option<String> {
+    let mut sig = sig.trim();
+    let mut dims = 0;
+    while let Some(rest) = sig.strip_prefix('[') {
+        dims += 1;
+        sig = rest;
+    }
+
+    let base = sig
+        .strip_prefix('L')
+        .and_then(|s| s.strip_suffix(';'))?
+        .replace('/', ".");
+
+    let mut out = base;
+    for _ in 0..dims {
+        out.push_str("[]");
+    }
+    Some(out)
 }
