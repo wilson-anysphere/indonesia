@@ -14,7 +14,7 @@ fn stdio_server_resolves_extract_constant_code_action() {
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Test.java");
 
-    let source = "class C {\n    void m() {\n        int x = 1 + 2;\n    }\n}\n";
+    let source = "class C {\n    void m() {\n        int x = /* 😀 */ 1 + 2;\n    }\n}\n";
     fs::write(&file_path, source).expect("write file");
 
     let uri = Uri::from_file_path(&file_path).expect("uri");
@@ -156,16 +156,16 @@ fn stdio_server_resolves_extract_constant_code_action() {
         "expected extracted constant declaration"
     );
     assert!(
-        updated.contains(&format!("int x = {name};")),
+        updated.contains(&format!("int x = /* 😀 */ {name};")),
         "expected initializer replaced with constant reference"
     );
     assert!(
-        !updated.contains("int x = 1 + 2;"),
+        !updated.contains("int x = /* 😀 */ 1 + 2;"),
         "expected original expression to be replaced"
     );
 
     let expected = format!(
-        "class C {{\n    private static final int {name} = 1 + 2;\n\n    void m() {{\n        int x = {name};\n    }}\n}}\n"
+        "class C {{\n    private static final int {name} = 1 + 2;\n\n    void m() {{\n        int x = /* 😀 */ {name};\n    }}\n}}\n"
     );
     assert_eq!(updated, expected);
 
@@ -187,7 +187,7 @@ fn stdio_server_resolves_extract_field_code_action() {
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Test.java");
 
-    let source = "class C {\n    void m() {\n        int x = 1 + 2;\n    }\n}\n";
+    let source = "class C {\n    void m() {\n        int x = /* 😀 */ 1 + 2;\n    }\n}\n";
     fs::write(&file_path, source).expect("write file");
 
     let uri = Uri::from_file_path(&file_path).expect("uri");
@@ -320,11 +320,11 @@ fn stdio_server_resolves_extract_field_code_action() {
         "expected extracted field declaration"
     );
     assert!(
-        updated.contains(&format!("int x = {name};")),
+        updated.contains(&format!("int x = /* 😀 */ {name};")),
         "expected initializer replaced with field reference"
     );
     assert!(
-        !updated.contains("int x = 1 + 2;"),
+        !updated.contains("int x = /* 😀 */ 1 + 2;"),
         "expected original expression to be replaced"
     );
 
@@ -346,7 +346,7 @@ fn stdio_server_offers_convert_to_record_code_action() {
     let file_path = temp.path().join("Point.java");
 
     let source = "\
-public final class Point {\n\
+public final /* 😀 */ class Point {\n\
     private final int x;\n\
 \n\
     public Point(int x) {\n\
