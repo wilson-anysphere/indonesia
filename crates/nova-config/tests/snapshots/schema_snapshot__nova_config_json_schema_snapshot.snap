@@ -63,6 +63,7 @@ expression: schema
       ]
     },
     "extensions": {
+      "description": "Workspace extensions (WASM bundles) configuration.",
       "default": {
         "allow": null,
         "deny": [],
@@ -78,6 +79,7 @@ expression: schema
       ]
     },
     "generated_sources": {
+      "description": "Generated sources indexing and discovery configuration.",
       "default": {
         "additional_roots": [],
         "enabled": true,
@@ -117,6 +119,7 @@ expression: schema
       ]
     }
   },
+  "additionalProperties": false,
   "definitions": {
     "AiConfig": {
       "type": "object",
@@ -236,7 +239,8 @@ expression: schema
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "AiEmbeddingsConfig": {
       "type": "object",
@@ -265,7 +269,8 @@ expression: schema
           "default": ".nova/models/embeddings",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "AiFeaturesConfig": {
       "type": "object",
@@ -285,7 +290,8 @@ expression: schema
           "default": false,
           "type": "boolean"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "AiPrivacyConfig": {
       "type": "object",
@@ -329,7 +335,8 @@ expression: schema
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "AiProviderConfig": {
       "type": "object",
@@ -405,7 +412,8 @@ expression: schema
           "default": "http://localhost:11434/",
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "AiProviderKind": {
       "oneOf": [
@@ -484,7 +492,8 @@ expression: schema
           "format": "uint64",
           "minimum": 0.0
         }
-      }
+      },
+      "additionalProperties": false
     },
     "AuditLogConfig": {
       "type": "object",
@@ -500,7 +509,8 @@ expression: schema
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ExtensionsConfig": {
       "type": "object",
@@ -557,7 +567,8 @@ expression: schema
           "format": "uint64",
           "minimum": 0.0
         }
-      }
+      },
+      "additionalProperties": false
     },
     "GeneratedSourcesConfig": {
       "type": "object",
@@ -586,7 +597,8 @@ expression: schema
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "InProcessLlamaConfig": {
       "type": "object",
@@ -634,7 +646,8 @@ expression: schema
           "type": "number",
           "format": "float"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "JdkConfig": {
       "type": "object",
@@ -647,7 +660,8 @@ expression: schema
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "LoggingConfig": {
       "type": "object",
@@ -687,7 +701,8 @@ expression: schema
           "default": true,
           "type": "boolean"
         }
-      }
+      },
+      "additionalProperties": false
     }
   }
 }

@@ -95,6 +95,33 @@ wasm_paths = ["./missing"]
 }
 
 #[test]
+fn validates_extensions_wasm_paths_absolute_without_context() {
+    let dir = tempdir().expect("tempdir");
+    let missing = dir.path().join("missing-abs");
+    let missing_str = missing.display().to_string();
+
+    let text = format!(
+        r#"
+[extensions]
+enabled = true
+wasm_paths = ["{missing_str}"]
+"#
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::ExtensionsWasmPathMissing {
+            toml_path: "extensions.wasm_paths[0]".to_string(),
+            resolved: missing,
+        }]
+    );
+}
+
+#[test]
 fn validates_generated_sources_override_roots_is_not_empty() {
     let text = r#"
 [generated_sources]
@@ -128,4 +155,3 @@ level = "warn,nova=foo"
         }]
     );
 }
-

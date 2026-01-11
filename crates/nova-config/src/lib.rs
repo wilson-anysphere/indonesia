@@ -27,6 +27,7 @@ pub use validation::ConfigValidationContext;
 pub const AI_AUDIT_TARGET: &str = "nova.ai.audit";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct GeneratedSourcesConfig {
     /// Whether generated sources should be indexed and participate in resolution.
     #[serde(default = "default_generated_sources_enabled")]
@@ -42,6 +43,7 @@ pub struct GeneratedSourcesConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[schemars(deny_unknown_fields)]
 pub struct JdkConfig {
     /// Optional override for the JDK installation to use.
     ///
@@ -67,6 +69,7 @@ impl Default for GeneratedSourcesConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct ExtensionsConfig {
     /// Whether extensions are enabled.
     #[serde(default = "default_extensions_enabled")]
@@ -115,6 +118,7 @@ impl Default for ExtensionsConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 /// Top-level Nova configuration loaded from TOML.
 ///
 /// Extensions can be configured via the `[extensions]` table:
@@ -128,6 +132,7 @@ impl Default for ExtensionsConfig {
 /// wasm_timeout_ms = 5000
 /// ```
 pub struct NovaConfig {
+    /// Generated sources indexing and discovery configuration.
     #[serde(default)]
     pub generated_sources: GeneratedSourcesConfig,
 
@@ -135,6 +140,7 @@ pub struct NovaConfig {
     #[serde(default)]
     pub jdk: JdkConfig,
 
+    /// Workspace extensions (WASM bundles) configuration.
     #[serde(default)]
     pub extensions: ExtensionsConfig,
 
@@ -161,6 +167,7 @@ impl Default for NovaConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct LoggingConfig {
     /// Logging level for all Nova crates.
     #[serde(default = "LoggingConfig::default_level")]
@@ -273,6 +280,7 @@ impl Default for LoggingConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct AiFeaturesConfig {
     /// Enables AI-assisted completion re-ranking.
     #[serde(default)]
@@ -299,6 +307,7 @@ impl Default for AiFeaturesConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct AiTimeoutsConfig {
     /// Timeout for completion ranking requests.
     #[serde(default = "default_completion_ranking_timeout_ms")]
@@ -337,6 +346,7 @@ impl AiTimeoutsConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct AiConfig {
     #[serde(default)]
     pub provider: AiProviderConfig,
@@ -410,6 +420,7 @@ fn default_ai_cache_ttl_secs() -> u64 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct AiEmbeddingsConfig {
     /// Enable local embeddings for semantic search and context building.
     #[serde(default)]
@@ -453,6 +464,7 @@ impl Default for AiEmbeddingsConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct AuditLogConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -508,6 +520,7 @@ impl Default for AiProviderKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct AiProviderConfig {
     /// Which backend implementation to use.
     #[serde(default)]
@@ -611,6 +624,7 @@ impl AiProviderConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct InProcessLlamaConfig {
     /// Path to a GGUF model file on disk.
     #[schemars(with = "String")]
@@ -656,6 +670,7 @@ fn default_in_process_llama_top_p() -> f32 {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct AiPrivacyConfig {
     /// If true, Nova will not use any cloud providers. This is the recommended
     /// setting for privacy-sensitive environments.

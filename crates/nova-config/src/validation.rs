@@ -69,15 +69,15 @@ fn validate_extensions(config: &NovaConfig, ctx: ConfigValidationContext<'_>, ou
         return;
     }
 
-    let Some(base_dir) = ctx.base_dir() else {
-        return;
-    };
+    let base_dir = ctx.base_dir();
 
     for (idx, path) in config.extensions.wasm_paths.iter().enumerate() {
         let resolved = if path.is_absolute() {
             path.clone()
-        } else {
+        } else if let Some(base_dir) = base_dir {
             base_dir.join(path)
+        } else {
+            continue;
         };
         let toml_path = format!("extensions.wasm_paths[{idx}]");
         if !resolved.exists() {
@@ -172,4 +172,3 @@ fn url_is_loopback(url: &url::Url) -> bool {
         None => false,
     }
 }
-
