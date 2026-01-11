@@ -196,6 +196,46 @@ describe('ServerManager install flow', () => {
     expect(result.version).toBe(prereleaseTag);
   });
 
+  it('suggests the prerelease channel when no stable releases exist', async () => {
+    const { Volume, createFsFromVolume } = await import('memfs');
+    const vol = new Volume();
+    const memfs = createFsFromVolume(vol) as typeof import('node:fs');
+
+    vi.doMock('node:fs/promises', () => memfs.promises as unknown as typeof import('node:fs/promises'));
+    vi.doMock('node:fs', () => memfs);
+
+    const { ServerManager } = await import('./serverManager');
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url === 'https://api.github.com/repos/wilson-anysphere/indonesia/releases/latest') {
+        return {
+          ok: false,
+          status: 404,
+          statusText: 'Not Found',
+          text: async () => JSON.stringify({ message: 'Not Found' }),
+        } as unknown as Response;
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const manager = new ServerManager('/storage', undefined, {
+      fetch: fetchMock as unknown as typeof fetch,
+      platform: 'linux',
+      arch: 'x64',
+      extractor: { extractBinaryFromArchive: vi.fn() },
+    });
+
+    await expect(
+      manager.installOrUpdate({
+        path: null,
+        autoDownload: true,
+        releaseChannel: 'stable',
+        version: 'latest',
+        releaseUrl: 'wilson-anysphere/indonesia',
+      }),
+    ).rejects.toThrow(/No stable releases found/);
+  });
+
   it('adds Authorization headers for public GitHub URLs when GH_TOKEN is set', async () => {
     const oldGhToken = process.env.GH_TOKEN;
     process.env.GH_TOKEN = 'test-token';
