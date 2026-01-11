@@ -40,8 +40,13 @@ impl AiClient {
             ));
         }
 
-        if config.privacy.local_only && config.provider.kind != AiProviderKind::InProcessLlama {
-            validate_local_only_url(&config.provider.url)?;
+        if config.privacy.local_only {
+            match config.provider.kind {
+                AiProviderKind::InProcessLlama => {}
+                AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible => {
+                    validate_local_only_url(&config.provider.url)?;
+                }
+            }
         }
 
         let provider: Arc<dyn AiProvider> = match config.provider.kind {
