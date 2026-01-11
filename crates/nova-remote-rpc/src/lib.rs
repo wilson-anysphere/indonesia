@@ -147,6 +147,7 @@ pub struct IncomingRequest {
 pub struct Client {
     inner: Arc<Inner>,
     welcome: RouterWelcome,
+    incoming: mpsc::UnboundedReceiver<IncomingRequest>,
 }
 
 pub struct Server {
@@ -161,6 +162,8 @@ struct Inner {
     pending: Mutex<HashMap<RequestId, oneshot::Sender<RpcResult<Response>>>>,
     negotiated: Negotiated,
     compression_threshold: usize,
+    worker_id: WorkerId,
+    shard_id: ShardId,
     next_request_id: AtomicU64,
     request_id_step: u64,
 }
@@ -184,20 +187,27 @@ impl Client {
         };
 
         let (reader, writer) = tokio::io::split(stream);
+        let (incoming_tx, incoming) = mpsc::unbounded_channel();
         let inner = Arc::new(Inner {
             writer: Mutex::new(writer),
             pending: Mutex::new(HashMap::new()),
             negotiated,
             compression_threshold: config.compression_threshold,
+            worker_id: welcome.worker_id,
+            shard_id: welcome.shard_id,
             // Worker-initiated request IDs are odd.
             next_request_id: AtomicU64::new(1),
             request_id_step: 2,
         });
 
         let inner_clone = inner.clone();
-        tokio::spawn(async move { read_loop(reader, inner_clone, None).await });
+        tokio::spawn(async move { read_loop(reader, inner_clone, Some(incoming_tx)).await });
 
-        Ok(Self { inner, welcome })
+        Ok(Self {
+            inner,
+            welcome,
+            incoming,
+        })
     }
 
     pub fn welcome(&self) -> &RouterWelcome {
@@ -206,6 +216,28 @@ impl Client {
 
     pub fn negotiated(&self) -> &Negotiated {
         &self.inner.negotiated
+    }
+
+    pub async fn recv_request(&mut self) -> Option<IncomingRequest> {
+        self.incoming.recv().await
+    }
+
+    pub async fn respond(
+        &self,
+        request_id: RequestId,
+        response: RpcResult<Response>,
+    ) -> Result<()> {
+        self.inner
+            .send_packet(request_id, RpcPayload::Response(response))
+            .await
+    }
+
+    pub async fn respond_ok(&self, request_id: RequestId, value: Response) -> Result<()> {
+        self.respond(request_id, RpcResult::Ok { value }).await
+    }
+
+    pub async fn respond_err(&self, request_id: RequestId, error: RpcError) -> Result<()> {
+        self.respond(request_id, RpcResult::Err { error }).await
     }
 
     pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
@@ -222,6 +254,8 @@ impl Client {
         let span = tracing::debug_span!(
             target: TRACE_TARGET,
             "call",
+            worker_id = self.inner.worker_id,
+            shard_id = self.inner.shard_id,
             request_id,
             request_type
         );
@@ -257,6 +291,8 @@ impl Client {
                 parent: &parent_span,
                 target: TRACE_TARGET,
                 event = "call_complete",
+                worker_id = self.inner.worker_id,
+                shard_id = self.inner.shard_id,
                 request_id,
                 request_type,
                 status,
@@ -292,6 +328,8 @@ impl Server {
             pending: Mutex::new(HashMap::new()),
             negotiated,
             compression_threshold: config.compression_threshold,
+            worker_id: welcome.worker_id,
+            shard_id: welcome.shard_id,
             // Router-initiated request IDs are even.
             next_request_id: AtomicU64::new(2),
             request_id_step: 2,
@@ -310,6 +348,70 @@ impl Server {
 
     pub fn negotiated(&self) -> &Negotiated {
         &self.inner.negotiated
+    }
+
+    pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
+        let request_id = self
+            .inner
+            .next_request_id
+            .fetch_add(self.inner.request_id_step, Ordering::Relaxed);
+
+        let request_type = request_type(&request);
+
+        let start = tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG)
+            .then(Instant::now);
+
+        let span = tracing::debug_span!(
+            target: TRACE_TARGET,
+            "call",
+            worker_id = self.inner.worker_id,
+            shard_id = self.inner.shard_id,
+            request_id,
+            request_type
+        );
+        let parent_span = span.clone();
+        let inner = self.inner.clone();
+        let response = async move {
+            let (tx, rx) = oneshot::channel();
+            {
+                let mut pending = inner.pending.lock().await;
+                pending.insert(request_id, tx);
+            }
+
+            if let Err(err) = inner
+                .send_packet(request_id, RpcPayload::Request(request))
+                .await
+            {
+                let mut pending = inner.pending.lock().await;
+                pending.remove(&request_id);
+                return Err(err);
+            }
+
+            rx.await
+                .map_err(|_| anyhow!("connection closed while waiting for response"))
+        }
+        .instrument(span)
+        .await?;
+
+        if let Some(start) = start {
+            let elapsed = start.elapsed();
+            let status = rpc_result_status(&response);
+            let error_code = rpc_result_error_code_str(&response);
+            tracing::debug!(
+                parent: &parent_span,
+                target: TRACE_TARGET,
+                event = "call_complete",
+                worker_id = self.inner.worker_id,
+                shard_id = self.inner.shard_id,
+                request_id,
+                request_type,
+                status,
+                error_code,
+                latency_ms = elapsed.as_secs_f64() * 1000.0
+            );
+        }
+
+        Ok(response)
     }
 
     pub async fn recv_request(&mut self) -> Option<IncomingRequest> {
@@ -354,6 +456,8 @@ impl Inner {
         tracing::trace!(
             target: TRACE_TARGET,
             direction = "send",
+            worker_id = self.worker_id,
+            shard_id = self.shard_id,
             request_id,
             payload_kind,
             request_type,
@@ -846,6 +950,8 @@ async fn read_loop(
                     tracing::debug!(
                         target: TRACE_TARGET,
                         event = "read_loop_end",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
                         error = %err
                     );
                     let mut pending = inner.pending.lock().await;
@@ -864,6 +970,8 @@ async fn read_loop(
                 tracing::debug!(
                     target: TRACE_TARGET,
                     event = "unsupported_chunk",
+                    worker_id = inner.worker_id,
+                    shard_id = inner.shard_id,
                     request_id = id
                 );
                 continue;
@@ -872,6 +980,8 @@ async fn read_loop(
                 tracing::trace!(
                     target: TRACE_TARGET,
                     event = "unexpected_frame",
+                    worker_id = inner.worker_id,
+                    shard_id = inner.shard_id,
                     frame_type = wire_frame_type(&other)
                 );
                 continue;
@@ -886,6 +996,8 @@ async fn read_loop(
                     tracing::debug!(
                         target: TRACE_TARGET,
                         event = "decompress_error",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
                         request_id,
                         error = %err
                     );
@@ -899,6 +1011,8 @@ async fn read_loop(
                 tracing::debug!(
                     target: TRACE_TARGET,
                     event = "decode_error",
+                    worker_id = inner.worker_id,
+                    shard_id = inner.shard_id,
                     request_id,
                     error = %err
                 );
@@ -909,6 +1023,8 @@ async fn read_loop(
         tracing::trace!(
             target: TRACE_TARGET,
             direction = "recv",
+            worker_id = inner.worker_id,
+            shard_id = inner.shard_id,
             request_id,
             payload_kind = payload_kind(&payload),
             request_type = payload_request_type(&payload),
@@ -933,6 +1049,8 @@ async fn read_loop(
                     tracing::trace!(
                         target: TRACE_TARGET,
                         event = "orphan_response",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
                         request_id
                     );
                 }
@@ -947,6 +1065,8 @@ async fn read_loop(
                     tracing::trace!(
                         target: TRACE_TARGET,
                         event = "unexpected_request",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
                         request_id
                     );
                 }
@@ -1113,6 +1233,11 @@ mod tests {
                 .recv_request()
                 .await
                 .ok_or_else(|| anyhow!("missing request"))?;
+            assert_eq!(
+                req.request_id % 2,
+                1,
+                "worker-initiated request IDs are odd"
+            );
             assert!(matches!(req.request, Request::GetWorkerStats));
             server.respond_ok(req.request_id, Response::Ack).await?;
             Ok::<_, anyhow::Error>(())
@@ -1124,6 +1249,37 @@ mod tests {
             RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
             other => return Err(anyhow!("unexpected response: {other:?}")),
         }
+
+        server_task.await??;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn router_initiated_roundtrip() -> Result<()> {
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+
+        let server_task = tokio::spawn(async move {
+            let server = Server::accept(server_stream, ServerConfig::default()).await?;
+            let resp = server.call(Request::GetWorkerStats).await?;
+            match resp {
+                RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
+                other => return Err(anyhow!("unexpected response: {other:?}")),
+            }
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let mut client = Client::connect(client_stream, ClientConfig::default()).await?;
+        let req = client
+            .recv_request()
+            .await
+            .ok_or_else(|| anyhow!("missing request"))?;
+        assert_eq!(
+            req.request_id % 2,
+            0,
+            "router-initiated request IDs are even"
+        );
+        assert!(matches!(req.request, Request::GetWorkerStats));
+        client.respond_ok(req.request_id, Response::Ack).await?;
 
         server_task.await??;
         Ok(())
