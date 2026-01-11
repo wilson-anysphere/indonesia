@@ -12,7 +12,7 @@ fn http_config(url: Url, model: &str) -> AiConfig {
     cfg.provider.url = url;
     cfg.provider.model = model.to_string();
     cfg.provider.timeout_ms = 1_000;
-    cfg.provider.concurrency = 1;
+    cfg.provider.concurrency = Some(1);
     cfg.provider.max_tokens = 64;
     cfg.privacy.local_only = false;
     cfg.privacy.anonymize = Some(false);
@@ -131,4 +131,3 @@ async fn llm_cache_misses_when_temperature_changes() {
 
     mock.assert_hits(2);
 }
-

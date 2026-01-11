@@ -49,17 +49,15 @@ fn base_config(kind: AiProviderKind, url: Url, model: &str) -> AiConfig {
             kind: kind.clone(),
             url,
             model: model.to_string(),
-            azure_deployment: None,
-            azure_api_version: None,
             max_tokens: 128,
             timeout_ms: 1_000,
-            concurrency: 1,
+            concurrency: Some(1),
+            ..AiProviderConfig::default()
         },
         privacy: AiPrivacyConfig {
             local_only,
             anonymize: Some(false),
-            excluded_paths: vec![],
-            redact_patterns: vec![],
+            ..AiPrivacyConfig::default()
         },
         enabled: true,
         ..AiConfig::default()
@@ -72,6 +70,10 @@ fn dummy_ctx() -> ContextRequest {
         focal_code: "class A { void m(){ x(); } }".to_string(),
         enclosing_context: None,
         related_symbols: Vec::new(),
+        related_code: Vec::new(),
+        cursor: None,
+        diagnostics: Vec::new(),
+        extra_files: Vec::new(),
         doc_comments: None,
         include_doc_comments: false,
         token_budget: 200,

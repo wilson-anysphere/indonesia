@@ -548,6 +548,7 @@ async fn cancellation_while_waiting_for_client_semaphore() {
                     ChatRequest {
                         messages: vec![ChatMessage::user("hi")],
                         max_tokens: Some(5),
+                        temperature: None,
                     },
                     CancellationToken::new(),
                 )
@@ -567,6 +568,7 @@ async fn cancellation_while_waiting_for_client_semaphore() {
                     ChatRequest {
                         messages: vec![ChatMessage::user("hi")],
                         max_tokens: Some(5),
+                        temperature: None,
                     },
                     cancel,
                 )

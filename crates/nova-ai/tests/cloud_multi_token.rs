@@ -27,7 +27,7 @@ fn http_config(server: &MockServer) -> AiConfig {
     cfg.provider.url = Url::parse(&format!("{}/complete", server.base_url())).unwrap();
     cfg.provider.model = "test-model".to_string();
     cfg.provider.timeout_ms = Duration::from_secs(2).as_millis() as u64;
-    cfg.provider.concurrency = 1;
+    cfg.provider.concurrency = Some(1);
     cfg.privacy.local_only = false;
     cfg.privacy.anonymize = Some(false);
     cfg.cache_enabled = false;

@@ -20,7 +20,7 @@ fn dummy_ai_client_config(privacy: AiPrivacyConfig) -> AiConfig {
             max_tokens: 128,
             timeout_ms: 5_000,
             concurrency: Some(1),
-            in_process_llama: None,
+            ..AiProviderConfig::default()
         },
         privacy,
         enabled: true,
@@ -34,7 +34,6 @@ fn privacy_excluded_paths_omit_snippet() {
         local_only: true,
         anonymize: Some(true),
         excluded_paths: vec!["src/secrets/**".to_string()],
-        redact_patterns: vec![],
         ..AiPrivacyConfig::default()
     }))
     .expect("client");

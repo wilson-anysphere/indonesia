@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use thiserror::Error;
 
+const MAX_PATCH_PAYLOAD_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
@@ -114,8 +116,232 @@ enum JsonPatchOpEnvelope {
     Rename { from: String, to: String },
 }
 
+fn extract_patch_payload(raw: &str) -> Option<String> {
+    let mut fenced_blocks: Vec<&str> = Vec::new();
+
+    // Prefer explicit fenced payloads first. LLMs often wrap structured output inside markdown
+    // fences with a language tag (json/diff/patch) or no language tag at all.
+    let mut offset = 0usize;
+    let mut in_fence = false;
+    let mut fence_start = 0usize;
+    let mut fence_is_candidate = false;
+
+    for line in raw.split_inclusive('\n') {
+        let line_no_newline = line.strip_suffix('\n').unwrap_or(line);
+        let trimmed = line_no_newline.trim_start();
+
+        if trimmed.starts_with("```") {
+            if !in_fence {
+                let info = trimmed.trim_start_matches("```");
+                let lang = info.split_whitespace().next().unwrap_or("");
+                fence_is_candidate = lang.is_empty()
+                    || lang.eq_ignore_ascii_case("json")
+                    || lang.eq_ignore_ascii_case("diff")
+                    || lang.eq_ignore_ascii_case("patch");
+                in_fence = true;
+                fence_start = offset + line.len();
+            } else {
+                // Closing fence. We intentionally accept any ``` line as a close to avoid
+                // being too strict about language annotations or indentation.
+                if fence_is_candidate {
+                    fenced_blocks.push(&raw[fence_start..offset]);
+                }
+                in_fence = false;
+                fence_is_candidate = false;
+            }
+        }
+
+        offset += line.len();
+    }
+
+    // Unterminated fence: treat the remainder of the response as the block payload.
+    if in_fence && fence_is_candidate && fence_start <= raw.len() {
+        fenced_blocks.push(&raw[fence_start..]);
+    }
+
+    if !fenced_blocks.is_empty() {
+        // Prefer the first block that parses as a JSON patch.
+        for block in &fenced_blocks {
+            let candidate = block.trim();
+            if candidate.len() > MAX_PATCH_PAYLOAD_BYTES {
+                continue;
+            }
+            if candidate.starts_with('{') && is_non_empty_json_patch(candidate) {
+                return Some(candidate.to_string());
+            }
+        }
+
+        // Otherwise prefer the first block that parses as a unified diff.
+        for block in &fenced_blocks {
+            let candidate = block.trim();
+            if candidate.len() > MAX_PATCH_PAYLOAD_BYTES {
+                continue;
+            }
+            if looks_like_unified_diff(candidate) && parse_unified_diff(candidate).is_ok() {
+                return Some(candidate.to_string());
+            }
+        }
+
+        // Nothing successfully parsed; still try returning a "patch-like" block so callers get
+        // a helpful parse error (InvalidJson/InvalidDiff) instead of UnsupportedFormat.
+        let mut first_candidate = None;
+        let mut first_patch_like = None;
+        for block in &fenced_blocks {
+            let candidate = block.trim();
+            if candidate.len() > MAX_PATCH_PAYLOAD_BYTES {
+                continue;
+            }
+            if first_candidate.is_none() {
+                first_candidate = Some(candidate);
+            }
+            if first_patch_like.is_none()
+                && (candidate.starts_with('{') || looks_like_unified_diff(candidate))
+            {
+                first_patch_like = Some(candidate);
+            }
+        }
+
+        return first_patch_like
+            .or(first_candidate)
+            .map(|candidate| candidate.to_string());
+    }
+
+    // No relevant fences: fall back to heuristic scanning.
+    if let Some(payload) = extract_json_patch_from_text(raw) {
+        return Some(payload);
+    }
+
+    let diff = extract_diff_patch_from_text(raw);
+    if diff.is_some() {
+        return diff;
+    }
+
+    extract_first_json_object_from_text(raw)
+}
+
+fn looks_like_unified_diff(payload: &str) -> bool {
+    payload.starts_with("diff --git") || payload.starts_with("--- ") || payload.starts_with("+++ ")
+}
+
+fn is_non_empty_json_patch(payload: &str) -> bool {
+    let Ok(patch) = serde_json::from_str::<JsonPatchEnvelope>(payload) else {
+        return false;
+    };
+    !(patch.edits.is_empty() && patch.ops.is_empty())
+}
+
+fn extract_json_patch_from_text(raw: &str) -> Option<String> {
+    for (start, ch) in raw.char_indices() {
+        if ch != '{' {
+            continue;
+        }
+        let end = match find_matching_brace(raw, start) {
+            Some(end) => end,
+            None => continue,
+        };
+        if end <= start {
+            continue;
+        }
+        let candidate = raw[start..end].trim();
+        if candidate.len() > MAX_PATCH_PAYLOAD_BYTES {
+            continue;
+        }
+        if is_non_empty_json_patch(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+
+    None
+}
+
+fn extract_first_json_object_from_text(raw: &str) -> Option<String> {
+    for (start, ch) in raw.char_indices() {
+        if ch != '{' {
+            continue;
+        }
+        let end = match find_matching_brace(raw, start) {
+            Some(end) => end,
+            None => continue,
+        };
+        if end <= start {
+            continue;
+        }
+        let candidate = raw[start..end].trim();
+        if candidate.len() > MAX_PATCH_PAYLOAD_BYTES {
+            continue;
+        }
+        return Some(candidate.to_string());
+    }
+
+    None
+}
+
+fn find_matching_brace(raw: &str, start: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for (rel_idx, ch) in raw[start..].char_indices() {
+        let idx = start + rel_idx;
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+            match ch {
+                '\\' => escape = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(idx + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn extract_diff_patch_from_text(raw: &str) -> Option<String> {
+    let mut offset = 0usize;
+    let mut first_diff = None;
+
+    for line in raw.split_inclusive('\n') {
+        let line_no_newline = line.strip_suffix('\n').unwrap_or(line);
+        if looks_like_unified_diff(line_no_newline) {
+            let candidate = raw[offset..].trim();
+            if candidate.len() <= MAX_PATCH_PAYLOAD_BYTES {
+                if parse_unified_diff(candidate).is_ok() {
+                    return Some(candidate.to_string());
+                }
+                if first_diff.is_none() {
+                    first_diff = Some(candidate.to_string());
+                }
+            }
+        }
+        offset += line.len();
+    }
+
+    first_diff
+}
+
 pub fn parse_structured_patch(raw: &str) -> Result<Patch, PatchParseError> {
-    let trimmed = raw.trim();
+    let extracted = extract_patch_payload(raw);
+    let payload = extracted.as_deref().unwrap_or(raw);
+    let trimmed = payload.trim();
     if trimmed.starts_with('{') {
         let patch: JsonPatchEnvelope = serde_json::from_str(trimmed)?;
         if patch.edits.is_empty() && patch.ops.is_empty() {
@@ -145,7 +371,7 @@ pub fn parse_structured_patch(raw: &str) -> Result<Patch, PatchParseError> {
         return Ok(Patch::Json(JsonPatch { edits, ops }));
     }
 
-    if trimmed.starts_with("diff --git") || trimmed.starts_with("--- ") {
+    if looks_like_unified_diff(trimmed) {
         let patch = parse_unified_diff(trimmed)?;
         return Ok(Patch::UnifiedDiff(patch));
     }
@@ -501,4 +727,123 @@ fn is_allowed_diff_metadata(line: &str) -> bool {
             || l.starts_with("rename from ")
             || l.starts_with("rename to ")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_json_patch() -> &'static str {
+        r#"{
+  "edits": [
+    {
+      "file": "foo.txt",
+      "range": {
+        "start": { "line": 0, "character": 0 },
+        "end": { "line": 0, "character": 0 }
+      },
+      "text": "hello"
+    }
+  ]
+}"#
+    }
+
+    #[test]
+    fn parses_json_patch_inside_json_fence() {
+        let raw = format!("```json\n{}\n```\n", sample_json_patch());
+        let patch = parse_structured_patch(&raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::Json(JsonPatch {
+                edits: vec![TextEdit {
+                    file: "foo.txt".to_string(),
+                    range: Range {
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                    },
+                    text: "hello".to_string(),
+                }],
+                ops: Vec::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn parses_unified_diff_inside_diff_fence() {
+        let raw = r#"```diff
+diff --git a/foo.txt b/foo.txt
+index e69de29..4b825dc 100644
+--- a/foo.txt
++++ b/foo.txt
+@@ -0,0 +1,1 @@
++hello
+```"#;
+
+        let patch = parse_structured_patch(raw).expect("parse patch");
+        assert_eq!(
+            patch,
+            Patch::UnifiedDiff(UnifiedDiffPatch {
+                files: vec![UnifiedDiffFile {
+                    old_path: "foo.txt".to_string(),
+                    new_path: "foo.txt".to_string(),
+                    hunks: vec![UnifiedDiffHunk {
+                        old_start: 0,
+                        old_len: 0,
+                        new_start: 1,
+                        new_len: 1,
+                        lines: vec![UnifiedDiffLine::Add("hello".to_string())],
+                    }],
+                }],
+            })
+        );
+    }
+
+    #[test]
+    fn parses_with_prose_around_fence() {
+        let raw = format!(
+            "Sure! Here's the patch:\n\n```json\n{}\n```\n\nThanks!\n",
+            sample_json_patch()
+        );
+        let patch = parse_structured_patch(&raw).expect("parse patch");
+        assert!(matches!(patch, Patch::Json(_)));
+    }
+
+    #[test]
+    fn picks_second_fence_when_first_is_unrelated() {
+        let raw = format!(
+            "```json\n{{\"foo\":\"bar\"}}\n```\n\n```json\n{}\n```\n",
+            sample_json_patch()
+        );
+        let patch = parse_structured_patch(&raw).expect("parse patch");
+        assert!(matches!(patch, Patch::Json(_)));
+    }
+
+    #[test]
+    fn malformed_json_fence_returns_invalid_json() {
+        let raw = "```json\n{\"edits\":[\n";
+        let err = parse_structured_patch(raw).expect_err("expected failure");
+        assert!(matches!(err, PatchParseError::InvalidJson(_)));
+    }
+
+    #[test]
+    fn malformed_diff_fence_returns_invalid_diff() {
+        let raw = r#"```diff
+diff --git a/foo.txt b/foo.txt
+--- a/foo.txt
++++ b/foo.txt
+@@ -1,1 +1,1 @@
+-hello
++world
+BROKEN
+```"#;
+
+        let err = parse_structured_patch(raw).expect_err("expected failure");
+        assert!(matches!(err, PatchParseError::InvalidDiff(_)));
+    }
 }
