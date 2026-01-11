@@ -295,7 +295,10 @@ mod tests {
     #[test]
     fn file_id_mapping_is_stable_and_drives_salsa_inputs() {
         let workspace = crate::Workspace::new_in_memory();
-        let path = VfsPath::uri("file:///Main.java");
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = nova_core::AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
 
         let file_id = workspace.open_document(path.clone(), "class Main {}".to_string(), 1);
 

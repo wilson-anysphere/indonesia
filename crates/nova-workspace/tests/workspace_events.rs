@@ -1,3 +1,4 @@
+use nova_core::AbsPathBuf;
 use nova_vfs::{ContentChange, VfsPath};
 use nova_workspace::{Workspace, WorkspaceEvent, WorkspaceStatus};
 use tokio::time::{timeout, Duration};
@@ -7,7 +8,10 @@ async fn diagnostics_event_on_open_and_change() {
     let workspace = Workspace::new_in_memory();
     let events = workspace.subscribe();
 
-    let file = VfsPath::uri("file:///Main.java");
+    let tmp = tempfile::tempdir().unwrap();
+    let abs = AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+    let uri = nova_core::path_to_file_uri(&abs).unwrap();
+    let file = VfsPath::uri(uri);
     workspace.open_document(file.clone(), "class Main { error }".to_string(), 1);
 
     loop {
@@ -58,8 +62,13 @@ async fn indexing_emits_progress_and_ready() {
     let workspace = Workspace::new_in_memory();
     let events = workspace.subscribe();
 
-    let a = VfsPath::uri("file:///A.java");
-    let b = VfsPath::uri("file:///B.java");
+    let tmp = tempfile::tempdir().unwrap();
+    let abs_a = AbsPathBuf::new(tmp.path().join("A.java")).unwrap();
+    let abs_b = AbsPathBuf::new(tmp.path().join("B.java")).unwrap();
+    let uri_a = nova_core::path_to_file_uri(&abs_a).unwrap();
+    let uri_b = nova_core::path_to_file_uri(&abs_b).unwrap();
+    let a = VfsPath::uri(uri_a);
+    let b = VfsPath::uri(uri_b);
     workspace.open_document(a, "class A {}".into(), 1);
     workspace.open_document(b, "class B {}".into(), 1);
 

@@ -148,14 +148,17 @@ impl<F: FileSystem> FileSystem for Vfs<F> {
 mod tests {
     use super::*;
 
-    use nova_core::{Position, Range};
+    use nova_core::{AbsPathBuf, Position, Range};
 
     use crate::fs::LocalFs;
 
     #[test]
     fn vfs_emits_document_change_events() {
         let vfs = Vfs::new(LocalFs::new());
-        let path = VfsPath::uri("file:///tmp/Main.java");
+        let tmp = tempfile::tempdir().unwrap();
+        let abs = AbsPathBuf::new(tmp.path().join("Main.java")).unwrap();
+        let uri = nova_core::path_to_file_uri(&abs).unwrap();
+        let path = VfsPath::uri(uri);
         let id = vfs.open_document(path.clone(), "hello world".to_string(), 1);
 
         let change = ContentChange::replace(
