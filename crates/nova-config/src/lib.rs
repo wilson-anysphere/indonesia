@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::fmt;
 use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -349,7 +350,7 @@ impl AiTimeoutsConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AiConfig {
     #[serde(default)]
@@ -397,6 +398,24 @@ pub struct AiConfig {
     #[serde(default = "default_ai_cache_ttl_secs")]
     #[schemars(range(min = 1))]
     pub cache_ttl_secs: u64,
+}
+
+impl fmt::Debug for AiConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AiConfig")
+            .field("provider", &self.provider)
+            .field("privacy", &self.privacy)
+            .field("embeddings", &self.embeddings)
+            .field("enabled", &self.enabled)
+            .field("api_key_present", &self.api_key.is_some())
+            .field("audit_log", &self.audit_log)
+            .field("features", &self.features)
+            .field("timeouts", &self.timeouts)
+            .field("cache_enabled", &self.cache_enabled)
+            .field("cache_max_entries", &self.cache_max_entries)
+            .field("cache_ttl_secs", &self.cache_ttl_secs)
+            .finish()
+    }
 }
 
 impl Default for AiConfig {
@@ -1359,6 +1378,23 @@ impl Default for EffectiveConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_config_debug_does_not_expose_api_key() {
+        let key = "super-secret-api-key";
+        let mut config = AiConfig::default();
+        config.api_key = Some(key.to_string());
+
+        let output = format!("{config:?}");
+        assert!(
+            !output.contains(key),
+            "AiConfig debug output leaked api_key: {output}"
+        );
+        assert!(
+            output.contains("api_key_present"),
+            "AiConfig debug output should include api_key presence indicator: {output}"
+        );
+    }
 
     #[test]
     fn ai_config_features_and_timeouts_roundtrip_toml() {
