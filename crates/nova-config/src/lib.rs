@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::writer::{BoxMakeWriter, MakeWriterExt};
 use tracing_subscriber::prelude::*;
 use url::Url;
 
@@ -145,6 +146,20 @@ pub struct LoggingConfig {
     #[serde(default)]
     pub json: bool,
 
+    /// Mirror logs to stderr (in addition to the in-memory buffer).
+    ///
+    /// Defaults to enabled so running Nova binaries outside an editor still
+    /// produces real-time logs.
+    #[serde(default = "LoggingConfig::default_stderr")]
+    pub stderr: bool,
+
+    /// Append logs to the given file path (in addition to the in-memory buffer).
+    ///
+    /// If the file cannot be opened, file logging is disabled while other sinks
+    /// remain active.
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+
     /// Capture and include backtraces in panic reports.
     #[serde(default)]
     pub include_backtrace: bool,
@@ -159,17 +174,62 @@ impl LoggingConfig {
         "info".to_owned()
     }
 
+    fn default_stderr() -> bool {
+        true
+    }
+
     fn default_buffer_lines() -> usize {
         2_000
     }
 
-    pub fn level_filter(&self) -> tracing_subscriber::filter::LevelFilter {
-        match self.level.to_ascii_lowercase().as_str() {
-            "trace" => tracing_subscriber::filter::LevelFilter::TRACE,
-            "debug" => tracing_subscriber::filter::LevelFilter::DEBUG,
-            "warn" | "warning" => tracing_subscriber::filter::LevelFilter::WARN,
-            "error" => tracing_subscriber::filter::LevelFilter::ERROR,
-            _ => tracing_subscriber::filter::LevelFilter::INFO,
+    fn normalize_level_directives(input: &str) -> String {
+        let trimmed = input.trim();
+        if trimmed.is_empty() {
+            return Self::default_level();
+        }
+
+        match trimmed.to_ascii_lowercase().as_str() {
+            // Simple levels should be forgiving about casing and synonyms.
+            "trace" => "trace".to_owned(),
+            "debug" => "debug".to_owned(),
+            "info" => "info".to_owned(),
+            "warn" | "warning" => "warn".to_owned(),
+            "error" => "error".to_owned(),
+            // Anything else is treated as an `EnvFilter` directive string.
+            _ => trimmed.to_owned(),
+        }
+    }
+
+    fn config_env_filter(&self) -> tracing_subscriber::EnvFilter {
+        let directives = Self::normalize_level_directives(&self.level);
+        tracing_subscriber::EnvFilter::try_new(directives).unwrap_or_else(|_| {
+            tracing_subscriber::EnvFilter::default()
+                .add_directive(tracing_subscriber::filter::LevelFilter::INFO.into())
+        })
+    }
+
+    /// Create the effective `EnvFilter` for Nova tracing.
+    ///
+    /// `LoggingConfig.level` may be either a simple level (`info`, `debug`, ...)
+    /// or a full `tracing_subscriber::EnvFilter` directive string.
+    ///
+    /// If `RUST_LOG` is set, it is merged into the resulting filter.
+    pub fn env_filter(&self) -> tracing_subscriber::EnvFilter {
+        let env_directives = std::env::var("RUST_LOG")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+
+        let config_directives = Self::normalize_level_directives(&self.level);
+
+        match env_directives {
+            Some(env_directives) => {
+                let combined = format!("{config_directives},{env_directives}");
+                tracing_subscriber::EnvFilter::try_new(combined)
+                    .or_else(|_| tracing_subscriber::EnvFilter::try_new(env_directives))
+                    .unwrap_or_else(|_| self.config_env_filter())
+            }
+            None => self.config_env_filter(),
         }
     }
 }
@@ -179,6 +239,8 @@ impl Default for LoggingConfig {
         Self {
             level: Self::default_level(),
             json: false,
+            stderr: Self::default_stderr(),
+            file: None,
             include_backtrace: false,
             buffer_lines: Self::default_buffer_lines(),
         }
@@ -631,7 +693,7 @@ static GLOBAL_LOG_BUFFER: OnceLock<Arc<LogBuffer>> = OnceLock::new();
 
 pub fn global_log_buffer() -> Arc<LogBuffer> {
     GLOBAL_LOG_BUFFER
-        .get_or_init(|| Arc::new(LogBuffer::new(2_000)))
+        .get_or_init(|| Arc::new(LogBuffer::new(LoggingConfig::default_buffer_lines())))
         .clone()
 }
 
@@ -654,8 +716,19 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
         .clone();
 
     TRACING_INIT.call_once(|| {
-        let filter =
-            tracing_subscriber::EnvFilter::default().add_directive(logging.level_filter().into());
+        let filter = logging.env_filter();
+
+        let base_file = logging
+            .file
+            .as_ref()
+            .and_then(|path| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .ok()
+            })
+            .map(|file| Arc::new(Mutex::new(file)));
 
         let audit_file = ai
             .filter(|ai| ai.enabled && ai.audit_log.enabled)
@@ -675,12 +748,29 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
             .map(|file| Arc::new(Mutex::new(file)));
         let audit_enabled = audit_file.is_some();
 
+        let mut make_writer = BoxMakeWriter::new(LogBufferMakeWriter {
+            buffer: buffer.clone(),
+        });
+        if logging.stderr {
+            // `cargo test` output capture only works for the stdlib's `print!/eprint!`
+            // macros. Using `TestWriter` in debug builds keeps unit tests quiet
+            // while still providing real-time logs for `cargo run` workflows.
+            if cfg!(debug_assertions) {
+                make_writer = BoxMakeWriter::new(
+                    make_writer.and(tracing_subscriber::fmt::writer::TestWriter::with_stderr),
+                );
+            } else {
+                make_writer = BoxMakeWriter::new(make_writer.and(std::io::stderr));
+            }
+        }
+        if let Some(file) = base_file {
+            make_writer = BoxMakeWriter::new(make_writer.and(MutexFileMakeWriter { file }));
+        }
+
         let base_layer: Box<dyn tracing_subscriber::Layer<_> + Send + Sync> = if logging.json {
             let layer = tracing_subscriber::fmt::layer()
                 .json()
-                .with_writer(LogBufferMakeWriter {
-                    buffer: buffer.clone(),
-                })
+                .with_writer(make_writer)
                 .with_ansi(false);
 
             if audit_enabled {
@@ -694,9 +784,7 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
             }
         } else {
             let layer = tracing_subscriber::fmt::layer()
-                .with_writer(LogBufferMakeWriter {
-                    buffer: buffer.clone(),
-                })
+                .with_writer(make_writer)
                 .with_ansi(false);
 
             if audit_enabled {
@@ -732,6 +820,87 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
     });
 
     buffer
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logging_level_parses_simple_levels() {
+        let mut logging = LoggingConfig::default();
+        logging.level = "DEBUG".to_owned();
+
+        let filter = logging.config_env_filter();
+        let buffer = Arc::new(LogBuffer::new(64));
+        let subscriber = tracing_subscriber::registry()
+            .with(filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(LogBufferMakeWriter {
+                        buffer: buffer.clone(),
+                    })
+                    .with_ansi(false),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::trace!("not visible");
+            tracing::debug!("visible");
+        });
+
+        let text = buffer.last_lines(64).join("\n");
+        assert!(!text.contains("not visible"), "{text}");
+        assert!(text.contains("visible"), "{text}");
+    }
+
+    #[test]
+    fn logging_level_parses_env_filter_directives() {
+        let mut logging = LoggingConfig::default();
+        logging.level = "warn,nova_config=trace".to_owned();
+
+        let filter = logging.config_env_filter();
+        let buffer = Arc::new(LogBuffer::new(64));
+        let subscriber = tracing_subscriber::registry()
+            .with(filter)
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(LogBufferMakeWriter {
+                        buffer: buffer.clone(),
+                    })
+                    .with_ansi(false),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "other_target", "not visible");
+            tracing::warn!(target: "other_target", "visible warn");
+            tracing::trace!(target: "nova_config", "visible trace");
+        });
+
+        let text = buffer.last_lines(64).join("\n");
+        assert!(!text.contains("not visible"), "{text}");
+        assert!(text.contains("visible warn"), "{text}");
+        assert!(text.contains("visible trace"), "{text}");
+    }
+
+    #[test]
+    fn audit_target_is_excluded_from_base_log_buffer_when_enabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let audit_path = dir.path().join("audit.log");
+
+        let mut config = NovaConfig::default();
+        config.ai.enabled = true;
+        config.ai.audit_log.enabled = true;
+        config.ai.audit_log.path = Some(audit_path);
+
+        let buffer = init_tracing_with_config(&config);
+
+        tracing::info!("visible");
+        tracing::info!(target: AI_AUDIT_TARGET, "should not be in base");
+
+        let text = buffer.last_lines(256).join("\n");
+        assert!(text.contains("visible"), "{text}");
+        assert!(!text.contains("should not be in base"), "{text}");
+    }
 }
 
 #[derive(Debug, Clone)]
