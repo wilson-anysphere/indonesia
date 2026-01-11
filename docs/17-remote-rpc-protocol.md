@@ -545,6 +545,9 @@ Chunking is used when a packet would exceed `chosen_capabilities.max_frame_len` 
 
 Chunking is allowed only if `chosen_capabilities.supports_chunking = true`.
 
+If `supports_chunking = false`, a receiver MUST treat any `WireFrame::PacketChunk` as a protocol
+violation and close the connection.
+
 ### 6.1 Chunk frame format
 
 ```rust
@@ -565,6 +568,8 @@ For each packet stream identified by `id`:
 - Chunks MUST arrive in strictly increasing contiguous sequence order:
   - if the receiver has last seen `seq = n`, the next chunk MUST have `seq = n + 1`.
 - The packet is complete when a chunk with `last = true` is received.
+- All chunks for a given `id` MUST have the same `compression` value.
+- Only the final chunk in a stream may have `last = true` (all prior chunks MUST have `last = false`).
 - Chunks for different `id`s MAY be interleaved arbitrarily.
 
 Reassembly algorithm (normative):
