@@ -8,6 +8,7 @@ use crate::{
 };
 use futures::StreamExt;
 use nova_config::{AiConfig, AiProviderKind};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
@@ -39,7 +40,7 @@ impl AiClient {
             ));
         }
 
-        if config.privacy.local_only {
+        if config.privacy.local_only && config.provider.kind != AiProviderKind::InProcessLlama {
             validate_local_only_url(&config.provider.url)?;
         }
 
@@ -70,6 +71,26 @@ impl AiClient {
             }
         };
 
+        let (model, endpoint) = match config.provider.kind {
+            AiProviderKind::InProcessLlama => {
+                let Some(in_process) = config.provider.in_process_llama.as_ref() else {
+                    return Err(AiError::InvalidConfig(
+                        "ai.provider.in_process_llama must be set when kind = \"in_process_llama\""
+                            .into(),
+                    ));
+                };
+                let model = in_process
+                    .model_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_else(|| config.provider.model.clone());
+                (model, in_process_endpoint_id(in_process)?)
+            }
+            AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible => {
+                (config.provider.model.clone(), config.provider.url.clone())
+            }
+        };
+
         let cache = if config.cache_enabled {
             if config.cache_max_entries == 0 {
                 return Err(AiError::InvalidConfig(
@@ -97,8 +118,8 @@ impl AiClient {
             default_max_tokens: config.provider.max_tokens,
             audit_enabled: config.enabled && config.audit_log.enabled,
             provider_label: provider_label(&config.provider.kind),
-            model: config.provider.model.clone(),
-            endpoint: config.provider.url.clone(),
+            model,
+            endpoint,
             cache,
         })
     }
@@ -429,6 +450,28 @@ fn provider_label(kind: &AiProviderKind) -> &'static str {
     }
 }
 
+fn in_process_endpoint_id(cfg: &nova_config::InProcessLlamaConfig) -> Result<url::Url, AiError> {
+    let mut hasher = Sha256::new();
+    hasher.update(cfg.model_path.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    hasher.update(
+        u64::try_from(cfg.context_size)
+            .unwrap_or(u64::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(cfg.temperature.to_le_bytes());
+    hasher.update(cfg.top_p.to_le_bytes());
+    hasher.update(cfg.gpu_layers.to_le_bytes());
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(16);
+    for byte in digest.iter().take(8).copied() {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+
+    url::Url::parse(&format!("inprocess://local/{hex}"))
+        .map_err(|err| AiError::InvalidConfig(format!("invalid in-process endpoint id: {err}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,7 +657,10 @@ mod tests {
             .get("request_id")
             .expect("request_id field present")
             .to_string();
-        let endpoint = request.fields.get("endpoint").expect("endpoint field present");
+        let endpoint = request
+            .fields
+            .get("endpoint")
+            .expect("endpoint field present");
         assert!(!endpoint.contains("token="));
         assert!(!endpoint.contains("supersecret"));
         assert!(!endpoint.contains("user:pass@"));
