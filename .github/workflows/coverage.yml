@@ -35,16 +35,18 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate lcov.info
-        run: |
-          set -euxo pipefail
-          cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide \
-            --lcov --output-path lcov.info
-
+      # Run tests once to collect coverage data (HTML generation is the "primary" run),
+      # then generate additional report formats from the same data via `cargo llvm-cov report`.
       - name: Generate HTML report
         run: |
           set -euxo pipefail
           cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html
+
+      - name: Generate lcov.info
+        run: |
+          set -euxo pipefail
+          cargo llvm-cov report -p nova-core -p nova-syntax -p nova-ide \
+            --lcov --output-path lcov.info
 
       - name: Coverage summary
         run: |
@@ -53,7 +55,7 @@ jobs:
             echo "## Test coverage"
             echo
             echo '```text'
-            cargo llvm-cov report --summary-only
+            cargo llvm-cov report -p nova-core -p nova-syntax -p nova-ide --color never
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
