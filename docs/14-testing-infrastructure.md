@@ -29,6 +29,24 @@ cargo test
 
 This matches `.github/workflows/ci.yml` (Rust job).
 
+`ci.yml` also runs:
+
+- **Workflow linting** via `actionlint` (`.github/workflows/ci.yml`, job `workflows`).
+- **VS Code packaging** checks (`.github/workflows/ci.yml`, job `vscode`).
+
+To run those locally:
+
+```bash
+# workflow linting (install actionlint first: https://github.com/rhysd/actionlint)
+actionlint
+
+# VS Code extension packaging (also checks version sync)
+./scripts/sync-versions.sh
+cd editors/vscode
+npm ci
+npm run package
+```
+
 ---
 
 ## Test tiers (what exists + where it lives + how to run)
@@ -349,7 +367,7 @@ Always inspect `git diff` after updating snapshots.
 
 | Workflow | Status | What it runs | Local equivalent |
 |---|---|---|---|
-| `.github/workflows/ci.yml` | in repo | `cargo fmt`, `cargo clippy`, `cargo test` (plus actionlint + VS Code packaging) | `cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test` |
+| `.github/workflows/ci.yml` | in repo | `cargo fmt`, `cargo clippy`, `cargo test` (plus actionlint + VS Code packaging) | See “CI-equivalent smoke run” above |
 | `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths` + `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual) | `./scripts/run-real-project-tests.sh` |
