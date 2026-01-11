@@ -401,19 +401,21 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 ### `nova-remote-proto`
 - **Purpose:** on-the-wire message types for distributed mode (router ↔ worker RPC).
 - **Key entry points:**
-  - `crates/nova-remote-proto/src/lib.rs` — legacy lockstep protocol (length-delimited binary encoding; `RpcMessage`, `PROTOCOL_VERSION`)
-  - `crates/nova-remote-proto/src/v3.rs` — v3 CBOR envelope (`WireFrame`, `RpcPayload`)
+  - `crates/nova-remote-proto/src/v3.rs` — v3 CBOR envelope + payload schema (`WireFrame`, `RpcPayload`, `Request`, `Response`, `Notification`)
+  - `crates/nova-remote-proto/src/legacy_v2.rs` — deprecated lockstep protocol kept for compatibility/tests
+  - `crates/nova-remote-proto/src/lib.rs` — shared hard limits + helpers
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Protocol is still evolving; not yet integrated into `nova-lsp` (distributed mode is experimental).
+  - Distributed mode is still experimental and not yet integrated into `nova-lsp` (editor-facing).
+  - v3 is the current router↔worker wire protocol; schema evolution is expected within minor versions.
 
 ### `nova-remote-rpc`
 - **Purpose:** async negotiated RPC transport for distributed mode (v3 handshake, request/response framing, optional zstd compression).
 - **Key entry points:** `crates/nova-remote-rpc/src/lib.rs` (`RpcConnection`, `RpcRole`, `RouterConfig`, `WorkerConfig`, `RpcError`, `RpcTransportError`, `RequestId`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Not yet wired into the `nova-router`/`nova-worker` binaries (distributed mode is still not editor-facing).
-  - No end-to-end distributed mode migration yet (router/worker still speak legacy_v2 on the wire).
+  - Distributed mode is still not editor-facing (not yet integrated into `nova-lsp`).
+  - No application-level keepalive/heartbeat yet; idle connections rely on the transport/deployment.
 
 ### `nova-resolve`
 - **Purpose:** name resolution + scope building (currently based on simplified `nova-hir`).
@@ -505,7 +507,8 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-worker/src/main.rs`.
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - Distributed mode is not yet wired into editor-facing features; protocol/versioning is still evolving.
+  - Distributed mode is not yet wired into editor-facing features (`nova-lsp`).
+  - v3 is the current router↔worker protocol; schema evolution is expected within minor versions.
 
 ### `nova-workspace`
 - **Purpose:** library-first workspace engine used by the `nova` CLI (indexing, diagnostics, cache mgmt, events).
