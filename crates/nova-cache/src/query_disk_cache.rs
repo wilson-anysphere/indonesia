@@ -104,11 +104,23 @@ impl QueryDiskCache {
 
         if persisted.schema_version != QUERY_DISK_CACHE_SCHEMA_VERSION
             || persisted.nova_version != nova_core::NOVA_VERSION
-            || persisted.key != key
-            || persisted.key_fingerprint != key_fingerprint
         {
-            // The file exists but is not usable for this key/version; treat as a miss.
+            // The file exists but is not usable for this version; treat as a miss and
+            // delete it so we don't keep growing stale caches.
             let _ = std::fs::remove_file(&path);
+            return Ok(None);
+        }
+
+        if persisted.key_fingerprint != key_fingerprint {
+            // The entry doesn't match the file name; treat as corruption and delete it.
+            let _ = std::fs::remove_file(&path);
+            return Ok(None);
+        }
+
+        if persisted.key != key {
+            // Fingerprint collisions should be treated as a miss, but we do **not**
+            // delete the file: in the (extremely unlikely) event of a collision, we
+            // don't want reads for one key to erase the other key's cached value.
             return Ok(None);
         }
 

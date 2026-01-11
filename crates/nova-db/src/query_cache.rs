@@ -440,6 +440,8 @@ fn cache_key<T: Serialize>(
 #[cfg(test)]
 mod disk_cache_tests {
     use super::*;
+    use bincode::Options;
+    use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
     #[test]
@@ -476,26 +478,126 @@ mod disk_cache_tests {
         let cache = QueryDiskCache::new(tmp.path()).unwrap();
 
         cache.store("key1", b"value1").unwrap();
-        cache.store("key2", b"value2").unwrap();
 
-        let path1 = tmp.path().join(format!(
-            "{}.bin",
-            Fingerprint::from_bytes("key1".as_bytes()).as_str()
-        ));
-        let path2 = tmp.path().join(format!(
-            "{}.bin",
-            Fingerprint::from_bytes("key2".as_bytes()).as_str()
-        ));
+        // Simulate a fingerprint collision by forcing the *same file path*
+        // (`fingerprint(key1)`) to contain a payload for a different key while keeping
+        // `key_fingerprint` identical. This ensures the collision defense is
+        // actually checking the stored full key, not just the fingerprint.
+        #[derive(Debug, Serialize)]
+        struct ForgedPersistedQueryValue {
+            schema_version: u32,
+            nova_version: String,
+            saved_at_millis: u64,
+            key: String,
+            key_fingerprint: Fingerprint,
+            value: Vec<u8>,
+        }
 
-        // Force a "collision" by copying the bytes for key2 into key1's file path.
-        let bytes2 = std::fs::read(&path2).unwrap();
-        std::fs::write(&path1, bytes2).unwrap();
+        let fingerprint = Fingerprint::from_bytes("key1".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+
+        let forged = ForgedPersistedQueryValue {
+            schema_version: nova_cache::QUERY_DISK_CACHE_SCHEMA_VERSION,
+            nova_version: nova_core::NOVA_VERSION.to_string(),
+            saved_at_millis: 0,
+            key: "key2".to_string(),
+            key_fingerprint: fingerprint,
+            value: b"value2".to_vec(),
+        };
+        let bytes = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+            .serialize(&forged)
+            .unwrap();
+        std::fs::write(&path, bytes).unwrap();
 
         assert_eq!(cache.load("key1").unwrap(), None);
-        assert_eq!(
-            cache.load("key2").unwrap().as_deref(),
-            Some(b"value2".as_slice())
-        );
+    }
+
+    #[test]
+    fn disk_cache_schema_version_mismatch_is_treated_as_miss() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new(tmp.path()).unwrap();
+
+        cache.store("key", b"value").unwrap();
+
+        #[derive(Debug, Serialize, Deserialize)]
+        struct PersistedQueryValueOwned {
+            schema_version: u32,
+            nova_version: String,
+            saved_at_millis: u64,
+            key: String,
+            key_fingerprint: Fingerprint,
+            value: Vec<u8>,
+        }
+
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+        let bytes = std::fs::read(&path).unwrap();
+        let mut persisted: PersistedQueryValueOwned = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+            .deserialize(&bytes)
+            .unwrap();
+        persisted.schema_version = persisted.schema_version.saturating_add(1);
+        let bytes = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+            .serialize(&persisted)
+            .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(cache.load("key").unwrap(), None);
+    }
+
+    #[test]
+    fn disk_cache_nova_version_mismatch_is_treated_as_miss() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new(tmp.path()).unwrap();
+
+        cache.store("key", b"value").unwrap();
+
+        #[derive(Debug, Serialize, Deserialize)]
+        struct PersistedQueryValueOwned {
+            schema_version: u32,
+            nova_version: String,
+            saved_at_millis: u64,
+            key: String,
+            key_fingerprint: Fingerprint,
+            value: Vec<u8>,
+        }
+
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+        let bytes = std::fs::read(&path).unwrap();
+        let mut persisted: PersistedQueryValueOwned = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+            .deserialize(&bytes)
+            .unwrap();
+        persisted.nova_version = "0.0.0-test".to_string();
+        let bytes = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+            .serialize(&persisted)
+            .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(cache.load("key").unwrap(), None);
+    }
+
+    #[test]
+    fn disk_cache_garbage_data_is_treated_as_miss() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new(tmp.path()).unwrap();
+
+        cache.store("key", b"value").unwrap();
+
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+        std::fs::write(&path, b"not a valid bincode payload").unwrap();
+
+        assert_eq!(cache.load("key").unwrap(), None);
     }
 }
 
