@@ -268,25 +268,30 @@ fn normalize_decompiled_segment(segment: String) -> String {
 }
 
 fn normalize_decompiled_binary_name(binary_name: String) -> String {
-    let binary_name = binary_name.replace('\\', "/");
-    let binary_name = binary_name.trim_matches('/');
+    let binary_name = binary_name
+        .strip_suffix(".java")
+        .unwrap_or(&binary_name)
+        .replace('\\', ".")
+        .replace('/', ".")
+        .trim_matches('.')
+        .to_string();
 
     let mut out = String::with_capacity(binary_name.len());
-    let mut last_slash = false;
+    let mut last_dot = false;
     for ch in binary_name.chars() {
-        if ch == '/' {
-            if last_slash {
+        if ch == '.' {
+            if last_dot {
                 continue;
             }
-            last_slash = true;
-            out.push('/');
+            last_dot = true;
+            out.push('.');
         } else {
-            last_slash = false;
+            last_dot = false;
             out.push(ch);
         }
     }
 
-    out.strip_suffix(".java").unwrap_or(&out).to_string()
+    out
 }
 
 fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
@@ -326,7 +331,7 @@ fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
     };
 
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    if segments.len() < 3 {
+    if segments.len() != 3 {
         return None;
     }
     if segments[0] != "decompiled" {
@@ -341,22 +346,16 @@ fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
         return None;
     }
 
-    let filename = *segments.last()?;
+    let filename = segments[2];
     let filename_stem = filename.strip_suffix(".java")?;
     if filename_stem.is_empty() {
         return None;
     }
 
-    let mut binary_name_parts: Vec<&str> = segments[2..].to_vec();
-    if let Some(last) = binary_name_parts.last_mut() {
-        *last = filename_stem;
-    }
-    let binary_name = binary_name_parts.join("/");
-    if binary_name.is_empty() {
-        return None;
-    }
-
-    Some(VfsPath::decompiled(content_hash.to_string(), binary_name))
+    Some(VfsPath::decompiled(
+        content_hash.to_string(),
+        filename_stem.to_string(),
+    ))
 }
 
 #[cfg(test)]
@@ -484,7 +483,7 @@ mod tests {
 
     #[test]
     fn decompiled_uri_roundtrips() {
-        let path = VfsPath::decompiled("abc123", "com/example/Foo");
+        let path = VfsPath::decompiled("abc123", "com.example.Foo");
         let uri = path.to_uri().expect("decompiled uri");
         let round = VfsPath::uri(uri);
         assert_eq!(round, path);
@@ -492,10 +491,10 @@ mod tests {
 
     #[test]
     fn decompiled_uri_normalizes_multiple_slashes_when_printing() {
-        let parsed = VfsPath::uri("nova:////decompiled//abc123//com//example///Foo.java");
+        let parsed = VfsPath::uri("nova:////decompiled//abc123//com.example.Foo.java");
         assert_eq!(
             parsed.to_uri().as_deref(),
-            Some("nova:///decompiled/abc123/com/example/Foo.java")
+            Some("nova:///decompiled/abc123/com.example.Foo.java")
         );
     }
 
