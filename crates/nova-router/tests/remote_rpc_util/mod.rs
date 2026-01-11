@@ -108,11 +108,15 @@ async fn legacy_v2_handshake(
             shard_id: ack_shard_id,
             protocol_version,
             ..
-        } if ack_shard_id == shard_id && protocol_version == nova_remote_proto::PROTOCOL_VERSION => {
+        } if ack_shard_id == shard_id
+            && protocol_version == nova_remote_proto::PROTOCOL_VERSION =>
+        {
             Ok(())
         }
         RpcMessage::Error { message } => Err(anyhow!("{message}")),
-        other => Err(anyhow!("unexpected legacy_v2 handshake response: {other:?}")),
+        other => Err(anyhow!(
+            "unexpected legacy_v2 handshake response: {other:?}"
+        )),
     }
 }
 

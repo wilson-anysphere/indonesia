@@ -39,8 +39,7 @@ fn json_schema_loopback_url_rule_does_not_require_explicit_url() {
         .and_then(|v| v.as_array())
         .expect("root schema should include allOf semantic constraints");
 
-    let expected_pattern =
-        "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)";
+    let expected_pattern = "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)";
 
     let rule = all_of
         .iter()
@@ -57,7 +56,8 @@ fn json_schema_loopback_url_rule_does_not_require_explicit_url() {
         "loopback rule should not require ai.provider explicitly"
     );
     assert!(
-        rule.pointer("/then/properties/ai/properties/provider/required").is_none(),
+        rule.pointer("/then/properties/ai/properties/provider/required")
+            .is_none(),
         "loopback rule should not require ai.provider.url explicitly"
     );
 }

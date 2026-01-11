@@ -210,8 +210,7 @@ pub fn diagnostics_for_config_file(
         };
 
         if let Some(deprecation) = prop.deprecation.as_ref() {
-            let mut message =
-                format!("Deprecated Spring configuration key '{}'", entry.key);
+            let mut message = format!("Deprecated Spring configuration key '{}'", entry.key);
             if let Some(replacement) = deprecation
                 .replacement
                 .as_deref()

@@ -296,18 +296,16 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
     .await?;
 
     // Client A is rejected for shard 1.
-    assert!(
-        connect_and_handshake_mtls(
-            addr,
-            "localhost",
-            ca_pem.as_bytes(),
-            client_a_cert_pem.as_bytes(),
-            client_a_key_pem.as_bytes(),
-            1,
-        )
-        .await
-        .is_err()
-    );
+    assert!(connect_and_handshake_mtls(
+        addr,
+        "localhost",
+        ca_pem.as_bytes(),
+        client_a_cert_pem.as_bytes(),
+        client_a_key_pem.as_bytes(),
+        1,
+    )
+    .await
+    .is_err());
 
     // Client B can connect as shard 1.
     let stream_b1 = connect_and_handshake_mtls(
@@ -323,18 +321,16 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
     // With a non-empty global allowlist, shards without an explicit per-shard allowlist entry are
     // also protected. Client A should be rejected for shard 2 because it is not in the global
     // allowlist.
-    assert!(
-        connect_and_handshake_mtls(
-            addr,
-            "localhost",
-            ca_pem.as_bytes(),
-            client_a_cert_pem.as_bytes(),
-            client_a_key_pem.as_bytes(),
-            2,
-        )
-        .await
-        .is_err()
-    );
+    assert!(connect_and_handshake_mtls(
+        addr,
+        "localhost",
+        ca_pem.as_bytes(),
+        client_a_cert_pem.as_bytes(),
+        client_a_key_pem.as_bytes(),
+        2,
+    )
+    .await
+    .is_err());
 
     // Client C is in the global allowlist and can connect to shard 2.
     let stream_c2 = connect_and_handshake_mtls(

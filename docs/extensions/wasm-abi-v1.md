@@ -37,6 +37,19 @@ ptr: lower 32 bits, len: upper 32 bits (both unsigned)
 If the function returns `0` (`ptr=0,len=0`), the host treats the response as an empty list and will
 not read/free a response buffer.
 
+## Memory ownership rules
+
+- The host allocates the **request buffer** by calling `nova_ext_alloc(len)`, writes the request
+  bytes into guest memory, then calls the provider export.
+- The host will call `nova_ext_free(req_ptr, req_len)` after the provider export returns (even on
+  errors), so the guest **must not** try to free the request buffer itself.
+- The guest allocates the **response buffer** by calling its own allocator (`nova_ext_alloc`) and
+  returning `(resp_ptr, resp_len)` to the host.
+- The host copies response bytes out, then calls `nova_ext_free(resp_ptr, resp_len)`.
+
+In other words: allocation happens in the guest, but ownership is symmetric — **the side that
+didn't allocate always frees**.
+
 Helper functions are available in `nova_ext_abi::v1::guest`:
 
 - `pack_ptr_len` / `unpack_ptr_len`

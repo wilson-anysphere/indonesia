@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use nova_remote_proto::v3::{Notification, Request, Response};
+use nova_remote_proto::ShardIndex;
 use nova_remote_proto::{RpcMessage, ShardId, ShardIndexInfo, WorkerStats};
-use nova_remote_proto::{ShardIndex};
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use tempfile::TempDir;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -80,7 +80,10 @@ async fn connect_worker(
 }
 
 #[cfg(unix)]
-async fn expect_disconnect_v3(conn: nova_remote_rpc::RpcConnection, timeout: Duration) -> Result<()> {
+async fn expect_disconnect_v3(
+    conn: nova_remote_rpc::RpcConnection,
+    timeout: Duration,
+) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if tokio::time::Instant::now() >= deadline {
@@ -282,12 +285,11 @@ async fn worker_stats_rejects_mismatched_shard_id() -> Result<()> {
                             Request::GetWorkerStats => {
                                 let _ = handled_tx.send(true);
                                 Ok(Response::WorkerStats(WorkerStats {
-                                shard_id: 1,
-                                revision: 0,
-                                index_generation: 0,
-                                file_count: 0,
-                            }
-                            ))
+                                    shard_id: 1,
+                                    revision: 0,
+                                    index_generation: 0,
+                                    file_count: 0,
+                                }))
                             }
                             Request::Shutdown => Ok(Response::Shutdown),
                             _ => Ok(Response::Ack),
