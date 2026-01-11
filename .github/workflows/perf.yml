@@ -152,10 +152,17 @@ jobs:
           cargo run -p nova-cli --release -- perf compare --help >"${help_file}"
           json_out_supported=0
           format_supported=0
+          thresholds_args=()
           if grep -q -- '--json-out' "${help_file}"; then
             json_out_supported=1
           elif grep -q -- '--format' "${help_file}"; then
             format_supported=1
+          fi
+
+          if grep -q -- '--thresholds-config' "${help_file}"; then
+            thresholds_args=(--thresholds-config perf/thresholds.toml)
+          elif grep -q -- '--config' "${help_file}"; then
+            thresholds_args=(--config perf/thresholds.toml)
           fi
           rm -f "${help_file}"
 
@@ -164,7 +171,7 @@ jobs:
             cargo run -p nova-cli --release -- perf compare \
               --baseline perf-base.json \
               --current perf-current.json \
-              --config perf/thresholds.toml \
+              "${thresholds_args[@]}" \
               --markdown-out perf-report.md \
               --json-out perf-report.json
             status=$?
@@ -173,14 +180,14 @@ jobs:
             cargo run -p nova-cli --release -- perf compare \
               --baseline perf-base.json \
               --current perf-current.json \
-              --config perf/thresholds.toml \
+              "${thresholds_args[@]}" \
               --markdown-out perf-report.md
             status_md=$?
 
             cargo run -p nova-cli --release -- perf compare \
               --baseline perf-base.json \
               --current perf-current.json \
-              --config perf/thresholds.toml \
+              "${thresholds_args[@]}" \
               --format json > perf-report.json
             status_json=$?
 
@@ -193,7 +200,7 @@ jobs:
             cargo run -p nova-cli --release -- perf compare \
               --baseline perf-base.json \
               --current perf-current.json \
-              --config perf/thresholds.toml \
+              "${thresholds_args[@]}" \
               --markdown-out perf-report.md
             status=$?
 
