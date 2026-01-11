@@ -110,7 +110,10 @@ pub struct DistributedRouterConfig {
 #[cfg(feature = "tls")]
 #[derive(Clone, Debug, Default)]
 pub struct TlsClientCertFingerprintAllowlist {
-    /// Fingerprints allowed to connect to any shard (handy for operators).
+    /// Fingerprints allowed to connect to any shard.
+    ///
+    /// If non-empty, the allowlist is enforced for all shards (connections are rejected unless the
+    /// presented client certificate fingerprint appears in this list or the shard-specific list).
     pub global: Vec<String>,
     /// Per-shard allowlists. If a shard is present in this map, connections for that shard are
     /// rejected unless the client's certificate fingerprint is listed (or present in `global`).
@@ -881,12 +884,11 @@ async fn handle_new_connection(
 
     #[cfg(feature = "tls")]
     {
-        if let Some(shard_allowlist) = state
-            .config
-            .tls_client_cert_fingerprint_allowlist
-            .shards
-            .get(&shard_id)
-        {
+        let allowlist = &state.config.tls_client_cert_fingerprint_allowlist;
+        let shard_allowlist = allowlist.shards.get(&shard_id);
+        let enforce_allowlist = !allowlist.global.is_empty() || shard_allowlist.is_some();
+
+        if enforce_allowlist {
             let Some(fingerprint) = identity.tls_client_cert_fingerprint() else {
                 write_message(
                     &mut stream,
@@ -899,15 +901,15 @@ async fn handle_new_connection(
                 return Err(anyhow!("shard {shard_id} requires mTLS client identity"));
             };
 
-            let is_allowed = shard_allowlist
+            let is_allowed = allowlist
+                .global
                 .iter()
                 .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
-                || state
-                    .config
-                    .tls_client_cert_fingerprint_allowlist
-                    .global
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint));
+                || shard_allowlist.is_some_and(|entries| {
+                    entries
+                        .iter()
+                        .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
+                });
 
             if !is_allowed {
                 write_message(

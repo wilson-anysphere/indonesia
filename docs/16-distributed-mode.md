@@ -204,10 +204,13 @@ When built with `--features tls`, `nova-router` supports the following policy:
 
 Semantics:
 
-- If a shard appears in the allowlist map, connections claiming that shard are rejected unless the
-  worker’s client certificate fingerprint matches (or matches the global allowlist).
-- If a shard has no allowlist configured, it is accepted (mTLS still limits connections to
-  CA-signed client certificates).
+- If the **global allowlist** is non-empty, *all* shard connections are rejected unless the worker’s
+  client certificate fingerprint matches the global allowlist (or that shard’s allowlist).
+- If a shard appears in the per-shard allowlist map, connections claiming that shard are rejected
+  unless the worker’s client certificate fingerprint matches that shard’s allowlist (or the global
+  allowlist).
+- If neither global nor per-shard allowlists apply, the connection is accepted (mTLS still limits
+  connections to CA-signed client certificates).
 
 Fingerprints are computed as `sha256(leaf_cert_der)` encoded as a lowercase hex string. You can
 derive a value from a PEM certificate with OpenSSL:
