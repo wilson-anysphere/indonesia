@@ -58,6 +58,8 @@ url = "2"
 [features]
 default = ["ai"]
 ai = ["nova-ide/ai"]
+# Optional Build Server Protocol integration for Bazel via `nova-build-bazel`.
+bsp = ["nova-build-bazel/bsp"]
 
 [dev-dependencies]
 httpmock = "0.7"

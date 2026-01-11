@@ -1,4 +1,4 @@
-use nova_build_bazel::{digest_file, BazelCache, CacheEntry, JavaCompileInfo};
+use nova_build_bazel::{digest_file, BazelCache, CacheEntry, CompileInfoProvider, JavaCompileInfo};
 use std::sync::{Arc, Barrier};
 use tempfile::tempdir;
 
@@ -16,17 +16,59 @@ fn cache_is_keyed_by_expr_version_and_file_digests() {
         target: "//:hello".to_string(),
         expr_version_hex: expr_version_hex.clone(),
         files: vec![digest.clone()],
+        provider: CompileInfoProvider::Aquery,
         info: JavaCompileInfo {
             classpath: vec!["a.jar".to_string()],
             ..JavaCompileInfo::default()
         },
     });
 
-    assert!(cache.get("//:hello", &expr_version_hex).is_some());
+    assert!(cache
+        .get("//:hello", &expr_version_hex, CompileInfoProvider::Aquery)
+        .is_some());
 
     // Changing the BUILD file should invalidate the entry.
     std::fs::write(&build, "java_library(name = \"hello\", srcs = [])").unwrap();
-    assert!(cache.get("//:hello", &expr_version_hex).is_none());
+    assert!(cache
+        .get("//:hello", &expr_version_hex, CompileInfoProvider::Aquery)
+        .is_none());
+}
+
+#[test]
+fn cache_does_not_mix_compile_info_providers() {
+    let expr_version_hex = "expr-v1".to_string();
+    let mut cache = BazelCache::default();
+    cache.insert(CacheEntry {
+        target: "//:hello".to_string(),
+        expr_version_hex: expr_version_hex.clone(),
+        files: Vec::new(),
+        provider: CompileInfoProvider::Aquery,
+        info: JavaCompileInfo {
+            classpath: vec!["a.jar".to_string()],
+            ..JavaCompileInfo::default()
+        },
+    });
+
+    cache.insert(CacheEntry {
+        target: "//:hello".to_string(),
+        expr_version_hex: expr_version_hex.clone(),
+        files: Vec::new(),
+        provider: CompileInfoProvider::Bsp,
+        info: JavaCompileInfo {
+            classpath: vec!["b.jar".to_string()],
+            ..JavaCompileInfo::default()
+        },
+    });
+
+    let aquery = cache
+        .get("//:hello", &expr_version_hex, CompileInfoProvider::Aquery)
+        .unwrap();
+    assert_eq!(aquery.info.classpath, vec!["a.jar".to_string()]);
+
+    let bsp = cache
+        .get("//:hello", &expr_version_hex, CompileInfoProvider::Bsp)
+        .unwrap();
+    assert_eq!(bsp.info.classpath, vec!["b.jar".to_string()]);
 }
 
 #[test]
@@ -50,6 +92,7 @@ fn cache_roundtrips_via_disk() {
         target: "//:hello".to_string(),
         expr_version_hex: expr_version_hex.clone(),
         files: Vec::new(),
+        provider: CompileInfoProvider::Aquery,
         info: JavaCompileInfo {
             classpath: vec!["a.jar".to_string()],
             ..JavaCompileInfo::default()
@@ -75,19 +118,26 @@ fn invalidate_changed_files_drops_matching_entries() {
         target: "//:hello".to_string(),
         expr_version_hex: expr_version_hex.clone(),
         files: vec![digest],
+        provider: CompileInfoProvider::Aquery,
         info: JavaCompileInfo {
             classpath: vec!["a.jar".to_string()],
             ..JavaCompileInfo::default()
         },
     });
 
-    assert!(cache.get("//:hello", &expr_version_hex).is_some());
+    assert!(cache
+        .get("//:hello", &expr_version_hex, CompileInfoProvider::Aquery)
+        .is_some());
 
     cache.invalidate_changed_files(&[dir.path().join("unrelated.txt")]);
-    assert!(cache.get("//:hello", &expr_version_hex).is_some());
+    assert!(cache
+        .get("//:hello", &expr_version_hex, CompileInfoProvider::Aquery)
+        .is_some());
 
     cache.invalidate_changed_files(&[build]);
-    assert!(cache.get("//:hello", &expr_version_hex).is_none());
+    assert!(cache
+        .get("//:hello", &expr_version_hex, CompileInfoProvider::Aquery)
+        .is_none());
 }
 
 #[test]
@@ -100,6 +150,7 @@ fn cache_save_is_safe_under_concurrent_writers() {
         target: "//:a".to_string(),
         expr_version_hex: "expr-a".to_string(),
         files: Vec::new(),
+        provider: CompileInfoProvider::Aquery,
         info: JavaCompileInfo {
             classpath: vec!["a.jar".to_string()],
             ..JavaCompileInfo::default()
@@ -111,6 +162,7 @@ fn cache_save_is_safe_under_concurrent_writers() {
         target: "//:b".to_string(),
         expr_version_hex: "expr-b".to_string(),
         files: Vec::new(),
+        provider: CompileInfoProvider::Aquery,
         info: JavaCompileInfo {
             classpath: vec!["b.jar".to_string()],
             ..JavaCompileInfo::default()

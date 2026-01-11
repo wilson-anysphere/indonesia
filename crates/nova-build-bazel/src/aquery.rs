@@ -598,14 +598,18 @@ fn brace_delta_unquoted(line: &str) -> i32 {
 
 /// Extract the classpath/module-path/source roots from a parsed `Javac` action.
 pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
+    extract_java_compile_info_from_args(&action.arguments)
+}
+
+pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompileInfo {
     let mut info = JavaCompileInfo::default();
     let mut sourcepath_roots = BTreeSet::<String>::new();
     let mut java_file_roots = BTreeSet::<String>::new();
 
-    let mut it = action.arguments.iter().peekable();
+    let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "-classpath" | "--class-path" => {
+            "-classpath" | "--class-path" | "-cp" => {
                 if let Some(cp) = it.next() {
                     info.classpath = split_path_list(cp);
                 }
@@ -740,3 +744,38 @@ fn split_path_list(value: &str) -> Vec<String> {
 // NOTE: this module intentionally avoids building a full in-memory representation of the
 // `bazel aquery` output. The consumer (e.g. `BazelWorkspace`) should scan the stream and retain
 // only the actions it needs.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_javac_options_into_compile_info() {
+        let args = vec![
+            "--module-path".to_string(),
+            "mods/a:mods/b".to_string(),
+            "--release".to_string(),
+            "21".to_string(),
+            "--enable-preview".to_string(),
+            "-sourcepath".to_string(),
+            "src/main/java:src/test/java".to_string(),
+            "-d".to_string(),
+            "out/classes".to_string(),
+        ];
+
+        let info = extract_java_compile_info_from_args(&args);
+        assert_eq!(
+            info.module_path,
+            vec!["mods/a".to_string(), "mods/b".to_string()]
+        );
+        assert_eq!(info.release.as_deref(), Some("21"));
+        assert_eq!(info.source.as_deref(), Some("21"));
+        assert_eq!(info.target.as_deref(), Some("21"));
+        assert!(info.preview);
+        assert_eq!(
+            info.source_roots,
+            vec!["src/main/java".to_string(), "src/test/java".to_string()]
+        );
+        assert_eq!(info.output_dir.as_deref(), Some("out/classes"));
+    }
+}

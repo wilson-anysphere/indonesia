@@ -22,7 +22,9 @@ pub use crate::{
         extract_java_compile_info, parse_aquery_textproto, parse_aquery_textproto_streaming,
         JavaCompileInfo, JavacAction,
     },
-    cache::{digest_file, digest_file_or_absent, BazelCache, CacheEntry, FileDigest},
+    cache::{
+        digest_file, digest_file_or_absent, BazelCache, CacheEntry, CompileInfoProvider, FileDigest,
+    },
     command::{CommandOutput, CommandRunner, DefaultCommandRunner},
     workspace::{
         bazel_workspace_root, is_bazel_workspace, BazelWorkspace, BazelWorkspaceDiscovery,
@@ -34,3 +36,6 @@ pub use crate::bsp::{
     bsp_compile_and_collect_diagnostics, bsp_publish_diagnostics_to_nova_diagnostics,
     BazelBspConfig,
 };
+
+#[cfg(feature = "bsp")]
+pub use crate::bsp::target_compile_info_via_bsp;

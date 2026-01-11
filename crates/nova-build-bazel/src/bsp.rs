@@ -507,6 +507,72 @@ fn bsp_severity_to_nova(severity: Option<i32>) -> nova_core::DiagnosticSeverity 
     }
 }
 
+pub fn target_compile_info_via_bsp(
+    workspace_root: &Path,
+    bsp_program: &str,
+    bsp_args: &[&str],
+    target: &str,
+) -> Result<crate::aquery::JavaCompileInfo> {
+    let root_abs = nova_core::AbsPathBuf::canonicalize(workspace_root).with_context(|| {
+        format!(
+            "failed to canonicalize workspace root {}",
+            workspace_root.display()
+        )
+    })?;
+    let root_uri = nova_core::path_to_file_uri(&root_abs)
+        .context("failed to convert workspace root to file URI")?;
+
+    let mut client = BspClient::spawn_in_dir(bsp_program, bsp_args, root_abs.as_path())?;
+
+    // Initialize the BSP session.
+    let _init_result = client.initialize(InitializeBuildParams {
+        display_name: "nova".to_string(),
+        version: nova_core::NOVA_VERSION.to_string(),
+        bsp_version: "2.1.0".to_string(),
+        root_uri,
+        capabilities: ClientCapabilities {
+            language_ids: vec!["java".to_string()],
+        },
+        data: None,
+    })?;
+    client.initialized()?;
+
+    // Optional discovery step: fetch targets so we can resolve "labels" (or display names) to
+    // actual BSP build target identifiers.
+    let build_targets = client.build_targets().ok();
+    let requested_target = resolve_build_target_identifier(target, build_targets.as_ref());
+
+    let opts = client.javac_options(JavacOptionsParams {
+        targets: vec![requested_target.clone()],
+    })?;
+
+    let mut items = opts.items;
+    let match_idx = items
+        .iter()
+        .position(|item| item.target.uri == requested_target.uri);
+    let item = if let Some(idx) = match_idx {
+        items.remove(idx)
+    } else {
+        items
+            .into_iter()
+            .next()
+            .with_context(|| format!("no javac options returned for `{target}`"))?
+    };
+
+    let mut info = crate::aquery::extract_java_compile_info_from_args(&item.options);
+    info.classpath = item
+        .classpath
+        .into_iter()
+        .map(|entry| normalize_bsp_uri_to_path(&entry).to_string_lossy().to_string())
+        .collect();
+    info.output_dir = Some(
+        normalize_bsp_uri_to_path(&item.class_directory)
+            .to_string_lossy()
+            .to_string(),
+    );
+    Ok(info)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

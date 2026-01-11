@@ -1,6 +1,6 @@
 use crate::{
     aquery::{parse_aquery_textproto_streaming_javac_action_info, JavaCompileInfo},
-    cache::{digest_file_or_absent, BazelCache, CacheEntry, FileDigest},
+    cache::{digest_file_or_absent, BazelCache, CacheEntry, CompileInfoProvider, FileDigest},
     command::CommandRunner,
 };
 use anyhow::{Context, Result};
@@ -153,10 +153,54 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
     /// Resolve Java compilation information for a Bazel target.
     pub fn target_compile_info(&mut self, target: &str) -> Result<JavaCompileInfo> {
-        if let Some(entry) = self
-            .cache
-            .get(target, &self.compile_info_expr_version_hex)
-        {
+        let prefer_bsp =
+            cfg!(feature = "bsp") && std::env::var("NOVA_BAZEL_USE_BSP").is_ok_and(|v| v == "1");
+
+        if prefer_bsp {
+            if let Some(entry) = self.cache.get(
+                target,
+                &self.compile_info_expr_version_hex,
+                CompileInfoProvider::Bsp,
+            ) {
+                return Ok(entry.info.clone());
+            }
+
+            #[cfg(feature = "bsp")]
+            {
+                let bsp_program =
+                    std::env::var("NOVA_BSP_PROGRAM").unwrap_or_else(|_| "bsp4bazel".to_string());
+                let bsp_args_raw = std::env::var("NOVA_BSP_ARGS").unwrap_or_default();
+                let bsp_args_owned: Vec<String> = bsp_args_raw
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+                let bsp_args: Vec<&str> = bsp_args_owned.iter().map(String::as_str).collect();
+
+                if let Ok(info) = crate::bsp::target_compile_info_via_bsp(
+                    &self.root,
+                    &bsp_program,
+                    &bsp_args,
+                    target,
+                ) {
+                    let files = self.compile_info_file_digests_for_target(target)?;
+                    self.cache.insert(CacheEntry {
+                        target: target.to_string(),
+                        expr_version_hex: self.compile_info_expr_version_hex.clone(),
+                        files,
+                        provider: CompileInfoProvider::Bsp,
+                        info: info.clone(),
+                    });
+                    self.persist_cache()?;
+                    return Ok(info);
+                }
+            }
+        }
+
+        if let Some(entry) = self.cache.get(
+            target,
+            &self.compile_info_expr_version_hex,
+            CompileInfoProvider::Aquery,
+        ) {
             return Ok(entry.info.clone());
         }
 
@@ -179,6 +223,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             target: target.to_string(),
             expr_version_hex: self.compile_info_expr_version_hex.clone(),
             files,
+            provider: CompileInfoProvider::Aquery,
             info: info.clone(),
         });
 

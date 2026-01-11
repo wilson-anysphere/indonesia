@@ -11,6 +11,21 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompileInfoProvider {
+    /// Compile information extracted from `bazel aquery`.
+    Aquery,
+    /// Compile information extracted from BSP `buildTarget/javacOptions`.
+    Bsp,
+}
+
+impl Default for CompileInfoProvider {
+    fn default() -> Self {
+        Self::Aquery
+    }
+}
+
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +44,8 @@ pub struct CacheEntry {
     /// This includes workspace-level configuration (`WORKSPACE`, `MODULE.bazel`, `.bazelrc`, ...)
     /// and the BUILD files for packages in the target's transitive dependency closure.
     pub files: Vec<FileDigest>,
+    #[serde(default)]
+    pub provider: CompileInfoProvider,
     pub info: JavaCompileInfo,
 }
 
@@ -38,8 +55,31 @@ pub struct BazelCache {
 }
 
 impl BazelCache {
-    pub fn get(&self, target: &str, expr_version_hex: &str) -> Option<&CacheEntry> {
-        let entry = self.entries.get(target)?;
+    fn cache_key(target: &str, provider: CompileInfoProvider) -> String {
+        format!(
+            "{}:{target}",
+            match provider {
+                CompileInfoProvider::Aquery => "aquery",
+                CompileInfoProvider::Bsp => "bsp",
+            }
+        )
+    }
+
+    pub fn get(
+        &self,
+        target: &str,
+        expr_version_hex: &str,
+        provider: CompileInfoProvider,
+    ) -> Option<&CacheEntry> {
+        let key = Self::cache_key(target, provider);
+        let entry = self.entries.get(&key).or_else(|| {
+            // Backwards compatibility: older cache files keyed directly by the label.
+            if provider == CompileInfoProvider::Aquery {
+                self.entries.get(target)
+            } else {
+                None
+            }
+        })?;
         if entry.expr_version_hex != expr_version_hex {
             return None;
         }
@@ -50,11 +90,19 @@ impl BazelCache {
         if entry.files != current_digests {
             return None;
         }
+        if entry.provider != provider {
+            return None;
+        }
         Some(entry)
     }
 
     pub fn insert(&mut self, entry: CacheEntry) {
-        self.entries.insert(entry.target.clone(), entry);
+        let key = Self::cache_key(&entry.target, entry.provider);
+        if key != entry.target {
+            // Remove any legacy key for the same label.
+            self.entries.remove(&entry.target);
+        }
+        self.entries.insert(key, entry);
     }
 
     pub fn invalidate_changed_files(&mut self, changed: &[PathBuf]) {
@@ -81,7 +129,9 @@ impl BazelCache {
             Ok(data) => data,
             Err(_) => return Ok(Self::default()),
         };
-        Ok(serde_json::from_str(&data).unwrap_or_default())
+        let mut cache: Self = serde_json::from_str(&data).unwrap_or_default();
+        cache.migrate_keys();
+        Ok(cache)
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -131,6 +181,16 @@ impl BazelCache {
         }
 
         Ok(())
+    }
+
+    fn migrate_keys(&mut self) {
+        let entries = std::mem::take(&mut self.entries);
+        let mut migrated = HashMap::with_capacity(entries.len());
+        for (_key, entry) in entries {
+            let key = Self::cache_key(&entry.target, entry.provider);
+            migrated.entry(key).or_insert(entry);
+        }
+        self.entries = migrated;
     }
 }
 
