@@ -177,6 +177,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - `crates/nova-devtools/src/check_deps.rs` (`check_deps::check`) — validates `cargo metadata` edges against `crate-layers.toml`.
   - `crates/nova-devtools/src/check_layers.rs` (`check_layers::check`) — validates `crate-layers.toml` coverage/consistency against workspace members.
   - `crates/nova-devtools/src/check_arch_map.rs` (`check_arch_map::check`) — validates `docs/architecture-map.md` coverage + quick-link path freshness.
+  - `crates/nova-devtools/src/check_protocol_extensions.rs` (`check_protocol_extensions::check`) — validates `docs/protocol-extensions.md` against `nova-lsp` constants + VS Code client usage.
   - `crates/nova-devtools/src/graph.rs` (`graph::generate`) — emits a DOT/GraphViz dependency graph annotated by layer.
   - `crates/nova-devtools/src/main.rs` — CLI wrapper used by CI (`cargo run -p nova-devtools -- <command>`).
   - `crate-layers.toml` — policy + layer mapping configuration.
