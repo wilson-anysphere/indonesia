@@ -3419,6 +3419,7 @@ dependencies = [
  "nova-memory",
  "nova-project",
  "nova-syntax",
+ "nova-types",
  "parking_lot",
  "ra_ap_salsa",
  "serde",

@@ -3,9 +3,10 @@ use std::time::Instant;
 
 use nova_cache::Fingerprint;
 use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
+use nova_types::Diagnostic;
 
 use crate::persistence::HasPersistence;
-use crate::FileId;
+use crate::{FileId, ProjectId};
 
 use super::cancellation as cancel;
 use super::inputs::NovaInputs;
@@ -22,6 +23,17 @@ pub trait NovaSyntax: NovaInputs + HasQueryStats + HasPersistence + HasFilePaths
 
     /// Parse a file using the full-fidelity Rowan-based Java grammar.
     fn parse_java(&self, file: FileId) -> Arc<JavaParseResult>;
+
+    /// Effective Java language level for this file.
+    ///
+    /// This is currently derived from `ProjectConfig.java.source` for a single
+    /// "default" project (ProjectId(0)). As Nova's project model matures, this
+    /// should become a true per-file/per-module query.
+    fn java_language_level(&self, file: FileId) -> nova_syntax::JavaLanguageLevel;
+
+    /// Version-aware diagnostics for syntax features that are not enabled at
+    /// the configured language level (e.g. `record` below Java 16).
+    fn syntax_feature_diagnostics(&self, file: FileId) -> Arc<Vec<Diagnostic>>;
 
     /// Convenience query that exposes the syntax tree.
     fn syntax_tree(&self, file: FileId) -> Arc<SyntaxTree>;
@@ -81,6 +93,32 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
     result
 }
 
+fn java_language_level(db: &dyn NovaSyntax, _file: FileId) -> nova_syntax::JavaLanguageLevel {
+    let cfg = db.project_config(ProjectId::from_raw(0));
+    nova_syntax::JavaLanguageLevel {
+        major: cfg.java.source.0,
+        preview: false,
+    }
+}
+
+fn syntax_feature_diagnostics(db: &dyn NovaSyntax, file: FileId) -> Arc<Vec<Diagnostic>> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span =
+        tracing::debug_span!("query", name = "syntax_feature_diagnostics", ?file).entered();
+
+    cancel::check_cancelled(db);
+
+    let parse = db.parse_java(file);
+    let level = db.java_language_level(file);
+
+    let diagnostics = nova_syntax::feature_gate_diagnostics(&parse.syntax(), level);
+    let result = Arc::new(diagnostics);
+    db.record_query_stat("syntax_feature_diagnostics", start.elapsed());
+    result
+}
+
 fn syntax_tree(db: &dyn NovaSyntax, file: FileId) -> Arc<SyntaxTree> {
     let start = Instant::now();
 
@@ -93,4 +131,71 @@ fn syntax_tree(db: &dyn NovaSyntax, file: FileId) -> Arc<SyntaxTree> {
     let result = Arc::new(root);
     db.record_query_stat("syntax_tree", start.elapsed());
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::path::PathBuf;
+
+    use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
+
+    use crate::SourceRootId;
+    use crate::salsa::RootDatabase;
+
+    fn config_with_source(source: JavaVersion) -> ProjectConfig {
+        ProjectConfig {
+            workspace_root: PathBuf::new(),
+            build_system: BuildSystem::Simple,
+            java: JavaConfig {
+                source,
+                target: source,
+            },
+            modules: Vec::new(),
+            jpms_modules: Vec::new(),
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn feature_diagnostics_use_project_language_level() {
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+
+        db.set_file_exists(file, true);
+        db.set_source_root(file, SourceRootId::from_raw(0));
+        db.set_file_content(
+            file,
+            Arc::new("class Foo { void m() { var x = 1; } }".to_string()),
+        );
+
+        db.set_project_config(
+            ProjectId::from_raw(0),
+            Arc::new(config_with_source(JavaVersion::JAVA_8)),
+        );
+
+        let parse = db.parse_java(file);
+        assert!(
+            parse.errors.is_empty(),
+            "expected Java parse errors to be empty, got: {:?}",
+            parse.errors
+        );
+
+        let diags = db.syntax_feature_diagnostics(file);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "JAVA_FEATURE_VAR_LOCAL_INFERENCE");
+
+        // Updating project language level invalidates + recomputes diagnostics.
+        db.set_project_config(
+            ProjectId::from_raw(0),
+            Arc::new(config_with_source(JavaVersion(10))),
+        );
+        let diags = db.syntax_feature_diagnostics(file);
+        assert!(diags.is_empty());
+    }
 }

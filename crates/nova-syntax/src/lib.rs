@@ -51,6 +51,14 @@ pub fn parse_java_with_options(text: &str, opts: ParseOptions) -> JavaParse {
     JavaParse { result, diagnostics }
 }
 
+/// Run the Java syntax feature gate pass on an already-parsed syntax tree.
+pub fn feature_gate_diagnostics(
+    root: &SyntaxNode,
+    language_level: JavaLanguageLevel,
+) -> Vec<nova_types::Diagnostic> {
+    feature_gate::feature_gate_diagnostics(root, language_level)
+}
+
 use serde::{Deserialize, Serialize};
 
 /// A half-open byte range within a source file (`start..end`).

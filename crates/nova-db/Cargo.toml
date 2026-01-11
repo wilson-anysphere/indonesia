@@ -13,6 +13,7 @@ nova-core = { path = "../nova-core" }
 nova-hir = { path = "../nova-hir" }
 nova-project = { path = "../nova-project" }
 nova-syntax = { path = "../nova-syntax" }
+nova-types = { path = "../nova-types" }
 parking_lot = "0.12"
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 tracing = "0.1"

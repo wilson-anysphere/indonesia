@@ -53,7 +53,7 @@ use std::time::Duration;
 
 use parking_lot::RwLock;
 
-use nova_project::ProjectConfig;
+use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
 
 use crate::persistence::{HasPersistence, Persistence, PersistenceConfig};
 use crate::{FileId, ProjectId, SourceRootId};
@@ -171,12 +171,37 @@ impl RootDatabase {
         project_root: impl AsRef<Path>,
         persistence: PersistenceConfig,
     ) -> Self {
-        Self {
+        let project_root = project_root.as_ref().to_path_buf();
+        let mut db = Self {
             storage: ra_salsa::Storage::default(),
             stats: QueryStatsCollector::default(),
-            persistence: Persistence::new(project_root, persistence),
+            persistence: Persistence::new(&project_root, persistence),
             file_paths: Arc::new(RwLock::new(HashMap::new())),
-        }
+        };
+
+        // Provide a sensible default `ProjectConfig` so callers can start
+        // asking version-aware questions (like syntax feature diagnostics)
+        // without wiring full project discovery first.
+        db.set_project_config(
+            ProjectId::from_raw(0),
+            Arc::new(ProjectConfig {
+                workspace_root: project_root,
+                build_system: BuildSystem::Simple,
+                java: JavaConfig {
+                    source: JavaVersion::JAVA_21,
+                    target: JavaVersion::JAVA_21,
+                },
+                modules: Vec::new(),
+                jpms_modules: Vec::new(),
+                source_roots: Vec::new(),
+                module_path: Vec::new(),
+                classpath: Vec::new(),
+                output_dirs: Vec::new(),
+                dependencies: Vec::new(),
+            }),
+        );
+
+        db
     }
 
     pub fn set_file_path(&mut self, file: FileId, path: impl Into<String>) {
