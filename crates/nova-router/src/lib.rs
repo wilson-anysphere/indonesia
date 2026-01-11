@@ -161,6 +161,43 @@ impl WorkerIdentity {
 
 impl DistributedRouterConfig {
     fn validate(&self) -> Result<()> {
+        #[cfg(feature = "tls")]
+        {
+            let allowlist = &self.tls_client_cert_fingerprint_allowlist;
+            let allowlist_configured =
+                !allowlist.global.is_empty() || !allowlist.shards.is_empty();
+
+            if allowlist_configured {
+                match &self.listen_addr {
+                    ListenAddr::Tcp(TcpListenAddr::Tls { config, .. }) => {
+                        if config.client_ca_cert_path.is_none() {
+                            return Err(anyhow!(
+                                "TLS client certificate fingerprint allowlist requires mTLS client verification. \
+Configure the router TLS server with a client CA certificate (TlsServerConfig::with_client_ca_cert)."
+                            ));
+                        }
+                    }
+                    ListenAddr::Tcp(TcpListenAddr::Plain(addr)) => {
+                        return Err(anyhow!(
+                            "TLS client certificate fingerprint allowlist requires TLS (`tcp+tls:`); got plaintext TCP listen addr {addr}"
+                        ));
+                    }
+                    #[cfg(unix)]
+                    ListenAddr::Unix(_) => {
+                        return Err(anyhow!(
+                            "TLS client certificate fingerprint allowlist requires TCP+TLS (`tcp+tls:`); local IPC transports do not provide TLS identities"
+                        ));
+                    }
+                    #[cfg(windows)]
+                    ListenAddr::NamedPipe(_) => {
+                        return Err(anyhow!(
+                            "TLS client certificate fingerprint allowlist requires TCP+TLS (`tcp+tls:`); local IPC transports do not provide TLS identities"
+                        ));
+                    }
+                }
+            }
+        }
+
         let ListenAddr::Tcp(tcp) = &self.listen_addr else {
             return Ok(());
         };
