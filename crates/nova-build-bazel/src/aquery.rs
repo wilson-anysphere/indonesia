@@ -702,8 +702,7 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
             }
             "-sourcepath" | "--source-path" => {
                 if let Some(v) = it.next() {
-                    // Once a sourcepath is provided we no longer need to track source roots from
-                    // individual `.java` arguments.
+                    // `-sourcepath` overrides implicit source roots derived from `.java` arguments.
                     java_file_roots.clear();
                     for root in split_path_list(v) {
                         if !root.is_empty() {
@@ -779,6 +778,9 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
                 }
 
                 if other.ends_with(".java") {
+                    if !sourcepath_roots.is_empty() {
+                        continue;
+                    }
                     if let Some(parent) = other.rsplit_once('/') {
                         if !java_file_roots.contains(parent.0) {
                             java_file_roots.insert(parent.0.to_string());
