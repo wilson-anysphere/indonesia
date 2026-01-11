@@ -1,5 +1,6 @@
 use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
+use crate::path::normalize_rel_path;
 use crate::util::{
     atomic_write, bincode_deserialize, bincode_serialize, now_millis, read_file_limited,
 };
@@ -12,7 +13,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-pub const AST_ARTIFACT_SCHEMA_VERSION: u32 = 2;
+pub const AST_ARTIFACT_SCHEMA_VERSION: u32 = 3;
 
 const METADATA_LOCK_FILE_NAME: &str = "metadata.lock";
 
@@ -109,12 +110,13 @@ impl AstArtifactCache {
         file_path: &str,
         fingerprint: &Fingerprint,
     ) -> Result<Option<FileAstArtifacts>, CacheError> {
+        let file_path = normalize_rel_path(file_path);
         let metadata = self.read_metadata_for_load();
         if !metadata.is_compatible() {
             return Ok(None);
         }
 
-        let entry = match metadata.files.get(file_path) {
+        let entry = match metadata.files.get(&file_path) {
             Some(entry) => entry,
             None => return Ok(None),
         };
@@ -159,16 +161,17 @@ impl AstArtifactCache {
         fingerprint: &Fingerprint,
         artifacts: &FileAstArtifacts,
     ) -> Result<(), CacheError> {
+        let file_path = normalize_rel_path(file_path);
         std::fs::create_dir_all(&self.root)?;
 
-        let artifact_file = artifact_file_name(file_path);
+        let artifact_file = artifact_file_name(&file_path);
         let artifact_path = self.root.join(&artifact_file);
 
         let persisted = PersistedAstArtifacts {
             schema_version: AST_ARTIFACT_SCHEMA_VERSION,
             nova_version: nova_core::NOVA_VERSION.to_string(),
             saved_at_millis: now_millis(),
-            file_path: file_path.to_string(),
+            file_path: file_path.clone(),
             file_fingerprint: fingerprint.clone(),
             artifacts,
         };
@@ -196,7 +199,7 @@ impl AstArtifactCache {
         }
 
         metadata.files.insert(
-            file_path.to_string(),
+            file_path.clone(),
             AstCacheFileEntry {
                 fingerprint: fingerprint.clone(),
                 artifact_file,
@@ -353,5 +356,25 @@ mod tests {
         std::fs::write(tmp.path().join(artifact_name), b"broken").unwrap();
 
         assert!(cache.load("src/Foo.java", &fp).unwrap().is_none());
+    }
+
+    #[test]
+    fn cache_keys_normalize_path_separators() {
+        let tmp = TempDir::new().unwrap();
+        let cache = AstArtifactCache::new(tmp.path());
+
+        let text = "class A {}";
+        let parsed = parse(text);
+        let it = item_tree(&parsed, text);
+        let artifacts = FileAstArtifacts {
+            parse: parsed,
+            item_tree: it,
+            symbol_summary: None,
+        };
+        let fp = Fingerprint::from_bytes(text.as_bytes());
+
+        cache.store("src\\A.java", &fp, &artifacts).unwrap();
+        let loaded = cache.load("src/A.java", &fp).unwrap().unwrap();
+        assert_eq!(loaded, artifacts);
     }
 }

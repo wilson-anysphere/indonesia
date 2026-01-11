@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use nova_cache::{
     AstArtifactCache, CacheConfig, CacheDir, CacheError, FileAstArtifacts, Fingerprint,
+    normalize_rel_path,
 };
 pub use nova_core::{FileId, ProjectId, SourceRootId};
 use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
@@ -171,7 +172,7 @@ impl AnalysisDatabase {
     }
 
     pub fn set_file_content(&mut self, file_path: impl Into<String>, text: impl Into<String>) {
-        let file_path = file_path.into();
+        let file_path = normalize_rel_path(&file_path.into());
         let text = text.into();
         let fingerprint = Fingerprint::from_bytes(text.as_bytes());
         let text = Arc::<str>::from(text);
@@ -197,18 +198,19 @@ impl AnalysisDatabase {
     }
 
     pub fn parse(&mut self, file_path: &str) -> Result<Arc<ParseResult>, AnalysisDbError> {
+        let file_path = normalize_rel_path(file_path);
         let (text, fingerprint) = {
-            let data = self.file_data(file_path)?;
+            let data = self.file_data(&file_path)?;
             (data.text.clone(), data.fingerprint.clone())
         };
 
-        if let Some(cached) = self.ast.get(file_path) {
+        if let Some(cached) = self.ast.get(&file_path) {
             if cached.fingerprint == fingerprint {
                 return Ok(cached.parse.clone());
             }
         }
 
-        if let Some(artifacts) = self.ast_cache.load(file_path, &fingerprint)? {
+        if let Some(artifacts) = self.ast_cache.load(&file_path, &fingerprint)? {
             let cached = CachedAst {
                 fingerprint,
                 parse: Arc::new(artifacts.parse),
@@ -216,7 +218,7 @@ impl AnalysisDatabase {
                 symbol_summary: artifacts.symbol_summary.map(Arc::new),
             };
             let parse = cached.parse.clone();
-            self.ast.insert(file_path.to_string(), cached);
+            self.ast.insert(file_path.clone(), cached);
             return Ok(parse);
         }
 
@@ -230,7 +232,7 @@ impl AnalysisDatabase {
             item_tree: it,
             symbol_summary: Some(sym),
         };
-        self.ast_cache.store(file_path, &fingerprint, &artifacts)?;
+        self.ast_cache.store(&file_path, &fingerprint, &artifacts)?;
 
         let FileAstArtifacts {
             parse: parsed,
@@ -245,21 +247,22 @@ impl AnalysisDatabase {
             symbol_summary: symbol_summary.map(Arc::new),
         };
         let parse = cached.parse.clone();
-        self.ast.insert(file_path.to_string(), cached);
+        self.ast.insert(file_path, cached);
         Ok(parse)
     }
 
     pub fn item_tree(&mut self, file_path: &str) -> Result<Arc<ItemTree>, AnalysisDbError> {
-        let fingerprint = self.file_data(file_path)?.fingerprint.clone();
-        if let Some(cached) = self.ast.get(file_path) {
+        let file_path = normalize_rel_path(file_path);
+        let fingerprint = self.file_data(&file_path)?.fingerprint.clone();
+        if let Some(cached) = self.ast.get(&file_path) {
             if cached.fingerprint == fingerprint {
                 return Ok(cached.item_tree.clone());
             }
         }
-        let _ = self.parse(file_path)?;
+        let _ = self.parse(&file_path)?;
         Ok(self
             .ast
-            .get(file_path)
+            .get(&file_path)
             .expect("parse() populates ast cache")
             .item_tree
             .clone())
@@ -269,16 +272,17 @@ impl AnalysisDatabase {
         &mut self,
         file_path: &str,
     ) -> Result<Option<Arc<SymbolSummary>>, AnalysisDbError> {
-        let fingerprint = self.file_data(file_path)?.fingerprint.clone();
-        if let Some(cached) = self.ast.get(file_path) {
+        let file_path = normalize_rel_path(file_path);
+        let fingerprint = self.file_data(&file_path)?.fingerprint.clone();
+        if let Some(cached) = self.ast.get(&file_path) {
             if cached.fingerprint == fingerprint {
                 return Ok(cached.symbol_summary.clone());
             }
         }
-        let _ = self.parse(file_path)?;
+        let _ = self.parse(&file_path)?;
         Ok(self
             .ast
-            .get(file_path)
+            .get(&file_path)
             .expect("parse() populates ast cache")
             .symbol_summary
             .clone())

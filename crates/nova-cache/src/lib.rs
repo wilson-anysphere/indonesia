@@ -16,6 +16,7 @@ mod error;
 mod fingerprint;
 mod metadata;
 mod pack;
+mod path;
 mod shard_index;
 mod store;
 mod util;
@@ -27,6 +28,7 @@ pub use derived_cache::DerivedArtifactCache;
 pub use error::CacheError;
 pub use fingerprint::{Fingerprint, ProjectSnapshot};
 pub use metadata::{CacheMetadata, CACHE_METADATA_SCHEMA_VERSION};
+pub use path::{normalize_inputs_map, normalize_rel_path};
 pub use pack::{
     fetch_cache_package, install_cache_package, pack_cache_package, CachePackageInstallOutcome,
     CACHE_PACKAGE_MANIFEST_PATH,

@@ -1,5 +1,6 @@
 use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
+use crate::path::normalize_inputs_map;
 use crate::util::{
     atomic_write, bincode_deserialize, bincode_serialize, now_millis, read_file_limited,
 };
@@ -15,6 +16,11 @@ pub const DERIVED_CACHE_SCHEMA_VERSION: u32 = 1;
 /// This is intentionally separate from any salsa-backed query system; callers
 /// provide the query name, arguments, and input fingerprints that should drive
 /// invalidation.
+///
+/// Note: Any file paths that participate in cache keys should be normalized
+/// (see [`crate::normalize_rel_path`]) to avoid duplicate entries across
+/// platforms/path sources. `input_fingerprints` keys are normalized internally,
+/// but callers are responsible for normalizing path-like strings inside `args`.
 #[derive(Clone, Debug)]
 pub struct DerivedArtifactCache {
     root: PathBuf,
@@ -37,7 +43,8 @@ impl DerivedArtifactCache {
         input_fingerprints: &BTreeMap<String, Fingerprint>,
     ) -> Result<Fingerprint, CacheError> {
         let args_json = serde_json::to_vec(args)?;
-        let inputs_json = serde_json::to_vec(input_fingerprints)?;
+        let normalized_inputs = normalize_inputs_map(input_fingerprints);
+        let inputs_json = serde_json::to_vec(&normalized_inputs)?;
 
         let mut key_bytes = Vec::new();
         key_bytes.extend_from_slice(query_name.as_bytes());
