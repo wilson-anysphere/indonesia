@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { LanguageClient, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
+import { LanguageClient, State, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
 import * as path from 'path';
 import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
@@ -145,6 +145,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const clientOptions: LanguageClientOptions = {
     documentSelector,
+    outputChannel: serverOutput,
     synchronize: {
       fileEvents: fileWatcher,
     },
@@ -266,10 +267,32 @@ export async function activate(context: vscode.ExtensionContext) {
     clientStart.catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(`Nova: failed to start nova-lsp: ${message}`);
+      void stopLanguageClient();
     });
+  }
 
-    // Ensure the client is stopped when the extension is deactivated.
-    context.subscriptions.push(client);
+  async function ensureLanguageClientRunning(serverCommand: string): Promise<void> {
+    if (client && currentServerCommand === serverCommand) {
+      if (client.state === State.Running) {
+        return;
+      }
+      if (clientStart) {
+        try {
+          await clientStart;
+          return;
+        } catch {
+          await stopLanguageClient();
+        }
+      } else {
+        await stopLanguageClient();
+      }
+    } else if (client) {
+      await stopLanguageClient();
+    }
+
+    if (!client) {
+      await startLanguageClient(serverCommand);
+    }
   }
 
   async function installOrUpdateServer(): Promise<void> {
@@ -319,12 +342,7 @@ export async function activate(context: vscode.ExtensionContext) {
       const refreshed = readServerSettings();
       const resolved = await serverManager.resolveServerPath({ path: refreshed.path });
       if (resolved) {
-        if (client && currentServerCommand !== resolved) {
-          await stopLanguageClient();
-        }
-        if (!client) {
-          await startLanguageClient(resolved);
-        }
+        await ensureLanguageClientRunning(resolved);
       }
       missingServerPrompted = false;
     } catch (err) {
@@ -362,12 +380,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const serverPath = picked[0].fsPath;
     await setServerPath(serverPath);
     missingServerPrompted = false;
-    if (client && currentServerCommand !== serverPath) {
-      await stopLanguageClient();
-    }
-    if (!client) {
-      await startLanguageClient(serverPath);
-    }
+    await ensureLanguageClientRunning(serverPath);
   }
 
   async function showServerVersion(): Promise<void> {
@@ -429,15 +442,7 @@ export async function activate(context: vscode.ExtensionContext) {
       const resolved = await serverManager.resolveServerPath({ path: settings.path });
       if (resolved) {
         missingServerPrompted = false;
-        if (client && currentServerCommand === resolved) {
-          return;
-        }
-        if (client && currentServerCommand !== resolved) {
-          await stopLanguageClient();
-        }
-        if (!client) {
-          await startLanguageClient(resolved);
-        }
+        await ensureLanguageClientRunning(resolved);
         return;
       }
 
@@ -938,7 +943,7 @@ export function deactivate(): Thenable<void> | undefined {
     return undefined;
   }
 
-  return client.stop();
+  return client.stop().catch(() => undefined);
 }
 
 async function requireClient(): Promise<LanguageClient> {
