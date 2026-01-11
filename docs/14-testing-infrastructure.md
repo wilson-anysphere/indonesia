@@ -43,9 +43,7 @@ actionlint
 # VS Code extension packaging (also checks version sync)
 ./scripts/sync-versions.sh
 git diff --exit-code
-cd editors/vscode
-npm ci
-npm run package
+(cd editors/vscode && npm ci && npm run package)
 ```
 
 ## Full PR gate run (requires a JDK)
@@ -53,10 +51,18 @@ npm run package
 Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same core checks locally:
 
 ```bash
-# ci.yml
+# ci.yml (rust)
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+
+# ci.yml (workflows)
+actionlint
+
+# ci.yml (vscode)
+./scripts/sync-versions.sh
+git diff --exit-code
+(cd editors/vscode && npm ci && npm run package)
 
 # javac.yml (requires `javac` on PATH)
 cargo test -p nova-types --test javac_differential -- --ignored
