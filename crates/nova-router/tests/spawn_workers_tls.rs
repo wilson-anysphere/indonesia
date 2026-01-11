@@ -7,6 +7,7 @@ use nova_router::{
     tls::TlsServerConfig, DistributedRouterConfig, ListenAddr, QueryRouter, TcpListenAddr,
     WorkspaceLayout,
 };
+use rcgen::{CertificateParams, ExtendedKeyUsagePurpose, KeyPair};
 
 #[tokio::test]
 async fn spawn_workers_with_tcp_tls_is_rejected() {
@@ -14,12 +15,15 @@ async fn spawn_workers_with_tcp_tls_is_rejected() {
     let dir = tmp.path();
 
     let server_cert = {
-        let mut params = rcgen::CertificateParams::new(vec!["localhost".into()]);
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        rcgen::Certificate::from_params(params).unwrap()
+        let mut params = CertificateParams::new(vec!["localhost".into()]).unwrap();
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+
+        let key = KeyPair::generate().unwrap();
+        let cert = params.self_signed(&key).unwrap();
+        (cert, key)
     };
-    let cert_pem = server_cert.serialize_pem().unwrap();
-    let key_pem = server_cert.serialize_private_key_pem();
+    let cert_pem = server_cert.0.pem();
+    let key_pem = server_cert.1.serialize_pem();
 
     let cert_path = dir.join("router.pem");
     let key_path = dir.join("router.key");
@@ -36,6 +40,9 @@ async fn spawn_workers_with_tcp_tls_is_rejected() {
         cache_dir: dir.join("cache"),
         auth_token: None,
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };

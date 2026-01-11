@@ -12,10 +12,60 @@ use nova_router::{
     tls::TlsServerConfig, DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot,
     TcpListenAddr, TlsClientCertFingerprintAllowlist, WorkspaceLayout,
 };
+use rcgen::{
+    BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyPair, KeyUsagePurpose,
+};
 use sha2::Digest;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
+
+struct GeneratedCert {
+    cert: Certificate,
+    key: KeyPair,
+}
+
+fn generate_ca() -> anyhow::Result<GeneratedCert> {
+    let mut params = CertificateParams::default();
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![
+        KeyUsagePurpose::KeyCertSign,
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::CrlSign,
+    ];
+    params
+        .distinguished_name
+        .push(DnType::CommonName, "nova-router-test-ca");
+
+    let key = KeyPair::generate().context("generate CA key")?;
+    let cert = params.self_signed(&key).context("self-sign CA certificate")?;
+    Ok(GeneratedCert { cert, key })
+}
+
+fn generate_leaf_cert(
+    common_name: &str,
+    dns_names: Vec<String>,
+    eku: ExtendedKeyUsagePurpose,
+    ca: &GeneratedCert,
+) -> anyhow::Result<GeneratedCert> {
+    let mut params = CertificateParams::new(dns_names).context("create leaf cert params")?;
+    params.is_ca = IsCa::NoCa;
+    params.key_usages = vec![
+        KeyUsagePurpose::DigitalSignature,
+        KeyUsagePurpose::KeyEncipherment,
+    ];
+    params.extended_key_usages = vec![eku];
+    params
+        .distinguished_name
+        .push(DnType::CommonName, common_name);
+
+    let key = KeyPair::generate().context("generate leaf key")?;
+    let cert = params
+        .signed_by(&key, &ca.cert, &ca.key)
+        .context("sign leaf cert")?;
+    Ok(GeneratedCert { cert, key })
+}
 
 fn sha256_fingerprint_hex(der: &[u8]) -> String {
     let mut hasher = sha2::Sha256::new();
@@ -142,55 +192,35 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
     let tmp = tempfile::TempDir::new()?;
     let dir = tmp.path();
 
-    let ca = {
-        let mut params = rcgen::CertificateParams::default();
-        params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        params.key_usages = vec![
-            rcgen::KeyUsagePurpose::KeyCertSign,
-            rcgen::KeyUsagePurpose::DigitalSignature,
-            rcgen::KeyUsagePurpose::CrlSign,
-        ];
-        rcgen::Certificate::from_params(params)?
-    };
-    let ca_pem = ca.serialize_pem()?;
+    let ca = generate_ca()?;
+    let ca_pem = ca.cert.pem();
 
-    let server = {
-        let mut params = rcgen::CertificateParams::new(vec!["localhost".into()]);
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        rcgen::Certificate::from_params(params)?
-    };
-    let server_cert_pem = server.serialize_pem_with_signer(&ca)?;
-    let server_key_pem = server.serialize_private_key_pem();
+    let server = generate_leaf_cert(
+        "localhost",
+        vec!["localhost".into()],
+        ExtendedKeyUsagePurpose::ServerAuth,
+        &ca,
+    )?;
+    let server_cert_pem = server.cert.pem();
+    let server_key_pem = server.key.serialize_pem();
 
-    let client_a = rcgen::Certificate::from_params({
-        let mut params = rcgen::CertificateParams::default();
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        params
-    })?;
-    let client_a_cert_der = client_a.serialize_der_with_signer(&ca)?;
-    let client_a_cert_pem = client_a.serialize_pem_with_signer(&ca)?;
-    let client_a_key_pem = client_a.serialize_private_key_pem();
-    let client_a_fp = sha256_fingerprint_hex(&client_a_cert_der);
+    let client_a =
+        generate_leaf_cert("client-a", Vec::new(), ExtendedKeyUsagePurpose::ClientAuth, &ca)?;
+    let client_a_fp = sha256_fingerprint_hex(client_a.cert.der().as_ref());
+    let client_a_cert_pem = client_a.cert.pem();
+    let client_a_key_pem = client_a.key.serialize_pem();
 
-    let client_b = rcgen::Certificate::from_params({
-        let mut params = rcgen::CertificateParams::default();
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        params
-    })?;
-    let client_b_cert_der = client_b.serialize_der_with_signer(&ca)?;
-    let client_b_cert_pem = client_b.serialize_pem_with_signer(&ca)?;
-    let client_b_key_pem = client_b.serialize_private_key_pem();
-    let client_b_fp = sha256_fingerprint_hex(&client_b_cert_der);
+    let client_b =
+        generate_leaf_cert("client-b", Vec::new(), ExtendedKeyUsagePurpose::ClientAuth, &ca)?;
+    let client_b_fp = sha256_fingerprint_hex(client_b.cert.der().as_ref());
+    let client_b_cert_pem = client_b.cert.pem();
+    let client_b_key_pem = client_b.key.serialize_pem();
 
-    let client_c = rcgen::Certificate::from_params({
-        let mut params = rcgen::CertificateParams::default();
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-        params
-    })?;
-    let client_c_cert_der = client_c.serialize_der_with_signer(&ca)?;
-    let client_c_cert_pem = client_c.serialize_pem_with_signer(&ca)?;
-    let client_c_key_pem = client_c.serialize_private_key_pem();
-    let client_c_fp = sha256_fingerprint_hex(&client_c_cert_der);
+    let client_c =
+        generate_leaf_cert("client-c", Vec::new(), ExtendedKeyUsagePurpose::ClientAuth, &ca)?;
+    let client_c_fp = sha256_fingerprint_hex(client_c.cert.der().as_ref());
+    let client_c_cert_pem = client_c.cert.pem();
+    let client_c_key_pem = client_c.key.serialize_pem();
 
     let ca_path = dir.join("ca.pem");
     let server_cert_path = dir.join("router.pem");
