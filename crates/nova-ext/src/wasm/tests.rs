@@ -9,7 +9,7 @@ use nova_config::NovaConfig;
 use nova_core::FileId;
 use nova_core::ProjectId;
 use nova_scheduler::CancellationToken;
-use nova_types::{CompletionItem, Diagnostic};
+use nova_types::{ClassId, CompletionItem, Diagnostic, Span};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -237,6 +237,107 @@ const WAT_MEMORY_GROW: &str = r#"
 )
 "#;
 
+const WAT_ALL_PROVIDERS: &str = r#"
+(module
+  (memory (export "memory") 1)
+
+  (global $heap (mut i32) (i32.const 1024))
+
+  (func $nova_ext_alloc (export "nova_ext_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr)
+  )
+
+  (func $nova_ext_free (export "nova_ext_free") (param i32 i32)
+    nop
+  )
+
+  (func (export "nova_ext_abi_version") (result i32)
+    (i32.const 1)
+  )
+
+  ;; all 5 providers
+  (func (export "nova_ext_capabilities") (result i32)
+    (i32.const 31)
+  )
+
+  (data (i32.const 0) "[{\"message\":\"diag\"}]")
+  (data (i32.const 64) "[{\"label\":\"comp\"}]")
+  (data (i32.const 128) "[{\"title\":\"action\",\"kind\":\"quickfix\"}]")
+  (data (i32.const 256) "[{\"label\":\"hint\",\"span\":{\"start\":0,\"end\":1}}]")
+  (data (i32.const 384) "[{\"fileId\":1,\"span\":{\"start\":0,\"end\":1},\"label\":\"file-target\"}]")
+  (data (i32.const 512) "[{\"fileId\":2,\"span\":{\"start\":2,\"end\":3},\"label\":\"class-target\"}]")
+
+  (func $contains_class (param $ptr i32) (param $len i32) (result i32)
+    (local $i i32)
+    (local $end i32)
+    (if (i32.lt_u (local.get $len) (i32.const 5))
+      (then (return (i32.const 0))))
+    (local.set $end (i32.sub (local.get $len) (i32.const 5)))
+    (local.set $i (i32.const 0))
+    (block $break
+      (loop $loop
+        (br_if $break (i32.gt_u (local.get $i) (local.get $end)))
+        (if
+          (i32.and
+            (i32.eq (i32.load8_u (i32.add (local.get $ptr) (local.get $i))) (i32.const 99)) ;; 'c'
+            (i32.and
+              (i32.eq (i32.load8_u (i32.add (local.get $ptr) (i32.add (local.get $i) (i32.const 1)))) (i32.const 108)) ;; 'l'
+              (i32.and
+                (i32.eq (i32.load8_u (i32.add (local.get $ptr) (i32.add (local.get $i) (i32.const 2)))) (i32.const 97)) ;; 'a'
+                (i32.and
+                  (i32.eq (i32.load8_u (i32.add (local.get $ptr) (i32.add (local.get $i) (i32.const 3)))) (i32.const 115)) ;; 's'
+                  (i32.eq (i32.load8_u (i32.add (local.get $ptr) (i32.add (local.get $i) (i32.const 4)))) (i32.const 115)) ;; 's'
+                )
+              )
+            )
+          )
+          (then (return (i32.const 1)))
+        )
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $loop)
+      )
+    )
+    (i32.const 0)
+  )
+
+  (func $return_static (param $src i32) (param $len i32) (result i64)
+    (local $out_ptr i32)
+    (local.set $out_ptr (call $nova_ext_alloc (local.get $len)))
+    (memory.copy (local.get $out_ptr) (local.get $src) (local.get $len))
+    (i64.or
+      (i64.shl (i64.extend_i32_u (local.get $len)) (i64.const 32))
+      (i64.extend_i32_u (local.get $out_ptr))
+    )
+  )
+
+  (func (export "nova_ext_diagnostics") (param i32 i32) (result i64)
+    (call $return_static (i32.const 0) (i32.const 20))
+  )
+
+  (func (export "nova_ext_completions") (param i32 i32) (result i64)
+    (call $return_static (i32.const 64) (i32.const 18))
+  )
+
+  (func (export "nova_ext_code_actions") (param i32 i32) (result i64)
+    (call $return_static (i32.const 128) (i32.const 38))
+  )
+
+  (func (export "nova_ext_inlay_hints") (param i32 i32) (result i64)
+    (call $return_static (i32.const 256) (i32.const 45))
+  )
+
+  (func (export "nova_ext_navigation") (param $req_ptr i32) (param $req_len i32) (result i64)
+    (if (call $contains_class (local.get $req_ptr) (local.get $req_len))
+      (then (return (call $return_static (i32.const 512) (i32.const 64))))
+    )
+    (call $return_static (i32.const 384) (i32.const 63))
+  )
+)
+"#;
+
 #[test]
 fn abi_version_mismatch_is_rejected() {
     let err = match WasmPlugin::from_wat(
@@ -437,6 +538,115 @@ fn nova_config_overrides_wasm_timeout_and_memory_limits() {
     assert_eq!(
         diags[0].message, "grow_failed",
         "NovaConfig memory limit should override the plugin config"
+    );
+}
+
+#[test]
+fn all_provider_kinds_roundtrip() {
+    let plugin = Arc::new(
+        WasmPlugin::from_wat("all", WAT_ALL_PROVIDERS, WasmPluginConfig::default())
+            .expect("load module"),
+    );
+    assert_eq!(plugin.capabilities().bits(), 31);
+
+    let mut registry = ExtensionRegistry::<TestDb>::default();
+    plugin.register(&mut registry).unwrap();
+
+    let id = plugin.id().to_string();
+    assert_eq!(
+        registry.register_diagnostic_provider(Arc::new(DummyDiagProvider { id: id.clone() })),
+        Err(RegisterError::DuplicateId {
+            kind: "diagnostic",
+            id: id.clone()
+        })
+    );
+    assert_eq!(
+        registry.register_completion_provider(Arc::new(DummyCompletionProvider { id: id.clone() })),
+        Err(RegisterError::DuplicateId {
+            kind: "completion",
+            id: id.clone()
+        })
+    );
+    assert_eq!(
+        registry.register_code_action_provider(Arc::new(DummyCodeActionProvider { id: id.clone() })),
+        Err(RegisterError::DuplicateId {
+            kind: "code_action",
+            id: id.clone()
+        })
+    );
+    assert_eq!(
+        registry.register_navigation_provider(Arc::new(DummyNavigationProvider { id: id.clone() })),
+        Err(RegisterError::DuplicateId {
+            kind: "navigation",
+            id: id.clone()
+        })
+    );
+    assert_eq!(
+        registry.register_inlay_hint_provider(Arc::new(DummyInlayHintProvider { id: id.clone() })),
+        Err(RegisterError::DuplicateId {
+            kind: "inlay_hint",
+            id
+        })
+    );
+
+    let file = FileId::from_raw(1);
+    let db = Arc::new(TestDb {
+        text: "hello".to_string(),
+        path: None,
+    });
+
+    let actions = plugin.provide_code_actions(
+        ctx(Arc::clone(&db)),
+        CodeActionParams {
+            file,
+            span: Some(Span::new(0, 1)),
+        },
+    );
+    assert_eq!(
+        actions,
+        vec![CodeAction {
+            title: "action".to_string(),
+            kind: Some("quickfix".to_string()),
+        }]
+    );
+
+    let hints = plugin.provide_inlay_hints(ctx(Arc::clone(&db)), InlayHintParams { file });
+    assert_eq!(
+        hints,
+        vec![InlayHint {
+            span: Some(Span::new(0, 1)),
+            label: "hint".to_string(),
+        }]
+    );
+
+    let file_targets = plugin.provide_navigation(
+        ctx(Arc::clone(&db)),
+        NavigationParams {
+            symbol: crate::types::Symbol::File(file),
+        },
+    );
+    assert_eq!(
+        file_targets,
+        vec![NavigationTarget {
+            file,
+            span: Some(Span::new(0, 1)),
+            label: "file-target".to_string(),
+        }]
+    );
+
+    let class_targets = plugin.provide_navigation(
+        ctx(db),
+        NavigationParams {
+            symbol: crate::types::Symbol::Class(ClassId::from_raw(7)),
+        },
+    );
+    assert_eq!(
+        class_targets,
+        vec![NavigationTarget {
+            file: FileId::from_raw(2),
+            span: Some(Span::new(2, 3)),
+            label: "class-target".to_string(),
+        }]
     );
 }
 
