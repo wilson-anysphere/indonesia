@@ -26,12 +26,17 @@ would otherwise pick up.
 The `perf` GitHub Actions workflow (`.github/workflows/perf.yml`) runs the benchmark suite on pull
 requests and on pushes to `main`:
 
+- The workflow sets `CARGO_TARGET_DIR` to a shared directory so the baseline worktree and the
+  current checkout can reuse build artifacts. (Criterion output is read from
+  `$CARGO_TARGET_DIR/criterion`.)
+- The workflow pins the Rust toolchain to keep cached `main` baselines comparable over time.
 - **Pull requests:** produce a baseline run for the PR base SHA (either by downloading a cached
-  baseline from `main` or by benching the base commit in a git worktree), then bench the PR head,
+  baseline artifact from `main` or by benching the base commit in a git worktree), then bench the
+  PR head,
   capture both via `nova perf capture`, and compare via `nova perf compare --thresholds-config
   perf/thresholds.toml`.
 - **Pushes to `main`:** bench the current `main` commit and upload `perf-current.json` as the
-  reusable baseline artifact for future PRs.
+  reusable baseline artifact (`perf-baseline-main`) for future PRs.
 
 ### Suites
 
