@@ -262,58 +262,83 @@ fn automatic_module_name_from_manifest(bytes: &[u8]) -> Option<ModuleName> {
 }
 
 fn derive_automatic_module_name(path: &Path) -> ModuleName {
-    let name = path
-        .file_stem()
-        .or_else(|| path.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or("unnamed");
+    let stem = automatic_module_name_stem(path).unwrap_or("unnamed");
+    let stem = strip_version_suffix(stem);
 
-    let mut base = name.to_string();
-    if let Some(pos) = base
-        .as_bytes()
-        .windows(2)
-        .position(|w| w[0] == b'-' && w[1].is_ascii_digit())
-    {
-        base.truncate(pos);
-    }
-
-    let mut normalized = String::with_capacity(base.len());
-    let mut last_dot = false;
-    for ch in base.chars() {
-        let keep = ch.is_ascii_alphanumeric() || ch == '_' || ch == '$';
-        let out = if keep { ch } else { '.' };
-        if out == '.' {
-            if last_dot {
-                continue;
-            }
-            last_dot = true;
+    // Replace non-alphanumeric characters with '.' and collapse sequences down
+    // to a single dot (mirrors `java.lang.module.ModuleFinder`'s automatic
+    // module naming algorithm).
+    let mut normalized = String::with_capacity(stem.len());
+    let mut last_was_dot = true; // trim leading dots by default
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch);
+            last_was_dot = false;
+        } else if !last_was_dot {
             normalized.push('.');
-        } else {
-            last_dot = false;
-            normalized.push(out);
+            last_was_dot = true;
         }
     }
-    let normalized = normalized.trim_matches('.').to_string();
+    if normalized.ends_with('.') {
+        normalized.pop();
+    }
 
-    let mut parts = Vec::new();
+    if normalized.is_empty() {
+        return ModuleName::new("_");
+    }
+
+    let mut parts_out = Vec::new();
     for part in normalized.split('.') {
         if part.is_empty() {
             continue;
         }
-        let mut part = part.to_string();
-        if part.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
-            part.insert(0, '_');
+        if part.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+            parts_out.push(format!("_{part}"));
+        } else {
+            parts_out.push(part.to_string());
         }
-        parts.push(part);
     }
 
-    let module = if parts.is_empty() {
-        "unnamed".to_string()
+    if parts_out.is_empty() {
+        ModuleName::new("_")
     } else {
-        parts.join(".")
-    };
+        ModuleName::new(parts_out.join("."))
+    }
+}
 
-    ModuleName::new(module)
+fn automatic_module_name_stem(path: &Path) -> Option<&str> {
+    if path.is_dir() {
+        return path.file_name().and_then(|s| s.to_str());
+    }
+
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    let is_archive = ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod");
+    if is_archive {
+        path.file_stem().and_then(|s| s.to_str())
+    } else {
+        path.file_name().and_then(|s| s.to_str())
+    }
+}
+
+fn strip_version_suffix(stem: &str) -> &str {
+    // Strip a trailing "version" suffix that starts at the first `-` followed
+    // by digits and then either `.` or the end of the string (equivalent to the
+    // regex `-(\d+(\.|$))`).
+    let bytes = stem.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'-' && bytes[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j == bytes.len() || bytes[j] == b'.' {
+                return &stem[..i];
+            }
+        }
+        i += 1;
+    }
+    stem
 }
 
 #[cfg(test)]
@@ -389,6 +414,18 @@ mod tests {
         assert_eq!(
             derive_automatic_module_name(Path::new("guava-33.0.0-jre.jar")).as_str(),
             "guava"
+        );
+        // Ensure we don't strip artifact IDs like `foo-2bar` (version-stripping
+        // only triggers when digits are followed by `.` or end-of-string).
+        assert_eq!(
+            derive_automatic_module_name(Path::new("foo-2bar.jar")).as_str(),
+            "foo._2bar"
+        );
+
+        // Dotted directory names should not be truncated by `Path::file_stem()`.
+        assert_eq!(
+            derive_automatic_module_name(Path::new("com.example.app")).as_str(),
+            "com.example.app"
         );
     }
 
