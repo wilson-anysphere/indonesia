@@ -355,7 +355,7 @@ impl Handle {
 
         let request_type = request_type(&request);
 
-        let start = tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG)
+        let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG)
             .then(Instant::now);
 
         let span = tracing::debug_span!(
@@ -550,8 +550,7 @@ async fn client_handshake(
     stream: &mut BoxedStream,
     config: &ClientConfig,
 ) -> Result<RouterWelcome> {
-    let start =
-        tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG).then(Instant::now);
+    let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
 
     tracing::debug!(
         target: TRACE_TARGET,
@@ -661,8 +660,7 @@ async fn server_handshake(
     stream: &mut BoxedStream,
     config: &ServerConfig,
 ) -> Result<(RouterWelcome, ShardId, bool)> {
-    let start =
-        tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG).then(Instant::now);
+    let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
 
     tracing::debug!(
         target: TRACE_TARGET,
@@ -1071,6 +1069,20 @@ async fn read_loop(
                     continue;
                 }
 
+                if let Err(err) = chunked_packets.try_reserve(1) {
+                    tracing::debug!(
+                        target: TRACE_TARGET,
+                        event = "chunk_state_alloc_failed",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
+                        request_id = id,
+                        error = ?err
+                    );
+                    let mut pending = inner.pending.lock().await;
+                    pending.clear();
+                    break;
+                }
+
                 let max_packet_len = inner.negotiated.capabilities.max_packet_len as usize;
                 let entry = chunked_packets.entry(id).or_insert_with(|| ChunkState {
                     compression,
@@ -1112,6 +1124,21 @@ async fn read_loop(
                     break;
                 }
 
+                if let Err(err) = entry.data.try_reserve(data.len()) {
+                    tracing::debug!(
+                        target: TRACE_TARGET,
+                        event = "chunk_data_alloc_failed",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
+                        request_id = id,
+                        current = entry.data.len(),
+                        incoming = data.len(),
+                        error = ?err
+                    );
+                    let mut pending = inner.pending.lock().await;
+                    pending.clear();
+                    break;
+                }
                 entry.data.extend_from_slice(&data);
 
                 if !last {
