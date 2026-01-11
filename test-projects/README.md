@@ -12,6 +12,14 @@ Run the ignored “real project” test suites with:
 ./scripts/run-real-project-tests.sh
 ```
 
+To focus on a subset of fixtures (matches `clone-test-projects.sh`):
+```bash
+./scripts/run-real-project-tests.sh --only guava,spring-petclinic
+
+# or:
+NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/run-real-project-tests.sh
+```
+
 Best-effort helper to compile the fixtures with their build toolchain (sanity-check your local JDK/Maven):
 ```bash
 ./scripts/javac-validate.sh
