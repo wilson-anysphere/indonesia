@@ -1,6 +1,8 @@
 use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
-use crate::util::{atomic_write, now_millis};
+use crate::util::{
+    atomic_write, bincode_deserialize, bincode_serialize, now_millis, read_file_limited,
+};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -64,7 +66,7 @@ impl DerivedArtifactCache {
             value,
         };
 
-        let bytes = bincode::serialize(&persisted)?;
+        let bytes = bincode_serialize(&persisted)?;
         atomic_write(&path, &bytes)
     }
 
@@ -79,11 +81,11 @@ impl DerivedArtifactCache {
             return Ok(None);
         }
 
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(None),
+        let bytes = match read_file_limited(&path) {
+            Some(bytes) => bytes,
+            None => return Ok(None),
         };
-        let persisted: PersistedDerivedValueOwned<T> = match bincode::deserialize(&bytes) {
+        let persisted: PersistedDerivedValueOwned<T> = match bincode_deserialize(&bytes) {
             Ok(value) => value,
             Err(_) => return Ok(None),
         };

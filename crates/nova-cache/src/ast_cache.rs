@@ -1,7 +1,8 @@
 use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
-use crate::util::{atomic_write, now_millis};
-use bincode::Options;
+use crate::util::{
+    atomic_write, bincode_deserialize, bincode_serialize, now_millis, read_file_limited,
+};
 use fs2::FileExt as _;
 use nova_hir::{ItemTree, SymbolSummary};
 use nova_syntax::ParseResult;
@@ -46,7 +47,8 @@ impl AstCacheMetadata {
     }
 
     fn is_compatible(&self) -> bool {
-        self.schema_version == AST_ARTIFACT_SCHEMA_VERSION && self.nova_version == nova_core::NOVA_VERSION
+        self.schema_version == AST_ARTIFACT_SCHEMA_VERSION
+            && self.nova_version == nova_core::NOVA_VERSION
     }
 }
 
@@ -126,11 +128,11 @@ impl AstArtifactCache {
             return Ok(None);
         }
 
-        let bytes = match std::fs::read(artifact_path) {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(None),
+        let bytes = match read_file_limited(&artifact_path) {
+            Some(bytes) => bytes,
+            None => return Ok(None),
         };
-        let persisted: PersistedAstArtifactsOwned = match decode(&bytes) {
+        let persisted: PersistedAstArtifactsOwned = match bincode_deserialize(&bytes) {
             Ok(persisted) => persisted,
             Err(_) => return Ok(None),
         };
@@ -202,7 +204,7 @@ impl AstArtifactCache {
             },
         );
 
-        let meta_bytes = encode(&metadata)?;
+        let meta_bytes = bincode_serialize(&metadata)?;
         atomic_write(&self.metadata_path, &meta_bytes)?;
         Ok(())
     }
@@ -243,12 +245,12 @@ impl AstArtifactCache {
             return AstCacheMetadata::empty();
         }
 
-        let bytes = match std::fs::read(&self.metadata_path) {
-            Ok(bytes) => bytes,
-            Err(_) => return AstCacheMetadata::empty(),
+        let bytes = match read_file_limited(&self.metadata_path) {
+            Some(bytes) => bytes,
+            None => return AstCacheMetadata::empty(),
         };
 
-        match decode::<AstCacheMetadata>(&bytes) {
+        match bincode_deserialize::<AstCacheMetadata>(&bytes) {
             Ok(metadata) => metadata,
             Err(_) => AstCacheMetadata::empty(),
         }
@@ -260,19 +262,8 @@ fn artifact_file_name(file_path: &str) -> String {
     format!("{}.ast", fingerprint.as_str())
 }
 
-fn bincode_options() -> impl bincode::Options {
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_little_endian()
-        .with_no_limit()
-}
-
 fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, CacheError> {
-    Ok(bincode_options().serialize(value)?)
-}
-
-fn decode<T: for<'de> Deserialize<'de>>(bytes: &[u8]) -> Result<T, CacheError> {
-    Ok(bincode_options().deserialize(bytes)?)
+    bincode_serialize(value)
 }
 
 #[cfg(test)]
