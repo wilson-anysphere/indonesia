@@ -27,19 +27,21 @@ struct MockRunnerInner {
 }
 
 impl MockRunner {
-    fn with_stdout(mut self, program: &str, args: &[&str], stdout: String) -> Self {
+    fn with_stdout(self, program: &str, args: &[&str], stdout: String) -> Self {
         let key = (
             program.to_string(),
             args.iter().map(|s| s.to_string()).collect(),
         );
-        let mut guard = self.inner.responses.lock().expect("responses lock");
-        guard.insert(
-            key,
-            CommandOutput {
-                stdout,
-                stderr: String::new(),
-            },
-        );
+        {
+            let mut guard = self.inner.responses.lock().expect("responses lock");
+            guard.insert(
+                key,
+                CommandOutput {
+                    stdout,
+                    stderr: String::new(),
+                },
+            );
+        }
         self
     }
 }
@@ -166,8 +168,8 @@ fn loads_bazel_targets_as_module_configs() {
         lib.language_level,
         JavaLanguageLevel {
             release: Some(JavaVersion(21)),
-            source: None,
-            target: None,
+            source: Some(JavaVersion(21)),
+            target: Some(JavaVersion(21)),
             preview: true,
         }
     );
