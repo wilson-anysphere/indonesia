@@ -111,7 +111,7 @@ fn java_language_level(db: &dyn NovaSyntax, _file: FileId) -> nova_syntax::JavaL
     let cfg = db.project_config(ProjectId::from_raw(0));
     nova_syntax::JavaLanguageLevel {
         major: cfg.java.source.0,
-        preview: false,
+        preview: cfg.java.enable_preview,
     }
 }
 
@@ -119,8 +119,7 @@ fn syntax_feature_diagnostics(db: &dyn NovaSyntax, file: FileId) -> Arc<Vec<Diag
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
-    let _span =
-        tracing::debug_span!("query", name = "syntax_feature_diagnostics", ?file).entered();
+    let _span = tracing::debug_span!("query", name = "syntax_feature_diagnostics", ?file).entered();
 
     cancel::check_cancelled(db);
 
@@ -155,16 +154,21 @@ mod tests {
 
     use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
 
-    use crate::SourceRootId;
     use crate::salsa::RootDatabase;
+    use crate::SourceRootId;
 
     fn config_with_source(source: JavaVersion) -> ProjectConfig {
+        config_with_source_preview(source, false)
+    }
+
+    fn config_with_source_preview(source: JavaVersion, enable_preview: bool) -> ProjectConfig {
         ProjectConfig {
             workspace_root: PathBuf::new(),
             build_system: BuildSystem::Simple,
             java: JavaConfig {
                 source,
                 target: source,
+                enable_preview,
             },
             modules: Vec::new(),
             jpms_modules: Vec::new(),
@@ -210,6 +214,45 @@ mod tests {
         db.set_project_config(
             ProjectId::from_raw(0),
             Arc::new(config_with_source(JavaVersion(10))),
+        );
+        let diags = db.syntax_feature_diagnostics(file);
+        assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn feature_diagnostics_respect_enable_preview() {
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(2);
+
+        db.set_file_exists(file, true);
+        db.set_source_root(file, SourceRootId::from_raw(0));
+        db.set_file_content(
+            file,
+            Arc::new(
+                "class Foo { void m(int x) { switch (x) { case 1 -> { } default -> { } } } }"
+                    .to_string(),
+            ),
+        );
+
+        db.set_project_config(
+            ProjectId::from_raw(0),
+            Arc::new(config_with_source_preview(JavaVersion(13), false)),
+        );
+
+        let parse = db.parse_java(file);
+        assert!(
+            parse.errors.is_empty(),
+            "expected Java parse errors to be empty, got: {:?}",
+            parse.errors
+        );
+
+        let diags = db.syntax_feature_diagnostics(file);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, "JAVA_FEATURE_SWITCH_EXPRESSIONS");
+
+        db.set_project_config(
+            ProjectId::from_raw(0),
+            Arc::new(config_with_source_preview(JavaVersion(13), true)),
         );
         let diags = db.syntax_feature_diagnostics(file);
         assert!(diags.is_empty());

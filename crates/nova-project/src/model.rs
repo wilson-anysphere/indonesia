@@ -36,6 +36,7 @@ impl JavaVersion {
 pub struct JavaConfig {
     pub source: JavaVersion,
     pub target: JavaVersion,
+    pub enable_preview: bool,
 }
 
 impl Default for JavaConfig {
@@ -43,6 +44,7 @@ impl Default for JavaConfig {
         Self {
             source: JavaVersion::JAVA_17,
             target: JavaVersion::JAVA_17,
+            enable_preview: false,
         }
     }
 }

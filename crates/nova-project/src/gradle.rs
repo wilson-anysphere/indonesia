@@ -438,10 +438,15 @@ fn extract_java_config_from_build_script(contents: &str) -> Option<JavaConfig> {
     }
 
     match (source, target) {
-        (Some(source), Some(target)) => Some(JavaConfig { source, target }),
+        (Some(source), Some(target)) => Some(JavaConfig {
+            source,
+            target,
+            enable_preview: false,
+        }),
         (Some(v), None) | (None, Some(v)) => Some(JavaConfig {
             source: v,
             target: v,
+            enable_preview: false,
         }),
         (None, None) => None,
     }

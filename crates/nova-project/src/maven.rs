@@ -395,8 +395,10 @@ fn discover_modules_recursive(
             RawPom::default()
         };
 
-        let effective =
-            Arc::new(EffectivePom::from_raw(&raw_pom, Some(parent_effective.as_ref())));
+        let effective = Arc::new(EffectivePom::from_raw(
+            &raw_pom,
+            Some(parent_effective.as_ref()),
+        ));
 
         let mut child_modules = raw_pom.modules.clone();
         child_modules.sort();
@@ -621,6 +623,7 @@ fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> 
         return Some(JavaConfig {
             source: v,
             target: v,
+            enable_preview: false,
         });
     }
 
@@ -632,10 +635,15 @@ fn java_from_properties(props: &BTreeMap<String, String>) -> Option<JavaConfig> 
         .and_then(|v| JavaVersion::parse(v));
 
     match (source, target) {
-        (Some(source), Some(target)) => Some(JavaConfig { source, target }),
+        (Some(source), Some(target)) => Some(JavaConfig {
+            source,
+            target,
+            enable_preview: false,
+        }),
         (Some(v), None) | (None, Some(v)) => Some(JavaConfig {
             source: v,
             target: v,
+            enable_preview: false,
         }),
         (None, None) => None,
     }

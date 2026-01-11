@@ -369,6 +369,7 @@ impl RootDatabase {
                 java: JavaConfig {
                     source: JavaVersion::JAVA_21,
                     target: JavaVersion::JAVA_21,
+                    enable_preview: false,
                 },
                 modules: Vec::new(),
                 jpms_modules: Vec::new(),
