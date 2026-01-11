@@ -221,6 +221,8 @@ export async function activate(context: vscode.ExtensionContext) {
   let installTask: Promise<{ path: string; version: string }> | undefined;
   let currentServerCommand: string | undefined;
   let missingServerPrompted = false;
+  let ensureTask: Promise<void> | undefined;
+  let ensurePromptRequested = false;
 
   async function stopLanguageClient(): Promise<void> {
     if (!client) {
@@ -296,7 +298,16 @@ export async function activate(context: vscode.ExtensionContext) {
         },
       );
       vscode.window.showInformationMessage(`Nova: Installed nova-lsp ${installed.version}.`);
-      await ensureLanguageClientStarted({ promptForInstall: false });
+      const refreshed = readServerSettings();
+      const resolved = await serverManager.resolveServerPath({ path: refreshed.path });
+      if (resolved) {
+        if (client && currentServerCommand !== resolved) {
+          await stopLanguageClient();
+        }
+        if (!client) {
+          await startLanguageClient(resolved);
+        }
+      }
       missingServerPrompted = false;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -330,8 +341,15 @@ export async function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    await setServerPath(picked[0].fsPath);
-    await ensureLanguageClientStarted({ promptForInstall: false });
+    const serverPath = picked[0].fsPath;
+    await setServerPath(serverPath);
+    missingServerPrompted = false;
+    if (client && currentServerCommand !== serverPath) {
+      await stopLanguageClient();
+    }
+    if (!client) {
+      await startLanguageClient(serverPath);
+    }
   }
 
   async function showServerVersion(): Promise<void> {
@@ -360,77 +378,108 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   async function ensureLanguageClientStarted(opts?: { promptForInstall?: boolean }): Promise<void> {
-    const settings = readServerSettings();
-    const resolved = await serverManager.resolveServerPath({ path: settings.path });
-    if (resolved) {
-      missingServerPrompted = false;
-      if (client && currentServerCommand === resolved) {
+    if (opts?.promptForInstall) {
+      ensurePromptRequested = true;
+    }
+
+    if (ensureTask) {
+      await ensureTask;
+      return;
+    }
+
+    ensureTask = (async () => {
+      while (true) {
+        const promptForInstall = ensurePromptRequested;
+        ensurePromptRequested = false;
+        await doEnsureLanguageClientStarted(promptForInstall);
+        if (!ensurePromptRequested) {
+          break;
+        }
+      }
+    })();
+
+    try {
+      await ensureTask;
+    } finally {
+      ensureTask = undefined;
+    }
+  }
+
+  async function doEnsureLanguageClientStarted(promptForInstall: boolean): Promise<void> {
+    while (true) {
+      const settings = readServerSettings();
+      const resolved = await serverManager.resolveServerPath({ path: settings.path });
+      if (resolved) {
+        missingServerPrompted = false;
+        if (client && currentServerCommand === resolved) {
+          return;
+        }
+        if (client && currentServerCommand !== resolved) {
+          await stopLanguageClient();
+        }
+        if (!client) {
+          await startLanguageClient(resolved);
+        }
         return;
       }
-      if (client && currentServerCommand !== resolved) {
-        await stopLanguageClient();
-      }
-      if (!client) {
-        await startLanguageClient(resolved);
-      }
-      return;
-    }
 
-    if (settings.path) {
-      const actions = ['Use Local Server Binary...', 'Clear Setting'];
-      if (settings.autoDownload) {
-        actions.push('Install/Update Server');
+      if (settings.path) {
+        const actions = ['Use Local Server Binary...', 'Clear Setting'];
+        if (settings.autoDownload) {
+          actions.push('Install/Update Server');
+        }
+        const choice = await vscode.window.showErrorMessage(
+          `Nova: nova.server.path points to a missing file: ${settings.path}`,
+          ...actions,
+        );
+        if (choice === 'Use Local Server Binary...') {
+          await useLocalServerBinary();
+        } else if (choice === 'Clear Setting') {
+          await setServerPath(null);
+          continue;
+        } else if (choice === 'Install/Update Server') {
+          await installOrUpdateServer();
+        }
+        return;
       }
-      const choice = await vscode.window.showErrorMessage(
-        `Nova: nova.server.path points to a missing file: ${settings.path}`,
-        ...actions,
-      );
-      if (choice === 'Use Local Server Binary...') {
-        await useLocalServerBinary();
-      } else if (choice === 'Clear Setting') {
-        await setServerPath(null);
-        await ensureLanguageClientStarted(opts);
-      } else if (choice === 'Install/Update Server') {
-        await installOrUpdateServer();
+
+      if (!promptForInstall) {
+        return;
       }
-      return;
-    }
 
-    if (!opts?.promptForInstall) {
-      return;
-    }
+      if (!settings.autoDownload) {
+        if (missingServerPrompted) {
+          return;
+        }
+        missingServerPrompted = true;
+        const action = await vscode.window.showErrorMessage(
+          'Nova: nova-lsp is not installed. Set nova.server.path or run Nova: Install/Update Server.',
+          'Install/Update Server',
+          'Use Local Server Binary...',
+        );
+        if (action === 'Install/Update Server') {
+          await installOrUpdateServer();
+        } else if (action === 'Use Local Server Binary...') {
+          await useLocalServerBinary();
+        }
+        return;
+      }
 
-    if (!settings.autoDownload) {
       if (missingServerPrompted) {
         return;
       }
       missingServerPrompted = true;
-      const action = await vscode.window.showErrorMessage(
-        'Nova: nova-lsp is not installed. Set nova.server.path or run Nova: Install/Update Server.',
-        'Install/Update Server',
+      const choice = await vscode.window.showInformationMessage(
+        'Nova: nova-lsp is not installed. Install it now?',
+        'Install',
         'Use Local Server Binary...',
       );
-      if (action === 'Install/Update Server') {
+      if (choice === 'Install') {
         await installOrUpdateServer();
-      } else if (action === 'Use Local Server Binary...') {
+      } else if (choice === 'Use Local Server Binary...') {
         await useLocalServerBinary();
       }
       return;
-    }
-
-    if (missingServerPrompted) {
-      return;
-    }
-    missingServerPrompted = true;
-    const installChoice = await vscode.window.showInformationMessage(
-      'Nova: nova-lsp is not installed. Install it now?',
-      'Install',
-      'Use Local Server Binary...',
-    );
-    if (installChoice === 'Use Local Server Binary...') {
-      await useLocalServerBinary();
-    } else if (installChoice === 'Install') {
-      await installOrUpdateServer();
     }
   }
 
