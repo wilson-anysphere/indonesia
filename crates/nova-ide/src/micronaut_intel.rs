@@ -11,6 +11,8 @@ use nova_framework_micronaut::{is_micronaut_applicable, is_micronaut_applicable_
 use nova_framework_micronaut::{AnalysisResult, ConfigFile, JavaSource};
 use nova_project::ProjectConfig;
 
+use crate::framework_cache;
+
 #[derive(Clone)]
 struct CachedAnalysis {
     signature: u64,
@@ -20,21 +22,18 @@ struct CachedAnalysis {
 static ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedAnalysis>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-#[derive(Clone)]
-struct CachedProjectConfig {
-    fingerprint: u64,
-    config: Option<Arc<ProjectConfig>>,
-}
-
-static PROJECT_CONFIG_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedProjectConfig>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
 pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<AnalysisResult>> {
     let path = db.file_path(file)?;
     let root = project_root_for_path(path);
 
-    let (sources, config_files, mut signature) = gather_workspace_inputs(db, &root);
-    signature ^= build_marker_fingerprint(&root);
+    let config = framework_cache::project_config(&root);
+    let config_signature = config
+        .as_deref()
+        .map(project_config_signature)
+        .unwrap_or_default();
+
+    let (sources, config_files, base_signature) = gather_workspace_inputs(db, &root);
+    let signature = combined_signature(base_signature, config_signature);
 
     // Fast path: cache hit.
     {
@@ -46,7 +45,6 @@ pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<A
         }
     }
 
-    let config = project_config_for_root(&root);
     let applicable = is_applicable(&config, &sources);
     let analysis = if applicable {
         Some(Arc::new(
@@ -103,40 +101,9 @@ fn is_applicable(config: &Option<Arc<ProjectConfig>>, sources: &[JavaSource]) ->
     sources.iter().any(|src| src.text.contains("io.micronaut."))
 }
 
-fn project_config_for_root(root: &Path) -> Option<Arc<ProjectConfig>> {
-    let fingerprint = build_marker_fingerprint(root);
-
-    {
-        let cache = PROJECT_CONFIG_CACHE
-            .lock()
-            .expect("project config cache poisoned");
-        if let Some(entry) = cache
-            .get(root)
-            .filter(|entry| entry.fingerprint == fingerprint)
-        {
-            return entry.config.clone();
-        }
-    }
-
-    let loaded = nova_project::load_project(root).ok().map(Arc::new);
-    let mut cache = PROJECT_CONFIG_CACHE
-        .lock()
-        .expect("project config cache poisoned");
-    cache.insert(
-        root.to_path_buf(),
-        CachedProjectConfig {
-            fingerprint,
-            config: loaded.clone(),
-        },
-    );
-    loaded
-}
-
 fn project_root_for_path(path: &Path) -> PathBuf {
     if path.exists() {
-        if let Some(root) = find_build_root(path) {
-            return root;
-        }
+        return framework_cache::project_root_for_path(path);
     }
 
     // Heuristic fallback (works for in-memory DB fixtures): `.../src/...` -> project is parent of `src`.
@@ -156,61 +123,31 @@ fn project_root_for_path(path: &Path) -> PathBuf {
     path.parent().unwrap_or(path).to_path_buf()
 }
 
-fn find_build_root(path: &Path) -> Option<PathBuf> {
-    const MARKERS: &[&str] = &[
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-        "WORKSPACE",
-        "WORKSPACE.bazel",
-        "MODULE.bazel",
-    ];
-
-    let mut dir = if path.is_dir() { path } else { path.parent()? };
-
-    loop {
-        if MARKERS.iter().any(|marker| dir.join(marker).is_file()) {
-            return Some(dir.to_path_buf());
-        }
-        dir = dir.parent()?;
+fn project_config_signature(cfg: &ProjectConfig) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for dep in &cfg.dependencies {
+        dep.group_id.hash(&mut hasher);
+        dep.artifact_id.hash(&mut hasher);
+        dep.version.hash(&mut hasher);
+        dep.scope.hash(&mut hasher);
+        dep.classifier.hash(&mut hasher);
+        dep.type_.hash(&mut hasher);
     }
+    for entry in cfg
+        .classpath
+        .iter()
+        .chain(cfg.module_path.iter())
+        .map(|e| &e.path)
+    {
+        entry.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
-fn build_marker_fingerprint(root: &Path) -> u64 {
-    const MARKERS: &[&str] = &[
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-        "WORKSPACE",
-        "WORKSPACE.bazel",
-        "MODULE.bazel",
-    ];
-
+fn combined_signature(base: u64, config: u64) -> u64 {
     let mut hasher = DefaultHasher::new();
-    for marker in MARKERS {
-        marker.hash(&mut hasher);
-        let path = root.join(marker);
-        match std::fs::metadata(&path) {
-            Ok(meta) => {
-                true.hash(&mut hasher);
-                meta.len().hash(&mut hasher);
-                if let Ok(modified) = meta.modified() {
-                    if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
-                        duration.as_secs().hash(&mut hasher);
-                        duration.subsec_nanos().hash(&mut hasher);
-                    }
-                }
-            }
-            Err(_) => {
-                false.hash(&mut hasher);
-            }
-        }
-    }
-
+    base.hash(&mut hasher);
+    config.hash(&mut hasher);
     hasher.finish()
 }
 
