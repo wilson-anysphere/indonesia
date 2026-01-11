@@ -111,6 +111,13 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_type_in_index(&self, name: &QualifiedName) -> Option<TypeName> {
+        // The runtime forbids application class loaders from defining `java.*` packages. Mirror
+        // that behavior here so "fake" `java.lang.Foo` classes on the classpath don't affect
+        // name resolution (and so tests can model this accurately).
+        if is_java_qualified_name(name) {
+            return resolve_type_with_nesting(self.jdk, name);
+        }
+
         if let Some(classpath) = self.classpath {
             if let Some(ty) = resolve_type_with_nesting(classpath, name) {
                 return Some(ty);
@@ -125,12 +132,20 @@ impl<'a> Resolver<'a> {
         package: &PackageName,
         name: &Name,
     ) -> Option<TypeName> {
+        if is_java_package(package) {
+            return self.jdk.resolve_type_in_package(package, name);
+        }
+
         self.classpath
             .and_then(|cp| cp.resolve_type_in_package(package, name))
             .or_else(|| self.jdk.resolve_type_in_package(package, name))
     }
 
     fn package_exists(&self, package: &PackageName) -> bool {
+        if is_java_package(package) {
+            return self.jdk.package_exists(package);
+        }
+
         self.classpath.is_some_and(|cp| cp.package_exists(package))
             || self.jdk.package_exists(package)
     }
@@ -855,6 +870,19 @@ mod tests {
         );
         assert_eq!(resolver.resolve_import(&imports, None, &Name::from("Foo")), None);
     }
+}
+
+fn is_java_package(package: &PackageName) -> bool {
+    package
+        .segments()
+        .first()
+        .is_some_and(|seg| seg.as_str() == "java")
+}
+
+fn is_java_qualified_name(name: &QualifiedName) -> bool {
+    name.segments()
+        .first()
+        .is_some_and(|seg| seg.as_str() == "java")
 }
 
 pub(crate) fn resolve_type_with_nesting(
