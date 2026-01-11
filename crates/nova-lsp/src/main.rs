@@ -2,9 +2,10 @@ mod codec;
 
 use codec::{read_json_message, write_json_message};
 use lsp_types::{
-    CodeAction, CodeActionKind, CompletionItem, CompletionList, CompletionParams,
-    Position as LspTypesPosition, Range as LspTypesRange, RenameParams as LspRenameParams,
-    TextDocumentPositionParams, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
+    CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
+    CompletionList, CompletionParams, Position as LspTypesPosition, Range as LspTypesRange,
+    RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
+    WorkspaceEdit as LspWorkspaceEdit,
 };
 use nova_ai::context::{
     ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
@@ -252,6 +253,7 @@ fn parse_config_arg(args: &[String]) -> Option<PathBuf> {
 
 struct ServerState {
     shutdown_requested: bool,
+    project_root: Option<PathBuf>,
     documents: HashMap<String, Document>,
     cancelled_requests: HashSet<String>,
     ai: Option<AiService>,
@@ -319,6 +321,7 @@ impl ServerState {
 
         Self {
             shutdown_requested: false,
+            project_root: None,
             documents: HashMap::new(),
             cancelled_requests: HashSet::new(),
             ai,
@@ -380,6 +383,14 @@ fn handle_request(
 
     match method {
         "initialize" => {
+            // Capture workspace root to power CodeLens execute commands.
+            let init_params: InitializeParams =
+                serde_json::from_value(params.clone()).unwrap_or_default();
+            state.project_root = init_params
+                .project_root_uri()
+                .and_then(|uri| path_from_uri(uri))
+                .or_else(|| init_params.root_path.map(PathBuf::from));
+
             // Minimal initialize response. We advertise the handful of standard
             // capabilities that Nova supports today; editor integrations can
             // still call custom `nova/*` requests directly.
@@ -410,11 +421,18 @@ fn handle_request(
                             "refactor.rewrite"
                         ]
                     },
+                    "codeLensProvider": {
+                        "resolveProvider": true
+                    },
                     "executeCommandProvider": {
                         "commands": [
                             COMMAND_EXPLAIN_ERROR,
                             COMMAND_GENERATE_METHOD_BODY,
                             COMMAND_GENERATE_TESTS,
+                            "nova.runTest",
+                            "nova.debugTest",
+                            "nova.runMain",
+                            "nova.debugMain",
                             "nova.extractMethod",
                             "nova.safeDelete"
                         ]
@@ -474,6 +492,30 @@ fn handle_request(
             let result = handle_code_action_resolve(params, state);
             Ok(match result {
                 Ok(action) => json!({ "jsonrpc": "2.0", "id": id, "result": action }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/codeLens" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_code_lens(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "codeLens/resolve" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_code_lens_resolve(params);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
                     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
                 }
@@ -790,6 +832,37 @@ fn request_id_key(id: &serde_json::Value) -> Option<String> {
         serde_json::Value::Number(number) => Some(number.to_string()),
         serde_json::Value::String(string) => Some(string.clone()),
         _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct InitializeParams {
+    #[serde(default)]
+    root_uri: Option<String>,
+    /// Legacy initialize param (path, not URI).
+    #[serde(default)]
+    root_path: Option<String>,
+    #[serde(default)]
+    workspace_folders: Option<Vec<InitializeWorkspaceFolder>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InitializeWorkspaceFolder {
+    uri: String,
+    #[allow(dead_code)]
+    name: Option<String>,
+}
+
+impl InitializeParams {
+    fn project_root_uri(&self) -> Option<&str> {
+        self.root_uri.as_deref().or_else(|| {
+            self.workspace_folders
+                .as_ref()?
+                .first()
+                .map(|f| f.uri.as_str())
+        })
     }
 }
 
@@ -1316,6 +1389,354 @@ fn handle_rename(
     workspace_edit_to_lsp(&db, &edit).map_err(|e| e.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodeLensParams {
+    text_document: TextDocumentIdentifier,
+}
+
+fn handle_code_lens(
+    params: serde_json::Value,
+    state: &ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: CodeLensParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+    let Some(source) = load_document_text(state, &uri) else {
+        return Ok(serde_json::Value::Array(Vec::new()));
+    };
+
+    let lenses = code_lenses_for_java(&uri, &source);
+    serde_json::to_value(lenses).map_err(|e| e.to_string())
+}
+
+fn handle_code_lens_resolve(params: serde_json::Value) -> Result<serde_json::Value, String> {
+    // We eagerly resolve CodeLens commands in `textDocument/codeLens`, but some clients still call
+    // `codeLens/resolve` unconditionally. Echo the lens back to avoid "method not found".
+    let lens: LspCodeLens = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    serde_json::to_value(lens).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Clone)]
+struct ClassDecl {
+    id: String,
+    name_offset: usize,
+}
+
+fn code_lenses_for_java(_uri: &str, text: &str) -> Vec<LspCodeLens> {
+    let package = parse_java_package(text);
+    let mut classes: Vec<ClassDecl> = Vec::new();
+    let mut class_offsets = std::collections::HashMap::<String, usize>::new();
+    let mut test_classes = std::collections::BTreeSet::<String>::new();
+
+    let mut lenses = Vec::new();
+    let mut pending_test = false;
+    let mut line_offset = 0usize;
+
+    for raw_line in text.split_inclusive('\n') {
+        let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
+
+        if let Some(decl) = parse_java_class_decl(line, line_offset, package.as_deref()) {
+            class_offsets.insert(decl.id.clone(), decl.name_offset);
+            classes.push(decl);
+        }
+
+        // Best-effort JUnit detection: look for `@Test` and bind it to the next method declaration.
+        if looks_like_test_annotation_line(line) {
+            // Handle inline `@Test void foo() {}` declarations.
+            if let Some((method_name, local_offset)) = extract_method_name(line) {
+                if let Some(class) = current_class_for_offset(&classes, line_offset + local_offset)
+                {
+                    let method_id = format!("{}#{method_name}", class.id);
+                    test_classes.insert(class.id.clone());
+                    push_test_lenses(&mut lenses, text, line_offset + local_offset, method_id);
+                }
+                pending_test = false;
+            } else {
+                pending_test = true;
+            }
+        } else if pending_test {
+            let trimmed = line.trim_start();
+            if trimmed.is_empty()
+                || trimmed.starts_with('@')
+                || trimmed.starts_with("//")
+                || trimmed.starts_with("/*")
+            {
+                // Another annotation or comment between `@Test` and the method declaration.
+            } else if let Some((method_name, local_offset)) = extract_method_name(line) {
+                if let Some(class) = current_class_for_offset(&classes, line_offset + local_offset)
+                {
+                    let method_id = format!("{}#{method_name}", class.id);
+                    test_classes.insert(class.id.clone());
+                    push_test_lenses(&mut lenses, text, line_offset + local_offset, method_id);
+                }
+                pending_test = false;
+            }
+        }
+
+        if let Some(local_offset) = find_main_method_name_offset(line) {
+            if let Some(class) = current_class_for_offset(&classes, line_offset + local_offset) {
+                push_main_lenses(
+                    &mut lenses,
+                    text,
+                    line_offset + local_offset,
+                    class.id.clone(),
+                );
+            }
+        }
+
+        line_offset += raw_line.len();
+    }
+
+    // Add class-level test lenses once per class.
+    for class_id in test_classes {
+        if let Some(&offset) = class_offsets.get(&class_id) {
+            push_test_lenses(&mut lenses, text, offset, class_id);
+        }
+    }
+
+    lenses
+}
+
+fn current_class_for_offset<'a>(classes: &'a [ClassDecl], offset: usize) -> Option<&'a ClassDecl> {
+    classes.iter().rev().find(|decl| decl.name_offset <= offset)
+}
+
+fn push_test_lenses(lenses: &mut Vec<LspCodeLens>, text: &str, offset: usize, test_id: String) {
+    let range = LspTypesRange::new(
+        offset_to_position_utf16(text, offset),
+        offset_to_position_utf16(text, offset),
+    );
+    let run_args = json!({ "testId": test_id });
+    lenses.push(LspCodeLens {
+        range,
+        command: Some(LspCommand {
+            title: "Run Test".to_string(),
+            command: "nova.runTest".to_string(),
+            arguments: Some(vec![run_args.clone()]),
+        }),
+        data: Some(run_args.clone()),
+    });
+    lenses.push(LspCodeLens {
+        range,
+        command: Some(LspCommand {
+            title: "Debug Test".to_string(),
+            command: "nova.debugTest".to_string(),
+            arguments: Some(vec![run_args]),
+        }),
+        data: None,
+    });
+}
+
+fn push_main_lenses(lenses: &mut Vec<LspCodeLens>, text: &str, offset: usize, main_class: String) {
+    let range = LspTypesRange::new(
+        offset_to_position_utf16(text, offset),
+        offset_to_position_utf16(text, offset),
+    );
+    let args = json!({ "mainClass": main_class });
+    lenses.push(LspCodeLens {
+        range,
+        command: Some(LspCommand {
+            title: "Run Main".to_string(),
+            command: "nova.runMain".to_string(),
+            arguments: Some(vec![args.clone()]),
+        }),
+        data: Some(args.clone()),
+    });
+    lenses.push(LspCodeLens {
+        range,
+        command: Some(LspCommand {
+            title: "Debug Main".to_string(),
+            command: "nova.debugMain".to_string(),
+            arguments: Some(vec![args]),
+        }),
+        data: None,
+    });
+}
+
+fn parse_java_package(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("package") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            continue;
+        }
+        let pkg = rest.split(';').next().unwrap_or("").trim();
+        if !pkg.is_empty() {
+            return Some(pkg.to_string());
+        }
+    }
+    None
+}
+
+fn parse_java_class_decl(
+    line: &str,
+    line_offset: usize,
+    package: Option<&str>,
+) -> Option<ClassDecl> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('*') {
+        return None;
+    }
+
+    let bytes = line.as_bytes();
+    let mut tokens: Vec<(&str, usize)> = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        while i < bytes.len() && (bytes[i] as char).is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        if !(bytes[i] as char).is_ascii_alphabetic() && bytes[i] != b'_' && bytes[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        while i < bytes.len()
+            && ((bytes[i] as char).is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+        {
+            i += 1;
+        }
+        let token = &line[start..i];
+        tokens.push((token, start));
+    }
+
+    let mut idx = 0usize;
+    while idx < tokens.len() {
+        let token = tokens[idx].0;
+        if is_java_modifier(token) {
+            idx += 1;
+            continue;
+        }
+        break;
+    }
+
+    let Some((kind, _)) = tokens.get(idx).copied() else {
+        return None;
+    };
+    if !matches!(kind, "class" | "interface" | "enum" | "record") {
+        return None;
+    }
+    let Some((name, name_col)) = tokens.get(idx + 1).copied() else {
+        return None;
+    };
+
+    let id = match package {
+        Some(pkg) => format!("{pkg}.{name}"),
+        None => name.to_string(),
+    };
+    Some(ClassDecl {
+        id,
+        name_offset: line_offset + name_col,
+    })
+}
+
+fn is_java_modifier(token: &str) -> bool {
+    matches!(
+        token,
+        "public"
+            | "protected"
+            | "private"
+            | "abstract"
+            | "final"
+            | "static"
+            | "sealed"
+            | "non"
+            | "strictfp"
+    )
+}
+
+fn looks_like_test_annotation_line(line: &str) -> bool {
+    // Best-effort: match `@Test` and `@org.junit.jupiter.api.Test` but avoid `@TestFactory`.
+    for (needle, offset) in [
+        ("@Test", 0usize),
+        (
+            "@org.junit.jupiter.api.Test",
+            "@org.junit.jupiter.api.".len(),
+        ),
+    ] {
+        if let Some(idx) = line.find(needle) {
+            let end = idx + needle.len();
+            let after = line.as_bytes().get(end).copied();
+            // Must be a word boundary (or end of line).
+            if after.is_none()
+                || !((after.unwrap() as char).is_ascii_alphanumeric() || after.unwrap() == b'_')
+            {
+                // For the fully-qualified form, ensure we're matching the `Test` token at the end.
+                if offset == 0 || needle.ends_with("Test") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn extract_method_name(line: &str) -> Option<(String, usize)> {
+    let open_paren = line.find('(')?;
+    let before = &line[..open_paren];
+    let trimmed = before.trim_end();
+    let bytes = trimmed.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+
+    // Scan backwards for the last identifier in `before`.
+    let mut end = trimmed.len();
+    while end > 0 && (bytes[end - 1] as char).is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0
+        && ((bytes[start - 1] as char).is_ascii_alphanumeric()
+            || bytes[start - 1] == b'_'
+            || bytes[start - 1] == b'$')
+    {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+
+    Some((trimmed[start..end].to_string(), start))
+}
+
+fn find_main_method_name_offset(line: &str) -> Option<usize> {
+    // Very conservative filter to avoid false positives.
+    if !(line.contains("public") && line.contains("static") && line.contains("void")) {
+        return None;
+    }
+
+    // Find `main` at a word boundary, followed by `(`.
+    let mut search = line;
+    let mut base = 0usize;
+    while let Some(rel) = search.find("main") {
+        let idx = base + rel;
+        let before = line.as_bytes().get(idx.wrapping_sub(1)).copied();
+        let after = line.as_bytes().get(idx + 4).copied();
+        let before_ok = before
+            .map(|b| !((b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'))
+            .unwrap_or(true);
+        let after_ok = after == Some(b'(') || after == Some(b' ') || after == Some(b'\t');
+        if before_ok && after_ok {
+            // Require `String` somewhere after the `main` token to approximate the signature.
+            if line[idx..].contains("String") {
+                return Some(idx);
+            }
+        }
+        let next = rel + 4;
+        base += next;
+        search = &search[next..];
+    }
+
+    None
+}
+
 fn handle_completion(
     params: serde_json::Value,
     state: &ServerState,
@@ -1461,6 +1882,91 @@ fn handle_execute_command(
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
 
     match params.command.as_str() {
+        "nova.runTest" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct RunTestArgs {
+                test_id: String,
+            }
+            let args: RunTestArgs = parse_first_arg(params.arguments)?;
+            let project_root = state.project_root.as_ref().ok_or_else(|| {
+                (
+                    -32602,
+                    "missing project root (initialize.rootUri)".to_string(),
+                )
+            })?;
+
+            let payload = json!({
+                "projectRoot": project_root.to_string_lossy(),
+                "buildTool": "auto",
+                "tests": [args.test_id],
+            });
+            let result = nova_lsp::handle_custom_request(nova_lsp::TEST_RUN_METHOD, payload)
+                .map_err(map_nova_lsp_error)?;
+            Ok(json!({ "ok": true, "kind": "testRun", "result": result }))
+        }
+        "nova.debugTest" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct DebugTestArgs {
+                test_id: String,
+            }
+            let args: DebugTestArgs = parse_first_arg(params.arguments)?;
+            let project_root = state.project_root.as_ref().ok_or_else(|| {
+                (
+                    -32602,
+                    "missing project root (initialize.rootUri)".to_string(),
+                )
+            })?;
+            let payload = json!({
+                "projectRoot": project_root.to_string_lossy(),
+                "buildTool": "auto",
+                "test": args.test_id,
+            });
+            let result =
+                nova_lsp::handle_custom_request(nova_lsp::TEST_DEBUG_CONFIGURATION_METHOD, payload)
+                    .map_err(map_nova_lsp_error)?;
+            Ok(json!({ "ok": true, "kind": "testDebugConfiguration", "result": result }))
+        }
+        "nova.runMain" | "nova.debugMain" => {
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct RunMainArgs {
+                main_class: String,
+            }
+            let args: RunMainArgs = parse_first_arg(params.arguments)?;
+            let project_root = state.project_root.as_ref().ok_or_else(|| {
+                (
+                    -32602,
+                    "missing project root (initialize.rootUri)".to_string(),
+                )
+            })?;
+            let payload = json!({
+                "projectRoot": project_root.to_string_lossy(),
+            });
+            let configs_value =
+                nova_lsp::handle_custom_request(nova_lsp::DEBUG_CONFIGURATIONS_METHOD, payload)
+                    .map_err(map_nova_lsp_error)?;
+            let configs: Vec<nova_ide::DebugConfiguration> =
+                serde_json::from_value(configs_value).map_err(|e| (-32603, e.to_string()))?;
+
+            let config = select_debug_configuration_for_main(&configs, &args.main_class)
+                .ok_or_else(|| {
+                    (
+                        -32602,
+                        format!("no debug configuration found for {}", args.main_class),
+                    )
+                })?;
+
+            let mode = if params.command == "nova.runMain" {
+                "run"
+            } else {
+                "debug"
+            };
+            Ok(
+                json!({ "ok": true, "kind": "mainConfiguration", "mode": mode, "configuration": config }),
+            )
+        }
         "nova.extractMethod" => {
             let args: nova_ide::code_action::ExtractMethodCommandArgs =
                 parse_first_arg(params.arguments)?;
@@ -1538,6 +2044,25 @@ fn handle_execute_command(
         }
         _ => Err((-32602, format!("unknown command: {}", params.command))),
     }
+}
+
+fn map_nova_lsp_error(err: nova_lsp::NovaLspError) -> (i32, String) {
+    match err {
+        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+    }
+}
+
+fn select_debug_configuration_for_main(
+    configs: &[nova_ide::DebugConfiguration],
+    main_class: &str,
+) -> Option<nova_ide::DebugConfiguration> {
+    configs
+        .iter()
+        .filter(|c| c.main_class == main_class)
+        .cloned()
+        .find(|c| c.name.starts_with("Run "))
+        .or_else(|| configs.iter().find(|c| c.main_class == main_class).cloned())
 }
 
 fn load_document_text(state: &ServerState, uri: &str) -> Option<String> {
