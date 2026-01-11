@@ -666,4 +666,59 @@ mod tests {
             .collect();
         assert_eq!(rel_modules, vec!["module-a", "module-b"]);
     }
+
+    #[test]
+    fn help_evaluate_args_replaces_expression_in_configured_args() {
+        let build = MavenBuild::new(MavenConfig::default());
+        let args = build.help_evaluate_args("project.testClasspathElements");
+        assert!(args.iter().any(|a| a == "-q"));
+        assert!(args.iter().any(|a| a == "-DforceStdout"));
+        assert!(args.iter().any(|a| a == "help:evaluate"));
+        assert!(args
+            .iter()
+            .any(|a| a == "-Dexpression=project.testClasspathElements"));
+        assert!(!args
+            .iter()
+            .any(|a| a == "-Dexpression=project.compileClasspathElements"));
+    }
+
+    #[test]
+    fn help_evaluate_args_injects_defaults_when_missing() {
+        let mut cfg = MavenConfig::default();
+        cfg.classpath_args = vec!["-Pdemo".into()];
+        let build = MavenBuild::new(cfg);
+        let args = build.help_evaluate_args("project.compileSourceRoots");
+        assert_eq!(
+            args,
+            vec![
+                "-q",
+                "-DforceStdout",
+                "-Pdemo",
+                "-Dexpression=project.compileSourceRoots",
+                "help:evaluate"
+            ]
+        );
+    }
+
+    #[test]
+    fn help_evaluate_args_dedupes_multiple_expression_flags() {
+        let mut cfg = MavenConfig::default();
+        cfg.classpath_args = vec![
+            "-q".into(),
+            "-DforceStdout".into(),
+            "-Dexpression=foo".into(),
+            "-Dexpression=bar".into(),
+            "help:evaluate".into(),
+        ];
+        let build = MavenBuild::new(cfg);
+        let args = build.help_evaluate_args("project.build.outputDirectory");
+        let expr_count = args
+            .iter()
+            .filter(|a| a.starts_with("-Dexpression="))
+            .count();
+        assert_eq!(expr_count, 1);
+        assert!(args
+            .iter()
+            .any(|a| a == "-Dexpression=project.build.outputDirectory"));
+    }
 }
