@@ -292,6 +292,8 @@ pub enum SyntaxKind {
     ProvidesDirective,
 
     DefaultValue,
+
+    /// Root node produced by [`crate::parse_java_expression`].
     ExpressionRoot,
     ModuleDirective,
 

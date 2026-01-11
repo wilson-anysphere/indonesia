@@ -218,6 +218,16 @@ impl JavaParseResult {
         SyntaxNode::new_root(self.green.clone())
     }
 
+    /// Returns the top-level expression when this parse result was produced by
+    /// [`parse_java_expression`].
+    pub fn expression(&self) -> Option<SyntaxNode> {
+        let root = self.syntax();
+        if root.kind() != SyntaxKind::ExpressionRoot {
+            return None;
+        }
+        root.children().next()
+    }
+
     pub fn token_at_offset(&self, offset: u32) -> rowan::TokenAtOffset<SyntaxToken> {
         self.syntax().token_at_offset(TextSize::from(offset))
     }
@@ -252,6 +262,18 @@ pub fn parse_expression(input: &str) -> JavaParseResult {
         green: parser.builder.finish(),
         errors: parser.errors,
     }
+}
+
+/// Parses `input` as a standalone Java expression.
+///
+/// This entry point is intended for debugger/expression-evaluation scenarios where the input is
+/// not a full compilation unit.
+///
+/// - The returned syntax tree is always rooted at [`SyntaxKind::ExpressionRoot`].
+/// - A trailing semicolon (`;`) is accepted.
+/// - Use [`JavaParseResult::expression`] to obtain the parsed expression node.
+pub fn parse_java_expression(input: &str) -> JavaParseResult {
+    Parser::new(input).parse_expression_root()
 }
 
 pub(crate) fn parse_block_fragment(input: &str) -> JavaParseResult {
@@ -373,6 +395,35 @@ impl<'a> Parser<'a> {
 
         self.eat_trivia();
         self.expect(SyntaxKind::Eof, "expected end of file");
+        self.builder.finish_node();
+
+        JavaParseResult {
+            green: self.builder.finish(),
+            errors: self.errors,
+        }
+    }
+
+    fn parse_expression_root(mut self) -> JavaParseResult {
+        self.builder.start_node(SyntaxKind::ExpressionRoot.into());
+        self.eat_trivia();
+        self.parse_expression(0);
+        self.eat_trivia();
+
+        if self.at(SyntaxKind::Semicolon) {
+            self.bump();
+        }
+
+        self.eat_trivia();
+
+        if !self.at(SyntaxKind::Eof) {
+            self.builder.start_node(SyntaxKind::Error.into());
+            self.error_here("unexpected tokens after expression");
+            self.recover_to(TokenSet::new(&[SyntaxKind::Eof]));
+            self.builder.finish_node();
+        }
+
+        self.eat_trivia();
+        self.expect(SyntaxKind::Eof, "expected end of expression");
         self.builder.finish_node();
 
         JavaParseResult {

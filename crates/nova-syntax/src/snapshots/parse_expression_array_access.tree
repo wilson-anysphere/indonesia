@@ -1,0 +1,9 @@
+ExpressionRoot
+  ArrayAccessExpression
+    NameExpression
+      Identifier "arr"
+    LBracket "["
+    NameExpression
+      Identifier "i"
+    RBracket "]"
+  Eof ""

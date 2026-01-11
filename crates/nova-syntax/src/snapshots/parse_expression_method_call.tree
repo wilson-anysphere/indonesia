@@ -1,0 +1,16 @@
+ExpressionRoot
+  MethodCallExpression
+    NameExpression
+      Identifier "obj"
+      Dot "."
+      Identifier "method"
+    ArgumentList
+      LParen "("
+      LiteralExpression
+        IntLiteral "1"
+      Comma ","
+      Whitespace " "
+      LiteralExpression
+        StringLiteral "\"hi\""
+      RParen ")"
+  Eof ""

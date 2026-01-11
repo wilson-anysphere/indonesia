@@ -1,0 +1,7 @@
+ExpressionRoot
+  FieldAccessExpression
+    ThisExpression
+      ThisKw "this"
+    Dot "."
+    Identifier "field"
+  Eof ""

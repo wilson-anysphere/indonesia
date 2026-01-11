@@ -1,0 +1,10 @@
+ExpressionRoot
+  BinaryExpression
+    NameExpression
+      Identifier "x"
+      Whitespace " "
+    Plus "+"
+    Whitespace " "
+    LiteralExpression
+      IntLiteral "1"
+  Eof ""
