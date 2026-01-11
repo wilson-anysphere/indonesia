@@ -179,12 +179,24 @@ pub fn javac_version() -> Option<u32> {
 }
 
 fn parse_javac_version(output: &str) -> Option<u32> {
-    let mut it = output.trim().split_whitespace();
-    let tool = it.next()?;
-    if tool != "javac" {
-        return None;
+    // `javac -version` sometimes prints additional lines to stderr (e.g.
+    // `Picked up _JAVA_OPTIONS...`). Scan for the `javac <version>` line.
+    for line in output.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("javac") else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            continue;
+        }
+        let version = rest.split_whitespace().next()?;
+        return parse_javac_version_token(version);
     }
-    let version = it.next()?;
+    None
+}
+
+fn parse_javac_version_token(version: &str) -> Option<u32> {
     let mut nums = version.split(|c| c == '.' || c == '_');
     let first_part = nums.next()?;
     let first_digits: String = first_part
@@ -380,6 +392,14 @@ mod tests {
     #[test]
     fn parses_javac_version_ea() {
         assert_eq!(parse_javac_version("javac 21-ea"), Some(21));
+    }
+
+    #[test]
+    fn parses_javac_version_with_java_options_noise() {
+        assert_eq!(
+            parse_javac_version("Picked up _JAVA_OPTIONS: -Dfoo=bar\njavac 21.0.9\n"),
+            Some(21)
+        );
     }
 
     #[test]
