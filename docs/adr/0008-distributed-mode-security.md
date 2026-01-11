@@ -241,10 +241,14 @@ Implemented:
 - Basic protocol hardening:
   - maximum frame size enforcement (reject oversized length prefixes),
   - handshake timeouts and limits on concurrent handshakes.
+- Fuzz targets for the v3 codec/transport (defense-in-depth against malformed/untrusted inputs):
+  - `crates/nova-remote-proto/fuzz/`
+  - `crates/nova-remote-rpc/fuzz/`
 
 Remaining work:
 
-- Fuzz tests for the codec and handshake.
+- Expand fuzzing coverage to include end-to-end router/worker handshake and application-level RPC
+  surfaces (beyond the core v3 codec/transport fuzz targets).
 - Rate limiting / connection caps appropriate for untrusted networks.
 - Operational “takeover” support for orchestrated restarts (if needed) should remain an explicit,
   audited configuration choice.
