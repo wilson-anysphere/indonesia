@@ -1,8 +1,12 @@
 use crate::ast::{
-    AstNode, ClassDeclaration, ClassMember, CompilationUnit, Expression, ExpressionFragment,
-    ModuleDirectiveKind, Statement, StatementFragment, SwitchRuleBody, TypeDeclaration,
+    AstNode, BlockFragment, ClassDeclaration, ClassMember, ClassMemberFragment, CompilationUnit,
+    Expression, ExpressionFragment, ModuleDirectiveKind, Statement, StatementFragment,
+    SwitchRuleBody, TypeDeclaration,
 };
-use crate::{parse_java, parse_java_expression_fragment, parse_java_statement_fragment};
+use crate::{
+    parse_java, parse_java_block_fragment, parse_java_class_member_fragment,
+    parse_java_expression_fragment, parse_java_statement_fragment,
+};
 use crate::SyntaxKind;
 
 #[test]
@@ -46,6 +50,26 @@ fn fragment_root_wrappers_work() {
     assert!(
         matches!(stmt, Statement::ReturnStatement(_)),
         "expected return statement, got {stmt:?}"
+    );
+
+    let block_parse = parse_java_block_fragment("{ int x = 1; }", 0);
+    assert!(block_parse.parse.errors.is_empty());
+    let fragment = BlockFragment::cast(block_parse.parse.syntax()).expect("BlockFragment");
+    let block = fragment.block().expect("block");
+    assert!(
+        block.statements()
+            .any(|stmt| matches!(stmt, Statement::LocalVariableDeclarationStatement(_))),
+        "expected local variable declaration statement in fragment"
+    );
+
+    let member_parse = parse_java_class_member_fragment("int x = 1;", 0);
+    assert!(member_parse.parse.errors.is_empty());
+    let fragment =
+        ClassMemberFragment::cast(member_parse.parse.syntax()).expect("ClassMemberFragment");
+    let member = fragment.member().expect("member");
+    assert!(
+        matches!(member, ClassMember::FieldDeclaration(_)),
+        "expected field declaration, got {member:?}"
     );
 }
 
