@@ -59,6 +59,56 @@ describe('serverManager helpers', () => {
 });
 
 describe('ServerManager install flow', () => {
+  it('skips download when the requested version is already installed', async () => {
+    const { Volume, createFsFromVolume } = await import('memfs');
+    const vol = new Volume();
+    const memfs = createFsFromVolume(vol) as typeof import('node:fs');
+
+    vi.doMock('node:fs/promises', () => memfs.promises as unknown as typeof import('node:fs/promises'));
+    vi.doMock('node:fs', () => memfs);
+
+    const { ServerManager } = await import('./serverManager');
+
+    await memfs.promises.mkdir('/storage/server', { recursive: true });
+    await memfs.promises.writeFile('/storage/server/nova-lsp', 'binary');
+    await memfs.promises.writeFile(
+      '/storage/server/nova-lsp.json',
+      JSON.stringify(
+        {
+          version: 'v0.1.0',
+          target: 'x86_64-unknown-linux-gnu',
+          releaseApiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
+        },
+        null,
+        2,
+      ),
+    );
+
+    const fetchMock = vi.fn();
+    const extractor = {
+      extractBinaryFromArchive: vi.fn(),
+    };
+
+    const manager = new ServerManager('/storage', undefined, {
+      fetch: fetchMock as unknown as typeof fetch,
+      platform: 'linux',
+      arch: 'x64',
+      extractor,
+    });
+
+    const result = await manager.installOrUpdate({
+      path: null,
+      autoDownload: true,
+      releaseChannel: 'stable',
+      version: 'v0.1.0',
+      releaseUrl: 'wilson-anysphere/indonesia',
+    });
+
+    expect(result).toEqual({ path: '/storage/server/nova-lsp', version: 'v0.1.0' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(extractor.extractBinaryFromArchive).not.toHaveBeenCalled();
+  });
+
   it('downloads, verifies, and installs nova-lsp', async () => {
     const { Volume, createFsFromVolume } = await import('memfs');
     const vol = new Volume();

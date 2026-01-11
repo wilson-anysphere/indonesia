@@ -85,12 +85,44 @@ export class ServerManager {
     const serverDir = path.join(this.storageRoot, 'server');
     await fs.mkdir(serverDir, { recursive: true });
 
+    const finalBinaryPath = this.getManagedServerPath();
+    const metadataPath = path.join(serverDir, 'nova-lsp.json');
+
+    const desiredTag = normalizeVersionTag(settings.version);
+    if (desiredTag !== 'latest') {
+      const installed = await readInstalledMetadata(metadataPath);
+      if (
+        installed &&
+        installed.version === desiredTag &&
+        installed.target === target &&
+        (installed.releaseApiBaseUrl ?? parseGitHubRepo(installed.releaseUrl ?? '')?.apiBaseUrl) === repo.apiBaseUrl &&
+        (await fileExists(fs, finalBinaryPath))
+      ) {
+        this.log(`nova-lsp ${desiredTag} is already installed`);
+        return { path: finalBinaryPath, version: desiredTag };
+      }
+    }
+
     const tag = await resolveTag({
       fetchImpl: this.fetchImpl,
       repo,
       releaseChannel: settings.releaseChannel,
       version: settings.version,
     });
+
+    {
+      const installed = await readInstalledMetadata(metadataPath);
+      if (
+        installed &&
+        installed.version === tag &&
+        installed.target === target &&
+        (installed.releaseApiBaseUrl ?? parseGitHubRepo(installed.releaseUrl ?? '')?.apiBaseUrl) === repo.apiBaseUrl &&
+        (await fileExists(fs, finalBinaryPath))
+      ) {
+        this.log(`nova-lsp ${tag} is already installed`);
+        return { path: finalBinaryPath, version: tag };
+      }
+    }
 
     const release = await fetchReleaseByTag({ fetchImpl: this.fetchImpl, repo, tag });
     const archiveName = novaLspArchiveName(target, this.platform);
@@ -110,8 +142,6 @@ export class ServerManager {
 
     const tmpArchivePath = path.join(serverDir, `${archiveName}.tmp`);
     const tmpBinaryPath = path.join(serverDir, `${novaLspBinaryName(this.platform)}.tmp`);
-    const finalBinaryPath = this.getManagedServerPath();
-    const metadataPath = path.join(serverDir, 'nova-lsp.json');
 
     await safeRm(fs, tmpArchivePath);
     await safeRm(fs, tmpBinaryPath);
@@ -145,6 +175,7 @@ export class ServerManager {
             version: release.tag_name,
             target,
             releaseUrl: settings.releaseUrl,
+            releaseApiBaseUrl: repo.apiBaseUrl,
           },
           null,
           2,
@@ -181,6 +212,14 @@ type GitHubReleaseAsset = {
 type GitHubRelease = {
   tag_name: string;
   assets: GitHubReleaseAsset[];
+};
+
+type InstalledServerMetadata = {
+  installedAt?: string;
+  version?: string;
+  target?: string;
+  releaseUrl?: string;
+  releaseApiBaseUrl?: string;
 };
 
 export function parseGitHubRepo(input: string): GitHubRepo | undefined {
@@ -265,9 +304,9 @@ async function resolveTag(opts: {
   releaseChannel: ReleaseChannel;
   version: string;
 }): Promise<string> {
-  const raw = opts.version.trim();
-  if (raw !== 'latest') {
-    return raw.startsWith('v') ? raw : `v${raw}`;
+  const normalized = normalizeVersionTag(opts.version);
+  if (normalized !== 'latest') {
+    return normalized;
   }
 
   if (opts.releaseChannel === 'stable') {
@@ -284,6 +323,38 @@ async function resolveTag(opts: {
     throw new Error(`No releases found for ${opts.repo.owner}/${opts.repo.repo}`);
   }
   return candidate.tag_name;
+}
+
+function normalizeVersionTag(version: string): string {
+  const trimmed = version.trim();
+  if (trimmed === 'latest') {
+    return 'latest';
+  }
+  if (!trimmed) {
+    return 'latest';
+  }
+  if (trimmed.startsWith('v')) {
+    return trimmed;
+  }
+  return `v${trimmed}`;
+}
+
+async function readInstalledMetadata(filePath: string): Promise<InstalledServerMetadata | undefined> {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw) as InstalledServerMetadata;
+    if (!parsed || typeof parsed !== 'object') {
+      return undefined;
+    }
+    const version = typeof parsed.version === 'string' ? parsed.version : undefined;
+    const target = typeof parsed.target === 'string' ? parsed.target : undefined;
+    const releaseUrl = typeof parsed.releaseUrl === 'string' ? parsed.releaseUrl : undefined;
+    const releaseApiBaseUrl = typeof parsed.releaseApiBaseUrl === 'string' ? parsed.releaseApiBaseUrl : undefined;
+    const installedAt = typeof parsed.installedAt === 'string' ? parsed.installedAt : undefined;
+    return { installedAt, version, target, releaseUrl, releaseApiBaseUrl };
+  } catch {
+    return undefined;
+  }
 }
 
 async function fetchReleaseByTag(opts: { fetchImpl: typeof fetch; repo: GitHubRepo; tag: string }): Promise<GitHubRelease> {
