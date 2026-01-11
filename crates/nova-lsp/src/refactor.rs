@@ -125,9 +125,9 @@ pub fn safe_delete_code_action(
     index: &Index,
     target: SafeDeleteTarget,
 ) -> Option<CodeActionOrCommand> {
-    let title_base = match target {
+    let title_base = match &target {
         SafeDeleteTarget::Symbol(id) => index
-            .find_symbol(id)
+            .find_symbol(*id)
             .map(|sym| format!("Safe delete `{}`", sym.name))
             .unwrap_or_else(|| "Safe delete".to_string()),
     };
