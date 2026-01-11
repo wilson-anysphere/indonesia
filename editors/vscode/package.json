@@ -100,7 +100,7 @@
             "null"
           ],
           "default": null,
-          "description": "Override the nova-dap binary path (debug adapter). Supports ~ and ${workspaceFolder}. Relative paths resolve against the first workspace folder."
+          "description": "Override the nova-dap binary path (debug adapter). Supports ~ and ${workspaceFolder}. Relative paths resolve against the first workspace folder. When unset, Nova will search $PATH and can fall back to managed downloads (nova.download.mode)."
         },
         "nova.download.mode": {
           "type": "string",

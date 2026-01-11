@@ -110,6 +110,8 @@ Tests are discovered via `nova/test/discover` and can be run from the Test Explo
 
 Nova contributes a `nova` debug type backed by the `nova-dap` binary (DAP over stdio).
 
+If Nova can't find a usable `nova-dap` (via `nova.dap.path` or on `$PATH`), it can download and install a matching version into VS Code global storage (controlled by `nova.download.mode`).
+
 ### Attach configuration
 
 In `.vscode/launch.json`:

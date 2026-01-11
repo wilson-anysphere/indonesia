@@ -172,6 +172,22 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
     throw new UserFacingError('nova-dap is not installed');
   }
 
+  private async pickLocalDapBinary(config: vscode.WorkspaceConfiguration): Promise<string | undefined> {
+    const picked = await vscode.window.showOpenDialog({
+      title: 'Select nova-dap binary',
+      canSelectMany: false,
+      canSelectFolders: false,
+      canSelectFiles: true,
+    });
+    if (!picked?.length) {
+      return undefined;
+    }
+
+    const pickedPath = picked[0].fsPath;
+    await config.update('dap.path', pickedPath, vscode.ConfigurationTarget.Global);
+    return pickedPath;
+  }
+
   private async resolveNovaDapCommand(session: vscode.DebugSession): Promise<string> {
     const workspaceFolder = session.workspaceFolder;
     const workspaceRoot = workspaceFolder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
@@ -248,10 +264,19 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
     if (downloadMode === 'off') {
       const action = await vscode.window.showErrorMessage(
         'Nova: nova-dap is not installed and auto-download is disabled. Set nova.dap.path or enable nova.download.mode.',
+        'Select local binary…',
         'Open Settings',
         'Open install docs',
       );
-      if (action === 'Open Settings') {
+      if (action === 'Select local binary…') {
+        const pickedPath = await this.pickLocalDapBinary(config);
+        if (pickedPath) {
+          const check = await this.checkBinaryVersion(pickedPath, allowMismatch);
+          if (check.ok && check.version) {
+            return pickedPath;
+          }
+        }
+      } else if (action === 'Open Settings') {
         await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.mode');
       } else if (action === 'Open install docs') {
         await openInstallDocs(this.context);
@@ -267,10 +292,27 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
       'Nova: nova-dap is not installed. Download it now?',
       { modal: true },
       'Download',
+      'Select local binary…',
       'Open install docs',
     );
     if (choice === 'Download') {
       return await this.installOrUpdateDap(config);
+    }
+    if (choice === 'Select local binary…') {
+      const pickedPath = await this.pickLocalDapBinary(config);
+      if (pickedPath) {
+        const check = await this.checkBinaryVersion(pickedPath, allowMismatch);
+        if (check.ok && check.version) {
+          return pickedPath;
+        }
+
+        const suffix = check.version
+          ? `found v${check.version}, expected v${this.extensionVersion}`
+          : check.error
+            ? check.error
+            : 'unavailable';
+        void vscode.window.showErrorMessage(`Nova: selected nova-dap is not usable (${suffix}): ${pickedPath}`);
+      }
     }
     if (choice === 'Open install docs') {
       await openInstallDocs(this.context);
