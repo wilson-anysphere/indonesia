@@ -72,7 +72,7 @@ impl VirtualWorkspace {
             match op {
                 JsonPatchOp::Create { file, text } => {
                     if !config.allow_new_files {
-                        return Err(PatchApplyError::MissingFile { file: file.clone() });
+                        return Err(PatchApplyError::NewFileNotAllowed { file: file.clone() });
                     }
                     if out.files.contains_key(file) {
                         return Err(PatchApplyError::FileAlreadyExists { file: file.clone() });
@@ -155,7 +155,7 @@ impl VirtualWorkspace {
             match op {
                 UnifiedDiffFileOp::Create => {
                     if !config.allow_new_files {
-                        return Err(PatchApplyError::MissingFile { file: target_path });
+                        return Err(PatchApplyError::NewFileNotAllowed { file: target_path });
                     }
                     if out.files.contains_key(&target_path) {
                         return Err(PatchApplyError::FileAlreadyExists { file: target_path });
@@ -266,6 +266,8 @@ pub enum PatchApplyError {
     OverlappingEdits { file: String },
     #[error("file '{file}' was not present in the workspace")]
     MissingFile { file: String },
+    #[error("patch attempted to create a new file '{file}', but new files are not allowed")]
+    NewFileNotAllowed { file: String },
     #[error("file '{file}' already exists in the workspace")]
     FileAlreadyExists { file: String },
     #[error("invalid unified diff: {0}")]
