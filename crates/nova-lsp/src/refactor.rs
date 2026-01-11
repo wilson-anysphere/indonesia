@@ -115,14 +115,18 @@ pub fn safe_delete_code_action(
     index: &Index,
     target: SafeDeleteTarget,
 ) -> Option<CodeActionOrCommand> {
-    let title_base = match &target {
-        SafeDeleteTarget::Symbol(id) => index
-            .find_symbol(*id)
-            .map(|sym| format!("Safe delete `{}`", sym.name))
-            .unwrap_or_else(|| "Safe delete".to_string()),
-    };
+    let SafeDeleteTarget::Symbol(target_id) = target;
+    let title_base = index
+        .find_symbol(target_id)
+        .map(|sym| format!("Safe delete `{}`", sym.name))
+        .unwrap_or_else(|| "Safe delete".to_string());
 
-    let outcome = safe_delete(index, target, SafeDeleteMode::Safe).ok()?;
+    let outcome = safe_delete(
+        index,
+        SafeDeleteTarget::Symbol(target_id),
+        SafeDeleteMode::Safe,
+    )
+    .ok()?;
     match outcome {
         SafeDeleteOutcome::Applied { edit } => Some(CodeActionOrCommand::CodeAction(CodeAction {
             title: title_base,
@@ -131,11 +135,21 @@ pub fn safe_delete_code_action(
             ..CodeAction::default()
         })),
         SafeDeleteOutcome::Preview { report } => {
+            let command = lsp_types::Command {
+                title: format!("{title_base}…"),
+                command: SAFE_DELETE_COMMAND.to_string(),
+                arguments: Some(vec![serde_json::to_value(SafeDeleteParams {
+                    target: SafeDeleteTargetParam::SymbolId(target_id),
+                    mode: SafeDeleteMode::Safe,
+                })
+                .ok()?]),
+            };
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title: format!("{title_base}…"),
                 kind: Some(CodeActionKind::REFACTOR),
-                // In a full server we'd attach this to a command that returns the preview.
+                // Attach a command so the code action is actionable even without `codeAction/resolve`.
                 data: Some(serde_json::to_value(RefactorResponse::Preview { report }).ok()?),
+                command: Some(command),
                 ..CodeAction::default()
             }))
         }
