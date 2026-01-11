@@ -17,6 +17,10 @@ well-tested.
 
 - Rust (see `rust-toolchain.toml`)
 - Node.js + npm (for the VS Code extension)
+- Java (JDK 17 recommended) — optional, but required for:
+  - `javac` differential tests (`.github/workflows/javac.yml`)
+  - DAP real-JVM smoke test (`cargo test -p nova-dap --features real-jvm-tests ...`)
+  - best-effort real-project build validation (`./scripts/javac-validate.sh`)
 
 ## Common workflows
 
