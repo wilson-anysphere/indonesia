@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::io::Read;
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::path::Path;
@@ -9,6 +10,25 @@ use rkyv::Deserialize;
 use thiserror::Error;
 
 use crate::header::{ArtifactKind, Compression, StorageHeader, HEADER_LEN};
+
+/// Maximum number of bytes we'll ever read into memory when mmap is unavailable.
+///
+/// Nova runs many agents concurrently with a hard per-agent memory budget (see `AGENTS.md`).
+/// Treating unexpectedly-large cache files as a miss is preferable to risking an OOM.
+pub(crate) const MAX_MMAP_FALLBACK_BYTES: u64 = 256 * 1024 * 1024; // 256 MiB
+
+/// Maximum number of bytes a compressed artifact is allowed to decompress to.
+///
+/// This bounds `zstd::bulk::decompress*` output allocations based on the header's
+/// `uncompressed_len` field. Corrupted or adversarial cache files must not be able to
+/// trigger multi-gigabyte allocations.
+pub(crate) const MAX_DECOMPRESSED_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+
+/// Maximum payload length (archived bytes) accepted for any artifact.
+///
+/// Even when memory-mapped, very large payloads can cause pathological validation / access
+/// patterns. This cap provides a conservative upper bound that degrades to a cache miss.
+pub(crate) const MAX_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 
 /// Trait alias for archived roots that can be validated with `rkyv`.
 ///
@@ -53,8 +73,10 @@ pub enum StorageError {
     Decompression(String),
     #[error("unsupported compression tag {0}")]
     UnsupportedCompression(u8),
-    #[error("payload size {payload_len} does not fit into addressable memory")]
-    OversizedPayload { payload_len: u64 },
+    #[error("payload size {payload_len} exceeds maximum supported {cap} bytes")]
+    OversizedPayload { payload_len: u64, cap: u64 },
+    #[error("file size {file_len} exceeds fallback read cap {cap} bytes")]
+    TooLargeForFallbackRead { file_len: u64, cap: u64 },
     #[error("payload hash mismatch: expected {expected}, found {found}")]
     HashMismatch { expected: u64, found: u64 },
 }
@@ -165,23 +187,65 @@ where
         expected_kind: ArtifactKind,
         expected_schema: u32,
     ) -> Result<Self, StorageError> {
+        Self::open_with_mmap(path, expected_kind, expected_schema, true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_without_mmap(
+        path: &Path,
+        expected_kind: ArtifactKind,
+        expected_schema: u32,
+    ) -> Result<Self, StorageError> {
+        Self::open_with_mmap(path, expected_kind, expected_schema, false)
+    }
+
+    fn open_with_mmap(
+        path: &Path,
+        expected_kind: ArtifactKind,
+        expected_schema: u32,
+        prefer_mmap: bool,
+    ) -> Result<Self, StorageError> {
         let file = File::open(path)?;
-        let file_len = file.metadata()?.len() as usize;
-        if file_len < HEADER_LEN {
+        let file_len = file.metadata()?.len();
+        if file_len < HEADER_LEN as u64 {
             return Err(StorageError::Truncated {
                 expected: HEADER_LEN,
-                found: file_len,
+                found: file_len as usize,
             });
         }
 
         // mmap is the fast path. If it fails, fall back to reading the file.
-        match unsafe { MmapOptions::new().map(&file) } {
-            Ok(mmap) => Self::from_mmap(mmap, expected_kind, expected_schema),
-            Err(_) => {
-                let bytes = std::fs::read(path)?;
-                Self::from_owned_bytes(bytes, expected_kind, expected_schema)
+        if prefer_mmap {
+            if let Ok(mmap) = unsafe { MmapOptions::new().map(&file) } {
+                return Self::from_mmap(mmap, expected_kind, expected_schema);
             }
         }
+
+        if file_len > MAX_MMAP_FALLBACK_BYTES {
+            return Err(StorageError::TooLargeForFallbackRead {
+                file_len,
+                cap: MAX_MMAP_FALLBACK_BYTES,
+            });
+        }
+
+        let bytes = read_file_with_cap(file, MAX_MMAP_FALLBACK_BYTES)?;
+        Self::from_owned_bytes(bytes, expected_kind, expected_schema)
+    }
+
+    fn checked_payload_len(header: &StorageHeader) -> Result<usize, StorageError> {
+        if header.payload_len > MAX_PAYLOAD_BYTES {
+            return Err(StorageError::OversizedPayload {
+                payload_len: header.payload_len,
+                cap: MAX_PAYLOAD_BYTES,
+            });
+        }
+        header
+            .payload_len
+            .try_into()
+            .map_err(|_| StorageError::OversizedPayload {
+                payload_len: header.payload_len,
+                cap: usize::MAX as u64,
+            })
     }
 
     fn from_mmap(
@@ -193,7 +257,7 @@ where
         validate_header(&header, expected_kind, expected_schema)?;
 
         let payload_offset = header.payload_offset as usize;
-        let payload_len = header.payload_len as usize;
+        let payload_len = Self::checked_payload_len(&header)?;
         ensure_file_bounds(mmap.len(), payload_offset, payload_len)?;
 
         match header.compression {
@@ -207,8 +271,7 @@ where
             ),
             Compression::Zstd => {
                 let payload = &mmap[payload_offset..payload_offset + payload_len];
-                let decompressed = decompress(payload, header.uncompressed_len)?;
-                let aligned = aligned_bytes(&decompressed);
+                let aligned = decompress(payload, header.uncompressed_len)?;
                 Self::from_backing(header, Backing::Owned(aligned))
             }
         }
@@ -230,16 +293,14 @@ where
         validate_header(&header, expected_kind, expected_schema)?;
 
         let payload_offset = header.payload_offset as usize;
-        let payload_len = header.payload_len as usize;
+        let payload_len = Self::checked_payload_len(&header)?;
         ensure_file_bounds(bytes.len(), payload_offset, payload_len)?;
 
         let payload = &bytes[payload_offset..payload_offset + payload_len];
-        let uncompressed = match header.compression {
-            Compression::None => payload.to_vec(),
+        let aligned = match header.compression {
+            Compression::None => aligned_bytes(payload),
             Compression::Zstd => decompress(payload, header.uncompressed_len)?,
         };
-
-        let aligned = aligned_bytes(&uncompressed);
         Self::from_backing(header, Backing::Owned(aligned))
     }
 
@@ -366,13 +427,33 @@ fn ensure_file_bounds(
     Ok(())
 }
 
-fn decompress(payload: &[u8], uncompressed_len: u64) -> Result<Vec<u8>, StorageError> {
+fn decompress(
+    payload: &[u8],
+    uncompressed_len: u64,
+) -> Result<rkyv::util::AlignedVec, StorageError> {
+    if uncompressed_len > MAX_DECOMPRESSED_BYTES {
+        return Err(StorageError::OversizedPayload {
+            payload_len: uncompressed_len,
+            cap: MAX_DECOMPRESSED_BYTES,
+        });
+    }
     let len: usize = uncompressed_len
         .try_into()
         .map_err(|_| StorageError::OversizedPayload {
             payload_len: uncompressed_len,
+            cap: usize::MAX as u64,
         })?;
-    zstd::bulk::decompress(payload, len).map_err(|e| StorageError::Decompression(e.to_string()))
+
+    let mut out = rkyv::util::AlignedVec::with_capacity(len);
+    out.resize(len, 0);
+    let written = zstd::bulk::decompress_to_buffer(payload, &mut out)
+        .map_err(|e| StorageError::Decompression(e.to_string()))?;
+    if written != len {
+        return Err(StorageError::Decompression(format!(
+            "decompressed {written} bytes but header declared {len}"
+        )));
+    }
+    Ok(out)
 }
 
 fn aligned_bytes(bytes: &[u8]) -> rkyv::util::AlignedVec {
@@ -395,4 +476,17 @@ fn verify_payload_hash(header: &StorageHeader, payload: &[u8]) -> Result<(), Sto
 fn content_hash(payload: &[u8]) -> u64 {
     let hash_bytes = blake3::hash(payload);
     u64::from_le_bytes(hash_bytes.as_bytes()[..8].try_into().expect("hash slice"))
+}
+
+fn read_file_with_cap(mut file: File, cap: u64) -> Result<Vec<u8>, StorageError> {
+    let mut bytes = Vec::new();
+    let mut limited = (&mut file).take(cap.saturating_add(1));
+    limited.read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Err(StorageError::TooLargeForFallbackRead {
+            file_len: bytes.len() as u64,
+            cap,
+        });
+    }
+    Ok(bytes)
 }

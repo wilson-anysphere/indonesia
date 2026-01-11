@@ -30,6 +30,7 @@ pub use write::write_archive_atomic;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Seek, SeekFrom, Write};
     use std::sync::{Arc, Barrier};
 
     #[derive(Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
@@ -89,7 +90,8 @@ mod tests {
         let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
         file.set_len((HEADER_LEN - 1) as u64).unwrap();
 
-        let err = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
+        let err =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
         match err {
             StorageError::Truncated { .. } => {}
             other => panic!("unexpected error: {other:?}"),
@@ -135,11 +137,13 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         let corrupted_payload = &bytes[HEADER_LEN..];
-        let mut aligned_corrupted = rkyv::util::AlignedVec::with_capacity(corrupted_payload.len());
+        let mut aligned_corrupted =
+            rkyv::util::AlignedVec::with_capacity(corrupted_payload.len());
         aligned_corrupted.extend_from_slice(corrupted_payload);
         assert!(rkyv::check_archived_root::<Sample>(&aligned_corrupted).is_ok());
 
-        let err = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
+        let err =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
         match err {
             StorageError::HashMismatch { expected, found } => {
                 assert_ne!(expected, found);
@@ -207,10 +211,80 @@ mod tests {
         output.extend_from_slice(&compressed_corrupted);
         std::fs::write(&path, &output).unwrap();
 
-        let err = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
+        let err =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
         match err {
             StorageError::HashMismatch { expected, found } => {
                 assert_ne!(expected, found);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oversized_decompressed_len_is_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sample.bin");
+
+        let value = Sample {
+            a: 42,
+            b: "hello".to_string(),
+            values: vec![1, 2, 3, 4],
+        };
+
+        write_archive_atomic(
+            &path,
+            ArtifactKind::AstArtifacts,
+            1,
+            &value,
+            Compression::Zstd,
+        )
+        .unwrap();
+
+        // Patch the `uncompressed_len` field in the header to exceed the cap. This should
+        // fail fast without attempting to allocate a multi-hundred-MB output buffer.
+        //
+        // Header layout (little-endian):
+        //   payload_len @ 40..48
+        //   uncompressed_len @ 48..56
+        const UNCOMPRESSED_LEN_OFFSET: u64 = 48;
+        let oversized = crate::persisted::MAX_DECOMPRESSED_BYTES + 1;
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(UNCOMPRESSED_LEN_OFFSET)).unwrap();
+        file.write_all(&oversized.to_le_bytes()).unwrap();
+        file.sync_all().unwrap();
+
+        let err =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
+        match err {
+            StorageError::OversizedPayload { payload_len, cap } => {
+                assert_eq!(payload_len, oversized);
+                assert_eq!(cap, crate::persisted::MAX_DECOMPRESSED_BYTES);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn oversized_mmap_fallback_is_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("large.bin");
+
+        // Create a sparse file larger than the fallback read cap.
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let file_len = crate::persisted::MAX_MMAP_FALLBACK_BYTES + 1;
+        file.set_len(file_len).unwrap();
+
+        let err = PersistedArchive::<Sample>::open_without_mmap(&path, ArtifactKind::AstArtifacts, 1)
+            .unwrap_err();
+        match err {
+            StorageError::TooLargeForFallbackRead { file_len: got, cap } => {
+                assert_eq!(got, file_len);
+                assert_eq!(cap, crate::persisted::MAX_MMAP_FALLBACK_BYTES);
             }
             other => panic!("unexpected error: {other:?}"),
         }
