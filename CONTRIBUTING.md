@@ -93,6 +93,10 @@ cargo test -p nova-cli --test real_projects -- --include-ignored
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
+
+# Lint GitHub Actions workflows (CI runs actionlint)
+# https://github.com/rhysd/actionlint
+actionlint
 ```
 
 ## Release engineering
@@ -193,6 +197,13 @@ Seed corpora live under `fuzz/corpus/<target>/`. Crash artifacts (if any) are wr
 `fuzz/artifacts/<target>/`.
 
 ## VS Code extension development
+
+CI verifies that Rust + VS Code extension versions stay in sync:
+
+```bash
+./scripts/sync-versions.sh
+git diff --exit-code
+```
 
 ```bash
 cd editors/vscode
