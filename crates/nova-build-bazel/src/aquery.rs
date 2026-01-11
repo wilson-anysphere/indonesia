@@ -33,8 +33,8 @@ pub struct JavaCompileInfo {
     #[serde(default)]
     pub output_dir: Option<String>,
     /// Whether `--enable-preview` is passed.
-    #[serde(default)]
-    pub enable_preview: bool,
+    #[serde(default, rename = "enable_preview", alias = "preview")]
+    pub preview: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,7 +206,8 @@ struct AqueryTextprotoStreamingJavacInfoParser<R: BufRead> {
     is_javac: Option<bool>,
     owner: Option<String>,
     info: JavaCompileInfo,
-    source_roots: BTreeSet<String>,
+    sourcepath_roots: BTreeSet<String>,
+    java_file_roots: BTreeSet<String>,
     pending: Option<PendingJavacArg>,
     done: bool,
 }
@@ -221,7 +222,8 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
             is_javac: None,
             owner: None,
             info: JavaCompileInfo::default(),
-            source_roots: BTreeSet::new(),
+            sourcepath_roots: BTreeSet::new(),
+            java_file_roots: BTreeSet::new(),
             pending: None,
             done: false,
         }
@@ -237,13 +239,20 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
                     self.info.module_path = split_path_list(arg);
                 }
                 PendingJavacArg::Release => {
-                    self.info.release = Some(arg.to_string());
+                    let release = arg.to_string();
+                    self.info.release = Some(release.clone());
+                    self.info.source = Some(release.clone());
+                    self.info.target = Some(release);
                 }
                 PendingJavacArg::Source => {
-                    self.info.source = Some(arg.to_string());
+                    if self.info.release.is_none() {
+                        self.info.source = Some(arg.to_string());
+                    }
                 }
                 PendingJavacArg::Target => {
-                    self.info.target = Some(arg.to_string());
+                    if self.info.release.is_none() {
+                        self.info.target = Some(arg.to_string());
+                    }
                 }
                 PendingJavacArg::OutputDir => {
                     self.info.output_dir = Some(arg.to_string());
@@ -251,7 +260,7 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
                 PendingJavacArg::SourcePath => {
                     for root in split_path_list(arg) {
                         if !root.is_empty() {
-                            self.source_roots.insert(root);
+                            self.sourcepath_roots.insert(root);
                         }
                     }
                 }
@@ -267,12 +276,15 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
             "--target" | "-target" => self.pending = Some(PendingJavacArg::Target),
             "-d" => self.pending = Some(PendingJavacArg::OutputDir),
             "--enable-preview" => {
-                self.info.enable_preview = true;
+                self.info.preview = true;
             }
             "-sourcepath" | "--source-path" => self.pending = Some(PendingJavacArg::SourcePath),
             other => {
                 if let Some(release) = other.strip_prefix("--release=") {
-                    self.info.release = Some(release.to_string());
+                    let release = release.to_string();
+                    self.info.release = Some(release.clone());
+                    self.info.source = Some(release.clone());
+                    self.info.target = Some(release);
                     return;
                 }
 
@@ -283,9 +295,9 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
 
                 if other.ends_with(".java") {
                     if let Some(parent) = other.rsplit_once('/') {
-                        self.source_roots.insert(parent.0.to_string());
+                        self.java_file_roots.insert(parent.0.to_string());
                     } else if let Some(parent) = other.rsplit_once('\\') {
-                        self.source_roots.insert(parent.0.to_string());
+                        self.java_file_roots.insert(parent.0.to_string());
                     }
                 }
             }
@@ -331,7 +343,8 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                     self.is_javac = None;
                     self.owner = None;
                     self.info = JavaCompileInfo::default();
-                    self.source_roots.clear();
+                    self.sourcepath_roots.clear();
+                    self.java_file_roots.clear();
                     self.pending = None;
 
                     if self.depth <= 0 {
@@ -369,7 +382,13 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
 
                 if self.is_javac == Some(true) {
                     let mut info = std::mem::take(&mut self.info);
-                    info.source_roots = std::mem::take(&mut self.source_roots).into_iter().collect();
+                    info.source_roots = if !self.sourcepath_roots.is_empty() {
+                        std::mem::take(&mut self.sourcepath_roots)
+                    } else {
+                        std::mem::take(&mut self.java_file_roots)
+                    }
+                    .into_iter()
+                    .collect();
                     self.pending = None;
                     return Some(JavacActionInfo {
                         owner: self.owner.take(),
@@ -380,7 +399,8 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                 self.is_javac = None;
                 self.owner = None;
                 self.info = JavaCompileInfo::default();
-                self.source_roots.clear();
+                self.sourcepath_roots.clear();
+                self.java_file_roots.clear();
                 self.pending = None;
             }
         }
@@ -568,7 +588,7 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
                 }
             }
             "--enable-preview" => {
-                info.enable_preview = true;
+                info.preview = true;
             }
             "-sourcepath" | "--source-path" => {
                 if let Some(v) = it.next() {

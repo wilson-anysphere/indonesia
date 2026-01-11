@@ -52,7 +52,7 @@ action {
         info.output_dir.as_deref(),
         Some("bazel-out/k8-fastbuild/bin/java/com/example/_javac/hello/classes")
     );
-    assert!(info.enable_preview);
+    assert!(info.preview);
     // `--release` implies both language level (`--source`) and bytecode target (`--target`).
     assert_eq!(info.source.as_deref(), Some("21"));
     assert_eq!(info.target.as_deref(), Some("21"));
@@ -245,7 +245,7 @@ fn parses_realistic_aquery_fixture_with_nested_braces_and_escapes() {
     assert_eq!(actions.len(), 1);
     let info = extract_java_compile_info(&actions[0]);
     assert_eq!(info.release.as_deref(), Some("17"));
-    assert!(info.enable_preview);
+    assert!(info.preview);
     assert_eq!(
         info.source_roots,
         vec!["java/com/example".to_string(), "java/com/example/generated".to_string()]

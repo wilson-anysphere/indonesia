@@ -68,6 +68,11 @@ action {
   mnemonic: "Javac"
   owner: "//java:hello"
   arguments: "javac"
+  arguments: "--release"
+  arguments: "21"
+  arguments: "--enable-preview"
+  arguments: "-sourcepath"
+  arguments: "src/main/java:src/test/java"
   arguments: "-classpath"
   arguments: "lib.jar"
   arguments: "java/Hello.java"
@@ -78,7 +83,16 @@ action {
     let runner = TestRunner::new(query_stdout, aquery_stdout);
     let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
 
-    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    let info = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(info.release.as_deref(), Some("21"));
+    assert_eq!(info.source.as_deref(), Some("21"));
+    assert_eq!(info.target.as_deref(), Some("21"));
+    assert!(info.preview);
+    // `-sourcepath` should win over inferred roots from `.java` arguments.
+    assert_eq!(
+        info.source_roots,
+        vec!["src/main/java".to_string(), "src/test/java".to_string()]
+    );
     assert_eq!(
         runner.call_count(),
         3,
