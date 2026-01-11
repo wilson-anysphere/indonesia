@@ -670,6 +670,52 @@ mod disk_cache_tests {
     }
 
     #[test]
+    fn disk_cache_load_respects_ttl() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new_with_policy(
+            tmp.path(),
+            QueryDiskCachePolicy {
+                ttl_millis: 1_000,
+                max_bytes: u64::MAX,
+                gc_interval_millis: u64::MAX,
+            },
+        )
+        .unwrap();
+
+        #[derive(Debug, Serialize)]
+        struct PersistedQueryValue<'a> {
+            schema_version: u32,
+            nova_version: String,
+            saved_at_millis: u64,
+            key: &'a str,
+            key_fingerprint: Fingerprint,
+            value: &'a [u8],
+        }
+
+        let saved_at_millis = nova_cache::now_millis().saturating_sub(10_000);
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+
+        let persisted = PersistedQueryValue {
+            schema_version: nova_cache::QUERY_DISK_CACHE_SCHEMA_VERSION,
+            nova_version: nova_core::NOVA_VERSION.to_string(),
+            saved_at_millis,
+            key: "key",
+            key_fingerprint: fingerprint,
+            value: b"value",
+        };
+        let bytes = bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+            .serialize(&persisted)
+            .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+
+        assert_eq!(cache.load("key").unwrap(), None);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn disk_cache_gc_enforces_max_bytes_oldest_first() {
         let tmp = TempDir::new().unwrap();
 
