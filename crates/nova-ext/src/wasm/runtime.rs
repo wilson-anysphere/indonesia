@@ -508,7 +508,7 @@ fn severity_from_v1(sev: Option<SeverityV1>) -> Severity {
 fn symbol_to_v1(symbol: Symbol) -> SymbolV1 {
     match symbol {
         Symbol::File(file) => SymbolV1::File(file.to_raw()),
-        Symbol::Class(class) => SymbolV1::Class(class.0),
+        Symbol::Class(class) => SymbolV1::Class(class.to_raw()),
     }
 }
 
@@ -530,7 +530,7 @@ where
             .file_path(params.file)
             .map(|p| p.to_string_lossy().into_owned());
         let req = DiagnosticsRequestV1 {
-            project_id: ctx.project.0,
+            project_id: ctx.project.to_raw(),
             file_id: params.file.to_raw(),
             file_path,
             text: ctx.db.file_text(params.file).to_string(),
@@ -577,7 +577,7 @@ where
         }
 
         let req = CompletionsRequestV1 {
-            project_id: ctx.project.0,
+            project_id: ctx.project.to_raw(),
             file_id: params.file.to_raw(),
             offset: params.offset,
             text: ctx.db.file_text(params.file).to_string(),
@@ -618,7 +618,7 @@ where
         }
 
         let req = CodeActionsRequestV1 {
-            project_id: ctx.project.0,
+            project_id: ctx.project.to_raw(),
             file_id: params.file.to_raw(),
             span: params.span.map(span_to_v1),
             text: ctx.db.file_text(params.file).to_string(),
@@ -663,7 +663,7 @@ where
         }
 
         let req = NavigationRequestV1 {
-            project_id: ctx.project.0,
+            project_id: ctx.project.to_raw(),
             symbol: symbol_to_v1(params.symbol),
         };
 
@@ -703,7 +703,7 @@ where
         }
 
         let req = InlayHintsRequestV1 {
-            project_id: ctx.project.0,
+            project_id: ctx.project.to_raw(),
             file_id: params.file.to_raw(),
             text: ctx.db.file_text(params.file).to_string(),
         };
