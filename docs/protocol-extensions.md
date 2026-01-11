@@ -1110,10 +1110,17 @@ Params are optional; send `null` or omit params to accept defaults.
 #### Response
 
 ```json
-{ "path": "/tmp/nova-bugreport-…/" }
+{
+  "path": "/tmp/nova-bugreport-…/",
+  "archivePath": "/tmp/nova-bugreport-….zip"
+}
 ```
 
 This is always available, even while the server is in safe-mode.
+
+Notes:
+
+- `archivePath` may be `null` if archive creation is disabled or fails (Nova will still emit the on-disk directory at `path`).
 
 ---
 
