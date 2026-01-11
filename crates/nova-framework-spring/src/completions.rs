@@ -9,9 +9,15 @@ pub fn qualifier_completions(model: &BeanModel) -> Vec<CompletionItem> {
     let mut items: Vec<_> = model
         .beans
         .iter()
-        .map(|b| CompletionItem {
-            label: b.name.clone(),
-            detail: Some(b.ty.clone()),
+        .flat_map(|b| {
+            std::iter::once(CompletionItem {
+                label: b.name.clone(),
+                detail: Some(b.ty.clone()),
+            })
+            .chain(b.qualifiers.iter().map(|q| CompletionItem {
+                label: q.clone(),
+                detail: Some(b.ty.clone()),
+            }))
         })
         .collect();
     items.sort_by(|a, b| a.label.cmp(&b.label));

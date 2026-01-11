@@ -1,6 +1,6 @@
 use nova_framework_spring::{
-    analyze_java_sources, is_spring_applicable, BeanKind, InjectionKind, SPRING_AMBIGUOUS_BEAN,
-    SPRING_NO_BEAN,
+    analyze_java_sources, is_spring_applicable, qualifier_completions, BeanKind, InjectionKind,
+    SPRING_AMBIGUOUS_BEAN, SPRING_NO_BEAN,
 };
 use nova_project::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, ProjectConfig,
@@ -153,4 +153,30 @@ fn applicability_detects_spring_via_classpath_marker() {
     };
 
     assert!(is_spring_applicable(&config));
+}
+
+#[test]
+fn qualifier_completions_include_explicit_qualifiers() {
+    let foo = r#"
+        import org.springframework.beans.factory.annotation.Qualifier;
+        import org.springframework.stereotype.Component;
+
+        @Component
+        @Qualifier("specialFoo")
+        class Foo {
+        }
+    "#;
+
+    let analysis = analyze_java_sources(&[foo]);
+    let items = qualifier_completions(&analysis.model);
+    let labels: std::collections::BTreeSet<_> = items.iter().map(|i| i.label.as_str()).collect();
+
+    assert!(
+        labels.contains("foo"),
+        "expected bean name completion; got {labels:?}"
+    );
+    assert!(
+        labels.contains("specialFoo"),
+        "expected qualifier completion; got {labels:?}"
+    );
 }
