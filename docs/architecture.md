@@ -19,6 +19,7 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
   - `serde`/`bincode` for small caches and metadata
   ([ADR 0005](adr/0005-persistence-formats.md))
 - Canonical identifiers: structured VFS paths + normalized URIs (`file`, `jar`/`jmod`, `nova`) ([ADR 0006](adr/0006-uri-normalization.md))
+- Router↔worker remote RPC: CBOR-framed v3 protocol with negotiation, multiplexing, and chunking ([ADR 0009](adr/0009-remote-rpc-protocol.md))
 
 ## ADR index
 
@@ -30,6 +31,7 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
 6. [0006 — Path/URI normalization and virtual document schemes](adr/0006-uri-normalization.md)
 7. [0007 — Crate boundaries and dependency policy](adr/0007-crate-boundaries-and-dependencies.md)
 8. [0008 — Distributed mode security (router↔worker)](adr/0008-distributed-mode-security.md)
+9. [0009 — Router↔worker remote RPC protocol (v3)](adr/0009-remote-rpc-protocol.md)
 
 ## Where to look in code
 
@@ -53,6 +55,12 @@ The ADRs are normative; these pointers are only meant to make it easy to find th
   - `crates/nova-vfs/src/path.rs` and `crates/nova-vfs/src/archive.rs` — VFS path model (local + jar/jmod)
 - **ADR 0007 (crate boundaries)**:
   - `Cargo.toml` workspace members + `crates/` tree
+- **ADR 0008 (distributed mode security)**:
+  - `crates/nova-router/src/tls.rs` and `crates/nova-worker/src/tls.rs` — TLS helpers (feature-gated today)
+  - `crates/nova-router/src/lib.rs` and `crates/nova-worker/src/main.rs` — router/worker connection setup + auth token plumbing (MVP)
+- **ADR 0009 (remote RPC protocol)**:
+  - `crates/nova-router/src/lib.rs` and `crates/nova-worker/src/main.rs` — router/worker transport (v2 today; will be migrated to v3)
+  - `crates/nova-remote-proto/src/lib.rs` — RPC message model + codec (v2 today; will be superseded by v3)
 
 ## Current repo status vs ADRs
 
