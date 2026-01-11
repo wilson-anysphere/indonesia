@@ -272,15 +272,18 @@ If you forgot to include reproduction steps, add them either:
 Nova’s main runtime “metrics” surface today is memory reporting and memory-pressure-driven feature
 throttling.
 
-Nova does not currently expose a dedicated `nova/metrics` request in this repository snapshot. The
-closest equivalent is `nova/memoryStatus`, which reports memory usage/pressure and any resulting
-feature throttles.
+Nova exposes two equivalent LSP requests:
 
-### LSP: `nova/memoryStatus` (memory + throttling snapshot)
+- `nova/metrics` (alias)
+- `nova/memoryStatus`
+
+Both report memory usage/pressure and any resulting feature throttles.
+
+### LSP: `nova/metrics` / `nova/memoryStatus` (memory + throttling snapshot)
 
 The `nova-lsp` stdio server exposes a custom request:
 
-- method: `nova/memoryStatus`
+- method: `nova/metrics` (alias) or `nova/memoryStatus`
 - result: `{ "report": <MemoryReport> }`
 
 The `report` payload includes:

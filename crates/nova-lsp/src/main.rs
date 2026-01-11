@@ -231,7 +231,7 @@ fn handle_request(
             state.shutdown_requested = true;
             Ok(json!({ "jsonrpc": "2.0", "id": id, "result": serde_json::Value::Null }))
         }
-        nova_lsp::MEMORY_STATUS_METHOD => {
+        nova_lsp::MEMORY_STATUS_METHOD | "nova/metrics" => {
             // Force an enforcement pass so the response reflects the current
             // pressure state and triggers evictions in registered components.
             let report = state.memory.enforce();
