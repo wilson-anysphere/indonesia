@@ -220,20 +220,34 @@ enum WordKind {
     Case,
     Default,
     Modifier,
+    New,
     Other,
 }
 
-fn word_kind(text: &str) -> WordKind {
-    match text {
+#[derive(Debug, Clone, Copy)]
+struct WordInfo {
+    kind: WordKind,
+    type_like: bool,
+}
+
+fn word_info(text: &str) -> WordInfo {
+    let kind = match text {
         "if" | "while" | "catch" | "synchronized" => WordKind::Control,
         "for" => WordKind::For,
         "switch" => WordKind::Switch,
         "try" => WordKind::Try,
         "case" => WordKind::Case,
         "default" => WordKind::Default,
+        "new" => WordKind::New,
         "public" | "protected" | "private" | "static" | "final" | "abstract" | "native"
         | "strictfp" | "transient" | "volatile" | "sealed" | "non" | "record" => WordKind::Modifier,
         _ => WordKind::Other,
+    }
+    ;
+
+    WordInfo {
+        kind,
+        type_like: looks_like_type_name(text),
     }
 }
 
@@ -249,7 +263,7 @@ fn looks_like_type_name(text: &str) -> bool {
 
 #[derive(Debug, Clone, Copy)]
 enum SigToken {
-    Word(WordKind),
+    Word(WordInfo),
     Literal,
     Punct(Punct),
     GenericClose { after_dot: bool },
@@ -274,6 +288,7 @@ struct ParenCtx {
     multiline: bool,
     base_indent: usize,
     content_indent: usize,
+    annotation_args: bool,
     start_brace_depth: usize,
     start_bracket_depth: usize,
     start_generic_depth: usize,
@@ -449,7 +464,7 @@ impl<'a> FormatState<'a> {
 
     fn token_sig(&self, tok: &Token) -> SigToken {
         match tok {
-            Token::Word(span) => SigToken::Word(word_kind(span.text(self.source))),
+            Token::Word(span) => SigToken::Word(word_info(span.text(self.source))),
             Token::Number(_) | Token::StringLiteral(_) | Token::CharLiteral(_) => SigToken::Literal,
             Token::LineComment(_) | Token::BlockComment(_) | Token::DocComment(_) => SigToken::Comment,
             Token::Punct(p) => SigToken::Punct(*p),
@@ -474,10 +489,11 @@ impl<'a> FormatState<'a> {
 
         match prev {
             None => true,
-            Some(SigToken::Punct(Punct::Dot)) => true,
+            Some(SigToken::Punct(Punct::Dot | Punct::DoubleColon)) => true,
             Some(SigToken::GenericClose { .. }) => true,
-            Some(SigToken::Word(kind)) => match kind {
-                WordKind::Modifier | WordKind::Other | WordKind::Switch | WordKind::For | WordKind::Try => true,
+            Some(SigToken::Word(info)) => match info.kind {
+                WordKind::Modifier | WordKind::New => true,
+                WordKind::Other | WordKind::Switch | WordKind::For | WordKind::Try => info.type_like,
                 WordKind::Case | WordKind::Default | WordKind::Control => false,
             },
             Some(SigToken::Punct(p)) => matches!(
@@ -522,7 +538,9 @@ impl<'a> FormatState<'a> {
                     | Punct::Question
                     | Punct::Arrow
             ),
-            Some(SigToken::Word(kind)) => matches!(kind, WordKind::Control | WordKind::For | WordKind::Switch),
+            Some(SigToken::Word(info)) => {
+                matches!(info.kind, WordKind::Control | WordKind::For | WordKind::Switch)
+            }
             Some(SigToken::Comment) => true,
             Some(SigToken::Literal | SigToken::GenericClose { .. }) => false,
         }
@@ -587,16 +605,16 @@ impl<'a> FormatState<'a> {
                     return true;
                 }
             }
-            SigToken::Word(kind) => {
+            SigToken::Word(info) => {
                 if matches!(curr, SigToken::Punct(Punct::LParen)) {
                     return matches!(
-                        kind,
+                        info.kind,
                         WordKind::Control | WordKind::For | WordKind::Switch | WordKind::Try
                     );
                 }
                 if matches!(curr, SigToken::Punct(Punct::Less)) {
                     // `public <T>` should keep a space, while `List<T>` should not.
-                    return matches!(kind, WordKind::Modifier);
+                    return matches!(info.kind, WordKind::Modifier);
                 }
                 if matches!(curr, SigToken::Punct(Punct::At)) {
                     return true;
@@ -976,7 +994,10 @@ fn analyze_parens(tokens: &[Token], source: &str, config: &FormatConfig) -> Vec<
                 Punct::Less => {
                     if state.should_start_generic(prev, FormatState::next_non_trivia(tokens, idx + 1)) {
                         state.generic_stack.push(GenericContext {
-                            after_dot: matches!(prev, Some(SigToken::Punct(Punct::Dot))),
+                            after_dot: matches!(
+                                prev,
+                                Some(SigToken::Punct(Punct::Dot | Punct::DoubleColon))
+                            ),
                         });
                     }
                 }
@@ -1070,7 +1091,8 @@ fn write_token(
         }
         Token::Word(span) => {
             let text = span.text(state.source);
-            let kind = word_kind(text);
+            let info = word_info(text);
+            let kind = info.kind;
 
             if kind == WordKind::Case || kind == WordKind::Default {
                 // Case labels should start on their own line.
@@ -1086,7 +1108,7 @@ fn write_token(
             }
 
             state.write_indent();
-            let sig = SigToken::Word(kind);
+            let sig = SigToken::Word(info);
             if state.needs_space_before(state.last_sig, sig, tok) {
                 state.ensure_space();
             }
@@ -1096,7 +1118,9 @@ fn write_token(
 
             state.pending_for = kind == WordKind::For;
             state.pending_try = kind == WordKind::Try;
-            state.pending_switch = kind == WordKind::Switch;
+            if kind == WordKind::Switch {
+                state.pending_switch = true;
+            }
 
             if matches!(kind, WordKind::Case | WordKind::Default) {
                 state.pending_case_label = true;
@@ -1112,7 +1136,6 @@ fn write_token(
             state.line_len += span.end.saturating_sub(span.start);
             state.last_sig = Some(sig);
             state.pending_for = false;
-            state.pending_case_label = false;
         }
         Token::Punct(punct) => match punct {
             Punct::LBrace => {
@@ -1140,7 +1163,6 @@ fn write_token(
                 state.brace_stack.push(BraceCtx { kind: brace_kind });
                 state.last_sig = None;
                 state.pending_for = false;
-                state.pending_case_label = false;
             }
             Punct::RBrace => {
                 let closing_switch = matches!(state.brace_stack.last(), Some(ctx) if ctx.kind == BraceKind::Switch);
@@ -1184,7 +1206,6 @@ fn write_token(
 
                 state.last_sig = Some(SigToken::Punct(Punct::RBrace));
                 state.pending_for = false;
-                state.pending_case_label = false;
             }
             Punct::Semicolon => {
                 state.write_indent();
@@ -1239,7 +1260,6 @@ fn write_token(
 
                 state.last_sig = Some(SigToken::Punct(Punct::Comma));
                 state.pending_for = false;
-                state.pending_case_label = false;
             }
             Punct::LParen => {
                 state.write_indent();
@@ -1270,18 +1290,19 @@ fn write_token(
                 }
 
                 let base_indent = state.current_line_indent();
+                let annotation_args = is_annotation_args(tokens, idx);
                 let ctx = ParenCtx {
                     kind,
                     multiline,
                     base_indent,
                     content_indent: base_indent.saturating_add(1),
+                    annotation_args,
                     start_brace_depth: state.brace_stack.len(),
                     start_bracket_depth: state.bracket_depth,
                     start_generic_depth: state.generic_depth(),
                 };
                 state.paren_stack.push(ctx);
                 state.last_sig = Some(sig);
-                state.pending_case_label = false;
 
                 if multiline {
                     state.ensure_newline();
@@ -1300,8 +1321,13 @@ fn write_token(
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
 
+                if ctx.as_ref().is_some_and(|c| c.multiline && c.annotation_args)
+                    && matches!(next, Some(Token::Word(_) | Token::Punct(Punct::At)))
+                {
+                    state.ensure_newline();
+                }
+
                 state.last_sig = Some(SigToken::Punct(Punct::RParen));
-                state.pending_case_label = false;
             }
             Punct::LBracket => {
                 state.write_indent();
@@ -1313,7 +1339,6 @@ fn write_token(
                 state.line_len += punct.len();
                 state.bracket_depth = state.bracket_depth.saturating_add(1);
                 state.last_sig = Some(sig);
-                state.pending_case_label = false;
             }
             Punct::RBracket => {
                 state.write_indent();
@@ -1321,7 +1346,6 @@ fn write_token(
                 state.line_len += punct.len();
                 state.bracket_depth = state.bracket_depth.saturating_sub(1);
                 state.last_sig = Some(SigToken::Punct(Punct::RBracket));
-                state.pending_case_label = false;
             }
             Punct::Dot | Punct::DoubleColon => {
                 // Avoid wrapping decimal literals like `3.14`.
@@ -1338,7 +1362,6 @@ fn write_token(
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
                 state.last_sig = Some(SigToken::Punct(*punct));
-                state.pending_case_label = false;
             }
             Punct::At => {
                 state.write_indent();
@@ -1349,7 +1372,6 @@ fn write_token(
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
                 state.last_sig = Some(sig);
-                state.pending_case_label = false;
             }
             Punct::Less => {
                 let prev = state.last_sig;
@@ -1364,21 +1386,29 @@ fn write_token(
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
                     state.generic_stack.push(GenericContext {
-                        after_dot: matches!(prev, Some(SigToken::Punct(Punct::Dot))),
+                        after_dot: matches!(
+                            prev,
+                            Some(SigToken::Punct(Punct::Dot | Punct::DoubleColon))
+                        ),
                     });
                     state.last_sig = Some(sig);
                 } else {
                     // Treat as comparison operator.
-                    if state.needs_space_before(prev, sig, tok) {
-                        state.ensure_space();
-                    }
+                    state.ensure_space();
                     let next_len = next.map(|t| t.display_len()).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
+                    if next.is_some()
+                        && !matches!(
+                            next,
+                            Some(Token::Punct(p)) if p.is_closing_delim() || p.is_chain_separator()
+                        )
+                    {
+                        state.ensure_space();
+                    }
                     state.last_sig = Some(sig);
                 }
-                state.pending_case_label = false;
             }
             Punct::Greater | Punct::RightShift | Punct::UnsignedRightShift => {
                 let sig = SigToken::Punct(*punct);
@@ -1398,16 +1428,23 @@ fn write_token(
                     };
                     state.last_sig = Some(SigToken::GenericClose { after_dot });
                 } else {
-                    if state.needs_space_before(state.last_sig, sig, tok) {
-                        state.ensure_space();
-                    }
+                    let prev = state.last_sig;
+                    state.ensure_space();
                     let next_len = next.map(|t| t.display_len()).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
+                    if prev.is_some()
+                        && next.is_some()
+                        && !matches!(
+                            next,
+                            Some(Token::Punct(p)) if p.is_closing_delim() || p.is_chain_separator()
+                        )
+                    {
+                        state.ensure_space();
+                    }
                     state.last_sig = Some(sig);
                 }
-                state.pending_case_label = false;
             }
             Punct::Question => {
                 state.write_indent();
@@ -1429,7 +1466,6 @@ fn write_token(
                     state.line_len += punct.len();
                 }
                 state.last_sig = Some(sig);
-                state.pending_case_label = false;
             }
             Punct::Colon => {
                 state.write_indent();
@@ -1475,7 +1511,6 @@ fn write_token(
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
                 state.last_sig = Some(sig);
-                state.pending_case_label = false;
             }
             _ => {
                 let sig = SigToken::Punct(*punct);
@@ -1500,11 +1535,31 @@ fn write_token(
                 }
 
                 state.last_sig = Some(sig);
-                state.pending_case_label = false;
             }
         },
         Token::BlankLine => {}
     }
+}
+
+fn is_annotation_args(tokens: &[Token], l_paren_idx: usize) -> bool {
+    let mut idx = l_paren_idx;
+    let mut saw_name = false;
+
+    while idx > 0 {
+        idx -= 1;
+        match tokens.get(idx) {
+            Some(Token::BlankLine) => continue,
+            Some(Token::Word(_)) => {
+                saw_name = true;
+                continue;
+            }
+            Some(Token::Punct(Punct::Dot)) => continue,
+            Some(Token::Punct(Punct::At)) => return saw_name,
+            _ => break,
+        }
+    }
+
+    false
 }
 
 fn count_line_breaks(text: &str) -> u32 {

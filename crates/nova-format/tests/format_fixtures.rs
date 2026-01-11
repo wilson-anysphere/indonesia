@@ -99,6 +99,24 @@ fn snapshot_broken_code_is_panic_free() {
 }
 
 #[test]
+fn snapshot_method_reference_type_args() {
+    let input = include_str!("fixtures/method_reference_type_args.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("method_reference_type_args", formatted);
+    assert_idempotent("method_reference_type_args", input, &config);
+}
+
+#[test]
+fn snapshot_control_flow_constructs() {
+    let input = include_str!("fixtures/do_while_synchronized_switch.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("control_flow_constructs", formatted);
+    assert_idempotent("control_flow_constructs", input, &config);
+}
+
+#[test]
 fn on_type_formatting_triggers_inside_argument_lists() {
     let input = "class A {\n    void m() {\nfoo(1,2);\n    }\n}\n";
     let tree = parse(input);
@@ -131,4 +149,3 @@ fn formats_large_file_regression() {
     let formatted = format_java(&tree, &src, &FormatConfig::default());
     assert!(!formatted.is_empty());
 }
-
