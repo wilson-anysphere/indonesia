@@ -3392,11 +3392,14 @@ name = "nova-bugreport"
 version = "0.1.0"
 dependencies = [
  "nova-config",
- "nova-scheduler",
+ "nova-core",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
+ "time",
  "tracing",
+ "zip 2.4.2",
 ]
 
 [[package]]
@@ -5844,6 +5847,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91e7d9e3bb61134e77bde20dd4825b97c010155709965fedf0f49bb138e52a9d"
 dependencies = [
  "deranged",
+ "itoa",
  "num-conv",
  "powerfmt",
  "serde",

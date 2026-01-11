@@ -6,9 +6,11 @@ license.workspace = true
 
 [dependencies]
 nova-config = { path = "../nova-config" }
-nova-scheduler = { path = "../nova-scheduler" }
+nova-core = { path = "../nova-core" }
+regex = "1"
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+time = { version = "0.3", features = ["formatting"] }
 tracing.workspace = true
-
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }

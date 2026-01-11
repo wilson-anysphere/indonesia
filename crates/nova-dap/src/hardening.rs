@@ -13,6 +13,7 @@ pub fn init(config: &NovaConfig, notifier: Arc<dyn Fn(&str) + Send + Sync + 'sta
     install_panic_hook(
         PanicHookConfig {
             include_backtrace: config.logging.include_backtrace,
+            ..Default::default()
         },
         notifier,
     );

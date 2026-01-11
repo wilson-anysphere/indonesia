@@ -7,7 +7,7 @@ use crate::{
     TEST_RUN_METHOD,
 };
 use nova_bugreport::{
-    create_bug_report_bundle, global_crash_store, install_panic_hook, BugReportOptions,
+    BugReportBuilder, global_crash_store, install_panic_hook, BugReportOptions,
     PanicHookConfig, PerfStats,
 };
 use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig};
@@ -59,6 +59,7 @@ pub fn init(config: &NovaConfig, notifier: Arc<dyn Fn(&str) + Send + Sync + 'sta
     install_panic_hook(
         PanicHookConfig {
             include_backtrace: config.logging.include_backtrace,
+            ..Default::default()
         },
         notifier,
     );
@@ -230,25 +231,28 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
     };
 
     let config = config_snapshot();
-    let bundle = create_bug_report_bundle(
-        &config,
-        &global_log_buffer(),
-        &global_crash_store(),
-        perf(),
-        options,
-    )
-    .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+    let safe_mode_active = safe_mode().enabled.load(Ordering::Relaxed);
+    let bundle = BugReportBuilder::new(&config, &global_log_buffer(), &global_crash_store(), perf())
+        .options(options)
+        .safe_mode_active(Some(safe_mode_active))
+        .extra_attachments(|dir| {
+            // Best-effort: attach the runtime request metrics snapshot. This is useful when
+            // diagnosing hangs/timeouts/panics because it captures per-method latencies and
+            // error rates.
+            if let Ok(metrics_json) =
+                serde_json::to_string_pretty(&nova_metrics::MetricsRegistry::global().snapshot())
+            {
+                let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
+            }
+            Ok(())
+        })
+        .build()
+        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
-    // Best-effort: attach the runtime request metrics snapshot. This is useful when
-    // diagnosing hangs/timeouts/panics because it captures per-method latencies and
-    // error rates.
-    if let Ok(metrics_json) =
-        serde_json::to_string_pretty(&nova_metrics::MetricsRegistry::global().snapshot())
-    {
-        let _ = std::fs::write(bundle.path().join("metrics.json"), metrics_json);
-    }
-
-    Ok(serde_json::json!({ "path": bundle.path() }))
+    Ok(serde_json::json!({
+        "path": bundle.path(),
+        "archivePath": bundle.archive_path(),
+    }))
 }
 
 #[cfg(test)]
