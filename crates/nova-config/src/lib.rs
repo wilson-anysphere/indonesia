@@ -459,7 +459,7 @@ pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigEr
                 Err(ConfigError::Io { source, .. })
                     if source.kind() == io::ErrorKind::NotFound =>
                 {
-                    continue
+                    continue;
                 }
                 Err(err) => return Err(err),
             }

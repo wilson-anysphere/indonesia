@@ -5,6 +5,7 @@
 //! members and imports (including the implicit `java.lang.*` import).
 
 pub mod jpms;
+pub mod jpms_env;
 
 use std::collections::HashMap;
 

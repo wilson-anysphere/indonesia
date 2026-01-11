@@ -3672,13 +3672,16 @@ dependencies = [
 name = "nova-resolve"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "nova-classpath",
  "nova-core",
  "nova-framework",
  "nova-hir",
  "nova-jdk",
  "nova-modules",
+ "nova-project",
  "nova-types",
+ "tempfile",
  "thiserror 1.0.69",
  "walkdir",
 ]

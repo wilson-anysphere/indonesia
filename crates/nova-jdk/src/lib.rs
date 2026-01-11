@@ -14,11 +14,11 @@ mod jmod;
 mod persist;
 mod stub;
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::path::Path;
 use std::sync::Arc;
-use std::borrow::Cow;
 
 use nova_core::{
     JdkConfig, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName,
