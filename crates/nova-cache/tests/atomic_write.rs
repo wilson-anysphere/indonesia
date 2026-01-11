@@ -50,3 +50,14 @@ fn atomic_write_is_safe_under_concurrent_writers() {
         bytes.len()
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn atomic_write_overwrites_existing_file_on_windows() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("atomic.bin");
+    std::fs::write(&path, b"before").unwrap();
+
+    nova_cache::atomic_write(&path, b"after").unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"after");
+}

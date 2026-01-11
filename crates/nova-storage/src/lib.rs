@@ -447,4 +447,42 @@ mod tests {
             bytes.len()
         );
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_archive_atomic_overwrites_existing_file_on_windows() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("overwrite.bin");
+
+        let first = Sample {
+            a: 1,
+            b: "before".to_string(),
+            values: vec![1],
+        };
+        let second = Sample {
+            a: 2,
+            b: "after".to_string(),
+            values: vec![2],
+        };
+
+        write_archive_atomic(
+            &path,
+            ArtifactKind::AstArtifacts,
+            1,
+            &first,
+            Compression::None,
+        )
+        .unwrap();
+        write_archive_atomic(
+            &path,
+            ArtifactKind::AstArtifacts,
+            1,
+            &second,
+            Compression::None,
+        )
+        .unwrap();
+
+        let loaded = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
+        assert_eq!(loaded.to_owned().unwrap(), second);
+    }
 }

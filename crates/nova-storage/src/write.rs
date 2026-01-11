@@ -76,6 +76,11 @@ where
     let parent = path
         .parent()
         .ok_or(StorageError::InvalidHeader("missing parent directory"))?;
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
     fs::create_dir_all(parent)?;
 
     // Note: `rkyv::to_bytes` allocates the final archive, but we avoid
@@ -223,8 +228,7 @@ fn validate_written_file(path: &Path, expected_header: &StorageHeader) -> Result
     }
 
     let hash_bytes = hasher.finalize();
-    let found =
-        u64::from_le_bytes(hash_bytes.as_bytes()[..8].try_into().expect("hash slice"));
+    let found = u64::from_le_bytes(hash_bytes.as_bytes()[..8].try_into().expect("hash slice"));
     if found != header.content_hash {
         return Err(StorageError::HashMismatch {
             expected: header.content_hash,
@@ -242,7 +246,10 @@ fn rename_overwrite(tmp_path: &Path, dest: &Path) -> io::Result<()> {
     loop {
         match fs::rename(tmp_path, dest) {
             Ok(()) => return Ok(()),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists || dest.exists() => {
+            Err(err)
+                if cfg!(windows)
+                    && (err.kind() == io::ErrorKind::AlreadyExists || dest.exists()) =>
+            {
                 // On Windows, `rename` doesn't overwrite. Under concurrent writers,
                 // multiple `remove + rename` sequences can race; retry until we win.
                 let _ = fs::remove_file(dest);
