@@ -6,15 +6,12 @@ use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
 
 use crate::FileId;
 
+use super::cancellation as cancel;
 use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
 
 /// The parsed syntax tree type exposed by the database.
 pub type SyntaxTree = GreenNode;
-
-#[cfg(test)]
-pub(crate) static INTERRUPTIBLE_WORK_STARTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
 
 #[ra_salsa::query_group(NovaSyntaxStorage)]
 pub trait NovaSyntax: NovaInputs + HasQueryStats {
@@ -47,6 +44,13 @@ pub trait NovaSyntax: NovaInputs + HasQueryStats {
     /// `db.unwind_if_cancelled()` while doing expensive work; this query exists
     /// as a lightweight fixture for that pattern.
     fn interruptible_work(&self, file: FileId, steps: u32) -> u64;
+
+    /// Synthetic long-running query that mimics future semantic analysis work.
+    ///
+    /// This intentionally does "real" Salsa work up front by depending on
+    /// `symbol_summary`, then runs a tight loop with periodic cancellation
+    /// checkpoints.
+    fn synthetic_semantic_work(&self, file: FileId, steps: u32) -> u64;
 }
 
 fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
@@ -55,7 +59,7 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("query", name = "parse", ?file).entered();
 
-    db.unwind_if_cancelled();
+    cancel::check_cancelled(db);
 
     let text = if db.file_exists(file) {
         db.file_content(file)
@@ -75,7 +79,7 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("query", name = "parse_java", ?file).entered();
 
-    db.unwind_if_cancelled();
+    cancel::check_cancelled(db);
 
     let text = if db.file_exists(file) {
         db.file_content(file)
@@ -95,7 +99,7 @@ fn syntax_tree(db: &dyn NovaSyntax, file: FileId) -> Arc<SyntaxTree> {
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("query", name = "syntax_tree", ?file).entered();
 
-    db.unwind_if_cancelled();
+    cancel::check_cancelled(db);
 
     let root = db.parse(file).root.clone();
     let result = Arc::new(root);
@@ -109,7 +113,7 @@ fn item_tree(db: &dyn NovaSyntax, file: FileId) -> Arc<ItemTree> {
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("query", name = "item_tree", ?file).entered();
 
-    db.unwind_if_cancelled();
+    cancel::check_cancelled(db);
 
     let parse = db.parse(file);
     let text = if db.file_exists(file) {
@@ -129,7 +133,7 @@ fn symbol_summary(db: &dyn NovaSyntax, file: FileId) -> Arc<SymbolSummary> {
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("query", name = "symbol_summary", ?file).entered();
 
-    db.unwind_if_cancelled();
+    cancel::check_cancelled(db);
 
     let it = db.item_tree(file);
     let summary = SymbolSummary::from_item_tree(&it);
@@ -144,7 +148,7 @@ fn symbol_count(db: &dyn NovaSyntax, file: FileId) -> usize {
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("query", name = "symbol_count", ?file).entered();
 
-    db.unwind_if_cancelled();
+    cancel::check_cancelled(db);
 
     let count = db.symbol_summary(file).names.len();
     db.record_query_stat("symbol_count", start.elapsed());
@@ -157,18 +161,39 @@ fn interruptible_work(db: &dyn NovaSyntax, file: FileId, steps: u32) -> u64 {
     #[cfg(feature = "tracing")]
     let _span = tracing::debug_span!("query", name = "interruptible_work", ?file, steps).entered();
 
-    #[cfg(test)]
-    INTERRUPTIBLE_WORK_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
-
     let mut acc: u64 = 0;
     for i in 0..steps {
-        if i % 256 == 0 {
-            db.unwind_if_cancelled();
-        }
+        cancel::checkpoint_cancelled(db, i);
         acc = acc.wrapping_add(i as u64 ^ file.to_raw() as u64);
         std::hint::black_box(acc);
     }
 
     db.record_query_stat("interruptible_work", start.elapsed());
+    acc
+}
+
+fn synthetic_semantic_work(db: &dyn NovaSyntax, file: FileId, steps: u32) -> u64 {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span =
+        tracing::debug_span!("query", name = "synthetic_semantic_work", ?file, steps).entered();
+
+    // Pull in some derived data to mimic the shape of future semantic queries.
+    let summary = db.symbol_summary(file);
+
+    let mut acc: u64 = 0;
+    for i in 0..steps {
+        cancel::checkpoint_cancelled(db, i);
+
+        // Some deterministic "work" that depends on the summary.
+        acc = acc.wrapping_add(i as u64 ^ file.to_raw() as u64);
+        for name in summary.names.iter() {
+            acc = acc.wrapping_add(name.len() as u64);
+        }
+        std::hint::black_box(acc);
+    }
+
+    db.record_query_stat("synthetic_semantic_work", start.elapsed());
     acc
 }

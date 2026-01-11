@@ -6,6 +6,14 @@
 //! - snapshot-based concurrency (via `ra_salsa::ParallelDatabase`)
 //! - lightweight instrumentation (query timings + optional `tracing`)
 //!
+//! ## Cancellation
+//!
+//! Salsa cancellation is cooperative: a query will only stop once it reaches a
+//! cancellation checkpoint (`db.unwind_if_cancelled()`).
+//!
+//! **All queries doing more than ~1ms of work must checkpoint cancellation
+//! periodically.** See [`cancellation`] for the recommended helper API/pattern.
+//!
 //! ## Usage sketch
 //!
 //! ```rust
@@ -21,6 +29,7 @@
 //! assert!(parse.errors.is_empty());
 //! ```
 
+mod cancellation;
 mod inputs;
 mod stats;
 mod syntax;
@@ -230,9 +239,76 @@ pub trait NovaDatabase: NovaInputs + NovaSyntax {}
 impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax {}
 
 #[cfg(test)]
+fn assert_query_is_cancelled<T, F>(mut db: RootDatabase, run_query: F)
+where
+    T: Send + 'static,
+    F: FnOnce(&Snapshot) -> T + Send + std::panic::UnwindSafe + 'static,
+{
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    const ENTER_TIMEOUT: Duration = Duration::from_secs(5);
+    const CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+    const HARNESS_TIMEOUT: Duration = Duration::from_secs(10);
+
+    let harness = std::thread::spawn(move || -> Result<(), String> {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let snap = db.snapshot();
+
+        let worker = std::thread::spawn(move || {
+            let _guard =
+                cancellation::test_support::install_entered_long_running_region_sender(entered_tx);
+            catch_cancelled(|| run_query(&snap))
+        });
+
+        entered_rx.recv_timeout(ENTER_TIMEOUT).map_err(|_| {
+            "query never hit a cancellation checkpoint (missing checkpoint_cancelled?)".to_string()
+        })?;
+
+        // NB: this may block until the query unwinds and drops its snapshot.
+        db.request_cancellation();
+
+        let deadline = Instant::now() + CANCEL_TIMEOUT;
+        while !worker.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !worker.is_finished() {
+            return Err(format!(
+                "query did not unwind with ra_salsa::Cancelled within {CANCEL_TIMEOUT:?} after request_cancellation"
+            ));
+        }
+
+        let result = worker
+            .join()
+            .map_err(|_| "worker thread panicked".to_string())?;
+        if result.is_ok() {
+            return Err(
+                "expected salsa query to unwind with Cancelled after request_cancellation"
+                    .to_string(),
+            );
+        }
+
+        Ok(())
+    });
+
+    let deadline = Instant::now() + HARNESS_TIMEOUT;
+    while !harness.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        harness.is_finished(),
+        "cancellation harness did not complete within {HARNESS_TIMEOUT:?}"
+    );
+
+    match harness.join().expect("cancellation harness panicked") {
+        Ok(()) => {}
+        Err(message) => panic!("{message}"),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::Ordering;
 
     fn executions(db: &RootDatabase, query_name: &str) -> u64 {
         db.query_stats()
@@ -323,31 +399,24 @@ mod tests {
 
     #[test]
     fn request_cancellation_unwinds_inflight_queries() {
-        syntax::INTERRUPTIBLE_WORK_STARTED.store(false, Ordering::SeqCst);
-
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
         db.set_file_exists(file, true);
+        db.set_source_root(file, SourceRootId::from_raw(0));
         db.set_file_content(file, Arc::new("class Foo {}".to_string()));
 
-        let snap = db.snapshot();
-        let handle = std::thread::spawn(move || {
-            ra_salsa::Cancelled::catch(|| snap.interruptible_work(file, 5_000_000))
-        });
+        assert_query_is_cancelled(db, move |snap| snap.interruptible_work(file, 5_000_000));
+    }
 
-        while !syntax::INTERRUPTIBLE_WORK_STARTED.load(Ordering::SeqCst) {
-            std::thread::yield_now();
-        }
+    #[test]
+    fn request_cancellation_unwinds_synthetic_semantic_query() {
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+        db.set_file_exists(file, true);
+        db.set_source_root(file, SourceRootId::from_raw(0));
+        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
 
-        // This will block until `snap` is dropped; cancellation ensures that the
-        // worker thread unwinds and releases its snapshot.
-        db.request_cancellation();
-
-        let result = handle.join().expect("worker thread panicked");
-        assert!(
-            result.is_err(),
-            "expected salsa query to unwind with Cancelled after request_cancellation"
-        );
+        assert_query_is_cancelled(db, move |snap| snap.synthetic_semantic_work(file, 5_000_000));
     }
 
     #[test]
@@ -363,3 +432,4 @@ mod tests {
         });
     }
 }
+
