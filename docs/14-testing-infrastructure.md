@@ -156,6 +156,7 @@ BLESS=1 cargo test -p nova-refactor move_instance_method_adds_receiver_param_and
 These are not always golden “snapshots”, but they are fixture-driven tests:
 
 - `crates/nova-testing/fixtures/` — small Maven/Gradle projects used by LSP “test discovery” flows.
+- `crates/*/tests/fixtures/` — per-crate file fixtures (e.g. framework analyzers, decompiler inputs).
 - `crates/*/testdata/` — per-crate sample inputs (build tool parsing, classpath discovery, etc).
 
 #### 2d) Formatter golden tests (`insta` snapshots)
