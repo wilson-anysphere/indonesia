@@ -57,7 +57,9 @@ pub struct ExtensionsConfig {
     /// Whether extensions are enabled.
     #[serde(default = "default_extensions_enabled")]
     pub enabled: bool,
-    /// Additional paths searched for extension bundles (`.wasm` or bundle dirs).
+    /// Directories searched for extension bundles.
+    ///
+    /// Each directory is scanned for extension bundle folders containing a `nova-ext.toml` manifest.
     #[serde(default)]
     pub wasm_paths: Vec<PathBuf>,
     /// If set, only extensions with an id in this list will be loaded.
