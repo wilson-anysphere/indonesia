@@ -587,6 +587,8 @@ fn is_build_file(path: &Path) -> bool {
 
     if name == "pom.xml"
         || name == "nova.toml"
+        || name == ".nova.toml"
+        || name == "nova.config.toml"
         || name == ".bazelrc"
         || name.starts_with(".bazelrc.")
         || name == ".bazelversion"
@@ -797,6 +799,8 @@ mod tests {
         let build_files = [
             root.join("pom.xml"),
             root.join("nova.toml"),
+            root.join(".nova.toml"),
+            root.join("nova.config.toml"),
             root.join(".nova").join("config.toml"),
             root.join(".bazelrc"),
             root.join(".bazelrc.user"),
