@@ -38,9 +38,8 @@ fn sanitize_text(text: &str) -> String {
         Regex::new(r"(?i)([?&](?:key|api[_-]?key|token|access[_-]?token)=)([^&\s]+)")
             .expect("valid regex")
     });
-    static URL_USERINFO_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@").expect("valid regex")
-    });
+    static URL_USERINFO_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@").expect("valid regex"));
     static LONG_HEX_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\b[0-9a-fA-F]{32,}\b").expect("valid regex"));
     static LONG_BASE64ISH_RE: Lazy<Regex> =
@@ -49,7 +48,9 @@ fn sanitize_text(text: &str) -> String {
     let mut out = text.to_string();
 
     out = URL_USERINFO_RE
-        .replace_all(&out, |caps: &regex::Captures<'_>| format!("{}[REDACTED]@", &caps[1]))
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            format!("{}[REDACTED]@", &caps[1])
+        })
         .into_owned();
     out = HEADER_VALUE_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
@@ -62,7 +63,9 @@ fn sanitize_text(text: &str) -> String {
         })
         .into_owned();
     out = BEARER_TOKEN_RE
-        .replace_all(&out, |caps: &regex::Captures<'_>| format!("{}[REDACTED]", &caps[1]))
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            format!("{}[REDACTED]", &caps[1])
+        })
         .into_owned();
     out = BASIC_TOKEN_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| format!("{}[REDACTED]", &caps[1]))

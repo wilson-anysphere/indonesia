@@ -253,6 +253,7 @@ fn snippet(original: &str, normalized: &str, query: &str) -> String {
 mod embeddings {
     use super::{SearchResult, SemanticSearch};
     use nova_core::ProjectDatabase;
+    use nova_fuzzy::{fuzzy_match, MatchKind};
     use std::cmp::Ordering;
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -421,6 +422,11 @@ mod embeddings {
                 });
             }
 
+            if let Some(ref mut hnsw) = hnsw {
+                // HNSW is not safe to mutate concurrently with search; enter a
+                // dedicated searching mode after building the index.
+                hnsw.set_searching_mode(true);
+            }
             self.hnsw = hnsw;
         }
 
@@ -446,7 +452,14 @@ mod embeddings {
                     continue;
                 };
                 // Re-score with exact cosine similarity for deterministic ranking.
-                let score = cosine_similarity(&query_embedding, &doc.embedding);
+                let mut score = cosine_similarity(&query_embedding, &doc.embedding);
+                let path_str = doc.path.to_string_lossy();
+                if let Some(score_path) = fuzzy_match(query, &path_str) {
+                    score += match score_path.kind {
+                        MatchKind::Prefix => 0.15,
+                        MatchKind::Fuzzy => 0.05,
+                    };
+                }
                 results.push(SearchResult {
                     path: doc.path.clone(),
                     range: doc.range.clone(),
@@ -494,15 +507,16 @@ mod embeddings {
             let end = u32::from(range.end()) as usize;
             let start = start.min(source.len());
             let end = end.min(source.len()).max(start);
-            let snippet = source[start..end].trim().to_string();
-            if snippet.is_empty() {
+            let method_text = source[start..end].trim();
+            if method_text.is_empty() {
                 continue;
             }
 
             let doc = find_doc_comment_before_offset(source, start).unwrap_or_default();
-            let signature = extract_signature(&snippet);
-            let body = extract_body_preview(&snippet);
-            let embed_text = format!("{doc}\n{signature}\n{body}");
+            let signature = extract_signature(method_text);
+            let body = extract_body_preview(method_text);
+            let snippet = preview(method_text, 2_000);
+            let embed_text = format!("{}\n{doc}\n{signature}\n{body}", path.to_string_lossy());
 
             out.push((
                 path.clone(),
@@ -514,6 +528,10 @@ mod embeddings {
         }
 
         out
+    }
+
+    fn preview(text: &str, max_chars: usize) -> String {
+        text.chars().take(max_chars).collect()
     }
 
     fn extract_signature(snippet: &str) -> String {

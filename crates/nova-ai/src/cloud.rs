@@ -970,7 +970,10 @@ mod tests {
             .unwrap();
 
         mock.assert();
-        assert!(out.contains(secret), "client returns provider output unchanged");
+        assert!(
+            out.contains(secret),
+            "client returns provider output unchanged"
+        );
 
         let events = events.lock().unwrap();
         let audit = audit_events(&events);
