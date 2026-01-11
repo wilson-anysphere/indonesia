@@ -69,10 +69,13 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
             if max_items == 0 {
                 return Ok(Vec::new());
             }
- 
+
             let sanitized_prompt = sanitize_prompt(&prompt, &self.privacy);
             let full_prompt = format!("{sanitized_prompt}\n\n{}", json_instructions(max_items));
-  
+
+            // Use a child token so dropping this request doesn't cancel the parent session token.
+            let cancel = cancel.child_token();
+            let _guard = cancel.clone().drop_guard();
             let response = self
                 .llm
                 .generate(

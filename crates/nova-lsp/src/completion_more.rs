@@ -180,12 +180,11 @@ impl NovaCompletionService {
                     .map(|item| to_lsp_completion_item(item, &context_id_clone))
                     .collect();
 
-                lsp_items.retain(|item| {
-                    item.insert_text
-                        .as_deref()
-                        .map(|text| !standard_insert_texts.contains(text))
-                        .unwrap_or(true)
-                });
+                nova_ai::filter_duplicates_against_insert_text_set(
+                    &mut lsp_items,
+                    &standard_insert_texts,
+                    |item| item.insert_text.as_deref(),
+                );
 
                 let _ = tx.send(lsp_items);
             });

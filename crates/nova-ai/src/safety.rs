@@ -1,5 +1,5 @@
 use crate::patch::{Patch, UnifiedDiffLine};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
@@ -40,6 +40,7 @@ pub enum SafetyError {
 pub fn enforce_patch_safety(patch: &Patch, config: &PatchSafetyConfig) -> Result<(), SafetyError> {
     let mut files = BTreeSet::new();
     let mut inserted_chars = 0usize;
+    let mut new_imports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     match patch {
         Patch::Edits(edits) => {
@@ -47,6 +48,17 @@ pub fn enforce_patch_safety(patch: &Patch, config: &PatchSafetyConfig) -> Result
                 validate_path(&edit.file, config)?;
                 files.insert(edit.file.clone());
                 inserted_chars = inserted_chars.saturating_add(edit.text.len());
+
+                if config.no_new_imports {
+                    for line in edit.text.lines() {
+                        if is_import_line(line) {
+                            new_imports
+                                .entry(edit.file.clone())
+                                .or_default()
+                                .insert(line.trim().to_string());
+                        }
+                    }
+                }
             }
         }
         Patch::UnifiedDiff(diff) => {
@@ -69,6 +81,12 @@ pub fn enforce_patch_safety(patch: &Patch, config: &PatchSafetyConfig) -> Result
                     for line in &hunk.lines {
                         if let UnifiedDiffLine::Add(text) = line {
                             inserted_chars = inserted_chars.saturating_add(text.len());
+                            if config.no_new_imports && is_import_line(text) {
+                                new_imports
+                                    .entry(file.new_path.clone())
+                                    .or_default()
+                                    .insert(text.trim().to_string());
+                            }
                         }
                     }
                 }
@@ -88,6 +106,15 @@ pub fn enforce_patch_safety(patch: &Patch, config: &PatchSafetyConfig) -> Result
             chars: inserted_chars,
             max: config.max_total_inserted_chars,
         });
+    }
+
+    if config.no_new_imports {
+        if let Some((file, imports)) = new_imports.into_iter().find(|(_, v)| !v.is_empty()) {
+            return Err(SafetyError::NewImports {
+                file,
+                imports: imports.into_iter().collect(),
+            });
+        }
     }
 
     Ok(())
@@ -111,6 +138,11 @@ fn validate_path(path: &str, config: &PatchSafetyConfig) -> Result<(), SafetyErr
     }
 
     Ok(())
+}
+
+fn is_import_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("import ") && trimmed.ends_with(';')
 }
 
 pub fn extract_new_imports(before: &str, after: &str) -> Vec<String> {

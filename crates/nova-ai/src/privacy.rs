@@ -27,6 +27,7 @@ impl Default for PrivacyMode {
 pub struct RedactionConfig {
     pub redact_string_literals: bool,
     pub redact_numeric_literals: bool,
+    pub redact_comments: bool,
 }
 
 impl Default for RedactionConfig {
@@ -34,6 +35,7 @@ impl Default for RedactionConfig {
         Self {
             redact_string_literals: true,
             redact_numeric_literals: true,
+            redact_comments: true,
         }
     }
 }
@@ -43,7 +45,7 @@ pub fn redact_suspicious_literals(code: &str, cfg: &RedactionConfig) -> String {
         anonymize_identifiers: false,
         redact_sensitive_strings: cfg.redact_string_literals,
         redact_numeric_literals: cfg.redact_numeric_literals,
-        strip_or_redact_comments: false,
+        strip_or_redact_comments: cfg.redact_comments,
     });
     anonymizer.anonymize(code)
 }
@@ -57,6 +59,15 @@ mod tests {
         let code = r#"String apiKey = "sk-verysecretstringthatislong";"#;
         let redacted = redact_suspicious_literals(code, &RedactionConfig::default());
         assert!(redacted.contains("\"[REDACTED]\""));
+        assert!(!redacted.contains("sk-verysecret"));
+    }
+
+    #[test]
+    fn redacts_sensitive_comments() {
+        let code = r#"// token: sk-verysecretstringthatislong
+class Foo {}"#;
+        let redacted = redact_suspicious_literals(code, &RedactionConfig::default());
+        assert!(redacted.contains("// [REDACTED]"));
         assert!(!redacted.contains("sk-verysecret"));
     }
 }

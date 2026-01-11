@@ -6,9 +6,8 @@ use lsp_types::{
     RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
     WorkspaceEdit as LspWorkspaceEdit,
 };
-use nova_ai::{
-    AiService, CloudLlmClient, CloudLlmConfig, ContextRequest, ProviderKind, RetryConfig,
-};
+use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
+use nova_ai::context::ContextRequest;
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
