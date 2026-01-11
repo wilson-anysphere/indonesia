@@ -536,6 +536,16 @@ fn parse_expression_smoke() {
 }
 
 #[test]
+fn parse_expression_allows_primitive_class_literals_in_argument_lists() {
+    let result = parse_java_expression("f(int.class)");
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::MethodCallExpression));
+    assert!(kinds.contains(&SyntaxKind::ClassLiteralExpression));
+}
+
+#[test]
 fn parse_expression_trailing_tokens_are_reported_and_consumed() {
     let result = parse_java_expression("1 2");
     assert!(

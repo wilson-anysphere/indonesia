@@ -652,3 +652,43 @@ fn annotation_default_values_are_element_values() {
         .collect();
     assert_eq!(pair_names, vec!["x"]);
 }
+
+#[test]
+fn annotation_element_values_allow_primitive_class_literals() {
+    let src = r#"
+        @Anno(primitive = int.class)
+        class Foo {}
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+
+    let anno = class.modifiers().unwrap().annotations().next().unwrap();
+    let pair = anno.arguments().unwrap().pairs().next().unwrap();
+    assert_eq!(pair.name_token().unwrap().text(), "primitive");
+
+    let expr = pair.value().unwrap().expression().unwrap();
+    match expr {
+        Expression::ClassLiteralExpression(class_lit) => {
+            assert_eq!(
+                class_lit
+                    .expression()
+                    .unwrap()
+                    .syntax()
+                    .first_token()
+                    .unwrap()
+                    .text(),
+                "int"
+            );
+        }
+        other => panic!("expected class literal expression, got {other:?}"),
+    }
+}

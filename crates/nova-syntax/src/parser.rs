@@ -1602,7 +1602,7 @@ impl<'a> Parser<'a> {
             SyntaxKind::LBrace => {
                 self.parse_annotation_element_value_array_initializer();
             }
-            kind if can_start_expression(kind) => {
+            _ if self.can_start_expression_here() => {
                 self.parse_expression(0);
             }
             _ => {
@@ -1617,8 +1617,16 @@ impl<'a> Parser<'a> {
         match self.current() {
             SyntaxKind::At => self.nth(1) != Some(SyntaxKind::InterfaceKw),
             SyntaxKind::LBrace => true,
-            kind => can_start_expression(kind),
+            _ => self.can_start_expression_here(),
         }
+    }
+
+    fn can_start_expression_here(&mut self) -> bool {
+        let kind = self.current();
+        if can_start_expression(kind) {
+            return true;
+        }
+        (is_primitive_type(kind) || kind == SyntaxKind::VoidKw) && self.at_primitive_class_literal_start()
     }
 
     fn parse_annotation_element_value_array_initializer(&mut self) {
@@ -1735,7 +1743,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 continue;
             }
-            if !can_start_expression(self.current()) {
+            if !self.can_start_expression_here() {
                 // Common during typing: `@Anno(` followed by the next declaration.
                 self.error_here("expected argument expression");
                 break;
@@ -3290,7 +3298,7 @@ impl<'a> Parser<'a> {
         self.eat_trivia();
         if self.at(SyntaxKind::LBrace) {
             self.parse_array_initializer(allow_lambda);
-        } else if can_start_expression(self.current()) {
+        } else if self.can_start_expression_here() {
             self.parse_expression_inner(0, allow_lambda);
         } else {
             self.builder.start_node(SyntaxKind::Error.into());
