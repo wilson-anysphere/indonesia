@@ -1540,3 +1540,50 @@ async fn dap_feature_requests_are_guarded_by_jdwp_capabilities() {
 
     server_task.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn dap_evaluate_without_frame_id_returns_friendly_message() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let init_resp = read_response(&mut reader, 1).await;
+    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    let initialized = read_next(&mut reader).await;
+    assert_eq!(initialized.get("event").and_then(|v| v.as_str()), Some("initialized"));
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+
+    send_request(&mut writer, 3, "evaluate", json!({ "expression": "x", "context": "hover" })).await;
+    let eval_resp = read_response(&mut reader, 3).await;
+    assert!(eval_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert_eq!(
+        eval_resp.pointer("/body/variablesReference").and_then(|v| v.as_i64()),
+        Some(0)
+    );
+    let result = eval_resp.pointer("/body/result").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(result.contains("frameId"));
+
+    send_request(&mut writer, 4, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 4).await;
+
+    server_task.await.unwrap().unwrap();
+}

@@ -34,6 +34,8 @@ pub use crate::error::{DebugError, DebugResult};
 pub use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
 pub use crate::session::{DebugSession, StepOutput};
 
+pub mod eval_context;
+
 /// Async/Tokio DAP codec helpers (used by the wire-level JDWP adapter).
 pub mod dap_tokio;
 

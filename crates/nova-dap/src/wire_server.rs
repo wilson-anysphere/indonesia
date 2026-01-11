@@ -29,10 +29,12 @@ use nova_config::NovaConfig;
 
 use crate::{
     dap_tokio::{make_event, make_response, DapError, DapReader, DapWriter, Request},
+    eval_context::EvalOptions,
     hot_swap::{BuildSystem, CompileError, CompileOutput, CompiledClass, HotSwapEngine},
     wire_debugger::{
         AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError, StepDepth,
     },
+    EvaluateResult,
 };
 
 #[derive(Debug, Error)]
@@ -45,6 +47,16 @@ pub enum WireServerError {
 }
 
 type Result<T> = std::result::Result<T, WireServerError>;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EvaluateArguments {
+    expression: String,
+    #[serde(default)]
+    frame_id: Option<i64>,
+    #[serde(default)]
+    context: Option<String>,
+}
 
 /// Run the experimental JDWP-backed DAP adapter over stdio.
 pub async fn run_stdio() -> anyhow::Result<()> {
@@ -1484,17 +1496,6 @@ async fn handle_request_inner(
             }
         }
         "evaluate" => {
-            let expression = request
-                .arguments
-                .get("expression")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let frame_id = request
-                .arguments
-                .get("frameId")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
@@ -1521,28 +1522,54 @@ async fn handle_request_inner(
                 return;
             };
 
-            match dbg.evaluate(cancel, frame_id, expression).await {
-                Ok(body) if cancel.is_cancelled() => {
-                    send_response(
-                        out_tx,
-                        seq,
-                        request,
-                        false,
-                        None,
-                        Some("cancelled".to_string()),
-                    );
+            let args: EvaluateArguments = match serde_json::from_value(request.arguments.clone()) {
+                Ok(args) => args,
+                Err(err) => {
+                    let body = EvaluateResult {
+                        result: format!("invalid evaluate arguments: {err}"),
+                        type_: None,
+                        variables_reference: 0,
+                        evaluate_name: None,
+                        presentation_hint: None,
+                    };
+                    send_response(out_tx, seq, request, true, Some(json!(body)), None);
+                    return;
                 }
+            };
+
+            let frame_id = args.frame_id.filter(|frame_id| *frame_id > 0);
+            let Some(frame_id) = frame_id else {
+                let body = EvaluateResult {
+                    result: "This evaluation requires a stack frame. Retry while stopped or pass frameId.".to_string(),
+                    type_: None,
+                    variables_reference: 0,
+                    evaluate_name: None,
+                    presentation_hint: None,
+                };
+                send_response(out_tx, seq, request, true, Some(json!(body)), None);
+                return;
+            };
+
+            let options = EvalOptions::from_dap_context(args.context.as_deref());
+
+            match dbg.evaluate(cancel, frame_id, &args.expression, options).await {
+                Ok(body) if cancel.is_cancelled() => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
                 Ok(body) => send_response(out_tx, seq, request, true, body, None),
-                Err(err) if is_cancelled_error(&err) => {
-                    send_response(
-                        out_tx,
-                        seq,
-                        request,
-                        false,
-                        None,
-                        Some("cancelled".to_string()),
-                    );
-                }
+                Err(err) if is_cancelled_error(&err) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                ),
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }

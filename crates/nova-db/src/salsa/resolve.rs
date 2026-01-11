@@ -24,44 +24,33 @@ pub trait NovaResolve: NovaHir + HasQueryStats {
     ) -> Option<nova_resolve::Resolution>;
 }
 
-impl HirDatabase for dyn NovaResolve {
+struct HirDbAdapter<'a>(&'a dyn NovaResolve);
+
+impl HirDatabase for HirDbAdapter<'_> {
     fn file_text(&self, file: FileId) -> Arc<str> {
-        // `nova-hir`'s standalone query helpers use `Arc<str>`. The Salsa DB keeps
-        // file content as an `Arc<String>`, so we downcast by copying.
-        //
-        // This keeps `nova-resolve` independent of Salsa while still allowing
-        // us to use it from queries.
-        Arc::from(self.file_content(file).as_str())
+        Arc::from(self.0.file_content(file).as_str())
     }
 
     fn hir_item_tree(&self, file: FileId) -> Arc<nova_hir::item_tree::ItemTree> {
-        NovaHir::hir_item_tree(self, file)
+        NovaHir::hir_item_tree(self.0, file)
     }
 
     fn hir_body(&self, method: nova_hir::ids::MethodId) -> Arc<nova_hir::hir::Body> {
-        NovaHir::hir_body(self, method)
+        NovaHir::hir_body(self.0, method)
     }
 
     fn hir_constructor_body(
         &self,
         constructor: nova_hir::ids::ConstructorId,
     ) -> Arc<nova_hir::hir::Body> {
-        NovaHir::hir_constructor_body(self, constructor)
+        NovaHir::hir_constructor_body(self.0, constructor)
     }
 
     fn hir_initializer_body(
         &self,
         initializer: nova_hir::ids::InitializerId,
     ) -> Arc<nova_hir::hir::Body> {
-        NovaHir::hir_initializer_body(self, initializer)
-    }
-}
-
-struct HirDbAdapter<'a>(&'a dyn NovaResolve);
-
-impl HirDatabase for HirDbAdapter<'_> {
-    fn file_text(&self, file: FileId) -> Arc<str> {
-        Arc::from(self.0.file_content(file).as_str())
+        NovaHir::hir_initializer_body(self.0, initializer)
     }
 }
 

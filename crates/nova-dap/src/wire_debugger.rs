@@ -18,6 +18,7 @@ use nova_jdwp::wire::{
     Location, MethodInfo, ObjectId, ReferenceTypeId, ThreadId, VariableInfo,
 };
 
+use crate::eval_context::EvalOptions;
 use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
 
 /// Internal representation of a DAP `SourceBreakpoint`.
@@ -876,6 +877,7 @@ impl Debugger {
         cancel: &CancellationToken,
         frame_id: i64,
         expression: &str,
+        _options: EvalOptions,
     ) -> Result<Option<serde_json::Value>> {
         let expr = expression.trim();
         if expr.is_empty() {
@@ -887,9 +889,9 @@ impl Debugger {
             ));
         }
         let Some(frame) = self.frame_handles.get(frame_id).copied() else {
-            return Err(DebuggerError::InvalidRequest(format!(
-                "unknown frameId {frame_id}"
-            )));
+            return Ok(Some(
+                json!({"result": format!("unknown frameId {frame_id}"), "variablesReference": 0}),
+            ));
         };
         let vars = self.locals_variables(cancel, &frame).await?;
         for v in vars {
@@ -897,11 +899,20 @@ impl Debugger {
             if v.get("name").and_then(|v| v.as_str()) == Some(expr) {
                 let result = v
                     .get("value")
-                    .cloned()
-                    .unwrap_or(Value::String(String::new()));
-                return Ok(Some(
-                    json!({"result": result, "variablesReference": v.get("variablesReference").cloned().unwrap_or(json!(0))}),
-                ));
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let variables_reference = v.get("variablesReference").and_then(|v| v.as_i64()).unwrap_or(0);
+                let type_name = v.get("type").and_then(|v| v.as_str()).map(|v| v.to_string());
+
+                let mut obj = serde_json::Map::new();
+                obj.insert("result".to_string(), json!(result));
+                obj.insert("variablesReference".to_string(), json!(variables_reference));
+                if let Some(type_name) = type_name {
+                    obj.insert("type".to_string(), json!(type_name));
+                }
+
+                return Ok(Some(Value::Object(obj)));
             }
         }
         Ok(Some(
@@ -925,7 +936,6 @@ impl Debugger {
             };
 
             meta.hit_count = meta.hit_count.saturating_add(1);
-
             (
                 meta.hit_count,
                 meta.hit_condition.clone(),
