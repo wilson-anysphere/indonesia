@@ -130,6 +130,11 @@ impl AiClient {
         } else {
             0
         };
+        let safe_endpoint = if self.audit_enabled {
+            Some(audit::sanitize_url_for_log(&self.endpoint))
+        } else {
+            None
+        };
 
         let cache_key = self.cache.as_ref().map(|_| {
             let mut builder = CacheKeyBuilder::new("ai_chat_v1");
@@ -168,7 +173,7 @@ impl AiClient {
                         self.provider_label,
                         &self.model,
                         prompt,
-                        /*endpoint=*/ None,
+                        safe_endpoint.as_deref(),
                         /*attempt=*/ 0,
                         /*stream=*/ false,
                     );
@@ -201,7 +206,7 @@ impl AiClient {
                 self.provider_label,
                 &self.model,
                 prompt,
-                /*endpoint=*/ None,
+                safe_endpoint.as_deref(),
                 /*attempt=*/ 0,
                 /*stream=*/ false,
             );
@@ -281,6 +286,11 @@ impl AiClient {
         } else {
             0
         };
+        let safe_endpoint = if self.audit_enabled {
+            Some(audit::sanitize_url_for_log(&self.endpoint))
+        } else {
+            None
+        };
         let started_at = Instant::now();
         if let Some(prompt) = prompt_for_log.as_deref() {
             audit::log_llm_request(
@@ -288,7 +298,7 @@ impl AiClient {
                 self.provider_label,
                 &self.model,
                 prompt,
-                /*endpoint=*/ None,
+                safe_endpoint.as_deref(),
                 /*attempt=*/ 0,
                 /*stream=*/ true,
             );
