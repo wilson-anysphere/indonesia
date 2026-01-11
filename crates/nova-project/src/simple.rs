@@ -69,6 +69,7 @@ pub(crate) fn load_simple_project(
             .unwrap_or("root")
             .to_string(),
         root: root.to_path_buf(),
+        annotation_processing: Default::default(),
     }];
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
     let (mut module_path, mut classpath) =

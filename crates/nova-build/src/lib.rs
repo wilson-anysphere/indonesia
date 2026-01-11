@@ -14,17 +14,20 @@ mod module_graph;
 pub use cache::{BuildCache, BuildFileFingerprint};
 pub use command::{CommandOutput, CommandRunner, DefaultCommandRunner};
 pub use gradle::{
-    collect_gradle_build_files, parse_gradle_classpath_output, parse_gradle_projects_output,
-    GradleBuild, GradleConfig, GradleProjectInfo,
+    collect_gradle_build_files, parse_gradle_annotation_processing_output,
+    parse_gradle_classpath_output, parse_gradle_projects_output, GradleBuild, GradleConfig,
+    GradleProjectInfo,
 };
 pub use javac::{parse_javac_diagnostics, JavacDiagnosticFormat};
 pub use maven::{
-    collect_maven_build_files, parse_maven_classpath_output, parse_maven_evaluate_scalar_output,
+    collect_maven_build_files, parse_maven_classpath_output,
+    parse_maven_effective_pom_annotation_processing, parse_maven_evaluate_scalar_output,
     MavenBuild, MavenConfig,
 };
 pub use module_graph::{infer_module_graph, ModuleBuildInfo, ModuleGraph, ModuleId};
 
 use nova_core::Diagnostic;
+use nova_project::AnnotationProcessing;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -351,5 +354,23 @@ impl BuildManager {
     ) -> Result<BuildResult> {
         self.gradle
             .build_with_task(project_root, project_path, task, &self.cache)
+    }
+
+    pub fn annotation_processing_maven(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+    ) -> Result<AnnotationProcessing> {
+        self.maven
+            .annotation_processing(project_root, module_relative, &self.cache)
+    }
+
+    pub fn annotation_processing_gradle(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+    ) -> Result<AnnotationProcessing> {
+        self.gradle
+            .annotation_processing(project_root, project_path, &self.cache)
     }
 }

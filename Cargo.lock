@@ -3355,6 +3355,7 @@ dependencies = [
  "nova-core",
  "nova-process",
  "nova-project",
+ "roxmltree",
  "serde",
  "serde_json",
  "sha2",

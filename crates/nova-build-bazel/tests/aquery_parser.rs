@@ -2,6 +2,7 @@ use nova_build_bazel::{
     extract_java_compile_info, parse_aquery_textproto, parse_aquery_textproto_streaming,
 };
 use std::io::BufReader;
+use std::path::PathBuf;
 
 #[test]
 fn parses_javac_action_and_extracts_classpath() {
@@ -57,6 +58,50 @@ action {
     assert_eq!(info.source.as_deref(), Some("21"));
     assert_eq!(info.target.as_deref(), Some("21"));
     assert_eq!(info.source_roots, vec!["java/com/example".to_string()]);
+}
+
+#[test]
+fn extracts_annotation_processing_flags_from_javac_action() {
+    let output = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:hello"
+  arguments: "external/local_jdk/bin/javac"
+  arguments: "-processorpath"
+  arguments: "external/apt/processor.jar:external/apt/helper.jar"
+  arguments: "-processor"
+  arguments: "com.example.Proc"
+  arguments: "-Afoo=bar"
+  arguments: "-s"
+  arguments: "bazel-out/k8-fastbuild/bin/java/com/example/generated"
+  arguments: "-proc:only"
+  arguments: "java/com/example/Hello.java"
+}
+"#;
+
+    let actions = parse_aquery_textproto(output);
+    assert_eq!(actions.len(), 1);
+
+    let info = extract_java_compile_info(&actions[0]);
+    let ap = info
+        .annotation_processing
+        .expect("annotation processing present");
+    assert!(ap.enabled);
+    assert_eq!(
+        ap.processor_path,
+        vec![
+            PathBuf::from("external/apt/processor.jar"),
+            PathBuf::from("external/apt/helper.jar")
+        ]
+    );
+    assert_eq!(ap.processors, vec!["com.example.Proc".to_string()]);
+    assert_eq!(ap.options.get("foo").map(String::as_str), Some("bar"));
+    assert_eq!(
+        ap.generated_sources_dir,
+        Some(PathBuf::from(
+            "bazel-out/k8-fastbuild/bin/java/com/example/generated"
+        ))
+    );
 }
 
 #[test]

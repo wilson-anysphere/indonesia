@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::BufRead;
+use std::path::PathBuf;
 
 // `read_line` grows the backing buffer to fit the longest line seen. Some Bazel action arguments
 // (e.g. long classpaths) can be very large; cap the retained buffer size to avoid permanently
@@ -13,6 +14,24 @@ const MAX_LINE_BUF_CAPACITY_BYTES: usize = 1024 * 1024;
 pub struct JavacAction {
     pub owner: Option<String>,
     pub arguments: Vec<String>,
+}
+
+/// Annotation processing (APT) configuration extracted from a `javac` invocation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AnnotationProcessingConfig {
+    /// Whether annotation processing is enabled (`-proc:none` disables it).
+    pub enabled: bool,
+    /// Output directory for generated `.java` sources (`javac -s`).
+    pub generated_sources_dir: Option<PathBuf>,
+    /// Annotation processor classpath (`-processorpath` / `--processor-path`).
+    pub processor_path: Vec<PathBuf>,
+    /// Explicit processors passed via `-processor`.
+    pub processors: Vec<String>,
+    /// Key/value pairs from `-Akey=value` options.
+    pub options: BTreeMap<String, String>,
+    /// APT-related compiler arguments (e.g. `-proc:none`, `-A...`, `-processorpath`, `-s`).
+    pub compiler_args: Vec<String>,
 }
 
 /// The compilation settings Nova cares about for Java semantic analysis.
@@ -41,6 +60,11 @@ pub struct JavaCompileInfo {
     /// Whether `--enable-preview` is passed.
     #[serde(default, alias = "enable_preview")]
     pub preview: bool,
+
+    /// Annotation processing configuration extracted from `javac` flags (`-processorpath`, `-A...`,
+    /// `-s`, etc).
+    #[serde(default)]
+    pub annotation_processing: Option<AnnotationProcessingConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +229,17 @@ enum PendingJavacArg {
     Target,
     OutputDir,
     SourcePath,
+    ProcessorPath,
+    Processor,
+    GeneratedSourcesDir,
+}
+
+#[derive(Debug, Default)]
+struct AptState {
+    config: AnnotationProcessingConfig,
+    saw_flag: bool,
+    proc_mode: Option<String>,
+    compiler_args: Vec<String>,
 }
 
 struct AqueryTextprotoStreamingJavacInfoParser<R: BufRead> {
@@ -217,6 +252,7 @@ struct AqueryTextprotoStreamingJavacInfoParser<R: BufRead> {
     info: JavaCompileInfo,
     sourcepath_roots: BTreeSet<String>,
     java_file_roots: BTreeSet<String>,
+    apt: AptState,
     pending: Option<PendingJavacArg>,
     done: bool,
 }
@@ -233,6 +269,7 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
             info: JavaCompileInfo::default(),
             sourcepath_roots: BTreeSet::new(),
             java_file_roots: BTreeSet::new(),
+            apt: AptState::default(),
             pending: None,
             done: false,
         }
@@ -244,6 +281,7 @@ fn apply_javac_argument(
     info: &mut JavaCompileInfo,
     sourcepath_roots: &mut BTreeSet<String>,
     java_file_roots: &mut BTreeSet<String>,
+    apt: &mut AptState,
     arg: &str,
 ) {
     if let Some(pending) = pending.take() {
@@ -283,6 +321,32 @@ fn apply_javac_argument(
                     }
                 }
             }
+            PendingJavacArg::ProcessorPath => {
+                apt.saw_flag = true;
+                apt.compiler_args.push(arg.to_string());
+                apt.config.processor_path.extend(
+                    split_path_list(arg)
+                        .into_iter()
+                        .filter(|s| !s.is_empty())
+                        .map(PathBuf::from),
+                );
+            }
+            PendingJavacArg::Processor => {
+                apt.saw_flag = true;
+                apt.compiler_args.push(arg.to_string());
+                apt.config.processors.extend(
+                    arg.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                );
+            }
+            PendingJavacArg::GeneratedSourcesDir => {
+                apt.saw_flag = true;
+                apt.compiler_args.push(arg.to_string());
+                if !arg.is_empty() {
+                    apt.config.generated_sources_dir = Some(PathBuf::from(arg));
+                }
+            }
         }
         return;
     }
@@ -294,6 +358,21 @@ fn apply_javac_argument(
         "--source" | "-source" => *pending = Some(PendingJavacArg::Source),
         "--target" | "-target" => *pending = Some(PendingJavacArg::Target),
         "-d" => *pending = Some(PendingJavacArg::OutputDir),
+        "-processorpath" | "--processor-path" => {
+            apt.saw_flag = true;
+            apt.compiler_args.push(arg.to_string());
+            *pending = Some(PendingJavacArg::ProcessorPath);
+        }
+        "-processor" => {
+            apt.saw_flag = true;
+            apt.compiler_args.push(arg.to_string());
+            *pending = Some(PendingJavacArg::Processor);
+        }
+        "-s" => {
+            apt.saw_flag = true;
+            apt.compiler_args.push(arg.to_string());
+            *pending = Some(PendingJavacArg::GeneratedSourcesDir);
+        }
         "--enable-preview" => {
             info.preview = true;
         }
@@ -313,6 +392,24 @@ fn apply_javac_argument(
                 .or_else(|| other.strip_prefix("-p="))
             {
                 info.module_path = split_path_list(module_path);
+                return;
+            }
+
+            if other.starts_with("-proc:") {
+                apt.saw_flag = true;
+                apt.proc_mode = Some(other.trim_start_matches("-proc:").to_string());
+                apt.compiler_args.push(other.to_string());
+                return;
+            }
+
+            if other.starts_with("-A") {
+                apt.saw_flag = true;
+                apt.compiler_args.push(other.to_string());
+                let rest = other.trim_start_matches("-A");
+                let (k, v) = rest.split_once('=').unwrap_or((rest, ""));
+                if !k.is_empty() {
+                    apt.config.options.insert(k.to_string(), v.to_string());
+                }
                 return;
             }
 
@@ -425,6 +522,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                     self.info = JavaCompileInfo::default();
                     self.sourcepath_roots.clear();
                     self.java_file_roots.clear();
+                    self.apt = AptState::default();
                     self.pending = None;
 
                     if self.depth <= 0 {
@@ -449,6 +547,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                         self.info = JavaCompileInfo::default();
                         self.sourcepath_roots.clear();
                         self.java_file_roots.clear();
+                        self.apt = AptState::default();
                         self.pending = None;
                     }
                 } else if let Some(value) = parse_quoted_field(trimmed, "owner:") {
@@ -471,6 +570,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                             &mut self.info,
                             &mut self.sourcepath_roots,
                             &mut self.java_file_roots,
+                            &mut self.apt,
                             value.as_ref(),
                         );
                     }
@@ -491,6 +591,31 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                     }
                     .into_iter()
                     .collect();
+
+                    let apt = std::mem::take(&mut self.apt);
+                    let has_apt = apt.saw_flag
+                        || apt.proc_mode.is_some()
+                        || !apt.config.processor_path.is_empty()
+                        || !apt.config.processors.is_empty()
+                        || !apt.config.options.is_empty()
+                        || apt.config.generated_sources_dir.is_some();
+                    if has_apt {
+                        let mut cfg = apt.config;
+                        cfg.compiler_args = apt.compiler_args;
+                        cfg.enabled = match apt.proc_mode.as_deref() {
+                            Some("none") => false,
+                            Some(_) => true,
+                            None => true,
+                        };
+
+                        let mut seen_processors = std::collections::HashSet::new();
+                        cfg.processors.retain(|p| seen_processors.insert(p.clone()));
+                        let mut seen_paths = std::collections::HashSet::new();
+                        cfg.processor_path.retain(|p| seen_paths.insert(p.clone()));
+
+                        info.annotation_processing = Some(cfg);
+                    }
+
                     self.pending = None;
                     return Some(JavacActionInfo {
                         owner: self.owner.take(),
@@ -503,6 +628,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                 self.info = JavaCompileInfo::default();
                 self.sourcepath_roots.clear();
                 self.java_file_roots.clear();
+                self.apt = AptState::default();
                 self.pending = None;
             }
         }
@@ -656,6 +782,10 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
     let mut info = JavaCompileInfo::default();
     let mut sourcepath_roots = BTreeSet::<String>::new();
     let mut java_file_roots = BTreeSet::<String>::new();
+    let mut apt_config = AnnotationProcessingConfig::default();
+    let mut saw_apt_flag = false;
+    let mut proc_mode = None::<String>;
+    let mut apt_args = Vec::<String>::new();
 
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
@@ -697,6 +827,37 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
                     info.output_dir = Some(v.clone());
                 }
             }
+            "-processorpath" | "--processor-path" => {
+                if let Some(value) = it.next() {
+                    apt_config
+                        .processor_path
+                        .extend(split_path_list(value).into_iter().map(PathBuf::from));
+                    saw_apt_flag = true;
+                    apt_args.push(arg.clone());
+                    apt_args.push(value.clone());
+                }
+            }
+            "-processor" => {
+                if let Some(value) = it.next() {
+                    apt_config.processors.extend(
+                        value
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty()),
+                    );
+                    saw_apt_flag = true;
+                    apt_args.push(arg.clone());
+                    apt_args.push(value.clone());
+                }
+            }
+            "-s" => {
+                if let Some(value) = it.next() {
+                    apt_config.generated_sources_dir = Some(PathBuf::from(value));
+                    saw_apt_flag = true;
+                    apt_args.push(arg.clone());
+                    apt_args.push(value.clone());
+                }
+            }
             "--enable-preview" => {
                 info.preview = true;
             }
@@ -726,6 +887,23 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
                     .or_else(|| other.strip_prefix("-p="))
                 {
                     info.module_path = split_path_list(module_path);
+                    continue;
+                }
+                if other.starts_with("-proc:") {
+                    proc_mode = Some(other.trim_start_matches("-proc:").to_string());
+                    saw_apt_flag = true;
+                    apt_args.push(arg.clone());
+                    continue;
+                }
+
+                if other.starts_with("-A") {
+                    let rest = other.trim_start_matches("-A");
+                    let (k, v) = rest.split_once('=').unwrap_or((rest, ""));
+                    if !k.is_empty() {
+                        apt_config.options.insert(k.to_string(), v.to_string());
+                    }
+                    saw_apt_flag = true;
+                    apt_args.push(arg.clone());
                     continue;
                 }
 
@@ -800,6 +978,31 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
     } else {
         java_file_roots.into_iter().collect()
     };
+
+    let has_apt = saw_apt_flag
+        || proc_mode.is_some()
+        || !apt_config.processor_path.is_empty()
+        || !apt_config.processors.is_empty()
+        || !apt_config.options.is_empty()
+        || apt_config.generated_sources_dir.is_some();
+    if has_apt {
+        apt_config.compiler_args = apt_args;
+        apt_config.enabled = match proc_mode.as_deref() {
+            Some("none") => false,
+            Some(_) => true,
+            None => true,
+        };
+
+        let mut seen_processors = std::collections::HashSet::new();
+        apt_config
+            .processors
+            .retain(|p| seen_processors.insert(p.clone()));
+        let mut seen_paths = std::collections::HashSet::new();
+        apt_config
+            .processor_path
+            .retain(|p| seen_paths.insert(p.clone()));
+        info.annotation_processing = Some(apt_config);
+    }
     info
 }
 

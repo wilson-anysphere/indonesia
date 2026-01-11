@@ -7,7 +7,7 @@ use nova_project::{
     BuildSystem, Module, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -536,7 +536,7 @@ impl AptManager {
 
         for module in &self.project.modules {
             let roots = self
-                .generated_roots_for_module(&module.root)
+                .generated_roots_for_module(module)
                 .into_iter()
                 .map(|root| {
                     let freshness = freshness.freshness_for_root(&module.root, &root)?;
@@ -563,7 +563,7 @@ impl AptManager {
 
         for module in &self.project.modules {
             let roots = self
-                .generated_roots_for_module(&module.root)
+                .generated_roots_for_module(module)
                 .into_iter()
                 .map(|root| {
                     let freshness = freshness.freshness_for_root(&module.root, &root)?;
@@ -579,6 +579,16 @@ impl AptManager {
         }
 
         Ok(GeneratedSourcesStatus { enabled, modules })
+    }
+
+    /// Like [`AptManager::status`] but first attempts to populate per-module annotation processing
+    /// configuration from the build tool.
+    ///
+    /// This is best-effort: if build metadata extraction fails, Nova falls back to conventional
+    /// generated source roots.
+    pub fn status_with_build(&mut self, build: &BuildManager) -> io::Result<GeneratedSourcesStatus> {
+        let _ = self.apply_build_annotation_processing(build);
+        self.status()
     }
 
     pub fn run_annotation_processing(
@@ -704,17 +714,120 @@ enum ModuleBuildAction {
 }
 
 impl AptManager {
-    fn generated_roots_for_module(&self, module_root: &Path) -> Vec<SourceRoot> {
-        let mut roots: Vec<_> = self
-            .project
-            .source_roots
-            .iter()
-            .filter(|root| root.origin == SourceRootOrigin::Generated)
-            .filter(|root| root.path.starts_with(module_root))
-            .cloned()
-            .collect();
+    fn generated_roots_for_module(&self, module: &Module) -> Vec<SourceRoot> {
+        if !self.config.generated_sources.enabled {
+            return Vec::new();
+        }
+
+        let module_root = &module.root;
+        let mut candidates: Vec<(SourceRootKind, PathBuf)> = Vec::new();
+
+        if let Some(override_roots) = &self.config.generated_sources.override_roots {
+            for root in override_roots {
+                let path = if root.is_absolute() {
+                    root.clone()
+                } else {
+                    module_root.join(root)
+                };
+                candidates.push((SourceRootKind::Main, path));
+            }
+        } else {
+            match module.annotation_processing.main.as_ref() {
+                Some(cfg) if cfg.enabled => match cfg.generated_sources_dir.clone() {
+                    Some(dir) => candidates.push((SourceRootKind::Main, dir)),
+                    None => push_default_generated_dirs(
+                        &mut candidates,
+                        self.project.build_system,
+                        module_root,
+                        SourceRootKind::Main,
+                    ),
+                },
+                Some(_) => {}
+                None => push_default_generated_dirs(
+                    &mut candidates,
+                    self.project.build_system,
+                    module_root,
+                    SourceRootKind::Main,
+                ),
+            }
+
+            match module.annotation_processing.test.as_ref() {
+                Some(cfg) if cfg.enabled => match cfg.generated_sources_dir.clone() {
+                    Some(dir) => candidates.push((SourceRootKind::Test, dir)),
+                    None => push_default_generated_dirs(
+                        &mut candidates,
+                        self.project.build_system,
+                        module_root,
+                        SourceRootKind::Test,
+                    ),
+                },
+                Some(_) => {}
+                None => push_default_generated_dirs(
+                    &mut candidates,
+                    self.project.build_system,
+                    module_root,
+                    SourceRootKind::Test,
+                ),
+            }
+
+            for root in &self.config.generated_sources.additional_roots {
+                let path = if root.is_absolute() {
+                    root.clone()
+                } else {
+                    module_root.join(root)
+                };
+                candidates.push((SourceRootKind::Main, path));
+            }
+        }
+
+        let mut seen = HashSet::new();
+        let mut roots = Vec::new();
+        for (kind, path) in candidates {
+            if !seen.insert((kind, path.clone())) {
+                continue;
+            }
+            roots.push(SourceRoot {
+                kind,
+                origin: SourceRootOrigin::Generated,
+                path,
+            });
+        }
         roots.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
         roots
+    }
+
+    fn apply_build_annotation_processing(&mut self, build: &BuildManager) -> nova_build::Result<()> {
+        let workspace_root = self.project.workspace_root.clone();
+
+        match self.project.build_system {
+            BuildSystem::Maven => {
+                for module in &mut self.project.modules {
+                    let rel = module
+                        .root
+                        .strip_prefix(&workspace_root)
+                        .ok()
+                        .filter(|p| !p.as_os_str().is_empty());
+                    module.annotation_processing =
+                        build.annotation_processing_maven(&workspace_root, rel)?;
+                }
+            }
+            BuildSystem::Gradle => {
+                for module in &mut self.project.modules {
+                    let project_path = module
+                        .root
+                        .strip_prefix(&workspace_root)
+                        .ok()
+                        .and_then(rel_to_gradle_project_path);
+                    module.annotation_processing = build.annotation_processing_gradle(
+                        &workspace_root,
+                        project_path.as_deref(),
+                    )?;
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
     }
 
     fn resolve_modules<'a>(&'a self, target: &AptRunTarget) -> Result<Vec<&'a Module>, String> {
@@ -767,7 +880,7 @@ impl AptManager {
         module: &Module,
         freshness: &mut FreshnessCalculator<'_>,
     ) -> io::Result<Option<ModuleBuildPlan>> {
-        let generated_roots = self.generated_roots_for_module(&module.root);
+        let generated_roots = self.generated_roots_for_module(module);
         if generated_roots.is_empty() {
             return Ok(None);
         }
@@ -880,6 +993,53 @@ fn rel_to_gradle_project_path(rel: &Path) -> Option<String> {
         None
     } else {
         Some(s)
+    }
+}
+
+fn push_default_generated_dirs(
+    out: &mut Vec<(SourceRootKind, PathBuf)>,
+    build_system: BuildSystem,
+    module_root: &Path,
+    kind: SourceRootKind,
+) {
+    match (build_system, kind) {
+        (BuildSystem::Maven, SourceRootKind::Main) => out.push((
+            SourceRootKind::Main,
+            module_root.join("target/generated-sources/annotations"),
+        )),
+        (BuildSystem::Maven, SourceRootKind::Test) => out.push((
+            SourceRootKind::Test,
+            module_root.join("target/generated-test-sources/test-annotations"),
+        )),
+        (BuildSystem::Gradle, SourceRootKind::Main) => out.push((
+            SourceRootKind::Main,
+            module_root.join("build/generated/sources/annotationProcessor/java/main"),
+        )),
+        (BuildSystem::Gradle, SourceRootKind::Test) => out.push((
+            SourceRootKind::Test,
+            module_root.join("build/generated/sources/annotationProcessor/java/test"),
+        )),
+        (BuildSystem::Simple, SourceRootKind::Main) => {
+            out.push((
+                SourceRootKind::Main,
+                module_root.join("target/generated-sources/annotations"),
+            ));
+            out.push((
+                SourceRootKind::Main,
+                module_root.join("build/generated/sources/annotationProcessor/java/main"),
+            ));
+        }
+        (BuildSystem::Simple, SourceRootKind::Test) => {
+            out.push((
+                SourceRootKind::Test,
+                module_root.join("target/generated-test-sources/test-annotations"),
+            ));
+            out.push((
+                SourceRootKind::Test,
+                module_root.join("build/generated/sources/annotationProcessor/java/test"),
+            ));
+        }
+        (BuildSystem::Bazel, _) => {}
     }
 }
 

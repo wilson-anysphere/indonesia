@@ -4,6 +4,7 @@ use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, JavaCompileConfig, MavenBuildGoal, Result,
 };
+use nova_project::{AnnotationProcessing, AnnotationProcessingConfig};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -398,6 +399,83 @@ impl MavenBuild {
         })
     }
 
+    pub fn annotation_processing(
+        &self,
+        project_root: &Path,
+        module_relative: Option<&Path>,
+        cache: &BuildCache,
+    ) -> Result<AnnotationProcessing> {
+        let pom_files = collect_maven_build_files(project_root)?;
+        let fingerprint = BuildFileFingerprint::from_files(project_root, pom_files)?;
+        let module_key = module_relative
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "<root>".to_string());
+
+        if let Some(cached) = cache.get_module(
+            project_root,
+            BuildSystemKind::Maven,
+            &fingerprint,
+            &module_key,
+        )? {
+            if let Some(config) = cached.annotation_processing {
+                return Ok(config);
+            }
+        }
+
+        let module_root = module_relative
+            .map(|p| project_root.join(p))
+            .unwrap_or_else(|| project_root.to_path_buf());
+
+        let effective_pom = write_temp_effective_pom_path();
+        let effective_pom_args = vec![
+            "-q".to_string(),
+            format!("-Doutput={}", effective_pom.display()),
+            "help:effective-pom".to_string(),
+        ];
+        let (program, args, output) = self.run(project_root, module_relative, &effective_pom_args)?;
+        if !output.status.success() {
+            return Err(BuildError::CommandFailed {
+                tool: "maven",
+                command: format_command(&program, &args),
+                code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+            });
+        }
+
+        let pom_xml = std::fs::read_to_string(&effective_pom)?;
+        let _ = std::fs::remove_file(&effective_pom);
+
+        let mut config = parse_maven_effective_pom_annotation_processing(&pom_xml, &module_root)?;
+
+        // Ensure defaults for generated source directories even when the effective POM does not
+        // contain explicit configuration.
+        if let Some(main) = config.main.as_mut() {
+            if main.generated_sources_dir.is_none() {
+                main.generated_sources_dir =
+                    Some(module_root.join("target/generated-sources/annotations"));
+            }
+        }
+        if let Some(test) = config.test.as_mut() {
+            if test.generated_sources_dir.is_none() {
+                test.generated_sources_dir =
+                    Some(module_root.join("target/generated-test-sources/test-annotations"));
+            }
+        }
+
+        cache.update_module(
+            project_root,
+            BuildSystemKind::Maven,
+            &fingerprint,
+            &module_key,
+            |m| {
+                m.annotation_processing = Some(config.clone());
+            },
+        )?;
+
+        Ok(config)
+    }
+
     fn run(
         &self,
         project_root: &Path,
@@ -549,6 +627,332 @@ fn absolutize_path(base_dir: &Path, path: PathBuf) -> PathBuf {
     } else {
         base_dir.join(path)
     }
+}
+
+pub fn parse_maven_effective_pom_annotation_processing(
+    effective_pom_xml: &str,
+    module_root: &Path,
+) -> Result<AnnotationProcessing> {
+    let doc = roxmltree::Document::parse(effective_pom_xml)
+        .map_err(|err| BuildError::Parse(err.to_string()))?;
+    let project = doc.root_element();
+
+    let Some(build) = child_element(&project, "build") else {
+        return Ok(AnnotationProcessing::default());
+    };
+
+    let Some(plugin) = find_maven_compiler_plugin(build) else {
+        return Ok(AnnotationProcessing::default());
+    };
+
+    let mut main = AnnotationProcessingConfig {
+        enabled: true,
+        generated_sources_dir: Some(module_root.join("target/generated-sources/annotations")),
+        ..Default::default()
+    };
+    let mut test = AnnotationProcessingConfig {
+        enabled: true,
+        generated_sources_dir: Some(module_root.join("target/generated-test-sources/test-annotations")),
+        ..Default::default()
+    };
+
+    // Apply plugin-level config.
+    if let Some(config) = child_element(&plugin, "configuration") {
+        apply_maven_compiler_config(&config, module_root, &mut main, &mut test);
+    }
+
+    // Apply execution-level overrides.
+    if let Some(executions) = child_element(&plugin, "executions") {
+        for exec in executions
+            .children()
+            .filter(|n| n.is_element() && n.has_tag_name("execution"))
+        {
+            let goals = child_element(&exec, "goals")
+                .map(|goals| {
+                    goals
+                        .children()
+                        .filter(|n| n.is_element() && n.has_tag_name("goal"))
+                        .filter_map(|n| n.text())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+
+            let Some(config) = child_element(&exec, "configuration") else {
+                continue;
+            };
+
+            if goals.iter().any(|g| g == "compile") {
+                apply_maven_compiler_config(&config, module_root, &mut main, &mut test);
+            }
+            if goals.iter().any(|g| g == "testCompile") {
+                // Execution config uses the same keys, but we treat it as test-specific.
+                // Use a dummy "main" config to avoid double-borrowing `test`.
+                let mut dummy_main = AnnotationProcessingConfig::default();
+                apply_maven_compiler_config(&config, module_root, &mut dummy_main, &mut test);
+            }
+        }
+    }
+
+    augment_from_compiler_args(&mut main);
+    augment_from_compiler_args(&mut test);
+
+    Ok(AnnotationProcessing {
+        main: Some(main),
+        test: Some(test),
+    })
+}
+
+fn write_temp_effective_pom_path() -> PathBuf {
+    let mut path = std::env::temp_dir();
+    let token = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.push(format!("nova_maven_effective_{token}.xml"));
+    path
+}
+
+fn apply_maven_compiler_config(
+    config: &roxmltree::Node<'_, '_>,
+    module_root: &Path,
+    main: &mut AnnotationProcessingConfig,
+    test: &mut AnnotationProcessingConfig,
+) {
+    if let Some(proc_mode) = child_text(config, "proc") {
+        let mode = proc_mode.trim().to_ascii_lowercase();
+        if mode == "none" {
+            main.enabled = false;
+            test.enabled = false;
+        } else {
+            main.enabled = true;
+            test.enabled = true;
+        }
+    }
+
+    if let Some(dir) = child_text(config, "generatedSourcesDirectory")
+        .and_then(|v| resolve_maven_path(&v, module_root))
+    {
+        main.generated_sources_dir = Some(dir);
+    }
+    if let Some(dir) = child_text(config, "generatedTestSourcesDirectory")
+        .and_then(|v| resolve_maven_path(&v, module_root))
+    {
+        test.generated_sources_dir = Some(dir);
+    }
+
+    if let Some(args) = child_element(config, "compilerArgs") {
+        for arg in args
+            .children()
+            .filter(|n| n.is_element() && n.has_tag_name("arg"))
+            .filter_map(|n| n.text())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            main.compiler_args.push(arg.to_string());
+            test.compiler_args.push(arg.to_string());
+        }
+    }
+
+    if let Some(processors) = child_element(config, "annotationProcessors") {
+        // Maven's compiler plugin supports either a comma-separated string or nested elements.
+        let mut extracted = Vec::new();
+        for child in processors.children().filter(|n| n.is_element()) {
+            if let Some(text) = child.text().map(str::trim).filter(|s| !s.is_empty()) {
+                extracted.push(text.to_string());
+            }
+        }
+        if extracted.is_empty() {
+            if let Some(text) = processors.text().map(str::trim).filter(|s| !s.is_empty()) {
+                extracted.extend(text.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+            }
+        }
+        main.processors.extend(extracted.iter().cloned());
+        test.processors.extend(extracted);
+    }
+
+    if let Some(paths) = child_element(config, "annotationProcessorPaths") {
+        let repo = default_maven_repo();
+        for path in paths
+            .children()
+            .filter(|n| n.is_element() && n.has_tag_name("path"))
+        {
+            let Some(group_id) = child_text(&path, "groupId") else {
+                continue;
+            };
+            let Some(artifact_id) = child_text(&path, "artifactId") else {
+                continue;
+            };
+            let Some(version) = child_text(&path, "version") else {
+                continue;
+            };
+            if version.contains("${") {
+                continue;
+            }
+            let classifier = child_text(&path, "classifier");
+            let type_ = child_text(&path, "type").unwrap_or_else(|| "jar".to_string());
+            if type_ != "jar" {
+                continue;
+            }
+
+            if let Some(jar) = maven_jar_path(&repo, &group_id, &artifact_id, &version, classifier.as_deref()) {
+                main.processor_path.push(jar.clone());
+                test.processor_path.push(jar);
+            }
+        }
+    }
+}
+
+fn augment_from_compiler_args(config: &mut AnnotationProcessingConfig) {
+    let mut proc_mode = None::<String>;
+    let mut it = config.compiler_args.clone().into_iter().peekable();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "-processor" => {
+                if let Some(value) = it.next() {
+                    config.processors.extend(
+                        value
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty()),
+                    );
+                }
+            }
+            "-processorpath" | "--processor-path" => {
+                if let Some(value) = it.next() {
+                    config.processor_path.extend(split_path_list(&value));
+                }
+            }
+            "-s" => {
+                if let Some(value) = it.next() {
+                    config.generated_sources_dir = Some(PathBuf::from(value));
+                }
+            }
+            other if other.starts_with("-proc:") => {
+                proc_mode = Some(other.trim_start_matches("-proc:").to_string());
+            }
+            other if other.starts_with("-A") => {
+                let rest = other.trim_start_matches("-A");
+                let (k, v) = rest.split_once('=').unwrap_or((rest, ""));
+                if !k.is_empty() {
+                    config.options.insert(k.to_string(), v.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    config.enabled = match proc_mode.as_deref() {
+        Some("none") => false,
+        Some(_) => true,
+        None => config.enabled,
+    };
+
+    let mut seen_processors = std::collections::HashSet::new();
+    config.processors.retain(|p| seen_processors.insert(p.clone()));
+
+    let mut seen_paths = std::collections::HashSet::new();
+    config.processor_path.retain(|p| seen_paths.insert(p.clone()));
+}
+
+fn resolve_maven_path(value: &str, module_root: &Path) -> Option<PathBuf> {
+    let value = value.trim();
+    if value.is_empty() || value.contains("${") {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        Some(module_root.join(path))
+    }
+}
+
+fn find_maven_compiler_plugin<'a, 'i>(
+    build: roxmltree::Node<'a, 'i>,
+) -> Option<roxmltree::Node<'a, 'i>> {
+    // Prefer `<build><plugins>`; fall back to pluginManagement if needed.
+    if let Some(plugins) = child_element(&build, "plugins") {
+        if let Some(plugin) = plugins
+            .children()
+            .find(|n| {
+                n.is_element()
+                    && n.has_tag_name("plugin")
+                    && child_text(&n, "artifactId").as_deref() == Some("maven-compiler-plugin")
+            })
+        {
+            return Some(plugin);
+        }
+    }
+
+    if let Some(pm) = child_element(&build, "pluginManagement") {
+        if let Some(plugins) = child_element(&pm, "plugins") {
+            if let Some(plugin) = plugins
+                .children()
+                .find(|n| {
+                    n.is_element()
+                        && n.has_tag_name("plugin")
+                        && child_text(&n, "artifactId").as_deref() == Some("maven-compiler-plugin")
+                })
+            {
+                return Some(plugin);
+            }
+        }
+    }
+
+    None
+}
+
+fn default_maven_repo() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".m2/repository")
+}
+
+fn maven_jar_path(
+    repo: &Path,
+    group_id: &str,
+    artifact_id: &str,
+    version: &str,
+    classifier: Option<&str>,
+) -> Option<PathBuf> {
+    let group_path = group_id.replace('.', "/");
+    let base = repo.join(group_path).join(artifact_id).join(version);
+    let file_name = if let Some(classifier) = classifier {
+        format!("{artifact_id}-{version}-{classifier}.jar")
+    } else {
+        format!("{artifact_id}-{version}.jar")
+    };
+    Some(base.join(file_name))
+}
+
+fn split_path_list(value: &str) -> Vec<PathBuf> {
+    let sep = if value.contains(';') { ';' } else { ':' };
+    value
+        .split(sep)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn child_element<'a, 'i>(
+    node: &roxmltree::Node<'a, 'i>,
+    name: &str,
+) -> Option<roxmltree::Node<'a, 'i>> {
+    node.children()
+        .find(|n| n.is_element() && n.tag_name().name() == name)
+}
+
+fn child_text<'a, 'i>(node: &roxmltree::Node<'a, 'i>, name: &str) -> Option<String> {
+    child_element(node, name)
+        .and_then(|n| n.text())
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
 }
 
 pub fn parse_maven_classpath_output(output: &str) -> Vec<PathBuf> {

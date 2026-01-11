@@ -1,10 +1,11 @@
 use nova_build::{
     collect_gradle_build_files, collect_maven_build_files, parse_gradle_classpath_output,
-    parse_gradle_projects_output, parse_javac_diagnostics, parse_maven_classpath_output,
+    parse_gradle_annotation_processing_output, parse_gradle_projects_output, parse_javac_diagnostics,
+    parse_maven_classpath_output, parse_maven_effective_pom_annotation_processing,
     parse_maven_evaluate_scalar_output, BuildFileFingerprint, GradleProjectInfo, JavaCompileConfig,
 };
 use nova_core::{DiagnosticSeverity, Position, Range};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn fingerprint_changes_on_pom_edit() {
@@ -543,5 +544,77 @@ BUILD SUCCESSFUL
                 dir: PathBuf::from("/workspace/app"),
             }
         ]
+    );
+}
+
+#[test]
+fn parses_gradle_annotation_processing_json() {
+    let out = r#"
+> Task :printNovaAnnotationProcessing
+Some random warning
+NOVA_APT_BEGIN
+{"main":{"annotationProcessorPath":["/ap/lombok.jar"],"compilerArgs":["-Afoo=bar","-processor","com.example.Proc"],"generatedSourcesDir":"/workspace/build/generated/sources/annotationProcessor/java/main"},"test":{"annotationProcessorPath":[],"compilerArgs":["-proc:none"],"generatedSourcesDir":"/workspace/build/generated/sources/annotationProcessor/java/test"}}
+NOVA_APT_END
+BUILD SUCCESSFUL
+"#;
+
+    let ap = parse_gradle_annotation_processing_output(out).unwrap();
+    let main = ap.main.unwrap();
+    assert!(main.enabled);
+    assert_eq!(
+        main.generated_sources_dir,
+        Some(PathBuf::from(
+            "/workspace/build/generated/sources/annotationProcessor/java/main"
+        ))
+    );
+    assert_eq!(main.processor_path, vec![PathBuf::from("/ap/lombok.jar")]);
+    assert_eq!(main.processors, vec!["com.example.Proc".to_string()]);
+    assert_eq!(main.options.get("foo").map(String::as_str), Some("bar"));
+
+    let test = ap.test.unwrap();
+    assert!(!test.enabled);
+}
+
+#[test]
+fn parses_maven_effective_pom_annotation_processing() {
+    let xml = r#"
+<project>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <configuration>
+          <proc>none</proc>
+          <generatedSourcesDirectory>generated</generatedSourcesDirectory>
+          <generatedTestSourcesDirectory>generated-test</generatedTestSourcesDirectory>
+          <compilerArgs>
+            <arg>-Afoo=bar</arg>
+            <arg>-processor</arg>
+            <arg>com.example.Proc</arg>
+          </compilerArgs>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+"#;
+
+    let ap = parse_maven_effective_pom_annotation_processing(xml, Path::new("/workspace/app"))
+        .unwrap();
+    let main = ap.main.unwrap();
+    assert!(!main.enabled);
+    assert_eq!(
+        main.generated_sources_dir,
+        Some(PathBuf::from("/workspace/app/generated"))
+    );
+    assert_eq!(main.processors, vec!["com.example.Proc".to_string()]);
+    assert_eq!(main.options.get("foo").map(String::as_str), Some("bar"));
+
+    let test = ap.test.unwrap();
+    assert!(!test.enabled);
+    assert_eq!(
+        test.generated_sources_dir,
+        Some(PathBuf::from("/workspace/app/generated-test"))
     );
 }

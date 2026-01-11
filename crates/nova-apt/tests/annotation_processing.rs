@@ -144,10 +144,12 @@ fn stale_main_generated_sources_triggers_main_compile_for_that_module_only() {
             Module {
                 name: "module-a".to_string(),
                 root: module_a_root.clone(),
+                annotation_processing: Default::default(),
             },
             Module {
                 name: "module-b".to_string(),
                 root: module_b_root.clone(),
+                annotation_processing: Default::default(),
             },
         ],
         vec![
@@ -242,10 +244,12 @@ fn stale_test_generated_sources_triggers_test_compile_only() {
             Module {
                 name: "module-a".to_string(),
                 root: module_a_root.clone(),
+                annotation_processing: Default::default(),
             },
             Module {
                 name: "module-b".to_string(),
                 root: module_b_root.clone(),
+                annotation_processing: Default::default(),
             },
         ],
         vec![
@@ -319,6 +323,7 @@ fn no_stale_generated_roots_does_not_invoke_build() {
         vec![Module {
             name: "module-a".to_string(),
             root: module_root.clone(),
+            annotation_processing: Default::default(),
         }],
         vec![
             SourceRoot {

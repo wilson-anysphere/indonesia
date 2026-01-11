@@ -4,6 +4,7 @@ use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
     DefaultCommandRunner, GradleBuildTask, JavaCompileConfig, Result,
 };
+use nova_project::{AnnotationProcessing, AnnotationProcessingConfig};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -12,6 +13,10 @@ use std::sync::Arc;
 const NOVA_JSON_BEGIN: &str = "NOVA_JSON_BEGIN";
 const NOVA_JSON_END: &str = "NOVA_JSON_END";
 const NOVA_GRADLE_TASK: &str = "printNovaJavaCompileConfig";
+
+const NOVA_APT_BEGIN: &str = "NOVA_APT_BEGIN";
+const NOVA_APT_END: &str = "NOVA_APT_END";
+const NOVA_GRADLE_APT_TASK: &str = "printNovaAnnotationProcessing";
 
 const NOVA_PROJECTS_BEGIN: &str = "NOVA_PROJECTS_BEGIN";
 const NOVA_PROJECTS_END: &str = "NOVA_PROJECTS_END";
@@ -296,6 +301,70 @@ impl GradleBuild {
         })
     }
 
+    pub fn annotation_processing(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+        cache: &BuildCache,
+    ) -> Result<AnnotationProcessing> {
+        let project_path = project_path.filter(|p| *p != ":");
+        let fingerprint = gradle_build_fingerprint(project_root)?;
+        let module_key = project_path.unwrap_or("<root>");
+
+        if let Some(cached) = cache.get_module(
+            project_root,
+            BuildSystemKind::Gradle,
+            &fingerprint,
+            module_key,
+        )? {
+            if let Some(cfg) = cached.annotation_processing {
+                return Ok(cfg);
+            }
+        }
+
+        let (program, args, output) =
+            self.run_print_annotation_processing(project_root, project_path)?;
+        if !output.status.success() {
+            return Err(BuildError::CommandFailed {
+                tool: "gradle",
+                command: format_command(&program, &args),
+                code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+            });
+        }
+
+        let combined = output.combined();
+        let mut config = parse_gradle_annotation_processing_output(&combined)?;
+
+        // Fill in conventional defaults when the Gradle model doesn't expose a value.
+        let project_dir = gradle_project_dir_cached(project_root, project_path, cache, &fingerprint)?;
+        if let Some(main) = config.main.as_mut() {
+            if main.generated_sources_dir.is_none() {
+                main.generated_sources_dir =
+                    Some(project_dir.join("build/generated/sources/annotationProcessor/java/main"));
+            }
+        }
+        if let Some(test) = config.test.as_mut() {
+            if test.generated_sources_dir.is_none() {
+                test.generated_sources_dir =
+                    Some(project_dir.join("build/generated/sources/annotationProcessor/java/test"));
+            }
+        }
+
+        cache.update_module(
+            project_root,
+            BuildSystemKind::Gradle,
+            &fingerprint,
+            module_key,
+            |m| {
+                m.annotation_processing = Some(config.clone());
+            },
+        )?;
+
+        Ok(config)
+    }
+
     fn run_print_java_compile_config(
         &self,
         project_root: &Path,
@@ -314,6 +383,32 @@ impl GradleBuild {
         let task = match project_path {
             Some(p) => format!("{p}:{NOVA_GRADLE_TASK}"),
             None => NOVA_GRADLE_TASK.to_string(),
+        };
+        args.push(task);
+
+        let output = self.runner.run(project_root, &gradle, &args);
+        let _ = std::fs::remove_file(&init_script);
+        Ok((gradle, args, output?))
+    }
+
+    fn run_print_annotation_processing(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+    ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
+        let gradle = self.gradle_executable(project_root);
+        let init_script = write_init_script(project_root)?;
+
+        let mut args: Vec<String> = Vec::new();
+        args.push("--no-daemon".into());
+        args.push("--console=plain".into());
+        args.push("-q".into());
+        args.push("--init-script".into());
+        args.push(init_script.to_string_lossy().to_string());
+
+        let task = match project_path {
+            Some(p) => format!("{p}:{NOVA_GRADLE_APT_TASK}"),
+            None => NOVA_GRADLE_APT_TASK.to_string(),
         };
         args.push(task);
 
@@ -748,6 +843,155 @@ pub fn parse_gradle_projects_output(output: &str) -> Result<Vec<GradleProjectInf
     Ok(projects)
 }
 
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradleAnnotationProcessingJson {
+    #[serde(default)]
+    main: Option<GradleJavaCompileAptJson>,
+    #[serde(default)]
+    test: Option<GradleJavaCompileAptJson>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradleJavaCompileAptJson {
+    #[serde(default)]
+    annotation_processor_path: Vec<String>,
+    #[serde(default)]
+    compiler_args: Vec<String>,
+    #[serde(default)]
+    generated_sources_dir: Option<String>,
+}
+
+pub fn parse_gradle_annotation_processing_output(output: &str) -> Result<AnnotationProcessing> {
+    let json = extract_sentinel_block(output, NOVA_APT_BEGIN, NOVA_APT_END)
+        .or_else(|| extract_json_payload(output).map(str::to_string))
+        .ok_or_else(|| BuildError::Parse("failed to locate Gradle annotation processing JSON".into()))?;
+
+    let parsed: GradleAnnotationProcessingJson =
+        serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))?;
+
+    Ok(AnnotationProcessing {
+        main: parsed.main.map(annotation_processing_from_gradle),
+        test: parsed.test.map(annotation_processing_from_gradle),
+    })
+}
+
+fn extract_json_payload(output: &str) -> Option<&str> {
+    let start = output.find('{')?;
+    let end = output.rfind('}')?;
+    if end < start {
+        return None;
+    }
+    Some(&output[start..=end])
+}
+
+fn annotation_processing_from_gradle(json: GradleJavaCompileAptJson) -> AnnotationProcessingConfig {
+    let mut config = AnnotationProcessingConfig::default();
+    config.processor_path = json
+        .annotation_processor_path
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+    config.compiler_args = json.compiler_args.clone();
+    config.generated_sources_dir = json.generated_sources_dir.map(PathBuf::from);
+
+    let mut proc_mode = None::<String>;
+    let mut compiler_args = json.compiler_args.into_iter().peekable();
+    while let Some(arg) = compiler_args.next() {
+        match arg.as_str() {
+            "-processor" => {
+                if let Some(value) = compiler_args.next() {
+                    config.processors.extend(
+                        value
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty()),
+                    );
+                }
+            }
+            "-processorpath" | "--processor-path" => {
+                if let Some(value) = compiler_args.next() {
+                    config.processor_path.extend(split_path_list(&value));
+                }
+            }
+            "-s" => {
+                if let Some(value) = compiler_args.next() {
+                    config.generated_sources_dir = Some(PathBuf::from(value));
+                }
+            }
+            other if other.starts_with("-proc:") => {
+                proc_mode = Some(other.trim_start_matches("-proc:").to_string());
+            }
+            other if other.starts_with("-A") => {
+                let rest = other.trim_start_matches("-A");
+                let (k, v) = rest.split_once('=').unwrap_or((rest, ""));
+                if !k.is_empty() {
+                    config.options.insert(k.to_string(), v.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    config.enabled = match proc_mode.as_deref() {
+        Some("none") => false,
+        Some(_) => true,
+        None => true,
+    };
+
+    let mut seen_processors = std::collections::HashSet::new();
+    config.processors.retain(|p| seen_processors.insert(p.clone()));
+
+    let mut seen_paths = std::collections::HashSet::new();
+    config.processor_path.retain(|p| seen_paths.insert(p.clone()));
+
+    config
+}
+
+fn split_path_list(value: &str) -> Vec<PathBuf> {
+    if value.is_empty() {
+        return Vec::new();
+    }
+
+    // Prefer `;` if it appears anywhere in the argument. This matches the platform default on
+    // Windows and avoids breaking `C:\...` drive letters when we only see a single entry.
+    if value.contains(';') {
+        return value
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect();
+    }
+
+    // On Unix, `javac` uses `:` to separate path entries. Avoid splitting Windows drive letters.
+    let bytes = value.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b':' {
+            let is_drive_letter = i > start
+                && i - start == 1
+                && bytes[i - 1].is_ascii_alphabetic()
+                && matches!(bytes.get(i + 1).copied(), Some(b'\\') | Some(b'/'));
+            if !is_drive_letter {
+                let part = &value[start..i];
+                if !part.is_empty() {
+                    parts.push(PathBuf::from(part));
+                }
+                start = i + 1;
+            }
+        }
+        i += 1;
+    }
+    let tail = &value[start..];
+    if !tail.is_empty() {
+        parts.push(PathBuf::from(tail));
+    }
+    parts
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GradleJavaCompileConfigJson {
@@ -898,6 +1142,36 @@ fn write_init_script(project_root: &Path) -> Result<PathBuf> {
     let script = r#"
 import groovy.json.JsonOutput
 
+def novaJavaCompileModel = { task ->
+    def opts = task.options
+
+    def apPath = []
+    try {
+        if (opts.annotationProcessorPath != null) {
+            apPath = opts.annotationProcessorPath.files.collect { it.absolutePath }
+        }
+    } catch (Throwable ignored) {}
+
+    def args = []
+    try {
+        args = opts.compilerArgs ?: []
+    } catch (Throwable ignored) {}
+
+    def genDir = null
+    try {
+        if (opts.hasProperty("generatedSourceOutputDirectory") && opts.generatedSourceOutputDirectory != null) {
+            def dirProp = opts.generatedSourceOutputDirectory
+            try {
+                genDir = dirProp.asFile.get().absolutePath
+            } catch (Throwable ignored2) {}
+        } else if (opts.hasProperty("annotationProcessorGeneratedSourcesDirectory") && opts.annotationProcessorGeneratedSourcesDirectory != null) {
+            genDir = opts.annotationProcessorGeneratedSourcesDirectory.absolutePath
+        }
+    } catch (Throwable ignored) {}
+
+    return [annotationProcessorPath: apPath, compilerArgs: args, generatedSourcesDir: genDir]
+}
+
 allprojects { proj ->
     proj.tasks.register("printNovaJavaCompileConfig") {
         doLast {
@@ -976,6 +1250,23 @@ allprojects { proj ->
             println("NOVA_JSON_BEGIN")
             println(JsonOutput.toJson(payload))
             println("NOVA_JSON_END")
+        }
+    }
+
+    proj.tasks.register("printNovaAnnotationProcessing") {
+        doLast {
+            def out = [:]
+            def mainTask = proj.tasks.findByName("compileJava")
+            if (mainTask instanceof org.gradle.api.tasks.compile.JavaCompile) {
+                out.main = novaJavaCompileModel(mainTask)
+            }
+            def testTask = proj.tasks.findByName("compileTestJava")
+            if (testTask instanceof org.gradle.api.tasks.compile.JavaCompile) {
+                out.test = novaJavaCompileModel(testTask)
+            }
+            println("NOVA_APT_BEGIN")
+            println(JsonOutput.toJson(out))
+            println("NOVA_APT_END")
         }
     }
 

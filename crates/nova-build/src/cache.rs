@@ -64,6 +64,7 @@ pub struct CachedModuleData {
     #[serde(default)]
     pub java_compile_config: Option<JavaCompileConfig>,
     pub diagnostics: Option<Vec<CachedDiagnostic>>,
+    pub annotation_processing: Option<nova_project::AnnotationProcessing>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

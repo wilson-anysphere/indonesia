@@ -82,6 +82,7 @@ pub(crate) fn load_maven_project(
         modules.push(Module {
             name: module_display_name,
             root: module_root.clone(),
+            annotation_processing: Default::default(),
         });
 
         // Maven standard source layout.

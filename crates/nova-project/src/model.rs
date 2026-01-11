@@ -88,6 +88,38 @@ pub enum SourceRootOrigin {
     Generated,
 }
 
+/// Annotation processing (APT) configuration for a single compilation unit.
+///
+/// This is designed to be populated from build-tool metadata (Gradle init script JSON, Maven
+/// effective POM, Bazel `aquery`, etc). Callers should treat absent values as "unknown" and fall
+/// back to conventional defaults when needed.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
+pub struct AnnotationProcessingConfig {
+    /// Whether annotation processing is enabled for the compilation.
+    pub enabled: bool,
+    /// Output directory for generated `.java` sources (`javac -s`).
+    pub generated_sources_dir: Option<PathBuf>,
+    /// Annotation processor classpath (`-processorpath` / Gradle `annotationProcessorPath`).
+    pub processor_path: Vec<PathBuf>,
+    /// Explicit processors passed via `-processor`.
+    pub processors: Vec<String>,
+    /// Key/value pairs from `-Akey=value` options.
+    pub options: BTreeMap<String, String>,
+    /// Extra compiler args that may affect APT behavior (e.g. `--enable-preview`, `-proc:none`).
+    pub compiler_args: Vec<String>,
+}
+
+/// Annotation processing configuration for a module, split into main vs test compilations.
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default,
+)]
+pub struct AnnotationProcessing {
+    pub main: Option<AnnotationProcessingConfig>,
+    pub test: Option<AnnotationProcessingConfig>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceRoot {
     pub kind: SourceRootKind,
@@ -137,6 +169,8 @@ pub struct Module {
     /// roots, see [`JpmsModuleRoot`].
     pub name: String,
     pub root: PathBuf,
+    /// Build-tool-derived annotation processing configuration (when available).
+    pub annotation_processing: AnnotationProcessing,
 }
 
 /// Per-module build configuration (classpath, source roots, language level).

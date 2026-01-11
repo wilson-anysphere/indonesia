@@ -59,6 +59,7 @@ pub(crate) fn load_gradle_project(
         modules.push(Module {
             name: module_display_name,
             root: module_root.clone(),
+            annotation_processing: Default::default(),
         });
 
         let _module_java = parse_gradle_java_config(&module_root).unwrap_or(root_java);

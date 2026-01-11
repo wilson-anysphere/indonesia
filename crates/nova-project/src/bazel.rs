@@ -209,6 +209,7 @@ fn load_bazel_project_heuristic(
             .unwrap_or("root")
             .to_string(),
         root: root.to_path_buf(),
+        annotation_processing: Default::default(),
     }];
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
     let (mut module_path, mut classpath) =
@@ -363,6 +364,7 @@ fn project_config_from_workspace_model(
             .unwrap_or("root")
             .to_string(),
         root: root.to_path_buf(),
+        annotation_processing: Default::default(),
     }];
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
     let jpms_workspace = crate::jpms::build_jpms_workspace(&jpms_modules, &module_path);

@@ -120,9 +120,10 @@ pub fn handle_generated_sources(params: serde_json::Value) -> Result<serde_json:
     let params = parse_params(params)?;
     let root = PathBuf::from(&params.project_root);
 
+    let build = super::build_manager_for_root(&root, Duration::from_secs(60));
     let (project, config) = load_project_with_workspace_config(&root)?;
-    let apt = AptManager::new(project, config);
-    let mut status = apt.status().map_err(map_io_error)?;
+    let mut apt = AptManager::new(project, config);
+    let mut status = apt.status_with_build(&build).map_err(map_io_error)?;
 
     if let Some(module_root) = selected_module_root(apt.project(), &params) {
         status
@@ -151,8 +152,8 @@ pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<ser
 
     // Reload project + generated roots after the build.
     let (project, config) = load_project_with_workspace_config(&root)?;
-    let apt = AptManager::new(project, config);
-    let status = apt.status().map_err(map_io_error)?;
+    let mut apt = AptManager::new(project, config);
+    let status = apt.status_with_build(&build).map_err(map_io_error)?;
 
     let module_diagnostics = group_diagnostics_by_module(&build_result.diagnostics, apt.project());
 
