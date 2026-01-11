@@ -39,6 +39,8 @@ npm run compile
 
 - **Nova: Organize Imports** (`nova.organizeImports`)
   - Sends a custom LSP request: `nova/java/organizeImports`.
+  - Note: `nova-lsp` does not currently implement this request; prefer the standard LSP
+    `source.organizeImports` code action (see `docs/protocol-extensions.md`).
 
 - **Nova: Create Bug Report** (`nova.createBugReport`)
   - Prompts for optional reproduction steps and generates a diagnostic bundle via `nova/bugReport`.
