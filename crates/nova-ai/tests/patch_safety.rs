@@ -3,7 +3,7 @@ use nova_ai::patch::{
     UnifiedDiffPatch,
 };
 use nova_ai::safety::{enforce_patch_safety, PatchSafetyConfig, SafetyError};
-use nova_ai::workspace::VirtualWorkspace;
+use nova_ai::workspace::{PatchApplyConfig, VirtualWorkspace};
 
 fn zero_range() -> Range {
     Range {
@@ -155,4 +155,53 @@ fn rejects_new_files_in_unified_diff_by_default() {
         }
         other => panic!("expected NewFileNotAllowed, got {other:?}"),
     }
+}
+
+#[test]
+fn allows_new_files_when_enabled() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: "New.java".to_string(),
+            range: zero_range(),
+            text: "class New {}".to_string(),
+        }],
+        ops: Vec::new(),
+    });
+
+    let mut cfg = PatchSafetyConfig::default();
+    cfg.allow_new_files = true;
+    enforce_patch_safety(&patch, &workspace, &cfg).expect("patch safety");
+
+    let applied = workspace
+        .apply_patch_with_config(
+            &patch,
+            &PatchApplyConfig {
+                allow_new_files: true,
+            },
+        )
+        .expect("apply patch");
+    assert_eq!(applied.workspace.get("New.java"), Some("class New {}"));
+    assert!(applied.created_files.contains("New.java"));
+}
+
+#[test]
+fn allowlist_blocks_paths_outside_prefixes() {
+    let workspace = VirtualWorkspace::new(vec![(
+        "src/Main.java".to_string(),
+        "class Main {}".to_string(),
+    )]);
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: "Main.java".to_string(),
+            range: zero_range(),
+            text: "x".to_string(),
+        }],
+        ops: Vec::new(),
+    });
+
+    let mut cfg = PatchSafetyConfig::default();
+    cfg.allowed_path_prefixes = vec!["src/".to_string()];
+    let err = enforce_patch_safety(&patch, &workspace, &cfg).unwrap_err();
+    assert!(matches!(err, SafetyError::NotAllowedPath { .. }));
 }
