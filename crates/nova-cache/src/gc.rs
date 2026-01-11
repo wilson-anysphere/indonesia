@@ -4,7 +4,7 @@ use crate::metadata::{
 };
 use crate::util::now_millis;
 use crate::CacheConfig;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -17,7 +17,7 @@ struct CacheMetadataSummary {
 }
 
 /// Information about a single per-project cache directory under the global cache root.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProjectCacheInfo {
     /// Directory name under the global cache root (typically a project hash).
     pub name: String,
@@ -37,7 +37,7 @@ pub struct ProjectCacheInfo {
 }
 
 /// Policy for garbage-collecting global per-project caches.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CacheGcPolicy {
     /// Maximum total disk usage allowed for per-project caches.
     pub max_total_bytes: u64,
@@ -49,7 +49,7 @@ pub struct CacheGcPolicy {
 }
 
 /// Result summary from a GC run.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CacheGcReport {
     pub before_total_bytes: u64,
     pub after_total_bytes: u64,
@@ -57,7 +57,7 @@ pub struct CacheGcReport {
     pub failed: Vec<CacheGcFailure>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct CacheGcFailure {
     pub cache: ProjectCacheInfo,
     pub error: String,

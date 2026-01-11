@@ -4,7 +4,7 @@ use nova_ai::AiClient;
 use nova_bugreport::{global_crash_store, BugReportBuilder, BugReportOptions, PerfStats};
 use nova_cache::{
     atomic_write, fetch_cache_package, install_cache_package, pack_cache_package, CacheConfig,
-    CacheDir, CachePackageInstallOutcome,
+    CacheDir, CacheGcPolicy, CachePackageInstallOutcome,
 };
 use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig, NOVA_CONFIG_ENV_VAR};
 use nova_core::{
@@ -167,12 +167,36 @@ enum CacheCommand {
     Status(WorkspaceArgs),
     Warm(WorkspaceArgs),
 
+    /// Garbage collect global per-project caches under `~/.nova/cache` (or `NOVA_CACHE_DIR`).
+    ///
+    /// This never touches `deps/` (the shared dependency cache).
+    Gc(CacheGcArgs),
+
     /// Package a project's persistent cache directory into a single tar.zst archive.
     Pack(CachePackArgs),
     /// Install a packaged cache archive for a project.
     Install(CacheInstallArgs),
     /// Fetch a cache package from a URL (http/https/file/s3) and install it.
     Fetch(CacheFetchArgs),
+}
+
+#[derive(Args)]
+struct CacheGcArgs {
+    /// Maximum total bytes for all per-project caches (excluding `deps/`).
+    #[arg(long)]
+    max_total_bytes: u64,
+
+    /// Optional maximum age in milliseconds. Caches older than this are removed first.
+    #[arg(long)]
+    max_age_ms: Option<u64>,
+
+    /// Number of most-recently-updated caches to always keep.
+    #[arg(long, default_value_t = 1)]
+    keep_latest_n: usize,
+
+    /// Emit JSON suitable for CI
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args)]
@@ -542,6 +566,39 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     let ws = Workspace::open(&args.path)?;
                     let report = ws.cache_warm()?;
                     print_output(&report, args.json)?;
+                }
+                CacheCommand::Gc(args) => {
+                    let config = CacheConfig::from_env();
+                    let root = nova_cache::cache_root(&config)?;
+                    let report = nova_cache::gc_project_caches(
+                        &root,
+                        &CacheGcPolicy {
+                            max_total_bytes: args.max_total_bytes,
+                            max_age_ms: args.max_age_ms,
+                            keep_latest_n: args.keep_latest_n,
+                        },
+                    )?;
+
+                    if args.json {
+                        print_output(
+                            &serde_json::json!({ "cache_root": root, "report": report }),
+                            true,
+                        )?;
+                    } else {
+                        println!("cache gc: {}", root.display());
+                        println!("  before_total_bytes: {}", report.before_total_bytes);
+                        println!("  after_total_bytes: {}", report.after_total_bytes);
+                        println!("  deleted: {}", report.deleted.len());
+                        for cache in &report.deleted {
+                            println!("    {} ({})", cache.path.display(), cache.size_bytes);
+                        }
+                        if !report.failed.is_empty() {
+                            println!("  failed: {}", report.failed.len());
+                            for failure in &report.failed {
+                                println!("    {}: {}", failure.cache.path.display(), failure.error);
+                            }
+                        }
+                    }
                 }
                 CacheCommand::Pack(args) => {
                     let ws = Workspace::open(&args.path)?;
