@@ -4047,8 +4047,7 @@ name = "nova-remote-rpc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
- "serde",
+ "nova-remote-proto",
  "tokio",
  "tracing",
  "tracing-subscriber",

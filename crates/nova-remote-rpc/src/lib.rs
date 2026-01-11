@@ -1,99 +1,64 @@
 use std::collections::HashMap;
 use std::fmt;
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Context, Result};
-use serde::{Deserialize, Serialize};
+use nova_remote_proto::v3::{
+    self, Capabilities, CompressionAlgo, HandshakeReject, ProtocolVersion, RejectCode, Request,
+    Response, RouterWelcome, RpcError, RpcErrorCode, RpcPayload, RpcResult, SupportedVersions,
+    WireFrame, WorkerHello,
+};
+#[cfg(test)]
+use nova_remote_proto::FileText;
+use nova_remote_proto::{Revision, ShardId, WorkerId};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+/// The `tracing` target used by this crate.
+pub const TRACE_TARGET: &str = "nova.remote_rpc";
+
+/// Maximum allowed frame size before the handshake completes.
+///
+/// The v3 protocol requires a small, local (non-negotiated) guard here to avoid allocating
+/// attacker-controlled lengths before we've validated the peer's capabilities.
+pub const DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN: u32 = 1024 * 1024; // 1 MiB
+
 pub type RequestId = u64;
-
-pub const PROTOCOL_VERSION: u32 = 3;
-
-const TRACE_TARGET: &str = "nova.remote_rpc";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[repr(u8)]
-pub enum PayloadKind {
-    HandshakeHello = 1,
-    HandshakeWelcome = 2,
-    Request = 3,
-    Response = 4,
-    Error = 5,
-}
-
-impl PayloadKind {
-    fn from_wire(value: u8) -> Result<Self> {
-        Ok(match value {
-            1 => Self::HandshakeHello,
-            2 => Self::HandshakeWelcome,
-            3 => Self::Request,
-            4 => Self::Response,
-            5 => Self::Error,
-            other => return Err(anyhow!("unknown payload kind: {other}")),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Compression {
-    None,
-    Zstd,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct ClientHello {
-    supported_versions: Vec<u32>,
-    supported_compressions: Vec<Compression>,
-    auth_token: Option<String>,
-}
-
-impl fmt::Debug for ClientHello {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ClientHello")
-            .field("supported_versions", &self.supported_versions)
-            .field("supported_compressions", &self.supported_compressions)
-            .field(
-                "auth_token",
-                &self.auth_token.as_ref().map(|_| "<redacted>"),
-            )
-            .finish()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ServerWelcome {
-    version: u32,
-    compression: Compression,
-}
 
 #[derive(Debug, Clone)]
 pub struct Negotiated {
-    pub version: u32,
-    pub compression: Compression,
+    pub version: ProtocolVersion,
+    pub capabilities: Capabilities,
 }
 
 #[derive(Clone)]
 pub struct ClientConfig {
-    pub supported_versions: Vec<u32>,
-    pub supported_compressions: Vec<Compression>,
+    /// Worker-side hello payload (includes supported versions/capabilities).
+    ///
+    /// NOTE: `auth_token` is treated as a bearer secret and must never be logged.
+    pub hello: WorkerHello,
+    pub pre_handshake_max_frame_len: u32,
+    /// Compress payloads larger than this threshold (if zstd is negotiated).
     pub compression_threshold: usize,
-    pub auth_token: Option<String>,
 }
 
 impl fmt::Debug for ClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientConfig")
-            .field("supported_versions", &self.supported_versions)
-            .field("supported_compressions", &self.supported_compressions)
-            .field("compression_threshold", &self.compression_threshold)
+            .field("shard_id", &self.hello.shard_id)
+            .field("auth_present", &self.hello.auth_token.is_some())
+            .field("supported_versions", &self.hello.supported_versions)
+            .field("capabilities", &self.hello.capabilities)
+            .field("cached_index_info", &self.hello.cached_index_info)
+            .field("worker_build", &self.hello.worker_build)
             .field(
-                "auth_token",
-                &self.auth_token.as_ref().map(|_| "<redacted>"),
+                "pre_handshake_max_frame_len",
+                &self.pre_handshake_max_frame_len,
             )
+            .field("compression_threshold", &self.compression_threshold)
             .finish()
     }
 }
@@ -101,27 +66,73 @@ impl fmt::Debug for ClientConfig {
 impl Default for ClientConfig {
     fn default() -> Self {
         Self {
-            supported_versions: vec![PROTOCOL_VERSION],
-            supported_compressions: vec![Compression::None, Compression::Zstd],
+            hello: WorkerHello {
+                shard_id: 0,
+                auth_token: None,
+                supported_versions: SupportedVersions {
+                    min: ProtocolVersion::CURRENT,
+                    max: ProtocolVersion::CURRENT,
+                },
+                capabilities: Capabilities {
+                    supported_compression: vec![CompressionAlgo::Zstd, CompressionAlgo::None],
+                    ..Capabilities::default()
+                },
+                cached_index_info: None,
+                worker_build: None,
+            },
+            pre_handshake_max_frame_len: DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN,
             compression_threshold: 1024,
-            auth_token: None,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerConfig {
-    pub supported_versions: Vec<u32>,
-    pub supported_compressions: Vec<Compression>,
+    pub supported_versions: SupportedVersions,
+    pub capabilities: Capabilities,
+    pub pre_handshake_max_frame_len: u32,
     pub compression_threshold: usize,
+    pub worker_id: WorkerId,
+    pub revision: Revision,
+    /// Optional bearer token expected from the worker.
+    ///
+    /// NOTE: This is secret material and must never be logged.
+    pub expected_auth_token: Option<String>,
+}
+
+impl fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("supported_versions", &self.supported_versions)
+            .field("capabilities", &self.capabilities)
+            .field(
+                "pre_handshake_max_frame_len",
+                &self.pre_handshake_max_frame_len,
+            )
+            .field("compression_threshold", &self.compression_threshold)
+            .field("worker_id", &self.worker_id)
+            .field("revision", &self.revision)
+            .field("auth_required", &self.expected_auth_token.is_some())
+            .finish()
+    }
 }
 
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            supported_versions: vec![PROTOCOL_VERSION],
-            supported_compressions: vec![Compression::None, Compression::Zstd],
+            supported_versions: SupportedVersions {
+                min: ProtocolVersion::CURRENT,
+                max: ProtocolVersion::CURRENT,
+            },
+            capabilities: Capabilities {
+                supported_compression: vec![CompressionAlgo::Zstd, CompressionAlgo::None],
+                ..Capabilities::default()
+            },
+            pre_handshake_max_frame_len: DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN,
             compression_threshold: 1024,
+            worker_id: 1,
+            revision: 0,
+            expected_auth_token: None,
         }
     }
 }
@@ -129,25 +140,28 @@ impl Default for ServerConfig {
 #[derive(Debug, Clone)]
 pub struct IncomingRequest {
     pub request_id: RequestId,
-    pub payload: Vec<u8>,
+    pub request: Request,
 }
 
 pub struct Client {
     inner: Arc<Inner>,
+    welcome: RouterWelcome,
 }
 
 pub struct Server {
     inner: Arc<Inner>,
     incoming: mpsc::UnboundedReceiver<IncomingRequest>,
-    pub peer_auth_token: Option<String>,
+    pub peer_shard_id: ShardId,
+    pub peer_auth_present: bool,
 }
 
 struct Inner {
     writer: Mutex<WriteHalf<BoxedStream>>,
-    pending: Mutex<HashMap<RequestId, oneshot::Sender<Vec<u8>>>>,
+    pending: Mutex<HashMap<RequestId, oneshot::Sender<RpcResult<Response>>>>,
     negotiated: Negotiated,
     compression_threshold: usize,
     next_request_id: AtomicU64,
+    request_id_step: u64,
 }
 
 type BoxedStream = Box<dyn AsyncReadWrite>;
@@ -161,39 +175,54 @@ impl Client {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream: BoxedStream = Box::new(stream);
-        let negotiated = client_handshake(&mut stream, &config).await?;
-        let compression_threshold = config.compression_threshold;
-        let (reader, writer) = tokio::io::split(stream);
+        let welcome = client_handshake(&mut stream, &config).await?;
 
+        let negotiated = Negotiated {
+            version: welcome.chosen_version,
+            capabilities: welcome.chosen_capabilities.clone(),
+        };
+
+        let (reader, writer) = tokio::io::split(stream);
         let inner = Arc::new(Inner {
             writer: Mutex::new(writer),
             pending: Mutex::new(HashMap::new()),
             negotiated,
-            compression_threshold,
+            compression_threshold: config.compression_threshold,
+            // Worker-initiated request IDs are odd.
             next_request_id: AtomicU64::new(1),
+            request_id_step: 2,
         });
 
         let inner_clone = inner.clone();
         tokio::spawn(async move { read_loop(reader, inner_clone, None).await });
 
-        Ok(Self { inner })
+        Ok(Self { inner, welcome })
+    }
+
+    pub fn welcome(&self) -> &RouterWelcome {
+        &self.welcome
     }
 
     pub fn negotiated(&self) -> &Negotiated {
         &self.inner.negotiated
     }
 
-    pub async fn call(&self, payload: Vec<u8>) -> Result<Vec<u8>> {
-        let request_id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
+    pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
+        let request_id = self
+            .inner
+            .next_request_id
+            .fetch_add(self.inner.request_id_step, Ordering::Relaxed);
 
-        let latency_enabled = tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG);
-        let start = latency_enabled.then(Instant::now);
+        let request_type = request_type(&request);
+
+        let start = tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG)
+            .then(Instant::now);
 
         let span = tracing::debug_span!(
             target: TRACE_TARGET,
             "call",
             request_id,
-            payload_bytes = payload.len()
+            request_type
         );
         let _guard = span.enter();
 
@@ -205,7 +234,7 @@ impl Client {
 
         if let Err(err) = self
             .inner
-            .send_packet(request_id, PayloadKind::Request, payload)
+            .send_packet(request_id, RpcPayload::Request(request))
             .await
         {
             let mut pending = self.inner.pending.lock().await;
@@ -219,12 +248,16 @@ impl Client {
 
         if let Some(start) = start {
             let elapsed = start.elapsed();
+            let status = rpc_result_status(&response);
+            let error_code = rpc_result_error_code(&response);
             tracing::debug!(
                 target: TRACE_TARGET,
                 event = "call_complete",
                 request_id,
-                latency_ms = elapsed.as_secs_f64() * 1000.0,
-                response_bytes = response.len()
+                request_type,
+                status,
+                error_code,
+                latency_ms = elapsed.as_secs_f64() * 1000.0
             );
         }
 
@@ -238,8 +271,15 @@ impl Server {
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         let mut stream: BoxedStream = Box::new(stream);
-        let (negotiated, peer_auth_token) = server_handshake(&mut stream, &config).await?;
-        let compression_threshold = config.compression_threshold;
+
+        let (welcome, peer_shard_id, peer_auth_present) =
+            server_handshake(&mut stream, &config).await?;
+
+        let negotiated = Negotiated {
+            version: welcome.chosen_version,
+            capabilities: welcome.chosen_capabilities.clone(),
+        };
+
         let (reader, writer) = tokio::io::split(stream);
         let (incoming_tx, incoming) = mpsc::unbounded_channel();
 
@@ -247,8 +287,10 @@ impl Server {
             writer: Mutex::new(writer),
             pending: Mutex::new(HashMap::new()),
             negotiated,
-            compression_threshold,
-            next_request_id: AtomicU64::new(1),
+            compression_threshold: config.compression_threshold,
+            // Router-initiated request IDs are even.
+            next_request_id: AtomicU64::new(2),
+            request_id_step: 2,
         });
 
         let inner_clone = inner.clone();
@@ -257,7 +299,8 @@ impl Server {
         Ok(Self {
             inner,
             incoming,
-            peer_auth_token,
+            peer_shard_id,
+            peer_auth_present,
         })
     }
 
@@ -269,351 +312,371 @@ impl Server {
         self.incoming.recv().await
     }
 
-    pub async fn respond(&self, request_id: RequestId, payload: Vec<u8>) -> Result<()> {
+    pub async fn respond(
+        &self,
+        request_id: RequestId,
+        response: RpcResult<Response>,
+    ) -> Result<()> {
         self.inner
-            .send_packet(request_id, PayloadKind::Response, payload)
+            .send_packet(request_id, RpcPayload::Response(response))
             .await
+    }
+
+    pub async fn respond_ok(&self, request_id: RequestId, value: Response) -> Result<()> {
+        self.respond(request_id, RpcResult::Ok { value }).await
+    }
+
+    pub async fn respond_err(&self, request_id: RequestId, error: RpcError) -> Result<()> {
+        self.respond(request_id, RpcResult::Err { error }).await
     }
 }
 
 impl Inner {
-    async fn send_packet(
-        &self,
-        request_id: RequestId,
-        kind: PayloadKind,
-        payload: Vec<u8>,
-    ) -> Result<()> {
-        let (wire_payload, compressed, uncompressed_len) =
-            maybe_compress(&self.negotiated, self.compression_threshold, payload)?;
-        let wire_len: u32 = wire_payload
-            .len()
-            .try_into()
-            .map_err(|_| anyhow!("payload too large"))?;
+    async fn send_packet(&self, request_id: RequestId, payload: RpcPayload) -> Result<()> {
+        let (uncompressed, payload_kind) = encode_payload(&payload)?;
+        let (compression, wire_bytes) = maybe_compress(
+            &self.negotiated.capabilities,
+            self.compression_threshold,
+            &uncompressed,
+        )?;
 
         tracing::trace!(
             target: TRACE_TARGET,
             direction = "send",
             request_id,
-            kind = ?kind,
-            compressed,
-            bytes = wire_len,
-            uncompressed_bytes = uncompressed_len
+            payload_kind,
+            compressed = compression != CompressionAlgo::None,
+            bytes = wire_bytes.len(),
+            uncompressed_bytes = uncompressed.len()
         );
 
+        let frame = WireFrame::Packet {
+            id: request_id,
+            compression,
+            data: wire_bytes,
+        };
+
         let mut writer = self.writer.lock().await;
-        writer
-            .write_u64_le(request_id)
-            .await
-            .context("write request id")?;
-        writer.write_u8(kind as u8).await.context("write kind")?;
-        writer
-            .write_u8(compressed as u8)
-            .await
-            .context("write compressed flag")?;
-        writer
-            .write_u32_le(wire_len)
-            .await
-            .context("write payload len")?;
-        writer
-            .write_u32_le(uncompressed_len)
-            .await
-            .context("write uncompressed len")?;
-        writer
-            .write_all(&wire_payload)
-            .await
-            .context("write payload")?;
-        writer.flush().await.context("flush payload")?;
-        Ok(())
+        write_wire_frame(
+            &mut *writer,
+            self.negotiated.capabilities.max_frame_len,
+            &frame,
+        )
+        .await
     }
 }
 
-async fn client_handshake(stream: &mut BoxedStream, config: &ClientConfig) -> Result<Negotiated> {
+async fn client_handshake(
+    stream: &mut BoxedStream,
+    config: &ClientConfig,
+) -> Result<RouterWelcome> {
     tracing::debug!(
         target: TRACE_TARGET,
         event = "handshake_start",
-        role = "client",
-        supported_versions = ?config.supported_versions,
-        supported_compressions = ?config.supported_compressions,
-        auth_present = config.auth_token.is_some()
+        role = "worker",
+        shard_id = config.hello.shard_id,
+        supported_versions = ?config.hello.supported_versions,
+        capabilities = ?config.hello.capabilities,
+        auth_present = config.hello.auth_token.is_some()
     );
 
-    let hello = ClientHello {
-        supported_versions: config.supported_versions.clone(),
-        supported_compressions: config.supported_compressions.clone(),
-        auth_token: config.auth_token.clone(),
-    };
-    let payload = bincode::serialize(&hello).context("encode client hello")?;
-    let payload_len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("handshake payload too large"))?;
-    write_raw_packet(
+    write_wire_frame(
         stream,
-        0,
-        PayloadKind::HandshakeHello,
-        false,
-        payload_len,
-        payload,
+        config.pre_handshake_max_frame_len,
+        &WireFrame::Hello(config.hello.clone()),
     )
     .await?;
 
-    let packet = read_raw_packet(stream).await?;
-    if packet.kind != PayloadKind::HandshakeWelcome || packet.request_id != 0 {
-        return Err(anyhow!(
-            "unexpected handshake packet: kind={:?} request_id={}",
-            packet.kind,
-            packet.request_id
-        ));
+    let frame = read_wire_frame(stream, config.pre_handshake_max_frame_len).await?;
+    match frame {
+        WireFrame::Welcome(welcome) => {
+            tracing::debug!(
+                target: TRACE_TARGET,
+                event = "handshake_end",
+                role = "worker",
+                worker_id = welcome.worker_id,
+                shard_id = welcome.shard_id,
+                revision = welcome.revision,
+                negotiated_version = ?welcome.chosen_version,
+                negotiated_capabilities = ?welcome.chosen_capabilities
+            );
+            Ok(welcome)
+        }
+        WireFrame::Reject(reject) => Err(anyhow!(
+            "handshake rejected (code={:?}): {}",
+            reject.code,
+            reject.message
+        )),
+        other => Err(anyhow!("unexpected handshake frame: {other:?}")),
     }
-
-    let welcome: ServerWelcome =
-        bincode::deserialize(&packet.payload).context("decode server welcome")?;
-    if !config.supported_versions.contains(&welcome.version) {
-        return Err(anyhow!(
-            "server negotiated unsupported protocol version {}",
-            welcome.version
-        ));
-    }
-    if !config.supported_compressions.contains(&welcome.compression) {
-        return Err(anyhow!(
-            "server negotiated unsupported compression {:?}",
-            welcome.compression
-        ));
-    }
-
-    tracing::debug!(
-        target: TRACE_TARGET,
-        event = "handshake_end",
-        role = "client",
-        negotiated_version = welcome.version,
-        negotiated_compression = ?welcome.compression
-    );
-
-    Ok(Negotiated {
-        version: welcome.version,
-        compression: welcome.compression,
-    })
 }
 
 async fn server_handshake(
     stream: &mut BoxedStream,
     config: &ServerConfig,
-) -> Result<(Negotiated, Option<String>)> {
+) -> Result<(RouterWelcome, ShardId, bool)> {
+    let frame = read_wire_frame(stream, config.pre_handshake_max_frame_len).await?;
+    let hello = match frame {
+        WireFrame::Hello(hello) => hello,
+        other => {
+            let reject = HandshakeReject {
+                code: RejectCode::InvalidRequest,
+                message: format!("expected hello, got {other:?}"),
+            };
+            let _ = write_wire_frame(
+                stream,
+                config.pre_handshake_max_frame_len,
+                &WireFrame::Reject(reject.clone()),
+            )
+            .await;
+            return Err(anyhow!("invalid handshake: {other:?}"));
+        }
+    };
+
     tracing::debug!(
         target: TRACE_TARGET,
         event = "handshake_start",
-        role = "server",
+        role = "router",
+        shard_id = hello.shard_id,
         supported_versions = ?config.supported_versions,
-        supported_compressions = ?config.supported_compressions
+        capabilities = ?config.capabilities,
+        peer_supported_versions = ?hello.supported_versions,
+        peer_capabilities = ?hello.capabilities,
+        peer_auth_present = hello.auth_token.is_some(),
+        auth_required = config.expected_auth_token.is_some()
     );
 
-    let packet = read_raw_packet(stream).await?;
-    if packet.kind != PayloadKind::HandshakeHello || packet.request_id != 0 {
-        return Err(anyhow!(
-            "unexpected handshake packet: kind={:?} request_id={}",
-            packet.kind,
-            packet.request_id
-        ));
+    if let Some(expected) = config.expected_auth_token.as_deref() {
+        let provided = hello.auth_token.as_deref().unwrap_or("");
+        if provided != expected {
+            let reject = HandshakeReject {
+                code: RejectCode::Unauthorized,
+                message: "invalid auth token".to_string(),
+            };
+            write_wire_frame(
+                stream,
+                config.pre_handshake_max_frame_len,
+                &WireFrame::Reject(reject.clone()),
+            )
+            .await?;
+            return Err(anyhow!("handshake rejected: unauthorized"));
+        }
     }
-    let hello: ClientHello =
-        bincode::deserialize(&packet.payload).context("decode client hello")?;
 
-    let negotiated_version =
-        negotiate_version(&config.supported_versions, &hello.supported_versions)
-            .context("negotiate protocol version")?;
-    let negotiated_compression = negotiate_compression(
-        &config.supported_compressions,
-        &hello.supported_compressions,
+    let Some(chosen_version) = hello
+        .supported_versions
+        .choose_common(&config.supported_versions)
+    else {
+        let reject = HandshakeReject {
+            code: RejectCode::UnsupportedVersion,
+            message: "no common protocol version".to_string(),
+        };
+        let _ = write_wire_frame(
+            stream,
+            config.pre_handshake_max_frame_len,
+            &WireFrame::Reject(reject),
+        )
+        .await;
+        return Err(anyhow!("handshake rejected: unsupported version"));
+    };
+
+    let chosen_capabilities =
+        match negotiate_capabilities(&config.capabilities, &hello.capabilities) {
+            Ok(caps) => caps,
+            Err(err) => {
+                let reject = HandshakeReject {
+                    code: RejectCode::InvalidRequest,
+                    message: err.to_string(),
+                };
+                let _ = write_wire_frame(
+                    stream,
+                    config.pre_handshake_max_frame_len,
+                    &WireFrame::Reject(reject),
+                )
+                .await;
+                return Err(err).context("handshake rejected: incompatible capabilities");
+            }
+        };
+
+    let welcome = RouterWelcome {
+        worker_id: config.worker_id,
+        shard_id: hello.shard_id,
+        revision: config.revision,
+        chosen_version,
+        chosen_capabilities,
+    };
+
+    write_wire_frame(
+        stream,
+        config.pre_handshake_max_frame_len,
+        &WireFrame::Welcome(welcome.clone()),
     )
-    .context("negotiate compression")?;
+    .await?;
 
     tracing::debug!(
         target: TRACE_TARGET,
         event = "handshake_end",
-        role = "server",
-        negotiated_version,
-        negotiated_compression = ?negotiated_compression,
+        role = "router",
+        worker_id = welcome.worker_id,
+        shard_id = welcome.shard_id,
+        revision = welcome.revision,
+        negotiated_version = ?welcome.chosen_version,
+        negotiated_capabilities = ?welcome.chosen_capabilities,
         peer_auth_present = hello.auth_token.is_some()
     );
 
-    let welcome = ServerWelcome {
-        version: negotiated_version,
-        compression: negotiated_compression,
-    };
-    let payload = bincode::serialize(&welcome).context("encode server welcome")?;
-    let payload_len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("handshake payload too large"))?;
-    write_raw_packet(
-        stream,
-        0,
-        PayloadKind::HandshakeWelcome,
-        false,
-        payload_len,
-        payload,
-    )
-    .await?;
-
-    Ok((
-        Negotiated {
-            version: negotiated_version,
-            compression: negotiated_compression,
-        },
-        hello.auth_token,
-    ))
+    Ok((welcome, hello.shard_id, hello.auth_token.is_some()))
 }
 
-fn negotiate_version(server: &[u32], client: &[u32]) -> Result<u32> {
-    server
-        .iter()
-        .copied()
-        .filter(|version| client.contains(version))
-        .max()
-        .ok_or_else(|| anyhow!("no common protocol version"))
-}
+fn negotiate_capabilities(router: &Capabilities, worker: &Capabilities) -> Result<Capabilities> {
+    let max_frame_len = router.max_frame_len.min(worker.max_frame_len);
+    let max_packet_len = router.max_packet_len.min(worker.max_packet_len);
+    let supports_cancel = router.supports_cancel && worker.supports_cancel;
+    let supports_chunking = router.supports_chunking && worker.supports_chunking;
 
-fn negotiate_compression(server: &[Compression], client: &[Compression]) -> Result<Compression> {
-    let mut common: Vec<Compression> = server
+    let supported_compression: Vec<CompressionAlgo> = router
+        .supported_compression
         .iter()
         .copied()
-        .filter(|algo| client.contains(algo))
+        .filter(|algo| {
+            *algo != CompressionAlgo::Unknown
+                && worker.supported_compression.contains(algo)
+                && *algo != CompressionAlgo::Unknown
+        })
         .collect();
-    common.sort_by_key(|algo| match algo {
-        Compression::None => 0,
-        Compression::Zstd => 1,
-    });
-    common.pop().ok_or_else(|| anyhow!("no common compression"))
-}
 
-struct RawPacket {
-    request_id: RequestId,
-    kind: PayloadKind,
-    compressed: bool,
-    uncompressed_len: u32,
-    payload: Vec<u8>,
-}
+    if supported_compression.is_empty() {
+        return Err(anyhow!("no common compression algorithm"));
+    }
 
-async fn write_raw_packet(
-    stream: &mut (impl AsyncWrite + Unpin),
-    request_id: RequestId,
-    kind: PayloadKind,
-    compressed: bool,
-    uncompressed_len: u32,
-    payload: Vec<u8>,
-) -> Result<()> {
-    let wire_len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("payload too large"))?;
-
-    tracing::trace!(
-        target: TRACE_TARGET,
-        direction = "send",
-        request_id,
-        kind = ?kind,
-        compressed,
-        bytes = wire_len,
-        uncompressed_bytes = uncompressed_len
-    );
-
-    stream
-        .write_u64_le(request_id)
-        .await
-        .context("write request id")?;
-    stream.write_u8(kind as u8).await.context("write kind")?;
-    stream
-        .write_u8(compressed as u8)
-        .await
-        .context("write compressed flag")?;
-    stream
-        .write_u32_le(wire_len)
-        .await
-        .context("write payload len")?;
-    stream
-        .write_u32_le(uncompressed_len)
-        .await
-        .context("write uncompressed len")?;
-    stream.write_all(&payload).await.context("write payload")?;
-    stream.flush().await.context("flush payload")?;
-    Ok(())
-}
-
-async fn read_raw_packet(stream: &mut (impl AsyncRead + Unpin)) -> Result<RawPacket> {
-    let request_id = stream.read_u64_le().await.context("read request id")?;
-    let kind = PayloadKind::from_wire(stream.read_u8().await.context("read kind")?)?;
-    let compressed = stream.read_u8().await.context("read compressed flag")? != 0;
-    let wire_len = stream.read_u32_le().await.context("read payload len")?;
-    let uncompressed_len = stream
-        .read_u32_le()
-        .await
-        .context("read uncompressed len")?;
-    let mut payload = vec![0u8; wire_len as usize];
-    stream
-        .read_exact(&mut payload)
-        .await
-        .context("read payload")?;
-
-    tracing::trace!(
-        target: TRACE_TARGET,
-        direction = "recv",
-        request_id,
-        kind = ?kind,
-        compressed,
-        bytes = wire_len,
-        uncompressed_bytes = uncompressed_len
-    );
-
-    Ok(RawPacket {
-        request_id,
-        kind,
-        compressed,
-        uncompressed_len,
-        payload,
+    Ok(Capabilities {
+        max_frame_len,
+        max_packet_len,
+        supported_compression,
+        supports_cancel,
+        supports_chunking,
     })
 }
 
-fn maybe_compress(
-    negotiated: &Negotiated,
-    threshold: usize,
-    payload: Vec<u8>,
-) -> Result<(Vec<u8>, bool, u32)> {
-    let uncompressed_len: u32 = payload
+async fn write_wire_frame(
+    stream: &mut (impl AsyncWrite + Unpin),
+    max_frame_len: u32,
+    frame: &WireFrame,
+) -> Result<()> {
+    let payload = v3::encode_wire_frame(frame).context("encode wire frame")?;
+    let len: u32 = payload
         .len()
         .try_into()
-        .map_err(|_| anyhow!("payload too large"))?;
+        .map_err(|_| anyhow!("frame too large"))?;
+    if len > max_frame_len {
+        return Err(anyhow!(
+            "frame too large: {len} bytes (limit {max_frame_len} bytes)"
+        ));
+    }
 
-    if negotiated.compression == Compression::Zstd && payload.len() >= threshold {
-        let compressed = zstd::bulk::compress(&payload, 3).context("zstd compress")?;
-        if compressed.len() < payload.len() {
-            return Ok((compressed, true, uncompressed_len));
+    stream.write_u32_le(len).await.context("write frame len")?;
+    stream
+        .write_all(&payload)
+        .await
+        .context("write frame payload")?;
+    stream.flush().await.context("flush frame")?;
+    Ok(())
+}
+
+async fn read_wire_frame(
+    stream: &mut (impl AsyncRead + Unpin),
+    max_frame_len: u32,
+) -> Result<WireFrame> {
+    let len = stream.read_u32_le().await.context("read frame len")?;
+    if len > max_frame_len {
+        return Err(anyhow!(
+            "frame too large: {len} bytes (limit {max_frame_len} bytes)"
+        ));
+    }
+
+    let mut buf = vec![0u8; len as usize];
+    stream
+        .read_exact(&mut buf)
+        .await
+        .context("read frame payload")?;
+    v3::decode_wire_frame(&buf).context("decode wire frame")
+}
+
+fn encode_payload(payload: &RpcPayload) -> Result<(Vec<u8>, &'static str)> {
+    let kind = payload_kind(payload);
+    let bytes = v3::encode_rpc_payload(payload).context("encode rpc payload")?;
+    Ok((bytes, kind))
+}
+
+fn maybe_compress(
+    negotiated: &Capabilities,
+    threshold: usize,
+    uncompressed: &[u8],
+) -> Result<(CompressionAlgo, Vec<u8>)> {
+    if uncompressed.len() > negotiated.max_packet_len as usize {
+        return Err(anyhow!(
+            "payload too large: {} bytes (limit {} bytes)",
+            uncompressed.len(),
+            negotiated.max_packet_len
+        ));
+    }
+
+    let allow_zstd = negotiated
+        .supported_compression
+        .iter()
+        .any(|algo| *algo == CompressionAlgo::Zstd);
+
+    if allow_zstd && uncompressed.len() >= threshold {
+        let compressed = zstd::bulk::compress(uncompressed, 3).context("zstd compress")?;
+        if compressed.len() < uncompressed.len() {
+            return Ok((CompressionAlgo::Zstd, compressed));
         }
     }
 
-    Ok((payload, false, uncompressed_len))
+    Ok((CompressionAlgo::None, uncompressed.to_vec()))
 }
 
 fn maybe_decompress(
-    negotiated: &Negotiated,
-    packet: RawPacket,
-) -> Result<(PayloadKind, RequestId, Vec<u8>)> {
-    let payload = if packet.compressed {
-        match negotiated.compression {
-            Compression::Zstd => {
-                zstd::bulk::decompress(&packet.payload, packet.uncompressed_len as usize)
-                    .context("zstd decompress")?
-            }
-            Compression::None => {
+    negotiated: &Capabilities,
+    compression: CompressionAlgo,
+    data: &[u8],
+) -> Result<Vec<u8>> {
+    let max_packet_len = negotiated.max_packet_len as usize;
+    match compression {
+        CompressionAlgo::None => {
+            if data.len() > max_packet_len {
                 return Err(anyhow!(
-                    "received compressed packet but negotiated compression is None"
-                ))
+                    "payload too large: {} bytes (limit {} bytes)",
+                    data.len(),
+                    max_packet_len
+                ));
             }
+            Ok(data.to_vec())
         }
-    } else {
-        packet.payload
-    };
+        CompressionAlgo::Zstd => decompress_zstd_with_limit(data, max_packet_len),
+        CompressionAlgo::Unknown => Err(anyhow!("unsupported compression algorithm: unknown")),
+    }
+}
 
-    Ok((packet.kind, packet.request_id, payload))
+fn decompress_zstd_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>> {
+    let mut decoder = zstd::stream::read::Decoder::new(data).context("create zstd decoder")?;
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = decoder.read(&mut buf).context("read zstd stream")?;
+        if n == 0 {
+            break;
+        }
+        if out.len() + n > limit {
+            return Err(anyhow!(
+                "decompressed payload too large: {} bytes (limit {} bytes)",
+                out.len() + n,
+                limit
+            ));
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    Ok(out)
 }
 
 async fn read_loop(
@@ -622,23 +685,62 @@ async fn read_loop(
     incoming_tx: Option<mpsc::UnboundedSender<IncomingRequest>>,
 ) {
     loop {
-        let packet = match read_raw_packet(&mut reader).await {
-            Ok(packet) => packet,
-            Err(err) => {
+        let frame =
+            match read_wire_frame(&mut reader, inner.negotiated.capabilities.max_frame_len).await {
+                Ok(frame) => frame,
+                Err(err) => {
+                    tracing::debug!(
+                        target: TRACE_TARGET,
+                        event = "read_loop_end",
+                        error = %err
+                    );
+                    let mut pending = inner.pending.lock().await;
+                    pending.clear();
+                    break;
+                }
+            };
+
+        let (request_id, compression, data) = match frame {
+            WireFrame::Packet {
+                id,
+                compression,
+                data,
+            } => (id, compression, data),
+            WireFrame::PacketChunk { id, .. } => {
                 tracing::debug!(
                     target: TRACE_TARGET,
-                    event = "read_loop_end",
-                    error = %err
+                    event = "unsupported_chunk",
+                    request_id = id
                 );
-                let mut pending = inner.pending.lock().await;
-                pending.clear();
-                break;
+                continue;
+            }
+            other => {
+                tracing::trace!(
+                    target: TRACE_TARGET,
+                    event = "unexpected_frame",
+                    frame = ?other
+                );
+                continue;
             }
         };
 
-        let request_id = packet.request_id;
-        let (kind, request_id, payload) = match maybe_decompress(&inner.negotiated, packet) {
-            Ok(decoded) => decoded,
+        let compressed = compression != CompressionAlgo::None;
+        let decoded_bytes =
+            match maybe_decompress(&inner.negotiated.capabilities, compression, &data) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    tracing::debug!(
+                        target: TRACE_TARGET,
+                        event = "decompress_error",
+                        request_id,
+                        error = %err
+                    );
+                    continue;
+                }
+            };
+
+        let payload: RpcPayload = match v3::decode_rpc_payload(&decoded_bytes) {
+            Ok(payload) => payload,
             Err(err) => {
                 tracing::debug!(
                     target: TRACE_TARGET,
@@ -650,48 +752,86 @@ async fn read_loop(
             }
         };
 
-        match kind {
-            PayloadKind::Response | PayloadKind::Error => {
+        tracing::trace!(
+            target: TRACE_TARGET,
+            direction = "recv",
+            request_id,
+            payload_kind = payload_kind(&payload),
+            compressed,
+            bytes = data.len(),
+            uncompressed_bytes = decoded_bytes.len()
+        );
+
+        match payload {
+            RpcPayload::Response(response) => {
                 let tx = {
                     let mut pending = inner.pending.lock().await;
                     pending.remove(&request_id)
                 };
                 if let Some(tx) = tx {
-                    let _ = tx.send(payload);
+                    let _ = tx.send(response);
                 } else {
                     tracing::trace!(
                         target: TRACE_TARGET,
                         event = "orphan_response",
-                        request_id,
-                        kind = ?kind,
-                        bytes = payload.len()
+                        request_id
                     );
                 }
             }
-            PayloadKind::Request => {
+            RpcPayload::Request(request) => {
                 if let Some(tx) = incoming_tx.as_ref() {
                     let _ = tx.send(IncomingRequest {
                         request_id,
-                        payload,
+                        request,
                     });
                 } else {
                     tracing::trace!(
                         target: TRACE_TARGET,
                         event = "unexpected_request",
-                        request_id,
-                        bytes = payload.len()
+                        request_id
                     );
                 }
             }
-            PayloadKind::HandshakeHello | PayloadKind::HandshakeWelcome => {
-                tracing::trace!(
-                    target: TRACE_TARGET,
-                    event = "unexpected_handshake_packet",
-                    request_id,
-                    kind = ?kind
-                );
+            RpcPayload::Notification(_) | RpcPayload::Cancel | RpcPayload::Unknown => {
+                // Not routed yet; callers can enable `trace` to see the packet metadata.
             }
         }
+    }
+}
+
+fn payload_kind(payload: &RpcPayload) -> &'static str {
+    match payload {
+        RpcPayload::Request(_) => "request",
+        RpcPayload::Response(_) => "response",
+        RpcPayload::Notification(_) => "notification",
+        RpcPayload::Cancel => "cancel",
+        RpcPayload::Unknown => "unknown",
+    }
+}
+
+fn request_type(request: &Request) -> &'static str {
+    match request {
+        Request::LoadFiles { .. } => "load_files",
+        Request::IndexShard { .. } => "index_shard",
+        Request::UpdateFile { .. } => "update_file",
+        Request::GetWorkerStats => "get_worker_stats",
+        Request::Shutdown => "shutdown",
+        Request::Unknown => "unknown",
+    }
+}
+
+fn rpc_result_status(result: &RpcResult<Response>) -> &'static str {
+    match result {
+        RpcResult::Ok { .. } => "ok",
+        RpcResult::Err { .. } => "err",
+        RpcResult::Unknown => "unknown",
+    }
+}
+
+fn rpc_result_error_code(result: &RpcResult<Response>) -> Option<RpcErrorCode> {
+    match result {
+        RpcResult::Err { error } => Some(error.code),
+        _ => None,
     }
 }
 
@@ -739,13 +879,17 @@ mod tests {
                 .recv_request()
                 .await
                 .ok_or_else(|| anyhow!("missing request"))?;
-            server.respond(req.request_id, b"pong".to_vec()).await?;
+            assert!(matches!(req.request, Request::GetWorkerStats));
+            server.respond_ok(req.request_id, Response::Ack).await?;
             Ok::<_, anyhow::Error>(())
         });
 
         let client = Client::connect(client_stream, ClientConfig::default()).await?;
-        let resp = client.call(b"ping".to_vec()).await?;
-        assert_eq!(resp, b"pong");
+        let resp = client.call(Request::GetWorkerStats).await?;
+        match resp {
+            RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
+            other => return Err(anyhow!("unexpected response: {other:?}")),
+        }
 
         server_task.await??;
         Ok(())
@@ -765,18 +909,20 @@ mod tests {
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
 
         let secret = "super-secret-token".to_string();
-        let config = ClientConfig {
-            auth_token: Some(secret.clone()),
-            ..ClientConfig::default()
-        };
+
+        let mut client_cfg = ClientConfig::default();
+        client_cfg.hello.auth_token = Some(secret.clone());
+
+        let mut server_cfg = ServerConfig::default();
+        server_cfg.expected_auth_token = Some(secret.clone());
 
         let fut = tracing::subscriber::with_default(subscriber, || async move {
             let server_task = tokio::spawn(async move {
-                let _server = Server::accept(server_stream, ServerConfig::default()).await?;
+                let _server = Server::accept(server_stream, server_cfg).await?;
                 Ok::<_, anyhow::Error>(())
             });
 
-            let _client = Client::connect(client_stream, config).await?;
+            let _client = Client::connect(client_stream, client_cfg).await?;
             server_task.await??;
             Ok::<_, anyhow::Error>(())
         });
@@ -805,38 +951,42 @@ mod tests {
 
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
 
-        let client_config = ClientConfig {
-            compression_threshold: 1,
-            ..ClientConfig::default()
+        let mut client_cfg = ClientConfig::default();
+        client_cfg.compression_threshold = 1;
+
+        let mut server_cfg = ServerConfig::default();
+        server_cfg.compression_threshold = 1;
+
+        let large_text = "x".repeat(16 * 1024);
+        let request = Request::LoadFiles {
+            revision: 1,
+            files: vec![FileText {
+                path: "a.java".into(),
+                text: large_text,
+            }],
         };
-        let server_config = ServerConfig {
-            compression_threshold: 1,
-            ..ServerConfig::default()
-        };
 
-        let payload = vec![0u8; 4096];
-
-        let fut = tracing::subscriber::with_default(subscriber, || {
-            let payload = payload.clone();
-            async move {
-                let server_task = tokio::spawn(async move {
-                    let mut server = Server::accept(server_stream, server_config).await?;
-                    let req = server
-                        .recv_request()
-                        .await
-                        .ok_or_else(|| anyhow!("missing request"))?;
-                    assert_eq!(req.payload, payload);
-                    server.respond(req.request_id, b"ok".to_vec()).await?;
-                    Ok::<_, anyhow::Error>(())
-                });
-
-                let client = Client::connect(client_stream, client_config).await?;
-                let resp = client.call(payload.clone()).await?;
-                assert_eq!(resp, b"ok");
-
-                server_task.await??;
+        let fut = tracing::subscriber::with_default(subscriber, || async move {
+            let server_task = tokio::spawn(async move {
+                let mut server = Server::accept(server_stream, server_cfg).await?;
+                let req = server
+                    .recv_request()
+                    .await
+                    .ok_or_else(|| anyhow!("missing request"))?;
+                assert!(matches!(req.request, Request::LoadFiles { .. }));
+                server.respond_ok(req.request_id, Response::Ack).await?;
                 Ok::<_, anyhow::Error>(())
+            });
+
+            let client = Client::connect(client_stream, client_cfg).await?;
+            let resp = client.call(request).await?;
+            match resp {
+                RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
+                other => return Err(anyhow!("unexpected response: {other:?}")),
             }
+
+            server_task.await??;
+            Ok::<_, anyhow::Error>(())
         });
 
         fut.await?;
