@@ -9,6 +9,8 @@ use nova_db::{Database, FileId};
 use nova_framework_spring::AnalysisResult;
 use nova_types::{CompletionItem, Diagnostic, Span};
 
+use crate::framework_cache;
+
 #[derive(Debug, Clone)]
 struct CacheEntry<V> {
     fingerprint: u64,
@@ -281,9 +283,8 @@ fn build_workspace_entry(
         .map(|s| db.file_content(s.file_id))
         .collect();
 
-    let config_says_spring = nova_project::load_project(&root)
-        .ok()
-        .is_some_and(|cfg| nova_framework_spring::is_spring_applicable(&cfg));
+    let config_says_spring = framework_cache::project_config(&root)
+        .is_some_and(|cfg| nova_framework_spring::is_spring_applicable(cfg.as_ref()));
 
     let marker_says_spring = sources.iter().any(|src| looks_like_spring_source(src));
     let is_spring = config_says_spring || marker_says_spring;
@@ -332,46 +333,19 @@ fn sources_fingerprint(db: &dyn Database, sources: &[JavaSource]) -> u64 {
 }
 
 fn looks_like_spring_source(text: &str) -> bool {
-    const MARKERS: &[&str] = &[
-        "org.springframework",
-        "@SpringBootApplication",
-        "@Component",
-        "@Service",
-        "@Repository",
-        "@Controller",
-        "@Configuration",
-        "@Bean",
-        "@Autowired",
-        "@Qualifier",
-        "@Profile",
-    ];
-    MARKERS.iter().any(|m| text.contains(m))
+    text.contains("org.springframework")
 }
 
 fn discover_project_root(path: &Path) -> PathBuf {
+    if path.exists() {
+        return framework_cache::project_root_for_path(path);
+    }
+
     let dir = if path.is_file() {
         path.parent().unwrap_or(path)
     } else {
         path
     };
-
-    // Prefer build-tool markers when the workspace exists on disk.
-    const MARKERS: &[&str] = &[
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-        "WORKSPACE",
-        "WORKSPACE.bazel",
-        "MODULE.bazel",
-    ];
-
-    for ancestor in dir.ancestors() {
-        if MARKERS.iter().any(|marker| ancestor.join(marker).is_file()) {
-            return ancestor.to_path_buf();
-        }
-    }
 
     // Best-effort fallback for in-memory test fixtures: if the path has a
     // `src/` segment, treat its parent as the project root.
