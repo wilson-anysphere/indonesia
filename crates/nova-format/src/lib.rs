@@ -389,6 +389,33 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
     let original_lines = split_lines_inclusive(original);
     let formatted_lines = split_lines_inclusive(formatted);
 
+    if original_lines.len() == formatted_lines.len() {
+        let original_offsets = line_offsets(&original_lines);
+        let mut edits = Vec::new();
+        for (idx, (original_line, formatted_line)) in original_lines
+            .iter()
+            .zip(formatted_lines.iter())
+            .enumerate()
+        {
+            if let Some(edit) = minimal_text_edit(original_line, formatted_line) {
+                let base = TextSize::from(original_offsets[idx] as u32);
+                let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
+                edits.push(TextEdit::new(range, edit.replacement));
+            }
+        }
+
+        edits.sort_by_key(|edit| (edit.range.start(), edit.range.end()));
+        return edits;
+    }
+
+    // The diff algorithm below is quadratic in the worst case (and can require significant
+    // memory when there are few/no matching lines). Range formatting requests are typically small,
+    // so we cap the work and fall back to a single minimal replacement for very large inputs.
+    const MAX_MYERS_LINES: usize = 2000;
+    if original_lines.len().saturating_add(formatted_lines.len()) > MAX_MYERS_LINES {
+        return minimal_text_edit(original, formatted).into_iter().collect();
+    }
+
     let ops = myers_diff_ops(&original_lines, &formatted_lines);
 
     let mut chunks = Vec::new();
