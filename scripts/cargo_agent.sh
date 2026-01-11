@@ -134,6 +134,18 @@ run_cargo() {
     export RUST_TEST_THREADS="${rust_test_threads}"
   fi
 
+  # On multi-agent hosts we apply strict RLIMIT_AS ceilings. Some environments
+  # also configure a global rustc wrapper (commonly `sccache`) via cargo config.
+  # This can crash in low address-space environments and cause failures like:
+  #   `sccache rustc -vV` -> "memory allocation ... failed"
+  #
+  # Default to disabling any rustc wrapper for reliability. Consumers that want
+  # to opt back in can set `NOVA_CARGO_KEEP_RUSTC_WRAPPER=1`.
+  if [[ -z "${NOVA_CARGO_KEEP_RUSTC_WRAPPER:-}" ]]; then
+    export RUSTC_WRAPPER=""
+    export RUSTC_WORKSPACE_WRAPPER=""
+  fi
+
   if [[ -n "${jobs}" ]]; then
     cargo_cmd+=(-j "${jobs}")
   fi
