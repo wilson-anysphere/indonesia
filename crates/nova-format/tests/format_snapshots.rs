@@ -109,6 +109,19 @@ class Foo {
 }
 
 #[test]
+fn canonical_document_formatting_is_idempotent_on_generics_fixture() {
+    let input = include_str!("fixtures/generics.java");
+    let config = FormatConfig::default();
+    let edits = edits_for_document_formatting(input, &config);
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    let edits_again = edits_for_document_formatting(&formatted, &config);
+    let formatted_again = apply_text_edits(&formatted, &edits_again).unwrap();
+
+    assert_eq!(formatted_again, formatted);
+}
+
+#[test]
 fn lsp_cli_parity_for_canonical_document_formatting() {
     let input = "class Foo{String s=\"\"\"\nhello\n\"\"\";}\n";
     let config = FormatConfig::default();
