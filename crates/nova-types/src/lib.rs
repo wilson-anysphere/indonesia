@@ -22,6 +22,9 @@ pub use java::format::{
     format_method_signature, format_resolved_method, format_type, MethodSignatureDisplay, ResolvedMethodDisplay,
     TypeDisplay,
 };
+mod type_loader;
+
+pub use type_loader::{TypeLoadError, TypeStoreLoader};
 
 // === Generic shared types ====================================================
 
