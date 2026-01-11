@@ -33,6 +33,28 @@ impl HirDatabase for dyn NovaResolve {
         // us to use it from queries.
         Arc::from(self.file_content(file).as_str())
     }
+
+    fn hir_item_tree(&self, file: FileId) -> Arc<nova_hir::item_tree::ItemTree> {
+        NovaHir::hir_item_tree(self, file)
+    }
+
+    fn hir_body(&self, method: nova_hir::ids::MethodId) -> Arc<nova_hir::hir::Body> {
+        NovaHir::hir_body(self, method)
+    }
+
+    fn hir_constructor_body(
+        &self,
+        constructor: nova_hir::ids::ConstructorId,
+    ) -> Arc<nova_hir::hir::Body> {
+        NovaHir::hir_constructor_body(self, constructor)
+    }
+
+    fn hir_initializer_body(
+        &self,
+        initializer: nova_hir::ids::InitializerId,
+    ) -> Arc<nova_hir::hir::Body> {
+        NovaHir::hir_initializer_body(self, initializer)
+    }
 }
 
 fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ScopeBuildResult> {
