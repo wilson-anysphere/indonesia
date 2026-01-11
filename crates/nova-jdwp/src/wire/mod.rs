@@ -15,5 +15,8 @@ pub use types::{
     ReferenceTypeId, ThreadId, VariableInfo, VmClassPaths,
 };
 
-#[cfg(feature = "wire-test-support")]
+// The wire-protocol mock server is only needed for tests and downstream integration suites.
+// Compile it for nova-jdwp's own unit tests unconditionally (via `cfg(test)`), while keeping
+// it behind the `wire-test-support` feature for normal builds and for downstream crates.
+#[cfg(any(test, feature = "wire-test-support"))]
 pub mod mock;

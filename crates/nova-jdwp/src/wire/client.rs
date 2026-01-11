@@ -1125,3 +1125,69 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{JdwpClient, JdwpClientConfig};
+    use crate::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
+
+    #[tokio::test]
+    async fn pending_entries_are_removed_when_request_future_is_dropped() {
+        // Delay `VirtualMachine.AllThreads (1, 4)` so the request stays in-flight long enough
+        // for us to abort it without racing a reply/timeout path.
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            delayed_replies: vec![DelayedReply {
+                command_set: 1,
+                command: 4,
+                delay: Duration::from_secs(60),
+            }],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect_with_config(
+            server.addr(),
+            JdwpClientConfig {
+                reply_timeout: Duration::from_secs(60),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(client.inner.pending.lock().unwrap().len(), 0);
+
+        let client_for_task = client.clone();
+        let task = tokio::spawn(async move {
+            let _ = client_for_task.all_threads().await;
+        });
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if client.inner.pending.lock().unwrap().len() == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("request never became pending");
+
+        task.abort();
+        let _ = task.await;
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if client.inner.pending.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("pending entry was not cleaned up");
+    }
+}

@@ -129,6 +129,7 @@ fn is_sensitive_param(param: &str) -> bool {
         "key" | "token" | "access_token" | "api_key" | "apikey" | "authorization"
     )
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
