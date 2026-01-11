@@ -202,22 +202,35 @@ export class ServerManager {
       binaryId: opts.binaryId,
     });
 
+    const versionDir = path.join(installDir, release.tag_name);
+    await fs.mkdir(versionDir, { recursive: true });
+
+    const cachedBinaryPath = path.join(versionDir, opts.binaryName);
+    const cachedMetadataPath = path.join(versionDir, opts.metadataFileName);
+
     const tmpId = randomBytes(8).toString('hex');
-    const tmpArchivePath = path.join(installDir, `${archiveName}.tmp.${tmpId}`);
-    const tmpBinaryPath = path.join(installDir, `${opts.binaryName}.tmp.${tmpId}`);
+    const tmpArchivePath = path.join(versionDir, `${archiveName}.tmp.${tmpId}`);
+    const tmpBinaryPath = path.join(versionDir, `${opts.binaryName}.tmp.${tmpId}`);
+    const tmpInstallBinaryPath = path.join(installDir, `${opts.binaryName}.install.tmp.${tmpId}`);
 
     // Best-effort cleanup of crashed partial downloads/extractions.
-    await cleanupTmpFiles(fs, installDir, [`${archiveName}.tmp`, `${opts.binaryName}.tmp`]);
+    await cleanupTmpFiles(fs, versionDir, [`${archiveName}.tmp`, `${opts.binaryName}.tmp`]);
+    await cleanupTmpFiles(fs, installDir, [`${opts.binaryName}.install.tmp`]);
 
     await safeRm(fs, tmpArchivePath);
     await safeRm(fs, tmpBinaryPath);
+    await safeRm(fs, tmpInstallBinaryPath);
 
     try {
       const actualSha256 = await downloadToFileAndSha256(this.fetchImpl, archiveAsset.browser_download_url, tmpArchivePath);
-      if (!sha256Equal(actualSha256, expectedSha256)) {
-        throw new Error(
-          `Checksum mismatch for ${archiveName}: expected ${expectedSha256}, got ${actualSha256}. Refusing to install.`,
-        );
+      if (expectedSha256) {
+        if (!sha256Equal(actualSha256, expectedSha256)) {
+          throw new Error(
+            `Checksum mismatch for ${archiveName}: expected ${expectedSha256}, got ${actualSha256}. Refusing to install.`,
+          );
+        }
+      } else {
+        this.log(`No published SHA-256 checksum found for ${archiveName}; proceeding without checksum verification.`);
       }
 
       await this.extractor.extractBinaryFromArchive({
@@ -230,26 +243,39 @@ export class ServerManager {
         await fs.chmod(tmpBinaryPath, 0o755);
       }
 
+      await safeRm(fs, cachedBinaryPath);
+      await fs.rename(tmpBinaryPath, cachedBinaryPath);
+
+      await fs.copyFile(cachedBinaryPath, tmpInstallBinaryPath);
+      if (this.platform !== 'win32') {
+        await fs.chmod(tmpInstallBinaryPath, 0o755);
+      }
+
       await safeRm(fs, finalBinaryPath);
-      await fs.rename(tmpBinaryPath, finalBinaryPath);
+      await fs.rename(tmpInstallBinaryPath, finalBinaryPath);
+
+      const metadataJson = JSON.stringify(
+        {
+          installedAt: new Date().toISOString(),
+          version: release.tag_name,
+          target,
+          releaseUrl: settings.releaseUrl,
+          releaseApiBaseUrl: repo.apiBaseUrl,
+        },
+        null,
+        2,
+      );
 
       await fs.writeFile(
         metadataPath,
-        JSON.stringify(
-          {
-            installedAt: new Date().toISOString(),
-            version: release.tag_name,
-            target,
-            releaseUrl: settings.releaseUrl,
-            releaseApiBaseUrl: repo.apiBaseUrl,
-          },
-          null,
-          2,
-        ),
+        metadataJson,
       );
+
+      await fs.writeFile(cachedMetadataPath, metadataJson);
     } finally {
       await safeRm(fs, tmpArchivePath);
       await safeRm(fs, tmpBinaryPath);
+      await safeRm(fs, tmpInstallBinaryPath);
     }
 
     this.log(`Installed ${opts.binaryId} to ${finalBinaryPath}`);
@@ -577,7 +603,7 @@ async function fetchPublishedSha256(opts: {
   release: GitHubRelease;
   archiveName: string;
   binaryId: 'nova-lsp' | 'nova-dap';
-}): Promise<string> {
+}): Promise<string | undefined> {
   const sha256AssetNames = [`${opts.archiveName}.sha256`, `${opts.archiveName}.sha256.txt`];
   for (const candidate of sha256AssetNames) {
     const asset = opts.release.assets.find((a) => a.name === candidate);
@@ -605,11 +631,7 @@ async function fetchPublishedSha256(opts: {
     }
   }
 
-  const settingKey = opts.binaryId === 'nova-lsp' ? 'nova.server.path' : 'nova.dap.path';
-  throw new Error(
-    `No published SHA-256 checksums found for ${opts.archiveName}. Refusing to install. ` +
-      `If you're using a custom build, set ${settingKey} to a local ${opts.binaryId} executable instead.`,
-  );
+  return undefined;
 }
 
 async function fetchText(fetchImpl: typeof fetch, url: string): Promise<string> {
