@@ -2164,7 +2164,7 @@ fn module_body_missing_rbrace_recovers_to_eof() {
     let parse = parse_java(input);
     assert!(
         !parse.errors.is_empty(),
-        "expected parse errors for missing module body `}`"
+        "expected parse errors for missing module body `}}`"
     );
 
     let unit = CompilationUnit::cast(parse.syntax()).unwrap();
