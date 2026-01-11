@@ -1600,6 +1600,66 @@ mod tests {
     }
 
     #[test]
+    fn read_loop_never_panics_on_random_bytes() {
+        const MAX_FUZZ_INPUT_LEN: usize = 16 * 1024;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        let mut runner = TestRunner::new(ProptestConfig {
+            cases: 64,
+            ..ProptestConfig::default()
+        });
+        runner
+            .run(
+                &proptest::collection::vec(any::<u8>(), 0..=MAX_FUZZ_INPUT_LEN),
+                |bytes| {
+                    rt.block_on(async {
+                        // Ensure random bytes cannot trigger large allocations via the length prefix.
+                        let mut caps = Capabilities::default();
+                        caps.max_frame_len = 4096;
+                        caps.max_packet_len = 16 * 1024;
+                        caps.supported_compression = vec![CompressionAlgo::Zstd, CompressionAlgo::None];
+                        caps.supports_chunking = true;
+
+                        let negotiated = Negotiated {
+                            version: ProtocolVersion::CURRENT,
+                            capabilities: caps,
+                        };
+
+                        let (mut tx, rx) = tokio::io::duplex(bytes.len().max(1));
+                        let stream: BoxedStream = Box::new(rx);
+                        let (reader, writer) = tokio::io::split(stream);
+
+                        let inner = Arc::new(Inner {
+                            writer: Mutex::new(writer),
+                            pending: Mutex::new(HashMap::new()),
+                            negotiated,
+                            compression_threshold: 1024,
+                            worker_id: 0,
+                            shard_id: 0,
+                            next_request_id: AtomicU64::new(1),
+                            request_id_step: 2,
+                        });
+
+                        let task = tokio::spawn(read_loop(reader, inner, None));
+                        tx.write_all(&bytes).await.expect("write fuzz bytes");
+                        drop(tx);
+
+                        assert!(
+                            task.await.is_ok(),
+                            "read_loop task panicked while parsing random bytes"
+                        );
+                    });
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
     fn maybe_decompress_never_panics_on_random_bytes() {
         const MAX_FUZZ_INPUT_LEN: usize = 16 * 1024;
 
