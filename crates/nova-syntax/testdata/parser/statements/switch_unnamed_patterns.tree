@@ -100,6 +100,34 @@ CompilationUnit
               Whitespace "\n      "
               SwitchRule
                 SwitchLabel
+                  CaseKw "case"
+                  Whitespace " "
+                  CaseLabelElement
+                    Pattern
+                      RecordPattern
+                        Modifiers
+                        Type
+                          NamedType
+                            Identifier "Point"
+                        LParen "("
+                        Pattern
+                          UnnamedPattern
+                            Identifier "_"
+                        Comma ","
+                        Whitespace " "
+                        Pattern
+                          UnnamedPattern
+                            Identifier "_"
+                        RParen ")"
+                    Whitespace " "
+                  Arrow "->"
+                Whitespace " "
+                Block
+                  LBrace "{"
+                  RBrace "}"
+              Whitespace "\n      "
+              SwitchRule
+                SwitchLabel
                   DefaultKw "default"
                   Whitespace " "
                   Arrow "->"

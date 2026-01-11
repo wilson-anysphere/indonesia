@@ -3,6 +3,7 @@ class Foo {
     switch (o) {
       case String _ -> {}
       case Point(int _, int y) -> {}
+      case Point(_, _) -> {}
       default -> {}
     }
   }
