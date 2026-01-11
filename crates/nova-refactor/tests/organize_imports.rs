@@ -150,5 +150,5 @@ class Test {
     // No real imports -> no changes.
     let (after, edit) = apply_organize_imports(before);
     assert_eq!(after, before);
-    assert!(edit.text_edits.is_empty());
+    assert!(edit.is_empty());
 }
