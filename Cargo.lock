@@ -4192,10 +4192,10 @@ dependencies = [
  "nova-classfile",
  "nova-classpath",
  "nova-ids",
+ "nova-test-utils",
  "pretty_assertions",
  "schemars",
  "serde",
- "tempfile",
 ]
 
 [[package]]

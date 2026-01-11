@@ -12,4 +12,4 @@ nova-classfile = { path = "../nova-classfile" }
 [dev-dependencies]
 pretty_assertions = "1.4"
 nova-classpath = { path = "../nova-classpath" }
-tempfile.workspace = true
+nova-test-utils = { path = "../nova-test-utils", default-features = false }
