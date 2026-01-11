@@ -699,11 +699,7 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
             continue;
         }
 
-        // NOTE: we intentionally exclude Maven wrapper scripts (`mvnw*`) from the
-        // fingerprint. They are execution helpers rather than build
-        // configuration (the distribution URL lives in
-        // `.mvn/wrapper/maven-wrapper.properties`).
-        if file_name == "pom.xml" {
+        if file_name == "pom.xml" || file_name == "mvnw" || file_name == "mvnw.cmd" {
             out.push(path);
         }
     }

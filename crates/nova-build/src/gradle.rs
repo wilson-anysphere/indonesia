@@ -1122,12 +1122,9 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             | "build.gradle.kts"
             | "settings.gradle"
             | "settings.gradle.kts"
-            | "gradle.properties" => {
-                // NOTE: we intentionally exclude the wrapper scripts (`gradlew*`) from
-                // the fingerprint. They are execution helpers rather than build
-                // configuration. Keeping them out of the fingerprint lets Nova reuse
-                // cached build metadata even if a workspace is missing the wrapper
-                // scripts (e.g. sparse checkouts).
+            | "gradle.properties"
+            | "gradlew"
+            | "gradlew.bat" => {
                 out.push(path);
             }
             "gradle-wrapper.properties" => {
