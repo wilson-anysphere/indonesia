@@ -65,21 +65,18 @@ pub fn build_jpms_environment(
         })? {
             Some(info) => info,
             None => {
-                let meta = entry.module_meta().with_context(|| {
+                let meta = entry.module_meta_for_module_path().with_context(|| {
                     format!(
                         "failed to determine JPMS module name for `{}`",
                         entry.path().display()
                     )
                 })?;
-                let name = meta
-                    .name
-                    .or_else(|| nova_classpath::derive_automatic_module_name_from_path(entry.path()))
-                    .ok_or_else(|| {
-                        anyhow!(
-                            "failed to determine JPMS module name for `{}`",
-                            entry.path().display()
-                        )
-                    })?;
+                let name = meta.name.ok_or_else(|| {
+                    anyhow!(
+                        "failed to determine JPMS module name for `{}`",
+                        entry.path().display()
+                    )
+                })?;
                 empty_module(ModuleKind::Automatic, name)
             }
         };
