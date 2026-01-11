@@ -10,6 +10,8 @@ pub(crate) fn feature_gate_diagnostics(root: &SyntaxNode, level: JavaLanguageLev
     gate_sealed_classes(root, level, &mut diagnostics);
     gate_text_blocks(root, level, &mut diagnostics);
     gate_switch_expressions(root, level, &mut diagnostics);
+    gate_pattern_matching_switch(root, level, &mut diagnostics);
+    gate_record_patterns(root, level, &mut diagnostics);
     gate_var_local_inference(root, level, &mut diagnostics);
 
     diagnostics
@@ -102,6 +104,85 @@ fn gate_switch_expressions(root: &SyntaxNode, level: JavaLanguageLevel, out: &mu
     }
 }
 
+fn gate_pattern_matching_switch(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+    if level.is_enabled(JavaFeature::PatternMatchingSwitch) {
+        return;
+    }
+
+    // Gate switch labels that use pattern-matching-only constructs:
+    // - patterns (`case String s ->`)
+    // - null labels (`case null ->`) / `case null, default ->`
+    // - `default` as a case label element (distinct from a `default:` label)
+    // - guards (`when <expr>`)
+    for label in root.descendants().filter(|n| n.kind() == SyntaxKind::SwitchLabel) {
+        let Some(first_tok) = label
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| !t.kind().is_trivia())
+        else {
+            continue;
+        };
+
+        // Only `case ...` labels participate; plain `default:` is always allowed.
+        if first_tok.kind() != SyntaxKind::CaseKw {
+            continue;
+        }
+
+        let pattern_tok = label
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::Pattern)
+            .find_map(|n| first_token(&n));
+        if let Some(tok) = pattern_tok {
+            out.push(feature_error(level, JavaFeature::PatternMatchingSwitch, &tok));
+            continue;
+        }
+
+        let guard_tok = label
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::Guard)
+            .find_map(|n| first_token(&n));
+        if let Some(tok) = guard_tok {
+            out.push(feature_error(level, JavaFeature::PatternMatchingSwitch, &tok));
+            continue;
+        }
+
+        // `case null` and `case null, default`.
+        // Only consider `null`/`default` as *case label elements* (not occurrences inside guards).
+        for element in label
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::CaseLabelElement)
+        {
+            // If this element includes a Pattern, it would have been caught above; ignore `null`
+            // literals inside e.g. guard expressions.
+            if element.descendants().any(|n| n.kind() == SyntaxKind::Pattern) {
+                continue;
+            }
+
+            let tok = element
+                .descendants_with_tokens()
+                .filter_map(|e| e.into_token())
+                .find(|t| matches!(t.kind(), SyntaxKind::NullKw | SyntaxKind::DefaultKw));
+            if let Some(tok) = tok {
+                out.push(feature_error(level, JavaFeature::PatternMatchingSwitch, &tok));
+                break;
+            }
+        }
+    }
+}
+
+fn gate_record_patterns(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+    if level.is_enabled(JavaFeature::RecordPatterns) {
+        return;
+    }
+
+    for node in root.descendants().filter(|n| n.kind() == SyntaxKind::RecordPattern) {
+        let Some(tok) = first_token(&node) else {
+            continue;
+        };
+        out.push(feature_error(level, JavaFeature::RecordPatterns, &tok));
+    }
+}
+
 fn gate_var_local_inference(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
     if level.is_enabled(JavaFeature::VarLocalInference) {
         return;
@@ -153,6 +234,12 @@ fn var_type_keyword(container: &SyntaxNode) -> Option<SyntaxToken> {
 
 fn feature_error(level: JavaLanguageLevel, feature: JavaFeature, token: &SyntaxToken) -> Diagnostic {
     Diagnostic::error(feature.diagnostic_code(), feature_message(level, feature), Some(span(token)))
+}
+
+fn first_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+    node.descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| !t.kind().is_trivia())
 }
 
 fn span(token: &SyntaxToken) -> Span {

@@ -645,6 +645,165 @@ fn feature_gate_switch_expressions_version_matrix() {
 }
 
 #[test]
+fn feature_gate_pattern_matching_switch_version_matrix() {
+    let input =
+        "class Foo { void m(Object o) { switch (o) { case String s -> { return; } default -> { return; } } } }";
+
+    let java16 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 16,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java16.result.errors, Vec::new());
+    assert_eq!(
+        java16.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_PATTERN_MATCHING_SWITCH"]
+    );
+
+    let java17_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 17,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java17_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java17_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_PATTERN_MATCHING_SWITCH"]
+    );
+
+    let java17_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 17,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java17_preview.result.errors, Vec::new());
+    assert!(java17_preview.diagnostics.is_empty());
+
+    let java21 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21,
+        },
+    );
+    assert_eq!(java21.result.errors, Vec::new());
+    assert!(java21.diagnostics.is_empty());
+}
+
+#[test]
+fn feature_gate_pattern_matching_switch_handles_null_and_default_elements() {
+    let input =
+        "class Foo { void m(Object o) { switch (o) { case null, default -> { return; } } } }";
+
+    let java17_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 17,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java17_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java17_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_PATTERN_MATCHING_SWITCH"]
+    );
+
+    let java17_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 17,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java17_preview.result.errors, Vec::new());
+    assert!(java17_preview.diagnostics.is_empty());
+}
+
+#[test]
+fn feature_gate_record_patterns_version_matrix() {
+    let input =
+        "class Foo { void m(Object o) { if (o instanceof Point(int x, int y)) { return; } } }";
+
+    let java18 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 18,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java18.result.errors, Vec::new());
+    assert_eq!(
+        java18.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_RECORD_PATTERNS"]
+    );
+
+    let java20_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 20,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java20_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java20_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_RECORD_PATTERNS"]
+    );
+
+    let java20_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 20,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java20_preview.result.errors, Vec::new());
+    assert!(java20_preview.diagnostics.is_empty());
+
+    let java21 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21,
+        },
+    );
+    assert_eq!(java21.result.errors, Vec::new());
+    assert!(java21.diagnostics.is_empty());
+}
+
+#[test]
 fn parse_instanceof_type_patterns() {
     let input = r#"
 class Foo {
