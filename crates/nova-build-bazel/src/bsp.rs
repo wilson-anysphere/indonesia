@@ -857,22 +857,7 @@ pub fn target_compile_info_via_bsp(
             .with_context(|| format!("no javac options returned for `{target}`"))?
     };
 
-    let mut info = crate::aquery::extract_java_compile_info_from_args(&item.options);
-    info.classpath = item
-        .classpath
-        .into_iter()
-        .map(|entry| {
-            normalize_bsp_uri_to_path(&entry)
-                .to_string_lossy()
-                .to_string()
-        })
-        .collect();
-    info.output_dir = Some(
-        normalize_bsp_uri_to_path(&item.class_directory)
-            .to_string_lossy()
-            .to_string(),
-    );
-    Ok(info)
+    Ok(javac_options_item_to_compile_info(&item))
 }
 
 #[cfg(test)]
@@ -959,5 +944,94 @@ mod tests {
         assert_eq!(diag.severity, nova_core::DiagnosticSeverity::Warning);
         assert_eq!(diag.message, "warning!");
         assert_eq!(diag.source.as_deref(), Some("bsp"));
+    }
+
+    #[test]
+    fn publish_diagnostics_reset_replaces_previous_for_file() {
+        #[cfg(not(windows))]
+        let uri = "file:///tmp/Foo.java";
+        #[cfg(windows)]
+        let uri = "file:///C:/tmp/Foo.java";
+
+        let first = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "diagnostics": [
+                {
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 1 }
+                    },
+                    "severity": 1,
+                    "message": "first"
+                }
+            ],
+            "reset": true
+        });
+        let second = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "diagnostics": [
+                {
+                    "range": {
+                        "start": { "line": 0, "character": 2 },
+                        "end": { "line": 0, "character": 3 }
+                    },
+                    "severity": 1,
+                    "message": "second"
+                }
+            ],
+            "reset": true
+        });
+
+        let first: PublishDiagnosticsParams = serde_json::from_value(first).unwrap();
+        let second: PublishDiagnosticsParams = serde_json::from_value(second).unwrap();
+        let mapped = bsp_publish_diagnostics_to_nova_diagnostics(&[first, second]);
+        assert_eq!(mapped.len(), 1);
+        assert_eq!(mapped[0].message, "second");
+    }
+
+    #[test]
+    fn publish_diagnostics_reset_false_appends_for_file() {
+        #[cfg(not(windows))]
+        let uri = "file:///tmp/Foo.java";
+        #[cfg(windows)]
+        let uri = "file:///C:/tmp/Foo.java";
+
+        let first = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "diagnostics": [
+                {
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 0, "character": 1 }
+                    },
+                    "severity": 1,
+                    "message": "first"
+                }
+            ],
+            "reset": true
+        });
+        let second = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "diagnostics": [
+                {
+                    "range": {
+                        "start": { "line": 0, "character": 2 },
+                        "end": { "line": 0, "character": 3 }
+                    },
+                    "severity": 1,
+                    "message": "second"
+                }
+            ],
+            "reset": false
+        });
+
+        let first: PublishDiagnosticsParams = serde_json::from_value(first).unwrap();
+        let second: PublishDiagnosticsParams = serde_json::from_value(second).unwrap();
+        let mapped = bsp_publish_diagnostics_to_nova_diagnostics(&[first, second]);
+        assert_eq!(mapped.len(), 2);
+
+        let messages: Vec<_> = mapped.into_iter().map(|d| d.message).collect();
+        assert!(messages.contains(&"first".to_string()));
+        assert!(messages.contains(&"second".to_string()));
     }
 }
