@@ -1,7 +1,6 @@
 use crate::indexes::{
-    AnnotationIndex, AnnotationLocation, ArchivedAnnotationLocation, ArchivedReferenceLocation,
-    ArchivedSymbolLocation, InheritanceIndex, ProjectIndexes, ReferenceIndex, ReferenceLocation,
-    SymbolIndex, SymbolLocation,
+    AnnotationIndex, ArchivedAnnotationLocation, ArchivedReferenceLocation, ArchivedSymbolLocation,
+    InheritanceIndex, ProjectIndexes, ReferenceIndex, SymbolIndex,
 };
 use fs2::FileExt as _;
 use nova_cache::{CacheDir, CacheMetadata, ProjectSnapshot};
@@ -300,7 +299,9 @@ pub fn save_indexes(
 
     let metadata_path = cache_dir.metadata_path();
     let (mut metadata, previous_generation) = match CacheMetadata::load(&metadata_path) {
-        Ok(existing) if existing.is_compatible() && &existing.project_hash == snapshot.project_hash() => {
+        Ok(existing)
+            if existing.is_compatible() && &existing.project_hash == snapshot.project_hash() =>
+        {
             let previous = existing.last_updated_millis;
             (existing, previous)
         }
@@ -682,7 +683,9 @@ impl Drop for IndexWriteLock {
     }
 }
 
-fn acquire_index_write_lock(indexes_dir: &Path) -> Result<Option<IndexWriteLock>, IndexPersistenceError> {
+fn acquire_index_write_lock(
+    indexes_dir: &Path,
+) -> Result<Option<IndexWriteLock>, IndexPersistenceError> {
     let lock_path = indexes_dir.join(INDEX_WRITE_LOCK_NAME);
     let file = OpenOptions::new()
         .create(true)
@@ -761,74 +764,83 @@ impl ShardedIndexView {
         self.invalidated_files.contains(file)
     }
 
-    /// Return all `SymbolLocation`s for `symbol` across all available shards.
+    /// Return all symbol definition locations for `symbol` across all available shards.
     ///
     /// This is a convenience helper for consumers that want a global view without
     /// deserializing the entire index set.
     #[must_use]
-    pub fn symbol_locations(&self, symbol: &str) -> Vec<SymbolLocation> {
-        let mut out = Vec::new();
+    pub fn symbol_locations<'a>(
+        &'a self,
+        symbol: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
         let invalidated_files = &self.invalidated_files;
+
+        let mut lists = Vec::new();
         for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
-            let Some(locations) = shard.symbols.symbols.get(symbol) else {
-                continue;
-            };
-            out.extend(
-                locations
-                    .iter()
-                    .filter(|loc| !invalidated_files.contains(loc.file.as_str()))
-                    .map(|loc| SymbolLocation {
-                        file: loc.file.as_str().to_string(),
-                        line: loc.line,
-                        column: loc.column,
-                    }),
-            );
+            if let Some(locations) = shard.symbols.archived().symbols.get(symbol) {
+                lists.push(locations);
+            }
         }
-        out
+
+        lists
+            .into_iter()
+            .flat_map(move |locations| locations.iter())
+            .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            })
     }
 
     #[must_use]
-    pub fn reference_locations(&self, symbol: &str) -> Vec<ReferenceLocation> {
-        let mut out = Vec::new();
+    pub fn reference_locations<'a>(
+        &'a self,
+        symbol: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
         let invalidated_files = &self.invalidated_files;
+
+        let mut lists = Vec::new();
         for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
-            let Some(locations) = shard.references.references.get(symbol) else {
-                continue;
-            };
-            out.extend(
-                locations
-                    .iter()
-                    .filter(|loc| !invalidated_files.contains(loc.file.as_str()))
-                    .map(|loc| ReferenceLocation {
-                        file: loc.file.as_str().to_string(),
-                        line: loc.line,
-                        column: loc.column,
-                    }),
-            );
+            if let Some(locations) = shard.references.archived().references.get(symbol) {
+                lists.push(locations);
+            }
         }
-        out
+
+        lists
+            .into_iter()
+            .flat_map(move |locations| locations.iter())
+            .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            })
     }
 
     #[must_use]
-    pub fn annotation_locations(&self, annotation: &str) -> Vec<AnnotationLocation> {
-        let mut out = Vec::new();
+    pub fn annotation_locations<'a>(
+        &'a self,
+        annotation: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
         let invalidated_files = &self.invalidated_files;
+
+        let mut lists = Vec::new();
         for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
-            let Some(locations) = shard.annotations.annotations.get(annotation) else {
-                continue;
-            };
-            out.extend(
-                locations
-                    .iter()
-                    .filter(|loc| !invalidated_files.contains(loc.file.as_str()))
-                    .map(|loc| AnnotationLocation {
-                        file: loc.file.as_str().to_string(),
-                        line: loc.line,
-                        column: loc.column,
-                    }),
-            );
+            if let Some(locations) = shard.annotations.archived().annotations.get(annotation) {
+                lists.push(locations);
+            }
         }
-        out
+
+        lists
+            .into_iter()
+            .flat_map(move |locations| locations.iter())
+            .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            })
     }
 }
 

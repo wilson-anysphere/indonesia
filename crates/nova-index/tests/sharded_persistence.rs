@@ -107,7 +107,7 @@ fn sharded_roundtrip_loads_all_shards() {
     let view = load_sharded_index_view(&cache_dir, &snapshot, shard_count)
         .unwrap()
         .unwrap();
-    let a_locations = view.view.symbol_locations("A");
+    let a_locations: Vec<_> = view.view.symbol_locations("A").collect();
     assert_eq!(a_locations.len(), 1);
     assert_eq!(a_locations[0].file, "A.java");
 }
@@ -220,7 +220,7 @@ fn sharded_index_view_filters_invalidated_files() {
                 column: 1,
             },
         );
-    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, shards).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
 
     // Modify A.java so it is marked invalidated, but keep shard files intact on disk.
     std::fs::write(&a, "class A { void m() {} }").unwrap();
@@ -236,8 +236,8 @@ fn sharded_index_view_filters_invalidated_files() {
     assert_eq!(loaded_v2.invalidated_files, vec!["A.java".to_string()]);
 
     // The view should hide stale locations from invalidated files without requiring deserialization.
-    assert!(loaded_v2.view.symbol_locations("A").is_empty());
-    assert_eq!(loaded_v2.view.symbol_locations("B").len(), 1);
+    assert!(loaded_v2.view.symbol_locations("A").next().is_none());
+    assert_eq!(loaded_v2.view.symbol_locations("B").count(), 1);
 }
 
 #[test]
@@ -498,7 +498,7 @@ fn save_sharded_indexes_rewrites_only_affected_shards() {
         );
     }
 
-    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, shards.clone()).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
 
     let affected_path = &paths[0];
     let unaffected_path = &paths[1];
@@ -543,7 +543,7 @@ fn save_sharded_indexes_rewrites_only_affected_shards() {
         },
     );
 
-    save_sharded_indexes(&cache_dir, &snapshot_v2, shard_count, shards).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot_v2, shard_count, &mut shards).unwrap();
 
     let affected_mtime_v2 = std::fs::metadata(&affected_symbols_idx)
         .unwrap()
