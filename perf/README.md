@@ -14,7 +14,7 @@ cargo bench -p nova-refactor --bench refactor
 cargo bench -p nova-classpath --bench index
 ```
 
-Criterion writes results to `target/criterion`.
+Criterion writes results to `$CARGO_TARGET_DIR/criterion` (defaults to `target/criterion`).
 
 Note: When capturing runs for comparison, start from a clean `target/criterion` directory (as CI
 does) so removed benchmarks don’t leave stale `**/new/sample.json` files that `nova perf capture`
@@ -35,6 +35,8 @@ cargo run -p nova-cli --release -- perf capture \
   --criterion-dir target/criterion \
   --out perf-current.json
 ```
+
+If you set `CARGO_TARGET_DIR`, pass `--criterion-dir "$CARGO_TARGET_DIR/criterion"` instead.
 
 ## Comparing two runs
 

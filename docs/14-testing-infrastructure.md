@@ -453,6 +453,7 @@ cargo bench -p nova-classpath --bench index
 # files from removed benchmarks don't get picked up by `perf capture`.
 
 # capture criterion output
+# (if you set `CARGO_TARGET_DIR`, use `--criterion-dir "$CARGO_TARGET_DIR/criterion"` instead)
 cargo run -p nova-cli --release -- perf capture \
   --criterion-dir target/criterion \
   --out perf-current.json
