@@ -209,9 +209,9 @@ rustup toolchain install nightly --component llvm-tools-preview --component rust
 cargo +nightly install cargo-fuzz --locked
 
 # Run from the repository root.
-RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse
-RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format
-RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
 ```
 
 Seed corpora live under `fuzz/corpus/<target>/`. Crash artifacts (if any) are written under
