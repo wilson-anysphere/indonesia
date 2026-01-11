@@ -191,6 +191,10 @@ If you are troubleshooting the headless CLI itself, you can also generate a bund
 
 - `nova bugreport` (or `nova bugreport --json`)
 
+If you are troubleshooting the debug adapter process, Nova also supports a custom DAP request:
+
+- `nova/bugReport`
+
 Compress the directory and attach it to your issue along with reproduction steps. See
 [`docs/17-observability-and-reliability.md`](./docs/17-observability-and-reliability.md) for details
 (logging, safe mode behavior, bundle contents/redaction).
