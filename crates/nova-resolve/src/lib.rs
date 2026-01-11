@@ -20,7 +20,7 @@ pub mod types;
 
 pub use def_map::{DefMap, DefMapError, Import};
 pub use ids::{DefWithBodyId, ParamId, TypeDefId};
-pub use members::{complete_member_names, resolve_method_call, CallKind};
+pub use members::{complete_member_names, resolve_constructor_call, resolve_method_call, CallKind};
 mod diagnostics;
 mod import_map;
 mod resolver;

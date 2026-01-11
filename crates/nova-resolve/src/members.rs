@@ -49,12 +49,30 @@ pub fn resolve_method_call(
         .map(|m| m.return_type)
 }
 
+/// Resolve a constructor call and return the constructed type.
+pub fn resolve_constructor_call(
+    db: &dyn FrameworkDatabase,
+    registry: &AnalyzerRegistry,
+    ty: &Type,
+    args: &[Type],
+) -> Option<Type> {
+    constructors_of_type(db, registry, ty)
+        .into_iter()
+        .find(|c| params_match(&c.params, args))
+        .map(|_| ty.clone())
+}
+
 #[derive(Debug, Clone)]
 struct ResolvedMethod {
     name: String,
     return_type: Type,
     params: Vec<Parameter>,
     is_static: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedConstructor {
+    params: Vec<Parameter>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +183,18 @@ fn methods_of_type(
     }
 }
 
+fn constructors_of_type(
+    db: &dyn FrameworkDatabase,
+    registry: &AnalyzerRegistry,
+    ty: &Type,
+) -> Vec<ResolvedConstructor> {
+    match ty {
+        Type::Class(nova_types::ClassType { def, .. }) => constructors_of_class(db, registry, *def),
+        Type::VirtualInner { owner, name } => constructors_of_virtual_inner(db, registry, *owner, name),
+        _ => Vec::new(),
+    }
+}
+
 fn methods_of_class(
     db: &dyn FrameworkDatabase,
     registry: &AnalyzerRegistry,
@@ -189,6 +219,27 @@ fn methods_of_class(
     methods
 }
 
+fn constructors_of_class(
+    db: &dyn FrameworkDatabase,
+    registry: &AnalyzerRegistry,
+    class: nova_types::ClassId,
+) -> Vec<ResolvedConstructor> {
+    let class_data = db.class(class);
+    let mut ctors = Vec::new();
+
+    for ctor in &class_data.constructors {
+        ctors.push(ResolvedConstructor {
+            params: ctor.params.clone(),
+        });
+    }
+
+    for vm in registry.virtual_members_for_class(db, class) {
+        collect_virtual_constructors(&mut ctors, vm);
+    }
+
+    ctors
+}
+
 fn collect_virtual_methods(out: &mut Vec<ResolvedMethod>, vm: VirtualMember) {
     match vm {
         VirtualMember::Method(m) => out.push(ResolvedMethod {
@@ -200,6 +251,18 @@ fn collect_virtual_methods(out: &mut Vec<ResolvedMethod>, vm: VirtualMember) {
         VirtualMember::InnerClass(c) => {
             for member in c.members {
                 collect_virtual_methods(out, member);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_virtual_constructors(out: &mut Vec<ResolvedConstructor>, vm: VirtualMember) {
+    match vm {
+        VirtualMember::Constructor(c) => out.push(ResolvedConstructor { params: c.params }),
+        VirtualMember::InnerClass(c) => {
+            for member in c.members {
+                collect_virtual_constructors(out, member);
             }
         }
         _ => {}
@@ -241,6 +304,28 @@ fn methods_of_virtual_inner(
             if c.name == inner_name {
                 for member in c.members {
                     collect_virtual_methods(&mut out, member);
+                }
+                break;
+            }
+        }
+    }
+
+    out
+}
+
+fn constructors_of_virtual_inner(
+    db: &dyn FrameworkDatabase,
+    registry: &AnalyzerRegistry,
+    owner: nova_types::ClassId,
+    inner_name: &str,
+) -> Vec<ResolvedConstructor> {
+    let mut out = Vec::new();
+
+    for vm in registry.virtual_members_for_class(db, owner) {
+        if let VirtualMember::InnerClass(c) = vm {
+            if c.name == inner_name {
+                for member in c.members {
+                    collect_virtual_constructors(&mut out, member);
                 }
                 break;
             }

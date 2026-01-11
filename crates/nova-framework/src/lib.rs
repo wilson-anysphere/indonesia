@@ -306,6 +306,7 @@ pub struct VirtualField {
     pub ty: Type,
     pub is_static: bool,
     pub is_final: bool,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,17 +315,20 @@ pub struct VirtualMethod {
     pub return_type: Type,
     pub params: Vec<Parameter>,
     pub is_static: bool,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VirtualConstructor {
     pub params: Vec<Parameter>,
+    pub span: Option<Span>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VirtualInnerClass {
     pub name: String,
     pub members: Vec<VirtualMember>,
+    pub span: Option<Span>,
 }
 
 // -----------------------------------------------------------------------------

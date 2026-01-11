@@ -79,6 +79,7 @@ impl FrameworkAnalyzer for FakeAnalyzer {
             ty: Type::Named("java.lang.String".into()),
             is_static: false,
             is_final: false,
+            span: None,
         })]
     }
 

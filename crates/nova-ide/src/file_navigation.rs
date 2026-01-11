@@ -8,6 +8,7 @@ use nova_db::{Database, FileId};
 use nova_index::{InheritanceEdge, InheritanceIndex};
 use nova_types::Span;
 
+use crate::lombok_intel;
 use crate::parse::{parse_file, CallSite, ParsedFile, TypeDef, TypeKind};
 use crate::text::{position_to_offset, span_to_lsp_range};
 
@@ -150,6 +151,8 @@ impl FileNavigationIndex {
 
     fn implementation_for_call(
         &self,
+        db: &dyn Database,
+        file: FileId,
         parsed: &ParsedFile,
         offset: usize,
         call: &CallSite,
@@ -191,6 +194,14 @@ impl FileNavigationIndex {
                 if let Some(def) = self.resolve_method_definition(&subtype, &call.method) {
                     candidates.push(def);
                 }
+            }
+        }
+
+        if candidates.is_empty() {
+            if let Some((target_file, target_span)) =
+                lombok_intel::goto_virtual_member_definition(db, file, &receiver_ty, &call.method)
+            {
+                candidates.push((uri_for_file(db, target_file), target_span));
             }
         }
 
@@ -365,7 +376,7 @@ pub fn implementation(db: &dyn Database, file: FileId, position: Position) -> Ve
         .iter()
         .find(|call| span_contains(call.method_span, offset))
     {
-        return index.implementation_for_call(parsed, offset, call);
+        return index.implementation_for_call(db, file, parsed, offset, call);
     }
 
     if let Some((ty_name, method_name)) = index.method_decl_at(parsed, offset) {

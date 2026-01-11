@@ -133,11 +133,12 @@ impl LocalVarDecl {
 /// resolution. Frameworks frequently need a richer, annotation-aware view of a
 /// class even when we are not running annotation processors.
 pub mod framework {
-    use nova_types::{Parameter, Type};
+    use nova_types::{Parameter, Span, Type};
 
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     pub struct Annotation {
         pub name: String,
+        pub span: Option<Span>,
     }
 
     impl Annotation {
@@ -146,7 +147,13 @@ pub mod framework {
             if let Some(stripped) = name.strip_prefix('@') {
                 name = stripped.to_string();
             }
-            Self { name }
+            Self { name, span: None }
+        }
+
+        pub fn new_with_span(name: impl Into<String>, span: Span) -> Self {
+            let mut annotation = Self::new(name);
+            annotation.span = Some(span);
+            annotation
         }
 
         pub fn matches(&self, query: &str) -> bool {
@@ -166,6 +173,13 @@ pub mod framework {
     impl FieldData {
         pub fn has_annotation(&self, name: &str) -> bool {
             self.annotations.iter().any(|a| a.matches(name))
+        }
+
+        pub fn annotation_span(&self, name: &str) -> Option<Span> {
+            self.annotations
+                .iter()
+                .find(|a| a.matches(name))
+                .and_then(|a| a.span)
         }
     }
 
@@ -194,6 +208,13 @@ pub mod framework {
     impl ClassData {
         pub fn has_annotation(&self, name: &str) -> bool {
             self.annotations.iter().any(|a| a.matches(name))
+        }
+
+        pub fn annotation_span(&self, name: &str) -> Option<Span> {
+            self.annotations
+                .iter()
+                .find(|a| a.matches(name))
+                .and_then(|a| a.span)
         }
     }
 

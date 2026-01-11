@@ -225,8 +225,8 @@ impl<'a> Resolver<'a> {
     /// Order:
     /// 1) Single-type imports
     /// 2) Same-package types
-    /// 3) Type-import-on-demand (`.*`) imports
-    /// 4) Implicit `java.lang.*`
+    /// 3) Type-import-on-demand (`.*`) imports (ambiguity is reported)
+    /// 4) Implicit `java.lang.*` (preferred over a unique `.*` match)
     ///
     /// This reports ambiguity (e.g. multiple star imports providing the same
     /// simple name) instead of picking an arbitrary match.
@@ -249,14 +249,20 @@ impl<'a> Resolver<'a> {
             }
         }
 
+        let mut star_match = None;
         match self.resolve_star_type_imports_detailed(imports, name) {
-            TypeLookup::Found(ty) => return TypeLookup::Found(ty),
+            TypeLookup::Found(ty) => star_match = Some(ty),
             TypeLookup::Ambiguous(types) => return TypeLookup::Ambiguous(types),
             TypeLookup::NotFound => {}
         }
 
-        self.resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
-            .map_or(TypeLookup::NotFound, TypeLookup::Found)
+        if let Some(ty) =
+            self.resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
+        {
+            return TypeLookup::Found(ty);
+        }
+
+        star_match.map_or(TypeLookup::NotFound, TypeLookup::Found)
     }
 
     /// Compatibility wrapper over [`Resolver::resolve_import_detailed`].
@@ -494,11 +500,11 @@ impl<'a> Resolver<'a> {
                         NameResolution::Unresolved => {}
                     }
 
-                    // JLS 6.5.5.1 (simplified) type name lookup order:
+                    // Type name lookup order mirrors `resolve_import_detailed`:
                     // 1) single-type imports
                     // 2) same-package types
-                    // 3) java.lang (implicit)
-                    // 4) on-demand imports (star imports; ambiguous if multiple match)
+                    // 3) on-demand imports (star imports; ambiguity is reported)
+                    // 4) implicit `java.lang.*` (preferred over a unique `.*` match)
                     match self.resolve_single_type_imports(imports, name) {
                         NameResolution::Resolved(res) => return NameResolution::Resolved(res),
                         NameResolution::Ambiguous(candidates) => {
@@ -515,20 +521,33 @@ impl<'a> Resolver<'a> {
                         }
                     }
 
-                    if let Some(ty) = self
-                        .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
-                    {
+                    let mut star_match = None;
+                    match self.resolve_star_type_imports_detailed(imports, name) {
+                        TypeLookup::Found(ty) => star_match = Some(ty),
+                        TypeLookup::Ambiguous(types) => {
+                            return NameResolution::Ambiguous(
+                                types
+                                    .into_iter()
+                                    .map(|ty| Resolution::Type(TypeResolution::External(ty)))
+                                    .collect(),
+                            );
+                        }
+                        TypeLookup::NotFound => {}
+                    }
+
+                    if let Some(ty) = self.resolve_type_in_package_index(
+                        &PackageName::from_dotted("java.lang"),
+                        name,
+                    ) {
                         return NameResolution::Resolved(Resolution::Type(TypeResolution::External(
                             ty,
                         )));
                     }
 
-                    match self.resolve_star_type_imports(imports, name) {
-                        NameResolution::Resolved(res) => return NameResolution::Resolved(res),
-                        NameResolution::Ambiguous(candidates) => {
-                            return NameResolution::Ambiguous(candidates)
-                        }
-                        NameResolution::Unresolved => {}
+                    if let Some(ty) = star_match {
+                        return NameResolution::Resolved(Resolution::Type(TypeResolution::External(
+                            ty,
+                        )));
                     }
                 }
                 ScopeKind::Package { package } => {
@@ -562,21 +581,6 @@ impl<'a> Resolver<'a> {
 
     fn resolve_single_type_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
         match self.resolve_single_type_imports_detailed(imports, name) {
-            TypeLookup::Found(ty) => {
-                NameResolution::Resolved(Resolution::Type(TypeResolution::External(ty)))
-            }
-            TypeLookup::Ambiguous(types) => NameResolution::Ambiguous(
-                types
-                    .into_iter()
-                    .map(|ty| Resolution::Type(TypeResolution::External(ty)))
-                    .collect(),
-            ),
-            TypeLookup::NotFound => NameResolution::Unresolved,
-        }
-    }
-
-    fn resolve_star_type_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
-        match self.resolve_star_type_imports_detailed(imports, name) {
             TypeLookup::Found(ty) => {
                 NameResolution::Resolved(Resolution::Type(TypeResolution::External(ty)))
             }
