@@ -70,6 +70,8 @@ fn load_project_finds_maven_workspace_root_from_nested_file() {
     let config = load_project(&nested).expect("load project from nested file");
     assert_eq!(config.build_system, BuildSystem::Maven);
     assert_eq!(config.workspace_root, expected_root);
+    // The root pom here is an aggregator (`<packaging>pom</packaging>`), so we
+    // only expect the child modules.
     assert_eq!(config.modules.len(), 2);
 }
 
