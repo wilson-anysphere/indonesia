@@ -27,6 +27,7 @@ jobs:
       CARGO_TERM_COLOR: never
       RUST_BACKTRACE: "1"
       RUST_TEST_THREADS: "1"
+      NOVA_TEST_PROJECTS: ${{ github.event.inputs.only || '' }}
 
     steps:
       - name: Checkout
@@ -90,8 +91,6 @@ jobs:
             m2-${{ runner.os }}-java17-
 
       - name: Run real project tests
-        env:
-          NOVA_TEST_PROJECTS: ${{ github.event.inputs.only || '' }}
         run: |
           set -euxo pipefail
           mkdir -p real-project-logs
