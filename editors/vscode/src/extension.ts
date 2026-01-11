@@ -800,6 +800,7 @@ export async function activate(context: vscode.ExtensionContext) {
         : pressure === 'critical'
           ? new vscode.ThemeColor('statusBarItem.errorBackground')
           : undefined;
+    memoryStatusItem.command = pressure === 'high' || pressure === 'critical' ? BUG_REPORT_COMMAND : undefined;
 
     const usedBytes = totalMemoryBytes(report.usage);
     const budgetBytes = typeof report.budget?.total === 'number' ? report.budget.total : undefined;
@@ -809,7 +810,7 @@ export async function activate(context: vscode.ExtensionContext) {
         : undefined;
 
     memoryStatusItem.text = `$(pulse) Nova Mem: ${label}${typeof pct === 'number' ? ` (${pct}%)` : ''}`;
-    memoryStatusItem.tooltip = formatMemoryTooltip(label, usedBytes, budgetBytes, pct);
+    memoryStatusItem.tooltip = formatMemoryTooltip(label, usedBytes, budgetBytes, pct, pressure === 'high' || pressure === 'critical');
 
     if (pressure) {
       const isHigh = pressure === 'high' || pressure === 'critical';
@@ -836,6 +837,7 @@ export async function activate(context: vscode.ExtensionContext) {
     memoryStatusItem.text = '$(pulse) Nova Mem: —';
     memoryStatusItem.tooltip = 'Nova memory status';
     memoryStatusItem.backgroundColor = undefined;
+    memoryStatusItem.command = undefined;
   };
 
   const detachObservability = () => {
@@ -1427,6 +1429,7 @@ function formatMemoryTooltip(
   usedBytes: number | undefined,
   budgetBytes: number | undefined,
   pct: number | undefined,
+  includeBugReportHint: boolean,
 ): vscode.MarkdownString {
   const tooltip = new vscode.MarkdownString(undefined, true);
   tooltip.appendMarkdown(`**Nova memory pressure:** ${label}\n\n`);
@@ -1443,6 +1446,10 @@ function formatMemoryTooltip(
     }
   } else {
     tooltip.appendMarkdown('Usage: unavailable');
+  }
+
+  if (includeBugReportHint) {
+    tooltip.appendMarkdown('\n\nClick to create a bug report.');
   }
 
   return tooltip;
