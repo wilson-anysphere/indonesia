@@ -41,6 +41,12 @@ pub struct MockJdwpServerConfig {
     /// The order must match the JDWP spec. Most HotSpot VMs return 32 booleans, so the
     /// default mirrors that for realism.
     pub capabilities: Vec<bool>,
+    /// If set, the mock VM replies to `VirtualMachine.CapabilitiesNew (1/17)` with
+    /// `NOT_IMPLEMENTED` (JDWP error 99).
+    pub capabilities_new_not_implemented: bool,
+    /// If set, the mock VM replies to `VirtualMachine.Capabilities (1/12)` with
+    /// `NOT_IMPLEMENTED` (JDWP error 99).
+    pub capabilities_legacy_not_implemented: bool,
     /// JDWP reference type signature returned by `VirtualMachine.AllClasses` and
     /// `ReferenceType.Signature`.
     ///
@@ -65,6 +71,8 @@ impl Default for MockJdwpServerConfig {
         Self {
             delayed_replies: Vec::new(),
             capabilities: vec![false; 32],
+            capabilities_new_not_implemented: false,
+            capabilities_legacy_not_implemented: false,
             class_signature: "LMain;".to_string(),
             source_file: "Main.java".to_string(),
             // Preserve historical behavior: keep emitting stop events after every resume
@@ -312,6 +320,7 @@ pub struct RedefineClassesCall {
 //
 // JDWP error codes (subset).
 const ERROR_THREAD_NOT_SUSPENDED: u16 = 13;
+const ERROR_NOT_IMPLEMENTED: u16 = 99;
 const THREAD_ID: u64 = 0x8000_0000_0000_1001;
 const WORKER_THREAD_ID: u64 = 0x1002;
 const FRAME_ID: u64 = 0x2001;
@@ -472,13 +481,30 @@ async fn handle_packet(
             w.write_u32(sizes.frame_id as u32);
             (0, w.into_vec())
         }
+        // VirtualMachine.Capabilities (legacy)
+        (1, 12) => {
+            if state.config.capabilities_legacy_not_implemented {
+                (ERROR_NOT_IMPLEMENTED, Vec::new())
+            } else {
+                let mut w = JdwpWriter::new();
+                // Legacy Capabilities reply contains 7 booleans.
+                for idx in 0..7 {
+                    w.write_bool(state.capabilities.get(idx).copied().unwrap_or(false));
+                }
+                (0, w.into_vec())
+            }
+        }
         // VirtualMachine.CapabilitiesNew
         (1, 17) => {
-            let mut w = JdwpWriter::new();
-            for cap in &state.capabilities {
-                w.write_bool(*cap);
+            if state.config.capabilities_new_not_implemented {
+                (ERROR_NOT_IMPLEMENTED, Vec::new())
+            } else {
+                let mut w = JdwpWriter::new();
+                for cap in &state.capabilities {
+                    w.write_bool(*cap);
+                }
+                (0, w.into_vec())
             }
-            (0, w.into_vec())
         }
         // VirtualMachine.AllThreads
         (1, 4) => {

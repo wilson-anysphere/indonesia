@@ -142,6 +142,27 @@ impl JdwpCapabilitiesNew {
     pub fn supports_method_return_values(&self) -> bool {
         self.can_get_method_return_values
     }
+
+    /// Maps the legacy `VirtualMachine.Capabilities` (command 1/12) boolean list
+    /// into the subset of `CapabilitiesNew` fields that existed historically.
+    ///
+    /// The legacy reply contains fewer booleans than `CapabilitiesNew`; fields that
+    /// are not present in the legacy reply are left as `false`.
+    pub fn from_legacy_vec(v: Vec<bool>) -> Self {
+        fn get(v: &[bool], idx: usize) -> bool {
+            v.get(idx).copied().unwrap_or(false)
+        }
+
+        let mut caps = Self::default();
+        caps.can_watch_field_modification = get(&v, 0);
+        caps.can_watch_field_access = get(&v, 1);
+        caps.can_get_bytecodes = get(&v, 2);
+        caps.can_get_synthetic_attribute = get(&v, 3);
+        caps.can_get_owned_monitor_info = get(&v, 4);
+        caps.can_get_current_contended_monitor = get(&v, 5);
+        caps.can_get_monitor_info = get(&v, 6);
+        caps
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

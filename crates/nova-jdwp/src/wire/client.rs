@@ -151,7 +151,26 @@ impl JdwpClient {
         // ID sizes are required for correct parsing of most replies/events.
         let _ = client.idsizes().await?;
         // Capabilities are used for feature detection (hot swap, watchpoints, etc.).
-        let _ = client.refresh_capabilities().await?;
+        //
+        // `VirtualMachine.CapabilitiesNew` was introduced after the legacy
+        // `VirtualMachine.Capabilities` command and is not implemented by all
+        // VMs (especially older/embedded JDWP stacks). Treat this as best-effort
+        // and fall back to the legacy capability list when possible.
+        match client.refresh_capabilities().await {
+            Ok(_) => {}
+            Err(err) if is_unsupported_command_error(&err) => match client
+                .refresh_capabilities_legacy()
+                .await
+            {
+                Ok(_) => {}
+                Err(err) if is_unsupported_command_error(&err) => {
+                    // Both capability queries are unsupported; keep the default
+                    // all-false capability struct and continue connecting.
+                }
+                Err(err) => return Err(err),
+            },
+            Err(err) => return Err(err),
+        }
 
         Ok(client)
     }
@@ -268,6 +287,19 @@ impl JdwpClient {
             caps.push(r.read_bool()?);
         }
         let caps = JdwpCapabilitiesNew::from_vec(caps);
+        self.set_capabilities(caps).await;
+        Ok(caps)
+    }
+
+    /// VirtualMachine.Capabilities (1, 12)
+    pub async fn refresh_capabilities_legacy(&self) -> Result<JdwpCapabilitiesNew> {
+        let payload = self.send_command_raw(1, 12, Vec::new()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let mut caps = Vec::with_capacity(r.remaining());
+        while r.remaining() > 0 {
+            caps.push(r.read_bool()?);
+        }
+        let caps = JdwpCapabilitiesNew::from_legacy_vec(caps);
         self.set_capabilities(caps).await;
         Ok(caps)
     }
@@ -879,6 +911,16 @@ impl JdwpClient {
     }
 }
 
+fn is_unsupported_command_error(err: &JdwpError) -> bool {
+    const ERROR_NOT_FOUND: u16 = 41;
+    const ERROR_NOT_IMPLEMENTED: u16 = 99;
+
+    matches!(
+        err,
+        JdwpError::VmError(ERROR_NOT_FOUND | ERROR_NOT_IMPLEMENTED)
+    )
+}
+
 fn class_name_to_signature(class_name: &str) -> String {
     if class_name.starts_with('L') && class_name.ends_with(';') {
         return class_name.to_string();
@@ -1175,6 +1217,7 @@ mod tests {
 
     use super::{JdwpClient, JdwpClientConfig};
     use crate::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
+    use crate::wire::types::JdwpCapabilitiesNew;
 
     #[tokio::test]
     async fn pending_entries_are_removed_when_request_future_is_dropped() {
@@ -1232,5 +1275,64 @@ mod tests {
         })
         .await
         .expect("pending entry was not cleaned up");
+    }
+
+    #[tokio::test]
+    async fn connect_falls_back_to_legacy_capabilities_when_capabilities_new_is_not_implemented() {
+        let mut capabilities = vec![false; 32];
+        capabilities[0] = true; // canWatchFieldModification
+        capabilities[6] = true; // canGetMonitorInfo
+        capabilities[7] = true; // canRedefineClasses (not representable by legacy list)
+
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            capabilities,
+            capabilities_new_not_implemented: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let caps = client.capabilities().await;
+
+        let mut expected = JdwpCapabilitiesNew::default();
+        expected.can_watch_field_modification = true;
+        expected.can_get_monitor_info = true;
+        // Legacy `VirtualMachine.Capabilities` cannot report `can_redefine_classes`.
+        expected.can_redefine_classes = false;
+
+        assert_eq!(caps, expected);
+    }
+
+    #[tokio::test]
+    async fn connect_succeeds_when_both_capability_commands_are_unsupported() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            capabilities_new_not_implemented: true,
+            capabilities_legacy_not_implemented: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        assert_eq!(client.capabilities().await, JdwpCapabilitiesNew::default());
+    }
+
+    #[tokio::test]
+    async fn capabilities_new_parses_short_boolean_list() {
+        // Some older/embedded JDWP implementations return fewer than the 32 booleans
+        // typically produced by HotSpot.
+        let server = MockJdwpServer::spawn_with_capabilities(vec![true, false, true])
+            .await
+            .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let caps = client.capabilities().await;
+
+        assert!(caps.can_watch_field_modification);
+        assert!(!caps.can_watch_field_access);
+        assert!(caps.can_get_bytecodes);
+        // Missing booleans should be treated as false.
+        assert!(!caps.can_get_monitor_info);
     }
 }
