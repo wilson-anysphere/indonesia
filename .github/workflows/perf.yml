@@ -115,6 +115,10 @@ jobs:
       - name: Bench (current)
         run: |
           set -euxo pipefail
+          # Ensure we capture *only* current results. Without this, benchmarks that were removed
+          # on the current branch could leave stale `target/criterion/**/new/sample.json` files
+          # from the baseline run, which would get incorrectly picked up by `perf capture`.
+          rm -rf "${CARGO_TARGET_DIR}/criterion"
           cargo bench -p nova-core --bench critical_paths
           cargo bench -p nova-syntax --bench parse_java
           cargo bench -p nova-format --bench format
