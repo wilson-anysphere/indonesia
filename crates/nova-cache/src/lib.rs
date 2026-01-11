@@ -17,6 +17,7 @@ mod fingerprint;
 mod metadata;
 mod pack;
 mod path;
+mod query_disk_cache;
 mod shard_index;
 mod prune;
 mod store;
@@ -34,6 +35,7 @@ pub use pack::{
     CACHE_PACKAGE_MANIFEST_PATH,
 };
 pub use path::{normalize_inputs_map, normalize_rel_path};
+pub use query_disk_cache::{QueryDiskCache, QueryDiskCachePolicy, QUERY_DISK_CACHE_SCHEMA_VERSION};
 pub use shard_index::{load_shard_index, save_shard_index, shard_cache_path};
 pub use prune::{prune_cache, PruneError, PrunePolicy, PruneReport};
 pub use store::{store_for_url, CacheStore, HttpStore, LocalStore};

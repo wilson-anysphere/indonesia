@@ -5,14 +5,19 @@
 //! Eviction drops cache references, but any outstanding `Arc` keeps the value
 //! alive.
 //!
-//! Note: `QueryCache` is intentionally **in-memory only**. Persistent query
-//! results should be stored via [`PersistentQueryCache`], which uses
-//! `nova-cache`'s versioned persistence primitives.
+//! `QueryCache` is primarily an in-memory cache. When constructed with a cache
+//! directory (see [`QueryCache::new_with_disk`]) it will also persist cold values
+//! to disk for warm starts.
+//!
+//! For query-result persistence keyed by query name/arguments/input fingerprints,
+//! use [`PersistentQueryCache`], which builds on `nova-cache`'s versioned
+//! [`DerivedArtifactCache`].
 
-use nova_cache::{CacheDir, DerivedArtifactCache, Fingerprint};
+use nova_cache::{CacheDir, DerivedArtifactCache, Fingerprint, QueryDiskCache};
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Two-tier query cache with a hot LRU and warm clock (second-chance) policy.
@@ -20,6 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct QueryCache {
     name: String,
     inner: Mutex<QueryCacheInner>,
+    disk: Option<QueryDiskCache>,
     registration: OnceLock<nova_memory::MemoryRegistration>,
     tracker: OnceLock<nova_memory::MemoryTracker>,
 }
@@ -52,12 +58,21 @@ struct ClockEntry {
 
 impl QueryCache {
     pub fn new(manager: &MemoryManager) -> Arc<Self> {
+        Self::new_with_disk(manager, None)
+    }
+
+    pub fn new_with_disk(manager: &MemoryManager, cache_dir: Option<PathBuf>) -> Arc<Self> {
+        // Use a dedicated subdirectory so our GC policy can't impact other
+        // persistent query caches.
+        let disk = cache_dir.and_then(|dir| QueryDiskCache::new(dir.join("query_cache")).ok());
+
         let cache = Arc::new(Self {
             name: "query_cache".to_string(),
             inner: Mutex::new(QueryCacheInner {
                 hot: LruTier::default(),
                 warm: ClockTier::default(),
             }),
+            disk,
             registration: OnceLock::new(),
             tracker: OnceLock::new(),
         });
@@ -93,6 +108,16 @@ impl QueryCache {
             return Some(value);
         }
 
+        if let Some(store) = &self.disk {
+            if let Ok(Some(bytes)) = store.load(key) {
+                let value = Arc::new(bytes);
+                inner.warm.insert(key.to_string(), value.clone());
+                inner.hot.insert(key.to_string(), value.clone());
+                self.update_tracker_locked(&inner);
+                return Some(value);
+            }
+        }
+
         None
     }
 
@@ -122,8 +147,10 @@ impl QueryCache {
         let target_hot = target_bytes / 5;
         let target_warm = target_bytes.saturating_sub(target_hot);
 
-        inner.warm.evict_to(target_warm, pressure);
-        inner.hot.evict_to(target_hot, &mut inner.warm, pressure);
+        inner.warm.evict_to(target_warm, &self.disk, pressure);
+        inner
+            .hot
+            .evict_to(target_hot, &mut inner.warm, &self.disk, pressure);
     }
 }
 
@@ -141,8 +168,8 @@ impl MemoryEvictor for QueryCache {
         let before = Self::total_bytes(&inner);
 
         if request.target_bytes == 0 {
-            inner.hot.clear();
-            inner.warm.clear();
+            inner.hot.clear(&self.disk);
+            inner.warm.clear(&self.disk);
         } else {
             self.shrink_locked(&mut inner, request.target_bytes, request.pressure);
         }
@@ -153,6 +180,16 @@ impl MemoryEvictor for QueryCache {
             before_bytes: before,
             after_bytes: after,
         }
+    }
+
+    fn flush_to_disk(&self) -> std::io::Result<()> {
+        let Some(store) = &self.disk else {
+            return Ok(());
+        };
+        let inner = self.inner.lock().unwrap();
+        // Best-effort: persistent cache writes should never impact correctness.
+        let _ = inner.warm.flush_all(store);
+        Ok(())
     }
 }
 
@@ -183,6 +220,7 @@ impl LruTier {
         &mut self,
         target_bytes: u64,
         warm: &mut ClockTier,
+        disk: &Option<QueryDiskCache>,
         pressure: nova_memory::MemoryPressure,
     ) {
         while self.bytes > target_bytes {
@@ -194,17 +232,26 @@ impl LruTier {
             };
             self.bytes = self.bytes.saturating_sub(value.len() as u64);
             // Under low/medium pressure, keep demoted items in warm. Under high+
-            // pressure we drop them.
+            // pressure we drop them (potentially after persisting).
             match pressure {
                 nova_memory::MemoryPressure::Low | nova_memory::MemoryPressure::Medium => {
                     warm.insert(key, value);
                 }
-                nova_memory::MemoryPressure::High | nova_memory::MemoryPressure::Critical => {}
+                nova_memory::MemoryPressure::High | nova_memory::MemoryPressure::Critical => {
+                    if let Some(store) = disk {
+                        let _ = store.store(&key, &value);
+                    }
+                }
             }
         }
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self, disk: &Option<QueryDiskCache>) {
+        if let Some(store) = disk {
+            for (key, value) in &self.map {
+                let _ = store.store(key, value);
+            }
+        }
         self.map.clear();
         self.order.clear();
         self.bytes = 0;
@@ -236,7 +283,12 @@ impl ClockTier {
         self.order.push_back(key);
     }
 
-    fn evict_to(&mut self, target_bytes: u64, pressure: nova_memory::MemoryPressure) {
+    fn evict_to(
+        &mut self,
+        target_bytes: u64,
+        disk: &Option<QueryDiskCache>,
+        pressure: nova_memory::MemoryPressure,
+    ) {
         // Clock eviction: second chance via `referenced` bit.
         let mut spins = 0usize;
         while self.bytes > target_bytes && spins < self.order.len().saturating_mul(2).max(8) {
@@ -261,13 +313,33 @@ impl ClockTier {
             }
 
             self.bytes = self.bytes.saturating_sub(entry.value.len() as u64);
+            if matches!(
+                pressure,
+                nova_memory::MemoryPressure::Low | nova_memory::MemoryPressure::Medium
+            ) {
+                if let Some(store) = disk {
+                    let _ = store.store(&key, &entry.value);
+                }
+            }
         }
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self, disk: &Option<QueryDiskCache>) {
+        if let Some(store) = disk {
+            for (key, entry) in &self.map {
+                let _ = store.store(key, &entry.value);
+            }
+        }
         self.map.clear();
         self.order.clear();
         self.bytes = 0;
+    }
+
+    fn flush_all(&self, store: &QueryDiskCache) -> Result<(), nova_cache::CacheError> {
+        for (key, entry) in &self.map {
+            store.store(key, &entry.value)?;
+        }
+        Ok(())
     }
 }
 
@@ -363,6 +435,68 @@ fn cache_key<T: Serialize>(
     let fingerprint =
         DerivedArtifactCache::key_fingerprint(query_name, &key_args, input_fingerprints).ok()?;
     Some(fingerprint.as_str().to_string())
+}
+
+#[cfg(test)]
+mod disk_cache_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn disk_cache_roundtrips() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new(tmp.path()).unwrap();
+
+        cache.store("key", b"value").unwrap();
+        assert_eq!(
+            cache.load("key").unwrap().as_deref(),
+            Some(b"value".as_slice())
+        );
+    }
+
+    #[test]
+    fn disk_cache_corruption_is_treated_as_miss() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new(tmp.path()).unwrap();
+
+        cache.store("key", b"value").unwrap();
+
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+        let bytes = std::fs::read(&path).unwrap();
+        // Simulate a torn / partial write by truncating the payload.
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+
+        assert_eq!(cache.load("key").unwrap(), None);
+    }
+
+    #[test]
+    fn disk_cache_detects_key_collisions() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new(tmp.path()).unwrap();
+
+        cache.store("key1", b"value1").unwrap();
+        cache.store("key2", b"value2").unwrap();
+
+        let path1 = tmp.path().join(format!(
+            "{}.bin",
+            Fingerprint::from_bytes("key1".as_bytes()).as_str()
+        ));
+        let path2 = tmp.path().join(format!(
+            "{}.bin",
+            Fingerprint::from_bytes("key2".as_bytes()).as_str()
+        ));
+
+        // Force a "collision" by copying the bytes for key2 into key1's file path.
+        let bytes2 = std::fs::read(&path2).unwrap();
+        std::fs::write(&path1, bytes2).unwrap();
+
+        assert_eq!(cache.load("key1").unwrap(), None);
+        assert_eq!(
+            cache.load("key2").unwrap().as_deref(),
+            Some(b"value2".as_slice())
+        );
+    }
 }
 
 #[cfg(test)]
