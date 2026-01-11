@@ -166,6 +166,24 @@ const WAT_ABI_MISMATCH: &str = r#"
 )
 "#;
 
+const WAT_CAPABILITY_MISSING_EXPORT: &str = r#"
+(module
+  (memory (export "memory") 1)
+  (global $heap (mut i32) (i32.const 1024))
+
+  (func $nova_ext_alloc (export "nova_ext_alloc") (param $len i32) (result i32)
+    (local $ptr i32)
+    (local.set $ptr (global.get $heap))
+    (global.set $heap (i32.add (global.get $heap) (local.get $len)))
+    (local.get $ptr)
+  )
+  (func $nova_ext_free (export "nova_ext_free") (param i32 i32) nop)
+  (func (export "nova_ext_abi_version") (result i32) (i32.const 1))
+  ;; Claims diagnostics, but does not export `nova_ext_diagnostics`.
+  (func (export "nova_ext_capabilities") (result i32) (i32.const 1))
+)
+"#;
+
 const WAT_BUSY_LOOP: &str = r#"
 (module
   (memory (export "memory") 1)
@@ -353,6 +371,23 @@ fn abi_version_mismatch_is_rejected() {
             assert_eq!(expected, 1);
             assert_eq!(found, 2);
         }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+fn declared_capability_requires_export() {
+    let err = match WasmPlugin::from_wat(
+        "missing-export",
+        WAT_CAPABILITY_MISSING_EXPORT,
+        WasmPluginConfig::default(),
+    ) {
+        Ok(_) => panic!("module should be rejected"),
+        Err(err) => err,
+    };
+
+    match err {
+        WasmLoadError::MissingExport(name) => assert_eq!(name, "nova_ext_diagnostics"),
         other => panic!("unexpected error: {other:?}"),
     }
 }
