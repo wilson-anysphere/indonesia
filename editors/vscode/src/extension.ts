@@ -19,6 +19,12 @@ let testOutput: vscode.OutputChannel | undefined;
 let bugReportOutput: vscode.OutputChannel | undefined;
 let testController: vscode.TestController | undefined;
 const vscodeTestItemsById = new Map<string, vscode.TestItem>();
+type VsTestMetadata = {
+  workspaceFolder: vscode.WorkspaceFolder;
+  projectRoot: string;
+  lspId: string;
+};
+const vscodeTestMetadataById = new Map<string, VsTestMetadata>();
 
 let aiRefreshInProgress = false;
 let lastCompletionContextId: string | undefined;
@@ -179,8 +185,8 @@ export async function activate(context: vscode.ExtensionContext) {
   const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
 
   registerNovaDebugAdapter(context);
-  registerNovaDebugConfigurations(context, requireClient);
-  registerNovaHotSwap(context, requireClient);
+  registerNovaDebugConfigurations(context, sendNovaRequest);
+  registerNovaHotSwap(context, sendNovaRequest);
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');
@@ -666,13 +672,24 @@ export async function activate(context: vscode.ExtensionContext) {
   registerNovaTestDebugRunProfile(
     context,
     testController,
-    requireClient,
+    sendNovaRequest,
     async () => {
       if (testController && testController.items.size === 0) {
         await refreshTests();
       }
     },
-    (id) => vscodeTestItemsById.get(id),
+    (id) => {
+      const meta = vscodeTestMetadataById.get(id);
+      if (!meta) {
+        return undefined;
+      }
+      return {
+        item: vscodeTestItemsById.get(id),
+        workspaceFolder: meta.workspaceFolder,
+        projectRoot: meta.projectRoot,
+        lspId: meta.lspId,
+      };
+    },
   );
 
   testController.resolveHandler = async () => {
@@ -1097,8 +1114,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.discoverTests', async () => {
-      const workspace = vscode.workspace.workspaceFolders?.[0];
-      if (!workspace) {
+      const workspaces = vscode.workspace.workspaceFolders ?? [];
+      if (workspaces.length === 0) {
         vscode.window.showErrorMessage('Nova: Open a workspace folder to discover tests.');
         return;
       }
@@ -1107,16 +1124,18 @@ export async function activate(context: vscode.ExtensionContext) {
       channel.show(true);
 
       try {
-        const resp = await sendNovaRequest<DiscoverResponse>('nova/test/discover', {
-          projectRoot: workspace.uri.fsPath,
-        });
+        const discovered = await discoverTestsForWorkspaces(workspaces);
+        await refreshTests(discovered);
 
-        await refreshTests(resp);
-
-        const flat = flattenTests(resp.tests).filter((t) => t.kind === 'test');
-        channel.appendLine(`Discovered ${flat.length} test(s).`);
-        for (const t of flat) {
-          channel.appendLine(`- ${t.id}`);
+        for (const entry of discovered) {
+          const flat = flattenTests(entry.response.tests).filter((t) => t.kind === 'test');
+          if (discovered.length > 1) {
+            channel.appendLine(`\n=== Workspace: ${entry.workspaceFolder.name} ===`);
+          }
+          channel.appendLine(`Discovered ${flat.length} test(s).`);
+          for (const t of flat) {
+            channel.appendLine(`- ${t.id}`);
+          }
         }
       } catch (err) {
         const message = formatError(err);
@@ -1127,9 +1146,15 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.runTest', async () => {
-      const workspace = vscode.workspace.workspaceFolders?.[0];
-      if (!workspace) {
+      const workspaces = vscode.workspace.workspaceFolders ?? [];
+      if (workspaces.length === 0) {
         vscode.window.showErrorMessage('Nova: Open a workspace folder to run tests.');
+        return;
+      }
+
+      const workspace =
+        workspaces.length === 1 ? workspaces[0] : await pickWorkspaceFolder(workspaces, 'Select workspace folder');
+      if (!workspace) {
         return;
       }
 
@@ -1302,36 +1327,93 @@ async function sendNovaRequest<R>(method: string, params?: unknown): Promise<R> 
   }
 }
 
-async function refreshTests(discovered?: DiscoverResponse): Promise<void> {
+type DiscoveredWorkspaceTests = { workspaceFolder: vscode.WorkspaceFolder; response: DiscoverResponse };
+
+async function discoverTestsForWorkspaces(
+  workspaces: readonly vscode.WorkspaceFolder[],
+): Promise<DiscoveredWorkspaceTests[]> {
+  const discovered: DiscoveredWorkspaceTests[] = [];
+  for (const workspace of workspaces) {
+    const response = await sendNovaRequest<DiscoverResponse>('nova/test/discover', {
+      projectRoot: workspace.uri.fsPath,
+    });
+    discovered.push({ workspaceFolder: workspace, response });
+  }
+  return discovered;
+}
+
+async function refreshTests(discovered?: DiscoverResponse | DiscoveredWorkspaceTests[]): Promise<void> {
   if (!testController) {
     return;
   }
 
-  const workspace = vscode.workspace.workspaceFolders?.[0];
-  if (!workspace) {
+  const workspaces = vscode.workspace.workspaceFolders ?? [];
+  if (workspaces.length === 0) {
     return;
   }
 
-  const projectRoot = workspace.uri.fsPath;
-  const resp = discovered ?? (await sendNovaRequest<DiscoverResponse>('nova/test/discover', { projectRoot }));
+  let discoveredWorkspaces: DiscoveredWorkspaceTests[];
+  if (Array.isArray(discovered)) {
+    discoveredWorkspaces = discovered;
+  } else if (discovered) {
+    discoveredWorkspaces = [{ workspaceFolder: workspaces[0], response: discovered }];
+    if (workspaces.length > 1) {
+      const remaining = await discoverTestsForWorkspaces(workspaces.slice(1));
+      discoveredWorkspaces = [...discoveredWorkspaces, ...remaining];
+    }
+  } else {
+    discoveredWorkspaces = await discoverTestsForWorkspaces(workspaces);
+  }
+
+  const multiRoot = discoveredWorkspaces.length > 1;
 
   vscodeTestItemsById.clear();
+  vscodeTestMetadataById.clear();
   testController.items.replace([]);
 
-  for (const item of resp.tests) {
-    const vscodeItem = createVsTestItem(testController, projectRoot, item);
-    testController.items.add(vscodeItem);
+  for (const entry of discoveredWorkspaces) {
+    const projectRoot = entry.workspaceFolder.uri.fsPath;
+    const idPrefix = multiRoot ? `workspace:${entry.workspaceFolder.uri.toString()}::` : '';
+
+    if (multiRoot) {
+      const rootId = `workspace:${entry.workspaceFolder.uri.toString()}`;
+      const workspaceItem = testController.createTestItem(rootId, entry.workspaceFolder.name, entry.workspaceFolder.uri);
+      vscodeTestItemsById.set(rootId, workspaceItem);
+      testController.items.add(workspaceItem);
+
+      for (const item of entry.response.tests) {
+        const vscodeItem = createVsTestItem(testController, entry.workspaceFolder, projectRoot, idPrefix, item);
+        workspaceItem.children.add(vscodeItem);
+      }
+    } else {
+      for (const item of entry.response.tests) {
+        const vscodeItem = createVsTestItem(testController, entry.workspaceFolder, projectRoot, idPrefix, item);
+        testController.items.add(vscodeItem);
+      }
+    }
   }
 }
 
-function createVsTestItem(controller: vscode.TestController, projectRoot: string, item: TestItem): vscode.TestItem {
+function createVsTestItem(
+  controller: vscode.TestController,
+  workspaceFolder: vscode.WorkspaceFolder,
+  projectRoot: string,
+  idPrefix: string,
+  item: TestItem,
+): vscode.TestItem {
   const uri = vscode.Uri.file(path.join(projectRoot, item.path));
-  const vscodeItem = controller.createTestItem(item.id, item.label, uri);
+  const vscodeId = `${idPrefix}${item.id}`;
+  const vscodeItem = controller.createTestItem(vscodeId, item.label, uri);
   vscodeItem.range = toVsRange(item.range);
-  vscodeTestItemsById.set(item.id, vscodeItem);
+  vscodeTestItemsById.set(vscodeId, vscodeItem);
+  vscodeTestMetadataById.set(vscodeId, {
+    workspaceFolder,
+    projectRoot,
+    lspId: item.id,
+  });
 
   for (const child of item.children ?? []) {
-    vscodeItem.children.add(createVsTestItem(controller, projectRoot, child));
+    vscodeItem.children.add(createVsTestItem(controller, workspaceFolder, projectRoot, idPrefix, child));
   }
 
   return vscodeItem;
@@ -1351,8 +1433,8 @@ async function runTestsFromTestExplorer(
     return;
   }
 
-  const workspace = vscode.workspace.workspaceFolders?.[0];
-  if (!workspace) {
+  const workspaces = vscode.workspace.workspaceFolders ?? [];
+  if (workspaces.length === 0) {
     return;
   }
 
@@ -1369,57 +1451,100 @@ async function runTestsFromTestExplorer(
     const excludeIds = new Set(collectLeafIds(exclude));
     const ids = Array.from(new Set(includeIds.filter((id) => !excludeIds.has(id))));
 
+    const runPlanByWorkspace = new Map<
+      string,
+      {
+        workspaceFolder: vscode.WorkspaceFolder;
+        projectRoot: string;
+        lspIds: string[];
+        vsIdByLspId: Map<string, string>;
+      }
+    >();
+
     for (const id of ids) {
       const item = vscodeTestItemsById.get(id);
       if (item) {
         run.enqueued(item);
       }
+
+      const meta = vscodeTestMetadataById.get(id);
+      if (!meta) {
+        continue;
+      }
+
+      const key = meta.workspaceFolder.uri.toString();
+      const existing = runPlanByWorkspace.get(key);
+      if (existing) {
+        existing.lspIds.push(meta.lspId);
+        existing.vsIdByLspId.set(meta.lspId, id);
+      } else {
+        runPlanByWorkspace.set(key, {
+          workspaceFolder: meta.workspaceFolder,
+          projectRoot: meta.projectRoot,
+          lspIds: [meta.lspId],
+          vsIdByLspId: new Map([[meta.lspId, id]]),
+        });
+      }
     }
 
-    if (ids.length === 0) {
+    if (runPlanByWorkspace.size === 0) {
       return;
     }
 
-    const resp = await sendNovaRequest<RunResponse>('nova/test/run', {
-      projectRoot: workspace.uri.fsPath,
-      buildTool: await getTestBuildTool(workspace),
-      tests: ids,
-    });
-
-    if (resp.stdout) {
-      run.appendOutput(resp.stdout);
-    }
-    if (resp.stderr) {
-      run.appendOutput(resp.stderr);
-    }
-
-    const resultsById = new Map(resp.tests.map((t) => [t.id, t]));
-    for (const id of ids) {
-      const item = vscodeTestItemsById.get(id);
-      if (!item) {
-        continue;
+    for (const entry of runPlanByWorkspace.values()) {
+      if (token.isCancellationRequested) {
+        break;
       }
-      const result = resultsById.get(id);
-      if (!result) {
-        run.skipped(item);
-        continue;
+
+      const resp = await sendNovaRequest<RunResponse>('nova/test/run', {
+        projectRoot: entry.projectRoot,
+        buildTool: await getTestBuildTool(entry.workspaceFolder),
+        tests: entry.lspIds,
+      });
+
+      if (runPlanByWorkspace.size > 1) {
+        run.appendOutput(`\n=== Workspace: ${entry.workspaceFolder.name} (${resp.tool}) ===\n`);
       }
-      switch (result.status) {
-        case 'passed':
-          run.passed(item);
-          break;
-        case 'skipped':
+
+      if (resp.stdout) {
+        run.appendOutput(resp.stdout);
+      }
+      if (resp.stderr) {
+        run.appendOutput(resp.stderr);
+      }
+
+      const resultsById = new Map(resp.tests.map((t) => [t.id, t]));
+      for (const lspId of entry.lspIds) {
+        const vscodeId = entry.vsIdByLspId.get(lspId);
+        if (!vscodeId) {
+          continue;
+        }
+        const item = vscodeTestItemsById.get(vscodeId);
+        if (!item) {
+          continue;
+        }
+        const result = resultsById.get(lspId);
+        if (!result) {
           run.skipped(item);
-          break;
-        case 'failed': {
-          const parts = [
-            result.failure?.message,
-            result.failure?.kind,
-            result.failure?.stackTrace,
-          ].filter(Boolean);
-          const message = new vscode.TestMessage(parts.join('\n'));
-          run.failed(item, message);
-          break;
+          continue;
+        }
+        switch (result.status) {
+          case 'passed':
+            run.passed(item);
+            break;
+          case 'skipped':
+            run.skipped(item);
+            break;
+          case 'failed': {
+            const parts = [
+              result.failure?.message,
+              result.failure?.kind,
+              result.failure?.stackTrace,
+            ].filter(Boolean);
+            const message = new vscode.TestMessage(parts.join('\n'));
+            run.failed(item, message);
+            break;
+          }
         }
       }
     }
@@ -1484,6 +1609,21 @@ function getBugReportOutputChannel(): vscode.OutputChannel {
 }
 
 type BuildTool = 'auto' | 'maven' | 'gradle';
+
+async function pickWorkspaceFolder(
+  workspaces: readonly vscode.WorkspaceFolder[],
+  placeHolder: string,
+): Promise<vscode.WorkspaceFolder | undefined> {
+  const picked = await vscode.window.showQuickPick(
+    workspaces.map((workspace) => ({
+      label: workspace.name,
+      description: workspace.uri.fsPath,
+      workspace,
+    })),
+    { placeHolder },
+  );
+  return picked?.workspace;
+}
 
 async function getTestBuildTool(workspace: vscode.WorkspaceFolder): Promise<BuildTool> {
   const config = vscode.workspace.getConfiguration('nova', workspace.uri);

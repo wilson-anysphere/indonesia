@@ -1,8 +1,7 @@
 import * as vscode from 'vscode';
-import type { LanguageClient } from 'vscode-languageclient/node';
 import * as path from 'node:path';
 
-type ClientProvider = () => Promise<LanguageClient>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
 
 interface HotSwapFileResult {
   file: string;
@@ -16,7 +15,7 @@ interface HotSwapResult {
 
 export function registerNovaHotSwap(
   context: vscode.ExtensionContext,
-  clientProvider: ClientProvider,
+  request: NovaRequest,
 ): void {
   const output = vscode.window.createOutputChannel('Nova Hot Swap');
   context.subscriptions.push(output);
@@ -84,8 +83,7 @@ export function registerNovaHotSwap(
           return file;
         });
 
-        const client = await clientProvider();
-        const result = (await client.sendRequest('nova/debug/hotSwap', {
+        const result = (await request('nova/debug/hotSwap', {
           projectRoot,
           changedFiles,
           host,

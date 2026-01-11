@@ -1,12 +1,11 @@
 import * as vscode from 'vscode';
-import type { LanguageClient } from 'vscode-languageclient/node';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import { NOVA_DEBUG_TYPE } from './debugAdapter';
 
-type ClientProvider = () => Promise<LanguageClient>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
 
 type BuildTool = 'auto' | 'maven' | 'gradle';
 
@@ -32,12 +31,19 @@ interface SpawnedProcess {
 
 const NOVA_TEST_DEBUG_RUN_ID_KEY = '__novaTestDebugRunId';
 
+export interface ResolvedTestTarget {
+  item: vscode.TestItem | undefined;
+  workspaceFolder: vscode.WorkspaceFolder;
+  projectRoot: string;
+  lspId: string;
+}
+
 export function registerNovaTestDebugRunProfile(
   context: vscode.ExtensionContext,
   controller: vscode.TestController,
-  clientProvider: ClientProvider,
+  novaRequest: NovaRequest,
   ensureTestsDiscovered: () => Promise<void>,
-  getTestItemById: (id: string) => vscode.TestItem | undefined,
+  resolveTestTarget: (id: string) => ResolvedTestTarget | undefined,
 ): void {
   const output = vscode.window.createOutputChannel('Nova Test Debug');
   context.subscriptions.push(output);
@@ -84,9 +90,9 @@ export function registerNovaTestDebugRunProfile(
           token,
           controller,
           output,
-          clientProvider,
+          novaRequest,
           ensureTestsDiscovered,
-          getTestItemById,
+          resolveTestTarget,
           processesByRunId,
         );
       },
@@ -100,9 +106,9 @@ async function debugTestsFromTestExplorer(
   token: vscode.CancellationToken,
   controller: vscode.TestController,
   output: vscode.OutputChannel,
-  clientProvider: ClientProvider,
+  novaRequest: NovaRequest,
   ensureTestsDiscovered: () => Promise<void>,
-  getTestItemById: (id: string) => vscode.TestItem | undefined,
+  resolveTestTarget: (id: string) => ResolvedTestTarget | undefined,
   processesByRunId: Map<string, SpawnedProcess>,
 ): Promise<void> {
   await ensureTestsDiscovered();
@@ -121,8 +127,14 @@ async function debugTestsFromTestExplorer(
     void vscode.window.showWarningMessage('Nova: Debugging multiple tests at once is not supported yet. Debugging first.');
   }
 
-  const testId = ids[0];
-  const item = getTestItemById(testId);
+  const vsTestId = ids[0];
+  const target = resolveTestTarget(vsTestId);
+  if (!target) {
+    throw new Error(`Unknown test item: ${vsTestId}`);
+  }
+
+  const testId = target.lspId;
+  const item = target.item;
   const run = controller.createTestRun(request);
   let cancellationSubscription: vscode.Disposable | undefined;
   try {
@@ -131,17 +143,11 @@ async function debugTestsFromTestExplorer(
       run.started(item);
     }
 
-    const workspaceFolder = resolveWorkspaceFolderForTest(item);
-    if (!workspaceFolder) {
-      run.appendOutput('Nova: Open a workspace folder to debug tests.\n');
-      return;
-    }
-
-    const client = await clientProvider();
+    const workspaceFolder = target.workspaceFolder;
     const buildTool = await getBuildToolFromUser(workspaceFolder);
 
-    const resp = (await client.sendRequest('nova/test/debugConfiguration', {
-      projectRoot: workspaceFolder.uri.fsPath,
+    const resp = (await novaRequest('nova/test/debugConfiguration', {
+      projectRoot: target.projectRoot,
       buildTool,
       test: testId,
     })) as TestDebugResponse;
@@ -248,13 +254,6 @@ async function debugTestsFromTestExplorer(
     cancellationSubscription?.dispose();
     run.end();
   }
-}
-
-function resolveWorkspaceFolderForTest(item?: vscode.TestItem): vscode.WorkspaceFolder | undefined {
-  if (item?.uri) {
-    return vscode.workspace.getWorkspaceFolder(item.uri);
-  }
-  return vscode.workspace.workspaceFolders?.[0];
 }
 
 function collectLeafIds(items: Iterable<vscode.TestItem>): string[] {

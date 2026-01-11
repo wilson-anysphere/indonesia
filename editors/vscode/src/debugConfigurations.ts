@@ -1,8 +1,7 @@
 import * as vscode from 'vscode';
-import type { LanguageClient } from 'vscode-languageclient/node';
 import { NOVA_DEBUG_TYPE } from './debugAdapter';
 
-type ClientProvider = () => Promise<LanguageClient>;
+export type NovaRequest = <R>(method: string, params?: unknown) => Promise<R>;
 
 interface NovaLspDebugConfiguration {
   name: string;
@@ -17,7 +16,7 @@ interface NovaLspDebugConfiguration {
 
 export function registerNovaDebugConfigurations(
   context: vscode.ExtensionContext,
-  clientProvider: ClientProvider,
+  request: NovaRequest,
 ): void {
   const provider = new NovaDebugConfigurationProvider();
   context.subscriptions.push(vscode.debug.registerDebugConfigurationProvider(NOVA_DEBUG_TYPE, provider));
@@ -25,7 +24,7 @@ export function registerNovaDebugConfigurations(
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.addDebugConfiguration', async () => {
       try {
-        await addDebugConfigurationsFromLsp(clientProvider);
+        await addDebugConfigurationsFromLsp(request);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         void vscode.window.showErrorMessage(`Nova: failed to add debug configurations: ${message}`);
@@ -95,7 +94,7 @@ function getDebugDefaults(): { host: string; port: number } {
   return { host, port };
 }
 
-async function addDebugConfigurationsFromLsp(clientProvider: ClientProvider): Promise<void> {
+async function addDebugConfigurationsFromLsp(request: NovaRequest): Promise<void> {
   const folders = vscode.workspace.workspaceFolders ?? [];
   if (folders.length === 0) {
     void vscode.window.showErrorMessage('Nova: Open a workspace folder to add debug configurations.');
@@ -110,8 +109,7 @@ async function addDebugConfigurationsFromLsp(clientProvider: ClientProvider): Pr
     return;
   }
 
-  const client = await clientProvider();
-  const configs = (await client.sendRequest('nova/debug/configurations', {
+  const configs = (await request('nova/debug/configurations', {
     projectRoot: folder.uri.fsPath,
   })) as NovaLspDebugConfiguration[];
 
