@@ -821,6 +821,11 @@ export async function activate(context: vscode.ExtensionContext) {
       settingPath: serverSettings.path,
       managedPath: serverManager.getManagedServerPath(),
     });
+    await printManagedCacheStatus({
+      id: 'nova-lsp',
+      cacheRoot: path.dirname(serverManager.getManagedServerPath()),
+      binaryName: path.basename(serverManager.getManagedServerPath()),
+    });
 
     const rawDapPath = cfg.get<string | null>('dap.path', null) ?? cfg.get<string | null>('debug.adapterPath', null);
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
@@ -829,6 +834,11 @@ export async function activate(context: vscode.ExtensionContext) {
       id: 'nova-dap',
       settingPath: dapPath,
       managedPath: serverManager.getManagedDapPath(),
+    });
+    await printManagedCacheStatus({
+      id: 'nova-dap',
+      cacheRoot: path.dirname(serverManager.getManagedDapPath()),
+      binaryName: path.basename(serverManager.getManagedDapPath()),
     });
 
     serverOutput.show(true);
@@ -863,6 +873,53 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     serverOutput.appendLine(resolvedLine);
     serverOutput.appendLine('');
+  }
+
+  async function printManagedCacheStatus(opts: {
+    id: 'nova-lsp' | 'nova-dap';
+    cacheRoot: string;
+    binaryName: string;
+  }): Promise<void> {
+    try {
+      const entries = await fs.readdir(opts.cacheRoot, { withFileTypes: true });
+      const versions = entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b));
+
+      if (versions.length === 0) {
+        serverOutput.appendLine(`${opts.id} cache: (empty)`);
+        serverOutput.appendLine('');
+        return;
+      }
+
+      serverOutput.appendLine(`${opts.id} cache:`);
+      for (const versionDir of versions) {
+        const candidate = path.join(opts.cacheRoot, versionDir, opts.binaryName);
+        let exists = false;
+        try {
+          const stat = await fs.stat(candidate);
+          exists = stat.isFile();
+        } catch {
+          exists = false;
+        }
+
+        if (!exists) {
+          serverOutput.appendLine(`- ${versionDir}: missing ${opts.binaryName}`);
+          continue;
+        }
+
+        const checked = await checkBinaryVersion(candidate);
+        const versionStr = checked.version ? `v${checked.version}` : 'no-version';
+        const status = checked.ok ? 'ok' : checked.version ? `mismatch (expected v${extensionVersion})` : 'invalid';
+        serverOutput.appendLine(`- ${versionDir}: ${candidate} (${versionStr}, ${status}${checked.error ? `, ${checked.error}` : ''})`);
+      }
+      serverOutput.appendLine('');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      serverOutput.appendLine(`${opts.id} cache: unavailable (${message})`);
+      serverOutput.appendLine('');
+    }
   }
 
   async function ensureLanguageClientStarted(opts?: { promptForInstall?: boolean }): Promise<void> {
