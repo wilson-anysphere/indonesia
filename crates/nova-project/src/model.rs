@@ -69,7 +69,7 @@ impl JavaLanguageLevel {
             release: None,
             source: Some(java.source),
             target: Some(java.target),
-            preview: false,
+            preview: java.enable_preview,
         }
     }
 }

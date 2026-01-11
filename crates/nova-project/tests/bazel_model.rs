@@ -4,7 +4,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use nova_build_bazel::{CommandOutput, CommandRunner};
-use nova_project::{BazelLoadOptions, JavaLanguageLevel, JavaVersion, LoadOptions, SourceRootKind};
+use nova_project::{
+    BazelLoadOptions, JavaConfig, JavaLanguageLevel, JavaVersion, LanguageLevelProvenance,
+    LoadOptions, SourceRootKind, WorkspaceModuleBuildId,
+};
 
 fn testdata_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -371,4 +374,145 @@ fn reuses_bazel_query_cache_file() {
     let model = nova_project::load_bazel_workspace_model_with_runner(tmp.path(), &options, runner)
         .expect("load bazel workspace model from cache");
     assert_eq!(model.modules.len(), 2);
+}
+
+#[test]
+fn loads_bazel_targets_as_workspace_modules() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::write(tmp.path().join("WORKSPACE"), "").expect("WORKSPACE");
+
+    let query = read_fixture("bazel/query.txt");
+    let aquery_lib = read_fixture("bazel/aquery_lib.textproto");
+    let aquery_test = read_fixture("bazel/aquery_lib_test.textproto");
+    let aquery_alias = read_fixture("bazel/aquery_alias.textproto");
+
+    let runner = MockRunner::default()
+        .with_stdout("bazel", &["query", r#"kind("java_.* rule", //...)"#], query)
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:lib)"#,
+            ],
+            aquery_lib.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:lib))"#,
+            ],
+            aquery_lib,
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:lib_test)"#,
+            ],
+            aquery_test.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:lib_test))"#,
+            ],
+            aquery_test,
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", //java/com/example:alias)"#,
+            ],
+            aquery_alias.clone(),
+        )
+        .with_stdout(
+            "bazel",
+            &[
+                "aquery",
+                "--output=textproto",
+                r#"mnemonic("Javac", deps(//java/com/example:alias))"#,
+            ],
+            aquery_alias,
+        );
+
+    let options = options_with_bazel_enabled();
+    let model =
+        nova_project::load_bazel_workspace_project_model_with_runner(tmp.path(), &options, runner)
+            .expect("load bazel workspace project model");
+
+    assert_eq!(
+        model
+            .modules
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["//java/com/example:lib", "//java/com/example:lib_test"]
+    );
+
+    assert_eq!(
+        model.java,
+        JavaConfig {
+            source: JavaVersion(21),
+            target: JavaVersion(21),
+            enable_preview: true,
+        }
+    );
+
+    let lib = model.module_by_id("//java/com/example:lib").unwrap();
+    assert!(matches!(
+        &lib.build_id,
+        WorkspaceModuleBuildId::Bazel { label }
+            if label == "//java/com/example:lib"
+    ));
+    assert!(matches!(
+        lib.language_level.provenance,
+        LanguageLevelProvenance::Default
+    ));
+    assert_eq!(
+        lib.language_level.level,
+        JavaLanguageLevel {
+            release: Some(JavaVersion(21)),
+            source: Some(JavaVersion(21)),
+            target: Some(JavaVersion(21)),
+            preview: true,
+        }
+    );
+
+    let test = model.module_by_id("//java/com/example:lib_test").unwrap();
+    assert!(matches!(
+        &test.build_id,
+        WorkspaceModuleBuildId::Bazel { label }
+            if label == "//java/com/example:lib_test"
+    ));
+    assert_eq!(test.source_roots.len(), 1);
+    assert_eq!(test.source_roots[0].kind, SourceRootKind::Test);
+    assert_eq!(
+        test.language_level.level,
+        JavaLanguageLevel {
+            release: None,
+            source: Some(JavaVersion(17)),
+            target: Some(JavaVersion(17)),
+            preview: false,
+        }
+    );
+
+    let lib_file = tmp.path().join("java/com/example/Foo.java");
+    assert_eq!(
+        model.module_for_path(&lib_file).unwrap().module.id,
+        "//java/com/example:lib"
+    );
+
+    let test_file = tmp.path().join("javatests/com/example/FooTest.java");
+    assert_eq!(
+        model.module_for_path(&test_file).unwrap().module.id,
+        "//java/com/example:lib_test"
+    );
 }

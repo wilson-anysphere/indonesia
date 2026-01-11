@@ -30,6 +30,13 @@ pub(crate) fn load_bazel_project(
                 return Ok(project_config_from_workspace_model(root, options, model));
             }
         }
+        #[cfg(not(feature = "bazel"))]
+        {
+            return Err(ProjectError::Bazel {
+                message: "Bazel target loading requires enabling the `nova-project/bazel` feature"
+                    .to_string(),
+            });
+        }
     }
 
     load_bazel_project_heuristic(root, options)
@@ -39,6 +46,24 @@ pub(crate) fn load_bazel_workspace_model(
     root: &Path,
     options: &LoadOptions,
 ) -> Result<WorkspaceProjectModel, ProjectError> {
+    if options.bazel.enable_target_loading {
+        #[cfg(feature = "bazel")]
+        {
+            let runner = DefaultCommandRunner::default();
+            let model = load_bazel_workspace_project_model_with_runner(root, options, runner)?;
+            if !model.modules.is_empty() {
+                return Ok(model);
+            }
+        }
+        #[cfg(not(feature = "bazel"))]
+        {
+            return Err(ProjectError::Bazel {
+                message: "Bazel target loading requires enabling the `nova-project/bazel` feature"
+                    .to_string(),
+            });
+        }
+    }
+
     let mut source_roots = Vec::new();
 
     for entry in walkdir::WalkDir::new(root)
@@ -289,11 +314,48 @@ pub fn load_bazel_workspace_model_with_runner<R: CommandRunner>(
 }
 
 #[cfg(feature = "bazel")]
+pub fn load_bazel_workspace_project_model_with_runner<R: CommandRunner>(
+    root: &Path,
+    options: &LoadOptions,
+    runner: R,
+) -> Result<WorkspaceProjectModel, ProjectError> {
+    let model = load_bazel_workspace_model_with_runner(root, options, runner)?;
+    let java = workspace_java_from_target_modules(&model.modules);
+
+    let mut modules = model
+        .modules
+        .iter()
+        .map(|module| workspace_module_config_from_module_config(root, options, module))
+        .collect::<Vec<_>>();
+    modules.sort_by(|a, b| a.id.cmp(&b.id));
+    modules.dedup_by(|a, b| a.id == b.id);
+
+    let modules_for_jpms = modules
+        .iter()
+        .map(|module| Module {
+            name: module.name.clone(),
+            root: module.root.clone(),
+        })
+        .collect::<Vec<_>>();
+    let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);
+
+    Ok(WorkspaceProjectModel::new(
+        root.to_path_buf(),
+        BuildSystem::Bazel,
+        java,
+        modules,
+        jpms_modules,
+    ))
+}
+
+#[cfg(feature = "bazel")]
 fn project_config_from_workspace_model(
     root: &Path,
     options: &LoadOptions,
     model: WorkspaceModel,
 ) -> ProjectConfig {
+    let java = workspace_java_from_target_modules(&model.modules);
+
     let mut source_roots: Vec<SourceRoot> = model
         .modules
         .iter()
@@ -373,7 +435,7 @@ fn project_config_from_workspace_model(
     ProjectConfig {
         workspace_root: root.to_path_buf(),
         build_system: BuildSystem::Bazel,
-        java: JavaConfig::default(),
+        java,
         modules,
         jpms_modules,
         jpms_workspace,
@@ -432,6 +494,132 @@ fn module_config_from_compile_info(
         language_level,
         output_dir: info.output_dir.as_deref().map(|p| resolve_path(root, p)),
     }
+}
+
+#[cfg(feature = "bazel")]
+fn workspace_java_from_target_modules(modules: &[ModuleConfig]) -> JavaConfig {
+    let mut max_source: Option<JavaVersion> = None;
+    let mut max_target: Option<JavaVersion> = None;
+    let mut enable_preview = false;
+
+    for module in modules {
+        let level = &module.language_level;
+        let source = level.source.or(level.release);
+        let target = level.target.or(level.release);
+
+        if let Some(version) = source {
+            max_source = Some(max_source.map_or(version, |current| current.max(version)));
+        }
+        if let Some(version) = target {
+            max_target = Some(max_target.map_or(version, |current| current.max(version)));
+        }
+        if level.preview {
+            enable_preview = true;
+        }
+    }
+
+    let mut java = JavaConfig::default();
+    if let Some(source) = max_source {
+        java.source = source;
+    }
+    if let Some(target) = max_target {
+        java.target = target;
+    }
+    java.enable_preview = enable_preview;
+    java
+}
+
+#[cfg(feature = "bazel")]
+fn workspace_module_config_from_module_config(
+    workspace_root: &Path,
+    options: &LoadOptions,
+    module: &ModuleConfig,
+) -> WorkspaceModuleConfig {
+    let root = workspace_root_for_target(workspace_root, &module.id);
+    let name = bazel_target_display_name(&module.id);
+
+    let mut source_roots = module.source_roots.clone();
+    crate::generated::append_generated_source_roots(
+        &mut source_roots,
+        &root,
+        BuildSystem::Bazel,
+        &options.nova_config,
+    );
+
+    let mut classpath = module.classpath.clone();
+    for entry in &options.classpath_overrides {
+        classpath.push(ClasspathEntry {
+            kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+                ClasspathEntryKind::Jar
+            } else {
+                ClasspathEntryKind::Directory
+            },
+            path: entry.clone(),
+        });
+    }
+
+    let mut module_path = module.module_path.clone();
+
+    let mut output_dirs = Vec::new();
+    if let Some(path) = &module.output_dir {
+        let kind = if module
+            .source_roots
+            .iter()
+            .any(|root| root.kind == SourceRootKind::Test)
+        {
+            OutputDirKind::Test
+        } else {
+            OutputDirKind::Main
+        };
+        output_dirs.push(OutputDir {
+            kind,
+            path: path.clone(),
+        });
+    }
+
+    sort_dedup_source_roots(&mut source_roots);
+    sort_dedup_classpath(&mut classpath);
+    sort_dedup_classpath(&mut module_path);
+    sort_dedup_output_dirs(&mut output_dirs);
+
+    WorkspaceModuleConfig {
+        id: module.id.clone(),
+        name,
+        root,
+        build_id: WorkspaceModuleBuildId::Bazel {
+            label: module.id.clone(),
+        },
+        language_level: ModuleLanguageLevel {
+            level: module.language_level.clone(),
+            provenance: LanguageLevelProvenance::Default,
+        },
+        source_roots,
+        output_dirs,
+        module_path,
+        classpath,
+        dependencies: Vec::new(),
+    }
+}
+
+#[cfg(feature = "bazel")]
+fn workspace_root_for_target(workspace_root: &Path, target: &str) -> PathBuf {
+    let Some(package) = target.strip_prefix("//") else {
+        return workspace_root.to_path_buf();
+    };
+    let package = package.split(':').next().unwrap_or(package);
+    if package.is_empty() {
+        workspace_root.to_path_buf()
+    } else {
+        workspace_root.join(package)
+    }
+}
+
+#[cfg(feature = "bazel")]
+fn bazel_target_display_name(target: &str) -> String {
+    if let Some((_, name)) = target.rsplit_once(':') {
+        return name.to_string();
+    }
+    target.rsplit('/').next().unwrap_or(target).to_string()
 }
 
 fn classify_bazel_source_root(path: &Path) -> SourceRootKind {

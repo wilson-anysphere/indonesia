@@ -27,7 +27,9 @@ pub use discover::{
 pub use model::*;
 
 #[cfg(feature = "bazel")]
-pub use bazel::load_bazel_workspace_model_with_runner;
+pub use bazel::{
+    load_bazel_workspace_model_with_runner, load_bazel_workspace_project_model_with_runner,
+};
 pub use package::{
     class_to_file_name, infer_source_root, is_valid_package_name, package_to_path,
     validate_package_name, PackageNameError,
