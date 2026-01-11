@@ -18,6 +18,24 @@ use nova_jdwp::wire::{
 
 use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
 
+/// Internal representation of a DAP `SourceBreakpoint`.
+///
+/// This is intentionally minimal and only captures the fields we need for the wire-level adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BreakpointSpec {
+    pub line: i32,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BreakpointDisposition {
+    Stop,
+    Continue,
+    Log { message: String },
+}
+
 #[derive(Debug, Error)]
 pub enum DebuggerError {
     #[error(transparent)]
@@ -59,6 +77,17 @@ pub struct ExceptionInfo {
 #[derive(Debug, Clone)]
 struct BreakpointEntry {
     request_id: i32,
+    line: i32,
+}
+
+#[derive(Debug, Clone)]
+struct BreakpointMetadata {
+    file: String,
+    line: i32,
+    condition: Option<String>,
+    hit_condition: Option<String>,
+    log_message: Option<String>,
+    hit_count: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -154,7 +183,8 @@ pub struct Debugger {
     inspector: Inspector,
     objects: ObjectRegistry,
     breakpoints: HashMap<String, Vec<BreakpointEntry>>,
-    requested_breakpoints: HashMap<String, Vec<i32>>,
+    requested_breakpoints: HashMap<String, Vec<BreakpointSpec>>,
+    breakpoint_metadata: HashMap<i32, BreakpointMetadata>,
     class_prepare_request: Option<i32>,
     step_request: Option<i32>,
     exception_requests: Vec<i32>,
@@ -218,6 +248,7 @@ impl Debugger {
             jdwp,
             breakpoints: HashMap::new(),
             requested_breakpoints: HashMap::new(),
+            breakpoint_metadata: HashMap::new(),
             class_prepare_request: None,
             step_request: None,
             exception_requests: Vec::new(),
@@ -413,7 +444,7 @@ impl Debugger {
         &mut self,
         cancel: &CancellationToken,
         source_path: &str,
-        lines: Vec<i32>,
+        breakpoints: Vec<BreakpointSpec>,
     ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
         let file = Path::new(source_path)
@@ -435,17 +466,21 @@ impl Debugger {
                 check_cancel(cancel)?;
                 let _ =
                     cancellable_jdwp(cancel, self.jdwp.event_request_clear(2, bp.request_id)).await;
+                self.breakpoint_metadata.remove(&bp.request_id);
             }
         }
 
-        self.requested_breakpoints
-            .insert(file.clone(), lines.clone());
+        if breakpoints.is_empty() {
+            self.requested_breakpoints.remove(&file);
+        } else {
+            self.requested_breakpoints.insert(file.clone(), breakpoints.clone());
+        }
 
-        let mut results = Vec::with_capacity(lines.len());
+        let mut results = Vec::with_capacity(breakpoints.len());
 
         // Best-effort: attempt to apply now for already-loaded classes.
         let classes = cancellable_jdwp(cancel, self.jdwp.all_classes()).await?;
-        let mut class_candidates = Vec::new();
+        let mut class_candidates: Vec<ClassInfo> = Vec::new();
         for class_info in classes {
             check_cancel(cancel)?;
             match self.source_file(cancel, class_info.type_id).await {
@@ -459,13 +494,32 @@ impl Debugger {
             }
         }
 
-        let class = class_candidates.into_iter().next();
-        if let Some(class) = class {
-            let mut entries = Vec::new();
-            for &line in &lines {
+        if class_candidates.is_empty() {
+            for bp in breakpoints {
+                results.push(json!({"verified": false, "line": bp.line, "message": "class not loaded yet"}));
+            }
+            return Ok(results);
+        }
+
+        let mut all_entries = Vec::new();
+
+        for bp in breakpoints {
+            check_cancel(cancel)?;
+            let spec_line = bp.line;
+            let condition = normalize_breakpoint_string(bp.condition);
+            let hit_condition = normalize_breakpoint_string(bp.hit_condition);
+            let log_message = normalize_breakpoint_string(bp.log_message);
+
+            let mut verified = false;
+            let mut first_request_id: Option<i32> = None;
+            let mut last_error: Option<String> = None;
+            let mut saw_location = false;
+
+            for class in &class_candidates {
                 check_cancel(cancel)?;
-                match self.location_for_line(cancel, &class, line).await? {
+                match self.location_for_line(cancel, class, spec_line).await? {
                     Some(location) => {
+                        saw_location = true;
                         match cancellable_jdwp(
                             cancel,
                             self.jdwp.event_request_set(
@@ -477,29 +531,62 @@ impl Debugger {
                         .await
                         {
                             Ok(request_id) => {
-                                entries.push(BreakpointEntry { request_id });
-                                results.push(json!({"verified": true, "line": line}));
+                                verified = true;
+                                first_request_id.get_or_insert(request_id);
+
+                                all_entries.push(BreakpointEntry {
+                                    request_id,
+                                    line: spec_line,
+                                });
+                                self.breakpoint_metadata.insert(
+                                    request_id,
+                                    BreakpointMetadata {
+                                        file: file.clone(),
+                                        line: spec_line,
+                                        condition: condition.clone(),
+                                        hit_condition: hit_condition.clone(),
+                                        log_message: log_message.clone(),
+                                        hit_count: 0,
+                                    },
+                                );
                             }
                             Err(err) => {
                                 if matches!(err, JdwpError::Cancelled) {
                                     return Err(JdwpError::Cancelled.into());
                                 }
-                                results.push(json!({"verified": false, "line": line, "message": err.to_string()}));
+                                last_error = Some(err.to_string());
                             }
                         }
                     }
-                    None => {
-                        results.push(json!({"verified": false, "line": line, "message": "no executable code at this line"}));
-                    }
+                    None => {}
                 }
             }
-            self.breakpoints.insert(file.clone(), entries);
-        } else {
-            for line in lines {
-                results.push(
-                    json!({"verified": false, "line": line, "message": "class not loaded yet"}),
-                );
+
+            if verified {
+                let mut obj = serde_json::Map::new();
+                obj.insert("verified".to_string(), json!(true));
+                obj.insert("line".to_string(), json!(spec_line));
+                if let Some(id) = first_request_id {
+                    obj.insert("id".to_string(), json!(id));
+                }
+                results.push(Value::Object(obj));
+            } else if saw_location {
+                results.push(json!({
+                    "verified": false,
+                    "line": spec_line,
+                    "message": last_error.unwrap_or_else(|| "failed to set breakpoint".to_string())
+                }));
+            } else {
+                results.push(json!({
+                    "verified": false,
+                    "line": spec_line,
+                    "message": "no executable code at this line"
+                }));
             }
+        }
+
+        if !all_entries.is_empty() {
+            self.breakpoints.insert(file.clone(), all_entries);
         }
 
         Ok(results)
@@ -714,6 +801,68 @@ impl Debugger {
         ))
     }
 
+    pub async fn handle_breakpoint_event(
+        &mut self,
+        request_id: i32,
+        thread: ThreadId,
+        _location: Location,
+    ) -> Result<BreakpointDisposition> {
+        let Some(meta) = self.breakpoint_metadata.get_mut(&request_id) else {
+            // Unknown breakpoint request. Prefer stopping over auto-resuming to avoid silently
+            // skipping user-visible pause points.
+            return Ok(BreakpointDisposition::Stop);
+        };
+
+        meta.hit_count = meta.hit_count.saturating_add(1);
+        let hit_count = meta.hit_count;
+
+        if let Some(hit_expr) = meta.hit_condition.as_deref() {
+            match hit_condition_matches(hit_expr, hit_count) {
+                Ok(true) => {}
+                Ok(false) => return Ok(BreakpointDisposition::Continue),
+                Err(_) => return Ok(BreakpointDisposition::Stop),
+            }
+        }
+
+        let needs_locals = meta
+            .condition
+            .as_deref()
+            .is_some_and(|c| condition_needs_locals(c))
+            || meta
+                .log_message
+                .as_deref()
+                .is_some_and(|m| log_message_needs_locals(m));
+
+        let locals = if needs_locals {
+            let Some(frame) = self.jdwp.frames(thread, 0, 1).await?.into_iter().next() else {
+                return Ok(BreakpointDisposition::Stop);
+            };
+            let frame = FrameHandle {
+                thread,
+                frame_id: frame.frame_id,
+                location: frame.location,
+            };
+            Some(self.locals_values(&frame).await?)
+        } else {
+            None
+        };
+
+        if let Some(cond) = meta.condition.as_deref() {
+            match eval_breakpoint_condition(cond, locals.as_ref()) {
+                Ok(true) => {}
+                Ok(false) => return Ok(BreakpointDisposition::Continue),
+                Err(_) => return Ok(BreakpointDisposition::Stop),
+            }
+        }
+
+        if let Some(template) = meta.log_message.as_deref() {
+            let rendered = render_log_message(template, locals.as_ref());
+            return Ok(BreakpointDisposition::Log { message: rendered });
+        }
+
+        Ok(BreakpointDisposition::Stop)
+    }
+
     fn alloc_frame_handle(&mut self, thread: ThreadId, frame: &FrameInfo) -> i64 {
         self.frame_handles.intern(
             FrameKey {
@@ -838,6 +987,30 @@ impl Debugger {
         Ok(out)
     }
 
+    async fn locals_values(&mut self, frame: &FrameHandle) -> Result<HashMap<String, JdwpValue>> {
+        let (_argc, vars) = self
+            .jdwp
+            .method_variable_table(frame.location.class_id, frame.location.method_id)
+            .await?;
+
+        let in_scope: Vec<VariableInfo> = vars
+            .into_iter()
+            .filter(|v| v.code_index <= frame.location.index && frame.location.index < v.code_index + (v.length as u64))
+            .collect();
+
+        let slots: Vec<(u32, String)> = in_scope.iter().map(|v| (v.slot, v.signature.clone())).collect();
+        let values = self
+            .jdwp
+            .stack_frame_get_values(frame.thread, frame.frame_id, &slots)
+            .await?;
+
+        let mut out = HashMap::new();
+        for (var, value) in in_scope.into_iter().zip(values.into_iter()) {
+            out.insert(var.name, value);
+        }
+        Ok(out)
+    }
+
     async fn object_variables(
         &mut self,
         cancel: &CancellationToken,
@@ -850,16 +1023,15 @@ impl Debugger {
             return Ok(Vec::new());
         };
 
-        let children =
-            match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
-                Ok(children) => children,
-                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
-                    self.objects.mark_invalid_object_id(object_id);
-                    return Ok(vec![invalid_collected_variable()]);
-                }
-                Err(err) => return Err(err.into()),
-            };
+        let children = match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
+            Ok(children) => children,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                self.objects.mark_invalid_object_id(object_id);
+                return Ok(vec![invalid_collected_variable()]);
+            }
+            Err(err) => return Err(err.into()),
+        };
 
         let mut out = Vec::with_capacity(children.len());
         for child in children {
@@ -1049,7 +1221,7 @@ impl Debugger {
     async fn on_class_prepare(&mut self, ref_type_tag: u8, type_id: ReferenceTypeId) -> Result<()> {
         let cancel = CancellationToken::new();
         let file = self.source_file(&cancel, type_id).await?;
-        let Some(lines) = self.requested_breakpoints.get(&file).cloned() else {
+        let Some(bps) = self.requested_breakpoints.get(&file).cloned() else {
             return Ok(());
         };
         let class = ClassInfo {
@@ -1063,18 +1235,39 @@ impl Debugger {
             status: 0,
         };
         let mut entries = Vec::new();
-        for line in lines {
-            if let Some(location) = self.location_for_line(&cancel, &class, line).await? {
+        for bp in bps {
+            let spec_line = bp.line;
+            let condition = normalize_breakpoint_string(bp.condition);
+            let hit_condition = normalize_breakpoint_string(bp.hit_condition);
+            let log_message = normalize_breakpoint_string(bp.log_message);
+
+            if let Some(location) = self.location_for_line(&cancel, &class, spec_line).await? {
                 if let Ok(request_id) = self
                     .jdwp
                     .event_request_set(2, JDWP_SUSPEND_POLICY_EVENT_THREAD, vec![EventModifier::LocationOnly { location }])
                     .await
                 {
-                    entries.push(BreakpointEntry { request_id });
+                    entries.push(BreakpointEntry {
+                        request_id,
+                        line: spec_line,
+                    });
+                    self.breakpoint_metadata.insert(
+                        request_id,
+                        BreakpointMetadata {
+                            file: file.clone(),
+                            line: spec_line,
+                            condition,
+                            hit_condition,
+                            log_message,
+                            hit_count: 0,
+                        },
+                    );
                 }
             }
         }
-        self.breakpoints.insert(file, entries);
+        if !entries.is_empty() {
+            self.breakpoints.entry(file).or_default().extend(entries);
+        }
         Ok(())
     }
 
@@ -1557,4 +1750,321 @@ fn escape_java_string(input: &str, max_len: usize) -> String {
         used += 1;
     }
     out
+}
+
+fn normalize_breakpoint_string(value: Option<String>) -> Option<String> {
+    value.and_then(|v| {
+        let trimmed = v.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HitConditionOp {
+    Eq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+fn hit_condition_matches(expr: &str, hit_count: u64) -> std::result::Result<bool, ()> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return Ok(true);
+    }
+
+    // `%N` => break/log every N hits (1-indexed), i.e. N, 2N, 3N, ...
+    if let Some(rest) = expr.strip_prefix('%') {
+        let n: u64 = rest.trim().parse().map_err(|_| ())?;
+        if n == 0 {
+            return Err(());
+        }
+        return Ok(hit_count % n == 0);
+    }
+
+    if expr.chars().all(|c| c.is_ascii_digit()) {
+        let n: u64 = expr.parse().map_err(|_| ())?;
+        return Ok(hit_count >= n);
+    }
+
+    let (op, rest) = if let Some(rest) = expr.strip_prefix("==") {
+        (HitConditionOp::Eq, rest)
+    } else if let Some(rest) = expr.strip_prefix(">=") {
+        (HitConditionOp::Gte, rest)
+    } else if let Some(rest) = expr.strip_prefix('>') {
+        (HitConditionOp::Gt, rest)
+    } else if let Some(rest) = expr.strip_prefix("<=") {
+        (HitConditionOp::Lte, rest)
+    } else if let Some(rest) = expr.strip_prefix('<') {
+        (HitConditionOp::Lt, rest)
+    } else {
+        return Err(());
+    };
+
+    let n: u64 = rest.trim().parse().map_err(|_| ())?;
+    Ok(match op {
+        HitConditionOp::Eq => hit_count == n,
+        HitConditionOp::Gt => hit_count > n,
+        HitConditionOp::Gte => hit_count >= n,
+        HitConditionOp::Lt => hit_count < n,
+        HitConditionOp::Lte => hit_count <= n,
+    })
+}
+
+fn condition_needs_locals(expr: &str) -> bool {
+    let expr = expr.trim();
+    if expr.is_empty() || expr == "true" || expr == "false" {
+        return false;
+    }
+    if expr.parse::<i64>().is_ok() {
+        return false;
+    }
+    // Identifiers or comparisons may require locals.
+    true
+}
+
+fn log_message_needs_locals(template: &str) -> bool {
+    template.contains('{')
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CmpOp {
+    Eq,
+    Ne,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+}
+
+fn eval_breakpoint_condition(expr: &str, locals: Option<&HashMap<String, JdwpValue>>) -> std::result::Result<bool, ()> {
+    let expr = expr.trim();
+    if expr.is_empty() {
+        return Ok(true);
+    }
+    match expr {
+        "true" => return Ok(true),
+        "false" => return Ok(false),
+        _ => {}
+    }
+
+    if let Ok(n) = expr.parse::<i64>() {
+        return Ok(n != 0);
+    }
+
+    if let Some((lhs, op, rhs)) = parse_comparison(expr) {
+        let Some(lhs) = eval_int_operand(lhs, locals) else {
+            return Ok(false);
+        };
+        let Some(rhs) = eval_int_operand(rhs, locals) else {
+            return Ok(false);
+        };
+        return Ok(match op {
+            CmpOp::Eq => lhs == rhs,
+            CmpOp::Ne => lhs != rhs,
+            CmpOp::Gt => lhs > rhs,
+            CmpOp::Gte => lhs >= rhs,
+            CmpOp::Lt => lhs < rhs,
+            CmpOp::Lte => lhs <= rhs,
+        });
+    }
+
+    if is_identifier(expr) {
+        let Some(locals) = locals else {
+            return Err(());
+        };
+        let Some(value) = locals.get(expr) else {
+            return Ok(false);
+        };
+        return Ok(jdwp_value_truthy(value));
+    }
+
+    Err(())
+}
+
+fn parse_comparison(expr: &str) -> Option<(&str, CmpOp, &str)> {
+    // Try the longest operators first.
+    for (tok, op) in [
+        ("==", CmpOp::Eq),
+        ("!=", CmpOp::Ne),
+        (">=", CmpOp::Gte),
+        ("<=", CmpOp::Lte),
+        (">", CmpOp::Gt),
+        ("<", CmpOp::Lt),
+    ] {
+        if let Some(idx) = expr.find(tok) {
+            let (lhs, rhs_with_op) = expr.split_at(idx);
+            let rhs = &rhs_with_op[tok.len()..];
+            let lhs = lhs.trim();
+            let rhs = rhs.trim();
+            if lhs.is_empty() || rhs.is_empty() {
+                return None;
+            }
+            return Some((lhs, op, rhs));
+        }
+    }
+    None
+}
+
+fn eval_int_operand(op: &str, locals: Option<&HashMap<String, JdwpValue>>) -> Option<i64> {
+    let op = op.trim();
+    if let Ok(v) = op.parse::<i64>() {
+        return Some(v);
+    }
+    if is_identifier(op) {
+        let locals = locals?;
+        let value = locals.get(op)?;
+        return jdwp_value_as_i64(value);
+    }
+    None
+}
+
+fn jdwp_value_truthy(value: &JdwpValue) -> bool {
+    match value {
+        JdwpValue::Boolean(v) => *v,
+        JdwpValue::Byte(v) => *v != 0,
+        JdwpValue::Char(v) => *v != 0,
+        JdwpValue::Short(v) => *v != 0,
+        JdwpValue::Int(v) => *v != 0,
+        JdwpValue::Long(v) => *v != 0,
+        JdwpValue::Float(v) => *v != 0.0,
+        JdwpValue::Double(v) => *v != 0.0,
+        JdwpValue::Object { id, .. } => *id != 0,
+        JdwpValue::Void => false,
+    }
+}
+
+fn jdwp_value_as_i64(value: &JdwpValue) -> Option<i64> {
+    match value {
+        JdwpValue::Boolean(v) => Some(if *v { 1 } else { 0 }),
+        JdwpValue::Byte(v) => Some((*v).into()),
+        JdwpValue::Char(v) => Some((*v).into()),
+        JdwpValue::Short(v) => Some((*v).into()),
+        JdwpValue::Int(v) => Some((*v).into()),
+        JdwpValue::Long(v) => Some(*v),
+        _ => None,
+    }
+}
+
+fn render_log_message(template: &str, locals: Option<&HashMap<String, JdwpValue>>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => {
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    out.push('{');
+                    continue;
+                }
+
+                let mut expr = String::new();
+                while let Some(next) = chars.next() {
+                    if next == '}' {
+                        break;
+                    }
+                    expr.push(next);
+                }
+                let expr = expr.trim();
+                if is_identifier(expr) {
+                    if let Some(locals) = locals {
+                        if let Some(value) = locals.get(expr) {
+                            out.push_str(&value.to_string());
+                            continue;
+                        }
+                    }
+                }
+
+                out.push('{');
+                out.push_str(expr);
+                out.push('}');
+            }
+            '}' => {
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                    out.push('}');
+                } else {
+                    out.push('}');
+                }
+            }
+            other => out.push(other),
+        }
+    }
+
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hit_condition_digits_means_at_least() {
+        assert!(!hit_condition_matches("3", 1).unwrap());
+        assert!(!hit_condition_matches("3", 2).unwrap());
+        assert!(hit_condition_matches("3", 3).unwrap());
+        assert!(hit_condition_matches("3", 4).unwrap());
+    }
+
+    #[test]
+    fn hit_condition_operators() {
+        assert!(hit_condition_matches("== 2", 2).unwrap());
+        assert!(!hit_condition_matches("==2", 3).unwrap());
+        assert!(hit_condition_matches(">= 2", 2).unwrap());
+        assert!(hit_condition_matches("> 2", 3).unwrap());
+        assert!(hit_condition_matches("< 3", 2).unwrap());
+        assert!(hit_condition_matches("<= 2", 2).unwrap());
+    }
+
+    #[test]
+    fn hit_condition_modulo() {
+        assert!(!hit_condition_matches("%2", 1).unwrap());
+        assert!(hit_condition_matches("%2", 2).unwrap());
+        assert!(!hit_condition_matches("%2", 3).unwrap());
+        assert!(hit_condition_matches("%2", 4).unwrap());
+    }
+
+    #[test]
+    fn condition_literals_and_identifier_truthiness() {
+        let mut locals = HashMap::new();
+        locals.insert("x".to_string(), JdwpValue::Int(42));
+        locals.insert("y".to_string(), JdwpValue::Int(0));
+        locals.insert("flag".to_string(), JdwpValue::Boolean(true));
+
+        assert!(eval_breakpoint_condition("true", Some(&locals)).unwrap());
+        assert!(!eval_breakpoint_condition("false", Some(&locals)).unwrap());
+        assert!(eval_breakpoint_condition("1", Some(&locals)).unwrap());
+        assert!(!eval_breakpoint_condition("0", Some(&locals)).unwrap());
+        assert!(eval_breakpoint_condition("x", Some(&locals)).unwrap());
+        assert!(!eval_breakpoint_condition("y", Some(&locals)).unwrap());
+        assert!(eval_breakpoint_condition("flag", Some(&locals)).unwrap());
+        assert!(!eval_breakpoint_condition("missing", Some(&locals)).unwrap());
+    }
+
+    #[test]
+    fn condition_numeric_comparisons() {
+        let mut locals = HashMap::new();
+        locals.insert("x".to_string(), JdwpValue::Int(42));
+
+        assert!(eval_breakpoint_condition("x == 42", Some(&locals)).unwrap());
+        assert!(!eval_breakpoint_condition("x == 41", Some(&locals)).unwrap());
+        assert!(eval_breakpoint_condition("x >= 42", Some(&locals)).unwrap());
+        assert!(!eval_breakpoint_condition("x < 0", Some(&locals)).unwrap());
+    }
+
+    #[test]
+    fn log_message_substitution_and_escapes() {
+        let mut locals = HashMap::new();
+        locals.insert("x".to_string(), JdwpValue::Int(42));
+        locals.insert("flag".to_string(), JdwpValue::Boolean(true));
+
+        assert_eq!(
+            render_log_message("x is {x} and flag is {flag}", Some(&locals)),
+            "x is 42 and flag is true"
+        );
+        assert_eq!(render_log_message("{{x}}", Some(&locals)), "{x}");
+        assert_eq!(render_log_message("missing {y}", Some(&locals)), "missing {y}");
+    }
 }

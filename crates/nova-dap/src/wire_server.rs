@@ -22,7 +22,7 @@ use nova_config::NovaConfig;
 
 use crate::{
     dap_tokio::{make_event, make_response, DapError, DapReader, DapWriter, Request},
-    wire_debugger::{AttachArgs, Debugger, DebuggerError, StepDepth},
+    wire_debugger::{AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError, StepDepth},
 };
 
 #[derive(Debug, Error)]
@@ -223,7 +223,9 @@ async fn handle_request_inner(
                     { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
                     { "filter": "all", "label": "All Exceptions", "default": false },
                 ],
-                "supportsConditionalBreakpoints": false,
+                "supportsConditionalBreakpoints": true,
+                "supportsHitConditionalBreakpoints": true,
+                "supportsLogPoints": true,
             });
             send_response(out_tx, seq, request, true, Some(body), None);
             send_event(out_tx, seq, "initialized", None);
@@ -401,13 +403,34 @@ async fn handle_request_inner(
                 .and_then(|s| s.get("path"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let lines: Vec<i32> = request
+            let breakpoints: Vec<BreakpointSpec> = request
                 .arguments
                 .get("breakpoints")
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|bp| bp.get("line").and_then(|l| l.as_i64()).map(|l| l as i32))
+                        .filter_map(|bp| {
+                            let line = bp.get("line").and_then(|l| l.as_i64())? as i32;
+                            let condition = bp
+                                .get("condition")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+                            let hit_condition = bp
+                                .get("hitCondition")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+                            let log_message = bp
+                                .get("logMessage")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+
+                            Some(BreakpointSpec {
+                                line,
+                                condition,
+                                hit_condition,
+                                log_message,
+                            })
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -439,7 +462,7 @@ async fn handle_request_inner(
                 return;
             };
 
-            match dbg.set_breakpoints(cancel, source_path, lines).await {
+            match dbg.set_breakpoints(cancel, source_path, breakpoints).await {
                 Ok(bps) if cancel.is_cancelled() => {
                     send_response(
                         out_tx,
@@ -1550,23 +1573,63 @@ fn spawn_event_task(
                 },
             };
 
+            // Some events require consulting debugger state (conditional/log breakpoints).
+            let mut breakpoint_disposition: Option<BreakpointDisposition> = None;
+
             {
                 let mut guard = debugger.lock().await;
                 if let Some(dbg) = guard.as_mut() {
                     dbg.handle_vm_event(&event).await;
+
+                    if let nova_jdwp::wire::JdwpEvent::Breakpoint {
+                        request_id,
+                        thread,
+                        location,
+                    } = &event
+                    {
+                        match dbg
+                            .handle_breakpoint_event(*request_id, *thread, *location)
+                            .await
+                        {
+                            Ok(disposition) => breakpoint_disposition = Some(disposition),
+                            Err(_) => breakpoint_disposition = Some(BreakpointDisposition::Stop),
+                        }
+
+                        // If the breakpoint should not stop execution, resume immediately.
+                        if matches!(
+                            breakpoint_disposition.as_ref(),
+                            Some(BreakpointDisposition::Continue | BreakpointDisposition::Log { .. })
+                        ) {
+                            let _ = dbg.continue_(&server_shutdown).await;
+                        }
+                    }
                 }
             }
 
             match event {
                 nova_jdwp::wire::JdwpEvent::Breakpoint { thread, .. } => {
-                    send_event(
-                        &tx,
-                        &seq,
-                        "stopped",
-                        Some(
-                            json!({"reason": "breakpoint", "threadId": thread as i64, "allThreadsStopped": false}),
+                    match breakpoint_disposition.unwrap_or(BreakpointDisposition::Stop) {
+                        BreakpointDisposition::Stop => send_event(
+                            &tx,
+                            &seq,
+                            "stopped",
+                            Some(
+                                json!({"reason": "breakpoint", "threadId": thread as i64, "allThreadsStopped": false}),
+                            ),
                         ),
-                    );
+                        BreakpointDisposition::Continue => {}
+                        BreakpointDisposition::Log { message } => {
+                            send_event(
+                                &tx,
+                                &seq,
+                                "output",
+                                Some(json!({
+                                    "category": "console",
+                                    "output": format!("{message}\n")
+                                })),
+                            );
+                        }
+                    }
                 }
                 nova_jdwp::wire::JdwpEvent::SingleStep { thread, .. } => {
                     send_event(
