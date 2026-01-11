@@ -33,6 +33,7 @@ use crate::{
     hot_swap::{BuildSystem, CompileError, CompileOutput, CompiledClass, HotSwapEngine},
     wire_debugger::{
         AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError, StepDepth,
+        VmStoppedValue,
     },
     EvaluateResult,
 };
@@ -2585,6 +2586,21 @@ fn spawn_event_task(
             return;
         };
 
+        let format_value = |value: &nova_jdwp::wire::JdwpValue| -> String {
+            match value {
+                nova_jdwp::wire::JdwpValue::Object { tag, id } => {
+                    if *id == 0 {
+                        "null".to_string()
+                    } else if *tag == b'[' {
+                        format!("array@0x{id:x}")
+                    } else {
+                        format!("object@0x{id:x}")
+                    }
+                }
+                other => other.to_string(),
+            }
+        };
+
         loop {
             let event = tokio::select! {
                 _ = server_shutdown.cancelled() => return,
@@ -2608,6 +2624,7 @@ fn spawn_event_task(
             let mut breakpoint_disposition: Option<BreakpointDisposition> = None;
             // Best-effort exception label for DAP's stopped `text` field.
             let mut exception_context: Option<(JdwpClient, ObjectId)> = None;
+            let mut step_value: Option<VmStoppedValue> = None;
 
             {
                 let mut guard = debugger.lock().await;
@@ -2635,13 +2652,30 @@ fn spawn_event_task(
                         // Logpoints are configured with `SuspendPolicy::NONE`, so there is no
                         // suspension to resume (and resuming could accidentally unpause another
                         // thread that is stopped in the debugger).
-                        if matches!(
-                            breakpoint_disposition.as_ref(),
-                            Some(BreakpointDisposition::Continue)
-                        ) && !is_logpoint
-                        {
-                            let _ = dbg.continue_(&server_shutdown, Some(*thread as i64)).await;
+                        match breakpoint_disposition.as_ref() {
+                            Some(BreakpointDisposition::Continue) => {
+                                if !is_logpoint {
+                                    let _ = dbg
+                                        .continue_(&server_shutdown, Some(*thread as i64))
+                                        .await;
+                                }
+                            }
+                            Some(BreakpointDisposition::Log { .. }) => {}
+                            Some(BreakpointDisposition::Stop) => {
+                                step_value = dbg
+                                    .take_step_output_value(&server_shutdown, *thread)
+                                    .await;
+                            }
+                            None => {}
                         }
+                    } else if let nova_jdwp::wire::JdwpEvent::SingleStep { thread, .. } = &event {
+                        step_value = dbg
+                            .take_step_output_value(&server_shutdown, *thread)
+                            .await;
+                    } else if let nova_jdwp::wire::JdwpEvent::Exception { thread, .. } = &event {
+                        step_value = dbg
+                            .take_step_output_value(&server_shutdown, *thread)
+                            .await;
                     }
 
                     if let nova_jdwp::wire::JdwpEvent::Exception { exception, .. } = &event {
@@ -2669,14 +2703,30 @@ fn spawn_event_task(
             match event {
                 nova_jdwp::wire::JdwpEvent::Breakpoint { thread, .. } => {
                     match breakpoint_disposition.unwrap_or(BreakpointDisposition::Stop) {
-                        BreakpointDisposition::Stop => send_event(
-                            &tx,
-                            &seq,
-                            "stopped",
-                            Some(
-                                json!({"reason": "breakpoint", "threadId": thread as i64, "allThreadsStopped": false}),
-                            ),
-                        ),
+                        BreakpointDisposition::Stop => {
+                            if let Some(value) = step_value {
+                                let (label, value) = match value {
+                                    VmStoppedValue::Return(v) => ("Return value", v),
+                                    VmStoppedValue::Expression(v) => ("Expression value", v),
+                                };
+                                let output = format!("{label}: {}\n", format_value(&value));
+                                send_event(
+                                    &tx,
+                                    &seq,
+                                    "output",
+                                    Some(json!({"category": "console", "output": output})),
+                                );
+                            }
+
+                            send_event(
+                                &tx,
+                                &seq,
+                                "stopped",
+                                Some(
+                                    json!({"reason": "breakpoint", "threadId": thread as i64, "allThreadsStopped": false}),
+                                ),
+                            );
+                        }
                         BreakpointDisposition::Continue => {}
                         BreakpointDisposition::Log { message } => {
                             send_event(
@@ -2692,6 +2742,19 @@ fn spawn_event_task(
                     }
                 }
                 nova_jdwp::wire::JdwpEvent::SingleStep { thread, .. } => {
+                    if let Some(value) = step_value {
+                        let (label, value) = match value {
+                            VmStoppedValue::Return(v) => ("Return value", v),
+                            VmStoppedValue::Expression(v) => ("Expression value", v),
+                        };
+                        let output = format!("{label}: {}\n", format_value(&value));
+                        send_event(
+                            &tx,
+                            &seq,
+                            "output",
+                            Some(json!({"category": "console", "output": output})),
+                        );
+                    }
                     send_event(
                         &tx,
                         &seq,
@@ -2702,6 +2765,19 @@ fn spawn_event_task(
                     );
                 }
                 nova_jdwp::wire::JdwpEvent::Exception { thread, .. } => {
+                    if let Some(value) = step_value {
+                        let (label, value) = match value {
+                            VmStoppedValue::Return(v) => ("Return value", v),
+                            VmStoppedValue::Expression(v) => ("Expression value", v),
+                        };
+                        let output = format!("{label}: {}\n", format_value(&value));
+                        send_event(
+                            &tx,
+                            &seq,
+                            "output",
+                            Some(json!({"category": "console", "output": output})),
+                        );
+                    }
                     let mut body = serde_json::Map::new();
                     body.insert("reason".to_string(), json!("exception"));
                     body.insert("threadId".to_string(), json!(thread as i64));

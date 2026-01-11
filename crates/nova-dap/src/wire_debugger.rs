@@ -74,6 +74,18 @@ pub enum StepDepth {
     Out,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ActiveStepRequest {
+    request_id: i32,
+    depth: StepDepth,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum VmStoppedValue {
+    Return(JdwpValue),
+    Expression(JdwpValue),
+}
+
 #[derive(Debug, Clone)]
 pub struct ExceptionInfo {
     pub exception_id: String,
@@ -187,8 +199,10 @@ pub struct Debugger {
     requested_breakpoints: HashMap<String, Vec<BreakpointSpec>>,
     breakpoint_metadata: HashMap<i32, BreakpointMetadata>,
     class_prepare_request: Option<i32>,
-    step_request: Option<i32>,
     exception_requests: Vec<i32>,
+    active_step_requests: HashMap<ThreadId, ActiveStepRequest>,
+    active_method_exit_requests: HashMap<ThreadId, i32>,
+    pending_return_values: HashMap<ThreadId, JdwpValue>,
     last_stop_reason: HashMap<ThreadId, StopReason>,
     exception_stop_context: HashMap<ThreadId, ExceptionStopContext>,
     throwable_detail_message_field: Option<Option<u64>>,
@@ -258,8 +272,10 @@ impl Debugger {
             requested_breakpoints: HashMap::new(),
             breakpoint_metadata: HashMap::new(),
             class_prepare_request: None,
-            step_request: None,
             exception_requests: Vec::new(),
+            active_step_requests: HashMap::new(),
+            active_method_exit_requests: HashMap::new(),
+            pending_return_values: HashMap::new(),
             last_stop_reason: HashMap::new(),
             exception_stop_context: HashMap::new(),
             throwable_detail_message_field: None,
@@ -779,11 +795,29 @@ impl Debugger {
         check_cancel(cancel)?;
         let thread: ThreadId = dap_thread_id as ThreadId;
 
-        if let Some(old) = self.step_request.take() {
-            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(1, old)).await;
+        if let Some(old) = self.active_step_requests.remove(&thread) {
+            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(1, old.request_id)).await;
+        }
+        if let Some(old) = self.active_method_exit_requests.remove(&thread) {
+            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(42, old)).await;
+        }
+        self.pending_return_values.remove(&thread);
+
+        // Best-effort: MethodExitWithReturnValue isn't guaranteed to be supported by all JVMs.
+        if let Ok(req) = cancellable_jdwp(
+            cancel,
+            self.jdwp.event_request_set(
+                42,
+                0,
+                vec![EventModifier::ThreadOnly { thread }],
+            ),
+        )
+        .await
+        {
+            self.active_method_exit_requests.insert(thread, req);
         }
 
-        let depth = match depth {
+        let jdwp_depth = match depth {
             StepDepth::Into => 0,
             StepDepth::Over => 1,
             StepDepth::Out => 2,
@@ -797,12 +831,13 @@ impl Debugger {
                 vec![EventModifier::Step {
                     thread,
                     size: 1, // line
-                    depth,
+                    depth: jdwp_depth,
                 }],
             ),
         )
         .await?;
-        self.step_request = Some(req);
+        self.active_step_requests
+            .insert(thread, ActiveStepRequest { request_id: req, depth });
         cancellable_jdwp(cancel, self.jdwp.thread_resume(thread)).await?;
         Ok(())
     }
@@ -838,20 +873,25 @@ impl Debugger {
             } => {
                 let _ = self.on_class_prepare(*ref_type_tag, *type_id).await;
             }
+            JdwpEvent::MethodExitWithReturnValue {
+                request_id,
+                thread,
+                value,
+                ..
+            } => {
+                let matches_active = self.active_method_exit_requests.get(thread) == Some(request_id);
+                if matches_active {
+                    self.pending_return_values.insert(*thread, value.clone());
+                }
+            }
             JdwpEvent::Breakpoint { thread, .. } => {
                 self.invalidate_handles();
                 self.last_stop_reason
                     .insert(*thread, StopReason::Breakpoint);
                 self.exception_stop_context.remove(thread);
             }
-            JdwpEvent::SingleStep {
-                request_id, thread, ..
-            } => {
+            JdwpEvent::SingleStep { thread, .. } => {
                 self.invalidate_handles();
-                if self.step_request == Some(*request_id) {
-                    let _ = self.jdwp.event_request_clear(1, *request_id).await;
-                    self.step_request = None;
-                }
                 self.last_stop_reason.insert(*thread, StopReason::Step);
                 self.exception_stop_context.remove(thread);
             }
@@ -875,6 +915,29 @@ impl Debugger {
             }
             _ => {}
         }
+    }
+
+    pub(crate) async fn take_step_output_value(
+        &mut self,
+        cancel: &CancellationToken,
+        thread: ThreadId,
+    ) -> Option<VmStoppedValue> {
+        let step_depth = self.active_step_requests.get(&thread).map(|req| req.depth);
+
+        if let Some(step_req) = self.active_step_requests.remove(&thread) {
+            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(1, step_req.request_id)).await;
+        }
+        if let Some(exit_req) = self.active_method_exit_requests.remove(&thread) {
+            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(42, exit_req)).await;
+        }
+
+        let captured = self.pending_return_values.remove(&thread)?;
+        let step_depth = step_depth?;
+
+        Some(match step_depth {
+            StepDepth::Out => VmStoppedValue::Return(captured),
+            StepDepth::Into | StepDepth::Over => VmStoppedValue::Expression(captured),
+        })
     }
 
     pub async fn evaluate(

@@ -225,6 +225,36 @@ pub enum JdwpValue {
     Void,
 }
 
+// --- JDWP event kinds -------------------------------------------------------
+//
+// See: https://docs.oracle.com/javase/8/docs/platform/jpda/jdwp/jdwp-protocol.html#JDWP_EventKind
+//
+// Note: only a small subset is currently implemented by nova-jdwp's wire client.
+
+/// EventKind: SingleStep (1)
+pub const EVENT_KIND_SINGLE_STEP: u8 = 1;
+/// EventKind: Breakpoint (2)
+pub const EVENT_KIND_BREAKPOINT: u8 = 2;
+/// EventKind: Exception (4)
+pub const EVENT_KIND_EXCEPTION: u8 = 4;
+/// EventKind: ClassPrepare (8)
+pub const EVENT_KIND_CLASS_PREPARE: u8 = 8;
+/// EventKind: MethodExitWithReturnValue (42)
+pub const EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE: u8 = 42;
+/// EventKind: VMStart (90)
+pub const EVENT_KIND_VM_START: u8 = 90;
+/// EventKind: VMDeath (99)
+pub const EVENT_KIND_VM_DEATH: u8 = 99;
+
+// --- JDWP suspend policies ---------------------------------------------------
+//
+// See: https://docs.oracle.com/javase/8/docs/platform/jpda/jdwp/jdwp-protocol.html#JDWP_SuspendPolicy
+
+/// SuspendPolicy: NONE (0)
+pub const SUSPEND_POLICY_NONE: u8 = 0;
+/// SuspendPolicy: EVENT_THREAD (1)
+pub const SUSPEND_POLICY_EVENT_THREAD: u8 = 1;
+
 impl fmt::Display for JdwpValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
