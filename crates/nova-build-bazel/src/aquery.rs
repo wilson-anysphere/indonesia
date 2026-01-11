@@ -73,7 +73,7 @@ struct AqueryTextprotoStreamingParser<R: BufRead> {
     line_buf: String,
     in_action: bool,
     depth: i32,
-    mnemonic: Option<String>,
+    is_javac: Option<bool>,
     owner: Option<String>,
     arguments: Vec<String>,
     collect_arguments: bool,
@@ -87,7 +87,7 @@ impl<R: BufRead> AqueryTextprotoStreamingParser<R> {
             line_buf: String::new(),
             in_action: false,
             depth: 0,
-            mnemonic: None,
+            is_javac: None,
             owner: None,
             arguments: Vec::new(),
             collect_arguments: true,
@@ -130,7 +130,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
                 if trimmed_start.starts_with("action {") {
                     self.in_action = true;
                     self.depth = brace_delta_unquoted(trimmed_start);
-                    self.mnemonic = None;
+                    self.is_javac = None;
                     self.owner = None;
                     self.arguments.clear();
                     self.collect_arguments = true;
@@ -146,16 +146,20 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
 
             let trimmed = trimmed_start.trim();
             if self.depth == 1 {
-                if let Some(value) = parse_quoted_field(trimmed, "mnemonic:") {
-                    self.collect_arguments = value == "Javac";
-                    if !self.collect_arguments {
+                if let Some(value) = parse_quoted_field_raw(trimmed, "mnemonic:") {
+                    let is_javac = value == "Javac";
+                    self.is_javac = Some(is_javac);
+                    self.collect_arguments = is_javac;
+                    if !is_javac {
                         // Avoid retaining (potentially huge) argument vectors for actions we're
                         // going to discard anyway.
                         self.arguments.clear();
+                        self.owner = None;
                     }
-                    self.mnemonic = Some(value);
                 } else if let Some(value) = parse_quoted_field(trimmed, "owner:") {
-                    self.owner = Some(value);
+                    if self.is_javac != Some(false) {
+                        self.owner = Some(value);
+                    }
                 } else if let Some(value) = parse_quoted_field(trimmed, "arguments:") {
                     if self.collect_arguments {
                         self.arguments.push(value);
@@ -168,14 +172,14 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
                 self.in_action = false;
                 self.depth = 0;
 
-                if self.mnemonic.as_deref() == Some("Javac") {
+                if self.is_javac == Some(true) {
                     return Some(JavacAction {
                         owner: self.owner.take(),
                         arguments: std::mem::take(&mut self.arguments),
                     });
                 }
 
-                self.mnemonic = None;
+                self.is_javac = None;
                 self.owner = None;
                 self.arguments.clear();
             }
@@ -199,7 +203,7 @@ struct AqueryTextprotoStreamingJavacInfoParser<R: BufRead> {
     line_buf: String,
     in_action: bool,
     depth: i32,
-    mnemonic: Option<String>,
+    is_javac: Option<bool>,
     owner: Option<String>,
     info: JavaCompileInfo,
     source_roots: BTreeSet<String>,
@@ -214,7 +218,7 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
             line_buf: String::new(),
             in_action: false,
             depth: 0,
-            mnemonic: None,
+            is_javac: None,
             owner: None,
             info: JavaCompileInfo::default(),
             source_roots: BTreeSet::new(),
@@ -324,7 +328,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                 if trimmed_start.starts_with("action {") {
                     self.in_action = true;
                     self.depth = delta;
-                    self.mnemonic = None;
+                    self.is_javac = None;
                     self.owner = None;
                     self.info = JavaCompileInfo::default();
                     self.source_roots.clear();
@@ -341,14 +345,16 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
 
             let trimmed = trimmed_start.trim();
             if self.depth == 1 {
-                if let Some(value) = parse_quoted_field(trimmed, "mnemonic:") {
-                    self.mnemonic = Some(value);
+                if let Some(value) = parse_quoted_field_raw(trimmed, "mnemonic:") {
+                    self.is_javac = Some(value == "Javac");
                 } else if let Some(value) = parse_quoted_field(trimmed, "owner:") {
-                    self.owner = Some(value);
+                    if self.is_javac != Some(false) {
+                        self.owner = Some(value);
+                    }
                 } else if let Some(value) = parse_quoted_field(trimmed, "arguments:") {
                     // Don't spend time parsing arguments for non-Javac actions, but allow arguments
                     // before we've seen the mnemonic.
-                    if self.mnemonic.as_deref() != Some("Javac") && self.mnemonic.is_some() {
+                    if self.is_javac == Some(false) {
                         // skip
                     } else {
                         self.apply_argument(&value);
@@ -361,7 +367,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                 self.in_action = false;
                 self.depth = 0;
 
-                if self.mnemonic.as_deref() == Some("Javac") {
+                if self.is_javac == Some(true) {
                     let mut info = std::mem::take(&mut self.info);
                     info.source_roots = std::mem::take(&mut self.source_roots).into_iter().collect();
                     self.pending = None;
@@ -371,7 +377,7 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                     });
                 }
 
-                self.mnemonic = None;
+                self.is_javac = None;
                 self.owner = None;
                 self.info = JavaCompileInfo::default();
                 self.source_roots.clear();
@@ -390,6 +396,16 @@ fn parse_quoted_field(line: &str, prefix: &str) -> Option<String> {
     }
     let raw = &line[first + 1..last];
     Some(unescape_textproto(raw))
+}
+
+fn parse_quoted_field_raw<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    let line = line.strip_prefix(prefix)?.trim_start();
+    let first = line.find('"')?;
+    let last = line.rfind('"')?;
+    if first == last {
+        return None;
+    }
+    Some(&line[first + 1..last])
 }
 
 // textproto strings are C-escaped. For the Bazel outputs we care about, handling a minimal
