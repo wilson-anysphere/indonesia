@@ -109,6 +109,30 @@ interface MemoryStatusResponse {
   };
 }
 
+type NovaCompletionItemData = {
+  nova?: {
+    imports?: unknown;
+    uri?: unknown;
+  };
+};
+
+function ensureNovaCompletionItemUri(item: vscode.CompletionItem, uri: string): void {
+  const container = item as unknown as { data?: unknown };
+  const rawData = container.data as NovaCompletionItemData | undefined;
+  if (!rawData || typeof rawData !== 'object') {
+    return;
+  }
+  const nova = rawData.nova;
+  if (!nova || typeof nova !== 'object') {
+    return;
+  }
+  if (typeof nova.uri === 'string' && nova.uri.length > 0) {
+    return;
+  }
+  nova.uri = uri;
+  container.data = rawData;
+}
+
 export async function activate(context: vscode.ExtensionContext) {
   const serverOutput = vscode.window.createOutputChannel('Nova Server');
   context.subscriptions.push(serverOutput);
@@ -205,6 +229,9 @@ export async function activate(context: vscode.ExtensionContext) {
             // Ensure AI items appear above "normal" completions without disrupting normal sorting.
             for (const item of more) {
               item.sortText = item.sortText ?? '0';
+              // Preserve the document URI on the completion item so we can resolve it later and
+              // compute correct import insertion edits via `completionItem/resolve`.
+              ensureNovaCompletionItemUri(item, document.uri.toString());
             }
 
             // LRU cache: keep the most recently produced AI context ids, and evict the oldest.
@@ -562,6 +589,85 @@ export async function activate(context: vscode.ExtensionContext) {
           aiItemsByContextId.set(lastCompletionContextId, cached);
         }
         return cached;
+      },
+      resolveCompletionItem: async (item, token) => {
+        if (token.isCancellationRequested) {
+          return item;
+        }
+        if (!client || !clientStart || !isAiEnabled() || !isAiCompletionsEnabled()) {
+          return item;
+        }
+
+        // Only resolve items that asked for imports.
+        const data = (item as unknown as { data?: unknown }).data as NovaCompletionItemData | undefined;
+        const imports = data?.nova?.imports;
+        if (!Array.isArray(imports) || imports.length === 0) {
+          return item;
+        }
+
+        // Avoid re-resolving items that already have edits.
+        if (item.additionalTextEdits && item.additionalTextEdits.length > 0) {
+          return item;
+        }
+
+        if (lastCompletionDocumentUri) {
+          ensureNovaCompletionItemUri(item, lastCompletionDocumentUri);
+        }
+
+        try {
+          await clientStart;
+        } catch {
+          return item;
+        }
+        if (!client) {
+          return item;
+        }
+
+        const label = typeof item.label === 'string' ? item.label : item.label.label;
+        if (!label || typeof label !== 'string') {
+          return item;
+        }
+
+        try {
+          const resolved = await client.sendRequest<any>(
+            'completionItem/resolve',
+            { label, data: (item as unknown as { data?: unknown }).data },
+            token,
+          );
+          const edits = resolved?.additionalTextEdits;
+          if (!Array.isArray(edits) || edits.length === 0) {
+            return item;
+          }
+
+          const converted: vscode.TextEdit[] = [];
+          for (const edit of edits) {
+            const start = edit?.range?.start;
+            const end = edit?.range?.end;
+            const newText = edit?.newText;
+            if (typeof start?.line !== 'number' || typeof start?.character !== 'number') {
+              continue;
+            }
+            if (typeof end?.line !== 'number' || typeof end?.character !== 'number') {
+              continue;
+            }
+            if (typeof newText !== 'string') {
+              continue;
+            }
+            const range = new vscode.Range(
+              new vscode.Position(start.line, start.character),
+              new vscode.Position(end.line, end.character),
+            );
+            converted.push(vscode.TextEdit.replace(range, newText));
+          }
+          if (converted.length > 0) {
+            item.additionalTextEdits = converted;
+          }
+        } catch {
+          // Best-effort: if resolve fails (unsupported method, server down, etc.) just return the
+          // original completion item.
+        }
+
+        return item;
       },
     }),
   );
