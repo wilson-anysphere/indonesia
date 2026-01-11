@@ -200,7 +200,11 @@ export async function activate(context: vscode.ExtensionContext) {
     middleware: {
       sendRequest: async (type, param, token, next) => {
         try {
-          return await next(type, param, token);
+          const result = await next(type, param, token);
+          if (typeof type === 'string' && type.startsWith('nova/') && type !== 'nova/bugReport') {
+            setSafeModeEnabled?.(false);
+          }
+          return result;
         } catch (err) {
           if (typeof type === 'string' && type.startsWith('nova/') && type !== 'nova/bugReport' && isSafeModeError(err)) {
             setSafeModeEnabled?.(true);
