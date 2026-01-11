@@ -430,6 +430,7 @@ expression: schema
           ]
         },
         "audit_log": {
+          "description": "Optional audit log configuration for AI prompts/model output.",
           "default": {
             "enabled": false,
             "path": null
@@ -492,6 +493,7 @@ expression: schema
           ]
         },
         "privacy": {
+          "description": "Privacy controls and redaction behavior for AI requests.",
           "default": {
             "allow_cloud_code_edits": false,
             "allow_code_edits_without_anonymization": false,
@@ -510,6 +512,7 @@ expression: schema
           ]
         },
         "provider": {
+          "description": "Provider/backend configuration (kind, base URL, model, timeouts, etc).",
           "default": {
             "azure_api_version": null,
             "azure_deployment": null,

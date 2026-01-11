@@ -353,8 +353,10 @@ impl AiTimeoutsConfig {
 #[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AiConfig {
+    /// Provider/backend configuration (kind, base URL, model, timeouts, etc).
     #[serde(default)]
     pub provider: AiProviderConfig,
+    /// Privacy controls and redaction behavior for AI requests.
     #[serde(default)]
     pub privacy: AiPrivacyConfig,
 
@@ -372,6 +374,7 @@ pub struct AiConfig {
     #[serde(default)]
     pub api_key: Option<String>,
 
+    /// Optional audit log configuration for AI prompts/model output.
     #[serde(default)]
     pub audit_log: AuditLogConfig,
 
