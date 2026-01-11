@@ -28,6 +28,9 @@ pub enum ProjectError {
         source: std::io::Error,
     },
 
+    #[error(transparent)]
+    Config(#[from] nova_config::ConfigError),
+
     #[error("failed to parse XML in {path}: {source}")]
     Xml {
         path: PathBuf,
@@ -43,24 +46,25 @@ pub fn load_project(root: impl AsRef<Path>) -> Result<ProjectConfig, ProjectErro
     load_project_with_options(root, &LoadOptions::default())
 }
 
+pub fn load_project_with_workspace_config(
+    root: impl AsRef<Path>,
+) -> Result<ProjectConfig, ProjectError> {
+    let workspace_root = crate::workspace_config::canonicalize_workspace_root(root)?;
+    let nova_config = crate::workspace_config::load_nova_config(&workspace_root)?;
+    let options = LoadOptions {
+        nova_config,
+        ..LoadOptions::default()
+    };
+
+    load_project_from_workspace_root(&workspace_root, &options)
+}
+
 pub fn load_project_with_options(
     root: impl AsRef<Path>,
     options: &LoadOptions,
 ) -> Result<ProjectConfig, ProjectError> {
-    let root = root.as_ref();
-    let workspace_root = std::fs::canonicalize(root).map_err(|source| ProjectError::Io {
-        path: root.to_path_buf(),
-        source,
-    })?;
-
-    let build_system = detect_build_system(&workspace_root)?;
-
-    match build_system {
-        BuildSystem::Maven => maven::load_maven_project(&workspace_root, options),
-        BuildSystem::Gradle => gradle::load_gradle_project(&workspace_root, options),
-        BuildSystem::Bazel => bazel::load_bazel_project(&workspace_root, options),
-        BuildSystem::Simple => simple::load_simple_project(&workspace_root, options),
-    }
+    let workspace_root = crate::workspace_config::canonicalize_workspace_root(root)?;
+    load_project_from_workspace_root(&workspace_root, options)
 }
 
 pub fn reload_project(
@@ -68,7 +72,21 @@ pub fn reload_project(
     _changed_files: &[PathBuf],
 ) -> Result<ProjectConfig, ProjectError> {
     // Naive implementation: re-scan the workspace root.
-    load_project(&config.workspace_root)
+    load_project_with_workspace_config(&config.workspace_root)
+}
+
+fn load_project_from_workspace_root(
+    workspace_root: &Path,
+    options: &LoadOptions,
+) -> Result<ProjectConfig, ProjectError> {
+    let build_system = detect_build_system(workspace_root)?;
+
+    match build_system {
+        BuildSystem::Maven => maven::load_maven_project(workspace_root, options),
+        BuildSystem::Gradle => gradle::load_gradle_project(workspace_root, options),
+        BuildSystem::Bazel => bazel::load_bazel_project(workspace_root, options),
+        BuildSystem::Simple => simple::load_simple_project(workspace_root, options),
+    }
 }
 
 fn detect_build_system(root: &Path) -> Result<BuildSystem, ProjectError> {

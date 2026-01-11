@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nova_classfile::{parse_module_info_class, ClassFile};
-use nova_core::ProjectConfig;
+use nova_core::JdkConfig;
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName, JAVA_BASE};
 use once_cell::sync::OnceCell;
 use thiserror::Error;
@@ -81,7 +81,7 @@ pub(crate) struct JdkSymbolIndex {
 
 impl JdkSymbolIndex {
     pub fn discover_with_cache(
-        config: Option<&ProjectConfig>,
+        config: Option<&JdkConfig>,
         cache_dir: Option<&Path>,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {

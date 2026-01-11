@@ -45,7 +45,7 @@ pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
         serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
     let project_root = PathBuf::from(&params.project_root);
-    let project = nova_project::load_project(&project_root)
+    let project = nova_project::load_project_with_workspace_config(&project_root)
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
     let mut changed_files = Vec::new();

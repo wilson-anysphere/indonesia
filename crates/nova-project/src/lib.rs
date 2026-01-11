@@ -15,10 +15,11 @@ mod maven;
 mod model;
 pub mod package;
 mod simple;
+mod workspace_config;
 
 pub use discover::{
     bazel_workspace_root, is_bazel_workspace, load_project, load_project_with_options,
-    reload_project, LoadOptions, ProjectError,
+    load_project_with_workspace_config, reload_project, LoadOptions, ProjectError,
 };
 pub use model::*;
 pub use package::{

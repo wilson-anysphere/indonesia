@@ -27,6 +27,16 @@ pub struct GeneratedSourcesConfig {
     pub override_roots: Option<Vec<PathBuf>>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct JdkConfig {
+    /// Optional override for the JDK installation to use.
+    ///
+    /// When set, JDK discovery will use this path instead of searching `JAVA_HOME`
+    /// or `java` on `PATH`.
+    #[serde(default, alias = "jdk_home")]
+    pub home: Option<PathBuf>,
+}
+
 fn default_generated_sources_enabled() -> bool {
     true
 }
@@ -46,6 +56,10 @@ pub struct NovaConfig {
     #[serde(default)]
     pub generated_sources: GeneratedSourcesConfig,
 
+    /// Workspace-level JDK override configuration.
+    #[serde(default)]
+    pub jdk: JdkConfig,
+
     /// Global logging settings for Nova crates.
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -59,6 +73,7 @@ impl Default for NovaConfig {
     fn default() -> Self {
         Self {
             generated_sources: GeneratedSourcesConfig::default(),
+            jdk: JdkConfig::default(),
             logging: LoggingConfig::default(),
             ai: AiConfig::default(),
         }
@@ -383,6 +398,38 @@ impl NovaConfig {
         })?;
         Ok(toml::from_str(&text)?)
     }
+
+    pub fn jdk_config(&self) -> nova_core::JdkConfig {
+        nova_core::JdkConfig {
+            home: self.jdk.home.clone(),
+        }
+    }
+}
+
+/// Load the effective Nova config for a workspace root.
+///
+/// Discovery order (first match wins):
+/// 1) `NOVA_CONFIG_PATH` env var (if set)
+/// 2) `<workspace>/.nova/config.toml`
+/// 3) `<workspace>/nova.toml`
+/// 4) fallback `NovaConfig::default()`
+pub fn load_for_workspace(root: &Path) -> Result<NovaConfig, ConfigError> {
+    if let Some(path) = std::env::var_os("NOVA_CONFIG_PATH") {
+        return NovaConfig::load_from_path(PathBuf::from(path));
+    }
+
+    let candidates = [
+        root.join(".nova").join("config.toml"),
+        root.join("nova.toml"),
+    ];
+
+    for path in candidates {
+        if path.is_file() {
+            return NovaConfig::load_from_path(path);
+        }
+    }
+
+    Ok(NovaConfig::default())
 }
 
 /// Load Nova configuration for a workspace.

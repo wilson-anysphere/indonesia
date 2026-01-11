@@ -260,14 +260,14 @@ impl fmt::Debug for StaticMemberId {
     }
 }
 
-/// Workspace/project-level configuration.
+/// Configuration inputs for JDK discovery.
 ///
-/// This is intentionally minimal for now. Downstream crates (e.g. the resolver)
-/// can grow this as Nova's configuration model evolves.
+/// This is intentionally minimal for now, but avoids confusion with
+/// `nova_project::ProjectConfig` (the build graph + source roots).
 #[derive(Clone, Debug, Default)]
-pub struct ProjectConfig {
+pub struct JdkConfig {
     /// Optional override for the JDK installation to use.
-    pub jdk_home: Option<PathBuf>,
+    pub home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

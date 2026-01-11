@@ -2,7 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use nova_core::{Name, ProjectConfig, StaticMemberId, TypeIndex, TypeName};
+use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
+use nova_config::NovaConfig;
 use nova_jdk::{IndexingStats, JdkIndex, JdkInstallation};
 use nova_modules::ModuleName;
 use nova_types::TypeProvider;
@@ -176,12 +177,40 @@ fn discovery_prefers_config_override() -> Result<(), Box<dyn std::error::Error>>
     // to win.
     let bogus = fake.join("bogus");
     let _java_home = EnvVarGuard::set("JAVA_HOME", &bogus);
-    let cfg = ProjectConfig {
-        jdk_home: Some(fake),
+    let cfg = JdkConfig {
+        home: Some(fake),
     };
 
     let install = JdkInstallation::discover(Some(&cfg))?;
-    assert_eq!(install.root(), cfg.jdk_home.as_deref().unwrap());
+    assert_eq!(install.root(), cfg.home.as_deref().unwrap());
+
+    Ok(())
+}
+
+#[test]
+fn discovery_supports_workspace_config_override() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = ENV_LOCK.lock().unwrap();
+
+    let temp = tempdir()?;
+    let workspace_root = temp.path();
+
+    std::fs::create_dir_all(workspace_root.join(".nova"))?;
+    let fake = fake_jdk_root();
+    std::fs::write(
+        workspace_root.join(".nova/config.toml"),
+        format!("[jdk]\njdk_home = '{}'\n", fake.display()),
+    )?;
+
+    let _nova_config_path = EnvVarGuard::unset("NOVA_CONFIG_PATH");
+    let _java_home = EnvVarGuard::set("JAVA_HOME", &workspace_root.join("bogus-java-home"));
+
+    let nova_config: NovaConfig = nova_config::load_for_workspace(workspace_root)?;
+    // `nova-config` is the source of truth for on-disk settings; `nova-core`
+    // exposes a lightweight config used by JDK discovery.
+    let jdk_config: JdkConfig = nova_config.jdk_config();
+
+    let install = JdkInstallation::discover(Some(&jdk_config))?;
+    assert_eq!(install.root(), fake.as_path());
 
     Ok(())
 }

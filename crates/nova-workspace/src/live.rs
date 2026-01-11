@@ -148,7 +148,7 @@ impl Workspace {
         let workspace_root = fs::canonicalize(&root)
             .with_context(|| format!("failed to canonicalize {}", root.display()))?;
 
-        let project = match nova_project::load_project(&workspace_root) {
+        let project = match nova_project::load_project_with_workspace_config(&workspace_root) {
             Ok(project) => Some(project),
             Err(ProjectError::UnknownProjectType { .. }) => None,
             Err(err) => {
@@ -300,7 +300,7 @@ impl WorkspaceDriver {
         }
 
         self.client.show_status("Reloading project…".to_string());
-        if let Err(err) = nova_project::load_project(&self.config.workspace_root) {
+        if let Err(err) = nova_project::load_project_with_workspace_config(&self.config.workspace_root) {
             // Reload failures should not crash the watcher loop; surface as a user-visible error.
             self.client.show_error(format!("Project reload failed: {err}"));
         } else if !events.is_empty() {

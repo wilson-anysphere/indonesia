@@ -24,7 +24,7 @@ pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse>
 
     // Use nova-project to find source roots. This keeps discovery scoped to test sources
     // in Maven/Gradle projects and provides a reasonable fallback for simple projects.
-    let project = nova_project::load_project(&requested_root)
+    let project = nova_project::load_project_with_workspace_config(&requested_root)
         .map_err(|err| NovaTestingError::InvalidRequest(err.to_string()))?;
     let project_root = project.workspace_root;
 

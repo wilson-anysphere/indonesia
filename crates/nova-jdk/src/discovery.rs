@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nova_core::ProjectConfig;
+use nova_core::JdkConfig;
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,13 +31,13 @@ impl JdkInstallation {
 
     /// Discover a JDK installation.
     ///
-    /// When `ProjectConfig.jdk_home` is set it is used as an explicit override.
+    /// When `JdkConfig.home` is set it is used as an explicit override.
     /// Otherwise discovery sources are tried in this order:
     /// 1. `JAVA_HOME`
     /// 2. `java` on `PATH` (via `java -XshowSettings:properties -version`, then symlink resolution)
-    pub fn discover(config: Option<&ProjectConfig>) -> Result<Self, JdkDiscoveryError> {
+    pub fn discover(config: Option<&JdkConfig>) -> Result<Self, JdkDiscoveryError> {
         // Optional config override: when present it should win regardless of environment.
-        if let Some(override_home) = config.and_then(|c| c.jdk_home.as_deref()) {
+        if let Some(override_home) = config.and_then(|c| c.home.as_deref()) {
             let candidate =
                 coerce_to_jdk_root(override_home.to_path_buf()).unwrap_or_else(|| override_home.to_path_buf());
             return Self::from_root(candidate);

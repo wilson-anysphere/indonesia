@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::borrow::Cow;
 
 use nova_core::{
-    Name, PackageName, ProjectConfig, QualifiedName, StaticMemberId, TypeIndex, TypeName,
+    JdkConfig, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName,
 };
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
@@ -117,7 +117,7 @@ impl JdkIndex {
     }
 
     /// Discover a JDK installation and build an index backed by its `jmods/`.
-    pub fn discover(config: Option<&ProjectConfig>) -> Result<Self, JdkIndexError> {
+    pub fn discover(config: Option<&JdkConfig>) -> Result<Self, JdkIndexError> {
         let cache_dir = cache_dir_from_env();
         Self::discover_with_cache_and_stats(config, cache_dir.as_deref(), None)
     }
@@ -148,7 +148,7 @@ impl JdkIndex {
 
     /// Discover a JDK installation and build an index backed by its `jmods/` and an optional persisted cache.
     pub fn discover_with_cache(
-        config: Option<&ProjectConfig>,
+        config: Option<&JdkConfig>,
         cache_dir: Option<&Path>,
     ) -> Result<Self, JdkIndexError> {
         Self::discover_with_cache_and_stats(config, cache_dir, None)
@@ -157,7 +157,7 @@ impl JdkIndex {
     /// Discover a JDK installation and build an index backed by its `jmods/` and an optional persisted cache,
     /// emitting indexing stats as it loads or rebuilds the on-disk cache.
     pub fn discover_with_cache_and_stats(
-        config: Option<&ProjectConfig>,
+        config: Option<&JdkConfig>,
         cache_dir: Option<&Path>,
         stats: Option<&IndexingStats>,
     ) -> Result<Self, JdkIndexError> {

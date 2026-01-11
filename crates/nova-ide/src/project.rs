@@ -97,7 +97,7 @@ impl Project {
     /// Loads a project by recursively collecting `.java` files under `root`.
     pub fn load_from_dir(root: impl AsRef<Path>) -> Result<Self, ProjectDiscoveryError> {
         let root = root.as_ref().to_path_buf();
-        let (workspace_root, source_roots) = match nova_project::load_project(&root) {
+        let (workspace_root, source_roots) = match nova_project::load_project_with_workspace_config(&root) {
             Ok(ProjectConfig {
                 workspace_root,
                 source_roots,

@@ -149,7 +149,7 @@ impl Workspace {
     }
 
     fn project_java_files(&self) -> Result<Vec<PathBuf>> {
-        match nova_project::load_project(&self.root) {
+        match nova_project::load_project_with_workspace_config(&self.root) {
             Ok(config) => {
                 let mut files = Vec::new();
                 for root in config.source_roots {
@@ -396,7 +396,7 @@ impl Workspace {
         sources: &[(PathBuf, String)],
         requested_file: Option<&Path>,
     ) -> Result<Vec<Diagnostic>> {
-        let config = match nova_project::load_project(&self.root) {
+        let config = match nova_project::load_project_with_workspace_config(&self.root) {
             Ok(config) => Some(config),
             Err(ProjectError::UnknownProjectType { .. }) => None,
             Err(err) => {
@@ -460,7 +460,7 @@ impl Workspace {
         sources: &[(PathBuf, String)],
         requested_file: Option<&Path>,
     ) -> Result<Vec<Diagnostic>> {
-        let config = match nova_project::load_project(&self.root) {
+        let config = match nova_project::load_project_with_workspace_config(&self.root) {
             Ok(config) => Some(config),
             Err(ProjectError::UnknownProjectType { .. }) => None,
             Err(err) => {
