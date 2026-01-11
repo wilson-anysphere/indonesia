@@ -176,10 +176,11 @@ pub(crate) fn find_references(
 }
 
 fn project_analysis(db: &dyn Database, file_path: &Path) -> Option<Arc<CachedDaggerProject>> {
-    let root = normalize_root(&project_root_for_path(file_path));
+    let root_raw = framework_cache::project_root_for_path(file_path);
+    let root = normalize_root(&root_raw);
 
     let has_dagger_dep = project_has_dagger_dependency(&root);
-    let (files, fingerprint) = collect_java_sources(db, &root);
+    let (files, fingerprint) = collect_java_sources(db, &root_raw, &root);
     if files.is_empty() {
         return None;
     }
@@ -223,10 +224,11 @@ fn sources_look_like_dagger(files: &[JavaSourceFile]) -> bool {
         .any(|file| MARKERS.iter().any(|needle| file.text.contains(needle)))
 }
 
-fn collect_java_sources(db: &dyn Database, root: &Path) -> (Vec<JavaSourceFile>, u64) {
+fn collect_java_sources(db: &dyn Database, root: &Path, canonical_root: &Path) -> (Vec<JavaSourceFile>, u64) {
     let mut all = Vec::new();
     let mut under_root = Vec::new();
 
+    let has_alt_root = canonical_root != root;
     for file_id in db.all_file_ids() {
         let Some(path) = db.file_path(file_id) else {
             continue;
@@ -239,7 +241,7 @@ fn collect_java_sources(db: &dyn Database, root: &Path) -> (Vec<JavaSourceFile>,
             text: db.file_content(file_id).to_string(),
         };
 
-        if path.starts_with(root) {
+        if path.starts_with(root) || (has_alt_root && path.starts_with(canonical_root)) {
             under_root.push(file);
         } else {
             all.push(file);
@@ -274,16 +276,6 @@ fn dagger_code(source: Option<&str>) -> &'static str {
 
 fn normalize_root(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn project_root_for_path(path: &Path) -> PathBuf {
-    let start = if path.is_dir() {
-        path
-    } else {
-        path.parent().unwrap_or(path)
-    };
-
-    nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
 }
 
 fn span_contains_offset(span: Span, offset: usize) -> bool {
