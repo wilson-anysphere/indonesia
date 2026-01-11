@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
-use nova_remote_proto::{RpcMessage, ShardId};
+use nova_remote_proto::ShardId;
 use nova_router::{
     tls::TlsServerConfig, DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot,
     TcpListenAddr, TlsClientCertFingerprintAllowlist, WorkspaceLayout,
@@ -17,9 +17,10 @@ use rcgen::{
     KeyPair, KeyUsagePurpose,
 };
 use sha2::Digest;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
+
+mod remote_rpc_util;
 
 struct GeneratedCert {
     cert: Certificate,
@@ -132,36 +133,25 @@ async fn connect_mtls(
         .context("tls connect")
 }
 
-async fn write_message(
-    stream: &mut (impl AsyncWrite + Unpin),
-    message: &RpcMessage,
-) -> anyhow::Result<()> {
-    let payload = nova_remote_proto::encode_message(message)?;
-    let len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("message too large"))?;
-
-    stream
-        .write_u32_le(len)
-        .await
-        .context("write message len")?;
-    stream
-        .write_all(&payload)
-        .await
-        .context("write message payload")?;
-    stream.flush().await.context("flush message")?;
-    Ok(())
-}
-
-async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> anyhow::Result<RpcMessage> {
-    let len = stream.read_u32_le().await.context("read message len")?;
-    let mut buf = vec![0u8; len as usize];
-    stream
-        .read_exact(&mut buf)
-        .await
-        .context("read message payload")?;
-    Ok(nova_remote_proto::decode_message(&buf)?)
+async fn connect_and_handshake_mtls(
+    addr: SocketAddr,
+    domain: &str,
+    ca_pem: &[u8],
+    client_cert_pem: &[u8],
+    client_key_pem: &[u8],
+    shard_id: ShardId,
+) -> anyhow::Result<remote_rpc_util::ConnectedWorker<tokio_rustls::client::TlsStream<TcpStream>>> {
+    remote_rpc_util::connect_and_handshake_worker(
+        || async {
+            connect_with_retry(|| async {
+                connect_mtls(addr, domain, ca_pem, client_cert_pem, client_key_pem).await
+            })
+            .await
+        },
+        shard_id,
+        None,
+    )
+    .await
 }
 
 async fn connect_with_retry<F, Fut, T>(mut f: F) -> anyhow::Result<T>
@@ -295,161 +285,71 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
     let router = QueryRouter::new_distributed(config, layout).await?;
 
     // Client A can connect as shard 0.
-    let mut stream_a0 = connect_with_retry(|| {
-        let ca_pem = ca_pem.clone();
-        let cert_pem = client_a_cert_pem.clone();
-        let key_pem = client_a_key_pem.clone();
-        async move {
-            connect_mtls(
-                addr,
-                "localhost",
-                ca_pem.as_bytes(),
-                cert_pem.as_bytes(),
-                key_pem.as_bytes(),
-            )
-            .await
-        }
-    })
-    .await?;
-
-    write_message(
-        &mut stream_a0,
-        &RpcMessage::WorkerHello {
-            shard_id: 0,
-            auth_token: None,
-            has_cached_index: false,
-        },
+    let stream_a0 = connect_and_handshake_mtls(
+        addr,
+        "localhost",
+        ca_pem.as_bytes(),
+        client_a_cert_pem.as_bytes(),
+        client_a_key_pem.as_bytes(),
+        0,
     )
     .await?;
-    let resp = read_message(&mut stream_a0).await?;
-    match resp {
-        RpcMessage::RouterHello { shard_id, .. } => assert_eq!(shard_id, 0),
-        other => return Err(anyhow!("expected RouterHello, got {other:?}")),
-    }
 
     // Client A is rejected for shard 1.
-    let mut stream_a1 = connect_with_retry(|| {
-        let ca_pem = ca_pem.clone();
-        let cert_pem = client_a_cert_pem.clone();
-        let key_pem = client_a_key_pem.clone();
-        async move {
-            connect_mtls(
-                addr,
-                "localhost",
-                ca_pem.as_bytes(),
-                cert_pem.as_bytes(),
-                key_pem.as_bytes(),
-            )
-            .await
-        }
-    })
-    .await?;
-    write_message(
-        &mut stream_a1,
-        &RpcMessage::WorkerHello {
-            shard_id: 1,
-            auth_token: None,
-            has_cached_index: false,
-        },
-    )
-    .await?;
-    let resp = read_message(&mut stream_a1).await?;
-    assert!(matches!(resp, RpcMessage::Error { .. }));
+    assert!(
+        connect_and_handshake_mtls(
+            addr,
+            "localhost",
+            ca_pem.as_bytes(),
+            client_a_cert_pem.as_bytes(),
+            client_a_key_pem.as_bytes(),
+            1,
+        )
+        .await
+        .is_err()
+    );
 
     // Client B can connect as shard 1.
-    let mut stream_b1 = connect_with_retry(|| {
-        let ca_pem = ca_pem.clone();
-        let cert_pem = client_b_cert_pem.clone();
-        let key_pem = client_b_key_pem.clone();
-        async move {
-            connect_mtls(
-                addr,
-                "localhost",
-                ca_pem.as_bytes(),
-                cert_pem.as_bytes(),
-                key_pem.as_bytes(),
-            )
-            .await
-        }
-    })
-    .await?;
-    write_message(
-        &mut stream_b1,
-        &RpcMessage::WorkerHello {
-            shard_id: 1,
-            auth_token: None,
-            has_cached_index: false,
-        },
+    let stream_b1 = connect_and_handshake_mtls(
+        addr,
+        "localhost",
+        ca_pem.as_bytes(),
+        client_b_cert_pem.as_bytes(),
+        client_b_key_pem.as_bytes(),
+        1,
     )
     .await?;
-    let resp = read_message(&mut stream_b1).await?;
-    match resp {
-        RpcMessage::RouterHello { shard_id, .. } => assert_eq!(shard_id, 1),
-        other => return Err(anyhow!("expected RouterHello, got {other:?}")),
-    }
 
     // With a non-empty global allowlist, shards without an explicit per-shard allowlist entry are
     // also protected. Client A should be rejected for shard 2 because it is not in the global
     // allowlist.
-    let mut stream_a2 = connect_with_retry(|| {
-        let ca_pem = ca_pem.clone();
-        let cert_pem = client_a_cert_pem.clone();
-        let key_pem = client_a_key_pem.clone();
-        async move {
-            connect_mtls(
-                addr,
-                "localhost",
-                ca_pem.as_bytes(),
-                cert_pem.as_bytes(),
-                key_pem.as_bytes(),
-            )
-            .await
-        }
-    })
-    .await?;
-    write_message(
-        &mut stream_a2,
-        &RpcMessage::WorkerHello {
-            shard_id: 2,
-            auth_token: None,
-            has_cached_index: false,
-        },
-    )
-    .await?;
-    let resp = read_message(&mut stream_a2).await?;
-    assert!(matches!(resp, RpcMessage::Error { .. }));
+    assert!(
+        connect_and_handshake_mtls(
+            addr,
+            "localhost",
+            ca_pem.as_bytes(),
+            client_a_cert_pem.as_bytes(),
+            client_a_key_pem.as_bytes(),
+            2,
+        )
+        .await
+        .is_err()
+    );
 
     // Client C is in the global allowlist and can connect to shard 2.
-    let mut stream_c2 = connect_with_retry(|| {
-        let ca_pem = ca_pem.clone();
-        let cert_pem = client_c_cert_pem.clone();
-        let key_pem = client_c_key_pem.clone();
-        async move {
-            connect_mtls(
-                addr,
-                "localhost",
-                ca_pem.as_bytes(),
-                cert_pem.as_bytes(),
-                key_pem.as_bytes(),
-            )
-            .await
-        }
-    })
-    .await?;
-    write_message(
-        &mut stream_c2,
-        &RpcMessage::WorkerHello {
-            shard_id: 2,
-            auth_token: None,
-            has_cached_index: false,
-        },
+    let stream_c2 = connect_and_handshake_mtls(
+        addr,
+        "localhost",
+        ca_pem.as_bytes(),
+        client_c_cert_pem.as_bytes(),
+        client_c_key_pem.as_bytes(),
+        2,
     )
     .await?;
-    let resp = read_message(&mut stream_c2).await?;
-    match resp {
-        RpcMessage::RouterHello { shard_id, .. } => assert_eq!(shard_id, 2),
-        other => return Err(anyhow!("expected RouterHello, got {other:?}")),
-    }
+
+    stream_a0.shutdown().await;
+    stream_b1.shutdown().await;
+    stream_c2.shutdown().await;
 
     router.shutdown().await?;
     Ok(())

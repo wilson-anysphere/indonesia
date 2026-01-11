@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use nova_remote_proto::RpcMessage;
 use nova_router::{
     DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, TcpListenAddr, WorkspaceLayout,
 };
@@ -10,27 +9,21 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::{timeout, Instant};
 
-async fn write_rpc_message(stream: &mut TcpStream, msg: &RpcMessage) -> anyhow::Result<()> {
-    let payload = nova_remote_proto::encode_message(msg)?;
-    let len: u32 = payload.len().try_into()?;
-    stream.write_u32_le(len).await?;
-    stream.write_all(&payload).await?;
-    stream.flush().await?;
-    Ok(())
-}
+mod remote_rpc_util;
 
-async fn read_rpc_message_limited(
-    stream: &mut TcpStream,
-    max_len: usize,
-) -> anyhow::Result<RpcMessage> {
-    let len: usize = stream.read_u32_le().await?.try_into()?;
-    anyhow::ensure!(
-        len <= max_len,
-        "message too large ({len} bytes, max {max_len})"
-    );
-    let mut buf = vec![0u8; len];
-    stream.read_exact(&mut buf).await?;
-    Ok(nova_remote_proto::decode_message(&buf)?)
+async fn complete_handshake(addr: std::net::SocketAddr) -> anyhow::Result<()> {
+    let conn = remote_rpc_util::connect_and_handshake_worker(
+        || async {
+            Ok(TcpStream::connect(addr)
+                .await
+                .map_err(anyhow::Error::from)?)
+        },
+        0,
+        None,
+    )
+    .await?;
+    conn.shutdown().await;
+    Ok(())
 }
 
 async fn start_router(
@@ -89,21 +82,7 @@ async fn oversized_worker_hello_is_rejected() -> anyhow::Result<()> {
     );
 
     // Router should remain healthy and accept a subsequent valid handshake.
-    let mut ok = TcpStream::connect(addr).await?;
-    write_rpc_message(
-        &mut ok,
-        &RpcMessage::WorkerHello {
-            shard_id: 0,
-            auth_token: None,
-            has_cached_index: false,
-        },
-    )
-    .await?;
-    let ack = read_rpc_message_limited(&mut ok, 64 * 1024).await?;
-    match ack {
-        RpcMessage::RouterHello { shard_id, .. } => assert_eq!(shard_id, 0),
-        other => panic!("expected RouterHello, got {other:?}"),
-    }
+    complete_handshake(addr).await?;
 
     router.shutdown().await?;
     Ok(())
@@ -141,18 +120,7 @@ async fn handshake_concurrency_is_bounded() -> anyhow::Result<()> {
     drop(_stalled);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let mut ok = TcpStream::connect(addr).await?;
-    write_rpc_message(
-        &mut ok,
-        &RpcMessage::WorkerHello {
-            shard_id: 0,
-            auth_token: None,
-            has_cached_index: false,
-        },
-    )
-    .await?;
-    let ack = read_rpc_message_limited(&mut ok, 64 * 1024).await?;
-    assert!(matches!(ack, RpcMessage::RouterHello { .. }));
+    complete_handshake(addr).await?;
 
     router.shutdown().await?;
     Ok(())

@@ -3,12 +3,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
-use nova_remote_proto::RpcMessage;
+use anyhow::{Context, Result};
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+
+mod remote_rpc_util;
 
 async fn connect_with_retry(path: &Path) -> Result<UnixStream> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
@@ -25,29 +26,15 @@ async fn connect_with_retry(path: &Path) -> Result<UnixStream> {
     }
 }
 
-async fn write_rpc_message(stream: &mut UnixStream, msg: &RpcMessage) -> Result<()> {
-    let payload = nova_remote_proto::encode_message(msg)?;
-    let len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("message too large for u32 length"))?;
-    stream.write_u32_le(len).await.context("write frame len")?;
-    stream
-        .write_all(&payload)
-        .await
-        .context("write frame payload")?;
-    stream.flush().await.context("flush frame")?;
+async fn complete_handshake(path: &Path) -> Result<()> {
+    let conn = remote_rpc_util::connect_and_handshake_worker(
+        || async { connect_with_retry(path).await },
+        0,
+        None,
+    )
+    .await?;
+    conn.shutdown().await;
     Ok(())
-}
-
-async fn read_rpc_message(stream: &mut UnixStream) -> Result<RpcMessage> {
-    let len = stream.read_u32_le().await.context("read frame len")?;
-    let mut buf = vec![0u8; len as usize];
-    stream
-        .read_exact(&mut buf)
-        .await
-        .context("read frame payload")?;
-    nova_remote_proto::decode_message(&buf)
 }
 
 async fn start_router(tmp: &TempDir, listen_path: PathBuf) -> Result<QueryRouter> {
@@ -110,31 +97,9 @@ async fn oversized_frame_len_is_rejected_without_killing_accept_loop() -> Result
     );
 
     // Regression test: invalid connections should not terminate the accept loop.
-    let mut stream = connect_with_retry(&listen_path).await?;
-    write_rpc_message(
-        &mut stream,
-        &RpcMessage::WorkerHello {
-            shard_id: 0,
-            auth_token: None,
-            has_cached_index: false,
-        },
-    )
-    .await?;
-    let resp = tokio::time::timeout(Duration::from_secs(2), read_rpc_message(&mut stream))
+    tokio::time::timeout(Duration::from_secs(2), complete_handshake(&listen_path))
         .await
-        .context("timed out waiting for RouterHello")??;
-
-    match resp {
-        RpcMessage::RouterHello {
-            shard_id,
-            protocol_version,
-            ..
-        } => {
-            assert_eq!(shard_id, 0);
-            assert_eq!(protocol_version, nova_remote_proto::PROTOCOL_VERSION);
-        }
-        other => return Err(anyhow!("unexpected router response: {other:?}")),
-    }
+        .context("timed out waiting for handshake")??;
 
     router.shutdown().await?;
     Ok(())
@@ -150,24 +115,9 @@ async fn stalled_handshake_does_not_block_other_connections() -> Result<()> {
     let _stalled = connect_with_retry(&listen_path).await?;
 
     // Second client should still be able to complete the handshake promptly.
-    let mut stream = connect_with_retry(&listen_path).await?;
-    write_rpc_message(
-        &mut stream,
-        &RpcMessage::WorkerHello {
-            shard_id: 0,
-            auth_token: None,
-            has_cached_index: false,
-        },
-    )
-    .await?;
-
-    let resp = tokio::time::timeout(Duration::from_secs(2), read_rpc_message(&mut stream))
+    tokio::time::timeout(Duration::from_secs(2), complete_handshake(&listen_path))
         .await
-        .context("timed out waiting for RouterHello")??;
-    match resp {
-        RpcMessage::RouterHello { shard_id, .. } => assert_eq!(shard_id, 0),
-        other => return Err(anyhow!("unexpected router response: {other:?}")),
-    }
+        .context("timed out waiting for handshake")??;
 
     router.shutdown().await?;
     Ok(())

@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
+use nova_remote_proto::v3::{Notification, Request, Response};
 use nova_remote_proto::{RpcMessage, ShardId, ShardIndexInfo, WorkerStats};
+use nova_remote_proto::{ShardIndex};
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use tempfile::TempDir;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -10,6 +12,8 @@ use tokio::sync::oneshot;
 
 #[cfg(unix)]
 use tokio::net::UnixStream;
+
+mod remote_rpc_util;
 
 async fn write_rpc(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMessage) -> Result<()> {
     let payload = nova_remote_proto::encode_message(message)?;
@@ -31,12 +35,12 @@ async fn read_rpc(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
 }
 
 #[cfg(unix)]
-async fn connect_worker(socket_path: &Path, shard_id: ShardId) -> Result<UnixStream> {
+async fn connect_unix_with_retry(socket_path: &Path) -> Result<UnixStream> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     let mut last_err = None;
-    let mut stream = loop {
+    loop {
         match UnixStream::connect(socket_path).await {
-            Ok(stream) => break stream,
+            Ok(stream) => return Ok(stream),
             Err(err) => {
                 last_err = Some(err);
                 if tokio::time::Instant::now() >= deadline {
@@ -47,29 +51,7 @@ async fn connect_worker(socket_path: &Path, shard_id: ShardId) -> Result<UnixStr
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         }
-    };
-
-    write_rpc(
-        &mut stream,
-        &RpcMessage::WorkerHello {
-            shard_id,
-            auth_token: None,
-            has_cached_index: false,
-        },
-    )
-    .await?;
-
-    match read_rpc(&mut stream).await? {
-        RpcMessage::RouterHello {
-            shard_id: ack_shard_id,
-            protocol_version,
-            ..
-        } if ack_shard_id == shard_id
-            && protocol_version == nova_remote_proto::PROTOCOL_VERSION => {}
-        other => return Err(anyhow!("unexpected RouterHello: {other:?}")),
     }
-
-    Ok(stream)
 }
 
 #[cfg(unix)]
@@ -82,6 +64,35 @@ async fn expect_disconnect(mut stream: UnixStream) -> Result<()> {
         Ok(Err(_)) => Ok(()),
         Err(_) => Err(anyhow!("timed out waiting for router disconnect")),
     }
+}
+
+#[cfg(unix)]
+async fn connect_worker(
+    socket_path: &Path,
+    shard_id: ShardId,
+) -> Result<remote_rpc_util::ConnectedWorker<UnixStream>> {
+    remote_rpc_util::connect_and_handshake_worker(
+        || async { connect_unix_with_retry(socket_path).await },
+        shard_id,
+        None,
+    )
+    .await
+}
+
+#[cfg(unix)]
+async fn expect_disconnect_v3(conn: nova_remote_rpc::RpcConnection, timeout: Duration) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(anyhow!("timed out waiting for router disconnect"));
+        }
+        match conn.notify(Notification::Unknown).await {
+            Ok(()) => tokio::time::sleep(Duration::from_millis(20)).await,
+            Err(_) => break,
+        }
+    }
+    let _ = conn.shutdown().await;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -122,27 +133,64 @@ async fn update_file_rejects_cross_shard_index_poisoning() -> Result<()> {
 
     let (ready_tx, ready_rx) = oneshot::channel();
     let worker_task = tokio::spawn(async move {
-        let mut stream = connect_worker(&listen_path, 0).await?;
+        let conn = connect_worker(&listen_path, 0).await?;
         let _ = ready_tx.send(());
 
-        let msg = read_rpc(&mut stream).await?;
-        let revision = match msg {
-            RpcMessage::UpdateFile { revision, .. } => revision,
-            other => return Err(anyhow!("expected UpdateFile, got {other:?}")),
-        };
+        match conn {
+            remote_rpc_util::ConnectedWorker::LegacyV2(mut stream) => {
+                let msg = read_rpc(&mut stream).await?;
+                let revision = match msg {
+                    RpcMessage::UpdateFile { revision, .. } => revision,
+                    other => return Err(anyhow!("expected UpdateFile, got {other:?}")),
+                };
 
-        write_rpc(
-            &mut stream,
-            &RpcMessage::ShardIndexInfo(ShardIndexInfo {
-                shard_id: 1,
-                revision,
-                index_generation: 1,
-                symbol_count: 0,
-            }),
-        )
-        .await?;
+                write_rpc(
+                    &mut stream,
+                    &RpcMessage::ShardIndexInfo(ShardIndexInfo {
+                        shard_id: 1,
+                        revision,
+                        index_generation: 1,
+                        symbol_count: 0,
+                    }),
+                )
+                .await?;
 
-        expect_disconnect(stream).await
+                expect_disconnect(stream).await
+            }
+            remote_rpc_util::ConnectedWorker::V3(conn) => {
+                let (handled_tx, mut handled_rx) = tokio::sync::watch::channel(false);
+                conn.set_request_handler(move |_ctx, req| {
+                    let handled_tx = handled_tx.clone();
+                    async move {
+                        match req {
+                            Request::UpdateFile { revision, .. } => {
+                                let _ = handled_tx.send(true);
+                                Ok(Response::ShardIndex(ShardIndex {
+                                    shard_id: 1,
+                                    revision,
+                                    index_generation: 1,
+                                    symbols: Vec::new(),
+                                }))
+                            }
+                            Request::Shutdown => Ok(Response::Shutdown),
+                            _ => Ok(Response::Ack),
+                        }
+                    }
+                });
+
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while handled_rx.changed().await.is_ok() {
+                        if *handled_rx.borrow() {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .context("timed out waiting for router request")?;
+
+                expect_disconnect_v3(conn, Duration::from_secs(1)).await
+            }
+        }
     });
 
     ready_rx
@@ -201,27 +249,65 @@ async fn worker_stats_rejects_mismatched_shard_id() -> Result<()> {
 
     let (ready_tx, ready_rx) = oneshot::channel();
     let worker_task = tokio::spawn(async move {
-        let mut stream = connect_worker(&listen_path, 0).await?;
+        let conn = connect_worker(&listen_path, 0).await?;
         let _ = ready_tx.send(());
 
-        let msg = read_rpc(&mut stream).await?;
-        match msg {
-            RpcMessage::GetWorkerStats => {}
-            other => return Err(anyhow!("expected GetWorkerStats, got {other:?}")),
+        match conn {
+            remote_rpc_util::ConnectedWorker::LegacyV2(mut stream) => {
+                let msg = read_rpc(&mut stream).await?;
+                match msg {
+                    RpcMessage::GetWorkerStats => {}
+                    other => return Err(anyhow!("expected GetWorkerStats, got {other:?}")),
+                }
+
+                write_rpc(
+                    &mut stream,
+                    &RpcMessage::WorkerStats(WorkerStats {
+                        shard_id: 1,
+                        revision: 0,
+                        index_generation: 0,
+                        file_count: 0,
+                    }),
+                )
+                .await?;
+
+                expect_disconnect(stream).await
+            }
+            remote_rpc_util::ConnectedWorker::V3(conn) => {
+                let (handled_tx, mut handled_rx) = tokio::sync::watch::channel(false);
+                conn.set_request_handler(move |_ctx, req| {
+                    let handled_tx = handled_tx.clone();
+                    async move {
+                        match req {
+                            Request::GetWorkerStats => {
+                                let _ = handled_tx.send(true);
+                                Ok(Response::WorkerStats(WorkerStats {
+                                shard_id: 1,
+                                revision: 0,
+                                index_generation: 0,
+                                file_count: 0,
+                            }
+                            ))
+                            }
+                            Request::Shutdown => Ok(Response::Shutdown),
+                            _ => Ok(Response::Ack),
+                        }
+                    }
+                });
+
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while handled_rx.changed().await.is_ok() {
+                        if *handled_rx.borrow() {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .context("timed out waiting for router request")?;
+
+                expect_disconnect_v3(conn, Duration::from_secs(1)).await
+            }
         }
-
-        write_rpc(
-            &mut stream,
-            &RpcMessage::WorkerStats(WorkerStats {
-                shard_id: 1,
-                revision: 0,
-                index_generation: 0,
-                file_count: 0,
-            }),
-        )
-        .await?;
-
-        expect_disconnect(stream).await
     });
 
     ready_rx

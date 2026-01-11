@@ -3,12 +3,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use nova_remote_proto::RpcMessage;
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
+
+mod remote_rpc_util;
 
 #[tokio::test]
 async fn unix_socket_enforces_auth_token_when_configured() -> anyhow::Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
     let tmp = tempfile::TempDir::new()?;
@@ -49,50 +49,41 @@ async fn unix_socket_enforces_auth_token_when_configured() -> anyhow::Result<()>
     }
 
     // Connection without auth token should be rejected.
-    let mut stream = UnixStream::connect(&socket_path).await?;
-    let hello = nova_remote_proto::encode_message(&RpcMessage::WorkerHello {
-        shard_id: 0,
-        auth_token: None,
-        has_cached_index: false,
-    })?;
-    stream.write_u32_le(hello.len() as u32).await?;
-    stream.write_all(&hello).await?;
-    stream.flush().await?;
-
-    let len = stream.read_u32_le().await?;
-    let mut buf = vec![0u8; len as usize];
-    stream.read_exact(&mut buf).await?;
-    let resp = nova_remote_proto::decode_message(&buf)?;
-    match resp {
-        RpcMessage::Error { message } => {
-            assert!(
-                message.contains("authentication"),
-                "unexpected error message: {message:?}"
-            );
+    let res = remote_rpc_util::connect_and_handshake_worker(
+        || async {
+            Ok(UnixStream::connect(&socket_path)
+                .await
+                .map_err(anyhow::Error::from)?)
+        },
+        0,
+        None,
+    )
+    .await;
+    let err = match res {
+        Ok(conn) => {
+            conn.shutdown().await;
+            anyhow::bail!("expected unauthenticated worker to be rejected");
         }
-        other => anyhow::bail!("expected Error response, got {other:?}"),
-    }
-    drop(stream);
+        Err(err) => err,
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("authentication"),
+        "unexpected error message: {msg:?}"
+    );
 
     // A correctly-authenticated worker can connect.
-    let mut stream = UnixStream::connect(&socket_path).await?;
-    let hello = nova_remote_proto::encode_message(&RpcMessage::WorkerHello {
-        shard_id: 0,
-        auth_token: Some("secret-token".into()),
-        has_cached_index: false,
-    })?;
-    stream.write_u32_le(hello.len() as u32).await?;
-    stream.write_all(&hello).await?;
-    stream.flush().await?;
-
-    let len = stream.read_u32_le().await?;
-    let mut buf = vec![0u8; len as usize];
-    stream.read_exact(&mut buf).await?;
-    let resp = nova_remote_proto::decode_message(&buf)?;
-    match resp {
-        RpcMessage::RouterHello { shard_id, .. } => assert_eq!(shard_id, 0),
-        other => anyhow::bail!("expected RouterHello response, got {other:?}"),
-    }
+    let conn = remote_rpc_util::connect_and_handshake_worker(
+        || async {
+            Ok(UnixStream::connect(&socket_path)
+                .await
+                .map_err(anyhow::Error::from)?)
+        },
+        0,
+        Some("secret-token".into()),
+    )
+    .await?;
+    conn.shutdown().await;
 
     router.shutdown().await?;
     Ok(())

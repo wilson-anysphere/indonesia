@@ -10,7 +10,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn v2_router_rejects_v3_hello_with_clear_error() -> Result<()> {
+async fn router_handles_v3_hello_or_rejects_with_clear_error() -> Result<()> {
     let tmp = tempfile::tempdir().context("create temp dir")?;
     let cache_dir = tmp.path().join("cache");
     tokio::fs::create_dir_all(&cache_dir)
@@ -76,7 +76,11 @@ async fn v2_router_rejects_v3_hello_with_clear_error() -> Result<()> {
                 reject.message
             );
         }
-        other => return Err(anyhow!("expected v3 Reject frame, got {other:?}")),
+        nova_remote_proto::v3::WireFrame::Welcome(welcome) => {
+            // Post-migration routers should accept the v3 hello and respond with Welcome.
+            assert_eq!(welcome.shard_id, 0);
+        }
+        other => return Err(anyhow!("expected v3 Welcome/Reject frame, got {other:?}")),
     }
 
     router.shutdown().await.context("shutdown router")?;

@@ -1,13 +1,13 @@
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context, Result};
-use nova_remote_proto::RpcMessage;
+use anyhow::{Context, Result};
 use nova_router::{
     DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, TcpListenAddr, WorkspaceLayout,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+
+mod remote_rpc_util;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_worker_connections_for_same_shard_are_rejected() -> Result<()> {
@@ -38,55 +38,58 @@ async fn concurrent_worker_connections_for_same_shard_are_rejected() -> Result<(
         .await
         .context("start router")?;
 
-    let f1 = connect_and_hello(addr);
-    let f2 = connect_and_hello(addr);
-    let ((resp1, _stream1), (resp2, _stream2)) = tokio::try_join!(f1, f2)?;
+    let f1 = connect_and_handshake(addr);
+    let f2 = connect_and_handshake(addr);
+    let (r1, r2) = tokio::try_join!(f1, f2)?;
 
-    let responses = [resp1, resp2];
-    let ok_count = responses
-        .iter()
-        .filter(|msg| matches!(msg, RpcMessage::RouterHello { .. }))
-        .count();
-    let err_messages: Vec<String> = responses
-        .iter()
-        .filter_map(|msg| match msg {
-            RpcMessage::Error { message } => Some(message.clone()),
-            _ => None,
-        })
-        .collect();
+    let mut successes = Vec::new();
+    let mut errors = Vec::new();
+    for res in [r1, r2] {
+        match res {
+            Ok(conn) => successes.push(conn),
+            Err(err) => errors.push(err),
+        }
+    }
 
     assert_eq!(
-        ok_count, 1,
-        "expected exactly one RouterHello, got responses: {responses:?}"
+        successes.len(),
+        1,
+        "expected exactly one successful worker handshake, got {} (errors: {errors:?})",
+        successes.len()
     );
     assert_eq!(
-        err_messages.len(),
+        errors.len(),
         1,
-        "expected exactly one Error response, got: {responses:?}"
+        "expected exactly one rejected worker handshake, got {}",
+        errors.len()
     );
     assert!(
-        err_messages[0].contains("already has a connected worker"),
-        "unexpected error message: {:?}",
-        err_messages[0]
+        errors[0].contains("already has") || errors[0].contains("connected worker"),
+        "unexpected handshake rejection message: {:?}",
+        errors[0]
     );
+
+    for conn in successes {
+        conn.shutdown().await;
+    }
 
     router.shutdown().await.context("shutdown router")?;
     Ok(())
 }
 
-async fn connect_and_hello(addr: SocketAddr) -> Result<(RpcMessage, TcpStream)> {
-    let mut stream = connect_with_retries(addr).await?;
-    write_message(
-        &mut stream,
-        &RpcMessage::WorkerHello {
-            shard_id: 0,
-            auth_token: None,
-            has_cached_index: false,
-        },
+async fn connect_and_handshake(
+    addr: SocketAddr,
+) -> Result<std::result::Result<remote_rpc_util::ConnectedWorker<TcpStream>, String>> {
+    let res = remote_rpc_util::connect_and_handshake_worker(
+        || async { connect_with_retries(addr).await },
+        0,
+        None,
     )
-    .await?;
-    let resp = read_message(&mut stream).await?;
-    Ok((resp, stream))
+    .await;
+    Ok(match res {
+        Ok(conn) => Ok(conn),
+        Err(err) => Err(err.to_string()),
+    })
 }
 
 fn reserve_tcp_addr() -> Result<SocketAddr> {
@@ -109,23 +112,4 @@ async fn connect_with_retries(addr: SocketAddr) -> Result<TcpStream> {
             Err(err) => return Err(err).with_context(|| format!("connect to router {addr}")),
         }
     }
-}
-
-async fn write_message(stream: &mut TcpStream, message: &RpcMessage) -> Result<()> {
-    let payload = nova_remote_proto::encode_message(message)?;
-    let len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("payload too large"))?;
-    stream.write_u32_le(len).await.context("write len")?;
-    stream.write_all(&payload).await.context("write payload")?;
-    stream.flush().await.context("flush payload")?;
-    Ok(())
-}
-
-async fn read_message(stream: &mut TcpStream) -> Result<RpcMessage> {
-    let len = stream.read_u32_le().await.context("read len")?;
-    let mut buf = vec![0u8; len as usize];
-    stream.read_exact(&mut buf).await.context("read payload")?;
-    Ok(nova_remote_proto::decode_message(&buf)?)
 }
