@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        atomic::{AtomicI32, AtomicU16, AtomicU32, AtomicUsize, Ordering},
+        atomic::{AtomicI32, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
     time::Duration,
@@ -17,8 +17,8 @@ use tokio_util::sync::CancellationToken;
 use super::{
     codec::{encode_command, encode_reply, JdwpReader, JdwpWriter, HANDSHAKE, HEADER_LEN},
     types::{
-        FieldId, JdwpIdSizes, JdwpValue, Location, ObjectId, ReferenceTypeId, ThreadId,
-        EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_FIELD_ACCESS, EVENT_KIND_FIELD_MODIFICATION,
+        FieldId, FrameId, JdwpIdSizes, JdwpValue, Location, MethodId, ObjectId, ReferenceTypeId,
+        ThreadId, EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_FIELD_ACCESS, EVENT_KIND_FIELD_MODIFICATION,
         EVENT_KIND_VM_DISCONNECT, EVENT_MODIFIER_KIND_CLASS_EXCLUDE, EVENT_MODIFIER_KIND_CLASS_MATCH,
         EVENT_MODIFIER_KIND_CLASS_ONLY, EVENT_MODIFIER_KIND_COUNT, EVENT_MODIFIER_KIND_EXCEPTION_ONLY,
         EVENT_MODIFIER_KIND_FIELD_ONLY, EVENT_MODIFIER_KIND_INSTANCE_ONLY,
@@ -238,6 +238,50 @@ impl MockJdwpServer {
         self.state.redefine_classes_calls.lock().await.clone()
     }
 
+    pub async fn create_string_calls(&self) -> Vec<CreateStringCall> {
+        self.state.create_string_calls.lock().await.clone()
+    }
+
+    pub async fn stack_frame_set_values_calls(&self) -> Vec<StackFrameSetValuesCall> {
+        self.state.stack_frame_set_values_calls.lock().await.clone()
+    }
+
+    pub async fn object_reference_set_values_calls(&self) -> Vec<ObjectReferenceSetValuesCall> {
+        self.state
+            .object_reference_set_values_calls
+            .lock()
+            .await
+            .clone()
+    }
+
+    pub async fn class_type_set_values_calls(&self) -> Vec<ClassTypeSetValuesCall> {
+        self.state.class_type_set_values_calls.lock().await.clone()
+    }
+
+    pub async fn array_reference_set_values_calls(&self) -> Vec<ArrayReferenceSetValuesCall> {
+        self.state
+            .array_reference_set_values_calls
+            .lock()
+            .await
+            .clone()
+    }
+
+    pub async fn class_type_new_instance_calls(&self) -> Vec<ClassTypeNewInstanceCall> {
+        self.state.class_type_new_instance_calls.lock().await.clone()
+    }
+
+    pub async fn array_type_new_instance_calls(&self) -> Vec<ArrayTypeNewInstanceCall> {
+        self.state.array_type_new_instance_calls.lock().await.clone()
+    }
+
+    pub async fn interface_type_invoke_method_calls(&self) -> Vec<InterfaceTypeInvokeMethodCall> {
+        self.state
+            .interface_type_invoke_method_calls
+            .lock()
+            .await
+            .clone()
+    }
+
     pub async fn pinned_object_ids(&self) -> BTreeSet<ObjectId> {
         self.state.pinned_object_ids.lock().await.clone()
     }
@@ -313,6 +357,7 @@ struct State {
     config: MockJdwpServerConfig,
     next_request_id: AtomicI32,
     next_packet_id: AtomicU32,
+    next_object_id: AtomicU64,
     hashmap_bucket_calls: AtomicU32,
     vm_suspend_calls: AtomicU32,
     vm_resume_calls: AtomicU32,
@@ -335,7 +380,21 @@ struct State {
     event_requests: tokio::sync::Mutex<Vec<MockEventRequest>>,
     redefine_classes_error_code: AtomicU16,
     redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
+    create_string_calls: tokio::sync::Mutex<Vec<CreateStringCall>>,
+    stack_frame_set_values_calls: tokio::sync::Mutex<Vec<StackFrameSetValuesCall>>,
+    object_reference_set_values_calls: tokio::sync::Mutex<Vec<ObjectReferenceSetValuesCall>>,
+    class_type_set_values_calls: tokio::sync::Mutex<Vec<ClassTypeSetValuesCall>>,
+    array_reference_set_values_calls: tokio::sync::Mutex<Vec<ArrayReferenceSetValuesCall>>,
+    class_type_new_instance_calls: tokio::sync::Mutex<Vec<ClassTypeNewInstanceCall>>,
+    array_type_new_instance_calls: tokio::sync::Mutex<Vec<ArrayTypeNewInstanceCall>>,
+    interface_type_invoke_method_calls: tokio::sync::Mutex<Vec<InterfaceTypeInvokeMethodCall>>,
     pinned_object_ids: tokio::sync::Mutex<BTreeSet<ObjectId>>,
+    created_strings: tokio::sync::Mutex<HashMap<ObjectId, String>>,
+    stack_frame_values: tokio::sync::Mutex<HashMap<(ThreadId, FrameId, u32), JdwpValue>>,
+    object_field_values: tokio::sync::Mutex<HashMap<(ObjectId, FieldId), JdwpValue>>,
+    static_field_values: tokio::sync::Mutex<HashMap<(ReferenceTypeId, FieldId), JdwpValue>>,
+    array_values: tokio::sync::Mutex<HashMap<ObjectId, Vec<JdwpValue>>>,
+    array_type_ids: tokio::sync::Mutex<HashMap<ObjectId, ReferenceTypeId>>,
     last_classes_by_signature: tokio::sync::Mutex<Option<String>>,
     delayed_replies: HashMap<(u8, u8), Duration>,
     capabilities: Vec<bool>,
@@ -373,6 +432,7 @@ impl State {
             config,
             next_request_id: AtomicI32::new(0),
             next_packet_id: AtomicU32::new(0),
+            next_object_id: AtomicU64::new(ALLOC_OBJECT_ID_START),
             hashmap_bucket_calls: AtomicU32::new(0),
             vm_suspend_calls: AtomicU32::new(0),
             vm_resume_calls: AtomicU32::new(0),
@@ -395,7 +455,21 @@ impl State {
             event_requests: tokio::sync::Mutex::new(Vec::new()),
             redefine_classes_error_code: AtomicU16::new(0),
             redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
+            create_string_calls: tokio::sync::Mutex::new(Vec::new()),
+            stack_frame_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
+            object_reference_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
+            class_type_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
+            array_reference_set_values_calls: tokio::sync::Mutex::new(Vec::new()),
+            class_type_new_instance_calls: tokio::sync::Mutex::new(Vec::new()),
+            array_type_new_instance_calls: tokio::sync::Mutex::new(Vec::new()),
+            interface_type_invoke_method_calls: tokio::sync::Mutex::new(Vec::new()),
             pinned_object_ids: tokio::sync::Mutex::new(BTreeSet::new()),
+            created_strings: tokio::sync::Mutex::new(HashMap::new()),
+            stack_frame_values: tokio::sync::Mutex::new(HashMap::new()),
+            object_field_values: tokio::sync::Mutex::new(HashMap::new()),
+            static_field_values: tokio::sync::Mutex::new(HashMap::new()),
+            array_values: tokio::sync::Mutex::new(HashMap::new()),
+            array_type_ids: tokio::sync::Mutex::new(HashMap::new()),
             last_classes_by_signature: tokio::sync::Mutex::new(None),
             delayed_replies,
             capabilities,
@@ -414,6 +488,10 @@ impl State {
 
     fn alloc_packet_id(&self) -> u32 {
         self.next_packet_id.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn alloc_object_id(&self) -> u64 {
+        self.next_object_id.fetch_add(1, Ordering::Relaxed)
     }
 
     fn reply_delay(&self, command_set: u8, command: u8) -> Option<Duration> {
@@ -475,6 +553,64 @@ pub struct RedefineClassesCall {
     pub classes: Vec<(ReferenceTypeId, Vec<u8>)>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateStringCall {
+    pub value: String,
+    pub returned_id: ObjectId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StackFrameSetValuesCall {
+    pub thread: ThreadId,
+    pub frame_id: FrameId,
+    pub values: Vec<(u32, JdwpValue)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ObjectReferenceSetValuesCall {
+    pub object_id: ObjectId,
+    pub values: Vec<(FieldId, JdwpValue)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassTypeSetValuesCall {
+    pub class_id: ReferenceTypeId,
+    pub values: Vec<(FieldId, JdwpValue)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayReferenceSetValuesCall {
+    pub array_id: ObjectId,
+    pub first_index: i32,
+    pub values: Vec<JdwpValue>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassTypeNewInstanceCall {
+    pub class_id: ReferenceTypeId,
+    pub thread: ThreadId,
+    pub ctor_method: MethodId,
+    pub args: Vec<JdwpValue>,
+    pub options: u32,
+    pub returned_id: ObjectId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrayTypeNewInstanceCall {
+    pub array_type_id: ReferenceTypeId,
+    pub length: i32,
+    pub returned_id: ObjectId,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceTypeInvokeMethodCall {
+    pub interface_id: ReferenceTypeId,
+    pub thread: ThreadId,
+    pub method_id: MethodId,
+    pub args: Vec<JdwpValue>,
+    pub options: u32,
+}
+
 // Use a thread object id with the high bit set so DAP implementations that
 // (correctly) bit-cast `u64 <-> i64` are exercised by integration tests.
 //
@@ -530,6 +666,10 @@ const OWNED_MONITOR_A_OBJECT_ID: u64 = 0x5201;
 const OWNED_MONITOR_B_OBJECT_ID: u64 = 0x5202;
 const CONTENDED_MONITOR_OBJECT_ID: u64 = 0x5203;
 
+// Dynamically allocated object ids returned by commands like `VirtualMachine.CreateString`
+// and `ArrayType.NewInstance`.
+const ALLOC_OBJECT_ID_START: u64 = 0x5300;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MockExceptionRequest {
     pub request_id: i32,
@@ -546,6 +686,21 @@ fn default_location() -> Location {
         class_id: CLASS_ID,
         method_id: METHOD_ID,
         index: 0,
+    }
+}
+
+fn jdwp_value_tag(value: &JdwpValue) -> u8 {
+    match *value {
+        JdwpValue::Boolean(_) => b'Z',
+        JdwpValue::Byte(_) => b'B',
+        JdwpValue::Char(_) => b'C',
+        JdwpValue::Short(_) => b'S',
+        JdwpValue::Int(_) => b'I',
+        JdwpValue::Long(_) => b'J',
+        JdwpValue::Float(_) => b'F',
+        JdwpValue::Double(_) => b'D',
+        JdwpValue::Object { tag, .. } => tag,
+        JdwpValue::Void => b'V',
     }
 }
 
@@ -766,6 +921,27 @@ async fn handle_packet(
             w.write_string("/mock/boot");
             (0, w.into_vec())
         }
+        // VirtualMachine.CreateString
+        (1, 11) => {
+            let value = r.read_string().unwrap_or_default();
+            let object_id = state.alloc_object_id();
+            state
+                .created_strings
+                .lock()
+                .await
+                .insert(object_id, value.clone());
+            state
+                .create_string_calls
+                .lock()
+                .await
+                .push(CreateStringCall {
+                    value,
+                    returned_id: object_id,
+                });
+            let mut w = JdwpWriter::new();
+            w.write_object_id(object_id, sizes);
+            (0, w.into_vec())
+        }
         // ThreadReference.Name
         (11, 1) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
@@ -980,21 +1156,23 @@ async fn handle_packet(
             }
             let mut w = JdwpWriter::new();
             w.write_u32(field_ids.len() as u32);
+            let static_values = state.static_field_values.lock().await;
             for field_id in field_ids {
-                match (type_id, field_id) {
-                    (OBJECT_CLASS_ID, FIELD_ID) => {
-                        w.write_u8(b'I');
-                        w.write_i32(7);
-                    }
-                    (THROWABLE_CLASS_ID, DETAIL_MESSAGE_FIELD_ID) => {
-                        // String values are tagged as `s` (JDWP Tag.STRING) in replies.
-                        w.write_u8(b's');
-                        w.write_object_id(STRING_OBJECT_ID, sizes);
-                    }
-                    _ => {
-                        w.write_u8(b'V');
-                    }
+                if let Some(value) = static_values.get(&(type_id, field_id)) {
+                    w.write_tagged_value(value, sizes);
+                    continue;
                 }
+
+                let value = match (type_id, field_id) {
+                    (OBJECT_CLASS_ID, FIELD_ID) => JdwpValue::Int(7),
+                    (THROWABLE_CLASS_ID, DETAIL_MESSAGE_FIELD_ID) => JdwpValue::Object {
+                        // String values are tagged as `s` (JDWP Tag.STRING) in replies.
+                        tag: b's',
+                        id: STRING_OBJECT_ID,
+                    },
+                    _ => JdwpValue::Void,
+                };
+                w.write_tagged_value(&value, sizes);
             }
             (0, w.into_vec())
         }
@@ -1054,8 +1232,8 @@ async fn handle_packet(
                 // JDWP `Error.THREAD_NOT_SUSPENDED` (no suspension means frames/locals are unavailable).
                 (ERROR_THREAD_NOT_SUSPENDED, Vec::new())
             } else {
-                let _thread_id = r.read_object_id(sizes).unwrap_or(0);
-                let _frame_id = r.read_id(sizes.frame_id).unwrap_or(0);
+                let thread_id = r.read_object_id(sizes).unwrap_or(0);
+                let frame_id = r.read_id(sizes.frame_id).unwrap_or(0);
                 let count = r.read_u32().unwrap_or(0) as usize;
                 let mut slots = Vec::with_capacity(count);
                 for _ in 0..count {
@@ -1065,31 +1243,70 @@ async fn handle_packet(
                 }
                 let mut w = JdwpWriter::new();
                 w.write_u32(slots.len() as u32);
+                let locals = state.stack_frame_values.lock().await;
                 for (slot, tag) in slots {
-                    match (slot, tag) {
-                        (0, b'I') => {
-                            w.write_u8(b'I');
-                            w.write_i32(42);
-                        }
-                        (1, _) => {
-                            w.write_u8(b'L');
-                            w.write_object_id(OBJECT_ID, sizes);
-                        }
-                        (2, _) => {
-                            // String values are tagged as `s` (JDWP Tag.STRING) in replies.
-                            w.write_u8(b's');
-                            w.write_object_id(STRING_OBJECT_ID, sizes);
-                        }
-                        (3, _) => {
-                            w.write_u8(b'[');
-                            w.write_object_id(ARRAY_OBJECT_ID, sizes);
-                        }
-                        _ => {
-                            w.write_u8(b'V');
-                        }
+                    if let Some(value) = locals.get(&(thread_id, frame_id, slot)) {
+                        w.write_tagged_value(value, sizes);
+                        continue;
                     }
+
+                    let value = match (slot, tag) {
+                        (0, b'I') => JdwpValue::Int(42),
+                        (1, _) => JdwpValue::Object {
+                            tag: b'L',
+                            id: OBJECT_ID,
+                        },
+                        (2, _) => JdwpValue::Object {
+                            // String values are tagged as `s` (JDWP Tag.STRING) in replies.
+                            tag: b's',
+                            id: STRING_OBJECT_ID,
+                        },
+                        (3, _) => JdwpValue::Object {
+                            tag: b'[',
+                            id: ARRAY_OBJECT_ID,
+                        },
+                        _ => JdwpValue::Void,
+                    };
+                    w.write_tagged_value(&value, sizes);
                 }
                 (0, w.into_vec())
+            }
+        }
+        // StackFrame.SetValues
+        (16, 2) => {
+            let res = (|| {
+                let thread = r.read_object_id(sizes)?;
+                let frame_id = r.read_id(sizes.frame_id)?;
+                let count = r.read_u32()? as usize;
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let slot = r.read_u32()?;
+                    let value = r.read_tagged_value(sizes)?;
+                    values.push((slot, value));
+                }
+                Ok::<_, super::types::JdwpError>((thread, frame_id, values))
+            })();
+
+            match res {
+                Ok((thread, frame_id, values)) => {
+                    {
+                        let mut locals = state.stack_frame_values.lock().await;
+                        for (slot, value) in &values {
+                            locals.insert((thread, frame_id, *slot), value.clone());
+                        }
+                    }
+                    state
+                        .stack_frame_set_values_calls
+                        .lock()
+                        .await
+                        .push(StackFrameSetValuesCall {
+                            thread,
+                            frame_id,
+                            values,
+                        });
+                    (0, Vec::new())
+                }
+                Err(_) => (1, Vec::new()),
             }
         }
         // StackFrame.ThisObject
@@ -1104,7 +1321,16 @@ async fn handle_packet(
         (9, 1) => {
             let object_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            match object_id {
+            if state.created_strings.lock().await.contains_key(&object_id) {
+                w.write_u8(1); // TypeTag.CLASS
+                w.write_reference_type_id(STRING_CLASS_ID, sizes);
+            } else if let Some(array_type_id) =
+                state.array_type_ids.lock().await.get(&object_id).copied()
+            {
+                w.write_u8(3); // TypeTag.ARRAY
+                w.write_reference_type_id(array_type_id, sizes);
+            } else {
+                match object_id {
                 OBJECT_ID => {
                     w.write_u8(1); // TypeTag.CLASS
                     w.write_reference_type_id(OBJECT_CLASS_ID, sizes);
@@ -1150,7 +1376,8 @@ async fn handle_packet(
                     w.write_u8(1);
                     w.write_reference_type_id(OBJECT_CLASS_ID, sizes);
                 }
-            }
+                }
+            };
             (0, w.into_vec())
         }
         // ObjectReference.MonitorInfo
@@ -1219,32 +1446,35 @@ async fn handle_packet(
             }
             let mut w = JdwpWriter::new();
             w.write_u32(count as u32);
+            let object_values = state.object_field_values.lock().await;
             for field_id in field_ids {
-                match (object_id, field_id) {
-                    (EXCEPTION_ID, DETAIL_MESSAGE_FIELD_ID) => {
-                        w.write_u8(b's');
-                        w.write_object_id(STRING_OBJECT_ID, sizes);
-                    }
-                    (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_SIZE_ID) => {
-                        w.write_u8(b'I');
-                        w.write_i32(2);
-                    }
-                    (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_TABLE_ID) => {
-                        w.write_u8(b'[');
-                        w.write_object_id(HASHMAP_TABLE_ARRAY_OBJECT_ID, sizes);
-                    }
-                    (SAMPLE_HASHSET_OBJECT_ID, HASHSET_FIELD_MAP_ID) => {
-                        w.write_u8(b'L');
-                        w.write_object_id(SAMPLE_HASHMAP_OBJECT_ID, sizes);
-                    }
-                    (HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => {
-                        w.write_u8(b's');
-                        w.write_object_id(HASHMAP_KEY_A_OBJECT_ID, sizes);
-                    }
-                    (HASHMAP_NODE_B_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => {
-                        w.write_u8(b's');
-                        w.write_object_id(HASHMAP_KEY_B_OBJECT_ID, sizes);
-                    }
+                if let Some(value) = object_values.get(&(object_id, field_id)) {
+                    w.write_tagged_value(value, sizes);
+                    continue;
+                }
+
+                let value = match (object_id, field_id) {
+                    (EXCEPTION_ID, DETAIL_MESSAGE_FIELD_ID) => JdwpValue::Object {
+                        tag: b's',
+                        id: STRING_OBJECT_ID,
+                    },
+                    (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_SIZE_ID) => JdwpValue::Int(2),
+                    (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_TABLE_ID) => JdwpValue::Object {
+                        tag: b'[',
+                        id: HASHMAP_TABLE_ARRAY_OBJECT_ID,
+                    },
+                    (SAMPLE_HASHSET_OBJECT_ID, HASHSET_FIELD_MAP_ID) => JdwpValue::Object {
+                        tag: b'L',
+                        id: SAMPLE_HASHMAP_OBJECT_ID,
+                    },
+                    (HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => JdwpValue::Object {
+                        tag: b's',
+                        id: HASHMAP_KEY_A_OBJECT_ID,
+                    },
+                    (HASHMAP_NODE_B_OBJECT_ID, HASHMAP_NODE_FIELD_KEY_ID) => JdwpValue::Object {
+                        tag: b's',
+                        id: HASHMAP_KEY_B_OBJECT_ID,
+                    },
                     (
                         HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID,
                         HASHMAP_NODE_FIELD_VALUE_ID,
@@ -1252,17 +1482,44 @@ async fn handle_packet(
                     | (
                         HASHMAP_NODE_A_OBJECT_ID | HASHMAP_NODE_B_OBJECT_ID,
                         HASHMAP_NODE_FIELD_NEXT_ID,
-                    ) => {
-                        w.write_u8(b'L');
-                        w.write_object_id(0, sizes);
-                    }
-                    _ => {
-                        w.write_u8(b'I');
-                        w.write_i32(7);
-                    }
-                }
+                    ) => JdwpValue::Object { tag: b'L', id: 0 },
+                    _ => JdwpValue::Int(7),
+                };
+                w.write_tagged_value(&value, sizes);
             }
             (0, w.into_vec())
+        }
+        // ObjectReference.SetValues
+        (9, 3) => {
+            let res = (|| {
+                let object_id = r.read_object_id(sizes)?;
+                let count = r.read_u32()? as usize;
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let field_id = r.read_id(sizes.field_id)?;
+                    let value = r.read_tagged_value(sizes)?;
+                    values.push((field_id, value));
+                }
+                Ok::<_, super::types::JdwpError>((object_id, values))
+            })();
+
+            match res {
+                Ok((object_id, values)) => {
+                    {
+                        let mut field_values = state.object_field_values.lock().await;
+                        for (field_id, value) in &values {
+                            field_values.insert((object_id, *field_id), value.clone());
+                        }
+                    }
+                    state
+                        .object_reference_set_values_calls
+                        .lock()
+                        .await
+                        .push(ObjectReferenceSetValuesCall { object_id, values });
+                    (0, Vec::new())
+                }
+                Err(_) => (1, Vec::new()),
+            }
         }
         // ObjectReference.DisableCollection
         (9, 7) => {
@@ -1280,17 +1537,21 @@ async fn handle_packet(
         (10, 1) => {
             let object_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            let value = match object_id {
-                STRING_OBJECT_ID => "mock string".to_string(),
-                SAMPLE_STRING_OBJECT_ID => {
-                    // Include characters that require escaping and exceed the formatter's default length.
-                    let mut out = "hello\\world\n\"quoted\" and a long tail: ".repeat(3);
-                    out.push_str(&"x".repeat(80));
-                    out
+            let value = if let Some(value) = state.created_strings.lock().await.get(&object_id) {
+                value.clone()
+            } else {
+                match object_id {
+                    STRING_OBJECT_ID => "mock string".to_string(),
+                    SAMPLE_STRING_OBJECT_ID => {
+                        // Include characters that require escaping and exceed the formatter's default length.
+                        let mut out = "hello\\world\n\"quoted\" and a long tail: ".repeat(3);
+                        out.push_str(&"x".repeat(80));
+                        out
+                    }
+                    HASHMAP_KEY_A_OBJECT_ID => "a".to_string(),
+                    HASHMAP_KEY_B_OBJECT_ID => "b".to_string(),
+                    _ => "mock string".to_string(),
                 }
-                HASHMAP_KEY_A_OBJECT_ID => "a".to_string(),
-                HASHMAP_KEY_B_OBJECT_ID => "b".to_string(),
-                _ => "mock string".to_string(),
             };
             w.write_string(&value);
             (0, w.into_vec())
@@ -1299,11 +1560,15 @@ async fn handle_packet(
         (13, 1) => {
             let array_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            let len = match array_id {
-                ARRAY_OBJECT_ID => 3,
-                SAMPLE_INT_ARRAY_OBJECT_ID => 5,
-                HASHMAP_TABLE_ARRAY_OBJECT_ID => 2,
-                _ => 0,
+            let len = if let Some(values) = state.array_values.lock().await.get(&array_id) {
+                values.len() as i32
+            } else {
+                match array_id {
+                    ARRAY_OBJECT_ID => 3,
+                    SAMPLE_INT_ARRAY_OBJECT_ID => 5,
+                    HASHMAP_TABLE_ARRAY_OBJECT_ID => 2,
+                    _ => 0,
+                }
             };
             w.write_i32(len);
             (0, w.into_vec())
@@ -1314,7 +1579,20 @@ async fn handle_packet(
             let first_index = r.read_i32().unwrap_or(0);
             let length = r.read_i32().unwrap_or(0);
             let mut w = JdwpWriter::new();
-            match array_id {
+            if let Some(values) = state.array_values.lock().await.get(&array_id) {
+                let start = first_index.max(0) as usize;
+                let req = length.max(0) as usize;
+                let end = start.saturating_add(req).min(values.len());
+                let slice = if start < end { &values[start..end] } else { &[] };
+
+                let tag = values.first().map(jdwp_value_tag).unwrap_or(b'V');
+                w.write_u8(tag);
+                w.write_u32(slice.len() as u32);
+                for value in slice {
+                    w.write_value(value, sizes);
+                }
+            } else {
+                match array_id {
                 ARRAY_OBJECT_ID => {
                     w.write_u8(b'I'); // element tag
                     w.write_u32(length.max(0) as u32);
@@ -1367,8 +1645,65 @@ async fn handle_packet(
                     w.write_u8(b'V');
                     w.write_u32(0);
                 }
+                }
             }
             (0, w.into_vec())
+        }
+        // ArrayReference.SetValues
+        (13, 3) => {
+            let res = (|| {
+                let array_id = r.read_object_id(sizes)?;
+                let first_index = r.read_i32()?;
+                let count = r.read_u32()? as usize;
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    values.push(r.read_tagged_value(sizes)?);
+                }
+                Ok::<_, super::types::JdwpError>((array_id, first_index, values))
+            })();
+
+            match res {
+                Ok((array_id, first_index, values)) => {
+                    {
+                        let mut arrays = state.array_values.lock().await;
+                        let array = arrays.entry(array_id).or_insert_with(|| {
+                            if array_id == SAMPLE_INT_ARRAY_OBJECT_ID {
+                                vec![
+                                    JdwpValue::Int(10),
+                                    JdwpValue::Int(20),
+                                    JdwpValue::Int(30),
+                                    JdwpValue::Int(40),
+                                    JdwpValue::Int(50),
+                                ]
+                            } else {
+                                Vec::new()
+                            }
+                        });
+                        for (offset, value) in values.iter().enumerate() {
+                            let idx = first_index.saturating_add(offset as i32);
+                            if idx < 0 {
+                                continue;
+                            }
+                            let idx = idx as usize;
+                            if idx >= array.len() {
+                                array.resize(idx + 1, JdwpValue::Int(0));
+                            }
+                            array[idx] = value.clone();
+                        }
+                    }
+                    state
+                        .array_reference_set_values_calls
+                        .lock()
+                        .await
+                        .push(ArrayReferenceSetValuesCall {
+                            array_id,
+                            first_index,
+                            values,
+                        });
+                    (0, Vec::new())
+                }
+                Err(_) => (1, Vec::new()),
+            }
         }
         // ClassLoaderReference.DefineClass
         (14, 2) => {
@@ -1386,6 +1721,37 @@ async fn handle_packet(
                 let mut w = JdwpWriter::new();
                 w.write_reference_type_id(DEFINED_CLASS_ID, sizes);
                 (0, w.into_vec())
+            }
+        }
+        // ClassType.SetValues
+        (3, 2) => {
+            let res = (|| {
+                let class_id = r.read_reference_type_id(sizes)?;
+                let count = r.read_u32()? as usize;
+                let mut values = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let field_id = r.read_id(sizes.field_id)?;
+                    let value = r.read_tagged_value(sizes)?;
+                    values.push((field_id, value));
+                }
+                Ok::<_, super::types::JdwpError>((class_id, values))
+            })();
+            match res {
+                Ok((class_id, values)) => {
+                    {
+                        let mut static_values = state.static_field_values.lock().await;
+                        for (field_id, value) in &values {
+                            static_values.insert((class_id, *field_id), value.clone());
+                        }
+                    }
+                    state
+                        .class_type_set_values_calls
+                        .lock()
+                        .await
+                        .push(ClassTypeSetValuesCall { class_id, values });
+                    (0, Vec::new())
+                }
+                Err(_) => (1, Vec::new()),
             }
         }
         // ClassType.InvokeMethod
@@ -1406,6 +1772,120 @@ async fn handle_packet(
             match res {
                 Ok(args) => {
                     let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    let mut w = JdwpWriter::new();
+                    w.write_tagged_value(&return_value, sizes);
+                    w.write_object_id(0, sizes); // exception
+                    (0, w.into_vec())
+                }
+                Err(_) => (1, Vec::new()),
+            }
+        }
+        // ClassType.NewInstance
+        (3, 4) => {
+            let res = (|| {
+                let class_id = r.read_reference_type_id(sizes)?;
+                let thread = r.read_object_id(sizes)?;
+                let ctor_method = r.read_id(sizes.method_id)?;
+                let arg_count = r.read_u32()? as usize;
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(r.read_tagged_value(sizes)?);
+                }
+                let options = r.read_u32()?;
+                Ok::<_, super::types::JdwpError>((class_id, thread, ctor_method, args, options))
+            })();
+
+            match res {
+                Ok((class_id, thread, ctor_method, args, options)) => {
+                    let object_id = state.alloc_object_id();
+                    state
+                        .class_type_new_instance_calls
+                        .lock()
+                        .await
+                        .push(ClassTypeNewInstanceCall {
+                            class_id,
+                            thread,
+                            ctor_method,
+                            args,
+                            options,
+                            returned_id: object_id,
+                        });
+                    let mut w = JdwpWriter::new();
+                    w.write_object_id(object_id, sizes);
+                    w.write_object_id(0, sizes); // exception
+                    (0, w.into_vec())
+                }
+                Err(_) => (1, Vec::new()),
+            }
+        }
+        // ArrayType.NewInstance
+        (4, 1) => {
+            let res = (|| {
+                let array_type_id = r.read_reference_type_id(sizes)?;
+                let length = r.read_i32()?;
+                Ok::<_, super::types::JdwpError>((array_type_id, length))
+            })();
+
+            match res {
+                Ok((array_type_id, length)) if length >= 0 => {
+                    let array_id = state.alloc_object_id();
+                    let mut values = Vec::with_capacity(length as usize);
+                    for _ in 0..length {
+                        values.push(JdwpValue::Int(0));
+                    }
+                    state.array_values.lock().await.insert(array_id, values);
+                    state
+                        .array_type_ids
+                        .lock()
+                        .await
+                        .insert(array_id, array_type_id);
+                    state
+                        .array_type_new_instance_calls
+                        .lock()
+                        .await
+                        .push(ArrayTypeNewInstanceCall {
+                            array_type_id,
+                            length,
+                            returned_id: array_id,
+                        });
+                    let mut w = JdwpWriter::new();
+                    w.write_object_id(array_id, sizes);
+                    (0, w.into_vec())
+                }
+                Ok((_array_type_id, _length)) => (1, Vec::new()),
+                Err(_) => (1, Vec::new()),
+            }
+        }
+        // InterfaceType.InvokeMethod
+        (5, 1) => {
+            let res = (|| {
+                let interface_id = r.read_reference_type_id(sizes)?;
+                let thread = r.read_object_id(sizes)?;
+                let method_id = r.read_id(sizes.method_id)?;
+                let arg_count = r.read_u32()? as usize;
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(r.read_tagged_value(sizes)?);
+                }
+                let options = r.read_u32()?;
+                Ok::<_, super::types::JdwpError>((interface_id, thread, method_id, args, options))
+            })();
+
+            match res {
+                Ok((interface_id, thread, method_id, args, options)) => {
+                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    state
+                        .interface_type_invoke_method_calls
+                        .lock()
+                        .await
+                        .push(InterfaceTypeInvokeMethodCall {
+                            interface_id,
+                            thread,
+                            method_id,
+                            args,
+                            options,
+                        });
+
                     let mut w = JdwpWriter::new();
                     w.write_tagged_value(&return_value, sizes);
                     w.write_object_id(0, sizes); // exception

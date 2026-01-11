@@ -345,6 +345,16 @@ impl JdwpClient {
         })
     }
 
+    /// VirtualMachine.CreateString (1, 11)
+    pub async fn virtual_machine_create_string(&self, value: &str) -> Result<ObjectId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_string(value);
+        let payload = self.send_command_raw(1, 11, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_object_id(&sizes)
+    }
+
     pub async fn all_threads(&self) -> Result<Vec<ThreadId>> {
         let payload = self.send_command_raw(1, 4, Vec::new()).await?;
         let sizes = self.id_sizes().await;
@@ -735,6 +745,44 @@ impl JdwpClient {
         Ok(values)
     }
 
+    /// StackFrame.SetValues (16, 2)
+    pub async fn stack_frame_set_values(
+        &self,
+        thread: ThreadId,
+        frame_id: FrameId,
+        values: &[(u32, JdwpValue)],
+    ) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        w.write_id(frame_id, sizes.frame_id);
+        w.write_u32(values.len() as u32);
+        for (slot, value) in values {
+            w.write_u32(*slot);
+            w.write_tagged_value(value, &sizes);
+        }
+        let _ = self.send_command_raw(16, 2, w.into_vec()).await?;
+        Ok(())
+    }
+
+    /// ClassType.SetValues (3, 2)
+    pub async fn class_type_set_values(
+        &self,
+        class_id: ReferenceTypeId,
+        values: &[(FieldId, JdwpValue)],
+    ) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        w.write_u32(values.len() as u32);
+        for (field_id, value) in values {
+            w.write_id(*field_id, sizes.field_id);
+            w.write_tagged_value(value, &sizes);
+        }
+        let _ = self.send_command_raw(3, 2, w.into_vec()).await?;
+        Ok(())
+    }
+
     pub async fn class_type_invoke_method(
         &self,
         class_id: ReferenceTypeId,
@@ -754,6 +802,73 @@ impl JdwpClient {
         }
         w.write_u32(options);
         let payload = self.send_command_raw(3, 3, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let return_value = r.read_tagged_value(&sizes)?;
+        let exception = r.read_object_id(&sizes)?;
+        Ok((return_value, exception))
+    }
+
+    /// ClassType.NewInstance (3, 4)
+    pub async fn class_type_new_instance(
+        &self,
+        class_id: ReferenceTypeId,
+        thread: ThreadId,
+        ctor_method: MethodId,
+        args: &[JdwpValue],
+        options: u32,
+    ) -> Result<(ObjectId, ObjectId)> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        w.write_object_id(thread, &sizes);
+        w.write_id(ctor_method, sizes.method_id);
+        w.write_u32(args.len() as u32);
+        for arg in args {
+            w.write_tagged_value(arg, &sizes);
+        }
+        w.write_u32(options);
+        let payload = self.send_command_raw(3, 4, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let new_object = r.read_object_id(&sizes)?;
+        let exception = r.read_object_id(&sizes)?;
+        Ok((new_object, exception))
+    }
+
+    /// ArrayType.NewInstance (4, 1)
+    pub async fn array_type_new_instance(
+        &self,
+        array_type_id: ReferenceTypeId,
+        length: i32,
+    ) -> Result<ObjectId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(array_type_id, &sizes);
+        w.write_i32(length);
+        let payload = self.send_command_raw(4, 1, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_object_id(&sizes)
+    }
+
+    /// InterfaceType.InvokeMethod (5, 1)
+    pub async fn interface_type_invoke_method(
+        &self,
+        interface_id: ReferenceTypeId,
+        thread: ThreadId,
+        method_id: MethodId,
+        args: &[JdwpValue],
+        options: u32,
+    ) -> Result<(JdwpValue, ObjectId)> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(interface_id, &sizes);
+        w.write_object_id(thread, &sizes);
+        w.write_id(method_id, sizes.method_id);
+        w.write_u32(args.len() as u32);
+        for arg in args {
+            w.write_tagged_value(arg, &sizes);
+        }
+        w.write_u32(options);
+        let payload = self.send_command_raw(5, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         let return_value = r.read_tagged_value(&sizes)?;
         let exception = r.read_object_id(&sizes)?;
@@ -905,6 +1020,24 @@ impl JdwpClient {
         Ok(values)
     }
 
+    /// ObjectReference.SetValues (9, 3)
+    pub async fn object_reference_set_values(
+        &self,
+        object_id: ObjectId,
+        values: &[(FieldId, JdwpValue)],
+    ) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(object_id, &sizes);
+        w.write_u32(values.len() as u32);
+        for (field_id, value) in values {
+            w.write_id(*field_id, sizes.field_id);
+            w.write_tagged_value(value, &sizes);
+        }
+        let _ = self.send_command_raw(9, 3, w.into_vec()).await?;
+        Ok(())
+    }
+
     pub async fn object_reference_invoke_method(
         &self,
         object_id: ObjectId,
@@ -985,6 +1118,25 @@ impl JdwpClient {
             values.push(r.read_value(tag, &sizes)?);
         }
         Ok(values)
+    }
+
+    /// ArrayReference.SetValues (13, 3)
+    pub async fn array_reference_set_values(
+        &self,
+        array_id: ObjectId,
+        first_index: i32,
+        values: &[JdwpValue],
+    ) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(array_id, &sizes);
+        w.write_i32(first_index);
+        w.write_u32(values.len() as u32);
+        for value in values {
+            w.write_tagged_value(value, &sizes);
+        }
+        let _ = self.send_command_raw(13, 3, w.into_vec()).await?;
+        Ok(())
     }
 
     pub async fn vm_resume(&self) -> Result<()> {
@@ -1451,12 +1603,15 @@ mod tests {
     use std::time::Duration;
 
     use super::{EventModifier, JdwpClient, JdwpClientConfig};
-    use crate::wire::mock::{DelayedReply, MockEventRequestModifier, MockJdwpServer, MockJdwpServerConfig};
+    use crate::wire::mock::{
+        DelayedReply, MockEventRequestModifier, MockJdwpServer, MockJdwpServerConfig,
+    };
     use crate::wire::types::{
         EVENT_KIND_BREAKPOINT, EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION, EVENT_KIND_FIELD_ACCESS,
-        EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, EVENT_KIND_VM_DISCONNECT,
-        JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpIdSizes, Location, SUSPEND_POLICY_ALL,
-        SUSPEND_POLICY_EVENT_THREAD, SUSPEND_POLICY_NONE,
+        EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
+        EVENT_KIND_VM_DISCONNECT, INVOKE_NONVIRTUAL, INVOKE_SINGLE_THREADED, JdwpCapabilitiesNew,
+        JdwpError, JdwpEvent, JdwpIdSizes, Location, SUSPEND_POLICY_ALL, SUSPEND_POLICY_EVENT_THREAD,
+        SUSPEND_POLICY_NONE,
     };
     use crate::wire::JdwpValue;
 
@@ -1809,7 +1964,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn event_request_set_encodes_new_event_modifiers() {
         let server = MockJdwpServer::spawn().await.unwrap();
@@ -2006,5 +2160,229 @@ mod tests {
             .await
             .expect("shutdown token was not cancelled after VmDisconnect");
     }
-}
 
+    #[tokio::test]
+    async fn virtual_machine_create_string_round_trips_through_string_reference_value() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let string_id = client
+            .virtual_machine_create_string("hello")
+            .await
+            .unwrap();
+        let value = client.string_reference_value(string_id).await.unwrap();
+        assert_eq!(value, "hello");
+
+        let calls = server.create_string_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].value, "hello");
+        assert_eq!(calls[0].returned_id, string_id);
+    }
+
+    #[tokio::test]
+    async fn set_values_commands_are_encoded_and_mutate_mock_state() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let thread = client.all_threads().await.unwrap()[0];
+        let frame = client.frames(thread, 0, 1).await.unwrap()[0];
+
+        // StackFrame.SetValues
+        client
+            .stack_frame_set_values(
+                thread,
+                frame.frame_id,
+                &[
+                    (0, JdwpValue::Int(123)),
+                    (
+                        2,
+                        JdwpValue::Object {
+                            tag: b's',
+                            id: 0,
+                        },
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let calls = server.stack_frame_set_values_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].thread, thread);
+        assert_eq!(calls[0].frame_id, frame.frame_id);
+        assert_eq!(
+            calls[0].values,
+            vec![
+                (0, JdwpValue::Int(123)),
+                (2, JdwpValue::Object { tag: b's', id: 0 }),
+            ]
+        );
+
+        // Ensure SetValues actually affects StackFrame.GetValues in the mock.
+        let values = client
+            .stack_frame_get_values(
+                thread,
+                frame.frame_id,
+                &[(0, "I".to_string()), (2, "Ljava/lang/String;".to_string())],
+            )
+            .await
+            .unwrap();
+        assert_eq!(values[0], JdwpValue::Int(123));
+        assert_eq!(values[1], JdwpValue::Object { tag: b's', id: 0 });
+
+        // ObjectReference.SetValues round-trip via ObjectReference.GetValues.
+        let this_object = client
+            .stack_frame_this_object(thread, frame.frame_id)
+            .await
+            .unwrap();
+        let (_ref_type_tag, class_id) = client
+            .object_reference_reference_type(this_object)
+            .await
+            .unwrap();
+        let fields = client.reference_type_fields(class_id).await.unwrap();
+        let field_id = fields[0].field_id;
+
+        let before = client
+            .object_reference_get_values(this_object, &[field_id])
+            .await
+            .unwrap();
+        assert_eq!(before, vec![JdwpValue::Int(7)]);
+
+        client
+            .object_reference_set_values(this_object, &[(field_id, JdwpValue::Int(99))])
+            .await
+            .unwrap();
+
+        let after = client
+            .object_reference_get_values(this_object, &[field_id])
+            .await
+            .unwrap();
+        assert_eq!(after, vec![JdwpValue::Int(99)]);
+
+        let calls = server.object_reference_set_values_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].object_id, this_object);
+        assert_eq!(calls[0].values, vec![(field_id, JdwpValue::Int(99))]);
+
+        // ClassType.SetValues round-trip via ReferenceType.GetValues.
+        client
+            .class_type_set_values(class_id, &[(field_id, JdwpValue::Int(77))])
+            .await
+            .unwrap();
+        let values = client.reference_type_get_values(class_id, &[field_id]).await.unwrap();
+        assert_eq!(values, vec![JdwpValue::Int(77)]);
+
+        let calls = server.class_type_set_values_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].class_id, class_id);
+        assert_eq!(calls[0].values, vec![(field_id, JdwpValue::Int(77))]);
+
+        // ArrayReference.SetValues round-trip via ArrayReference.GetValues.
+        let array_id = server.sample_int_array_id();
+        client
+            .array_reference_set_values(array_id, 1, &[JdwpValue::Int(999)])
+            .await
+            .unwrap();
+        let values = client.array_reference_get_values(array_id, 0, 5).await.unwrap();
+        assert_eq!(
+            values,
+            vec![
+                JdwpValue::Int(10),
+                JdwpValue::Int(999),
+                JdwpValue::Int(30),
+                JdwpValue::Int(40),
+                JdwpValue::Int(50)
+            ]
+        );
+
+        let calls = server.array_reference_set_values_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].array_id, array_id);
+        assert_eq!(calls[0].first_index, 1);
+        assert_eq!(calls[0].values, vec![JdwpValue::Int(999)]);
+    }
+
+    #[tokio::test]
+    async fn expression_eval_primitives_record_payloads() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let thread = client.all_threads().await.unwrap()[0];
+        let frame = client.frames(thread, 0, 1).await.unwrap()[0];
+        let class_id = frame.location.class_id;
+        let ctor_method = frame.location.method_id;
+
+        let (new_object, exception) = client
+            .class_type_new_instance(
+                class_id,
+                thread,
+                ctor_method,
+                &[
+                    JdwpValue::Int(1),
+                    JdwpValue::Object {
+                        tag: b'L',
+                        id: 0,
+                    },
+                ],
+                INVOKE_SINGLE_THREADED,
+            )
+            .await
+            .unwrap();
+        assert_ne!(new_object, 0);
+        assert_eq!(exception, 0);
+
+        let calls = server.class_type_new_instance_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].class_id, class_id);
+        assert_eq!(calls[0].thread, thread);
+        assert_eq!(calls[0].ctor_method, ctor_method);
+        assert_eq!(
+            calls[0].args,
+            vec![
+                JdwpValue::Int(1),
+                JdwpValue::Object {
+                    tag: b'L',
+                    id: 0
+                }
+            ]
+        );
+        assert_eq!(calls[0].options, INVOKE_SINGLE_THREADED);
+        assert_eq!(calls[0].returned_id, new_object);
+
+        let (_tag, array_type_id) = client
+            .object_reference_reference_type(server.sample_int_array_id())
+            .await
+            .unwrap();
+        let new_array = client.array_type_new_instance(array_type_id, 4).await.unwrap();
+        assert_ne!(new_array, 0);
+        assert_eq!(client.array_reference_length(new_array).await.unwrap(), 4);
+
+        let calls = server.array_type_new_instance_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].array_type_id, array_type_id);
+        assert_eq!(calls[0].length, 4);
+        assert_eq!(calls[0].returned_id, new_array);
+
+        let arg = JdwpValue::Int(5);
+        let (return_value, exception) = client
+            .interface_type_invoke_method(
+                0xDEAD_BEEF,
+                thread,
+                ctor_method,
+                &[arg.clone()],
+                INVOKE_SINGLE_THREADED | INVOKE_NONVIRTUAL,
+            )
+            .await
+            .unwrap();
+        assert_eq!(return_value, arg);
+        assert_eq!(exception, 0);
+
+        let calls = server.interface_type_invoke_method_calls().await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].interface_id, 0xDEAD_BEEF);
+        assert_eq!(calls[0].thread, thread);
+        assert_eq!(calls[0].method_id, ctor_method);
+        assert_eq!(calls[0].args, vec![arg]);
+        assert_eq!(calls[0].options, INVOKE_SINGLE_THREADED | INVOKE_NONVIRTUAL);
+    }
+}

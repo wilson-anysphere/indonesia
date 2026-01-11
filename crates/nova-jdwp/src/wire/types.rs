@@ -427,6 +427,15 @@ pub const SUSPEND_POLICY_EVENT_THREAD: u8 = 1;
 /// SuspendPolicy: ALL (2)
 pub const SUSPEND_POLICY_ALL: u8 = 2;
 
+// --- JDWP invocation options -------------------------------------------------
+//
+// See: https://docs.oracle.com/javase/8/docs/platform/jpda/jdwp/jdwp-protocol.html#JDWP_InvokeOptions
+
+/// InvokeOptions: INVOKE_SINGLE_THREADED (0x1)
+pub const INVOKE_SINGLE_THREADED: u32 = 0x1;
+/// InvokeOptions: INVOKE_NONVIRTUAL (0x2)
+pub const INVOKE_NONVIRTUAL: u32 = 0x2;
+
 impl fmt::Display for JdwpValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
