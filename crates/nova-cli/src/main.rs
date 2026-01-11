@@ -315,8 +315,8 @@ enum PerfCommand {
         #[arg(long)]
         current: PathBuf,
         /// Optional runtime thresholds config (TOML).
-        #[arg(long)]
-        config: Option<PathBuf>,
+        #[arg(long = "thresholds-config")]
+        thresholds_config: Option<PathBuf>,
         /// Allow regressions for these metric IDs (repeatable).
         #[arg(long)]
         allow: Vec<String>,
@@ -630,10 +630,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                                 .last_updated_millis
                                 .map(|v| v.to_string())
                                 .unwrap_or_else(|| "(unknown)".to_string());
-                            let nova_version = cache
-                                .nova_version
-                                .as_deref()
-                                .unwrap_or("(unknown)");
+                            let nova_version = cache.nova_version.as_deref().unwrap_or("(unknown)");
                             let schema_version = cache
                                 .schema_version
                                 .map(|v| v.to_string())
@@ -796,7 +793,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
             PerfCommand::CompareRuntime {
                 baseline,
                 current,
-                config,
+                thresholds_config,
                 allow,
                 markdown_out,
             } => {
@@ -807,7 +804,7 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                     format!("load current runtime run from {}", current.display())
                 })?;
 
-                let config = match config {
+                let config = match thresholds_config {
                     Some(path) => RuntimeThresholdConfig::read_toml(&path).with_context(|| {
                         format!("load runtime thresholds config {}", path.display())
                     })?,
