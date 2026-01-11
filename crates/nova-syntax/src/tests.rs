@@ -547,6 +547,19 @@ fn parse_postfix_increment_decrement() {
 }
 
 #[test]
+fn parse_class_literal_in_annotation_argument() {
+    let input = "class Foo { @Anno(targetEntity = Post.class) int x; }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let has_class_literal = result
+        .syntax()
+        .descendants()
+        .any(|n| n.kind() == SyntaxKind::FieldAccessExpression);
+    assert!(has_class_literal);
+}
+
+#[test]
 fn parse_expression_parses_binary_expression() {
     let result = parse_expression("a + b");
     assert_eq!(result.errors, Vec::new());

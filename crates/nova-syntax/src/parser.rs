@@ -2161,7 +2161,14 @@ impl<'a> Parser<'a> {
                     if min_bp > 120 {
                         break;
                     }
-                    if self.nth(1).is_some_and(|k| k.is_identifier_like()) {
+                    // Java class literals (`Foo.class`) use the reserved keyword `class` after the
+                    // dot. Treat it like an identifier for the purpose of best-effort parsing so
+                    // downstream consumers can reliably read annotation arguments such as
+                    // `targetEntity = Foo.class`.
+                    if self
+                        .nth(1)
+                        .is_some_and(|k| k.is_identifier_like() || k == SyntaxKind::ClassKw)
+                    {
                         self.builder
                             .start_node_at(checkpoint, SyntaxKind::FieldAccessExpression.into());
                         self.bump();

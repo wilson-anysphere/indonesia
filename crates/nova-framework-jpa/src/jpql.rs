@@ -5,8 +5,8 @@
 
 use std::collections::HashMap;
 
+use nova_syntax::{parse_java, SyntaxKind, SyntaxNode, SyntaxToken};
 use nova_types::{CompletionItem, Diagnostic, Span};
-use regex::Regex;
 
 use crate::entity::EntityModel;
 
@@ -173,47 +173,30 @@ fn is_keyword(upper: &str) -> bool {
 
 /// Extract JPQL strings from Java source annotations (`@Query`, `@NamedQuery`).
 pub fn extract_jpql_strings(java_source: &str) -> Vec<(String, Span)> {
-    // We use regex for best-effort extraction of string literals. This is not a
-    // full Java parser, but it works well for common patterns.
-    //
-    // Examples:
-    //   @Query("select u from User u")
-    //   @Query(nativeQuery = false, value = "select u from User u")
-    //   @NamedQuery(name="X", query="select u from User u")
-    //
-    // We intentionally support both single and double quote literals.
-    static QUERY_POSITIONAL_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        Regex::new(r#"@Query\s*\(\s*(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#).unwrap()
-    });
-    static QUERY_VALUE_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        Regex::new(r#"@Query\s*\([^)]*?\bvalue\s*=\s*(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#)
-            .unwrap()
-    });
-    static NAMED_QUERY_RE: once_cell::sync::Lazy<Regex> = once_cell::sync::Lazy::new(|| {
-        Regex::new(
-            r#"@NamedQuery\s*\([^)]*?\bquery\s*=\s*(?P<lit>"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')"#,
-        )
-        .unwrap()
-    });
-
     let mut out = Vec::new();
+    let parse = parse_java(java_source);
+    let root = parse.syntax();
+    for annotation in root.descendants().filter(|n| n.kind() == SyntaxKind::Annotation) {
+        let Some(simple_name) = annotation_simple_name(&annotation) else {
+            continue;
+        };
 
-    for cap in QUERY_POSITIONAL_RE.captures_iter(java_source) {
-        if let Some(m) = cap.name("lit") {
-            let span = Span::new(m.start(), m.end());
-            out.push((strip_quotes(m.as_str()).to_string(), span));
-        }
-    }
-    for cap in QUERY_VALUE_RE.captures_iter(java_source) {
-        if let Some(m) = cap.name("lit") {
-            let span = Span::new(m.start(), m.end());
-            out.push((strip_quotes(m.as_str()).to_string(), span));
-        }
-    }
-    for cap in NAMED_QUERY_RE.captures_iter(java_source) {
-        if let Some(m) = cap.name("lit") {
-            let span = Span::new(m.start(), m.end());
-            out.push((strip_quotes(m.as_str()).to_string(), span));
+        match simple_name.as_str() {
+            "Query" => {
+                if let Some((value, span)) =
+                    jpql_string_from_annotation(&annotation, "value", true)
+                {
+                    out.push((value, span));
+                }
+            }
+            "NamedQuery" => {
+                if let Some((value, span)) =
+                    jpql_string_from_annotation(&annotation, "query", false)
+                {
+                    out.push((value, span));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -222,13 +205,126 @@ pub fn extract_jpql_strings(java_source: &str) -> Vec<(String, Span)> {
 
 fn strip_quotes(lit: &str) -> &str {
     let lit = lit.trim();
-    if (lit.starts_with('"') && lit.ends_with('"'))
+    if lit.starts_with("\"\"\"") && lit.ends_with("\"\"\"") && lit.len() >= 6 {
+        &lit[3..lit.len() - 3]
+    } else if (lit.starts_with('"') && lit.ends_with('"'))
         || (lit.starts_with('\'') && lit.ends_with('\''))
     {
         &lit[1..lit.len() - 1]
     } else {
         lit
     }
+}
+
+fn literal_content_bounds(source: &str, lit_span: Span) -> (usize, usize) {
+    let Some(lit) = source.get(lit_span.start..lit_span.end) else {
+        return (lit_span.start, lit_span.end);
+    };
+
+    if lit.starts_with("\"\"\"") && lit.ends_with("\"\"\"") && lit.len() >= 6 {
+        (
+            lit_span.start.saturating_add(3),
+            lit_span.end.saturating_sub(3),
+        )
+    } else {
+        (
+            lit_span.start.saturating_add(1),
+            lit_span.end.saturating_sub(1),
+        )
+    }
+}
+
+fn annotation_simple_name(annotation: &SyntaxNode) -> Option<String> {
+    let name = annotation.children().find(|n| n.kind() == SyntaxKind::Name)?;
+    let last = name
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind().is_identifier_like())
+        .last()?;
+    Some(last.text().to_string())
+}
+
+fn jpql_string_from_annotation(
+    annotation: &SyntaxNode,
+    key: &str,
+    allow_positional: bool,
+) -> Option<(String, Span)> {
+    let args = annotation
+        .children()
+        .find(|n| n.kind() == SyntaxKind::ArgumentList)?;
+
+    // Prefer a named argument (`key = "..."`).
+    if let Some((value, span)) = string_literal_for_named_arg(&args, key) {
+        return Some((value, span));
+    }
+
+    // Otherwise, support a single positional string literal argument (used by `@Query("...")`).
+    if allow_positional {
+        let first_expr = args.children().next()?;
+        if let Some((value, span)) = first_string_literal_token(&first_expr) {
+            return Some((value, span));
+        }
+    }
+
+    None
+}
+
+fn string_literal_for_named_arg(args: &SyntaxNode, key: &str) -> Option<(String, Span)> {
+    for expr in args.children() {
+        if expr.kind() != SyntaxKind::AssignmentExpression {
+            continue;
+        }
+
+        let mut lhs_idents = Vec::new();
+        let mut seen_eq = false;
+        let mut rhs_string: Option<SyntaxToken> = None;
+
+        for token in expr.descendants_with_tokens().filter_map(|e| e.into_token()) {
+            if !seen_eq {
+                if token.kind() == SyntaxKind::Eq {
+                    seen_eq = true;
+                    continue;
+                }
+                if token.kind().is_identifier_like() {
+                    lhs_idents.push(token.text().to_string());
+                }
+                continue;
+            }
+
+            if matches!(token.kind(), SyntaxKind::StringLiteral | SyntaxKind::TextBlock) {
+                rhs_string = Some(token);
+                break;
+            }
+        }
+
+        let Some(found_key) = lhs_idents.last() else {
+            continue;
+        };
+        if found_key != key {
+            continue;
+        }
+
+        let token = rhs_string?;
+        let span = span_of_token(&token);
+        return Some((strip_quotes(token.text()).to_string(), span));
+    }
+    None
+}
+
+fn first_string_literal_token(expr: &SyntaxNode) -> Option<(String, Span)> {
+    let token = expr
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| matches!(t.kind(), SyntaxKind::StringLiteral | SyntaxKind::TextBlock))?;
+    let span = span_of_token(&token);
+    Some((strip_quotes(token.text()).to_string(), span))
+}
+
+fn span_of_token(token: &SyntaxToken) -> Span {
+    let range = token.text_range();
+    let start: usize = u32::from(range.start()) as usize;
+    let end: usize = u32::from(range.end()) as usize;
+    Span::new(start, end)
 }
 
 /// Diagnose all JPQL query strings found in the provided Java source.
@@ -241,7 +337,7 @@ pub fn jpql_diagnostics_in_java_source(java_source: &str, model: &EntityModel) -
     for (query, lit_span) in extract_jpql_strings(java_source) {
         // `lit_span` covers the quote characters. We map query spans to the
         // underlying literal content (start after the opening quote).
-        let content_start = lit_span.start.saturating_add(1);
+        let (content_start, _content_end) = literal_content_bounds(java_source, lit_span);
 
         for mut diag in jpql_diagnostics(&query, model) {
             if let Some(span) = diag.span {
@@ -267,10 +363,9 @@ pub fn jpql_completions_in_java_source(
     model: &EntityModel,
 ) -> Vec<CompletionItem> {
     for (query, lit_span) in extract_jpql_strings(java_source) {
-        let content_start = lit_span.start.saturating_add(1);
-        let content_end_exclusive = lit_span.end.saturating_sub(1);
+        let (content_start, content_end_inclusive) = literal_content_bounds(java_source, lit_span);
 
-        if cursor >= content_start && cursor <= content_end_exclusive {
+        if cursor >= content_start && cursor <= content_end_inclusive {
             let query_cursor = cursor.saturating_sub(content_start);
             return jpql_completions(&query, query_cursor, model);
         }

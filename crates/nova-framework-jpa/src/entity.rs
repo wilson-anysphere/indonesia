@@ -1,11 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use nova_framework_parse::{
-    clean_type, collect_annotations, find_named_child, node_text, parse_java, visit_nodes,
-    ParsedAnnotation,
-};
+use nova_syntax::{parse_java, SyntaxKind, SyntaxNode, SyntaxToken};
 use nova_types::{Diagnostic, Span};
-use tree_sitter::Node;
 
 pub const JPA_PARSE_ERROR: &str = "JPA_PARSE_ERROR";
 pub const JPA_MISSING_ID: &str = "JPA_MISSING_ID";
@@ -140,26 +136,23 @@ pub(crate) fn analyze_entities(sources: &[&str]) -> AnalysisResult {
 }
 
 fn parse_entities(source: &str, source_idx: usize) -> Result<Vec<Entity>, String> {
-    let tree = parse_java(source)?;
-    let root = tree.root_node();
     let mut out = Vec::new();
 
-    visit_nodes(root, &mut |node| {
-        if node.kind() == "class_declaration" {
-            if let Some(entity) = parse_entity_class(node, source, source_idx) {
-                out.push(entity);
-            }
+    let parse = parse_java(source);
+    let root = parse.syntax();
+    for node in root.descendants().filter(|n| n.kind() == SyntaxKind::ClassDeclaration) {
+        if let Some(entity) = parse_entity_class(&node, source, source_idx) {
+            out.push(entity);
         }
-    });
+    }
 
     Ok(out)
 }
 
-fn parse_entity_class(node: Node<'_>, source: &str, source_idx: usize) -> Option<Entity> {
-    let modifiers = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"));
+fn parse_entity_class(node: &SyntaxNode, source: &str, source_idx: usize) -> Option<Entity> {
+    let modifiers = node.children().find(|n| n.kind() == SyntaxKind::Modifiers);
     let annotations = modifiers
+        .as_ref()
         .map(|m| collect_annotations(m, source))
         .unwrap_or_default();
 
@@ -168,10 +161,8 @@ fn parse_entity_class(node: Node<'_>, source: &str, source_idx: usize) -> Option
         return None;
     }
 
-    let name_node = node
-        .child_by_field_name("name")
-        .or_else(|| find_named_child(node, "identifier"))?;
-    let name = node_text(source, name_node).to_string();
+    let name_tok = class_name_token(node)?;
+    let name = name_tok.text().to_string();
     let jpql_name = annotations
         .iter()
         .find(|ann| ann.simple_name == "Entity")
@@ -187,12 +178,12 @@ fn parse_entity_class(node: Node<'_>, source: &str, source_idx: usize) -> Option
 
     // Use the class name span for diagnostics/navigation rather than the full
     // class declaration range.
-    let span = Span::new(name_node.start_byte(), name_node.end_byte());
+    let span = span_of_token(&name_tok);
 
     let body = node
-        .child_by_field_name("body")
-        .or_else(|| find_named_child(node, "class_body"))?;
-    let (fields, has_explicit_ctor, mut has_no_arg_ctor) = parse_class_body(body, source);
+        .children()
+        .find(|n| n.kind() == SyntaxKind::ClassBody)?;
+    let (fields, has_explicit_ctor, mut has_no_arg_ctor) = parse_class_body(&body, source);
     if !has_no_arg_ctor
         && annotations
             .iter()
@@ -214,26 +205,23 @@ fn parse_entity_class(node: Node<'_>, source: &str, source_idx: usize) -> Option
     })
 }
 
-fn parse_class_body(body: Node<'_>, source: &str) -> (Vec<Field>, bool, bool) {
+fn parse_class_body(body: &SyntaxNode, source: &str) -> (Vec<Field>, bool, bool) {
     let mut fields = Vec::new();
     let mut method_properties = Vec::new();
     let mut has_explicit_ctor = false;
     let mut has_no_arg_ctor = false;
 
-    let mut cursor = body.walk();
-    for child in body.named_children(&mut cursor) {
+    for child in body.children() {
         match child.kind() {
-            "field_declaration" => {
-                fields.extend(parse_field_declaration(child, source));
-            }
-            "method_declaration" => {
-                if let Some(field) = parse_method_property(child, source) {
+            SyntaxKind::FieldDeclaration => fields.extend(parse_field_declaration(&child, source)),
+            SyntaxKind::MethodDeclaration => {
+                if let Some(field) = parse_method_property(&child, source) {
                     method_properties.push(field);
                 }
             }
-            "constructor_declaration" => {
+            SyntaxKind::ConstructorDeclaration => {
                 has_explicit_ctor = true;
-                if is_no_arg_constructor(child, source) {
+                if is_no_arg_constructor(&child) {
                     has_no_arg_ctor = true;
                 }
             }
@@ -281,46 +269,43 @@ fn parse_class_body(body: Node<'_>, source: &str) -> (Vec<Field>, bool, bool) {
     (fields, has_explicit_ctor, has_no_arg_ctor)
 }
 
-fn is_no_arg_constructor(node: Node<'_>, source: &str) -> bool {
-    // Best-effort check: parameters list has no named children and constructor
-    // isn't explicitly `private`.
-    let modifiers = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"));
-    if let Some(modifiers) = modifiers {
-        let text = node_text(source, modifiers);
-        if text.contains("private") {
-            return false;
-        }
+fn is_no_arg_constructor(node: &SyntaxNode) -> bool {
+    // Best-effort check: parameter list is empty and constructor isn't explicitly `private`.
+    let modifiers = node.children().find(|n| n.kind() == SyntaxKind::Modifiers);
+    if modifiers
+        .as_ref()
+        .is_some_and(|m| modifier_contains(m, SyntaxKind::PrivateKw))
+    {
+        return false;
     }
 
     let params = node
-        .child_by_field_name("parameters")
-        .or_else(|| find_named_child(node, "formal_parameters"));
-
+        .children()
+        .find(|n| n.kind() == SyntaxKind::ParameterList);
     let Some(params) = params else {
         return false;
     };
-    params.named_child_count() == 0
+    params.children().filter(|n| n.kind() == SyntaxKind::Parameter).count() == 0
 }
 
-fn parse_field_declaration(node: Node<'_>, source: &str) -> Vec<Field> {
-    let mut annotations = Vec::new();
-    let mut is_static = false;
-    let mut is_transient_kw = false;
-
-    if let Some(modifiers) = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"))
-    {
-        annotations = collect_annotations(modifiers, source);
-        let mods_txt = node_text(source, modifiers);
-        is_static = mods_txt.split_whitespace().any(|t| t == "static");
-        is_transient_kw = mods_txt.split_whitespace().any(|t| t == "transient");
-    }
+fn parse_field_declaration(node: &SyntaxNode, source: &str) -> Vec<Field> {
+    let modifiers = node.children().find(|n| n.kind() == SyntaxKind::Modifiers);
+    let annotations = modifiers
+        .as_ref()
+        .map(|m| collect_annotations(m, source))
+        .unwrap_or_default();
+    let is_static = modifiers
+        .as_ref()
+        .is_some_and(|m| modifier_contains(m, SyntaxKind::StaticKw));
+    let is_transient_kw = modifiers
+        .as_ref()
+        .is_some_and(|m| modifier_contains(m, SyntaxKind::TransientKw));
 
     let is_transient =
         is_transient_kw || annotations.iter().any(|ann| ann.simple_name == "Transient");
+    if is_static || is_transient {
+        return Vec::new();
+    }
     let is_id = annotations.iter().any(|ann| ann.simple_name == "Id");
     let is_embedded_id = annotations
         .iter()
@@ -330,35 +315,33 @@ fn parse_field_declaration(node: Node<'_>, source: &str) -> Vec<Field> {
         .iter()
         .find_map(|ann| relationship_from_annotation(ann, source));
 
-    let ty_node = node
-        .child_by_field_name("type")
-        .or_else(|| infer_field_type_node(node));
+    let ty_node = node.children().find(|n| n.kind() == SyntaxKind::Type);
     let ty = ty_node
+        .as_ref()
         .map(|n| clean_type(node_text(source, n)))
         .unwrap_or_default();
 
     let mut fields = Vec::new();
-    let mut cursor = node.walk();
-    for declarator in node.named_children(&mut cursor) {
-        if declarator.kind() != "variable_declarator" {
-            continue;
-        }
+    let Some(declarators) = node
+        .children()
+        .find(|n| n.kind() == SyntaxKind::VariableDeclaratorList)
+    else {
+        return fields;
+    };
 
-        let name_node = declarator.child_by_field_name("name");
-        let name_node = name_node.or_else(|| {
-            declarator
-                .named_children(&mut declarator.walk())
-                .find(|n| n.kind() == "identifier")
-        });
-        let Some(name_node) = name_node else {
+    for declarator in declarators
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::VariableDeclarator)
+    {
+        let Some(name_tok) = declarator
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .find(|t| t.kind().is_identifier_like())
+        else {
             continue;
         };
-        let name = node_text(source, name_node).to_string();
-        let span = Span::new(name_node.start_byte(), name_node.end_byte());
-
-        if is_static || is_transient {
-            continue;
-        }
+        let name = name_tok.text().to_string();
+        let span = span_of_token(&name_tok);
 
         fields.push(Field {
             name: name.clone(),
@@ -378,46 +361,40 @@ fn parse_field_declaration(node: Node<'_>, source: &str) -> Vec<Field> {
     fields
 }
 
-fn parse_method_property(node: Node<'_>, source: &str) -> Option<Field> {
+fn parse_method_property(node: &SyntaxNode, source: &str) -> Option<Field> {
     // Best-effort support for JPA property access where annotations are placed
     // on getter methods rather than fields.
     //
     // We only treat no-arg getter-like methods as persistent properties to avoid
     // pulling in arbitrary business methods.
-    let mut annotations = Vec::new();
-    let mut is_static = false;
-
-    if let Some(modifiers) = node
-        .child_by_field_name("modifiers")
-        .or_else(|| find_named_child(node, "modifiers"))
-    {
-        annotations = collect_annotations(modifiers, source);
-        let mods_txt = node_text(source, modifiers);
-        is_static = mods_txt.split_whitespace().any(|t| t == "static");
-    }
+    let modifiers = node.children().find(|n| n.kind() == SyntaxKind::Modifiers);
+    let annotations = modifiers
+        .as_ref()
+        .map(|m| collect_annotations(m, source))
+        .unwrap_or_default();
+    let is_static = modifiers
+        .as_ref()
+        .is_some_and(|m| modifier_contains(m, SyntaxKind::StaticKw));
 
     if is_static {
         return None;
     }
 
     let params = node
-        .child_by_field_name("parameters")
-        .or_else(|| find_named_child(node, "formal_parameters"));
-    if params.is_some_and(|p| p.named_child_count() > 0) {
+        .children()
+        .find(|n| n.kind() == SyntaxKind::ParameterList);
+    if params
+        .as_ref()
+        .is_some_and(|p| p.children().any(|n| n.kind() == SyntaxKind::Parameter))
+    {
         return None;
     }
 
-    let name_node = node
-        .child_by_field_name("name")
-        .or_else(|| find_named_child(node, "identifier"))?;
-    let method_name = node_text(source, name_node).trim().to_string();
+    let name_tok = method_name_token(node)?;
+    let method_name = name_tok.text().trim().to_string();
 
-    let ty_node = node
-        .child_by_field_name("type")
-        .or_else(|| infer_method_return_type_node(node));
-    let ty = ty_node
-        .map(|n| clean_type(node_text(source, n)))
-        .unwrap_or_default();
+    let ty_node = node.children().find(|n| n.kind() == SyntaxKind::Type)?;
+    let ty = clean_type(node_text(source, &ty_node));
 
     let prop_name = getter_property_name(&method_name, &ty)?;
 
@@ -435,7 +412,7 @@ fn parse_method_property(node: Node<'_>, source: &str) -> Option<Field> {
         .iter()
         .find_map(|ann| relationship_from_annotation(ann, source));
 
-    let span = Span::new(name_node.start_byte(), name_node.end_byte());
+    let span = span_of_token(&name_tok);
 
     Some(Field {
         name: prop_name.clone(),
@@ -450,21 +427,6 @@ fn parse_method_property(node: Node<'_>, source: &str) -> Option<Field> {
             ..rel.clone()
         }),
     })
-}
-
-fn infer_method_return_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
-    // Method declarations are roughly: [modifiers] <type> <name> <params> ...
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            k if k == "modifiers" || k == "type_parameters" || k.ends_with("annotation") => {
-                continue
-            }
-            "identifier" => break,
-            _ => return Some(child),
-        }
-    }
-    None
 }
 
 fn getter_property_name(method_name: &str, return_type: &str) -> Option<String> {
@@ -513,20 +475,11 @@ fn decapitalize_java_bean(name: &str) -> String {
     out
 }
 
-fn infer_field_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
-    // Field declarations are roughly: [modifiers] <type> <declarator> ...
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        match child.kind() {
-            k if k == "modifiers" || k.ends_with("annotation") => continue,
-            "variable_declarator" => break,
-            _ => return Some(child),
-        }
-    }
-    None
+fn clean_type(raw: &str) -> String {
+    raw.split_whitespace().collect::<String>()
 }
 
-fn relationship_from_annotation(ann: &ParsedAnnotation, _source: &str) -> Option<Relationship> {
+fn relationship_from_annotation(ann: &Annotation, _source: &str) -> Option<Relationship> {
     let kind = match ann.simple_name.as_str() {
         "OneToMany" => RelationshipKind::OneToMany,
         "ManyToOne" => RelationshipKind::ManyToOne,
@@ -548,7 +501,183 @@ fn relationship_from_annotation(ann: &ParsedAnnotation, _source: &str) -> Option
         span: ann.span,
     })
 }
-// (tree-sitter helpers live in `nova-framework-parse`)
+
+#[derive(Clone, Debug)]
+struct Annotation {
+    simple_name: String,
+    args: HashMap<String, String>,
+    span: Span,
+}
+
+fn collect_annotations(modifiers: &SyntaxNode, source: &str) -> Vec<Annotation> {
+    let mut anns = Vec::new();
+    for child in modifiers.children() {
+        if child.kind() == SyntaxKind::Annotation {
+            if let Some(ann) = parse_annotation(&child, source) {
+                anns.push(ann);
+            }
+        }
+    }
+    anns
+}
+
+fn parse_annotation(node: &SyntaxNode, source: &str) -> Option<Annotation> {
+    let text = node_text(source, node);
+    let span = span_of_node(node);
+    parse_annotation_text(text, span)
+}
+
+fn parse_annotation_text(text: &str, span: Span) -> Option<Annotation> {
+    let text = text.trim();
+    if !text.starts_with('@') {
+        return None;
+    }
+    let rest = &text[1..];
+    let (name_part, args_part) = match rest.split_once('(') {
+        Some((name, args)) => (name.trim(), Some(args)),
+        None => (rest.trim(), None),
+    };
+
+    let simple_name = name_part
+        .rsplit('.')
+        .next()
+        .unwrap_or(name_part)
+        .trim()
+        .to_string();
+
+    let mut args = HashMap::new();
+    if let Some(args_part) = args_part {
+        let args_part = args_part.trim_end_matches(')').trim();
+        parse_annotation_args(args_part, &mut args);
+    }
+
+    Some(Annotation {
+        simple_name,
+        args,
+        span,
+    })
+}
+
+fn parse_annotation_args(args_part: &str, out: &mut HashMap<String, String>) {
+    // Very small, best-effort parser for named arguments.
+    //
+    // Example: `name = "users", schema="public"`
+    for segment in split_top_level_commas(args_part) {
+        let seg = segment.trim();
+        if seg.is_empty() {
+            continue;
+        }
+
+        // When the annotation uses a single positional argument, JPA commonly
+        // treats it as `value`. We record it as `value`.
+        if !seg.contains('=') {
+            if let Some(value) = parse_literal(seg) {
+                out.insert("value".to_string(), value);
+            }
+            continue;
+        }
+
+        let Some((key, value)) = seg.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().to_string();
+        let value = value.trim();
+        if let Some(parsed) = parse_literal(value) {
+            out.insert(key, parsed);
+        }
+    }
+}
+
+fn split_top_level_commas(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0u32;
+    let mut in_string = false;
+    let mut current = String::new();
+
+    for ch in input.chars() {
+        match ch {
+            '"' => {
+                in_string = !in_string;
+                current.push(ch);
+            }
+            '(' if !in_string => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' if !in_string => {
+                depth = depth.saturating_sub(1);
+                current.push(ch);
+            }
+            ',' if !in_string && depth == 0 => {
+                out.push(current);
+                current = String::new();
+            }
+            _ => current.push(ch),
+        }
+    }
+    out.push(current);
+    out
+}
+
+fn parse_literal(input: &str) -> Option<String> {
+    let input = input.trim();
+    if input.starts_with('"') && input.ends_with('"') && input.len() >= 2 {
+        return Some(input[1..input.len() - 1].to_string());
+    }
+    if input.starts_with('\'') && input.ends_with('\'') && input.len() >= 2 {
+        return Some(input[1..input.len() - 1].to_string());
+    }
+    Some(input.to_string())
+}
+
+fn node_text<'a>(source: &'a str, node: &SyntaxNode) -> &'a str {
+    let range = node.text_range();
+    let start: usize = u32::from(range.start()) as usize;
+    let end: usize = u32::from(range.end()) as usize;
+    &source[start..end]
+}
+
+fn span_of_node(node: &SyntaxNode) -> Span {
+    let range = node.text_range();
+    let start: usize = u32::from(range.start()) as usize;
+    let end: usize = u32::from(range.end()) as usize;
+    Span::new(start, end)
+}
+
+fn span_of_token(token: &SyntaxToken) -> Span {
+    let range = token.text_range();
+    let start: usize = u32::from(range.start()) as usize;
+    let end: usize = u32::from(range.end()) as usize;
+    Span::new(start, end)
+}
+
+fn modifier_contains(modifiers: &SyntaxNode, kind: SyntaxKind) -> bool {
+    modifiers
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .any(|t| t.kind() == kind)
+}
+
+fn class_name_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+    let mut saw_class_kw = false;
+    for element in node.children_with_tokens() {
+        let Some(token) = element.into_token() else {
+            continue;
+        };
+        match token.kind() {
+            SyntaxKind::ClassKw => saw_class_kw = true,
+            k if saw_class_kw && k.is_identifier_like() => return Some(token),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn method_name_token(node: &SyntaxNode) -> Option<SyntaxToken> {
+    node.children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind().is_identifier_like())
+}
 
 fn validate_model(model: &EntityModel) -> Vec<SourceDiagnostic> {
     let mut diags = Vec::new();

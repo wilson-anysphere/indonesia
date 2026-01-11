@@ -8,13 +8,8 @@ nova-core = { path = "../nova-core" }
 nova-framework = { path = "../nova-framework" }
 nova-hir = { path = "../nova-hir" }
 nova-resolve = { path = "../nova-resolve" }
+nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
-nova-framework-parse = { path = "../nova-framework-parse" }
-
-tree-sitter = "0.20"
-
-regex = "1"
-once_cell = "1"
 zip = "0.6"
 
 [dev-dependencies]
