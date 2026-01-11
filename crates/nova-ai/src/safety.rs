@@ -17,6 +17,9 @@ pub struct PatchSafetyConfig {
     /// Optional allowlist of relative path prefixes that patches may touch.
     ///
     /// When empty, all (valid) relative paths are allowed.
+    ///
+    /// Entries ending in `/` are treated as directory prefixes (e.g. `src/`).
+    /// Entries without a trailing `/` are treated as exact file paths (e.g. `src/Main.java`).
     pub allowed_path_prefixes: Vec<String>,
 
     /// Paths that should never be modified (simple prefix match).
@@ -471,11 +474,13 @@ fn normalize_patch_path(path: &str) -> &str {
 }
 
 fn path_matches_prefix(path: &str, prefix: &str) -> bool {
-    let prefix = prefix.strip_suffix('/').unwrap_or(prefix);
-    let Some(rest) = path.strip_prefix(prefix) else {
-        return false;
-    };
-    rest.is_empty() || rest.starts_with('/')
+    if prefix.ends_with('/') {
+        // Treat an explicit trailing slash as "directory prefix".
+        path.starts_with(prefix)
+    } else {
+        // Otherwise, treat it as an exact file path.
+        path == prefix
+    }
 }
 
 fn resolve_virtual_file<'a>(

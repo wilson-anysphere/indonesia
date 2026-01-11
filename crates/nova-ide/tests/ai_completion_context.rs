@@ -83,6 +83,17 @@ class A {
     f.<|>
   }
 }
+"#,
+    );
+
+    let ctx = multi_token_completion_context(&db, file, pos);
+    assert_eq!(ctx.receiver_type.as_deref(), Some("Foo"));
+    assert!(
+        ctx.available_methods.iter().any(|m| m == "bar"),
+        "expected fallback to include in-file method names; got {:?}",
+        ctx.available_methods
+    );
+}
 
 #[test]
 fn context_uses_utf16_positions_for_non_bmp_characters() {
@@ -107,16 +118,5 @@ class A {
         ctx.surrounding_code.trim_end().ends_with('.'),
         "expected surrounding code to include the '.' before the cursor, got: {:?}",
         ctx.surrounding_code
-    );
-}
-"#,
-    );
-
-    let ctx = multi_token_completion_context(&db, file, pos);
-    assert_eq!(ctx.receiver_type.as_deref(), Some("Foo"));
-    assert!(
-        ctx.available_methods.iter().any(|m| m == "bar"),
-        "expected fallback to include in-file method names; got {:?}",
-        ctx.available_methods
     );
 }
