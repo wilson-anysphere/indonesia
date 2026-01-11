@@ -173,7 +173,8 @@ access controls:
 
 For additional defense-in-depth, the router/worker RPC protocol supports a shared authentication
 token. When the router is configured to spawn workers locally, it will auto-generate a random token
-if one is not provided and pass it to its worker processes.
+if one is not provided and pass it to its worker processes via the environment (so it is not
+visible in `argv`).
 
 For debugging, a worker can also be started manually (normally the router spawns it):
 

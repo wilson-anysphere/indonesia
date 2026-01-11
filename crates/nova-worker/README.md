@@ -89,7 +89,8 @@ nova-worker \
 - `--shard-id <id>`: numeric shard identifier (assigned by the router).
 - `--cache-dir <dir>`: directory used to persist the shard index across restarts.
 - `--auth-token-file <path>`: read a shard-scoped bearer token from a file.
-- `--auth-token-env <VAR>`: read the token from an environment variable.
+- `--auth-token-env <VAR>`: read the token from an environment variable (the router uses
+  `NOVA_WORKER_AUTH_TOKEN` when spawning local workers).
 - `--auth-token <token>`: legacy/insecure bearer token used during the initial handshake (router must
   be configured with the same token).
   - ⚠️ The token is sent in cleartext unless the transport is encrypted (use `tcp+tls:` for remote
@@ -98,6 +99,8 @@ nova-worker \
     Prefer mTLS for production deployments.
 - `--allow-insecure`: allow plaintext TCP connections (`tcp:`). Required when using auth tokens over
   plaintext TCP.
+
+`--auth-token`, `--auth-token-file`, and `--auth-token-env` are mutually exclusive.
 
 ### TLS (optional)
 
