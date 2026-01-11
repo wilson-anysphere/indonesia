@@ -573,7 +573,7 @@ Rules:
   - `RpcPayload::Response(RpcResult::Err { error: { code: "cancelled", ... }})`
 
 If `supports_cancel = false`, receivers SHOULD treat `Cancel` as an invalid request (and close the
-connection, or respond with `RpcErrorCode::InvalidRequest` if safe to do so).
+connection, respond with `RpcErrorCode::InvalidRequest` if safe to do so, or ignore it).
 
 ---
 
