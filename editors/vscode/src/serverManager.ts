@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -201,8 +201,12 @@ export class ServerManager {
       archiveName,
     });
 
-    const tmpArchivePath = path.join(installDir, `${archiveName}.tmp`);
-    const tmpBinaryPath = path.join(installDir, `${opts.binaryName}.tmp`);
+    const tmpId = randomBytes(8).toString('hex');
+    const tmpArchivePath = path.join(installDir, `${archiveName}.tmp.${tmpId}`);
+    const tmpBinaryPath = path.join(installDir, `${opts.binaryName}.tmp.${tmpId}`);
+
+    // Best-effort cleanup of crashed partial downloads/extractions.
+    await cleanupTmpFiles(fs, installDir, [`${archiveName}.tmp`, `${opts.binaryName}.tmp`]);
 
     await safeRm(fs, tmpArchivePath);
     await safeRm(fs, tmpBinaryPath);
@@ -628,6 +632,26 @@ async function fileExists(fsImpl: typeof fs, filePath: string): Promise<boolean>
 async function safeRm(fsImpl: typeof fs, filePath: string): Promise<void> {
   try {
     await fsImpl.rm(filePath, { force: true, recursive: true });
+  } catch {
+    // ignore
+  }
+}
+
+async function cleanupTmpFiles(
+  fsImpl: typeof fs,
+  dirPath: string,
+  prefixes: readonly string[],
+): Promise<void> {
+  try {
+    const entries = await fsImpl.readdir(dirPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+      if (prefixes.some((prefix) => entry.name.startsWith(prefix))) {
+        await safeRm(fsImpl, path.join(dirPath, entry.name));
+      }
+    }
   } catch {
     // ignore
   }
