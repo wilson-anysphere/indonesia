@@ -207,3 +207,37 @@ fn gc_does_not_follow_symlinks_when_deleting() {
 
     assert!(outside_file.exists(), "GC must not delete symlink targets");
 }
+
+#[cfg(unix)]
+#[test]
+fn gc_removes_symlink_cache_dir_without_following_targets() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let cache_root = temp.path().join("cache");
+    std::fs::create_dir_all(&cache_root).unwrap();
+
+    let outside = temp.path().join("outside-dir");
+    std::fs::create_dir_all(&outside).unwrap();
+    let outside_file = outside.join("important.txt");
+    std::fs::write(&outside_file, "do not delete").unwrap();
+
+    let link_path = cache_root.join("symlink-cache");
+    symlink(&outside, &link_path).unwrap();
+
+    gc_project_caches(
+        &cache_root,
+        &CacheGcPolicy {
+            max_total_bytes: 0,
+            max_age_ms: None,
+            keep_latest_n: 0,
+        },
+    )
+    .unwrap();
+
+    assert!(!link_path.exists(), "GC should remove the symlink itself");
+    assert!(
+        outside_file.exists(),
+        "GC must not remove contents through symlink targets"
+    );
+}

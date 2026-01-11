@@ -79,7 +79,7 @@ pub fn enumerate_project_caches(
         }
 
         let file_type = entry.file_type()?;
-        if !file_type.is_dir() {
+        if !(file_type.is_dir() || file_type.is_symlink()) {
             continue;
         }
 
@@ -96,22 +96,31 @@ pub fn enumerate_project_caches(
         let mut nova_version = None;
         let mut schema_version = None;
 
-        let metadata_path = path.join("metadata.json");
-        if metadata_path.is_file() {
-            if let Ok(metadata) = CacheMetadata::load(&metadata_path) {
-                last_updated_millis = Some(metadata.last_updated_millis);
-                nova_version = Some(metadata.nova_version);
-                schema_version = Some(metadata.schema_version);
+        // Never follow symlinks when inspecting cache contents. If the top-level
+        // project entry is a symlink, treat it as opaque and allow GC to remove
+        // the symlink itself.
+        if !file_type.is_symlink() {
+            let metadata_path = path.join("metadata.json");
+            if let Ok(meta) = std::fs::symlink_metadata(&metadata_path) {
+                if meta.is_file() {
+                    if let Ok(metadata) = CacheMetadata::load(&metadata_path) {
+                        last_updated_millis = Some(metadata.last_updated_millis);
+                        nova_version = Some(metadata.nova_version);
+                        schema_version = Some(metadata.schema_version);
+                    }
+                }
             }
-        }
 
-        let perf_path = path.join("perf.json");
-        if perf_path.is_file() {
-            if let Some(perf_updated) = modified_millis(&perf_path) {
-                last_updated_millis = Some(match last_updated_millis {
-                    Some(prev) => prev.max(perf_updated),
-                    None => perf_updated,
-                });
+            let perf_path = path.join("perf.json");
+            if let Ok(meta) = std::fs::symlink_metadata(&perf_path) {
+                if meta.is_file() {
+                    if let Some(perf_updated) = modified_millis(&perf_path) {
+                        last_updated_millis = Some(match last_updated_millis {
+                            Some(prev) => prev.max(perf_updated),
+                            None => perf_updated,
+                        });
+                    }
+                }
             }
         }
 
@@ -300,12 +309,8 @@ fn delete_cache_dir(cache_root: &Path, cache: &ProjectCacheInfo) -> Result<(), C
 }
 
 fn validate_under_root(cache_root: &Path, path: &Path) -> Result<(), CacheError> {
-    // Prefer canonical paths for stronger guarantees (resolves symlinks), but fall
-    // back to lexical checks for non-existent roots.
-    let root_canon = std::fs::canonicalize(cache_root).unwrap_or_else(|_| cache_root.to_path_buf());
-    let path_canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-
-    if !path_canon.starts_with(&root_canon) {
+    // Lexical check only; do not follow symlinks.
+    if path.strip_prefix(cache_root).is_err() {
         return Err(CacheError::PathNotUnderCacheRoot {
             path: path.to_path_buf(),
             cache_root: cache_root.to_path_buf(),
