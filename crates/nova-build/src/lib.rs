@@ -5,12 +5,14 @@
 //! implements that missing piece for Nova.
 
 mod cache;
+mod command;
 mod gradle;
 mod javac;
 mod maven;
 mod module_graph;
 
 pub use cache::{BuildCache, BuildFileFingerprint};
+pub use command::{CommandRunner, DefaultCommandRunner};
 pub use gradle::{
     collect_gradle_build_files, parse_gradle_classpath_output, parse_gradle_projects_output,
     GradleBuild, GradleConfig, GradleProjectInfo,

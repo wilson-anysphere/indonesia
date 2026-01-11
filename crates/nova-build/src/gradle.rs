@@ -1,9 +1,13 @@
 use crate::cache::{BuildCache, BuildFileFingerprint, CachedProjectInfo};
-use crate::{BuildError, BuildResult, BuildSystemKind, Classpath, Result};
+use crate::{
+    BuildError, BuildResult, BuildSystemKind, Classpath, CommandRunner, DefaultCommandRunner,
+    Result,
+};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::Arc;
 
 const NOVA_NO_CLASSPATH_MARKER: &str = "NOVA_NO_CLASSPATH";
 const NOVA_PROJECTS_BEGIN: &str = "NOVA_PROJECTS_BEGIN";
@@ -30,6 +34,7 @@ impl Default for GradleConfig {
 #[derive(Debug)]
 pub struct GradleBuild {
     config: GradleConfig,
+    runner: Arc<dyn CommandRunner>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,7 +45,11 @@ pub struct GradleProjectInfo {
 
 impl GradleBuild {
     pub fn new(config: GradleConfig) -> Self {
-        Self { config }
+        Self::with_runner(config, Arc::new(DefaultCommandRunner::default()))
+    }
+
+    pub fn with_runner(config: GradleConfig, runner: Arc<dyn CommandRunner>) -> Self {
+        Self { config, runner }
     }
 
     pub fn projects(
@@ -234,39 +243,39 @@ impl GradleBuild {
         let gradle = self.gradle_executable(project_root);
         let init_script = write_init_script(project_root)?;
 
-        let mut cmd = Command::new(gradle);
-        cmd.current_dir(project_root);
-        cmd.arg("--no-daemon");
-        cmd.arg("--console=plain");
-        cmd.arg("-q");
-        cmd.arg("--init-script").arg(&init_script);
+        let mut args: Vec<OsString> = Vec::new();
+        args.push(OsString::from("--no-daemon"));
+        args.push(OsString::from("--console=plain"));
+        args.push(OsString::from("-q"));
+        args.push(OsString::from("--init-script"));
+        args.push(init_script.clone().into_os_string());
 
         let task = match project_path {
             Some(p) => format!("{p}:printNovaClasspath"),
             None => "printNovaClasspath".to_string(),
         };
-        cmd.arg(task);
+        args.push(task.into());
 
-        let output = cmd.output()?;
+        let output = self.runner.run(project_root, &gradle, &args);
         let _ = std::fs::remove_file(&init_script);
-        Ok(output)
+        Ok(output?)
     }
 
     fn run_print_projects(&self, project_root: &Path) -> Result<std::process::Output> {
         let gradle = self.gradle_executable(project_root);
         let init_script = write_init_script(project_root)?;
 
-        let mut cmd = Command::new(gradle);
-        cmd.current_dir(project_root);
-        cmd.arg("--no-daemon");
-        cmd.arg("--console=plain");
-        cmd.arg("-q");
-        cmd.arg("--init-script").arg(&init_script);
-        cmd.arg("printNovaProjects");
+        let mut args: Vec<OsString> = Vec::new();
+        args.push(OsString::from("--no-daemon"));
+        args.push(OsString::from("--console=plain"));
+        args.push(OsString::from("-q"));
+        args.push(OsString::from("--init-script"));
+        args.push(init_script.clone().into_os_string());
+        args.push(OsString::from("printNovaProjects"));
 
-        let output = cmd.output()?;
+        let output = self.runner.run(project_root, &gradle, &args);
         let _ = std::fs::remove_file(&init_script);
-        Ok(output)
+        Ok(output?)
     }
 
     fn run_compile(
@@ -275,17 +284,26 @@ impl GradleBuild {
         project_path: Option<&str>,
     ) -> Result<std::process::Output> {
         let gradle = self.gradle_executable(project_root);
-        let mut cmd = Command::new(gradle);
-        cmd.current_dir(project_root);
-        cmd.arg("--no-daemon");
-        cmd.arg("--console=plain");
+        let mut args: Vec<OsString> = Vec::new();
+        args.push(OsString::from("--no-daemon"));
+        args.push(OsString::from("--console=plain"));
 
-        let task = match project_path {
-            Some(p) => format!("{p}:compileJava"),
-            None => "compileJava".to_string(),
-        };
-        cmd.arg(task);
-        Ok(cmd.output()?)
+        match project_path {
+            Some(p) => {
+                args.push(format!("{p}:compileJava").into());
+                Ok(self.runner.run(project_root, &gradle, &args)?)
+            }
+            None => {
+                let init_script = write_compile_all_java_init_script(project_root)?;
+                args.push(OsString::from("--init-script"));
+                args.push(init_script.clone().into_os_string());
+                args.push(OsString::from("novaCompileAllJava"));
+
+                let output = self.runner.run(project_root, &gradle, &args);
+                let _ = std::fs::remove_file(&init_script);
+                Ok(output?)
+            }
+        }
     }
 
     fn gradle_executable(&self, project_root: &Path) -> PathBuf {
@@ -598,6 +616,52 @@ allprojects { proj ->
 
     // Make sure the temp file is unique within the project (e.g. when running
     // with restrictive tmpfs setups).
+    if !path.exists() {
+        return Err(BuildError::Unsupported(format!(
+            "failed to create init script under {}",
+            project_root.display()
+        )));
+    }
+
+    Ok(path)
+}
+
+fn write_compile_all_java_init_script(project_root: &Path) -> Result<PathBuf> {
+    let mut path = std::env::temp_dir();
+    let token = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    path.push(format!("nova_gradle_compile_all_{token}.gradle"));
+
+    // Register a root task that depends on all `compileJava` tasks we can find.
+    //
+    // This is necessary for multi-project Gradle workspaces where the root
+    // project is just an aggregator and does not apply the Java plugin.
+    let script = r#"
+gradle.rootProject { root ->
+    def novaTaskProvider = root.tasks.register("novaCompileAllJava") {
+        group = "build"
+        description = "Compiles all Java sources across all projects (Nova helper task)"
+    }
+
+    gradle.projectsEvaluated {
+        def compileTasks = []
+        root.allprojects { proj ->
+            def t = proj.tasks.findByName("compileJava")
+            if (t != null) {
+                compileTasks.add(t)
+            }
+        }
+        novaTaskProvider.configure {
+            dependsOn compileTasks
+        }
+    }
+}
+"#;
+
+    std::fs::write(&path, script)?;
+
     if !path.exists() {
         return Err(BuildError::Unsupported(format!(
             "failed to create init script under {}",
