@@ -295,25 +295,25 @@ fn fingerprints_match(cache_dir: &CacheDir, metadata: &CacheMetadata) -> (bool, 
     // Prefer fast, metadata-only fingerprints when available. This avoids hashing
     // full file contents in the common mismatch case.
     if !metadata.file_metadata_fingerprints.is_empty() {
-        let files: Vec<PathBuf> = metadata
-            .file_fingerprints
-            .keys()
-            .map(PathBuf::from)
-            .collect();
+        let mut mismatched = 0usize;
+        let project_root = cache_dir.project_root();
 
-        let local = ProjectSnapshot::new_fast(cache_dir.project_root(), files);
-        let Ok(local) = local else {
-            return (false, metadata.file_fingerprints.len());
-        };
+        for path in metadata.file_fingerprints.keys() {
+            // Defensively reject unsafe paths (absolute / `..`) to avoid probing
+            // arbitrary filesystem locations from a malformed package.
+            if validate_archive_relative_path(Path::new(path)).is_err() {
+                return (false, metadata.file_fingerprints.len());
+            }
 
-        let mismatched = metadata
-            .file_fingerprints
-            .keys()
-            .filter(|path| {
-                metadata.file_metadata_fingerprints.get(*path)
-                    != local.file_fingerprints().get(*path)
-            })
-            .count();
+            let expected = metadata.file_metadata_fingerprints.get(path);
+            let full_path = project_root.join(path);
+            let local = Fingerprint::from_file_metadata(&full_path).ok();
+
+            match (expected, local) {
+                (Some(expected), Some(local)) if expected == &local => {}
+                _ => mismatched += 1,
+            }
+        }
 
         if mismatched != 0 {
             return (false, mismatched);
