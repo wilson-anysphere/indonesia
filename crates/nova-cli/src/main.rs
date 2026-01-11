@@ -1547,7 +1547,7 @@ fn move_dir(src: &PathBuf, dest: &PathBuf) -> Result<()> {
 
     match std::fs::rename(src, dest) {
         Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::CrossDeviceLink => {
+        Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
             copy_dir_all(src, dest)?;
             std::fs::remove_dir_all(src)
                 .with_context(|| format!("failed to remove {}", src.display()))?;
@@ -1574,7 +1574,7 @@ fn move_file(src: &PathBuf, dest: &PathBuf) -> Result<()> {
 
     match std::fs::rename(src, dest) {
         Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::CrossDeviceLink => {
+        Err(err) if err.kind() == std::io::ErrorKind::CrossesDevices => {
             std::fs::copy(src, dest).with_context(|| {
                 format!("failed to copy {} to {}", src.display(), dest.display())
             })?;

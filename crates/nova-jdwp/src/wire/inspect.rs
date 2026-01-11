@@ -287,7 +287,7 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
 
             if let Some(map_id) = map_id {
                 let map_type_id = match jdwp.object_reference_reference_type(map_id).await {
-                    Ok((_ref_type_tag, id)) => id,
+                    Ok((_ref_type_tag, type_id)) => type_id,
                     Err(_) => {
                         return Ok(ObjectPreview {
                             runtime_type,
@@ -579,7 +579,7 @@ async fn hash_set_children(
     };
 
     let map_type_id = match jdwp.object_reference_reference_type(map_id).await {
-        Ok((_ref_type_tag, id)) => id,
+        Ok((_ref_type_tag, type_id)) => type_id,
         Err(_) => return Ok(None),
     };
     let Some((size, entries)) = hashmap_entries(jdwp, map_id, map_type_id, ARRAY_CHILD_SAMPLE).await

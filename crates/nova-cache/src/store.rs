@@ -1,12 +1,10 @@
-use std::{
-    fs::File,
-    io,
-    #[cfg(feature = "s3")]
-    ffi::{OsStr, OsString},
-    path::{Path, PathBuf},
-    #[cfg(feature = "s3")]
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::{fs::File, io, path::{Path, PathBuf}};
+
+#[cfg(feature = "s3")]
+use std::ffi::{OsStr, OsString};
+
+#[cfg(feature = "s3")]
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{CacheError, Result};
 

@@ -2208,6 +2208,7 @@ fn span_contains(span: Span, offset: usize) -> bool {
 fn span_within(inner: Span, outer: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
+
 pub(crate) fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
     let bytes = text.as_bytes();
     let mut start = offset;

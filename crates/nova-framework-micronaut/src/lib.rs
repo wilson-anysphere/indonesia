@@ -106,7 +106,14 @@ pub fn analyze_sources_with_config(
             .iter()
             .map(|d| d.diagnostic.clone()),
     );
-    diagnostics.sort_by_key(|d| (d.code, d.span.map(|s| s.start).unwrap_or(0)));
+    diagnostics.sort_by(|a, b| {
+        a.code.cmp(&b.code).then_with(|| {
+            a.span
+                .map(|s| s.start)
+                .unwrap_or(0)
+                .cmp(&b.span.map(|s| s.start).unwrap_or(0))
+        })
+    });
 
     let mut file_diagnostics = bean_analysis.file_diagnostics;
     file_diagnostics.extend(validation_file_diagnostics);

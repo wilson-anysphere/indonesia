@@ -119,7 +119,12 @@ pub(crate) fn load_simple_workspace_model(
         });
     }
 
-    crate::generated::append_generated_source_roots(&mut source_roots, root, &options.nova_config);
+    crate::generated::append_generated_source_roots(
+        &mut source_roots,
+        root,
+        BuildSystem::Simple,
+        &options.nova_config,
+    );
 
     let mut classpath = Vec::new();
     for entry in &options.classpath_overrides {

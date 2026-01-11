@@ -287,6 +287,7 @@ pub(crate) fn load_maven_workspace_model(
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             module_root,
+            BuildSystem::Maven,
             &options.nova_config,
         );
 

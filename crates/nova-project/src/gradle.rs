@@ -223,6 +223,7 @@ pub(crate) fn load_gradle_workspace_model(
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             &module_root,
+            BuildSystem::Gradle,
             &options.nova_config,
         );
 

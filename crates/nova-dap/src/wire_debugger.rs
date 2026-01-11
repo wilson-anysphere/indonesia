@@ -823,16 +823,24 @@ impl Debugger {
         thread: ThreadId,
         _location: Location,
     ) -> Result<BreakpointDisposition> {
-        let Some(meta) = self.breakpoint_metadata.get_mut(&request_id) else {
-            // Unknown breakpoint request. Prefer stopping over auto-resuming to avoid silently
-            // skipping user-visible pause points.
-            return Ok(BreakpointDisposition::Stop);
+        let (hit_count, hit_condition, condition, log_message) = {
+            let Some(meta) = self.breakpoint_metadata.get_mut(&request_id) else {
+                // Unknown breakpoint request. Prefer stopping over auto-resuming to avoid silently
+                // skipping user-visible pause points.
+                return Ok(BreakpointDisposition::Stop);
+            };
+
+            meta.hit_count = meta.hit_count.saturating_add(1);
+
+            (
+                meta.hit_count,
+                meta.hit_condition.clone(),
+                meta.condition.clone(),
+                meta.log_message.clone(),
+            )
         };
 
-        meta.hit_count = meta.hit_count.saturating_add(1);
-        let hit_count = meta.hit_count;
-
-        if let Some(hit_expr) = meta.hit_condition.as_deref() {
+        if let Some(hit_expr) = hit_condition.as_deref() {
             match hit_condition_matches(hit_expr, hit_count) {
                 Ok(true) => {}
                 Ok(false) => return Ok(BreakpointDisposition::Continue),
@@ -840,12 +848,10 @@ impl Debugger {
             }
         }
 
-        let needs_locals = meta
-            .condition
+        let needs_locals = condition
             .as_deref()
             .is_some_and(|c| condition_needs_locals(c))
-            || meta
-                .log_message
+            || log_message
                 .as_deref()
                 .is_some_and(|m| log_message_needs_locals(m));
 
@@ -863,7 +869,7 @@ impl Debugger {
             None
         };
 
-        if let Some(cond) = meta.condition.as_deref() {
+        if let Some(cond) = condition.as_deref() {
             match eval_breakpoint_condition(cond, locals.as_ref()) {
                 Ok(true) => {}
                 Ok(false) => return Ok(BreakpointDisposition::Continue),
@@ -871,7 +877,7 @@ impl Debugger {
             }
         }
 
-        if let Some(template) = meta.log_message.as_deref() {
+        if let Some(template) = log_message.as_deref() {
             let rendered = render_log_message(template, locals.as_ref());
             return Ok(BreakpointDisposition::Log { message: rendered });
         }
