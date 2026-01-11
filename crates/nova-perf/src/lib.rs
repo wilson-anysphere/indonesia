@@ -44,6 +44,38 @@ impl BenchRun {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(transparent)]
+pub struct RuntimeMetric(pub u64);
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeRun {
+    pub metrics: BTreeMap<String, RuntimeMetric>,
+}
+
+impl RuntimeRun {
+    pub fn write_json(&self, path: impl AsRef<Path>) -> Result<()> {
+        let serialized = serde_json::to_string_pretty(self)?;
+        fs::write(path.as_ref(), serialized).with_context(|| {
+            format!(
+                "failed to write runtime run JSON to {}",
+                path.as_ref().display()
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn read_json(path: impl AsRef<Path>) -> Result<Self> {
+        let bytes = fs::read(path.as_ref()).with_context(|| {
+            format!(
+                "failed to read runtime run JSON from {}",
+                path.as_ref().display()
+            )
+        })?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct CriterionSample {
     iters: Vec<f64>,
@@ -229,6 +261,51 @@ impl ThresholdConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+pub struct RuntimeThresholds {
+    /// Maximum allowed regression expressed as a fractional increase (e.g. 0.10 = +10% slower).
+    #[serde(default)]
+    pub pct_regression: Option<f64>,
+    /// Maximum allowed regression expressed as an absolute increase in the metric's unit.
+    #[serde(default)]
+    pub abs_regression: Option<u64>,
+}
+
+impl Default for RuntimeThresholds {
+    fn default() -> Self {
+        RuntimeThresholds {
+            pct_regression: Some(0.10),
+            abs_regression: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct RuntimeThresholdConfig {
+    #[serde(default)]
+    pub default: RuntimeThresholds,
+    #[serde(default)]
+    pub metrics: BTreeMap<String, RuntimeThresholds>,
+    #[serde(default)]
+    pub allow_regressions: Vec<String>,
+}
+
+impl RuntimeThresholdConfig {
+    pub fn read_toml(path: impl AsRef<Path>) -> Result<Self> {
+        let content = fs::read_to_string(path.as_ref()).with_context(|| {
+            format!(
+                "failed to read runtime thresholds TOML from {}",
+                path.as_ref().display()
+            )
+        })?;
+        Ok(toml::from_str(&content)?)
+    }
+
+    pub fn thresholds_for(&self, metric_id: &str) -> RuntimeThresholds {
+        self.metrics.get(metric_id).copied().unwrap_or(self.default)
+    }
+}
+
 /// The outcome of comparing a benchmark between two runs.
 ///
 /// ## Serde JSON representation (stable)
@@ -368,6 +445,85 @@ impl Comparison {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuntimeDiff {
+    pub id: String,
+    pub baseline: Option<RuntimeMetric>,
+    pub current: Option<RuntimeMetric>,
+    pub abs_change: Option<i128>,
+    pub pct_change: Option<f64>,
+    pub thresholds: Option<RuntimeThresholds>,
+    pub status: DiffStatus,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RuntimeComparison {
+    pub diffs: Vec<RuntimeDiff>,
+    pub has_failure: bool,
+}
+
+impl RuntimeComparison {
+    pub fn to_markdown(&self) -> String {
+        let mut out = String::new();
+        out.push_str("## Nova runtime performance report\n\n");
+        out.push_str("| Metric | base | new | Δ | Δ% | Status |\n");
+        out.push_str("|---|---:|---:|---:|---:|---|\n");
+
+        for diff in &self.diffs {
+            let base = diff
+                .baseline
+                .map(|v| format_runtime_value(&diff.id, v.0))
+                .unwrap_or_else(|| "—".to_string());
+            let cur = diff
+                .current
+                .map(|v| format_runtime_value(&diff.id, v.0))
+                .unwrap_or_else(|| "—".to_string());
+
+            let abs_delta = diff
+                .abs_change
+                .map(|d| format_runtime_delta(&diff.id, d))
+                .unwrap_or_else(|| "—".to_string());
+            let pct_delta = diff
+                .pct_change
+                .map(format_pct)
+                .unwrap_or_else(|| "—".to_string());
+
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} | {} | {} |\n",
+                diff.id, base, cur, abs_delta, pct_delta, diff.status
+            ));
+        }
+
+        let regressions: Vec<&RuntimeDiff> = self
+            .diffs
+            .iter()
+            .filter(|d| d.status == DiffStatus::Regression)
+            .collect();
+        if !regressions.is_empty() {
+            out.push_str("\n### Top regressions\n\n");
+            let mut regressions = regressions;
+            regressions.sort_by(|a, b| {
+                b.pct_change
+                    .unwrap_or(0.0)
+                    .partial_cmp(&a.pct_change.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for diff in regressions.into_iter().take(5) {
+                out.push_str(&format!(
+                    "- `{}`: {} ({})\n",
+                    diff.id,
+                    diff.abs_change
+                        .map(|d| format_runtime_delta(&diff.id, d))
+                        .unwrap_or_default(),
+                    diff.pct_change.map(format_pct).unwrap_or_default()
+                ));
+            }
+        }
+
+        out
+    }
+}
+
 impl fmt::Display for DiffStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -460,6 +616,107 @@ pub fn compare_runs(
     Comparison { diffs, has_failure }
 }
 
+pub fn compare_runtime_runs(
+    baseline: &RuntimeRun,
+    current: &RuntimeRun,
+    config: &RuntimeThresholdConfig,
+    extra_allowed: &[String],
+) -> RuntimeComparison {
+    let mut diffs = Vec::new();
+    let mut has_failure = false;
+
+    let mut allowed = config.allow_regressions.clone();
+    allowed.extend(extra_allowed.iter().cloned());
+
+    for (metric_id, base_metric) in &baseline.metrics {
+        match current.metrics.get(metric_id) {
+            Some(cur_metric) => {
+                let thresholds = config.thresholds_for(metric_id);
+
+                let abs_change = cur_metric.0 as i128 - base_metric.0 as i128;
+                let pct_change = change_ratio(base_metric.0, cur_metric.0).map(|ratio| ratio - 1.0);
+
+                let regression =
+                    is_runtime_regression(base_metric.0, cur_metric.0, thresholds, pct_change);
+
+                let is_allowed = allowed.iter().any(|a| a == metric_id);
+                let status = if regression && is_allowed {
+                    DiffStatus::AllowedRegression
+                } else if regression {
+                    has_failure = true;
+                    DiffStatus::Regression
+                } else {
+                    DiffStatus::Ok
+                };
+
+                diffs.push(RuntimeDiff {
+                    id: metric_id.clone(),
+                    baseline: Some(*base_metric),
+                    current: Some(*cur_metric),
+                    abs_change: Some(abs_change),
+                    pct_change,
+                    thresholds: Some(thresholds),
+                    status,
+                });
+            }
+            None => {
+                has_failure = true;
+                diffs.push(RuntimeDiff {
+                    id: metric_id.clone(),
+                    baseline: Some(*base_metric),
+                    current: None,
+                    abs_change: None,
+                    pct_change: None,
+                    thresholds: None,
+                    status: DiffStatus::MissingInCurrent,
+                });
+            }
+        }
+    }
+
+    for (metric_id, metric) in &current.metrics {
+        if baseline.metrics.contains_key(metric_id) {
+            continue;
+        }
+        diffs.push(RuntimeDiff {
+            id: metric_id.clone(),
+            baseline: None,
+            current: Some(*metric),
+            abs_change: None,
+            pct_change: None,
+            thresholds: Some(config.thresholds_for(metric_id)),
+            status: DiffStatus::NewInCurrent,
+        });
+    }
+
+    diffs.sort_by(|a, b| a.id.cmp(&b.id));
+
+    RuntimeComparison { diffs, has_failure }
+}
+
+fn is_runtime_regression(
+    baseline: u64,
+    current: u64,
+    thresholds: RuntimeThresholds,
+    pct_change: Option<f64>,
+) -> bool {
+    if current <= baseline {
+        return false;
+    }
+
+    let abs_delta = current - baseline;
+
+    match (thresholds.pct_regression, thresholds.abs_regression) {
+        (Some(pct_regression), Some(abs_regression)) => match pct_change {
+            Some(pct_change) => pct_change > pct_regression && abs_delta > abs_regression,
+            None => abs_delta > abs_regression,
+        },
+        (Some(pct_regression), None) => pct_change.is_some_and(|delta| delta > pct_regression),
+        (None, Some(abs_regression)) => abs_delta > abs_regression,
+        (None, None) => false,
+    }
+}
+
 fn change_ratio(baseline: u64, current: u64) -> Option<f64> {
     if baseline == 0 {
         return None;
@@ -483,6 +740,51 @@ fn format_ns(ns: u64) -> String {
         return format!("{:.1} ms", ns_f / 1_000_000.0);
     }
     format!("{:.2} s", ns_f / 1_000_000_000.0)
+}
+
+fn format_ms(ms: u64) -> String {
+    let ms_f = ms as f64;
+    if ms < 1_000 {
+        return format!("{ms} ms");
+    }
+    if ms < 60_000 {
+        return format!("{:.2} s", ms_f / 1_000.0);
+    }
+    let minutes = ms_f / 60_000.0;
+    format!("{minutes:.2} min")
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        return format!("{bytes} B");
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+fn format_runtime_value(metric_id: &str, value: u64) -> String {
+    if metric_id.ends_with("elapsed_ms") {
+        return format_ms(value);
+    }
+    if metric_id.contains("bytes") {
+        return format_bytes(value);
+    }
+    value.to_string()
+}
+
+fn format_runtime_delta(metric_id: &str, delta: i128) -> String {
+    if delta == 0 {
+        return "0".to_string();
+    }
+    let sign = if delta > 0 { "+" } else { "-" };
+    let abs = delta.abs() as u64;
+    format!("{}{}", sign, format_runtime_value(metric_id, abs))
 }
 
 /// Convenience for CI/workflows: resolve a path relative to the repository root.
@@ -729,5 +1031,67 @@ mod tests {
             );
             assert_eq!(left.status, right.status, "diffs[{idx}].status differs");
         }
+    }
+
+    fn runtime_run_with_single_metric(id: &str, value: u64) -> RuntimeRun {
+        RuntimeRun {
+            metrics: BTreeMap::from([(id.to_string(), RuntimeMetric(value))]),
+        }
+    }
+
+    #[test]
+    fn runtime_detects_regression_against_default_thresholds() {
+        let baseline = runtime_run_with_single_metric("workspace/index.elapsed_ms", 100);
+        let current = runtime_run_with_single_metric("workspace/index.elapsed_ms", 120);
+        let config = RuntimeThresholdConfig::default();
+
+        let comparison = compare_runtime_runs(&baseline, &current, &config, &[]);
+        assert!(comparison.has_failure);
+        assert_eq!(comparison.diffs[0].status, DiffStatus::Regression);
+    }
+
+    #[test]
+    fn runtime_allows_regression_when_metric_is_allowlisted() {
+        let baseline = runtime_run_with_single_metric("workspace/index.elapsed_ms", 100);
+        let current = runtime_run_with_single_metric("workspace/index.elapsed_ms", 200);
+
+        let mut config = RuntimeThresholdConfig::default();
+        config
+            .allow_regressions
+            .push("workspace/index.elapsed_ms".to_string());
+
+        let comparison = compare_runtime_runs(&baseline, &current, &config, &[]);
+        assert!(!comparison.has_failure);
+        assert_eq!(comparison.diffs[0].status, DiffStatus::AllowedRegression);
+    }
+
+    #[test]
+    fn runtime_metric_thresholds_override_default() {
+        let baseline = runtime_run_with_single_metric("workspace/index.elapsed_ms", 100);
+        let current = runtime_run_with_single_metric("workspace/index.elapsed_ms", 115);
+
+        let mut config = RuntimeThresholdConfig::default();
+        config.metrics.insert(
+            "workspace/index.elapsed_ms".to_string(),
+            RuntimeThresholds {
+                pct_regression: Some(0.20),
+                abs_regression: None,
+            },
+        );
+
+        let comparison = compare_runtime_runs(&baseline, &current, &config, &[]);
+        assert!(!comparison.has_failure);
+        assert_eq!(comparison.diffs[0].status, DiffStatus::Ok);
+    }
+
+    #[test]
+    fn runtime_missing_metric_is_a_failure() {
+        let baseline = runtime_run_with_single_metric("workspace/index.elapsed_ms", 100);
+        let current = RuntimeRun::default();
+        let config = RuntimeThresholdConfig::default();
+
+        let comparison = compare_runtime_runs(&baseline, &current, &config, &[]);
+        assert!(comparison.has_failure);
+        assert_eq!(comparison.diffs[0].status, DiffStatus::MissingInCurrent);
     }
 }

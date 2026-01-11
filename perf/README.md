@@ -42,3 +42,37 @@ cargo run -p nova-cli --release -- perf compare \
 
 Use `--allow <bench-id>` (repeatable) or `allow_regressions = ["..."]` in `thresholds.toml`
 for known/intentional slowdowns.
+
+## Runtime snapshots (indexing / RSS / startup)
+
+`nova-workspace` writes a `perf.json` file into the project's cache root after `nova index` runs.
+You can convert that into a compact runtime snapshot:
+
+```bash
+cargo run -p nova-cli --release -- index path/to/project --json > index-report.json
+cache_root=$(jq -r .cache_root index-report.json)
+
+cargo run -p nova-cli --release -- perf capture-runtime \
+  --workspace-cache "$cache_root" \
+  --out runtime-current.json
+```
+
+To include LSP startup + `nova/memoryStatus` (MemoryReport) metrics in the snapshot, pass a
+`nova-lsp` binary:
+
+```bash
+cargo build -p nova-lsp --release
+cargo run -p nova-cli --release -- perf capture-runtime \
+  --workspace-cache "$cache_root" \
+  --out runtime-current.json \
+  --nova-lsp target/release/nova-lsp
+```
+
+Compare two snapshots with per-metric thresholds:
+
+```bash
+cargo run -p nova-cli --release -- perf compare-runtime \
+  --baseline runtime-base.json \
+  --current runtime-current.json \
+  --config perf/runtime-thresholds.toml
+```

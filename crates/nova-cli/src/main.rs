@@ -18,7 +18,10 @@ mod diagnostics_output;
 use diagnostics_output::{print_github_annotations, print_sarif, write_sarif, DiagnosticsFormat};
 use nova_deps_cache::DependencyIndexStore;
 use nova_format::{edits_for_range_formatting, format_java, minimal_text_edits, FormatConfig};
-use nova_perf::{compare_runs, load_criterion_directory, BenchRun, ThresholdConfig};
+use nova_perf::{
+    compare_runs, compare_runtime_runs, load_criterion_directory, BenchRun, RuntimeRun,
+    RuntimeThresholdConfig, ThresholdConfig,
+};
 use nova_refactor::{
     apply_text_edits as apply_refactor_text_edits, organize_imports as refactor_organize_imports,
     rename as refactor_rename, Conflict, FileId as RefactorFileId, InMemoryJavaDatabase,
@@ -27,7 +30,8 @@ use nova_refactor::{
 };
 use nova_syntax::parse;
 use nova_workspace::{
-    CacheStatus, DiagnosticsReport, IndexReport, ParseResult, Workspace, WorkspaceSymbol,
+    CacheStatus, DiagnosticsReport, IndexReport, ParseResult, PerfMetrics, Workspace,
+    WorkspaceSymbol,
 };
 use serde::Serialize;
 use std::{
@@ -283,6 +287,37 @@ enum PerfCommand {
         #[arg(long = "thresholds-config")]
         thresholds_config: Option<PathBuf>,
         /// Allow regressions for these benchmark IDs (repeatable).
+        #[arg(long)]
+        allow: Vec<String>,
+        /// Optional path to write the markdown report.
+        #[arg(long)]
+        markdown_out: Option<PathBuf>,
+    },
+    /// Convert a `nova-workspace` `perf.json` file into a compact JSON snapshot suitable for CI diffing.
+    CaptureRuntime {
+        /// Path to a workspace cache root (directory containing `perf.json`) or a `perf.json` file.
+        #[arg(long)]
+        workspace_cache: PathBuf,
+        /// Path to write the output JSON file.
+        #[arg(long)]
+        out: PathBuf,
+        /// Optional path to a `nova-lsp` binary. When provided, `nova-cli` will query
+        /// `nova/memoryStatus` and include memory/startup metrics in the snapshot.
+        #[arg(long)]
+        nova_lsp: Option<PathBuf>,
+    },
+    /// Compare two runtime runs and fail if configured regression thresholds are exceeded.
+    CompareRuntime {
+        /// Baseline runtime run JSON file.
+        #[arg(long)]
+        baseline: PathBuf,
+        /// Current runtime run JSON file.
+        #[arg(long)]
+        current: PathBuf,
+        /// Optional runtime thresholds config (TOML).
+        #[arg(long)]
+        config: Option<PathBuf>,
+        /// Allow regressions for these metric IDs (repeatable).
         #[arg(long)]
         allow: Vec<String>,
         /// Optional path to write the markdown report.
@@ -769,6 +804,62 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                 };
 
                 let comparison = compare_runs(&baseline_run, &current_run, &thresholds, &allow);
+                let markdown = comparison.to_markdown();
+
+                if let Some(path) = markdown_out {
+                    std::fs::write(&path, &markdown).with_context(|| {
+                        format!("failed to write markdown report to {}", path.display())
+                    })?;
+                }
+
+                print!("{markdown}");
+
+                Ok(if comparison.has_failure { 1 } else { 0 })
+            }
+            PerfCommand::CaptureRuntime {
+                workspace_cache,
+                out,
+                nova_lsp,
+            } => {
+                let perf = load_workspace_perf_metrics(&workspace_cache).with_context(|| {
+                    format!(
+                        "load workspace perf metrics from {}",
+                        workspace_cache.display()
+                    )
+                })?;
+
+                let mut run = runtime_run_from_workspace_perf(&perf);
+                if let Some(nova_lsp) = nova_lsp {
+                    add_lsp_runtime_metrics(&mut run, &nova_lsp).with_context(|| {
+                        format!("capture runtime metrics from {}", nova_lsp.display())
+                    })?;
+                }
+                run.write_json(&out)?;
+                println!("wrote {}", out.display());
+                Ok(0)
+            }
+            PerfCommand::CompareRuntime {
+                baseline,
+                current,
+                config,
+                allow,
+                markdown_out,
+            } => {
+                let baseline_run = RuntimeRun::read_json(&baseline).with_context(|| {
+                    format!("load baseline runtime run from {}", baseline.display())
+                })?;
+                let current_run = RuntimeRun::read_json(&current).with_context(|| {
+                    format!("load current runtime run from {}", current.display())
+                })?;
+
+                let config = match config {
+                    Some(path) => RuntimeThresholdConfig::read_toml(&path).with_context(|| {
+                        format!("load runtime thresholds config {}", path.display())
+                    })?,
+                    None => RuntimeThresholdConfig::default(),
+                };
+
+                let comparison = compare_runtime_runs(&baseline_run, &current_run, &config, &allow);
                 let markdown = comparison.to_markdown();
 
                 if let Some(path) = markdown_out {
@@ -1733,5 +1824,214 @@ fn copy_dir_all(src: &PathBuf, dest: &PathBuf) -> Result<()> {
             })?;
         }
     }
+    Ok(())
+}
+
+fn load_workspace_perf_metrics(path: &PathBuf) -> Result<PerfMetrics> {
+    let perf_path = if path.is_dir() {
+        path.join("perf.json")
+    } else {
+        path.clone()
+    };
+
+    let content = std::fs::read_to_string(&perf_path)
+        .with_context(|| format!("failed to read {}", perf_path.display()))?;
+    Ok(serde_json::from_str(&content)
+        .with_context(|| format!("failed to parse {}", perf_path.display()))?)
+}
+
+fn runtime_run_from_workspace_perf(perf: &PerfMetrics) -> RuntimeRun {
+    fn usize_to_u64(value: usize) -> u64 {
+        u64::try_from(value).unwrap_or(u64::MAX)
+    }
+
+    let mut run = RuntimeRun::default();
+    run.metrics.insert(
+        "workspace/index.files_total".to_string(),
+        nova_perf::RuntimeMetric(usize_to_u64(perf.files_total)),
+    );
+    run.metrics.insert(
+        "workspace/index.files_indexed".to_string(),
+        nova_perf::RuntimeMetric(usize_to_u64(perf.files_indexed)),
+    );
+    run.metrics.insert(
+        "workspace/index.bytes_indexed".to_string(),
+        nova_perf::RuntimeMetric(perf.bytes_indexed),
+    );
+    run.metrics.insert(
+        "workspace/index.symbols_indexed".to_string(),
+        nova_perf::RuntimeMetric(usize_to_u64(perf.symbols_indexed)),
+    );
+    run.metrics.insert(
+        "workspace/index.elapsed_ms".to_string(),
+        nova_perf::RuntimeMetric(u64::try_from(perf.elapsed_ms).unwrap_or(u64::MAX)),
+    );
+
+    if let Some(rss) = perf.rss_bytes {
+        run.metrics.insert(
+            "workspace/index.rss_bytes".to_string(),
+            nova_perf::RuntimeMetric(rss),
+        );
+    }
+
+    run
+}
+
+fn add_lsp_runtime_metrics(run: &mut RuntimeRun, nova_lsp: &PathBuf) -> Result<()> {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
+    fn write_lsp_message<W: Write>(writer: &mut W, value: &serde_json::Value) -> Result<()> {
+        let payload = serde_json::to_vec(value)?;
+        write!(writer, "Content-Length: {}\r\n\r\n", payload.len())?;
+        writer.write_all(&payload)?;
+        writer.flush()?;
+        Ok(())
+    }
+
+    fn read_lsp_message<R: Read>(reader: &mut BufReader<R>) -> Result<Option<serde_json::Value>> {
+        let mut content_length: Option<usize> = None;
+        let mut line = String::new();
+
+        loop {
+            line.clear();
+            let bytes = reader.read_line(&mut line)?;
+            if bytes == 0 {
+                return Ok(None);
+            }
+
+            let header = line.trim_end_matches(['\r', '\n']);
+            if header.is_empty() {
+                break;
+            }
+
+            if let Some(rest) = header.strip_prefix("Content-Length:") {
+                content_length = Some(rest.trim().parse::<usize>()?);
+            }
+        }
+
+        let len = content_length.context("missing Content-Length header")?;
+        let mut payload = vec![0u8; len];
+        reader.read_exact(&mut payload)?;
+        Ok(Some(serde_json::from_slice(&payload)?))
+    }
+
+    fn read_lsp_response<R: Read>(
+        reader: &mut BufReader<R>,
+        expected_id: i32,
+    ) -> Result<serde_json::Value> {
+        let expected = serde_json::Value::from(expected_id);
+        loop {
+            let Some(message) = read_lsp_message(reader)? else {
+                return Err(anyhow::anyhow!(
+                    "unexpected EOF while waiting for LSP response"
+                ));
+            };
+
+            // Ignore notifications.
+            let Some(id) = message.get("id") else {
+                continue;
+            };
+
+            if id != &expected {
+                continue;
+            }
+
+            if let Some(err) = message.get("error") {
+                return Err(anyhow::anyhow!("LSP request failed: {}", err));
+            }
+
+            return Ok(message);
+        }
+    }
+
+    let mut child = Command::new(nova_lsp)
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to spawn {}", nova_lsp.display()))?;
+
+    let mut stdin = child.stdin.take().context("nova-lsp stdin unavailable")?;
+    let stdout = child.stdout.take().context("nova-lsp stdout unavailable")?;
+    let mut reader = BufReader::new(stdout);
+
+    let start = Instant::now();
+    write_lsp_message(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "processId": null,
+                "rootUri": null,
+                "capabilities": {},
+            },
+        }),
+    )?;
+    let _ = read_lsp_response(&mut reader, 1)?;
+    run.metrics.insert(
+        "lsp/startup.elapsed_ms".to_string(),
+        nova_perf::RuntimeMetric(u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)),
+    );
+
+    write_lsp_message(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/memoryStatus",
+            "params": null,
+        }),
+    )?;
+    let response = read_lsp_response(&mut reader, 2)?;
+
+    let usage = response
+        .pointer("/result/report/usage")
+        .context("missing memoryStatus result.report.usage")?;
+    let total = usage
+        .get("query_cache")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        .saturating_add(
+            usage
+                .get("syntax_trees")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+        )
+        .saturating_add(usage.get("indexes").and_then(|v| v.as_u64()).unwrap_or(0))
+        .saturating_add(usage.get("type_info").and_then(|v| v.as_u64()).unwrap_or(0))
+        .saturating_add(usage.get("other").and_then(|v| v.as_u64()).unwrap_or(0));
+    run.metrics.insert(
+        "lsp/memory.usage_total_bytes".to_string(),
+        nova_perf::RuntimeMetric(total),
+    );
+
+    write_lsp_message(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "shutdown",
+            "params": null,
+        }),
+    )?;
+    let _ = read_lsp_response(&mut reader, 3)?;
+
+    // `exit` is a notification (no response).
+    let _ = write_lsp_message(
+        &mut stdin,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "exit",
+            "params": null,
+        }),
+    );
+
+    let _ = child.wait();
+
     Ok(())
 }

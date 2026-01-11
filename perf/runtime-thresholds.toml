@@ -1,0 +1,20 @@
+# Runtime performance regression guard (end-to-end metrics).
+#
+# Values here are compared against `nova perf capture-runtime` snapshots.
+
+# Metrics listed here are allowed to regress (use sparingly; prefer updating thresholds only when
+# the regression is expected/acceptable).
+allow_regressions = []
+
+[default]
+# Thresholds are expressed as fractional regression (e.g. 0.10 = +10% slower / higher).
+pct_regression = 0.10
+
+[metrics]
+# Indexing / workspace cache metrics (emitted by `nova-workspace` as `perf.json`).
+"workspace/index.elapsed_ms" = { pct_regression = 0.10 }
+"workspace/index.rss_bytes" = { abs_regression = 50_000_000 } # ~50MB
+
+# LSP startup / memory metrics (optional; capture them via additional tooling).
+"lsp/startup.elapsed_ms" = { pct_regression = 0.15 }
+# "lsp/memory.usage_total_bytes" = { abs_regression = 5_000_000 } # ~5MB
