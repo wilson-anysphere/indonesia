@@ -8,7 +8,7 @@ fn apply_organize_imports(src: &str) -> (String, nova_refactor::WorkspaceEdit) {
     let db = InMemoryJavaDatabase::new([(file.clone(), src.to_string())]);
     let edit =
         organize_imports(&db, OrganizeImportsParams { file }).expect("organize_imports runs");
-    let after = apply_text_edits(src, &edit.edits).expect("apply edits");
+    let after = apply_text_edits(src, &edit.text_edits).expect("apply edits");
     (after, edit)
 }
 
@@ -19,8 +19,8 @@ fn assert_idempotent(src: &str, expected: &str) {
     let (after2, edit2) = apply_organize_imports(&after);
     assert_eq!(after2, after);
     assert!(
-        edit2.edits.is_empty(),
-        "second pass should be a no-op, got edits: {edit2:?} (first pass was: {edit:?})"
+        edit2.text_edits.is_empty() && edit2.file_ops.is_empty(),
+        "second pass should be a no-op, got edit: {edit2:?} (first pass was: {edit:?})"
     );
 }
 
@@ -150,5 +150,5 @@ class Test {
     // No real imports -> no changes.
     let (after, edit) = apply_organize_imports(before);
     assert_eq!(after, before);
-    assert!(edit.edits.is_empty());
+    assert!(edit.text_edits.is_empty());
 }

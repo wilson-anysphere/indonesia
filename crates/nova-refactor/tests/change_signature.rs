@@ -1,16 +1,33 @@
 use nova_index::{Index, SymbolKind};
 use nova_refactor::{
     apply_text_edits, change_signature, workspace_edit_to_lsp, ChangeSignature, ChangeSignatureConflict,
-    HierarchyPropagation, InMemoryJavaDatabase, ParameterOperation, WorkspaceEdit, WorkspaceTextEdit,
+    FileOp, HierarchyPropagation, InMemoryJavaDatabase, ParameterOperation, WorkspaceEdit, WorkspaceTextEdit,
 };
 use nova_types::MethodId;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
-fn apply_workspace_edit(files: &mut BTreeMap<String, String>, edit: WorkspaceEdit) {
+fn apply_workspace_edit(files: &mut BTreeMap<String, String>, mut edit: WorkspaceEdit) {
+    edit.normalize().expect("normalize edit");
+
+    for op in edit.file_ops.drain(..) {
+        match op {
+            FileOp::Rename { from, to } => {
+                let contents = files.remove(&from.0).expect("file exists");
+                files.insert(to.0, contents);
+            }
+            FileOp::Create { file, contents } => {
+                files.insert(file.0, contents);
+            }
+            FileOp::Delete { file } => {
+                files.remove(&file.0);
+            }
+        }
+    }
+
     let mut by_file: BTreeMap<String, Vec<WorkspaceTextEdit>> = BTreeMap::new();
-    for edit in edit.edits {
-        by_file.entry(edit.file.0.clone()).or_default().push(edit);
+    for e in edit.text_edits {
+        by_file.entry(e.file.0.clone()).or_default().push(e);
     }
 
     for (file, edits) in by_file {

@@ -946,12 +946,12 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
         },
     )?;
 
-    for e in &mut edit.edits {
+    for e in &mut edit.text_edits {
         e.replacement = convert_newlines(&e.replacement, newline_style);
     }
 
     let new_text =
-        apply_refactor_text_edits(&source, &edit.edits).map_err(|err| anyhow::anyhow!(err))?;
+        apply_refactor_text_edits(&source, &edit.text_edits).map_err(|err| anyhow::anyhow!(err))?;
     let changed = new_text != source;
 
     if args.in_place && changed {
@@ -970,7 +970,7 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
             vec![refactor_edits_to_json(
                 file_str.clone(),
                 &source,
-                &edit.edits,
+                &edit.text_edits,
             )]
         } else {
             Vec::new()

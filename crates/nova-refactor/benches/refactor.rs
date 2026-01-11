@@ -56,7 +56,7 @@ fn bench_refactorings(c: &mut Criterion) {
         let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
             .expect("organize_imports must succeed on fixture");
         assert!(
-            !edit.edits.is_empty(),
+            !edit.text_edits.is_empty(),
             "organize_imports fixture should produce an edit"
         );
 
@@ -99,7 +99,7 @@ fn bench_refactorings(c: &mut Criterion) {
         )
         .expect("rename must succeed on fixture");
         assert!(
-            !edit.edits.is_empty(),
+            !edit.text_edits.is_empty(),
             "rename fixture should produce edits"
         );
 
