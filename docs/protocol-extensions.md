@@ -478,6 +478,11 @@ Notes:
 
 - `projectRoot` also accepts the legacy alias `root`.
 - For **Bazel** workspaces, `target` is required and should be a Bazel label (e.g. `//app:lib`).
+- For **Maven** workspaces, `target` may be used to select a module directory relative to
+  `projectRoot` (e.g. `"module-a"`). `"."` / empty means “workspace” (no module selection).
+- For **Gradle** workspaces, `target` may be used to select a Gradle project path (e.g. `":app"`).
+  `":"` / empty means “workspace” (no project selection). Nova accepts project paths without the
+  leading `:` and will normalize them.
 
 #### Response
 
