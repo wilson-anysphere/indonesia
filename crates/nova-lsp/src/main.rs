@@ -25,6 +25,7 @@ use nova_vfs::{ContentChange, Document};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::env;
 use std::fs;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -33,14 +34,14 @@ use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 fn main() -> std::io::Result<()> {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    let args = env::args().skip(1).collect::<Vec<_>>();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         eprintln!(
-            "nova-lsp {version}\n\nUsage:\n  nova-lsp [--stdio]\n",
+            "nova-lsp {version}\n\nUsage:\n  nova-lsp [--stdio] [--config <path>]\n",
             version = env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -49,7 +50,7 @@ fn main() -> std::io::Result<()> {
     // Install panic hook + structured logging early. The stdio transport does
     // not currently emit `window/showMessage` notifications on panic, but
     // `nova/bugReport` can be used to generate a diagnostic bundle.
-    let mut config = nova_config::NovaConfig::default();
+    let mut config = load_config_from_args(&args);
     // When the legacy env-var based AI wiring is enabled (NOVA_AI_PROVIDER=...),
     // users can opt into prompt/response audit logging via NOVA_AI_AUDIT_LOGGING.
     //
@@ -177,6 +178,61 @@ fn main() -> std::io::Result<()> {
     }
 
     Ok(())
+}
+
+fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
+    // Prefer the explicit `--config` argument. This also ensures other crates
+    // using `nova_config::load_for_workspace` see the same config via
+    // `NOVA_CONFIG_PATH`.
+    if let Some(path) = parse_config_arg(args) {
+        env::set_var("NOVA_CONFIG_PATH", &path);
+        match nova_config::NovaConfig::load_from_path(&path) {
+            Ok(config) => return config,
+            Err(err) => {
+                eprintln!("nova-lsp: failed to load config from {}: {err}", path.display());
+                return nova_config::NovaConfig::default();
+            }
+        }
+    }
+
+    // Fall back to workspace discovery (env var + ancestor walk). We seed the
+    // search from the current working directory.
+    let cwd = match env::current_dir() {
+        Ok(dir) => dir,
+        Err(err) => {
+            eprintln!("nova-lsp: failed to determine current directory: {err}");
+            return nova_config::NovaConfig::default();
+        }
+    };
+
+    match nova_config::load_for_workspace(&cwd) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!(
+                "nova-lsp: failed to load workspace config from {}: {err}",
+                cwd.display()
+            );
+            nova_config::NovaConfig::default()
+        }
+    }
+}
+
+fn parse_config_arg(args: &[String]) -> Option<PathBuf> {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "--config" {
+            let next = args.get(i + 1)?;
+            return Some(PathBuf::from(next));
+        }
+        if let Some(path) = arg.strip_prefix("--config=") {
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 struct ServerState {
