@@ -687,6 +687,73 @@ fn method_reference_and_class_literal_accessors() {
 }
 
 #[test]
+fn method_reference_type_arguments_accessors() {
+    let src = "class Foo { void m() { var r = Foo::<String>bar; var c = Foo::<String>new; } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+    let method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .unwrap();
+
+    let decls: Vec<_> = method
+        .body()
+        .unwrap()
+        .statements()
+        .filter_map(|stmt| match stmt {
+            Statement::LocalVariableDeclarationStatement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(decls.len(), 2);
+
+    let init = decls[0]
+        .declarator_list()
+        .unwrap()
+        .declarators()
+        .next()
+        .unwrap()
+        .initializer()
+        .unwrap();
+    match init {
+        Expression::MethodReferenceExpression(expr) => {
+            assert_eq!(expr.name_token().unwrap().text(), "bar");
+            assert!(expr.type_arguments().is_some());
+        }
+        other => panic!("expected method reference, got {other:?}"),
+    }
+
+    let init = decls[1]
+        .declarator_list()
+        .unwrap()
+        .declarators()
+        .next()
+        .unwrap()
+        .initializer()
+        .unwrap();
+    match init {
+        Expression::ConstructorReferenceExpression(expr) => {
+            assert!(expr.type_arguments().is_some());
+        }
+        other => panic!("expected constructor reference, got {other:?}"),
+    }
+}
+
+#[test]
 fn annotation_element_value_pairs() {
     let src = r#"
         @Anno(x = 1)

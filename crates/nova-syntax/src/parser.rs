@@ -3004,7 +3004,17 @@ impl<'a> Parser<'a> {
                     if min_bp > 120 {
                         break;
                     }
-                    let is_constructor_ref = self.nth(1) == Some(SyntaxKind::NewKw);
+                    // Method reference (`Foo::bar`) / constructor reference (`Foo::new`).
+                    //
+                    // Java allows optional type arguments after the `::`:
+                    // `Foo::<T>bar`, `Foo::<T>new`.
+                    let mut lookahead = skip_trivia(&self.tokens, 1);
+                    if self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::Less) {
+                        lookahead =
+                            skip_trivia(&self.tokens, skip_type_arguments(&self.tokens, lookahead));
+                    }
+                    let is_constructor_ref =
+                        self.tokens.get(lookahead).map(|t| t.kind) == Some(SyntaxKind::NewKw);
                     let kind = if is_constructor_ref {
                         SyntaxKind::ConstructorReferenceExpression
                     } else {
@@ -3012,6 +3022,10 @@ impl<'a> Parser<'a> {
                     };
                     self.builder.start_node_at(checkpoint, kind.into());
                     self.bump(); // ::
+
+                    if self.at(SyntaxKind::Less) {
+                        self.parse_type_arguments();
+                    }
 
                     if is_constructor_ref {
                         if self.at(SyntaxKind::NewKw) {

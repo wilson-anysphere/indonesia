@@ -1,0 +1,79 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace " "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "r"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                MethodReferenceExpression
+                  NameExpression
+                    Identifier "Foo"
+                  DoubleColon "::"
+                  TypeArguments
+                    Less "<"
+                    TypeArgument
+                      Type
+                        NamedType
+                          Identifier "String"
+                    Greater ">"
+                  Identifier "bar"
+            Semicolon ";"
+          Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "c"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ConstructorReferenceExpression
+                  NameExpression
+                    Identifier "Foo"
+                  DoubleColon "::"
+                  TypeArguments
+                    Less "<"
+                    TypeArgument
+                      Type
+                        NamedType
+                          Identifier "String"
+                    Greater ">"
+                  NewKw "new"
+            Semicolon ";"
+          Whitespace " "
+          RBrace "}"
+      Whitespace " "
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""
