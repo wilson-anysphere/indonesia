@@ -85,6 +85,8 @@ impl DelimiterDepth {
 const TOP_LEVEL_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::PackageKw,
     SyntaxKind::ImportKw,
+    SyntaxKind::OpenKw,
+    SyntaxKind::ModuleKw,
     SyntaxKind::ClassKw,
     SyntaxKind::InterfaceKw,
     SyntaxKind::EnumKw,
@@ -107,6 +109,8 @@ const TYPE_DECL_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::RBrace,
     SyntaxKind::PackageKw,
     SyntaxKind::ImportKw,
+    SyntaxKind::OpenKw,
+    SyntaxKind::ModuleKw,
     SyntaxKind::ClassKw,
     SyntaxKind::InterfaceKw,
     SyntaxKind::EnumKw,
@@ -377,23 +381,31 @@ impl<'a> Parser<'a> {
             self.parse_import_decl();
         }
 
-        if self.at_module_decl_start() {
-            self.parse_module_declaration();
-            if !self.at(SyntaxKind::Eof) {
-                self.builder.start_node(SyntaxKind::Error.into());
-                self.error_here("unexpected tokens after module declaration");
-                self.recover_to(TokenSet::new(&[SyntaxKind::Eof]));
-                self.builder.finish_node();
-            }
-        } else {
-            while !self.at(SyntaxKind::Eof) {
-                let before = self.tokens.len();
-                if self.at_type_decl_start() {
-                    self.parse_type_declaration();
-                } else {
-                    self.recover_top_level();
+        let mut parsed_module_decl = false;
+        while !self.at(SyntaxKind::Eof) {
+            let before = self.tokens.len();
+
+            if !parsed_module_decl && self.at_module_decl_start() {
+                self.parse_module_declaration();
+                parsed_module_decl = true;
+
+                if !self.at(SyntaxKind::Eof) {
+                    self.builder.start_node(SyntaxKind::Error.into());
+                    self.error_here("unexpected tokens after module declaration");
+                    self.recover_to(TokenSet::new(&[SyntaxKind::Eof]));
+                    self.builder.finish_node();
                 }
-                self.force_progress(before, TOP_LEVEL_RECOVERY);
+            } else if self.at_type_decl_start() {
+                self.parse_type_declaration();
+            } else {
+                self.recover_top_level();
+            }
+
+            self.force_progress(before, TOP_LEVEL_RECOVERY);
+            if parsed_module_decl {
+                // Module compilation units contain exactly one module declaration. We recover
+                // any trailing junk to EOF above and stop parsing further top-level items.
+                break;
             }
         }
 
