@@ -76,6 +76,7 @@ Binding architectural choices (libraries, core patterns, invariants) are tracked
 - **[10 - Performance Engineering](docs/10-performance-engineering.md)** - Indexing, caching, persistence, concurrency
 - **[11 - Editor Integration](docs/11-editor-integration.md)** - LSP protocol, custom extensions, multi-editor support
 - **[12 - Debugging Integration](docs/12-debugging-integration.md)** - DAP implementation, advanced debugging features
+- **[17 - Observability and Reliability](docs/17-observability-and-reliability.md)** - Logging, safe mode, bug reports, runtime metrics
 
 ### Part V: Advanced Capabilities
 - **[13 - AI Augmentation](docs/13-ai-augmentation.md)** - Machine learning integration for intelligent features

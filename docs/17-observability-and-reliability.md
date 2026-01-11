@@ -359,6 +359,6 @@ Bug report bundles already include:
 
 To include memory metrics:
 
-1. call `nova/memoryStatus`
+1. call `nova/metrics` (or `nova/memoryStatus`)
 2. copy/paste the JSON result into your issue, or save it as `memory.json` next to the bundle before
    compressing it.

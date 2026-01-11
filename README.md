@@ -101,6 +101,10 @@ nova perf report --path <workspace>
 
 # Debug parsing for a single file
 nova parse <file>
+
+# Generate a diagnostic bug report bundle
+nova bugreport
+nova bugreport --json
 ```
 
 Cache location:
