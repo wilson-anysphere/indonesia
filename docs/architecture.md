@@ -82,7 +82,7 @@ Notable “delta” areas to be aware of:
 
 - **Incremental engine coverage (ADR 0001):**
   - Salsa is implemented in `crates/nova-db/src/salsa/` (see `mod.rs`), but many “shipping” features still bypass it:
-    - `crates/nova-lsp/src/main.rs` uses an in-memory `HashMap<String, String>` for open documents.
+    - `crates/nova-lsp/src/main.rs` uses an in-memory `HashMap<String, nova_vfs::Document>` for open documents.
     - Refactorings in the LSP stdio server run on `nova_refactor::InMemoryJavaDatabase` (see `crates/nova-lsp/src/main.rs`).
     - CLI indexing/diagnostics in `crates/nova-workspace/` are largely heuristic/regex-based.
 - **Syntax tree usage (ADR 0002):**
@@ -95,7 +95,7 @@ Notable “delta” areas to be aware of:
   - `rkyv` + validation is implemented in `crates/nova-storage/` and used by some persisted artifacts (e.g. dependency bundles in `crates/nova-deps-cache/`).
   - Some persistence remains serde/bincode-based (e.g. parts of classpath caching in `crates/nova-classpath/`), and not all editor-facing schemas are versioned yet.
 - **URIs + VFS model (ADR 0006):**
-  - `crates/nova-vfs/` has archive path types + overlay support, but the current `nova-lsp` stdio server does not use `nova-vfs` yet.
+  - `crates/nova-vfs/` has archive path types + overlay support. The current `nova-lsp` stdio server only uses `nova_vfs::Document`/`ContentChange` for open-document tracking; it does not yet use the full `Vfs` model for canonical archive/virtual document URIs.
   - Virtual-document schemes exist in pieces (e.g. `crates/nova-decompile` defines `nova-decompile:`), but there is not yet a single canonical LSP-facing URI scheme for all virtual documents/archives.
 - **Distributed mode (docs/16-distributed-mode.md):**
   - The router/worker stack exists (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) but is not yet integrated into the shipped `nova-lsp` binary.

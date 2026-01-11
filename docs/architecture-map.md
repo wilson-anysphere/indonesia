@@ -452,7 +452,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
-  - `nova-lsp`’s stdio server currently does not use this VFS; it maintains its own open-document map.
+  - `nova-lsp`’s stdio server uses `nova_vfs::Document`/`ContentChange` for open-document tracking, but does not yet use the full `Vfs`/archive path model for canonical virtual documents.
 
 ### `nova-worker`
 - **Purpose:** `nova-worker` binary for distributed mode (connects to `nova-router` and builds shard indexes).
