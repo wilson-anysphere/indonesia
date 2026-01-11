@@ -460,6 +460,9 @@ allow_cloud_code_edits = true
 allow_code_edits_without_anonymization = true
 ```
 
+Depending on the editor integration, these may be surfaced as settings prefixed with `nova.`
+(for example: `nova.ai.privacy.allow_cloud_code_edits`).
+
 Explain-only actions are always allowed regardless of these settings.
 
 ---
