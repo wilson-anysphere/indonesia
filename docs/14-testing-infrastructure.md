@@ -116,6 +116,25 @@ These are not always golden “snapshots”, but they are fixture-driven tests:
 - `crates/nova-testing/fixtures/` — small Maven/Gradle projects used by LSP “test discovery” flows.
 - `crates/*/testdata/` — per-crate sample inputs (build tool parsing, classpath discovery, etc).
 
+#### 2d) Formatter golden tests (`insta` snapshots)
+
+Nova uses [`insta`](https://crates.io/crates/insta) snapshots for formatter outputs.
+
+**Where:**
+
+- Inputs: `crates/nova-format/tests/fixtures/*.java`
+- Snapshot files: `crates/nova-format/tests/snapshots/*.snap`
+- Tests:
+  - `crates/nova-format/tests/format_fixtures.rs` (file-based `.snap` snapshots)
+  - `crates/nova-format/tests/format_snapshots.rs` (inline snapshots in Rust source)
+
+**Run locally:**
+
+```bash
+cargo test -p nova-format --test format_fixtures
+cargo test -p nova-format --test format_snapshots
+```
+
 ---
 
 ### 3) Protocol E2E tests
@@ -172,19 +191,32 @@ cargo test -p nova-types --test javac_differential -- --ignored
 
 ### 5) Fuzzing (`cargo fuzz`)
 
-Nova intends to use `cargo-fuzz` for “never panic” hardening (parser, incremental update paths, protocol
-decoders, etc).
+Nova uses `cargo-fuzz` for “never panic” hardening (parser, formatter, classfile parsing, and selected
+refactoring surfaces).
 
-**Current state:** there is no `fuzz/` directory in this repo yet (no fuzz targets are checked in today).
+For deeper details (timeouts, minimization, artifacts), see [`docs/fuzzing.md`](fuzzing.md).
 
-**How to add & run locally:**
+**Where:**
+
+- Targets live under `fuzz/fuzz_targets/`
+- Seed corpora live under `fuzz/corpus/<target>/`
+- Crash artifacts (if any) are written under `fuzz/artifacts/<target>/`
+
+**Run locally (from the repo root):**
 
 ```bash
-cargo install cargo-fuzz
-cargo fuzz init
+rustup toolchain install nightly --component llvm-tools-preview
+cargo +nightly install cargo-fuzz --locked
 
-# then (with a target you add under fuzz/fuzz_targets/)
-cargo +nightly fuzz run <target> -- -max_total_time=60
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60
+```
+
+There are additional targets (e.g. `refactor_smoke`, `parse_java`, `format_java`)—list them with:
+
+```bash
+cargo +nightly fuzz list
 ```
 
 ---
@@ -270,17 +302,19 @@ Always inspect `git diff` after blessing.
 
 ### `insta` snapshot updates (`INSTA_UPDATE=always`)
 
-Nova currently uses `insta` for **inline** snapshots in:
+Nova uses `insta` snapshots for formatter tests in `crates/nova-format/tests/`:
 
-- `crates/nova-format/tests/format_snapshots.rs`
+- `format_fixtures.rs` → updates `.snap` files under `crates/nova-format/tests/snapshots/`
+- `format_snapshots.rs` → updates inline snapshots in the Rust source file
 
 To update inline snapshots:
 
 ```bash
+INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
 INSTA_UPDATE=always cargo test -p nova-format --test format_snapshots
 ```
 
-This will rewrite the Rust source file containing the inline snapshot.
+Always inspect `git diff` after updating snapshots.
 
 ---
 
@@ -292,7 +326,7 @@ This will rewrite the Rust source file containing the inline snapshot.
 | `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths` + `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `javac.yml` | planned | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `real-projects.yml` | planned | Clone `test-projects/` and run ignored real-project suites | `./scripts/run-real-project-tests.sh` |
-| `fuzz.yml` | planned | Run short, time-boxed `cargo fuzz` jobs | `cargo +nightly fuzz run <target> -- -max_total_time=60` |
+| `fuzz.yml` | planned | Run short, time-boxed `cargo fuzz` jobs | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60` |
 
 Note: `.github/workflows/release.yml` exists for packaging and release automation; it is not a test gate.
 
@@ -313,3 +347,43 @@ Note: `.github/workflows/release.yml` exists for packaging and release automatio
 - **Golden outputs must be stable.** If a change legitimately updates expectations, use `BLESS=1` / `INSTA_UPDATE`
   and review diffs as part of the PR.
 
+---
+
+## Adding a new fixture (common recipes)
+
+### Add a new parser snapshot
+
+1. Add a new snapshot file under `crates/nova-syntax/src/snapshots/` (e.g. `my_case.tree`).
+2. Add a test in `crates/nova-syntax/src/tests.rs` that:
+   - parses an input string
+   - dumps `crate::parser::debug_dump(...)`
+   - compares against the snapshot file
+3. Generate/update the snapshot with:
+
+```bash
+BLESS=1 cargo test -p nova-syntax <your_test_name>
+```
+
+### Add a new refactoring before/after fixture
+
+1. Create a new directory:
+   `crates/nova-refactor/tests/fixtures/<case>/{before,after}/`
+2. Add Java source(s) to `before/`.
+3. Write/update a test in `crates/nova-refactor/tests/` using
+   `nova_test_utils::assert_fixture_transformed(...)`.
+4. Generate/update the `after/` directory with:
+
+```bash
+BLESS=1 cargo test -p nova-refactor <your_test_name>
+```
+
+### Add a new formatter fixture snapshot
+
+1. Add a new input file under `crates/nova-format/tests/fixtures/` (e.g. `my_case.java`).
+2. Add a test to `crates/nova-format/tests/format_fixtures.rs` that loads the input and calls
+   `insta::assert_snapshot!(...)`.
+3. Generate/update the `.snap` file with:
+
+```bash
+INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
+```
