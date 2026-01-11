@@ -715,7 +715,11 @@ fn feature_gate_records_version_matrix() {
     );
     assert_eq!(java11.result.errors, Vec::new());
     assert_eq!(
-        java11.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java11
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_RECORDS"]
     );
 
@@ -733,7 +737,7 @@ fn feature_gate_records_version_matrix() {
         java15_no_preview
             .diagnostics
             .iter()
-            .map(|d| d.code)
+            .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_RECORDS"]
     );
@@ -772,7 +776,11 @@ fn feature_gate_modules_version_matrix() {
     );
     assert_eq!(java8.result.errors, Vec::new());
     assert_eq!(
-        java8.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java8
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_MODULES"]
     );
 
@@ -805,7 +813,11 @@ there
     );
     assert_eq!(java14.result.errors, Vec::new());
     assert_eq!(
-        java14.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java14
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_TEXT_BLOCKS"]
     );
 
@@ -846,7 +858,11 @@ fn feature_gate_var_local_inference_version_matrix() {
     );
     assert_eq!(java8.result.errors, Vec::new());
     assert_eq!(
-        java8.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java8
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_VAR_LOCAL_INFERENCE"]
     );
 
@@ -878,7 +894,11 @@ fn feature_gate_sealed_classes_version_matrix() {
     );
     assert_eq!(java14.result.errors, Vec::new());
     assert_eq!(
-        java14.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java14
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_SEALED_CLASSES"]
     );
 
@@ -896,7 +916,7 @@ fn feature_gate_sealed_classes_version_matrix() {
         java16_no_preview
             .diagnostics
             .iter()
-            .map(|d| d.code)
+            .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_SEALED_CLASSES"]
     );
@@ -942,7 +962,11 @@ fn feature_gate_switch_expressions_version_matrix() {
     );
     assert_eq!(java13.result.errors, Vec::new());
     assert_eq!(
-        java13.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java13
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_SWITCH_EXPRESSIONS", "JAVA_FEATURE_SWITCH_EXPRESSIONS"]
     );
 
@@ -987,7 +1011,11 @@ fn feature_gate_pattern_matching_switch_version_matrix() {
     );
     assert_eq!(java16.result.errors, Vec::new());
     assert_eq!(
-        java16.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java16
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_PATTERN_MATCHING_SWITCH"]
     );
 
@@ -1005,7 +1033,7 @@ fn feature_gate_pattern_matching_switch_version_matrix() {
         java17_no_preview
             .diagnostics
             .iter()
-            .map(|d| d.code)
+            .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_PATTERN_MATCHING_SWITCH"]
     );
@@ -1051,7 +1079,7 @@ fn feature_gate_pattern_matching_switch_handles_null_and_default_elements() {
         java17_no_preview
             .diagnostics
             .iter()
-            .map(|d| d.code)
+            .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_PATTERN_MATCHING_SWITCH"]
     );
@@ -1085,7 +1113,11 @@ fn feature_gate_record_patterns_version_matrix() {
     );
     assert_eq!(java18.result.errors, Vec::new());
     assert_eq!(
-        java18.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java18
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_RECORD_PATTERNS"]
     );
 
@@ -1103,7 +1135,7 @@ fn feature_gate_record_patterns_version_matrix() {
         java20_no_preview
             .diagnostics
             .iter()
-            .map(|d| d.code)
+            .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_RECORD_PATTERNS"]
     );
@@ -1145,7 +1177,11 @@ fn feature_gate_pattern_matching_instanceof_version_matrix() {
     );
     assert_eq!(java13.result.errors, Vec::new());
     assert_eq!(
-        java13.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        java13
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_PATTERN_MATCHING_INSTANCEOF"]
     );
 
@@ -1163,7 +1199,7 @@ fn feature_gate_pattern_matching_instanceof_version_matrix() {
         java14_no_preview
             .diagnostics
             .iter()
-            .map(|d| d.code)
+            .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_PATTERN_MATCHING_INSTANCEOF"]
     );
