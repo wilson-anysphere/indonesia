@@ -8,6 +8,7 @@ use nova_scheduler::{run_with_timeout, TaskError};
 use nova_types::{CompletionItem, Diagnostic};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -408,6 +409,18 @@ impl<DB: ?Sized + Send + Sync + 'static> ProviderId for Arc<dyn InlayHintProvide
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegisterError {
     DuplicateId { kind: &'static str, id: String },
+    WasmCompile {
+        id: String,
+        dir: PathBuf,
+        entry_path: PathBuf,
+        message: String,
+    },
+
+    WasmCapabilityNotSupported {
+        id: String,
+        dir: PathBuf,
+        capability: String,
+    },
 }
 
 impl fmt::Display for RegisterError {
@@ -416,6 +429,19 @@ impl fmt::Display for RegisterError {
             RegisterError::DuplicateId { kind, id } => {
                 write!(f, "duplicate {kind} provider id: {id}")
             }
+            RegisterError::WasmCompile {
+                id,
+                dir,
+                entry_path,
+                message,
+            } => write!(
+                f,
+                "extension {id:?} at {dir:?}: failed to load wasm module {entry_path:?}: {message}"
+            ),
+            RegisterError::WasmCapabilityNotSupported { id, dir, capability } => write!(
+                f,
+                "extension {id:?} at {dir:?}: wasm module does not implement capability {capability:?}"
+            ),
         }
     }
 }
