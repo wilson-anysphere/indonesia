@@ -8,6 +8,7 @@ use blake3::Hash;
 use std::{
     collections::BTreeSet,
     fs,
+    ops::ControlFlow,
     path::{Path, PathBuf},
 };
 
@@ -182,7 +183,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         prefer_owner: Option<&str>,
         expr: &str,
     ) -> Result<Option<JavaCompileInfo>> {
-        self.runner.run_with_stdout(
+        self.runner.run_with_stdout_controlled(
             &self.root,
             "bazel",
             &["aquery", "--output=textproto", expr],
@@ -191,19 +192,19 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 for action in parse_aquery_textproto_streaming(stdout) {
                     if let Some(owner) = prefer_owner {
                         if action.owner.as_deref() == Some(owner) {
-                            return Ok(Some(extract_java_compile_info(&action)));
+                            return Ok(ControlFlow::Break(Some(extract_java_compile_info(&action))));
                         }
                     }
 
                     if first_info.is_none() {
                         first_info = Some(extract_java_compile_info(&action));
                         if prefer_owner.is_none() {
-                            break;
+                            return Ok(ControlFlow::Break(first_info));
                         }
                     }
                 }
 
-                Ok(first_info)
+                Ok(ControlFlow::Continue(first_info))
             },
         )
     }

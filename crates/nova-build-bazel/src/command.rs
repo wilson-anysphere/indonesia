@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use std::{
     io::{self, BufRead, BufReader, Read},
+    ops::ControlFlow,
     path::Path,
     process::{Command, Stdio},
 };
@@ -24,6 +25,20 @@ pub trait CommandRunner: Send + Sync {
         let output = self.run(cwd, program, args)?;
         let mut reader = BufReader::new(std::io::Cursor::new(output.stdout.into_bytes()));
         f(&mut reader)
+    }
+
+    fn run_with_stdout_controlled<R>(
+        &self,
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+        f: impl FnOnce(&mut dyn BufRead) -> Result<ControlFlow<R, R>>,
+    ) -> Result<R> {
+        self.run_with_stdout(cwd, program, args, |stdout| {
+            Ok(match f(stdout)? {
+                ControlFlow::Continue(value) | ControlFlow::Break(value) => value,
+            })
+        })
     }
 }
 
@@ -59,6 +74,18 @@ impl CommandRunner for DefaultCommandRunner {
         args: &[&str],
         f: impl FnOnce(&mut dyn BufRead) -> Result<R>,
     ) -> Result<R> {
+        self.run_with_stdout_controlled(cwd, program, args, |stdout| {
+            f(stdout).map(ControlFlow::Continue)
+        })
+    }
+
+    fn run_with_stdout_controlled<R>(
+        &self,
+        cwd: &Path,
+        program: &str,
+        args: &[&str],
+        f: impl FnOnce(&mut dyn BufRead) -> Result<ControlFlow<R, R>>,
+    ) -> Result<R> {
         const MAX_STDERR_BYTES: u64 = 1_048_576; // 1 MiB
 
         let mut child = Command::new(program)
@@ -84,31 +111,52 @@ impl CommandRunner for DefaultCommandRunner {
         });
 
         let mut stdout_reader = BufReader::new(stdout);
-        let result = f(&mut stdout_reader);
+        let control = f(&mut stdout_reader);
+        match control {
+            Ok(ControlFlow::Continue(value)) => {
+                // Drain remaining stdout to avoid deadlocks if `f` exits early.
+                let mut sink = io::sink();
+                let _ = io::copy(&mut stdout_reader, &mut sink);
 
-        // Drain remaining stdout to avoid deadlocks if `f` exits early.
-        let mut sink = io::sink();
-        let _ = io::copy(&mut stdout_reader, &mut sink);
+                let status = child
+                    .wait()
+                    .with_context(|| format!("failed to wait for `{program}`"))?;
 
-        let status = child
-            .wait()
-            .with_context(|| format!("failed to wait for `{program}`"))?;
+                let stderr = match stderr_handle.join() {
+                    Ok(Ok(stderr)) => stderr,
+                    Ok(Err(_)) => String::new(),
+                    Err(_) => String::new(),
+                };
 
-        let stderr = match stderr_handle.join() {
-            Ok(Ok(stderr)) => stderr,
-            Ok(Err(_)) => String::new(),
-            Err(_) => String::new(),
-        };
+                if !status.success() {
+                    return Err(anyhow!(
+                        "`{program} {}` exited with {}.\nstderr:\n{stderr}",
+                        args.join(" "),
+                        status
+                    ));
+                }
 
-        if !status.success() {
-            return Err(anyhow!(
-                "`{program} {}` exited with {}.\nstderr:\n{stderr}",
-                args.join(" "),
-                status
-            ));
+                Ok(value)
+            }
+            Ok(ControlFlow::Break(value)) => {
+                // Caller indicated it has found what it needs and wants to stop early. Kill the
+                // child process to avoid reading the remainder of stdout into the pipe buffers.
+                drop(stdout_reader);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stderr_handle.join();
+                Ok(value)
+            }
+            Err(err) => {
+                // The caller encountered an error while reading stdout. Kill the child process to
+                // avoid blocking on full stdout/stderr pipes, then return the original error.
+                drop(stdout_reader);
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stderr_handle.join();
+                Err(err)
+            }
         }
-
-        result
     }
 }
 
