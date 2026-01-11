@@ -199,7 +199,7 @@ jobs:
 
           # Ensure we always have both report artifacts to upload, even if `cargo run` fails
           # before the CLI has a chance to write them.
-          if [ ! -f perf-report.md ]; then
+          if [ ! -s perf-report.md ]; then
             cat > perf-report.md <<EOF
           ## Nova performance report
 
@@ -208,7 +208,7 @@ jobs:
           EOF
           fi
 
-          if [ ! -f perf-report.json ]; then
+          if [ ! -s perf-report.json ]; then
             cat > perf-report.json <<EOF
           {"error":"perf compare did not produce perf-report.json","exit_code":${status}}
           EOF
