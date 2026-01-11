@@ -100,4 +100,3 @@ fn read_dap_message(reader: &mut impl BufRead) -> serde_json::Value {
     reader.read_exact(&mut buf).expect("read body");
     serde_json::from_slice(&buf).expect("parse json")
 }
-

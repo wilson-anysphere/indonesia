@@ -90,7 +90,8 @@ pub fn format_entries(entries: &[Entry]) -> String {
         .iter()
         .enumerate()
         .map(|(idx, entry)| {
-            let msg = serde_json::to_string(&entry.message).unwrap_or_else(|_| "<invalid json>".to_string());
+            let msg = serde_json::to_string(&entry.message)
+                .unwrap_or_else(|_| "<invalid json>".to_string());
             format!("{idx:03} {} {msg}", entry.direction.as_str())
         })
         .collect::<Vec<_>>()
@@ -181,4 +182,3 @@ fn assert_json_subset(expected: &Value, actual: &Value, path: &str) -> Result<()
         }
     }
 }
-

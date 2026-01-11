@@ -38,6 +38,10 @@ fn compile_fixture(classes_dir: &Path) -> anyhow::Result<PathBuf> {
     );
 
     let output = Command::new("javac")
+        // Keep JVM memory usage low so this test can run under the `cargo_agent` RLIMIT_AS cap.
+        .arg("-J-Xms16m")
+        .arg("-J-Xmx256m")
+        .arg("-J-XX:CompressedClassSpaceSize=64m")
         .arg("-g")
         .arg("-encoding")
         .arg("UTF-8")
@@ -65,6 +69,10 @@ impl ChildGuard {
     fn spawn(port: u16, classes_dir: &Path) -> anyhow::Result<Self> {
         let jdwp = format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address={port}");
         let child = Command::new("java")
+            // Keep memory usage low so the debuggee can start under the test RLIMIT.
+            .arg("-Xms16m")
+            .arg("-Xmx256m")
+            .arg("-XX:CompressedClassSpaceSize=64m")
             .arg(jdwp)
             .arg("-cp")
             .arg(classes_dir)
@@ -187,10 +195,6 @@ fn is_event(msg: &Value, event: &str) -> bool {
 }
 
 #[tokio::test]
-#[cfg_attr(
-    not(feature = "real-jvm-tests"),
-    ignore = "enable with `cargo test -p nova-dap --features real-jvm-tests`"
-)]
 async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
     if !tool_available("java") || !tool_available("javac") {
         // There isn't a built-in "skip" in Rust's test harness; treat this as a no-op
@@ -305,7 +309,31 @@ async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
         .and_then(|v| v.as_i64())
         .unwrap();
 
-    let stack_seq = continue_seq + 1;
+    // Step over the assignment so `answer` is definitely in-scope and initialized before
+    // attempting to read locals.
+    let next_seq = continue_seq + 1;
+    dap.send_request(next_seq, "next", json!({ "threadId": thread_id }))
+        .await;
+    let next_resp = dap
+        .wait_for_response(next_seq, Instant::now() + Duration::from_secs(10))
+        .await;
+    assert_eq!(
+        next_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let stopped_step = dap
+        .wait_for_event("stopped", Instant::now() + Duration::from_secs(30))
+        .await;
+    assert_eq!(
+        stopped_step
+            .pointer("/body/reason")
+            .and_then(|v| v.as_str()),
+        Some("step"),
+        "expected a step stop after next: {stopped_step}"
+    );
+
+    let stack_seq = next_seq + 1;
     dap.send_request(stack_seq, "stackTrace", json!({ "threadId": thread_id }))
         .await;
     let stack_resp = dap
@@ -334,7 +362,76 @@ async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
         "expected at least one frame to reference the fixture source path {fixture_source}\nstackTrace response: {stack_resp}"
     );
 
-    let disconnect_seq = stack_seq + 1;
+    let fixture_frame_id = frames
+        .iter()
+        .find(|frame| {
+            frame
+                .pointer("/source/path")
+                .and_then(|v| v.as_str())
+                .is_some_and(|path| path == fixture_source.as_str())
+        })
+        .and_then(|frame| frame.get("id").and_then(|v| v.as_i64()))
+        .expect("fixture frame should include an id");
+
+    let scopes_seq = stack_seq + 1;
+    dap.send_request(scopes_seq, "scopes", json!({ "frameId": fixture_frame_id }))
+        .await;
+    let scopes_resp = dap
+        .wait_for_response(scopes_seq, Instant::now() + Duration::from_secs(10))
+        .await;
+    if scopes_resp.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        panic!("scopes request failed: {scopes_resp}");
+    }
+
+    let locals_ref = scopes_resp
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .expect("scopes[0].variablesReference missing");
+
+    let vars_seq = scopes_seq + 1;
+    dap.send_request(
+        vars_seq,
+        "variables",
+        json!({ "variablesReference": locals_ref }),
+    )
+    .await;
+    let vars_resp = dap
+        .wait_for_response(vars_seq, Instant::now() + Duration::from_secs(10))
+        .await;
+    if vars_resp.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        panic!("variables request failed: {vars_resp}");
+    }
+
+    let variables = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .expect("variables.body.variables missing");
+    let answer_value = variables
+        .iter()
+        .find(|v| v.get("name").and_then(|v| v.as_str()) == Some("answer"))
+        .and_then(|v| v.get("value").and_then(|v| v.as_str()))
+        .expect("expected locals to include `answer`");
+    assert_eq!(answer_value, "42");
+
+    let eval_seq = vars_seq + 1;
+    dap.send_request(
+        eval_seq,
+        "evaluate",
+        json!({ "expression": "answer", "frameId": fixture_frame_id }),
+    )
+    .await;
+    let eval_resp = dap
+        .wait_for_response(eval_seq, Instant::now() + Duration::from_secs(10))
+        .await;
+    if eval_resp.get("success").and_then(|v| v.as_bool()) != Some(true) {
+        panic!("evaluate request failed: {eval_resp}");
+    }
+    assert_eq!(
+        eval_resp.pointer("/body/result").and_then(|v| v.as_str()),
+        Some("42")
+    );
+
+    let disconnect_seq = eval_seq + 1;
     dap.send_request(disconnect_seq, "disconnect", json!({}))
         .await;
     let _ = dap

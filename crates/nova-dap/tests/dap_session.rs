@@ -29,8 +29,13 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
     let locals_ref = client.first_scope_variables_reference(frame_id).await;
 
     let vars_resp = client.variables(locals_ref).await;
-    let locals = vars_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
-    assert!(locals.iter().any(|v| v.get("name").and_then(|n| n.as_str()) == Some("x")));
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    assert!(locals
+        .iter()
+        .any(|v| v.get("name").and_then(|n| n.as_str()) == Some("x")));
 
     // Pause should suspend the requested thread and emit a stopped event.
     let (_pause_resp, pause_stopped) = client.pause(Some(thread_id)).await;
@@ -46,7 +51,10 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
 
     // Unknown/unhandled requests should be reported as errors (success: false).
     let bad_resp = client.request("nope", json!({})).await;
-    assert_eq!(bad_resp.get("success").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(
+        bad_resp.get("success").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 
     // Continue should emit a continued event and then a stopped event from the mock JDWP VM.
     let (cont_resp, continued) = client.continue_with_thread_id(Some(thread_id)).await;
@@ -205,12 +213,16 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
     );
 
     // Repeated stackTrace calls should return stable frame ids.
-    let stack_a = client.request("stackTrace", json!({ "threadId": thread_id })).await;
+    let stack_a = client
+        .request("stackTrace", json!({ "threadId": thread_id }))
+        .await;
     let frame_id_a = stack_a
         .pointer("/body/stackFrames/0/id")
         .and_then(|v| v.as_i64())
         .unwrap();
-    let stack_b = client.request("stackTrace", json!({ "threadId": thread_id })).await;
+    let stack_b = client
+        .request("stackTrace", json!({ "threadId": thread_id }))
+        .await;
     let frame_id_b = stack_b
         .pointer("/body/stackFrames/0/id")
         .and_then(|v| v.as_i64())
@@ -218,12 +230,16 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
     assert_eq!(frame_id_a, frame_id_b);
 
     // And repeated scopes calls should return stable locals handles.
-    let scopes_a = client.request("scopes", json!({ "frameId": frame_id_a })).await;
+    let scopes_a = client
+        .request("scopes", json!({ "frameId": frame_id_a }))
+        .await;
     let locals_ref_a = scopes_a
         .pointer("/body/scopes/0/variablesReference")
         .and_then(|v| v.as_i64())
         .unwrap();
-    let scopes_b = client.request("scopes", json!({ "frameId": frame_id_a })).await;
+    let scopes_b = client
+        .request("scopes", json!({ "frameId": frame_id_a }))
+        .await;
     let locals_ref_b = scopes_b
         .pointer("/body/scopes/0/variablesReference")
         .and_then(|v| v.as_i64())
@@ -234,14 +250,18 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
     client.continue_with_thread_id(Some(thread_id)).await;
     let _ = client.wait_for_stopped_reason("breakpoint").await;
 
-    let stack_after = client.request("stackTrace", json!({ "threadId": thread_id })).await;
+    let stack_after = client
+        .request("stackTrace", json!({ "threadId": thread_id }))
+        .await;
     let frame_id_after = stack_after
         .pointer("/body/stackFrames/0/id")
         .and_then(|v| v.as_i64())
         .unwrap();
     assert_ne!(frame_id_a, frame_id_after);
 
-    let scopes_after = client.request("scopes", json!({ "frameId": frame_id_after })).await;
+    let scopes_after = client
+        .request("scopes", json!({ "frameId": frame_id_after }))
+        .await;
     let locals_ref_after = scopes_after
         .pointer("/body/scopes/0/variablesReference")
         .and_then(|v| v.as_i64())
@@ -249,8 +269,13 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
     assert_ne!(locals_ref_a, locals_ref_after);
 
     // Old frame ids should be rejected rather than resolving to a different frame.
-    let stale_scopes = client.request("scopes", json!({ "frameId": frame_id_a })).await;
-    assert_eq!(stale_scopes.get("success").and_then(|v| v.as_bool()), Some(false));
+    let stale_scopes = client
+        .request("scopes", json!({ "frameId": frame_id_a }))
+        .await;
+    assert_eq!(
+        stale_scopes.get("success").and_then(|v| v.as_bool()),
+        Some(false)
+    );
 
     // Old variables references should return empty results.
     let stale_vars = client
@@ -287,7 +312,9 @@ async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_
     let _ = client.wait_for_stopped_reason("breakpoint").await;
 
     let frame_id = client.first_frame_id(thread_id).await;
-    let scopes_resp = client.request("scopes", json!({ "frameId": frame_id })).await;
+    let scopes_resp = client
+        .request("scopes", json!({ "frameId": frame_id }))
+        .await;
     let locals_ref = scopes_resp
         .pointer("/body/scopes/0/variablesReference")
         .and_then(|v| v.as_i64())
@@ -296,7 +323,10 @@ async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_
     let vars_resp = client
         .request("variables", json!({ "variablesReference": locals_ref }))
         .await;
-    let locals = vars_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     let obj_ref = locals
         .iter()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("obj"))
@@ -321,7 +351,9 @@ async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_
 
     // Pin a fresh object handle.
     let frame_id = client.first_frame_id(thread_id).await;
-    let scopes_resp = client.request("scopes", json!({ "frameId": frame_id })).await;
+    let scopes_resp = client
+        .request("scopes", json!({ "frameId": frame_id }))
+        .await;
     let locals_ref = scopes_resp
         .pointer("/body/scopes/0/variablesReference")
         .and_then(|v| v.as_i64())
@@ -335,7 +367,10 @@ async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_
     let vars_resp = client
         .request("variables", json!({ "variablesReference": locals_ref }))
         .await;
-    let locals = vars_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     let obj_ref = locals
         .iter()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("obj"))
@@ -349,14 +384,20 @@ async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_
             json!({ "variablesReference": obj_ref, "pinned": true }),
         )
         .await;
-    assert_eq!(pin_resp.pointer("/body/pinned").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        pin_resp.pointer("/body/pinned").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     // Resume again; pinned handle must survive.
     client.continue_with_thread_id(Some(thread_id)).await;
     let _ = client.wait_for_stopped_reason("breakpoint").await;
 
     let pinned_vars_resp = client
-        .request("variables", json!({ "variablesReference": PINNED_SCOPE_REF }))
+        .request(
+            "variables",
+            json!({ "variablesReference": PINNED_SCOPE_REF }),
+        )
         .await;
     let pinned_vars = pinned_vars_resp
         .pointer("/body/variables")
@@ -417,7 +458,9 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
     let thread_id = client.first_thread_id().await;
     let frame_id = client.first_frame_id(thread_id).await;
 
-    let scopes_resp = client.request("scopes", json!({ "frameId": frame_id })).await;
+    let scopes_resp = client
+        .request("scopes", json!({ "frameId": frame_id }))
+        .await;
     let locals_ref = scopes_resp
         .pointer("/body/scopes/0/variablesReference")
         .and_then(|v| v.as_i64())
@@ -431,13 +474,19 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
     let vars_resp = client
         .request("variables", json!({ "variablesReference": locals_ref }))
         .await;
-    let locals = vars_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
 
     let obj = locals
         .iter()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("obj"))
         .expect("expected locals to contain obj");
-    let obj_ref = obj.get("variablesReference").and_then(|v| v.as_i64()).unwrap();
+    let obj_ref = obj
+        .get("variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
     assert!(
         obj_ref > OBJECT_HANDLE_BASE,
         "expected stable object handle variablesReference"
@@ -448,8 +497,13 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
         .unwrap_or("")
         .contains('@'));
 
-    let fields_resp = client.request("variables", json!({ "variablesReference": obj_ref })).await;
-    let fields = fields_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let fields_resp = client
+        .request("variables", json!({ "variablesReference": obj_ref }))
+        .await;
+    let fields = fields_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     let field = fields
         .iter()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("field"))
@@ -464,11 +518,17 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
             json!({ "variablesReference": obj_ref, "pinned": true }),
         )
         .await;
-    assert_eq!(pin_resp.pointer("/body/pinned").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        pin_resp.pointer("/body/pinned").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     // Pinned objects are visible under the synthetic scope.
     let pinned_vars_resp = client
-        .request("variables", json!({ "variablesReference": PINNED_SCOPE_REF }))
+        .request(
+            "variables",
+            json!({ "variablesReference": PINNED_SCOPE_REF }),
+        )
         .await;
     let pinned_vars = pinned_vars_resp
         .pointer("/body/variables")
@@ -503,7 +563,10 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
     );
 
     let pinned_empty_resp = client
-        .request("variables", json!({ "variablesReference": PINNED_SCOPE_REF }))
+        .request(
+            "variables",
+            json!({ "variablesReference": PINNED_SCOPE_REF }),
+        )
         .await;
     let pinned_empty = pinned_empty_resp
         .pointer("/body/variables")
@@ -533,7 +596,10 @@ async fn dap_exception_info_includes_type_name() {
     let exc_bp_resp = client
         .request("setExceptionBreakpoints", json!({ "filters": ["all"] }))
         .await;
-    assert_eq!(exc_bp_resp.get("success").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        exc_bp_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 
     let thread_id = client.first_thread_id().await;
 
@@ -544,9 +610,14 @@ async fn dap_exception_info_includes_type_name() {
     let exc_info = client
         .request("exceptionInfo", json!({ "threadId": thread_id }))
         .await;
-    assert_eq!(exc_info.get("success").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(
-        exc_info.pointer("/body/exceptionId").and_then(|v| v.as_str()),
+        exc_info.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    assert_eq!(
+        exc_info
+            .pointer("/body/exceptionId")
+            .and_then(|v| v.as_str()),
         Some("java.lang.RuntimeException")
     );
     assert_eq!(
@@ -566,7 +637,9 @@ async fn dap_exception_info_includes_type_name() {
         Some("always")
     );
     assert_eq!(
-        exc_info.pointer("/body/description").and_then(|v| v.as_str()),
+        exc_info
+            .pointer("/body/description")
+            .and_then(|v| v.as_str()),
         Some("mock string")
     );
     assert_eq!(
@@ -592,26 +665,18 @@ async fn dap_emits_thread_start_and_death_events() {
     client.continue_().await;
 
     let started = client
-        .wait_for_event_matching(
-            "thread(started)",
-            Duration::from_secs(2),
-            |msg| {
-                msg.get("type").and_then(|v| v.as_str()) == Some("event")
-                    && msg.get("event").and_then(|v| v.as_str()) == Some("thread")
-                    && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("started")
-            },
-        )
+        .wait_for_event_matching("thread(started)", Duration::from_secs(2), |msg| {
+            msg.get("type").and_then(|v| v.as_str()) == Some("event")
+                && msg.get("event").and_then(|v| v.as_str()) == Some("thread")
+                && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("started")
+        })
         .await;
     let exited = client
-        .wait_for_event_matching(
-            "thread(exited)",
-            Duration::from_secs(2),
-            |msg| {
-                msg.get("type").and_then(|v| v.as_str()) == Some("event")
-                    && msg.get("event").and_then(|v| v.as_str()) == Some("thread")
-                    && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("exited")
-            },
-        )
+        .wait_for_event_matching("thread(exited)", Duration::from_secs(2), |msg| {
+            msg.get("type").and_then(|v| v.as_str()) == Some("event")
+                && msg.get("event").and_then(|v| v.as_str()) == Some("thread")
+                && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("exited")
+        })
         .await;
 
     let started_thread_id = started.pointer("/body/threadId").and_then(|v| v.as_i64());
@@ -635,8 +700,14 @@ async fn dap_feature_requests_are_guarded_by_jdwp_capabilities() {
 
     // Watchpoints / data breakpoints are gated by canWatchField* capabilities.
     let watch_resp = client.request("dataBreakpointInfo", json!({})).await;
-    assert_eq!(watch_resp.get("success").and_then(|v| v.as_bool()), Some(false));
-    let watch_msg = watch_resp.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    assert_eq!(
+        watch_resp.get("success").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    let watch_msg = watch_resp
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert!(watch_msg.contains("canWatchFieldModification"));
 
     // Hot swap is gated by canRedefineClasses.
@@ -655,8 +726,14 @@ async fn dap_feature_requests_are_guarded_by_jdwp_capabilities() {
     let ret_resp = client
         .request("nova/enableMethodReturnValues", json!({}))
         .await;
-    assert_eq!(ret_resp.get("success").and_then(|v| v.as_bool()), Some(false));
-    let ret_msg = ret_resp.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    assert_eq!(
+        ret_resp.get("success").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    let ret_msg = ret_resp
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert!(ret_msg.contains("canGetMethodReturnValues"));
 
     client.disconnect().await;
@@ -680,7 +757,10 @@ async fn dap_evaluate_without_frame_id_returns_friendly_message() {
             }),
         )
         .await;
-    assert_eq!(eval_resp.get("success").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        eval_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
     assert_eq!(
         eval_resp
             .pointer("/body/variablesReference")
@@ -711,7 +791,9 @@ async fn dap_emits_output_for_expression_value_on_step() {
 
     let thread_id = client.first_thread_id().await;
 
-    let req_seq = client.send_request("next", json!({ "threadId": thread_id })).await;
+    let req_seq = client
+        .send_request("next", json!({ "threadId": thread_id }))
+        .await;
     let resp = client.wait_for_response(req_seq).await;
     assert!(resp
         .get("success")
@@ -722,19 +804,15 @@ async fn dap_emits_output_for_expression_value_on_step() {
     //  - an `output` event for the expression value
     //  - a `stopped` event (reason=step)
     let output_evt = client
-        .wait_for_event_matching(
-            "output(Expression value)",
-            Duration::from_secs(5),
-            |msg| {
-                msg.get("type").and_then(|v| v.as_str()) == Some("event")
-                    && msg.get("event").and_then(|v| v.as_str()) == Some("output")
-                    && msg
-                        .pointer("/body/output")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .contains("Expression value:")
-            },
-        )
+        .wait_for_event_matching("output(Expression value)", Duration::from_secs(5), |msg| {
+            msg.get("type").and_then(|v| v.as_str()) == Some("event")
+                && msg.get("event").and_then(|v| v.as_str()) == Some("output")
+                && msg
+                    .pointer("/body/output")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .contains("Expression value:")
+        })
         .await;
 
     let stopped_evt = client

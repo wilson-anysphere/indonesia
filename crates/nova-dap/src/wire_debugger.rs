@@ -32,6 +32,15 @@ pub(crate) struct BreakpointSpec {
     pub log_message: Option<String>,
 }
 
+/// Internal representation of a DAP `FunctionBreakpoint`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FunctionBreakpointSpec {
+    pub name: String,
+    pub condition: Option<String>,
+    pub hit_condition: Option<String>,
+    pub log_message: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BreakpointDisposition {
     Stop,
@@ -40,6 +49,11 @@ pub enum BreakpointDisposition {
 }
 
 const ARRAY_CHILD_SAMPLE: i64 = 25;
+/// Hard cap on the number of child variables we will return in one response.
+///
+/// DAP clients can request arbitrarily large pages via `variables` `start`/`count`.
+/// Clamp to avoid OOMs when inspecting huge arrays or object graphs.
+const VARIABLES_PAGE_LIMIT: i64 = 1000;
 
 #[derive(Debug, Error)]
 pub enum DebuggerError {
@@ -96,13 +110,10 @@ pub struct ExceptionInfo {
 #[derive(Debug, Clone)]
 struct BreakpointEntry {
     request_id: i32,
-    line: i32,
 }
 
 #[derive(Debug, Clone)]
 struct BreakpointMetadata {
-    file: String,
-    line: i32,
     condition: Option<String>,
     hit_condition: Option<String>,
     log_message: Option<String>,
@@ -141,7 +152,6 @@ struct HandleTable<K, T> {
 #[derive(Debug, Clone)]
 struct ExceptionStopContext {
     exception: ObjectId,
-    throw_location: Location,
     catch_location: Option<Location>,
 }
 
@@ -197,6 +207,8 @@ pub struct Debugger {
     objects: ObjectRegistry,
     breakpoints: HashMap<String, Vec<BreakpointEntry>>,
     requested_breakpoints: HashMap<String, Vec<BreakpointSpec>>,
+    function_breakpoints: Vec<BreakpointEntry>,
+    requested_function_breakpoints: Vec<FunctionBreakpointSpec>,
     breakpoint_metadata: HashMap<i32, BreakpointMetadata>,
     class_prepare_request: Option<i32>,
     exception_requests: Vec<i32>,
@@ -270,6 +282,8 @@ impl Debugger {
             jdwp,
             breakpoints: HashMap::new(),
             requested_breakpoints: HashMap::new(),
+            function_breakpoints: Vec::new(),
+            requested_function_breakpoints: Vec::new(),
             breakpoint_metadata: HashMap::new(),
             class_prepare_request: None,
             exception_requests: Vec::new(),
@@ -512,7 +526,7 @@ impl Debugger {
         }
     }
 
-    pub async fn set_breakpoints(
+    pub(crate) async fn set_breakpoints(
         &mut self,
         cancel: &CancellationToken,
         source_path: &str,
@@ -651,15 +665,10 @@ impl Debugger {
                                 verified = true;
                                 first_request_id.get_or_insert(request_id);
 
-                                all_entries.push(BreakpointEntry {
-                                    request_id,
-                                    line: spec_line,
-                                });
+                                all_entries.push(BreakpointEntry { request_id });
                                 self.breakpoint_metadata.insert(
                                     request_id,
                                     BreakpointMetadata {
-                                        file: file.clone(),
-                                        line: spec_line,
                                         condition: condition.clone(),
                                         hit_condition: hit_condition.clone(),
                                         log_message: log_message.clone(),
@@ -703,6 +712,207 @@ impl Debugger {
 
         if !all_entries.is_empty() {
             self.breakpoints.insert(file.clone(), all_entries);
+        }
+
+        Ok(results)
+    }
+
+    pub(crate) async fn set_function_breakpoints(
+        &mut self,
+        cancel: &CancellationToken,
+        breakpoints: Vec<FunctionBreakpointSpec>,
+    ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
+
+        // Clear existing function breakpoints.
+        let existing = std::mem::take(&mut self.function_breakpoints);
+        for bp in existing {
+            check_cancel(cancel)?;
+            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(2, bp.request_id)).await;
+            self.breakpoint_metadata.remove(&bp.request_id);
+        }
+
+        if breakpoints.is_empty() {
+            self.requested_function_breakpoints.clear();
+        } else {
+            self.requested_function_breakpoints = breakpoints.clone();
+        }
+
+        let mut results = Vec::with_capacity(breakpoints.len());
+        let mut all_entries = Vec::new();
+
+        for bp in breakpoints {
+            check_cancel(cancel)?;
+            let spec_name = bp.name.trim().to_string();
+            if spec_name.is_empty() {
+                results.push(json!({"verified": false, "message": "function breakpoint name must not be empty"}));
+                continue;
+            }
+
+            let condition = normalize_breakpoint_string(bp.condition);
+            let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
+            let log_message = normalize_breakpoint_string(bp.log_message);
+
+            let count_modifier = hit_condition
+                .as_deref()
+                .and_then(|raw| raw.parse::<u32>().ok())
+                .filter(|count| *count > 1);
+            if count_modifier.is_some() {
+                hit_condition = None;
+            }
+
+            let suspend_policy = if log_message.is_some() {
+                JDWP_SUSPEND_POLICY_NONE
+            } else {
+                JDWP_SUSPEND_POLICY_EVENT_THREAD
+            };
+
+            let Some((class_name, method_name)) = parse_function_breakpoint(&spec_name) else {
+                results.push(json!({
+                    "verified": false,
+                    "message": "unsupported function breakpoint. Use `Class.method` (optionally fully qualified)."
+                }));
+                continue;
+            };
+
+            let signature = class_name_to_signature(&class_name);
+            let classes =
+                cancellable_jdwp(cancel, self.jdwp.classes_by_signature(&signature)).await?;
+            if classes.is_empty() {
+                results.push(json!({
+                    "verified": false,
+                    "message": "class not loaded yet"
+                }));
+                continue;
+            }
+
+            let mut verified = false;
+            let mut first_request_id: Option<i32> = None;
+            let mut first_line: Option<i32> = None;
+            let mut last_error: Option<String> = None;
+            let mut saw_method = false;
+            let mut saw_location = false;
+
+            for class in classes {
+                check_cancel(cancel)?;
+
+                let methods = if let Some(methods) = self.methods_cache.get(&class.type_id) {
+                    methods.clone()
+                } else {
+                    let methods =
+                        cancellable_jdwp(cancel, self.jdwp.reference_type_methods(class.type_id))
+                            .await?;
+                    self.methods_cache.insert(class.type_id, methods.clone());
+                    methods
+                };
+
+                for method in methods.iter().filter(|m| m.name == method_name) {
+                    saw_method = true;
+                    check_cancel(cancel)?;
+
+                    let table = match cancellable_jdwp(
+                        cancel,
+                        self.jdwp.method_line_table(class.type_id, method.method_id),
+                    )
+                    .await
+                    {
+                        Ok(table) => Some(table),
+                        Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                        Err(err) => {
+                            last_error = Some(err.to_string());
+                            None
+                        }
+                    };
+
+                    let Some(table) = table else { continue };
+                    self.line_table_cache
+                        .insert((class.type_id, method.method_id), table.clone());
+
+                    let index = table.start;
+                    let line = table
+                        .lines
+                        .iter()
+                        .filter(|entry| entry.code_index <= index)
+                        .map(|entry| entry.line)
+                        .last()
+                        .or_else(|| table.lines.first().map(|entry| entry.line))
+                        .unwrap_or(1);
+
+                    let location = Location {
+                        type_tag: class.ref_type_tag,
+                        class_id: class.type_id,
+                        method_id: method.method_id,
+                        index,
+                    };
+                    saw_location = true;
+
+                    let mut modifiers = vec![EventModifier::LocationOnly { location }];
+                    if let Some(count) = count_modifier {
+                        modifiers.push(EventModifier::Count { count });
+                    }
+
+                    match cancellable_jdwp(
+                        cancel,
+                        self.jdwp.event_request_set(2, suspend_policy, modifiers),
+                    )
+                    .await
+                    {
+                        Ok(request_id) => {
+                            verified = true;
+                            first_request_id.get_or_insert(request_id);
+                            first_line.get_or_insert(line);
+
+                            all_entries.push(BreakpointEntry { request_id });
+                            self.breakpoint_metadata.insert(
+                                request_id,
+                                BreakpointMetadata {
+                                    condition: condition.clone(),
+                                    hit_condition: hit_condition.clone(),
+                                    log_message: log_message.clone(),
+                                    hit_count: 0,
+                                },
+                            );
+                        }
+                        Err(err) => {
+                            if matches!(err, JdwpError::Cancelled) {
+                                return Err(JdwpError::Cancelled.into());
+                            }
+                            last_error = Some(err.to_string());
+                        }
+                    }
+                }
+            }
+
+            if verified {
+                let mut obj = serde_json::Map::new();
+                obj.insert("verified".to_string(), json!(true));
+                if let Some(id) = first_request_id {
+                    obj.insert("id".to_string(), json!(id));
+                }
+                if let Some(line) = first_line {
+                    obj.insert("line".to_string(), json!(line));
+                }
+                results.push(Value::Object(obj));
+            } else if !saw_method {
+                results.push(json!({
+                    "verified": false,
+                    "message": format!("method `{method_name}` not found in {class_name}")
+                }));
+            } else if saw_location {
+                results.push(json!({
+                    "verified": false,
+                    "message": last_error.unwrap_or_else(|| "failed to set breakpoint".to_string())
+                }));
+            } else {
+                results.push(json!({
+                    "verified": false,
+                    "message": "no executable code for this function"
+                }));
+            }
+        }
+
+        if !all_entries.is_empty() {
+            self.function_breakpoints.extend(all_entries);
         }
 
         Ok(results)
@@ -792,7 +1002,8 @@ impl Debugger {
         let thread: ThreadId = dap_thread_id as ThreadId;
 
         if let Some(old) = self.active_step_requests.remove(&thread) {
-            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(1, old.request_id)).await;
+            let _ =
+                cancellable_jdwp(cancel, self.jdwp.event_request_clear(1, old.request_id)).await;
         }
         if let Some(old) = self.active_method_exit_requests.remove(&thread) {
             let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(42, old)).await;
@@ -802,11 +1013,8 @@ impl Debugger {
         // Best-effort: MethodExitWithReturnValue isn't guaranteed to be supported by all JVMs.
         if let Ok(req) = cancellable_jdwp(
             cancel,
-            self.jdwp.event_request_set(
-                42,
-                0,
-                vec![EventModifier::ThreadOnly { thread }],
-            ),
+            self.jdwp
+                .event_request_set(42, 0, vec![EventModifier::ThreadOnly { thread }]),
         )
         .await
         {
@@ -832,8 +1040,13 @@ impl Debugger {
             ),
         )
         .await?;
-        self.active_step_requests
-            .insert(thread, ActiveStepRequest { request_id: req, depth });
+        self.active_step_requests.insert(
+            thread,
+            ActiveStepRequest {
+                request_id: req,
+                depth,
+            },
+        );
         cancellable_jdwp(cancel, self.jdwp.thread_resume(thread)).await?;
         Ok(())
     }
@@ -875,7 +1088,8 @@ impl Debugger {
                 value,
                 ..
             } => {
-                let matches_active = self.active_method_exit_requests.get(thread) == Some(request_id);
+                let matches_active =
+                    self.active_method_exit_requests.get(thread) == Some(request_id);
                 if matches_active {
                     self.pending_return_values.insert(*thread, value.clone());
                 }
@@ -893,7 +1107,7 @@ impl Debugger {
             }
             JdwpEvent::Exception {
                 thread,
-                location,
+                location: _,
                 exception,
                 catch_location,
                 ..
@@ -904,7 +1118,6 @@ impl Debugger {
                     *thread,
                     ExceptionStopContext {
                         exception: *exception,
-                        throw_location: *location,
                         catch_location: *catch_location,
                     },
                 );
@@ -921,7 +1134,11 @@ impl Debugger {
         let step_depth = self.active_step_requests.get(&thread).map(|req| req.depth);
 
         if let Some(step_req) = self.active_step_requests.remove(&thread) {
-            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(1, step_req.request_id)).await;
+            let _ = cancellable_jdwp(
+                cancel,
+                self.jdwp.event_request_clear(1, step_req.request_id),
+            )
+            .await;
         }
         if let Some(exit_req) = self.active_method_exit_requests.remove(&thread) {
             let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(42, exit_req)).await;
@@ -1393,7 +1610,11 @@ impl Debugger {
 
         let start_index = start.unwrap_or(0).max(0).min(length);
         let max_count = length.saturating_sub(start_index);
-        let count = count.unwrap_or(ARRAY_CHILD_SAMPLE).max(0).min(max_count);
+        let count = count
+            .unwrap_or(ARRAY_CHILD_SAMPLE)
+            .max(0)
+            .min(max_count)
+            .min(VARIABLES_PAGE_LIMIT);
 
         let values = match cancellable_jdwp(
             cancel,
@@ -1473,6 +1694,8 @@ impl Debugger {
                     "kind": "data",
                     "attributes": ["pinned"],
                 })),
+                formatted.named_variables,
+                formatted.indexed_variables,
             ));
         }
 
@@ -1509,6 +1732,8 @@ impl Debugger {
             formatted.variables_reference,
             evaluate_name,
             formatted.presentation_hint,
+            formatted.named_variables,
+            formatted.indexed_variables,
         ))
     }
 
@@ -1646,9 +1871,6 @@ impl Debugger {
             Ok(None) => source_file.clone(),
             Err(_) => source_file.clone(),
         };
-        let Some(bps) = self.requested_breakpoints.get(&file).cloned() else {
-            return Ok(());
-        };
         let class = ClassInfo {
             ref_type_tag,
             type_id,
@@ -1659,9 +1881,86 @@ impl Debugger {
                 .unwrap_or_default(),
             status: 0,
         };
+
+        if let Some(bps) = self.requested_breakpoints.get(&file).cloned() {
+            let mut entries = Vec::new();
+            for bp in bps {
+                let spec_line = bp.line;
+                let condition = normalize_breakpoint_string(bp.condition);
+                let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
+                let log_message = normalize_breakpoint_string(bp.log_message);
+
+                let count_modifier = hit_condition
+                    .as_deref()
+                    .and_then(|raw| raw.parse::<u32>().ok())
+                    .filter(|count| *count > 1);
+                if count_modifier.is_some() {
+                    hit_condition = None;
+                }
+
+                let suspend_policy = if log_message.is_some() {
+                    JDWP_SUSPEND_POLICY_NONE
+                } else {
+                    JDWP_SUSPEND_POLICY_EVENT_THREAD
+                };
+
+                if let Some(location) = self.location_for_line(&cancel, &class, spec_line).await? {
+                    let mut modifiers = vec![EventModifier::LocationOnly { location }];
+                    if let Some(count) = count_modifier {
+                        modifiers.push(EventModifier::Count { count });
+                    }
+                    if let Ok(request_id) = self
+                        .jdwp
+                        .event_request_set(2, suspend_policy, modifiers)
+                        .await
+                    {
+                        entries.push(BreakpointEntry { request_id });
+                        self.breakpoint_metadata.insert(
+                            request_id,
+                            BreakpointMetadata {
+                                condition,
+                                hit_condition,
+                                log_message,
+                                hit_count: 0,
+                            },
+                        );
+                    }
+                }
+            }
+            if !entries.is_empty() {
+                self.breakpoints.entry(file).or_default().extend(entries);
+            }
+        }
+
+        let _ = self
+            .apply_function_breakpoints_for_class(&cancel, &class)
+            .await;
+        Ok(())
+    }
+
+    async fn apply_function_breakpoints_for_class(
+        &mut self,
+        cancel: &CancellationToken,
+        class: &ClassInfo,
+    ) -> Result<()> {
+        if self.requested_function_breakpoints.is_empty() {
+            return Ok(());
+        }
+
+        let breakpoints = self.requested_function_breakpoints.clone();
         let mut entries = Vec::new();
-        for bp in bps {
-            let spec_line = bp.line;
+
+        for bp in breakpoints {
+            check_cancel(cancel)?;
+            let spec_name = bp.name.trim().to_string();
+            let Some((class_name, method_name)) = parse_function_breakpoint(&spec_name) else {
+                continue;
+            };
+
+            if class_name_to_signature(&class_name) != class.signature {
+                continue;
+            }
+
             let condition = normalize_breakpoint_string(bp.condition);
             let mut hit_condition = normalize_breakpoint_string(bp.hit_condition);
             let log_message = normalize_breakpoint_string(bp.log_message);
@@ -1680,37 +1979,73 @@ impl Debugger {
                 JDWP_SUSPEND_POLICY_EVENT_THREAD
             };
 
-            if let Some(location) = self.location_for_line(&cancel, &class, spec_line).await? {
+            let methods = match self.methods_cache.get(&class.type_id) {
+                Some(methods) => methods.clone(),
+                None => {
+                    match cancellable_jdwp(cancel, self.jdwp.reference_type_methods(class.type_id))
+                        .await
+                    {
+                        Ok(methods) => {
+                            self.methods_cache.insert(class.type_id, methods.clone());
+                            methods
+                        }
+                        Err(_) => continue,
+                    }
+                }
+            };
+
+            for method in methods.iter().filter(|m| m.name == method_name) {
+                check_cancel(cancel)?;
+
+                let table = match cancellable_jdwp(
+                    cancel,
+                    self.jdwp.method_line_table(class.type_id, method.method_id),
+                )
+                .await
+                {
+                    Ok(table) => table,
+                    Err(_) => continue,
+                };
+                self.line_table_cache
+                    .insert((class.type_id, method.method_id), table.clone());
+
+                let index = table.start;
+
+                let location = Location {
+                    type_tag: class.ref_type_tag,
+                    class_id: class.type_id,
+                    method_id: method.method_id,
+                    index,
+                };
+
                 let mut modifiers = vec![EventModifier::LocationOnly { location }];
                 if let Some(count) = count_modifier {
                     modifiers.push(EventModifier::Count { count });
                 }
+
                 if let Ok(request_id) = self
                     .jdwp
                     .event_request_set(2, suspend_policy, modifiers)
                     .await
                 {
-                    entries.push(BreakpointEntry {
-                        request_id,
-                        line: spec_line,
-                    });
+                    entries.push(BreakpointEntry { request_id });
                     self.breakpoint_metadata.insert(
                         request_id,
                         BreakpointMetadata {
-                            file: file.clone(),
-                            line: spec_line,
-                            condition,
-                            hit_condition,
-                            log_message,
+                            condition: condition.clone(),
+                            hit_condition: hit_condition.clone(),
+                            log_message: log_message.clone(),
                             hit_count: 0,
                         },
                     );
                 }
             }
         }
+
         if !entries.is_empty() {
-            self.breakpoints.entry(file).or_default().extend(entries);
+            self.function_breakpoints.extend(entries);
         }
+
         Ok(())
     }
 
@@ -1829,6 +2164,35 @@ fn package_path_from_signature(sig: &str) -> Option<PathBuf> {
         Some(PathBuf::new())
     }
 }
+
+fn class_name_to_signature(class_name: &str) -> String {
+    let class_name = class_name.trim();
+    if class_name.starts_with('L') && class_name.ends_with(';') {
+        return class_name.to_string();
+    }
+    let internal = class_name.replace('.', "/");
+    format!("L{internal};")
+}
+
+fn parse_function_breakpoint(spec: &str) -> Option<(String, String)> {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return None;
+    }
+
+    // Strip an optional parameter list (DAP UIs sometimes include it).
+    let spec = spec.split_once('(').map(|(head, _)| head).unwrap_or(spec);
+    let spec = spec.trim();
+
+    let (class, method) = spec.rsplit_once('#').or_else(|| spec.rsplit_once('.'))?;
+    let class = class.trim();
+    let method = method.trim();
+    if class.is_empty() || method.is_empty() {
+        return None;
+    }
+    Some((class.to_string(), method.to_string()))
+}
+
 fn is_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     let Some(first) = chars.next() else {
@@ -1850,6 +2214,8 @@ struct FormattedValue {
     type_name: Option<String>,
     variables_reference: i64,
     presentation_hint: Option<Value>,
+    named_variables: Option<i64>,
+    indexed_variables: Option<i64>,
 }
 
 impl Debugger {
@@ -1861,7 +2227,14 @@ impl Debugger {
         depth: usize,
     ) -> Result<FormattedValue> {
         check_cancel(cancel)?;
-        let (display, variables_reference, presentation_hint, runtime_type) = self
+        let (
+            display,
+            variables_reference,
+            presentation_hint,
+            runtime_type,
+            named_variables,
+            indexed_variables,
+        ) = self
             .format_value_display(cancel, value, static_type, depth)
             .await?;
 
@@ -1872,6 +2245,8 @@ impl Debugger {
                 .or_else(|| value_type_name(value, runtime_type.as_deref())),
             variables_reference,
             presentation_hint,
+            named_variables,
+            indexed_variables,
         })
     }
 
@@ -1882,19 +2257,33 @@ impl Debugger {
         value: &JdwpValue,
         static_type: Option<&str>,
         depth: usize,
-    ) -> Result<(String, i64, Option<Value>, Option<String>)> {
+    ) -> Result<(
+        String,
+        i64,
+        Option<Value>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    )> {
         check_cancel(cancel)?;
         match value {
-            JdwpValue::Void => Ok(("void".to_string(), 0, None, None)),
-            JdwpValue::Boolean(v) => Ok((v.to_string(), 0, None, None)),
-            JdwpValue::Byte(v) => Ok((v.to_string(), 0, None, None)),
-            JdwpValue::Short(v) => Ok((v.to_string(), 0, None, None)),
-            JdwpValue::Int(v) => Ok((v.to_string(), 0, None, None)),
-            JdwpValue::Long(v) => Ok((v.to_string(), 0, None, None)),
-            JdwpValue::Float(v) => Ok((trim_float(*v as f64), 0, None, None)),
-            JdwpValue::Double(v) => Ok((trim_float(*v), 0, None, None)),
-            JdwpValue::Char(v) => Ok((format!("'{}'", decode_java_char(*v)), 0, None, None)),
-            JdwpValue::Object { id: 0, .. } => Ok(("null".to_string(), 0, None, None)),
+            JdwpValue::Void => Ok(("void".to_string(), 0, None, None, None, None)),
+            JdwpValue::Boolean(v) => Ok((v.to_string(), 0, None, None, None, None)),
+            JdwpValue::Byte(v) => Ok((v.to_string(), 0, None, None, None, None)),
+            JdwpValue::Short(v) => Ok((v.to_string(), 0, None, None, None, None)),
+            JdwpValue::Int(v) => Ok((v.to_string(), 0, None, None, None, None)),
+            JdwpValue::Long(v) => Ok((v.to_string(), 0, None, None, None, None)),
+            JdwpValue::Float(v) => Ok((trim_float(*v as f64), 0, None, None, None, None)),
+            JdwpValue::Double(v) => Ok((trim_float(*v), 0, None, None, None, None)),
+            JdwpValue::Char(v) => Ok((
+                format!("'{}'", decode_java_char(*v)),
+                0,
+                None,
+                None,
+                None,
+                None,
+            )),
+            JdwpValue::Object { id: 0, .. } => Ok(("null".to_string(), 0, None, None, None, None)),
             JdwpValue::Object { id, .. } => {
                 self.format_object(cancel, *id, static_type, depth).await
             }
@@ -1907,7 +2296,14 @@ impl Debugger {
         object_id: ObjectId,
         static_type: Option<&str>,
         depth: usize,
-    ) -> Result<(String, i64, Option<Value>, Option<String>)> {
+    ) -> Result<(
+        String,
+        i64,
+        Option<Value>,
+        Option<String>,
+        Option<i64>,
+        Option<i64>,
+    )> {
         check_cancel(cancel)?;
         let fallback_runtime = static_type.unwrap_or("<object>").to_string();
 
@@ -1931,6 +2327,8 @@ impl Debugger {
                             "attributes": ["invalid"],
                         })),
                         Some(fallback_runtime),
+                        None,
+                        None,
                     ));
                 }
                 Err(_err) => fallback_runtime.clone(),
@@ -1945,6 +2343,8 @@ impl Debugger {
                 variables_reference,
                 None,
                 Some(runtime_type),
+                None,
+                None,
             ));
         }
 
@@ -1967,6 +2367,8 @@ impl Debugger {
                         "attributes": ["invalid"],
                     })),
                     Some(runtime_type),
+                    None,
+                    None,
                 ));
             }
             Err(_err) => {
@@ -1975,6 +2377,8 @@ impl Debugger {
                     variables_reference,
                     Some(json!({ "kind": "data" })),
                     Some(runtime_type),
+                    None,
+                    None,
                 ));
             }
         };
@@ -1984,6 +2388,8 @@ impl Debugger {
         let variables_reference = handle.as_variables_reference();
 
         let runtime_simple = simple_type_name(&preview.runtime_type).to_string();
+        let named_variables = None;
+        let mut indexed_variables = None;
         let value = match preview.kind {
             ObjectKindPreview::Plain => format!("{runtime_simple}{handle}"),
             ObjectKindPreview::String { value } => {
@@ -1999,6 +2405,7 @@ impl Debugger {
                 length,
                 sample,
             } => {
+                indexed_variables = Some(length as i64);
                 let sample = self.format_sample_list(cancel, &sample, depth + 1).await?;
                 let element = simple_type_name(&element_type);
                 format!("{element}[{length}]{handle} {{{sample}}}")
@@ -2033,6 +2440,8 @@ impl Debugger {
             variables_reference,
             Some(json!({ "kind": "data" })),
             Some(preview.runtime_type),
+            named_variables,
+            indexed_variables,
         ))
     }
 
@@ -2042,7 +2451,7 @@ impl Debugger {
         value: &JdwpValue,
         depth: usize,
     ) -> Result<String> {
-        let (display, _ref, _hint, _rt) =
+        let (display, _ref, _hint, _rt, _named, _indexed) =
             Box::pin(self.format_value_display(cancel, value, None, depth)).await?;
         Ok(display)
     }
@@ -2087,6 +2496,8 @@ fn variable_json(
     variables_reference: i64,
     evaluate_name: Option<String>,
     presentation_hint: Option<Value>,
+    named_variables: Option<i64>,
+    indexed_variables: Option<i64>,
 ) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("name".to_string(), json!(name));
@@ -2100,6 +2511,12 @@ fn variable_json(
     }
     if let Some(hint) = presentation_hint {
         obj.insert("presentationHint".to_string(), hint);
+    }
+    if let Some(named) = named_variables {
+        obj.insert("namedVariables".to_string(), json!(named));
+    }
+    if let Some(indexed) = indexed_variables {
+        obj.insert("indexedVariables".to_string(), json!(indexed));
     }
     Value::Object(obj)
 }
@@ -2115,6 +2532,8 @@ fn invalid_collected_variable() -> Value {
             "kind": "virtual",
             "attributes": ["invalid"],
         })),
+        None,
+        None,
     )
 }
 

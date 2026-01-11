@@ -32,8 +32,8 @@ use crate::{
     eval_context::EvalOptions,
     hot_swap::{BuildSystem, CompileError, CompileOutput, CompiledClass, HotSwapEngine},
     wire_debugger::{
-        AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError, StepDepth,
-        VmStoppedValue,
+        AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError,
+        FunctionBreakpointSpec, StepDepth, VmStoppedValue,
     },
     EvaluateResult,
 };
@@ -72,8 +72,6 @@ enum LifecycleState {
     LaunchedOrAttached,
     Configured,
     Running,
-    Stopped,
-    Terminated,
 }
 
 #[derive(Debug)]
@@ -296,6 +294,8 @@ async fn handle_request_inner(
                 "supportsRestartRequest": false,
                 "supportsSetVariable": false,
                 "supportsStepBack": false,
+                "supportsFunctionBreakpoints": true,
+                "supportsVariablePaging": true,
                 "supportsExceptionBreakpoints": true,
                 "supportsExceptionInfoRequest": true,
                 "exceptionBreakpointFilters": [
@@ -956,6 +956,110 @@ async fn handle_request_inner(
             send_response(out_tx, seq, request, true, None, None);
             send_event(out_tx, seq, "initialized", None);
             let _ = initialized_tx.send(true);
+        }
+        "setFunctionBreakpoints" => {
+            if cancel.is_cancelled() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
+                return;
+            }
+
+            let breakpoints: Vec<FunctionBreakpointSpec> = request
+                .arguments
+                .get("breakpoints")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|bp| {
+                            let name = bp.get("name").and_then(|v| v.as_str())?.to_string();
+                            let condition = bp
+                                .get("condition")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+                            let hit_condition = bp
+                                .get("hitCondition")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+                            let log_message = bp
+                                .get("logMessage")
+                                .and_then(|c| c.as_str())
+                                .map(|s| s.to_string());
+
+                            Some(FunctionBreakpointSpec {
+                                name,
+                                condition,
+                                hit_condition,
+                                log_message,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
+                    return;
+                }
+            };
+
+            let Some(dbg) = guard.as_mut() else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
+                return;
+            };
+
+            match dbg.set_function_breakpoints(cancel, breakpoints).await {
+                Ok(bps) if cancel.is_cancelled() => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
+                }
+                Ok(bps) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "breakpoints": bps })),
+                    None,
+                ),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
         }
         "setBreakpoints" => {
             if cancel.is_cancelled() {
@@ -2655,27 +2759,21 @@ fn spawn_event_task(
                         match breakpoint_disposition.as_ref() {
                             Some(BreakpointDisposition::Continue) => {
                                 if !is_logpoint {
-                                    let _ = dbg
-                                        .continue_(&server_shutdown, Some(*thread as i64))
-                                        .await;
+                                    let _ =
+                                        dbg.continue_(&server_shutdown, Some(*thread as i64)).await;
                                 }
                             }
                             Some(BreakpointDisposition::Log { .. }) => {}
                             Some(BreakpointDisposition::Stop) => {
-                                step_value = dbg
-                                    .take_step_output_value(&server_shutdown, *thread)
-                                    .await;
+                                step_value =
+                                    dbg.take_step_output_value(&server_shutdown, *thread).await;
                             }
                             None => {}
                         }
                     } else if let nova_jdwp::wire::JdwpEvent::SingleStep { thread, .. } = &event {
-                        step_value = dbg
-                            .take_step_output_value(&server_shutdown, *thread)
-                            .await;
+                        step_value = dbg.take_step_output_value(&server_shutdown, *thread).await;
                     } else if let nova_jdwp::wire::JdwpEvent::Exception { thread, .. } = &event {
-                        step_value = dbg
-                            .take_step_output_value(&server_shutdown, *thread)
-                            .await;
+                        step_value = dbg.take_step_output_value(&server_shutdown, *thread).await;
                     }
 
                     if let nova_jdwp::wire::JdwpEvent::Exception { exception, .. } = &event {
@@ -2689,7 +2787,11 @@ fn spawn_event_task(
                 // available via the dedicated `exceptionInfo` request.
                 match tokio::time::timeout(
                     Duration::from_millis(200),
-                    exception_stopped_text(&jdwp, exception, &mut throwable_detail_message_field_cache),
+                    exception_stopped_text(
+                        &jdwp,
+                        exception,
+                        &mut throwable_detail_message_field_cache,
+                    ),
                 )
                 .await
                 {
@@ -2843,7 +2945,8 @@ async fn exception_message(
     exception: ObjectId,
     throwable_detail_message_field_cache: &mut Option<Option<u64>>,
 ) -> Option<String> {
-    let field_id = throwable_detail_message_field_id(jdwp, throwable_detail_message_field_cache).await?;
+    let field_id =
+        throwable_detail_message_field_id(jdwp, throwable_detail_message_field_cache).await?;
 
     let values = jdwp
         .object_reference_get_values(exception, &[field_id])
@@ -2857,7 +2960,11 @@ async fn exception_message(
         return None;
     }
     let message = jdwp.string_reference_value(id).await.ok()?;
-    if message.is_empty() { None } else { Some(message) }
+    if message.is_empty() {
+        None
+    } else {
+        Some(message)
+    }
 }
 
 async fn throwable_detail_message_field_id(
@@ -2868,7 +2975,10 @@ async fn throwable_detail_message_field_id(
         return cached;
     }
 
-    let classes = jdwp.classes_by_signature("Ljava/lang/Throwable;").await.ok()?;
+    let classes = jdwp
+        .classes_by_signature("Ljava/lang/Throwable;")
+        .await
+        .ok()?;
     let throwable = classes.first()?.type_id;
     let fields = jdwp.reference_type_fields(throwable).await.ok()?;
     let field_id = fields

@@ -105,7 +105,8 @@ impl DapClient {
             "arguments": arguments,
         });
 
-        self.record(transcript::Direction::ClientToServer, msg.clone()).await;
+        self.record(transcript::Direction::ClientToServer, msg.clone())
+            .await;
 
         let mut writer = self.inner.writer.lock().await;
         writer
@@ -126,7 +127,11 @@ impl DapClient {
             .await
     }
 
-    pub async fn wait_for_response_with_timeout(&self, request_seq: i64, timeout: Duration) -> Value {
+    pub async fn wait_for_response_with_timeout(
+        &self,
+        request_seq: i64,
+        timeout: Duration,
+    ) -> Value {
         self.wait_for_message_with_timeout(
             &format!("response(request_seq={request_seq})"),
             timeout,
@@ -139,26 +144,37 @@ impl DapClient {
     }
 
     pub async fn wait_for_event(&self, event: &str) -> Value {
-        self.wait_for_event_with_timeout(event, self.inner.default_timeout).await
+        self.wait_for_event_with_timeout(event, self.inner.default_timeout)
+            .await
     }
 
     pub async fn wait_for_event_with_timeout(&self, event: &str, timeout: Duration) -> Value {
-        self.wait_for_message_with_timeout(
-            &format!("event({event})"),
-            timeout,
-            |msg| msg.get("type").and_then(|v| v.as_str()) == Some("event") && msg.get("event").and_then(|v| v.as_str()) == Some(event),
-        )
+        self.wait_for_message_with_timeout(&format!("event({event})"), timeout, |msg| {
+            msg.get("type").and_then(|v| v.as_str()) == Some("event")
+                && msg.get("event").and_then(|v| v.as_str()) == Some(event)
+        })
         .await
     }
 
-    pub async fn wait_for_event_matching<F>(&self, description: &str, timeout: Duration, predicate: F) -> Value
+    pub async fn wait_for_event_matching<F>(
+        &self,
+        description: &str,
+        timeout: Duration,
+        predicate: F,
+    ) -> Value
     where
         F: Fn(&Value) -> bool,
     {
-        self.wait_for_message_with_timeout(description, timeout, predicate).await
+        self.wait_for_message_with_timeout(description, timeout, predicate)
+            .await
     }
 
-    async fn wait_for_message_with_timeout<F>(&self, description: &str, timeout: Duration, predicate: F) -> Value
+    async fn wait_for_message_with_timeout<F>(
+        &self,
+        description: &str,
+        timeout: Duration,
+        predicate: F,
+    ) -> Value
     where
         F: Fn(&Value) -> bool,
     {
@@ -166,7 +182,8 @@ impl DapClient {
 
         loop {
             if let Some(msg) = self.try_take_message(&predicate).await {
-                self.record(transcript::Direction::ServerToClient, msg.clone()).await;
+                self.record(transcript::Direction::ServerToClient, msg.clone())
+                    .await;
                 return msg;
             }
 
@@ -240,7 +257,8 @@ impl DapClient {
                     .iter()
                     .enumerate()
                     .map(|(idx, msg)| {
-                        let msg = serde_json::to_string(msg).unwrap_or_else(|_| "<invalid json>".to_string());
+                        let msg = serde_json::to_string(msg)
+                            .unwrap_or_else(|_| "<invalid json>".to_string());
                         format!("{idx:03} {msg}")
                     })
                     .collect::<Vec<_>>()
@@ -266,8 +284,9 @@ impl DapClient {
             )
             .await;
         assert_success(&resp, "attach");
-        // The wire server emits the DAP `initialized` event after the debug session is
-        // launched/attached (not immediately after `initialize`).
+        // The wire adapter emits the DAP `initialized` event after it has launched/attached to
+        // the JDWP target and is ready to accept breakpoint configuration (not immediately after
+        // `initialize`).
         let _ = self.wait_for_event("initialized").await;
         resp
     }
@@ -367,13 +386,17 @@ impl DapClient {
     }
 
     pub async fn step_in(&self, thread_id: i64) -> Value {
-        let resp = self.request("stepIn", json!({ "threadId": thread_id })).await;
+        let resp = self
+            .request("stepIn", json!({ "threadId": thread_id }))
+            .await;
         assert_success(&resp, "stepIn");
         resp
     }
 
     pub async fn step_out(&self, thread_id: i64) -> Value {
-        let resp = self.request("stepOut", json!({ "threadId": thread_id })).await;
+        let resp = self
+            .request("stepOut", json!({ "threadId": thread_id }))
+            .await;
         assert_success(&resp, "stepOut");
         resp
     }
@@ -388,12 +411,16 @@ impl DapClient {
     }
 
     pub async fn first_frame_id(&self, thread_id: i64) -> i64 {
-        let stack = self.request("stackTrace", json!({ "threadId": thread_id })).await;
+        let stack = self
+            .request("stackTrace", json!({ "threadId": thread_id }))
+            .await;
         assert_success(&stack, "stackTrace");
         stack
             .pointer("/body/stackFrames/0/id")
             .and_then(|v| v.as_i64())
-            .unwrap_or_else(|| panic!("stackTrace response missing body.stackFrames[0].id: {stack}"))
+            .unwrap_or_else(|| {
+                panic!("stackTrace response missing body.stackFrames[0].id: {stack}")
+            })
     }
 
     pub async fn first_scope_variables_reference(&self, frame_id: i64) -> i64 {
@@ -402,7 +429,9 @@ impl DapClient {
         scopes
             .pointer("/body/scopes/0/variablesReference")
             .and_then(|v| v.as_i64())
-            .unwrap_or_else(|| panic!("scopes response missing body.scopes[0].variablesReference: {scopes}"))
+            .unwrap_or_else(|| {
+                panic!("scopes response missing body.scopes[0].variablesReference: {scopes}")
+            })
     }
 
     pub async fn variables(&self, variables_reference: i64) -> Value {
@@ -419,14 +448,14 @@ impl DapClient {
     }
 }
 
-pub fn spawn_wire_server(
-) -> (
+pub fn spawn_wire_server() -> (
     DapClient,
     tokio::task::JoinHandle<std::result::Result<(), nova_dap::wire_server::WireServerError>>,
 ) {
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { nova_dap::wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { nova_dap::wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let client = DapClient::new(client_read, client_write);
@@ -435,6 +464,9 @@ pub fn spawn_wire_server(
 }
 
 fn assert_success(resp: &Value, context: &str) {
-    let ok = resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+    let ok = resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     assert!(ok, "{context} response was not successful: {resp}");
 }

@@ -26,15 +26,17 @@ async fn transcript_attach_breakpoints_continue_stop_disconnect() {
             Some(json!({
                 "supportsConfigurationDoneRequest": true,
                 "supportsEvaluateForHovers": true,
-                 "supportsPauseRequest": true,
-                 "supportsCancelRequest": true,
-                 "supportsSetVariable": false,
-                 "supportsStepBack": false,
-                 "supportsExceptionBreakpoints": true,
-                 "supportsExceptionInfoRequest": true,
-                 "supportsConditionalBreakpoints": true,
-              })),
-         ),
+                "supportsPauseRequest": true,
+                "supportsCancelRequest": true,
+                "supportsFunctionBreakpoints": true,
+                "supportsVariablePaging": true,
+                "supportsSetVariable": false,
+                "supportsStepBack": false,
+                "supportsExceptionBreakpoints": true,
+                "supportsExceptionInfoRequest": true,
+                "supportsConditionalBreakpoints": true,
+            })),
+        ),
         tr::request(
             "attach",
             json!({
@@ -56,6 +58,104 @@ async fn transcript_attach_breakpoints_continue_stop_disconnect() {
             true,
             Some(json!({
                 "breakpoints": [ { "verified": true, "line": 3 } ],
+            })),
+        ),
+        tr::request("continue", json!({})),
+        tr::response(
+            "continue",
+            true,
+            Some(json!({
+                "allThreadsContinued": true,
+            })),
+        ),
+        tr::event(
+            "continued",
+            Some(json!({
+                "allThreadsContinued": true,
+            })),
+        ),
+        tr::event(
+            "stopped",
+            Some(json!({
+                "reason": "breakpoint",
+                "threadId": tr::ignore(),
+                "allThreadsStopped": false,
+            })),
+        ),
+        tr::request("disconnect", json!({})),
+        tr::response("disconnect", true, None),
+        tr::event("terminated", None),
+    ];
+
+    client.assert_transcript(&expected).await;
+}
+
+#[tokio::test]
+async fn transcript_attach_function_breakpoints_continue_stop_disconnect() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let func_resp = client
+        .request(
+            "setFunctionBreakpoints",
+            json!({
+                "breakpoints": [{ "name": "Main.main" }],
+            }),
+        )
+        .await;
+    assert_eq!(
+        func_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    client.continue_().await;
+    let _ = client.wait_for_stopped_reason("breakpoint").await;
+    client.disconnect().await;
+
+    server_task.await.unwrap().unwrap();
+
+    let expected = vec![
+        tr::request("initialize", json!({})),
+        tr::response(
+            "initialize",
+            true,
+            Some(json!({
+                "supportsConfigurationDoneRequest": true,
+                "supportsEvaluateForHovers": true,
+                "supportsPauseRequest": true,
+                "supportsCancelRequest": true,
+                "supportsFunctionBreakpoints": true,
+                "supportsVariablePaging": true,
+                "supportsSetVariable": false,
+                "supportsStepBack": false,
+                "supportsExceptionBreakpoints": true,
+                "supportsExceptionInfoRequest": true,
+                "supportsConditionalBreakpoints": true,
+            })),
+        ),
+        tr::request(
+            "attach",
+            json!({
+                "host": "127.0.0.1",
+                "port": tr::ignore(),
+            }),
+        ),
+        tr::response("attach", true, None),
+        tr::event("initialized", None),
+        tr::request(
+            "setFunctionBreakpoints",
+            json!({
+                "breakpoints": [{ "name": "Main.main" }],
+            }),
+        ),
+        tr::response(
+            "setFunctionBreakpoints",
+            true,
+            Some(json!({
+                "breakpoints": [{ "verified": true, "line": 3 }],
             })),
         ),
         tr::request("continue", json!({})),
@@ -122,15 +222,17 @@ async fn transcript_step_sequences() {
             Some(json!({
                 "supportsConfigurationDoneRequest": true,
                 "supportsEvaluateForHovers": true,
-                 "supportsPauseRequest": true,
-                 "supportsCancelRequest": true,
-                 "supportsSetVariable": false,
-                 "supportsStepBack": false,
-                 "supportsExceptionBreakpoints": true,
-                 "supportsExceptionInfoRequest": true,
-                 "supportsConditionalBreakpoints": true,
-              })),
-         ),
+                "supportsPauseRequest": true,
+                "supportsCancelRequest": true,
+                "supportsFunctionBreakpoints": true,
+                "supportsVariablePaging": true,
+                "supportsSetVariable": false,
+                "supportsStepBack": false,
+                "supportsExceptionBreakpoints": true,
+                "supportsExceptionInfoRequest": true,
+                "supportsConditionalBreakpoints": true,
+            })),
+        ),
         tr::request(
             "attach",
             json!({
@@ -240,14 +342,18 @@ async fn transcript_cancel_delayed_request() {
             }),
         )
         .await;
-    let cancel_resp = client.wait_for_response_with_timeout(cancel_seq, std::time::Duration::from_secs(10)).await;
+    let cancel_resp = client
+        .wait_for_response_with_timeout(cancel_seq, std::time::Duration::from_secs(10))
+        .await;
     assert_eq!(
         cancel_resp.get("success").and_then(|v| v.as_bool()),
         Some(true),
         "expected cancel to succeed: {cancel_resp}",
     );
 
-    let threads_resp = client.wait_for_response_with_timeout(threads_seq, std::time::Duration::from_secs(10)).await;
+    let threads_resp = client
+        .wait_for_response_with_timeout(threads_seq, std::time::Duration::from_secs(10))
+        .await;
     assert_eq!(
         threads_resp.get("success").and_then(|v| v.as_bool()),
         Some(false),
@@ -271,15 +377,17 @@ async fn transcript_cancel_delayed_request() {
             Some(json!({
                 "supportsConfigurationDoneRequest": true,
                 "supportsEvaluateForHovers": true,
-                 "supportsPauseRequest": true,
-                 "supportsCancelRequest": true,
-                 "supportsSetVariable": false,
-                 "supportsStepBack": false,
-                 "supportsExceptionBreakpoints": true,
-                 "supportsExceptionInfoRequest": true,
-                 "supportsConditionalBreakpoints": true,
-              })),
-         ),
+                "supportsPauseRequest": true,
+                "supportsCancelRequest": true,
+                "supportsFunctionBreakpoints": true,
+                "supportsVariablePaging": true,
+                "supportsSetVariable": false,
+                "supportsStepBack": false,
+                "supportsExceptionBreakpoints": true,
+                "supportsExceptionInfoRequest": true,
+                "supportsConditionalBreakpoints": true,
+            })),
+        ),
         tr::request(
             "attach",
             json!({
@@ -292,11 +400,7 @@ async fn transcript_cancel_delayed_request() {
         tr::request("threads", json!({})),
         tr::request("cancel", json!({ "requestId": tr::ignore() })),
         tr::response("cancel", true, None),
-        tr::response(
-            "threads",
-            false,
-            None,
-        ),
+        tr::response("threads", false, None),
         tr::request("disconnect", json!({})),
         tr::response("disconnect", true, None),
         tr::event("terminated", None),
