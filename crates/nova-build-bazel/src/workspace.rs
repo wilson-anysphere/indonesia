@@ -205,15 +205,27 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         }
 
         let direct_expr = AQUERY_DIRECT_TEMPLATE.replace("TARGET", target);
-        let mut info = self.aquery_compile_info(Some(target), &direct_expr)?;
+        let deps_expr = AQUERY_DEPS_TEMPLATE.replace("TARGET", target);
+        let mut direct_err: Option<anyhow::Error> = None;
+        let mut info = match self.aquery_compile_info(Some(target), &direct_expr) {
+            Ok(info) => info,
+            Err(err) => {
+                direct_err = Some(err);
+                None
+            }
+        };
 
         if info.is_none() {
-            let deps_expr = AQUERY_DEPS_TEMPLATE.replace("TARGET", target);
             // The direct query returned no `Javac` actions, so the `deps(...)` fallback is only
             // used to find a *similar* `Javac` invocation from a dependency. In that case we can
             // stop after the first `Javac` action, avoiding a full scan of the (potentially huge)
             // deps query output.
-            info = self.aquery_compile_info(None, &deps_expr)?;
+            info = self.aquery_compile_info(None, &deps_expr).with_context(|| {
+                direct_err
+                    .as_ref()
+                    .map(|err| format!("direct aquery failed: {err}"))
+                    .unwrap_or_else(|| format!("direct aquery returned no Javac actions"))
+            })?;
         }
 
         let info = info.with_context(|| format!("no Javac actions found for {target}"))?;

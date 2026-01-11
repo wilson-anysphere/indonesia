@@ -77,6 +77,41 @@ action {
   arguments: "lib.jar"
   arguments: "java/Hello.java"
 }
+"#
+    .to_string();
+
+    let runner = TestRunner::new(query_stdout, aquery_stdout);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let info = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(info.release.as_deref(), Some("21"));
+    assert_eq!(info.source.as_deref(), Some("21"));
+    assert_eq!(info.target.as_deref(), Some("21"));
+    assert!(info.preview);
+    // `-sourcepath` should win over inferred roots from `.java` arguments.
+    assert_eq!(
+        info.source_roots,
+        vec!["src/main/java".to_string(), "src/test/java".to_string()]
+    );
+    assert_eq!(
+        runner.call_count(),
+        3,
+        "expected aquery + buildfiles + loadfiles queries"
+    );
+
+    // Second call should hit the cache (no additional Bazel invocations).
+    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(runner.call_count(), 3, "expected cache hit");
+
+    // Mutate a *dependency* BUILD file and ensure the entry becomes invalid.
+    std::fs::write(&dep_build, "java_library(name = \"dep\", visibility = [])\n").unwrap();
+    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(
+        runner.call_count(),
+        6,
+        "expected cache miss after dep BUILD change"
+    );
+}
 
 #[derive(Clone)]
 struct BuildfilesFallbackRunner {
@@ -170,39 +205,4 @@ action {
     std::fs::write(&dep_build, "java_library(name = \"dep\", visibility = [])\n").unwrap();
     let _ = workspace.target_compile_info("//java:hello").unwrap();
     assert_eq!(runner.call_count(), 8);
-}
-"#
-    .to_string();
-
-    let runner = TestRunner::new(query_stdout, aquery_stdout);
-    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
-
-    let info = workspace.target_compile_info("//java:hello").unwrap();
-    assert_eq!(info.release.as_deref(), Some("21"));
-    assert_eq!(info.source.as_deref(), Some("21"));
-    assert_eq!(info.target.as_deref(), Some("21"));
-    assert!(info.preview);
-    // `-sourcepath` should win over inferred roots from `.java` arguments.
-    assert_eq!(
-        info.source_roots,
-        vec!["src/main/java".to_string(), "src/test/java".to_string()]
-    );
-    assert_eq!(
-        runner.call_count(),
-        3,
-        "expected aquery + buildfiles + loadfiles queries"
-    );
-
-    // Second call should hit the cache (no additional Bazel invocations).
-    let _ = workspace.target_compile_info("//java:hello").unwrap();
-    assert_eq!(runner.call_count(), 3, "expected cache hit");
-
-    // Mutate a *dependency* BUILD file and ensure the entry becomes invalid.
-    std::fs::write(&dep_build, "java_library(name = \"dep\", visibility = [])\n").unwrap();
-    let _ = workspace.target_compile_info("//java:hello").unwrap();
-    assert_eq!(
-        runner.call_count(),
-        6,
-        "expected cache miss after dep BUILD change"
-    );
 }

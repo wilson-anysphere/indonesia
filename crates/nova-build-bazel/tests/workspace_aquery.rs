@@ -291,3 +291,80 @@ action {{
     assert_eq!(info.target.as_deref(), Some("21"));
     assert_eq!(info.source_roots, vec!["java/com/example".to_string()]);
 }
+
+#[test]
+fn target_compile_info_falls_back_when_direct_aquery_errors() {
+    #[derive(Clone)]
+    struct FailingDirectRunner {
+        direct_expr: String,
+        deps_expr: String,
+    }
+
+    impl CommandRunner for FailingDirectRunner {
+        fn run(&self, _cwd: &Path, _program: &str, _args: &[&str]) -> Result<CommandOutput> {
+            unreachable!("workspace uses run_with_stdout for queries")
+        }
+
+        fn run_with_stdout<R>(
+            &self,
+            _cwd: &Path,
+            program: &str,
+            args: &[&str],
+            f: impl FnOnce(&mut dyn BufRead) -> Result<R>,
+        ) -> Result<R> {
+            assert_eq!(program, "bazel");
+            assert_eq!(args.get(0).copied(), Some("query"));
+            // Return an empty query result for buildfiles/loadfiles; those are best-effort inputs.
+            let mut reader = BufReader::new(Cursor::new(Vec::new()));
+            f(&mut reader)
+        }
+
+        fn run_with_stdout_controlled<R>(
+            &self,
+            _cwd: &Path,
+            program: &str,
+            args: &[&str],
+            f: impl FnOnce(&mut dyn BufRead) -> Result<std::ops::ControlFlow<R, R>>,
+        ) -> Result<R> {
+            assert_eq!(program, "bazel");
+            assert_eq!(args.get(0).copied(), Some("aquery"));
+            let expr = args.get(2).expect("missing aquery expression");
+
+            if *expr == self.direct_expr {
+                return Err(anyhow::anyhow!("direct aquery expression unsupported"));
+            }
+
+            assert_eq!(*expr, self.deps_expr);
+            let output = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//:dep"
+  arguments: "-classpath"
+  arguments: "a.jar"
+  arguments: "src/Dep.java"
+}
+"#;
+            let mut reader = BufReader::new(Cursor::new(output.as_bytes()));
+            let result = f(&mut reader)?;
+            Ok(match result {
+                std::ops::ControlFlow::Continue(value) | std::ops::ControlFlow::Break(value) => {
+                    value
+                }
+            })
+        }
+    }
+
+    let target = "//:hello";
+    let direct_expr = format!(r#"mnemonic("Javac", {target})"#);
+    let deps_expr = format!(r#"mnemonic("Javac", deps({target}))"#);
+
+    let root = tempdir().unwrap();
+    let runner = FailingDirectRunner {
+        direct_expr,
+        deps_expr,
+    };
+
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
+    let info = workspace.target_compile_info(target).unwrap();
+    assert_eq!(info.classpath, vec!["a.jar".to_string()]);
+}
