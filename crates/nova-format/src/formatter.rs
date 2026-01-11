@@ -1395,6 +1395,7 @@ fn write_token(
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
                 state.pending_new = false;
+                state.ternary_depth = 0;
 
                 let in_header = state.paren_stack.last().is_some_and(|ctx| {
                     matches!(ctx.kind, ParenKind::ForHeader | ParenKind::ResourceSpec)
@@ -1718,12 +1719,19 @@ fn write_token(
                         None
                     };
                 } else {
-                    if state.ternary_depth > 0 {
+                    let for_each_colon = state.ternary_depth == 0
+                        && state.paren_stack.last().is_some_and(|ctx| {
+                            ctx.kind == ParenKind::ForHeader
+                                && ctx.start_brace_depth == state.brace_stack.len()
+                                && ctx.start_bracket_depth == state.bracket_depth
+                                && ctx.start_generic_depth == state.generic_depth()
+                        });
+                    if for_each_colon || state.ternary_depth > 0 {
                         state.ensure_space();
                     }
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
-                    if state.ternary_depth > 0 {
+                    if for_each_colon || state.ternary_depth > 0 {
                         if next.is_some()
                             && !matches!(
                                 next,
@@ -1732,7 +1740,9 @@ fn write_token(
                         {
                             state.ensure_space();
                         }
-                        state.ternary_depth = state.ternary_depth.saturating_sub(1);
+                        if state.ternary_depth > 0 {
+                            state.ternary_depth = state.ternary_depth.saturating_sub(1);
+                        }
                     } else if matches!(
                         next,
                         Some(
