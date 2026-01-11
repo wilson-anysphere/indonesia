@@ -44,3 +44,15 @@ If a decision changes:
 - Prefer **adding a new ADR** that supersedes the prior one and explains why, rather than rewriting history.
 - If you must amend an ADR, keep the change narrowly scoped and include context for why it changed.
 
+## Index
+
+1. [0001 — Incremental query engine (Salsa)](0001-incremental-query-engine.md)
+2. [0002 — Syntax trees (Rowan)](0002-syntax-tree-rowan.md)
+3. [0003 — LSP/DAP frameworks and JSON-RPC transport](0003-protocol-frameworks-lsp-dap.md)
+4. [0004 — Concurrency model (snapshots + single writer)](0004-concurrency-model.md)
+5. [0005 — Persistence formats and compatibility policy](0005-persistence-formats.md)
+6. [0006 — Path/URI normalization and virtual document schemes](0006-uri-normalization.md)
+7. [0007 — Crate boundaries and dependency policy](0007-crate-boundaries-and-dependencies.md)
+8. [0008 — Distributed mode security (router↔worker)](0008-distributed-mode-security.md)
+9. [0009 — Router↔worker remote RPC protocol (v3)](0009-remote-rpc-protocol.md)
+10. [0010 — Extension system (native + WASM providers)](0010-extension-system.md)
