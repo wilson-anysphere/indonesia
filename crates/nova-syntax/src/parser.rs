@@ -240,7 +240,13 @@ pub fn parse_expression(input: &str) -> JavaParseResult {
     parser.eat_trivia();
     parser.parse_expression(0);
     parser.eat_trivia();
-    parser.expect(SyntaxKind::Eof, "expected end of expression");
+    if !parser.expect(SyntaxKind::Eof, "expected end of expression") {
+        // Keep the parse lossless by consuming trailing junk tokens until EOF.
+        parser.builder.start_node(SyntaxKind::Error.into());
+        parser.recover_to(TokenSet::new(&[SyntaxKind::Eof]));
+        parser.builder.finish_node();
+        parser.expect(SyntaxKind::Eof, "expected end of expression");
+    }
     parser.builder.finish_node();
     JavaParseResult {
         green: parser.builder.finish(),
