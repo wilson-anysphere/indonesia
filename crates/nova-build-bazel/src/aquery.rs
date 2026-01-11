@@ -175,12 +175,87 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
 }
 
 fn split_path_list(value: &str) -> Vec<String> {
-    let sep = if value.contains(';') { ';' } else { ':' };
+    if value.is_empty() {
+        return Vec::new();
+    }
+
+    // Prefer `;` if it appears anywhere in the argument. This matches the platform default on
+    // Windows and avoids breaking `C:\...` drive letters when we only see a single entry.
+    if value.contains(';') {
+        return value
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+    }
+
+    if looks_like_windows_absolute_path(value) {
+        // Windows absolute paths contain `:` as part of the drive letter (e.g. `C:\...`).
+        // Splitting on `:` would incorrectly turn `C:\foo\bar.jar` into `C` and `\foo\bar.jar`.
+        //
+        // If we can *reliably* detect a colon-separated list of drive-letter paths (rare, but
+        // unambiguous), split it. Otherwise treat the entire value as a single path entry.
+        if let Some(split) = split_windows_drive_list(value) {
+            return split;
+        }
+
+        return vec![value.to_string()];
+    }
+
     value
-        .split(sep)
+        .split(':')
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
         .collect()
+}
+
+fn looks_like_windows_absolute_path(value: &str) -> bool {
+    // UNC path (`\\server\share\...`) or drive-letter path (`C:\...`).
+    value.contains("\\\\") || is_windows_drive_absolute_path(value)
+}
+
+fn is_windows_drive_absolute_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+}
+
+fn split_windows_drive_list(value: &str) -> Option<Vec<String>> {
+    // Support colon-separated lists of drive-letter paths like:
+    // `C:\a.jar:D:\b.jar`
+    //
+    // We only split on `:` when it is followed by an unambiguous drive-letter prefix.
+    let bytes = value.as_bytes();
+    let mut split_points = Vec::new();
+    for i in 0..bytes.len().saturating_sub(3) {
+        if bytes[i] == b':'
+            && bytes[i + 1].is_ascii_alphabetic()
+            && bytes[i + 2] == b':'
+            && bytes[i + 3] == b'\\'
+        {
+            split_points.push(i);
+        }
+    }
+
+    if split_points.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for idx in split_points {
+        let part = &value[start..idx];
+        if !part.is_empty() {
+            parts.push(part.to_string());
+        }
+        start = idx + 1; // skip the `:` separator
+    }
+
+    let rest = &value[start..];
+    if !rest.is_empty() {
+        parts.push(rest.to_string());
+    }
+
+    Some(parts)
 }
 
 /// Convenience helper: parse a textproto output and return compile info keyed by action owner.
