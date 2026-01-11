@@ -602,14 +602,17 @@ pub fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-fn discover_maven_modules(root: &Path, pom_files: &[PathBuf]) -> Vec<PathBuf> {
+fn discover_maven_modules(root: &Path, build_files: &[PathBuf]) -> Vec<PathBuf> {
     let root_pom = root.join("pom.xml");
     let mut modules = Vec::new();
-    for pom in pom_files {
-        if pom == &root_pom {
+    for file in build_files {
+        if file.file_name().and_then(|s| s.to_str()) != Some("pom.xml") {
             continue;
         }
-        let Ok(rel) = pom.strip_prefix(root) else {
+        if file == &root_pom {
+            continue;
+        }
+        let Ok(rel) = file.strip_prefix(root) else {
             continue;
         };
         let Some(dir) = rel.parent() else {
@@ -693,6 +696,36 @@ mod tests {
             .map(|p| p.to_string_lossy().to_string())
             .collect();
         assert_eq!(rel_modules, vec!["module-a", "module-b"]);
+    }
+
+    #[test]
+    fn discover_maven_modules_ignores_wrapper_and_mvn_config_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::write(
+            root.join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("module-a")).unwrap();
+        std::fs::write(
+            root.join("module-a").join("pom.xml"),
+            "<project><modelVersion>4.0.0</modelVersion></project>",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(root.join(".mvn").join("wrapper")).unwrap();
+        std::fs::write(root.join(".mvn").join("maven.config"), "-DskipTests\n").unwrap();
+        std::fs::write(
+            root.join(".mvn").join("wrapper").join("maven-wrapper.properties"),
+            "distributionUrl=https://example.invalid/maven.zip\n",
+        )
+        .unwrap();
+
+        let build_files = collect_maven_build_files(root).unwrap();
+        let modules = discover_maven_modules(root, &build_files);
+        assert_eq!(modules, vec![PathBuf::from("module-a")]);
     }
 
     #[test]
