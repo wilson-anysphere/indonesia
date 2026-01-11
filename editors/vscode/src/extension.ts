@@ -284,6 +284,8 @@ export async function activate(context: vscode.ExtensionContext) {
       clientStart = undefined;
       currentServerCommand = undefined;
       detachObservability();
+      aiRefreshInProgress = false;
+      clearAiCompletionCache();
     }
   }
 
