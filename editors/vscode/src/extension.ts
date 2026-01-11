@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { LanguageClient, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
 import * as path from 'path';
+import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import type { DocumentSelector as ProtocolDocumentSelector } from 'vscode-languageserver-protocol';
@@ -14,8 +15,10 @@ const vscodeTestItemsById = new Map<string, vscode.TestItem>();
 
 let aiRefreshInProgress = false;
 let lastCompletionContextId: string | undefined;
+let lastCompletionDocumentUri: string | undefined;
 const aiItemsByContextId = new Map<string, vscode.CompletionItem[]>();
 const aiRequestsInFlight = new Set<string>();
+const MAX_AI_CONTEXT_IDS = 50;
 
 type TestKind = 'class' | 'test';
 
@@ -91,7 +94,7 @@ export async function activate(context: vscode.ExtensionContext) {
     await vscode.workspace.getConfiguration('nova').update('server.path', value, vscode.ConfigurationTarget.Global);
   };
 
-  const documentSelector: ProtocolDocumentSelector = [
+  const documentSelector: LspTextDocumentFilter[] = [
     { scheme: 'file', language: 'java' },
     { scheme: 'untitled', language: 'java' },
   ];
@@ -123,6 +126,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         lastCompletionContextId = contextId;
+        lastCompletionDocumentUri = document.uri.toString();
 
         if (aiItemsByContextId.has(contextId) || aiRequestsInFlight.has(contextId)) {
           return result;
@@ -137,8 +141,16 @@ export async function activate(context: vscode.ExtensionContext) {
             }
 
             await clientStart;
-            const more = await requestMoreCompletions(client, baseItems);
+            const more = await requestMoreCompletions(client, baseItems, { token });
             if (!more?.length) {
+              return;
+            }
+
+            if (token.isCancellationRequested) {
+              return;
+            }
+
+            if (lastCompletionContextId !== contextId || lastCompletionDocumentUri !== document.uri.toString()) {
               return;
             }
 
@@ -147,7 +159,18 @@ export async function activate(context: vscode.ExtensionContext) {
               item.sortText = item.sortText ?? '0';
             }
 
+            // LRU cache: keep the most recently produced AI context ids, and evict the oldest.
+            if (aiItemsByContextId.has(contextId)) {
+              aiItemsByContextId.delete(contextId);
+            }
             aiItemsByContextId.set(contextId, more);
+            while (aiItemsByContextId.size > MAX_AI_CONTEXT_IDS) {
+              const oldestKey = aiItemsByContextId.keys().next().value;
+              if (typeof oldestKey !== 'string') {
+                break;
+              }
+              aiItemsByContextId.delete(oldestKey);
+            }
 
             // Re-trigger suggestions once to surface async results.
             aiRefreshInProgress = true;
@@ -404,7 +427,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.languages.registerCompletionItemProvider(documentSelector, {
-      provideCompletionItems: () => {
+      provideCompletionItems: (document) => {
         const enabled = vscode.workspace.getConfiguration('nova').get<boolean>('aiCompletions.enabled', true);
         if (!enabled) {
           return undefined;
@@ -414,8 +437,46 @@ export async function activate(context: vscode.ExtensionContext) {
           return undefined;
         }
 
-        return aiItemsByContextId.get(lastCompletionContextId);
+        if (!lastCompletionDocumentUri || lastCompletionDocumentUri !== document.uri.toString()) {
+          return undefined;
+        }
+
+        const cached = aiItemsByContextId.get(lastCompletionContextId);
+        if (cached) {
+          // Touch for LRU.
+          aiItemsByContextId.delete(lastCompletionContextId);
+          aiItemsByContextId.set(lastCompletionContextId, cached);
+        }
+        return cached;
       },
+    }),
+  );
+
+  // Avoid returning stale AI completions when the user edits the document or switches files.
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (!lastCompletionDocumentUri) {
+        return;
+      }
+      if (event.document.uri.toString() !== lastCompletionDocumentUri) {
+        return;
+      }
+
+      lastCompletionContextId = undefined;
+      lastCompletionDocumentUri = undefined;
+      aiItemsByContextId.clear();
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      const uri = editor?.document.uri.toString();
+      if (uri && uri === lastCompletionDocumentUri) {
+        return;
+      }
+
+      lastCompletionContextId = undefined;
+      lastCompletionDocumentUri = undefined;
     }),
   );
 

@@ -97,6 +97,18 @@
           "default": 5,
           "minimum": 0,
           "description": "Maximum number of AI completion items to request."
+        },
+        "nova.aiCompletions.requestTimeoutMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 0,
+          "description": "Max wall-clock time (ms) to poll nova/completion/more for async AI completions."
+        },
+        "nova.aiCompletions.pollIntervalMs": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Base polling interval (ms) for nova/completion/more. Nova uses a short exponential backoff derived from this value."
         }
       }
     }
@@ -105,7 +117,7 @@
     "sync-version": "node scripts/sync-version.mjs",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "vitest run",
+    "test": "node -e \"require('fs').rmSync('out', { recursive: true, force: true })\" && npm run compile && node --test out/__tests__/aiCompletionMore.node.js && vitest run",
     "vscode:prepublish": "npm run compile",
     "package": "npm run sync-version && npm run compile && node scripts/ensure-dist.mjs && vsce package --skip-license --out dist/nova.vsix"
   },
