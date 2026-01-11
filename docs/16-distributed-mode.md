@@ -22,9 +22,10 @@ The current distributed mode is intentionally narrow:
 
 - Sharding is by **source root** (a shard ID is the index of a source root in the router’s layout).
 - Workers rebuild their **entire shard index** on each update (no incremental/delta indexing yet).
-- The router maintains a global **workspace symbol** view by merging shard indexes.
+- Workspace symbol search is distributed: the router queries each shard worker for top-k matches
+  and merges results (disconnected workers are skipped).
 - The RPC protocol is purpose-built for indexing (`IndexShard`, `UpdateFile`, `LoadFiles`) and
-  monitoring (`GetWorkerStats`). It is *not* a general “semantic query RPC” yet.
+  monitoring (`GetWorkerStats`, `SearchSymbols`). It is *not* a general “semantic query RPC” yet.
 
 Anything beyond this (semantic query routing, a generalized query RPC surface, aggressive
 parallelization, etc.) should be treated as **future work** and is documented separately below.
@@ -38,20 +39,24 @@ parallelization, etc.) should be treated as **future work** and is documented se
   - Calls into the router for shard indexing and workspace symbol search.
 - **Router (`nova-router`)**
   - Owns the *sharding layout* (source roots → shard IDs).
-  - Listens for worker connections over the nova remote RPC transport (v3).
+  - Listens for worker connections over the nova remote RPC transport (legacy v2 today; v3 is the
+    intended long-term protocol).
   - Optionally spawns and supervises local `nova-worker` processes (one per shard).
-  - Aggregates per-shard indexes into a global workspace symbol index.
-  - Loads cached shard indexes on startup for warm results.
+  - Answers workspace symbol queries by requesting top-k matches from shard workers
+    (`SearchSymbols`) and merging results.
 - **Worker (`nova-worker`)**
   - Owns exactly **one shard**.
   - Maintains an in-memory `path -> text` map for the shard.
   - Builds a shard index (currently just symbols) and persists that index to disk.
-  - Responds to router RPCs (`IndexShard`, `UpdateFile`, `LoadFiles`, `GetWorkerStats`).
+  - Serves symbol search (`SearchSymbols`) from its in-memory (or cached) index.
+  - Responds to router RPCs (`IndexShard`, `UpdateFile`, `LoadFiles`, `GetWorkerStats`,
+    `SearchSymbols`).
 
 ### Data flow (high level)
 
 - **Initial indexing**: router reads a full `.java` snapshot for each shard and sends it to the
-  worker via `IndexShard`. The worker rebuilds the shard index and returns it to the router.
+  worker via `IndexShard`. The worker rebuilds and persists its shard index and returns only
+  lightweight counters to the router (the full symbol list stays on the worker).
 - **File update**: the frontend sends the full updated file text to the router, which forwards it
   to the responsible worker via `UpdateFile`. The worker updates its in-memory file map and
   rebuilds the *entire* shard index.
@@ -70,27 +75,30 @@ Distributed mode uses the cache directory as a **best-effort warm start** mechan
 
 ### Router startup behavior
 
-On startup, the router attempts to load any cached shard indexes from its configured cache
-directory and uses them to build the initial global workspace-symbol view. This means
-`workspaceSymbols` can return *something* before workers finish connecting/indexing.
+On startup, the router does **not** load cached shard indexes or build a global symbol table.
+`workspaceSymbols` is best-effort and queries only the workers that are currently connected.
+
+Workers may still load their cached shard index on startup; once they connect, `SearchSymbols`
+queries can return results immediately even before the next full `IndexShard` rebuild completes.
 
 The cache is not validated against the current filesystem state and can be stale; callers should
 still trigger a real `index_workspace` to refresh results when correctness matters.
 
 ### Worker restart behavior (“rehydration”)
 
-When a worker connects, it advertises an optional cached shard index in `WorkerHello`.
+When a worker connects, it advertises whether it has a cached shard index (and, in the v3
+protocol, the cached index’s metadata).
 
-If the router accepts a cached index for the shard, it will then send `LoadFiles` with a full
-on-disk snapshot of the shard’s files to **rehydrate** the worker’s in-memory file map.
+If a worker reports a cached index, the router will then send `LoadFiles` with a full on-disk
+snapshot of the shard’s files to **rehydrate** the worker’s in-memory file map.
 
 This is a correctness guardrail: `UpdateFile` rebuilds the shard index from the worker’s in-memory
 file map. Without `LoadFiles`, a restarted worker would only know about the single updated file
 and would “forget” symbols from untouched files in the shard.
 
 Note that `LoadFiles` does **not** rebuild the shard index; it only repopulates the worker’s
-in-memory file contents. The shard index remains whatever the router last had cached until the
-next `IndexShard`/`UpdateFile` rebuild.
+in-memory file contents. The shard index used for `SearchSymbols` remains whatever the worker last
+loaded/built until the next `IndexShard`/`UpdateFile` rebuild.
 
 ## Unsaved editor text (correctness warning)
 
@@ -140,7 +148,7 @@ nova-worker \
 ### Remote mode (optional, not hardened)
 
 The router can listen on TCP and accept workers connecting from other machines. An authentication
-token is supported as a stub (a shared secret sent by the worker during the v3 `WorkerHello`
+token is supported as a stub (a shared secret sent by the worker during the initial `WorkerHello`
 handshake).
 
 This mode is best thought of as: **router stays close to the filesystem; workers are compute-only**.

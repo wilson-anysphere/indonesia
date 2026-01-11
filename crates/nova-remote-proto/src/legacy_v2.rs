@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{FileText, Revision, ShardId, ShardIndex, WorkerId, WorkerStats};
+use crate::{FileText, Revision, ScoredSymbol, ShardId, ShardIndexInfo, WorkerId, WorkerStats};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RpcMessage {
@@ -10,7 +10,12 @@ pub enum RpcMessage {
     WorkerHello {
         shard_id: ShardId,
         auth_token: Option<String>,
-        cached_index: Option<ShardIndex>,
+        /// Whether the worker was able to load a cached shard index on startup.
+        ///
+        /// When true, the router may send a `LoadFiles` message after connect to
+        /// rehydrate the worker's in-memory file map so incremental `UpdateFile`
+        /// operations can rebuild a complete index.
+        has_cached_index: bool,
     },
     /// Acknowledge `WorkerHello`. The router assigns a stable `worker_id`.
     RouterHello {
@@ -46,7 +51,13 @@ pub enum RpcMessage {
     /// Response to `GetWorkerStats`.
     WorkerStats(WorkerStats),
     /// Response to `IndexShard`/`UpdateFile`.
-    ShardIndex(ShardIndex),
+    ShardIndexInfo(ShardIndexInfo),
+
+    /// Query a shard's symbol index and return the top-k results.
+    SearchSymbols { query: String, limit: u32 },
+
+    /// Response to `SearchSymbols`.
+    SearchSymbolsResult { items: Vec<ScoredSymbol> },
 
     /// Generic success response for commands that don't have a structured payload.
     Ack,

@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use nova_remote_proto::{RpcMessage, ShardId, ShardIndex, WorkerStats};
+use nova_fuzzy::{FuzzyMatcher, MatchKind, MatchScore, TrigramIndex, TrigramIndexBuilder};
+use nova_remote_proto::{
+    RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo, SymbolRankKey, WorkerStats,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -15,6 +19,8 @@ use tokio::net::windows::named_pipe::ClientOptions;
 
 #[cfg(feature = "tls")]
 mod tls;
+
+const FALLBACK_SCAN_LIMIT: usize = 50_000;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -71,12 +77,13 @@ async fn main() -> Result<()> {
         }
     };
 
+    let has_cached_index = cached_index.is_some();
     write_message(
         &mut stream,
         &RpcMessage::WorkerHello {
             shard_id: args.shard_id,
             auth_token: args.auth_token.clone(),
-            cached_index,
+            has_cached_index,
         },
     )
     .await?;
@@ -92,7 +99,7 @@ async fn main() -> Result<()> {
         other => return Err(anyhow!("unexpected router hello: {other:?}")),
     }
 
-    let mut state = WorkerState::new(args.shard_id, args.cache_dir);
+    let mut state = WorkerState::new(args.shard_id, args.cache_dir, cached_index);
     state.run(&mut stream).await?;
 
     Ok(())
@@ -314,16 +321,27 @@ struct WorkerState {
     revision: u64,
     index_generation: u64,
     files: HashMap<String, String>,
+    symbol_index: Option<ShardSymbolSearchIndex>,
 }
 
 impl WorkerState {
-    fn new(shard_id: ShardId, cache_dir: PathBuf) -> Self {
+    fn new(shard_id: ShardId, cache_dir: PathBuf, cached_index: Option<ShardIndex>) -> Self {
+        let (index_generation, symbol_index) = match cached_index {
+            Some(index) => {
+                let index_generation = index.index_generation;
+                let index = Arc::new(index);
+                (index_generation, Some(ShardSymbolSearchIndex::new(index)))
+            }
+            None => (0, None),
+        };
+
         Self {
             shard_id,
             cache_dir,
             revision: 0,
-            index_generation: 0,
+            index_generation,
             files: HashMap::new(),
+            symbol_index,
         }
     }
 
@@ -338,8 +356,8 @@ impl WorkerState {
                 RpcMessage::IndexShard { revision, files } => {
                     self.revision = revision;
                     self.files = files.into_iter().map(|f| (f.path, f.text)).collect();
-                    let index = self.build_index().await?;
-                    write_message(stream, &RpcMessage::ShardIndex(index)).await?;
+                    let info = self.build_index().await?;
+                    write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
                 }
                 RpcMessage::LoadFiles { revision, files } => {
                     self.revision = revision;
@@ -349,8 +367,8 @@ impl WorkerState {
                 RpcMessage::UpdateFile { revision, file } => {
                     self.revision = revision;
                     self.files.insert(file.path, file.text);
-                    let index = self.build_index().await?;
-                    write_message(stream, &RpcMessage::ShardIndex(index)).await?;
+                    let info = self.build_index().await?;
+                    write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
                 }
                 RpcMessage::GetWorkerStats => {
                     let stats = WorkerStats {
@@ -360,6 +378,15 @@ impl WorkerState {
                         file_count: self.files.len().try_into().unwrap_or(u32::MAX),
                     };
                     write_message(stream, &RpcMessage::WorkerStats(stats)).await?;
+                }
+                RpcMessage::SearchSymbols { query, limit } => {
+                    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+                    let items = self
+                        .symbol_index
+                        .as_ref()
+                        .map(|index| index.search(&query, limit))
+                        .unwrap_or_default();
+                    write_message(stream, &RpcMessage::SearchSymbolsResult { items }).await?;
                 }
                 RpcMessage::Shutdown => return Ok(()),
                 other => {
@@ -375,14 +402,14 @@ impl WorkerState {
         }
     }
 
-    async fn build_index(&mut self) -> Result<ShardIndex> {
+    async fn build_index(&mut self) -> Result<ShardIndexInfo> {
         self.index_generation += 1;
         let mut files = std::collections::BTreeMap::new();
         for (path, text) in &self.files {
             files.insert(path.clone(), text.clone());
         }
         let index = nova_index::Index::new(files);
-        let symbols = index
+        let mut symbols: Vec<nova_remote_proto::Symbol> = index
             .symbols()
             .iter()
             .map(|sym| nova_remote_proto::Symbol {
@@ -390,21 +417,191 @@ impl WorkerState {
                 path: sym.file.clone(),
             })
             .collect();
-        let index = ShardIndex {
+
+        symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
+        symbols.dedup();
+
+        let symbol_count = symbols.len();
+        let index = Arc::new(ShardIndex {
             shard_id: self.shard_id,
             revision: self.revision,
             index_generation: self.index_generation,
             symbols,
-        };
+        });
+
+        self.symbol_index = Some(ShardSymbolSearchIndex::new(index.clone()));
 
         let cache_dir = self.cache_dir.clone();
         let index_clone = index.clone();
-        tokio::task::spawn_blocking(move || nova_cache::save_shard_index(&cache_dir, &index_clone))
-            .await
-            .context("join shard cache write")?
-            .context("write shard cache")?;
+        tokio::task::spawn_blocking(move || {
+            nova_cache::save_shard_index(&cache_dir, index_clone.as_ref())
+        })
+        .await
+        .context("join shard cache write")?
+        .context("write shard cache")?;
 
-        Ok(index)
+        Ok(ShardIndexInfo {
+            shard_id: self.shard_id,
+            revision: self.revision,
+            index_generation: self.index_generation,
+            symbol_count: symbol_count.try_into().unwrap_or(u32::MAX),
+        })
+    }
+}
+
+struct ShardSymbolSearchIndex {
+    index: Arc<ShardIndex>,
+    trigram: TrigramIndex,
+    prefix1: Vec<Vec<u32>>,
+}
+
+impl ShardSymbolSearchIndex {
+    fn new(index: Arc<ShardIndex>) -> Self {
+        let mut prefix1: Vec<Vec<u32>> = vec![Vec::new(); 256];
+        let mut builder = TrigramIndexBuilder::new();
+
+        for (id, sym) in index.symbols.iter().enumerate() {
+            let id_u32: u32 = id
+                .try_into()
+                .unwrap_or_else(|_| panic!("symbol index too large: {id}"));
+
+            builder.insert(id_u32, &sym.name);
+
+            if let Some(&b0) = sym.name.as_bytes().first() {
+                prefix1[b0.to_ascii_lowercase() as usize].push(id_u32);
+            }
+        }
+
+        Self {
+            index,
+            trigram: builder.build(),
+            prefix1,
+        }
+    }
+
+    fn search(&self, query: &str, limit: usize) -> Vec<ScoredSymbol> {
+        if limit == 0 || self.index.symbols.is_empty() {
+            return Vec::new();
+        }
+
+        if query.is_empty() {
+            return self
+                .index
+                .symbols
+                .iter()
+                .take(limit)
+                .map(|sym| ScoredSymbol {
+                    name: sym.name.clone(),
+                    path: sym.path.clone(),
+                    rank_key: SymbolRankKey {
+                        kind_rank: 0,
+                        score: 0,
+                    },
+                })
+                .collect();
+        }
+
+        let query_bytes = query.as_bytes();
+        let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
+        let mut matcher = FuzzyMatcher::new(query);
+
+        let mut scored = Vec::new();
+
+        if query_bytes.len() < 3 {
+            if let Some(b0) = query_first {
+                let bucket = &self.prefix1[b0 as usize];
+                if !bucket.is_empty() {
+                    self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
+                    return self.finish(scored, limit);
+                }
+            }
+
+            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.index.symbols.len());
+            self.score_candidates((0..scan_limit).map(|id| id as u32), &mut matcher, &mut scored);
+            return self.finish(scored, limit);
+        }
+
+        let mut candidates = self.trigram.candidates(query);
+        if candidates.is_empty() {
+            if let Some(b0) = query_first {
+                let bucket = &self.prefix1[b0 as usize];
+                if !bucket.is_empty() {
+                    self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
+                    return self.finish(scored, limit);
+                }
+            }
+
+            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.index.symbols.len());
+            candidates = (0..scan_limit as u32).collect();
+        }
+
+        self.score_candidates(candidates.into_iter(), &mut matcher, &mut scored);
+        self.finish(scored, limit)
+    }
+
+    fn score_candidates(
+        &self,
+        ids: impl IntoIterator<Item = u32>,
+        matcher: &mut FuzzyMatcher,
+        out: &mut Vec<ScoredSymbolInternal>,
+    ) {
+        for id in ids {
+            let Some(sym) = self.index.symbols.get(id as usize) else {
+                continue;
+            };
+            if let Some(score) = matcher.score(&sym.name) {
+                out.push(ScoredSymbolInternal { id, score });
+            }
+        }
+    }
+
+    fn finish(&self, mut scored: Vec<ScoredSymbolInternal>, limit: usize) -> Vec<ScoredSymbol> {
+        scored.sort_by(|a, b| {
+            b.score
+                .rank_key()
+                .cmp(&a.score.rank_key())
+                .then_with(|| {
+                    let a_sym = &self.index.symbols[a.id as usize];
+                    let b_sym = &self.index.symbols[b.id as usize];
+                    a_sym
+                        .name
+                        .len()
+                        .cmp(&b_sym.name.len())
+                        .then_with(|| a_sym.name.cmp(&b_sym.name))
+                        .then_with(|| a_sym.path.cmp(&b_sym.path))
+                        .then_with(|| a.id.cmp(&b.id))
+                })
+        });
+
+        scored
+            .into_iter()
+            .take(limit)
+            .filter_map(|s| {
+                let sym = self.index.symbols.get(s.id as usize)?;
+                Some(ScoredSymbol {
+                    name: sym.name.clone(),
+                    path: sym.path.clone(),
+                    rank_key: match_score_rank_key(s.score),
+                })
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScoredSymbolInternal {
+    id: u32,
+    score: MatchScore,
+}
+
+fn match_score_rank_key(score: MatchScore) -> SymbolRankKey {
+    let kind_rank = match score.kind {
+        MatchKind::Prefix => 2,
+        MatchKind::Fuzzy => 1,
+    };
+    SymbolRankKey {
+        kind_rank,
+        score: score.score,
     }
 }
 

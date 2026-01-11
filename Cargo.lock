@@ -3894,7 +3894,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "hex",
- "nova-cache",
  "nova-fuzzy",
  "nova-index",
  "nova-remote-proto",
@@ -4019,6 +4018,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "nova-cache",
+ "nova-fuzzy",
  "nova-index",
  "nova-lsp",
  "nova-remote-proto",

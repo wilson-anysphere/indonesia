@@ -7,14 +7,15 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context};
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
-    FileText, Revision, RpcMessage, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats,
+    FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo, Symbol, WorkerId,
+    WorkerStats,
 };
 use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{timeout, Duration};
 
 #[cfg(unix)]
@@ -121,7 +122,7 @@ impl WorkerIdentity {
 /// In this MVP it is responsible for:
 /// - partitioning work by source root (shard)
 /// - delegating indexing to worker processes over a simple RPC transport
-/// - aggregating shard indexes into a global workspace symbol view
+/// - answering workspace symbol queries by merging per-shard top-k results
 pub struct QueryRouter {
     inner: RouterMode,
 }
@@ -338,7 +339,6 @@ struct RouterState {
     layout: WorkspaceLayout,
     next_worker_id: AtomicU32,
     global_revision: AtomicU64,
-    global_symbols: RwLock<GlobalSymbolIndex>,
     shards: Mutex<HashMap<ShardId, ShardState>>,
     notify: Notify,
 }
@@ -346,7 +346,6 @@ struct RouterState {
 struct ShardState {
     root: PathBuf,
     worker: Option<WorkerHandle>,
-    index: Option<ShardIndex>,
 }
 
 #[derive(Clone)]
@@ -387,21 +386,13 @@ impl DistributedRouter {
     async fn new(config: DistributedRouterConfig, layout: WorkspaceLayout) -> Result<Self> {
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-        let mut max_cached_revision: Revision = 0;
         let mut shards = HashMap::new();
         for (idx, root) in layout.source_roots.iter().enumerate() {
-            let cached = nova_cache::load_shard_index(&config.cache_dir, idx as ShardId)
-                .ok()
-                .flatten();
-            if let Some(index) = cached.as_ref() {
-                max_cached_revision = max_cached_revision.max(index.revision);
-            }
             shards.insert(
                 idx as ShardId,
                 ShardState {
                     root: root.path.clone(),
                     worker: None,
-                    index: cached,
                 },
             );
         }
@@ -410,17 +401,10 @@ impl DistributedRouter {
             config: config.clone(),
             layout,
             next_worker_id: AtomicU32::new(1),
-            global_revision: AtomicU64::new(max_cached_revision),
-            global_symbols: RwLock::new(GlobalSymbolIndex::default()),
+            global_revision: AtomicU64::new(0),
             shards: Mutex::new(shards),
             notify: Notify::new(),
         });
-
-        let cached_symbols = {
-            let shard_guard = state.shards.lock().await;
-            build_global_symbols(shard_guard.values().filter_map(|s| s.index.as_ref()))
-        };
-        write_global_symbols(&state.global_symbols, cached_symbols).await;
 
         let accept_state = state.clone();
         let accept_shutdown_rx = shutdown_rx.clone();
@@ -474,14 +458,13 @@ impl DistributedRouter {
                 .request(RpcMessage::IndexShard { revision, files })
                 .await?;
             match resp {
-                RpcMessage::ShardIndex(index) => {
-                    if index.shard_id != shard_id {
+                RpcMessage::ShardIndexInfo(info) => {
+                    if info.shard_id != shard_id {
                         return Err(anyhow!(
-                            "worker returned index for wrong shard {}",
-                            index.shard_id
+                            "worker returned index info for wrong shard {}",
+                            info.shard_id
                         ));
                     }
-                    self.update_shard_index(index).await;
                 }
                 other => return Err(anyhow!("unexpected worker response: {other:?}")),
             }
@@ -511,8 +494,13 @@ impl DistributedRouter {
             .request(RpcMessage::UpdateFile { revision, file })
             .await?;
         match resp {
-            RpcMessage::ShardIndex(index) => {
-                self.update_shard_index(index).await;
+            RpcMessage::ShardIndexInfo(info) => {
+                if info.shard_id != shard_id {
+                    return Err(anyhow!(
+                        "worker returned index info for wrong shard {}",
+                        info.shard_id
+                    ));
+                }
                 Ok(())
             }
             other => Err(anyhow!("unexpected worker response: {other:?}")),
@@ -537,8 +525,64 @@ impl DistributedRouter {
     }
 
     async fn workspace_symbols(&self, query: &str) -> Vec<Symbol> {
-        let guard = self.state.global_symbols.read().await;
-        guard.search(query, WORKSPACE_SYMBOL_LIMIT)
+        let workers: Vec<WorkerHandle> = {
+            let guard = self.state.shards.lock().await;
+            guard.values().filter_map(|s| s.worker.clone()).collect()
+        };
+
+        if workers.is_empty() {
+            return Vec::new();
+        }
+
+        let mut tasks = JoinSet::new();
+        let query = query.to_string();
+        for worker in workers {
+            let query = query.clone();
+            tasks.spawn(async move {
+                worker
+                    .request(RpcMessage::SearchSymbols {
+                        query,
+                        limit: WORKSPACE_SYMBOL_LIMIT as u32,
+                    })
+                    .await
+            });
+        }
+
+        let mut merged = Vec::new();
+        while let Some(res) = tasks.join_next().await {
+            match res {
+                Ok(Ok(RpcMessage::SearchSymbolsResult { items })) => {
+                    merged.extend(items);
+                }
+                Ok(Ok(RpcMessage::Error { message })) => {
+                    eprintln!("worker returned error for symbol search: {message}");
+                }
+                Ok(Ok(other)) => {
+                    eprintln!("unexpected worker response for symbol search: {other:?}");
+                }
+                Ok(Err(err)) => {
+                    eprintln!("symbol search request failed: {err:?}");
+                }
+                Err(err) => {
+                    eprintln!("symbol search task failed: {err:?}");
+                }
+            }
+        }
+
+        if query.is_empty() {
+            merged.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
+        } else {
+            merged.sort_by(|a, b| scored_symbol_cmp(a, b));
+        }
+        merged.dedup_by(|a, b| a.name == b.name && a.path == b.path);
+        merged
+            .into_iter()
+            .take(WORKSPACE_SYMBOL_LIMIT)
+            .map(|s| Symbol {
+                name: s.name,
+                path: s.path,
+            })
+            .collect()
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -576,20 +620,14 @@ impl DistributedRouter {
         Ok(())
     }
 
-    async fn update_shard_index(&self, index: ShardIndex) {
-        self.state
-            .global_revision
-            .fetch_max(index.revision, Ordering::SeqCst);
-        let mut shard_guard = self.state.shards.lock().await;
-        if let Some(shard) = shard_guard.get_mut(&index.shard_id) {
-            shard.index = Some(index);
-        }
+}
 
-        let symbols = build_global_symbols(shard_guard.values().filter_map(|s| s.index.as_ref()));
-        drop(shard_guard);
-        write_global_symbols(&self.state.global_symbols, symbols).await;
-        self.state.notify.notify_waiters();
-    }
+fn scored_symbol_cmp(a: &ScoredSymbol, b: &ScoredSymbol) -> std::cmp::Ordering {
+    b.rank_key
+        .cmp(&a.rank_key)
+        .then_with(|| a.name.len().cmp(&b.name.len()))
+        .then_with(|| a.name.cmp(&b.name))
+        .then_with(|| a.path.cmp(&b.path))
 }
 
 async fn wait_for_worker(state: Arc<RouterState>, shard_id: ShardId) -> Result<WorkerHandle> {
@@ -758,15 +796,14 @@ async fn handle_new_connection(
     identity: WorkerIdentity,
 ) -> Result<()> {
     let hello = read_message(&mut stream).await?;
-    let (shard_id, auth_token, cached_index) = match hello {
+    let (shard_id, auth_token, has_cached_index) = match hello {
         RpcMessage::WorkerHello {
             shard_id,
             auth_token,
-            cached_index,
-        } => (shard_id, auth_token, cached_index),
+            has_cached_index,
+        } => (shard_id, auth_token, has_cached_index),
         other => return Err(anyhow!("expected WorkerHello, got {other:?}")),
     };
-    let has_cached_index = cached_index.is_some();
 
     if let Some(expected) = state.config.auth_token.as_ref() {
         if auth_token.as_deref() != Some(expected.as_str()) {
@@ -873,21 +910,12 @@ async fn handle_new_connection(
     let (tx, rx) = mpsc::unbounded_channel::<WorkerRequest>();
     let handle = WorkerHandle { worker_id, tx };
 
-    if let Some(index) = cached_index.as_ref() {
-        state
-            .global_revision
-            .fetch_max(index.revision, Ordering::SeqCst);
-    }
-
     {
         let mut guard = state.shards.lock().await;
         let shard = guard
             .get_mut(&shard_id)
             .ok_or_else(|| anyhow!("worker connected for unknown shard {shard_id}"))?;
         shard.worker = Some(handle.clone());
-        if cached_index.is_some() {
-            shard.index = cached_index;
-        }
     }
 
     let cleanup_state = state.clone();
@@ -905,12 +933,6 @@ async fn handle_new_connection(
         }
         cleanup_state.notify.notify_waiters();
     });
-
-    let symbols = {
-        let shard_guard = state.shards.lock().await;
-        build_global_symbols(shard_guard.values().filter_map(|s| s.index.as_ref()))
-    };
-    write_global_symbols(&state.global_symbols, symbols).await;
 
     if has_cached_index {
         let refresh_state = state.clone();

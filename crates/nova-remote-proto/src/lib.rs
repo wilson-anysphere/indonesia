@@ -16,6 +16,23 @@ pub struct Symbol {
     pub path: String,
 }
 
+/// A stable, comparable rank key for fuzzy symbol search results.
+///
+/// This intentionally mirrors `nova_fuzzy::MatchScore::rank_key()` but is defined in the
+/// remote protocol so routers can merge results from multiple workers without re-scoring.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SymbolRankKey {
+    pub kind_rank: i32,
+    pub score: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScoredSymbol {
+    pub name: String,
+    pub path: String,
+    pub rank_key: SymbolRankKey,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardIndex {
     pub shard_id: ShardId,
@@ -31,6 +48,14 @@ pub struct WorkerStats {
     pub revision: Revision,
     pub index_generation: u64,
     pub file_count: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardIndexInfo {
+    pub shard_id: ShardId,
+    pub revision: Revision,
+    pub index_generation: u64,
+    pub symbol_count: u32,
 }
 
 /// Legacy v2 protocol (bincode-encoded, no request IDs/multiplexing).
