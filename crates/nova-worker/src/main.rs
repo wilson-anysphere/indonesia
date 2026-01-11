@@ -631,7 +631,14 @@ async fn write_message(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMess
 
 async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
     let len = stream.read_u32_le().await.context("read message len")?;
-    let mut buf = vec![0u8; len as usize];
+    let len_usize = len as usize;
+    if len_usize > nova_remote_proto::MAX_MESSAGE_BYTES {
+        return Err(anyhow!(
+            "rpc payload too large: {len_usize} bytes (max {})",
+            nova_remote_proto::MAX_MESSAGE_BYTES
+        ));
+    }
+    let mut buf = vec![0u8; len_usize];
     stream
         .read_exact(&mut buf)
         .await

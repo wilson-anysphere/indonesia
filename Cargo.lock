@@ -4005,7 +4005,6 @@ name = "nova-remote-proto"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "bincode",
  "serde",
  "serde_cbor",
 ]

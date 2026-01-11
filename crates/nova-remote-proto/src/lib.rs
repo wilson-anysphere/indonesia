@@ -1,5 +1,16 @@
 use serde::{Deserialize, Serialize};
 
+/// Hard limits enforced during deserialization of untrusted network payloads.
+///
+/// These are intentionally conservative: they cap both the maximum frame size and the maximum
+/// size/count of nested collections so a small input cannot trigger an outsized allocation.
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+pub const MAX_FILES_PER_MESSAGE: usize = 100_000;
+pub const MAX_SEARCH_RESULTS_PER_MESSAGE: usize = 10_000;
+pub const MAX_SYMBOLS_PER_SHARD_INDEX: usize = 1_000_000;
+pub const MAX_FILE_TEXT_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+pub const MAX_SMALL_STRING_BYTES: usize = 16 * 1024; // 16 KiB
+
 pub type Revision = u64;
 pub type ShardId = u32;
 pub type WorkerId = u32;

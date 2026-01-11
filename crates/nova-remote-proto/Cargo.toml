@@ -5,6 +5,5 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-bincode.workspace = true
 serde.workspace = true
 serde_cbor = "0.11"
