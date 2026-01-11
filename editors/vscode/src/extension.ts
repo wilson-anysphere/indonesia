@@ -841,6 +841,7 @@ export async function activate(context: vscode.ExtensionContext) {
   let warnedHighMemoryPressure = false;
   let warnedCriticalMemoryPressure = false;
   let lastSafeModeEnabled = false;
+  let safeModeReason: string | undefined;
   let safeModeWarningInFlight: Promise<void> | undefined;
 
   const updateSafeModeStatus = (enabled: boolean) => {
@@ -850,11 +851,18 @@ export async function activate(context: vscode.ExtensionContext) {
       safeModeStatusItem.hide();
     }
 
+    if (!enabled) {
+      safeModeReason = undefined;
+    }
+
+    const reasonSuffix = enabled && safeModeReason ? ` (${formatSafeModeReason(safeModeReason)})` : '';
+    safeModeStatusItem.tooltip = `Nova is running in safe mode${reasonSuffix}. Click to create a bug report.`;
+
     if (enabled && !lastSafeModeEnabled && !safeModeWarningInFlight) {
       safeModeWarningInFlight = (async () => {
         try {
           const picked = await vscode.window.showWarningMessage(
-            'Nova: nova-lsp is running in safe mode. Create a bug report to help diagnose the issue.',
+            `Nova: nova-lsp is running in safe mode${reasonSuffix}. Create a bug report to help diagnose the issue.`,
             'Create Bug Report',
           );
           if (picked === 'Create Bug Report') {
@@ -939,6 +947,7 @@ export async function activate(context: vscode.ExtensionContext) {
     warnedCriticalMemoryPressure = false;
     safeModeWarningInFlight = undefined;
     lastSafeModeEnabled = false;
+    safeModeReason = undefined;
     updateSafeModeStatus(false);
     memoryStatusItem.text = '$(pulse) Nova Mem: —';
     memoryStatusItem.tooltip = 'Nova memory status';
@@ -961,6 +970,7 @@ export async function activate(context: vscode.ExtensionContext) {
       languageClient.onNotification('nova/safeModeChanged', (payload: unknown) => {
         const enabled = parseSafeModeEnabled(payload);
         if (typeof enabled === 'boolean') {
+          safeModeReason = enabled ? parseSafeModeReason(payload) : undefined;
           updateSafeModeStatus(enabled);
         }
       }),
@@ -982,6 +992,7 @@ export async function activate(context: vscode.ExtensionContext) {
           const payload = await languageClient.sendRequest('nova/safeModeStatus');
           const enabled = parseSafeModeEnabled(payload);
           if (typeof enabled === 'boolean') {
+            safeModeReason = enabled ? parseSafeModeReason(payload) : undefined;
             updateSafeModeStatus(enabled);
           }
         } catch (err) {
@@ -1473,6 +1484,38 @@ function parseSafeModeEnabled(payload: unknown): boolean | undefined {
   }
 
   return undefined;
+}
+
+function parseSafeModeReason(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object') {
+    return undefined;
+  }
+
+  const obj = payload as Record<string, unknown>;
+  const reason = obj.reason ?? obj.kind ?? obj.cause;
+  if (typeof reason === 'string') {
+    return reason;
+  }
+
+  const status = obj.status;
+  if (status && typeof status === 'object') {
+    const nested = (status as Record<string, unknown>).reason ?? (status as Record<string, unknown>).kind;
+    if (typeof nested === 'string') {
+      return nested;
+    }
+  }
+
+  return undefined;
+}
+
+function formatSafeModeReason(reason: string): string {
+  const trimmed = reason.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  const normalized = trimmed.replace(/[_-]+/g, ' ');
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
 function normalizeMemoryPressure(value: unknown): MemoryPressureLevel | undefined {
