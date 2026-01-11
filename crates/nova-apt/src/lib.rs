@@ -6,9 +6,10 @@ use nova_project::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Discover generated Java source roots produced by common annotation processor setups.
@@ -216,6 +217,8 @@ struct MtimeCacheFile {
     entries: Vec<MtimeCacheEntry>,
 }
 
+static MTIME_CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Persistent cache for `max_java_mtime` computations.
 ///
 /// This cache is best-effort: callers must invalidate paths when files change
@@ -261,6 +264,11 @@ impl AptMtimeCache {
         let Some(parent) = self.cache_path.parent() else {
             return Ok(());
         };
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
         std::fs::create_dir_all(parent)?;
 
         let mut entries: Vec<_> = self
@@ -277,18 +285,29 @@ impl AptMtimeCache {
         let json = serde_json::to_string_pretty(&file)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
-        let tmp_path = self.cache_path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, json)?;
-        if let Err(err) = std::fs::rename(&tmp_path, &self.cache_path) {
-            // `std::fs::rename` fails on Windows if the destination exists. Since
-            // this is a best-effort cache, fall back to replacing the file.
-            if self.cache_path.exists() {
-                let _ = std::fs::remove_file(&self.cache_path);
-                std::fs::rename(&tmp_path, &self.cache_path)?;
-            } else {
-                return Err(err);
-            }
+        let (tmp_path, mut file) = open_unique_tmp_file(&self.cache_path, parent)?;
+        let write_result = (|| -> io::Result<()> {
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(err) = write_result {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(err);
         }
+        drop(file);
+
+        if let Err(err) = rename_overwrite(&tmp_path, &self.cache_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+
+        #[cfg(unix)]
+        {
+            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+        }
+
         self.dirty = false;
         Ok(())
     }
@@ -309,6 +328,58 @@ impl AptMtimeCache {
     fn insert(&mut self, root: PathBuf, time: Option<SystemTime>) {
         self.entries.insert(root, time_to_epoch_nanos(time));
         self.dirty = true;
+    }
+}
+
+fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, std::fs::File)> {
+    let file_name = dest.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
+    })?;
+    let pid = std::process::id();
+
+    loop {
+        let counter = MTIME_CACHE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(format!(".tmp.{pid}.{counter}"));
+        let tmp_path = parent.join(tmp_name);
+
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn rename_overwrite(src: &Path, dest: &Path) -> io::Result<()> {
+    const MAX_RENAME_ATTEMPTS: usize = 1024;
+    let mut attempts = 0usize;
+
+    loop {
+        match std::fs::rename(src, dest) {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if cfg!(windows)
+                    && (err.kind() == io::ErrorKind::AlreadyExists || dest.exists()) =>
+            {
+                match std::fs::remove_file(dest) {
+                    Ok(()) => {}
+                    Err(remove_err) if remove_err.kind() == io::ErrorKind::NotFound => {}
+                    Err(remove_err) => return Err(remove_err),
+                }
+
+                attempts += 1;
+                if attempts >= MAX_RENAME_ATTEMPTS {
+                    return Err(err);
+                }
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
     }
 }
 

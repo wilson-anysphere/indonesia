@@ -1,7 +1,11 @@
 use std::{
     fs::File,
     io,
+    #[cfg(feature = "s3")]
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
+    #[cfg(feature = "s3")]
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::error::{CacheError, Result};
@@ -122,11 +126,38 @@ fn s3_max_download_bytes_from_env() -> Result<Option<u64>> {
 }
 
 #[cfg(feature = "s3")]
-fn tmp_download_path(dest: &Path) -> PathBuf {
-    let file_name = dest
-        .file_name()
-        .unwrap_or_else(|| std::ffi::OsStr::new("download"));
-    dest.with_file_name(format!(".{}.tmp", file_name.to_string_lossy()))
+static TMP_DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "s3")]
+async fn open_unique_tmp_file(dest: &Path) -> io::Result<(PathBuf, tokio::fs::File)> {
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    let parent = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
+
+    let file_name = dest.file_name().unwrap_or_else(|| OsStr::new("download"));
+    let pid = std::process::id();
+
+    loop {
+        let counter = TMP_DOWNLOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = OsString::from(".");
+        tmp_name.push(file_name);
+        tmp_name.push(format!(".tmp.{pid}.{counter}"));
+        let tmp_path = parent.join(&tmp_name);
+
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+            .await
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 #[cfg(feature = "s3")]
@@ -143,9 +174,10 @@ async fn stream_async_read_to_path(
         }
     }
 
-    let tmp_path = tmp_download_path(dest);
+    let (tmp_path, file) = open_unique_tmp_file(dest).await?;
+
     let result = async {
-        let mut file = tokio::fs::File::create(&tmp_path).await?;
+        let mut file = file;
 
         let mut reader = Box::pin(reader);
         let copied = match max_bytes {
@@ -174,9 +206,12 @@ async fn stream_async_read_to_path(
 
         match tokio::fs::rename(&tmp_path, dest).await {
             Ok(()) => Ok(copied),
-            Err(_err) => {
+            Err(err) => {
                 // On Windows, rename doesn't overwrite. Try remove + rename.
-                if tokio::fs::metadata(dest).await.is_ok() {
+                if cfg!(windows)
+                    && (err.kind() == io::ErrorKind::AlreadyExists
+                        || tokio::fs::metadata(dest).await.is_ok())
+                {
                     let _ = tokio::fs::remove_file(dest).await;
                     if tokio::fs::rename(&tmp_path, dest).await.is_ok() {
                         return Ok(copied);
