@@ -1,7 +1,7 @@
 use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::util::{
-    atomic_write, bincode_options_limited, bincode_serialize, now_millis,
+    atomic_write_with, bincode_options, bincode_options_limited, now_millis,
     BINCODE_PAYLOAD_LIMIT_BYTES,
 };
 use bincode::Options;
@@ -90,14 +90,20 @@ impl QueryDiskCache {
             value,
         };
 
-        let bytes = bincode_serialize(&persisted)?;
-        if bytes.len() > BINCODE_PAYLOAD_LIMIT_BYTES {
+        let opts = bincode_options();
+        let size = opts.serialized_size(&persisted)?;
+        if size > BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
             return Ok(());
         }
-        if bytes.len() as u64 > self.policy.max_bytes {
+        if size > self.policy.max_bytes {
             return Ok(());
         }
-        atomic_write(&path, &bytes)?;
+
+        atomic_write_with(&path, |file| {
+            opts.serialize_into(file, &persisted)?;
+            Ok(())
+        })?;
+
         self.maybe_gc();
         Ok(())
     }
