@@ -1,9 +1,9 @@
 name: Javac differential
 
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -24,7 +24,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -34,6 +34,8 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run javac differential tests
-        run: cargo test -p nova-types --test javac_differential -- --ignored
+      - name: Run javac corpus tests
+        run: cargo test -p nova-syntax --test javac_corpus
 
+      - name: Run javac smoke tests
+        run: cargo test -p nova-types --test javac_differential -- --ignored

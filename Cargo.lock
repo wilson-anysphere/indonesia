@@ -4085,6 +4085,7 @@ dependencies = [
  "criterion",
  "nova-core",
  "nova-memory",
+ "nova-test-utils",
  "nova-types",
  "nova-vfs",
  "pretty_assertions",

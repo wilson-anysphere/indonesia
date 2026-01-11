@@ -4,7 +4,11 @@ version.workspace = true
 edition = "2021"
 
 [dependencies]
-nova-index = { path = "../nova-index" }
-lsp-types = "0.97"
-nova-ide = { path = "../nova-ide" }
+nova-index = { path = "../nova-index", optional = true }
+lsp-types = { version = "0.97", optional = true }
+nova-ide = { path = "../nova-ide", optional = true }
 tempfile.workspace = true
+
+[features]
+default = ["fixtures"]
+fixtures = ["dep:nova-index", "dep:nova-ide", "dep:lsp-types"]
