@@ -16,6 +16,7 @@ use nova_remote_proto::FileText;
 use nova_remote_proto::{Revision, ShardId, WorkerId};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::{mpsc, oneshot, Mutex};
+use tracing::Instrument;
 
 /// The `tracing` target used by this crate.
 pub const TRACE_TARGET: &str = "nova.remote_rpc";
@@ -224,32 +225,33 @@ impl Client {
             request_id,
             request_type
         );
-        let _guard = span.enter();
+        let inner = self.inner.clone();
+        let response = async move {
+            let (tx, rx) = oneshot::channel();
+            {
+                let mut pending = inner.pending.lock().await;
+                pending.insert(request_id, tx);
+            }
 
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut pending = self.inner.pending.lock().await;
-            pending.insert(request_id, tx);
+            if let Err(err) = inner
+                .send_packet(request_id, RpcPayload::Request(request))
+                .await
+            {
+                let mut pending = inner.pending.lock().await;
+                pending.remove(&request_id);
+                return Err(err);
+            }
+
+            rx.await
+                .map_err(|_| anyhow!("connection closed while waiting for response"))
         }
-
-        if let Err(err) = self
-            .inner
-            .send_packet(request_id, RpcPayload::Request(request))
-            .await
-        {
-            let mut pending = self.inner.pending.lock().await;
-            pending.remove(&request_id);
-            return Err(err);
-        }
-
-        let response = rx
-            .await
-            .map_err(|_| anyhow!("connection closed while waiting for response"))?;
+        .instrument(span)
+        .await?;
 
         if let Some(start) = start {
             let elapsed = start.elapsed();
             let status = rpc_result_status(&response);
-            let error_code = rpc_result_error_code(&response);
+            let error_code = rpc_result_error_code_str(&response);
             tracing::debug!(
                 target: TRACE_TARGET,
                 event = "call_complete",
@@ -333,7 +335,14 @@ impl Server {
 
 impl Inner {
     async fn send_packet(&self, request_id: RequestId, payload: RpcPayload) -> Result<()> {
-        let (uncompressed, payload_kind) = encode_payload(&payload)?;
+        let payload_kind = payload_kind(&payload);
+        let request_type = payload_request_type(&payload);
+        let notification_type = payload_notification_type(&payload);
+        let response_status = payload_response_status(&payload);
+        let response_type = payload_response_type(&payload);
+        let error_code = payload_error_code(&payload);
+
+        let uncompressed = encode_payload(&payload)?;
         let (compression, wire_bytes) = maybe_compress(
             &self.negotiated.capabilities,
             self.compression_threshold,
@@ -345,6 +354,11 @@ impl Inner {
             direction = "send",
             request_id,
             payload_kind,
+            request_type,
+            notification_type,
+            response_status,
+            response_type,
+            error_code,
             compressed = compression != CompressionAlgo::None,
             bytes = wire_bytes.len(),
             uncompressed_bytes = uncompressed.len()
@@ -605,10 +619,8 @@ async fn read_wire_frame(
     v3::decode_wire_frame(&buf).context("decode wire frame")
 }
 
-fn encode_payload(payload: &RpcPayload) -> Result<(Vec<u8>, &'static str)> {
-    let kind = payload_kind(payload);
-    let bytes = v3::encode_rpc_payload(payload).context("encode rpc payload")?;
-    Ok((bytes, kind))
+fn encode_payload(payload: &RpcPayload) -> Result<Vec<u8>> {
+    v3::encode_rpc_payload(payload).context("encode rpc payload")
 }
 
 fn maybe_compress(
@@ -760,6 +772,11 @@ async fn read_loop(
             direction = "recv",
             request_id,
             payload_kind = payload_kind(&payload),
+            request_type = payload_request_type(&payload),
+            notification_type = payload_notification_type(&payload),
+            response_status = payload_response_status(&payload),
+            response_type = payload_response_type(&payload),
+            error_code = payload_error_code(&payload),
             compressed,
             bytes = data.len(),
             uncompressed_bytes = decoded_bytes.len()
@@ -812,6 +829,41 @@ fn payload_kind(payload: &RpcPayload) -> &'static str {
     }
 }
 
+fn payload_request_type(payload: &RpcPayload) -> &'static str {
+    match payload {
+        RpcPayload::Request(request) => request_type(request),
+        _ => "",
+    }
+}
+
+fn payload_notification_type(payload: &RpcPayload) -> &'static str {
+    match payload {
+        RpcPayload::Notification(notification) => notification_type(notification),
+        _ => "",
+    }
+}
+
+fn payload_response_status(payload: &RpcPayload) -> &'static str {
+    match payload {
+        RpcPayload::Response(result) => rpc_result_status(result),
+        _ => "",
+    }
+}
+
+fn payload_response_type(payload: &RpcPayload) -> &'static str {
+    match payload {
+        RpcPayload::Response(RpcResult::Ok { value }) => response_type(value),
+        _ => "",
+    }
+}
+
+fn payload_error_code(payload: &RpcPayload) -> &'static str {
+    match payload {
+        RpcPayload::Response(RpcResult::Err { error }) => rpc_error_code_str(error.code),
+        _ => "",
+    }
+}
+
 fn wire_frame_type(frame: &WireFrame) -> &'static str {
     match frame {
         WireFrame::Hello(_) => "hello",
@@ -834,6 +886,23 @@ fn request_type(request: &Request) -> &'static str {
     }
 }
 
+fn notification_type(notification: &nova_remote_proto::v3::Notification) -> &'static str {
+    match notification {
+        nova_remote_proto::v3::Notification::CachedIndex(_) => "cached_index",
+        nova_remote_proto::v3::Notification::Unknown => "unknown",
+    }
+}
+
+fn response_type(response: &Response) -> &'static str {
+    match response {
+        Response::Ack => "ack",
+        Response::ShardIndex(_) => "shard_index",
+        Response::WorkerStats(_) => "worker_stats",
+        Response::Shutdown => "shutdown",
+        Response::Unknown => "unknown",
+    }
+}
+
 fn rpc_result_status(result: &RpcResult<Response>) -> &'static str {
     match result {
         RpcResult::Ok { .. } => "ok",
@@ -842,10 +911,22 @@ fn rpc_result_status(result: &RpcResult<Response>) -> &'static str {
     }
 }
 
-fn rpc_result_error_code(result: &RpcResult<Response>) -> Option<RpcErrorCode> {
+fn rpc_result_error_code_str(result: &RpcResult<Response>) -> &'static str {
     match result {
-        RpcResult::Err { error } => Some(error.code),
-        _ => None,
+        RpcResult::Err { error } => rpc_error_code_str(error.code),
+        _ => "",
+    }
+}
+
+fn rpc_error_code_str(code: RpcErrorCode) -> &'static str {
+    match code {
+        RpcErrorCode::InvalidRequest => "invalid_request",
+        RpcErrorCode::Unauthorized => "unauthorized",
+        RpcErrorCode::UnsupportedVersion => "unsupported_version",
+        RpcErrorCode::TooLarge => "too_large",
+        RpcErrorCode::Cancelled => "cancelled",
+        RpcErrorCode::Internal => "internal",
+        RpcErrorCode::Unknown => "unknown",
     }
 }
 
