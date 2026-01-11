@@ -15,7 +15,7 @@ pub(crate) fn redact_string(input: &str) -> String {
 fn redact_urls(input: &str) -> String {
     static URL_RE: OnceLock<Regex> = OnceLock::new();
     let re = URL_RE.get_or_init(|| {
-        Regex::new(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s\"'<>]+")
+        Regex::new(r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s"'<>]+"#)
             .expect("URL regex should compile")
     });
 
@@ -26,7 +26,7 @@ fn redact_urls(input: &str) -> String {
 fn redact_bearer_tokens(input: &str) -> String {
     static BEARER_RE: OnceLock<Regex> = OnceLock::new();
     let re = BEARER_RE.get_or_init(|| {
-        Regex::new(r"(?i)\b(authorization\s*[:=]\s*bearer\s+)([^\s\"']+)")
+        Regex::new(r#"(?i)\b(authorization\s*[:=]\s*bearer\s+)([^\s"']+)"#)
             .expect("bearer regex should compile")
     });
 
@@ -131,4 +131,3 @@ fn is_sensitive_param(param: &str) -> bool {
         "key" | "token" | "access_token" | "api_key" | "apikey" | "authorization"
     )
 }
-
