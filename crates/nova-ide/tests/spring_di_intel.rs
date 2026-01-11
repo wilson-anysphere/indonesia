@@ -63,6 +63,7 @@ class A {
 }
 
 class Missing {}
+<|>
 "#;
 
     let (db, file, _) = fixture_multi(java_path, java_text, vec![]);
@@ -88,6 +89,7 @@ interface Foo {}
 class Consumer {
   @Autowired Foo foo;
 }
+<|>
 "#;
 
     let foo_impl_1 = (
@@ -403,6 +405,7 @@ class A {
 class B {
   @Autowired A a;
 }
+<|>
 "#;
 
     let (db, file, _) = fixture_multi(java_path, java_text, vec![]);

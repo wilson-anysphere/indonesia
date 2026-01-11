@@ -290,29 +290,29 @@ impl<'a> ScopeBuilder<'a> {
 
         // Populate member namespaces.
         for member in &members {
-            match *member {
+            match member {
                 Member::Field(id) => {
-                    let field = self.tree.field(id);
+                    let field = self.tree.field(*id);
                     self.scopes[class_scope]
                         .values
-                        .insert(Name::from(field.name.clone()), Resolution::Field(id));
+                        .insert(Name::from(field.name.clone()), Resolution::Field(*id));
                 }
                 Member::Method(id) => {
-                    let method = self.tree.method(id);
+                    let method = self.tree.method(*id);
                     let name = Name::from(method.name.clone());
                     match self.scopes[class_scope].values.get_mut(&name) {
-                        Some(Resolution::Methods(existing)) => existing.push(id),
+                        Some(Resolution::Methods(existing)) => existing.push(*id),
                         _ => {
                             self.scopes[class_scope]
                                 .values
-                                .insert(name, Resolution::Methods(vec![id]));
+                                .insert(name, Resolution::Methods(vec![*id]));
                         }
                     }
                 }
                 Member::Constructor(_) => {}
                 Member::Initializer(_) => {}
                 Member::Type(child) => {
-                    let child_id = item_id(child);
+                    let child_id = item_id(child.clone());
                     let name = Name::from(self.item_name(child_id));
                     self.scopes[class_scope]
                         .types
@@ -323,18 +323,18 @@ impl<'a> ScopeBuilder<'a> {
 
         // Build nested members (bodies + nested types).
         for member in &members {
-            match *member {
+            match member {
                 Member::Method(id) => {
-                    self.build_method_scopes(db, class_scope, id);
+                    self.build_method_scopes(db, class_scope, *id);
                 }
                 Member::Constructor(id) => {
-                    self.build_constructor_scopes(db, class_scope, id);
+                    self.build_constructor_scopes(db, class_scope, *id);
                 }
                 Member::Initializer(id) => {
-                    self.build_initializer_scopes(db, class_scope, id);
+                    self.build_initializer_scopes(db, class_scope, *id);
                 }
                 Member::Type(child) => {
-                    let child_id = item_id(child);
+                    let child_id = item_id(child.clone());
                     self.build_type_scopes(db, class_scope, package, Some(&ty_name), child_id);
                 }
                 Member::Field(_) => {}

@@ -272,6 +272,11 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     }
 
     // 1) Syntax errors.
+    //
+    // `nova_syntax::parse` is a lightweight token-level parser that reports
+    // unterminated literals/comments. For richer "unexpected token" errors we
+    // also run the full Java grammar parser (`parse_java`) when the file is a
+    // Java source file.
     let parse = nova_syntax::parse(text);
     diagnostics.extend(parse.errors.into_iter().map(|e| {
         Diagnostic::error(
@@ -280,6 +285,20 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
             Some(Span::new(e.range.start as usize, e.range.end as usize)),
         )
     }));
+
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        let parse = nova_syntax::parse_java(text);
+        diagnostics.extend(parse.errors.into_iter().map(|e| {
+            Diagnostic::error(
+                "SYNTAX",
+                e.message,
+                Some(Span::new(e.range.start as usize, e.range.end as usize)),
+            )
+        }));
+    }
 
     // 2) Unresolved references (best-effort).
     let analysis = analyze(text);

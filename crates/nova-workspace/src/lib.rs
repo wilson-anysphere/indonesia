@@ -139,6 +139,14 @@ impl Workspace {
     }
 
     fn java_files_in(&self, root: &Path) -> Result<Vec<PathBuf>> {
+        match fs::metadata(root) {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => {
+                return Err(err).with_context(|| format!("failed to read {}", root.display()));
+            }
+        }
+
         let mut files = Vec::new();
         for entry in WalkDir::new(root).follow_links(true) {
             let entry = entry?;

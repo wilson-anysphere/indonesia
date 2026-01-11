@@ -1,26 +1,34 @@
-use nova_types::{CompletionItem, Diagnostic, Span};
+use nova_db::InMemoryFileStore;
+use nova_types::{CompletionItem, Diagnostic};
 
-/// Very small "IDE layer" used by `nova-workspace`.
+/// Thin compatibility wrapper used by `nova-workspace`.
 ///
-/// The real Nova project will provide diagnostics, completions, navigation, etc.
-/// backed by a query-based semantic database. For now we keep this logic as a
-/// lightweight heuristic suitable for integration tests.
+/// `nova-workspace` (and thus `nova-lsp`) calls into `nova_ide::analysis` for a
+/// small set of IDE features without having access to the full database-backed
+/// APIs. This module bridges that gap by creating a tiny in-memory database with
+/// a single synthetic file and delegating to the richer `code_intelligence`
+/// layer.
 #[must_use]
 pub fn diagnostics(java_source: &str) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
+    let mut db = InMemoryFileStore::new();
+    let file_id = db.file_id_for_path("/virtual/Main.java");
+    db.set_file_text(file_id, java_source.to_string());
 
-    if let Some(idx) = java_source.find("error") {
-        diags.push(Diagnostic::error(
-            "E0001",
-            "found `error` token",
-            Some(Span::new(idx, idx + "error".len())),
-        ));
-    }
-
-    diags
+    crate::code_intelligence::file_diagnostics(&db, file_id)
 }
 
 #[must_use]
-pub fn completions(_java_source: &str, _offset: usize) -> Vec<CompletionItem> {
-    Vec::new()
+pub fn completions(java_source: &str, offset: usize) -> Vec<CompletionItem> {
+    let mut db = InMemoryFileStore::new();
+    let file_id = db.file_id_for_path("/virtual/Main.java");
+    db.set_file_text(file_id, java_source.to_string());
+
+    let position = crate::text::offset_to_position(java_source, offset);
+    crate::code_intelligence::completions(&db, file_id, position)
+        .into_iter()
+        .map(|item| CompletionItem {
+            label: item.label,
+            detail: item.detail,
+        })
+        .collect()
 }
