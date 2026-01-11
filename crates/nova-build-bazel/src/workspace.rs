@@ -11,6 +11,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(feature = "bsp")]
+#[derive(Debug)]
+enum BspConnection {
+    NotTried,
+    Connected(crate::bsp::BspWorkspace),
+    Failed,
+}
+
 const JAVA_TARGETS_QUERY: &str = r#"kind("java_.* rule", //...)"#;
 
 // Query/aquery expressions are part of the cache key; changing them should invalidate cached
@@ -108,6 +116,8 @@ pub struct BazelWorkspace<R: CommandRunner> {
     cache_path: Option<PathBuf>,
     cache: BazelCache,
     compile_info_expr_version_hex: String,
+    #[cfg(feature = "bsp")]
+    bsp: BspConnection,
 }
 
 impl<R: CommandRunner> BazelWorkspace<R> {
@@ -118,6 +128,8 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             cache_path: None,
             cache: BazelCache::default(),
             compile_info_expr_version_hex: compile_info_expr_version_hex(),
+            #[cfg(feature = "bsp")]
+            bsp: BspConnection::NotTried,
         })
     }
 
@@ -173,33 +185,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
             #[cfg(feature = "bsp")]
             {
-                let bsp_program =
-                    std::env::var("NOVA_BSP_PROGRAM").unwrap_or_else(|_| "bsp4bazel".to_string());
-                let bsp_args_raw = std::env::var("NOVA_BSP_ARGS").unwrap_or_default();
-                let bsp_args_raw = bsp_args_raw.trim();
-                let bsp_args_owned: Vec<String> = if bsp_args_raw.is_empty() {
-                    Vec::new()
-                } else if bsp_args_raw.starts_with('[') {
-                    serde_json::from_str::<Vec<String>>(bsp_args_raw).unwrap_or_else(|_| {
-                        bsp_args_raw
-                            .split_whitespace()
-                            .map(|s| s.to_string())
-                            .collect()
-                    })
-                } else {
-                    bsp_args_raw
-                        .split_whitespace()
-                        .map(|s| s.to_string())
-                        .collect()
-                };
-                let bsp_args: Vec<&str> = bsp_args_owned.iter().map(String::as_str).collect();
-
-                if let Ok(info) = crate::bsp::target_compile_info_via_bsp(
-                    &self.root,
-                    &bsp_program,
-                    &bsp_args,
-                    target,
-                ) {
+                if let Some(info) = self.target_compile_info_via_bsp_workspace(target) {
                     let files = self.compile_info_file_digests_for_target(target)?;
                     self.cache.insert(CacheEntry {
                         target: target.to_string(),
@@ -262,6 +248,68 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         self.persist_cache()?;
 
         Ok(info)
+    }
+
+    #[cfg(feature = "bsp")]
+    fn target_compile_info_via_bsp_workspace(&mut self, target: &str) -> Option<JavaCompileInfo> {
+        let result: Result<Option<JavaCompileInfo>> = (|| {
+            let Some(workspace) = self.bsp_workspace_mut()? else {
+                return Ok(None);
+            };
+
+            let Some(id) = workspace.resolve_build_target(target)? else {
+                return Ok(None);
+            };
+            let mut infos = workspace.javac_options(&[id])?;
+            Ok(infos.pop().map(|(_, info)| info))
+        })();
+
+        match result {
+            Ok(info) => info,
+            Err(_) => {
+                // If the BSP server misbehaves (dies mid-request, protocol error, etc) mark it as
+                // failed and fall back to `aquery` for the remainder of this workspace instance.
+                self.bsp = BspConnection::Failed;
+                None
+            }
+        }
+    }
+
+    #[cfg(feature = "bsp")]
+    fn bsp_workspace_mut(&mut self) -> Result<Option<&mut crate::bsp::BspWorkspace>> {
+        if matches!(self.bsp, BspConnection::NotTried) {
+            let config = self.bsp_config_from_env();
+            self.bsp = match crate::bsp::BspWorkspace::connect(self.root.clone(), config) {
+                Ok(workspace) => BspConnection::Connected(workspace),
+                Err(_) => BspConnection::Failed,
+            };
+        }
+
+        match &mut self.bsp {
+            BspConnection::Connected(workspace) => Ok(Some(workspace)),
+            BspConnection::Failed | BspConnection::NotTried => Ok(None),
+        }
+    }
+
+    #[cfg(feature = "bsp")]
+    fn bsp_config_from_env(&self) -> crate::bsp::BspServerConfig {
+        let program = std::env::var("NOVA_BSP_PROGRAM").unwrap_or_else(|_| "bsp4bazel".to_string());
+        let args_raw = std::env::var("NOVA_BSP_ARGS").unwrap_or_default();
+        let args_raw = args_raw.trim();
+        let args: Vec<String> = if args_raw.is_empty() {
+            Vec::new()
+        } else if args_raw.starts_with('[') {
+            serde_json::from_str::<Vec<String>>(args_raw).unwrap_or_else(|_| {
+                args_raw
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+        } else {
+            args_raw.split_whitespace().map(|s| s.to_string()).collect()
+        };
+
+        crate::bsp::BspServerConfig { program, args }
     }
 
     pub fn invalidate_changed_files(&mut self, changed: &[PathBuf]) -> Result<()> {
