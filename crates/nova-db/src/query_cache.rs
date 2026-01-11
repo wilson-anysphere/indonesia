@@ -978,12 +978,9 @@ mod tests {
         args: &T,
         inputs: &BTreeMap<String, Fingerprint>,
     ) -> PathBuf {
-        let key_args = VersionedArgs {
-            schema_version: query_schema_version,
-            args,
-        };
         let fingerprint =
-            DerivedArtifactCache::key_fingerprint(query_name, &key_args, inputs).unwrap();
+            DerivedArtifactCache::key_fingerprint(query_name, query_schema_version, args, inputs)
+                .unwrap();
         cache_dir
             .queries_dir()
             .join(query_name)
