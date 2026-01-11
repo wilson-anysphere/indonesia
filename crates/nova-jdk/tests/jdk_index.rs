@@ -2,9 +2,9 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use nova_config::NovaConfig;
+use nova_classfile::ClassFile;
 use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
-use nova_jdk::{IndexingStats, JdkIndex, JdkInstallation};
+use nova_jdk::{internal_name_to_source_entry_path, IndexingStats, JdkIndex, JdkInstallation};
 use nova_modules::ModuleName;
 use nova_types::TypeProvider;
 use tempfile::tempdir;
@@ -155,6 +155,29 @@ fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn reads_java_lang_string_class_bytes_from_test_jmod() -> Result<(), Box<dyn std::error::Error>> {
+    let index = JdkIndex::from_jdk_root(fake_jdk_root())?;
+
+    let bytes = index
+        .read_class_bytes("java/lang/String")?
+        .expect("java/lang/String should be present in testdata");
+    assert!(
+        bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE]),
+        "class files should start with CAFEBABE"
+    );
+
+    let class_file = ClassFile::parse(&bytes)?;
+    assert_eq!(class_file.this_class, "java/lang/String");
+
+    assert!(
+        index.read_class_bytes("module-info")?.is_none(),
+        "module-info.class is not a type"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn resolves_static_member_from_jmod_stub() -> Result<(), Box<dyn std::error::Error>> {
     let index = JdkIndex::from_jdk_root(fake_jdk_root())?;
 
@@ -238,6 +261,49 @@ fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Er
     assert_eq!(install.root(), root);
 
     Ok(())
+}
+
+#[test]
+fn src_zip_is_discovered_in_common_jdk_layouts() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempdir()?;
+    let root = temp.path();
+
+    let jmods_dir = root.join("jmods");
+    std::fs::create_dir_all(&jmods_dir)?;
+    std::fs::copy(
+        fake_jdk_root().join("jmods/java.base.jmod"),
+        jmods_dir.join("java.base.jmod"),
+    )?;
+
+    let lib_dir = root.join("lib");
+    std::fs::create_dir_all(&lib_dir)?;
+    let lib_src = lib_dir.join("src.zip");
+    std::fs::write(&lib_src, "")?;
+
+    let install = JdkInstallation::from_root(root)?;
+    assert_eq!(install.src_zip(), Some(lib_src));
+
+    let root_src = root.join("src.zip");
+    std::fs::write(&root_src, "")?;
+    assert_eq!(install.src_zip(), Some(root_src));
+
+    Ok(())
+}
+
+#[test]
+fn maps_internal_names_to_source_entry_paths() {
+    assert_eq!(
+        internal_name_to_source_entry_path("java/lang/String"),
+        "java/lang/String.java"
+    );
+    assert_eq!(
+        internal_name_to_source_entry_path("java/util/Map$Entry"),
+        "java/util/Map.java"
+    );
+    assert_eq!(
+        internal_name_to_source_entry_path("java/util/Map$Entry$1"),
+        "java/util/Map.java"
+    );
 }
 
 #[cfg(not(windows))]

@@ -370,6 +370,71 @@ impl JdkSymbolIndex {
         Ok(None)
     }
 
+    /// Read the raw `.class` bytes for a type by *internal* name, e.g.
+    /// `java/lang/String`.
+    ///
+    /// This uses the same lazy module indexing strategy as [`Self::lookup_type`]
+    /// and will not scan every `.jmod` on every call.
+    pub fn read_class_bytes(
+        &self,
+        internal_name: &str,
+    ) -> Result<Option<Vec<u8>>, JdkIndexError> {
+        if is_non_type_classfile(internal_name) {
+            return Ok(None);
+        }
+
+        if self
+            .missing
+            .lock()
+            .expect("mutex poisoned")
+            .contains(internal_name)
+        {
+            return Ok(None);
+        }
+
+        if let Some(module_idx) = self
+            .class_to_module
+            .lock()
+            .expect("mutex poisoned")
+            .get(internal_name)
+            .copied()
+        {
+            if let Some(bytes) = self.load_class_bytes_from_module(module_idx, internal_name)? {
+                return Ok(Some(bytes));
+            }
+        }
+
+        // Lazily index modules until we locate the class. This avoids opening
+        // and scanning every `.jmod` for each lookup.
+        let mut found_module = None;
+        for module_idx in 0..self.modules.len() {
+            self.ensure_module_indexed(module_idx)?;
+            let module = self
+                .class_to_module
+                .lock()
+                .expect("mutex poisoned")
+                .get(internal_name)
+                .copied();
+
+            if module.is_some() {
+                found_module = module;
+                break;
+            }
+        }
+
+        if let Some(module_idx) = found_module {
+            if let Some(bytes) = self.load_class_bytes_from_module(module_idx, internal_name)? {
+                return Ok(Some(bytes));
+            }
+        }
+
+        self.missing
+            .lock()
+            .expect("mutex poisoned")
+            .insert(internal_name.to_owned());
+        Ok(None)
+    }
+
     /// All types in the implicit `java.lang.*` universe scope.
     pub fn java_lang_symbols(&self) -> Result<Vec<Arc<JdkClassStub>>, JdkIndexError> {
         if let Some(cached) = self.java_lang.get() {
@@ -513,6 +578,26 @@ impl JdkSymbolIndex {
         let stub = Arc::new(classfile_to_stub(class_file));
         self.insert_stub(stub.clone());
         Ok(Some(stub))
+    }
+
+    fn load_class_bytes_from_module(
+        &self,
+        module_idx: usize,
+        internal: &str,
+    ) -> Result<Option<Vec<u8>>, JdkIndexError> {
+        self.ensure_module_indexed(module_idx)?;
+
+        let module_path = &self.modules[module_idx].path;
+        let Some(bytes) = jmod::read_class_bytes(module_path, internal)? else {
+            // Stale mapping (e.g. mutated filesystem). Remove and treat as not found.
+            self.class_to_module
+                .lock()
+                .expect("mutex poisoned")
+                .remove(internal);
+            return Ok(None);
+        };
+
+        Ok(Some(bytes))
     }
 
     fn packages_sorted(&self) -> Result<&Vec<String>, JdkIndexError> {

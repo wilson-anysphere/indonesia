@@ -20,6 +20,25 @@ impl JdkInstallation {
         &self.jmods_dir
     }
 
+    /// Returns the path to the JDK `src.zip` if it exists.
+    ///
+    /// This checks common JDK layouts:
+    /// - `$JDK/src.zip` (e.g. some Linux distributions)
+    /// - `$JDK/lib/src.zip` (e.g. macOS / SDKMAN)
+    pub fn src_zip(&self) -> Option<PathBuf> {
+        let root_src = self.root.join("src.zip");
+        if root_src.is_file() {
+            return Some(root_src);
+        }
+
+        let lib_src = self.root.join("lib").join("src.zip");
+        if lib_src.is_file() {
+            return Some(lib_src);
+        }
+
+        None
+    }
+
     pub fn from_root(root: impl AsRef<Path>) -> Result<Self, JdkDiscoveryError> {
         let root = root.as_ref().to_path_buf();
         let jmods_dir = root.join("jmods");

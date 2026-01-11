@@ -174,6 +174,22 @@ impl JdkIndex {
         }
     }
 
+    /// Read the raw `.class` bytes for a type by *internal* name, e.g.
+    /// `java/lang/String`.
+    ///
+    /// This is intended for decompilation / virtual documents. When this index
+    /// is not backed by a real JDK symbol index (`symbols` is `None`) the method
+    /// returns `Ok(None)`.
+    pub fn read_class_bytes(
+        &self,
+        internal_name: &str,
+    ) -> Result<Option<Vec<u8>>, JdkIndexError> {
+        match &self.symbols {
+            Some(symbols) => symbols.read_class_bytes(internal_name),
+            None => Ok(None),
+        }
+    }
+
     /// All types in the implicit `java.lang.*` universe scope.
     pub fn java_lang_symbols(&self) -> Result<Vec<Arc<JdkClassStub>>, JdkIndexError> {
         match &self.symbols {
@@ -375,6 +391,25 @@ fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
         Cow::Owned(prefix.replace('/', "."))
     } else {
         Cow::Borrowed(prefix)
+    }
+}
+
+/// Map a class internal name (e.g. `java/util/Map$Entry`) to its source file
+/// entry path in `src.zip` (e.g. `java/util/Map.java`).
+///
+/// Nested classes (`$Inner`) and anonymous/local classes (`$1`, `$1Local`) are
+/// mapped to their outer-most top-level type, since Java sources are organized
+/// as one file per top-level type.
+pub fn internal_name_to_source_entry_path(internal_name: &str) -> String {
+    let (dir, leaf) = match internal_name.rsplit_once('/') {
+        Some((dir, leaf)) => (Some(dir), leaf),
+        None => (None, internal_name),
+    };
+
+    let outer = leaf.split('$').next().unwrap_or(leaf);
+    match dir {
+        Some(dir) if !dir.is_empty() => format!("{dir}/{outer}.java"),
+        _ => format!("{outer}.java"),
     }
 }
 
