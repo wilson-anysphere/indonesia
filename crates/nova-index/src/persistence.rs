@@ -275,6 +275,27 @@ impl ProjectIndexesView {
             })
     }
 
+    /// Returns symbol names starting with `prefix` that have at least one
+    /// location in a non-invalidated file.
+    pub fn symbol_names_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.symbols
+            .archived()
+            .symbols
+            .iter()
+            .skip_while(move |(name, _)| name.as_str() < prefix)
+            .take_while(move |(name, _)| name.as_str().starts_with(prefix))
+            .filter_map(move |(name, locations)| {
+                locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .then(|| name.as_str())
+            })
+    }
+
     /// Returns all symbol names from both persisted archives (filtering out
     /// invalidated files) and the in-memory overlay.
     pub fn symbol_names_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
@@ -285,6 +306,24 @@ impl ProjectIndexesView {
                 .symbols
                 .keys()
                 .map(|name| name.as_str()),
+        )
+    }
+
+    /// Returns symbol names starting with `prefix` from both persisted archives
+    /// (filtering out invalidated files) and the in-memory overlay.
+    pub fn symbol_names_with_prefix_merged<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        merge_sorted_dedup(
+            self.symbol_names_with_prefix(prefix),
+            self.overlay
+                .symbols
+                .symbols
+                .iter()
+                .skip_while(move |(name, _)| name.as_str() < prefix)
+                .take_while(move |(name, _)| name.starts_with(prefix))
+                .map(|(name, _)| name.as_str()),
         )
     }
 
@@ -402,6 +441,27 @@ impl ProjectIndexesView {
             })
     }
 
+    /// Returns annotation names starting with `prefix` that have at least one
+    /// location in a non-invalidated file.
+    pub fn annotation_names_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.annotations
+            .archived()
+            .annotations
+            .iter()
+            .skip_while(move |(name, _)| name.as_str() < prefix)
+            .take_while(move |(name, _)| name.as_str().starts_with(prefix))
+            .filter_map(move |(name, locations)| {
+                locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .then(|| name.as_str())
+            })
+    }
+
     /// Returns all annotation names from both persisted archives (filtering out
     /// invalidated files) and the in-memory overlay.
     pub fn annotation_names_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
@@ -412,6 +472,24 @@ impl ProjectIndexesView {
                 .annotations
                 .keys()
                 .map(|name| name.as_str()),
+        )
+    }
+
+    /// Returns annotation names starting with `prefix` from both persisted
+    /// archives (filtering out invalidated files) and the in-memory overlay.
+    pub fn annotation_names_with_prefix_merged<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        merge_sorted_dedup(
+            self.annotation_names_with_prefix(prefix),
+            self.overlay
+                .annotations
+                .annotations
+                .iter()
+                .skip_while(move |(name, _)| name.as_str() < prefix)
+                .take_while(move |(name, _)| name.starts_with(prefix))
+                .map(|(name, _)| name.as_str()),
         )
     }
 
@@ -478,6 +556,27 @@ impl ProjectIndexesView {
             })
     }
 
+    /// Returns referenced symbol names starting with `prefix` that have at
+    /// least one location in a non-invalidated file.
+    pub fn referenced_symbols_with_prefix<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        let invalidated_files = &self.invalidated_files;
+        self.references
+            .archived()
+            .references
+            .iter()
+            .skip_while(move |(name, _)| name.as_str() < prefix)
+            .take_while(move |(name, _)| name.as_str().starts_with(prefix))
+            .filter_map(move |(symbol, locations)| {
+                locations
+                    .iter()
+                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .then(|| symbol.as_str())
+            })
+    }
+
     /// Returns all referenced symbols from both persisted archives (filtering
     /// out invalidated files) and the in-memory overlay.
     pub fn referenced_symbols_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
@@ -488,6 +587,25 @@ impl ProjectIndexesView {
                 .references
                 .keys()
                 .map(|name| name.as_str()),
+        )
+    }
+
+    /// Returns referenced symbol names starting with `prefix` from both
+    /// persisted archives (filtering out invalidated files) and the in-memory
+    /// overlay.
+    pub fn referenced_symbols_with_prefix_merged<'a>(
+        &'a self,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a str> + 'a {
+        merge_sorted_dedup(
+            self.referenced_symbols_with_prefix(prefix),
+            self.overlay
+                .references
+                .references
+                .iter()
+                .skip_while(move |(name, _)| name.as_str() < prefix)
+                .take_while(move |(name, _)| name.starts_with(prefix))
+                .map(|(name, _)| name.as_str()),
         )
     }
 }

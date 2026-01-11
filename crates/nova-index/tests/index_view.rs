@@ -107,6 +107,18 @@ fn index_view_filters_invalidated_files_without_materializing() {
         view_v1.annotation_names().collect::<Vec<_>>(),
         vec!["@Deprecated", "@OnlyA"]
     );
+    assert_eq!(
+        view_v1.symbol_names_with_prefix("O").collect::<Vec<_>>(),
+        vec!["OnlyA"]
+    );
+    assert_eq!(
+        view_v1.annotation_names_with_prefix("@D").collect::<Vec<_>>(),
+        vec!["@Deprecated"]
+    );
+    assert_eq!(
+        view_v1.referenced_symbols_with_prefix("F").collect::<Vec<_>>(),
+        vec!["Foo"]
+    );
 
     // Change a file so its fingerprint changes; A.java entries should be filtered.
     std::fs::write(&a, "class A { void m() {} }").unwrap();
@@ -148,6 +160,11 @@ fn index_view_filters_invalidated_files_without_materializing() {
     };
     let reference_files: Vec<&str> = reference_iter.map(|loc| loc.file.as_str()).collect();
     assert_eq!(reference_files, vec!["B.java"]);
+
+    assert_eq!(
+        view_v2.symbol_names_with_prefix("O").collect::<Vec<_>>(),
+        Vec::<&str>::new()
+    );
 
     // Simulate re-indexing the invalidated file by adding updated results to
     // the in-memory overlay; merged queries should now include both B.java
@@ -267,6 +284,21 @@ fn index_view_filters_invalidated_files_without_materializing() {
     assert_eq!(
         view_v2.annotation_names_merged().collect::<Vec<_>>(),
         vec!["@Deprecated", "@NewInA", "@OnlyA"]
+    );
+    assert_eq!(
+        view_v2.symbol_names_with_prefix_merged("N")
+            .collect::<Vec<_>>(),
+        vec!["NewInA"]
+    );
+    assert_eq!(
+        view_v2.annotation_names_with_prefix_merged("@N")
+            .collect::<Vec<_>>(),
+        vec!["@NewInA"]
+    );
+    assert_eq!(
+        view_v2.referenced_symbols_with_prefix_merged("O")
+            .collect::<Vec<_>>(),
+        vec!["OnlyA"]
     );
 
     assert_eq!(view_v2.symbol_names().collect::<Vec<_>>(), vec!["Foo"]);
