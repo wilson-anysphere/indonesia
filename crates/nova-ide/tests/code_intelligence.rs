@@ -1,5 +1,9 @@
 use nova_db::InMemoryFileStore;
-use nova_ide::{completions, file_diagnostics, find_references, goto_definition};
+use nova_ide::{
+    call_hierarchy_outgoing_calls, completions, document_symbols, file_diagnostics,
+    find_references, goto_definition, prepare_call_hierarchy, prepare_type_hierarchy,
+    type_hierarchy_subtypes, type_hierarchy_supertypes,
+};
 use nova_types::Severity;
 use std::path::PathBuf;
 
@@ -224,4 +228,97 @@ fn spring_config_diagnostics_include_duplicate_keys() {
             .any(|d| d.message.contains("Duplicate configuration key")),
         "expected duplicate key diagnostic; got {diags:#?}"
     );
+}
+
+#[test]
+fn document_symbols_include_class_with_method_child() {
+    let (db, file) = fixture_file(
+        r#"
+class A {
+  void foo() {}
+}
+"#,
+    );
+
+    let symbols = document_symbols(&db, file);
+    assert_eq!(
+        symbols.len(),
+        1,
+        "expected one class symbol; got {symbols:#?}"
+    );
+
+    let class = &symbols[0];
+    assert_eq!(class.name, "A");
+    assert_eq!(class.kind, lsp_types::SymbolKind::CLASS);
+
+    let children = class
+        .children
+        .as_ref()
+        .expect("expected class symbol to have children");
+
+    assert!(
+        children
+            .iter()
+            .any(|sym| sym.name == "foo" && sym.kind == lsp_types::SymbolKind::METHOD),
+        "expected foo method child; got {children:#?}"
+    );
+}
+
+#[test]
+fn call_hierarchy_outgoing_calls_include_call_site_ranges() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void bar() {}
+  void foo() {
+    <|>
+    bar();
+  }
+}
+"#,
+    );
+
+    let items =
+        prepare_call_hierarchy(&db, file, pos).expect("expected call hierarchy preparation");
+    assert_eq!(items.len(), 1);
+
+    let outgoing = call_hierarchy_outgoing_calls(&db, file, &items[0].name);
+    assert_eq!(
+        outgoing.len(),
+        1,
+        "expected one outgoing call; got {outgoing:#?}"
+    );
+    assert_eq!(outgoing[0].to.name, "bar");
+    assert!(
+        !outgoing[0].from_ranges.is_empty(),
+        "expected outgoing call to have from_ranges"
+    );
+    assert!(
+        outgoing[0].from_ranges[0].start != outgoing[0].from_ranges[0].end,
+        "expected non-empty call-site range; got {:?}",
+        outgoing[0].from_ranges[0]
+    );
+}
+
+#[test]
+fn type_hierarchy_prepare_and_supertypes_subtypes_work() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {}
+class B<|> extends A {}
+"#,
+    );
+
+    let items =
+        prepare_type_hierarchy(&db, file, pos).expect("expected type hierarchy preparation");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].name, "B");
+
+    let supers = type_hierarchy_supertypes(&db, file, &items[0].name);
+    assert_eq!(supers.len(), 1);
+    assert_eq!(supers[0].name, "A");
+
+    let subs = type_hierarchy_subtypes(&db, file, "A");
+    assert_eq!(subs.len(), 1);
+    assert_eq!(subs[0].name, "B");
 }

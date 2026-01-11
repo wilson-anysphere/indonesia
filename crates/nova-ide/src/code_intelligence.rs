@@ -4,19 +4,17 @@
 //! and semantic models. For this repository we keep the implementation lightweight
 //! and text-based so that user-visible IDE features can be exercised end-to-end.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::str::FromStr;
 
 use lsp_types::{
-    CallHierarchyItem, CompletionItem, CompletionItemKind, DiagnosticSeverity, Hover,
-    HoverContents, InlayHint, InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString,
-    Position, Range, SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp,
-    SignatureInformation, SymbolKind, TypeHierarchyItem,
+    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItem,
+    CompletionItemKind, DiagnosticSeverity, DocumentSymbol, Hover, HoverContents, InlayHint,
+    InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
+    SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp, SignatureInformation,
+    SymbolKind, TypeHierarchyItem,
 };
-
-#[cfg(feature = "ai")]
-use std::collections::HashMap;
 
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
@@ -575,6 +573,241 @@ pub fn find_references(
     locations
 }
 
+// -----------------------------------------------------------------------------
+// Document symbols
+// -----------------------------------------------------------------------------
+
+#[allow(deprecated)]
+pub fn document_symbols(db: &dyn Database, file: FileId) -> Vec<DocumentSymbol> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+
+    let mut symbols = Vec::new();
+
+    for class in &analysis.classes {
+        let mut children = Vec::new();
+        for field in analysis
+            .fields
+            .iter()
+            .filter(|f| span_within(f.name_span, class.span))
+        {
+            children.push((
+                field.name_span.start,
+                DocumentSymbol {
+                    name: field.name.clone(),
+                    detail: Some(field.ty.clone()),
+                    kind: SymbolKind::FIELD,
+                    tags: None,
+                    deprecated: None,
+                    range: span_to_lsp_range(text, field.name_span),
+                    selection_range: span_to_lsp_range(text, field.name_span),
+                    children: None,
+                },
+            ));
+        }
+
+        for method in analysis
+            .methods
+            .iter()
+            .filter(|m| span_within(m.body_span, class.span))
+        {
+            children.push((
+                method.name_span.start,
+                DocumentSymbol {
+                    name: method.name.clone(),
+                    detail: Some(format_method_signature(method)),
+                    kind: SymbolKind::METHOD,
+                    tags: None,
+                    deprecated: None,
+                    range: span_to_lsp_range(text, method.body_span),
+                    selection_range: span_to_lsp_range(text, method.name_span),
+                    children: None,
+                },
+            ));
+        }
+
+        children.sort_by_key(|(start, _)| *start);
+        let children = children.into_iter().map(|(_, sym)| sym).collect::<Vec<_>>();
+
+        symbols.push(DocumentSymbol {
+            name: class.name.clone(),
+            detail: class.extends.as_ref().map(|s| format!("extends {s}")),
+            kind: SymbolKind::CLASS,
+            tags: None,
+            deprecated: None,
+            range: span_to_lsp_range(text, class.span),
+            selection_range: span_to_lsp_range(text, class.name_span),
+            children: (!children.is_empty()).then_some(children),
+        });
+    }
+
+    if !symbols.is_empty() {
+        return symbols;
+    }
+
+    // Best-effort: If we don't find classes (e.g., incomplete code), fall back to
+    // returning top-level methods/fields as separate symbols.
+    for method in &analysis.methods {
+        symbols.push(DocumentSymbol {
+            name: method.name.clone(),
+            detail: Some(format_method_signature(method)),
+            kind: SymbolKind::METHOD,
+            tags: None,
+            deprecated: None,
+            range: span_to_lsp_range(text, method.body_span),
+            selection_range: span_to_lsp_range(text, method.name_span),
+            children: None,
+        });
+    }
+
+    for field in &analysis.fields {
+        symbols.push(DocumentSymbol {
+            name: field.name.clone(),
+            detail: Some(field.ty.clone()),
+            kind: SymbolKind::FIELD,
+            tags: None,
+            deprecated: None,
+            range: span_to_lsp_range(text, field.name_span),
+            selection_range: span_to_lsp_range(text, field.name_span),
+            children: None,
+        });
+    }
+
+    symbols
+}
+
+// -----------------------------------------------------------------------------
+// Call hierarchy
+// -----------------------------------------------------------------------------
+
+pub fn prepare_call_hierarchy(
+    db: &dyn Database,
+    file: FileId,
+    position: Position,
+) -> Option<Vec<CallHierarchyItem>> {
+    let text = db.file_content(file);
+    let offset = position_to_offset(text, position)?;
+    let analysis = analyze(text);
+    let uri = file_uri(db, file);
+
+    // Prefer method declarations at the cursor.
+    if let Some(method) = analysis
+        .methods
+        .iter()
+        .find(|m| span_contains(m.name_span, offset))
+    {
+        return Some(vec![call_hierarchy_item(&uri, text, method)]);
+    }
+
+    // Next try call sites.
+    if let Some(call) = analysis
+        .calls
+        .iter()
+        .find(|c| span_contains(c.name_span, offset))
+    {
+        if let Some(target) = analysis.methods.iter().find(|m| m.name == call.name) {
+            return Some(vec![call_hierarchy_item(&uri, text, target)]);
+        }
+    }
+
+    // Finally, fall back to the enclosing method body.
+    let method = analysis
+        .methods
+        .iter()
+        .find(|m| span_contains(m.body_span, offset))?;
+
+    Some(vec![call_hierarchy_item(&uri, text, method)])
+}
+
+pub fn call_hierarchy_outgoing_calls(
+    db: &dyn Database,
+    file: FileId,
+    method_name: &str,
+) -> Vec<CallHierarchyOutgoingCall> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+    let uri = file_uri(db, file);
+
+    let Some(owner) = analysis.methods.iter().find(|m| m.name == method_name) else {
+        return Vec::new();
+    };
+
+    let mut spans_by_target: HashMap<String, Vec<Span>> = HashMap::new();
+    for call in analysis
+        .calls
+        .iter()
+        .filter(|c| span_within(c.name_span, owner.body_span))
+    {
+        if analysis.methods.iter().any(|m| m.name == call.name) {
+            spans_by_target
+                .entry(call.name.clone())
+                .or_default()
+                .push(call.name_span);
+        }
+    }
+
+    let mut targets: Vec<_> = spans_by_target.into_iter().collect();
+    targets.sort_by(|(a, _), (b, _)| a.cmp(b));
+
+    targets
+        .into_iter()
+        .filter_map(|(target_name, mut spans)| {
+            let target = analysis.methods.iter().find(|m| m.name == target_name)?;
+            spans.sort_by_key(|s| s.start);
+            Some(CallHierarchyOutgoingCall {
+                to: call_hierarchy_item(&uri, text, target),
+                from_ranges: spans
+                    .into_iter()
+                    .map(|span| span_to_lsp_range(text, span))
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
+pub fn call_hierarchy_incoming_calls(
+    db: &dyn Database,
+    file: FileId,
+    method_name: &str,
+) -> Vec<CallHierarchyIncomingCall> {
+    let text = db.file_content(file);
+    let analysis = analyze(text);
+    let uri = file_uri(db, file);
+
+    let mut spans_by_caller: HashMap<Span, (MethodDecl, Vec<Span>)> = HashMap::new();
+
+    for call in analysis.calls.iter().filter(|c| c.name == method_name) {
+        let Some(caller) = analysis
+            .methods
+            .iter()
+            .find(|m| span_within(call.name_span, m.body_span))
+        else {
+            continue;
+        };
+
+        spans_by_caller
+            .entry(caller.name_span)
+            .and_modify(|(_, spans)| spans.push(call.name_span))
+            .or_insert_with(|| (caller.clone(), vec![call.name_span]));
+    }
+
+    let mut callers: Vec<_> = spans_by_caller.into_values().collect();
+    callers.sort_by_key(|(method, _)| method.name_span.start);
+
+    callers
+        .into_iter()
+        .map(|(method, mut spans)| {
+            spans.sort_by_key(|s| s.start);
+            CallHierarchyIncomingCall {
+                from: call_hierarchy_item(&uri, text, &method),
+                from_ranges: spans
+                    .into_iter()
+                    .map(|span| span_to_lsp_range(text, span))
+                    .collect(),
+            }
+        })
+        .collect()
+}
 pub fn outgoing_calls(
     db: &dyn Database,
     file: FileId,
@@ -646,6 +879,24 @@ fn call_hierarchy_item(uri: &lsp_types::Uri, text: &str, method: &MethodDecl) ->
     }
 }
 
+pub fn prepare_type_hierarchy(
+    db: &dyn Database,
+    file: FileId,
+    position: Position,
+) -> Option<Vec<TypeHierarchyItem>> {
+    let text = db.file_content(file);
+    let offset = position_to_offset(text, position)?;
+    let analysis = analyze(text);
+    let uri = file_uri(db, file);
+
+    let class = analysis
+        .classes
+        .iter()
+        .find(|c| span_contains(c.name_span, offset))?;
+
+    Some(vec![type_hierarchy_item(&uri, text, class)])
+}
+
 pub fn type_hierarchy_supertypes(
     db: &dyn Database,
     file: FileId,
@@ -694,7 +945,7 @@ fn type_hierarchy_item(uri: &lsp_types::Uri, text: &str, class: &ClassDecl) -> T
         tags: None,
         detail: class.extends.as_ref().map(|s| format!("extends {s}")),
         uri: uri.clone(),
-        range: span_to_lsp_range(text, class.name_span),
+        range: span_to_lsp_range(text, class.span),
         selection_range: span_to_lsp_range(text, class.name_span),
         data: None,
     }
@@ -1010,6 +1261,7 @@ struct Token {
 struct ClassDecl {
     name: String,
     name_span: Span,
+    span: Span,
     extends: Option<String>,
 }
 
@@ -1082,10 +1334,17 @@ fn analyze(text: &str) -> Analysis {
             };
 
             let mut extends: Option<String> = None;
+            let mut class_span_end = name_tok.span.end;
+
             let mut j = i + 2;
-            while j + 1 < tokens.len() {
+            while j < tokens.len() {
                 let tok = &tokens[j];
                 if tok.kind == TokenKind::Symbol('{') {
+                    if let Some((_end_idx, body_span)) = find_matching_brace(&tokens, j) {
+                        class_span_end = body_span.end;
+                    } else {
+                        class_span_end = tok.span.end;
+                    }
                     break;
                 }
                 if tok.kind == TokenKind::Ident && tok.text == "extends" {
@@ -1099,6 +1358,7 @@ fn analyze(text: &str) -> Analysis {
             analysis.classes.push(ClassDecl {
                 name: name_tok.text.clone(),
                 name_span: name_tok.span,
+                span: Span::new(tokens[i].span.start, class_span_end),
                 extends,
             });
             i = j;
@@ -1520,6 +1780,13 @@ fn is_field_modifier(ident: &str) -> bool {
 // Text coordinate helpers
 // -----------------------------------------------------------------------------
 
+fn span_contains(span: Span, offset: usize) -> bool {
+    span.start <= offset && offset <= span.end
+}
+
+fn span_within(inner: Span, outer: Span) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
+}
 fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
     let bytes = text.as_bytes();
     let mut start = offset;

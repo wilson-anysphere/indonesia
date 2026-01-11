@@ -713,17 +713,15 @@ class A {
 
         let mut db = InMemoryFileStore::new();
         let file = db.file_id_for_path(PathBuf::from("/inlay_hints.java"));
-        db.set_file_text(
-            file,
-            r#"
-class A {
-  void m() {
-    var x = "";
-  }
-}
-"#
-            .to_string(),
-        );
+        let source = r#"
+ class A {
+   void m() {
+     var x = "";
+   }
+ }
+ "#
+        .to_string();
+        db.set_file_text(file, source.clone());
 
         let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
         let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
@@ -733,7 +731,7 @@ class A {
 
         let range = lsp_types::Range::new(
             lsp_types::Position::new(0, 0),
-            lsp_types::Position::new(u32::MAX, u32::MAX),
+            crate::text::offset_to_position(&source, source.len()),
         );
 
         let hints = ide.inlay_hints_lsp(CancellationToken::new(), file, range);
