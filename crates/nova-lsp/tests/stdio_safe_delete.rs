@@ -127,6 +127,12 @@ class A {
             .and_then(|v| v.as_str()),
         Some("nova/refactor/preview")
     );
+    assert_eq!(
+        safe_delete_action
+            .pointer("/command/command")
+            .and_then(|v| v.as_str()),
+        Some("nova.safeDelete")
+    );
     let target_id = safe_delete_action
         .pointer("/data/report/target/id")
         .and_then(|v| v.as_u64())

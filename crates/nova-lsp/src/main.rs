@@ -189,7 +189,10 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
         match nova_config::NovaConfig::load_from_path(&path) {
             Ok(config) => return config,
             Err(err) => {
-                eprintln!("nova-lsp: failed to load config from {}: {err}", path.display());
+                eprintln!(
+                    "nova-lsp: failed to load config from {}: {err}",
+                    path.display()
+                );
                 return nova_config::NovaConfig::default();
             }
         }
@@ -367,7 +370,8 @@ fn handle_request(
                             COMMAND_EXPLAIN_ERROR,
                             COMMAND_GENERATE_METHOD_BODY,
                             COMMAND_GENERATE_TESTS,
-                            "nova.extractMethod"
+                            "nova.extractMethod",
+                            "nova.safeDelete"
                         ]
                     }
                 },
@@ -887,6 +891,27 @@ fn handle_code_action(
                                 &index,
                                 SafeDeleteTarget::Symbol(target),
                             ) {
+                                let mut action = action;
+                                if let lsp_types::CodeActionOrCommand::CodeAction(code_action) =
+                                    &mut action
+                                {
+                                    if code_action.edit.is_none() {
+                                        code_action.command = Some(lsp_types::Command {
+                                            title: code_action.title.clone(),
+                                            command: nova_lsp::SAFE_DELETE_COMMAND.to_string(),
+                                            arguments: Some(vec![serde_json::to_value(
+                                                nova_lsp::SafeDeleteParams {
+                                                    target:
+                                                        nova_lsp::SafeDeleteTargetParam::SymbolId(
+                                                            target,
+                                                        ),
+                                                    mode: nova_refactor::SafeDeleteMode::Safe,
+                                                },
+                                            )
+                                            .map_err(|e| e.to_string())?]),
+                                        });
+                                    }
+                                }
                                 actions
                                     .push(serde_json::to_value(action).map_err(|e| e.to_string())?);
                             }
@@ -1309,6 +1334,25 @@ fn handle_execute_command(
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
             run_ai_generate_tests(args, params.work_done_token, state, writer)
+        }
+        nova_lsp::SAFE_DELETE_COMMAND => {
+            let args: nova_lsp::SafeDeleteParams = parse_first_arg(params.arguments)?;
+            let files: BTreeMap<String, String> = state
+                .documents
+                .iter()
+                .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
+                .collect();
+            let index = Index::new(files);
+            match nova_lsp::handle_safe_delete(&index, args) {
+                Ok(result) => serde_json::to_value(result).map_err(|e| (-32603, e.to_string())),
+                Err(err) => {
+                    let (code, message) = match err {
+                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                    };
+                    Err((code, message))
+                }
+            }
         }
         _ => Err((-32602, format!("unknown command: {}", params.command))),
     }

@@ -18,6 +18,11 @@ pub const CHANGE_SIGNATURE_METHOD: &str = "nova/refactor/changeSignature";
 pub const MOVE_METHOD_METHOD: &str = "nova/refactor/moveMethod";
 pub const MOVE_STATIC_MEMBER_METHOD: &str = "nova/refactor/moveStaticMember";
 pub const SAFE_DELETE_METHOD: &str = "nova/refactor/safeDelete";
+/// `workspace/executeCommand` identifier for Safe Delete.
+///
+/// This is primarily intended for editor integrations that prefer `executeCommand` over custom
+/// request methods.
+pub const SAFE_DELETE_COMMAND: &str = "nova.safeDelete";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
