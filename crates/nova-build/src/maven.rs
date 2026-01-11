@@ -1,12 +1,18 @@
 use crate::cache::{BuildCache, BuildFileFingerprint};
-use crate::{BuildError, BuildResult, BuildSystemKind, Classpath, JavaCompileConfig, Result};
+use crate::command::format_command;
+use crate::{
+    BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
+    DefaultCommandRunner, JavaCompileConfig, Result,
+};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct MavenConfig {
     /// Path to the Maven executable (defaults to `mvn` in `PATH`).
     pub mvn_path: PathBuf,
+    /// Prefer using the Maven wrapper (`./mvnw`) when present.
+    pub prefer_wrapper: bool,
     /// Arguments used to compute a module's compile classpath.
     ///
     /// Defaults to `help:evaluate` on `project.compileClasspathElements`.
@@ -21,6 +27,7 @@ impl Default for MavenConfig {
     fn default() -> Self {
         Self {
             mvn_path: PathBuf::from("mvn"),
+            prefer_wrapper: true,
             classpath_args: vec![
                 "-q".into(),
                 "-DforceStdout".into(),
@@ -36,11 +43,16 @@ impl Default for MavenConfig {
 #[derive(Debug)]
 pub struct MavenBuild {
     config: MavenConfig,
+    runner: Arc<dyn CommandRunner>,
 }
 
 impl MavenBuild {
     pub fn new(config: MavenConfig) -> Self {
-        Self { config }
+        Self::with_runner(config, Arc::new(DefaultCommandRunner::default()))
+    }
+
+    pub fn with_runner(config: MavenConfig, runner: Arc<dyn CommandRunner>) -> Self {
+        Self { config, runner }
     }
 
     pub fn classpath(
@@ -99,18 +111,24 @@ impl MavenBuild {
             }
         }
 
-        let output = self.run(project_root, module_relative, &self.config.classpath_args)?;
+        let (program, args, output) =
+            self.run(project_root, module_relative, &self.config.classpath_args)?;
         if !output.status.success() {
-            let combined = combine_output(&output);
             return Err(BuildError::CommandFailed {
                 tool: "maven",
+                command: format_command(&program, &args),
                 code: output.status.code(),
-                output: combined,
+                stdout: output.stdout,
+                stderr: output.stderr,
             });
         }
 
-        let combined = combine_output(&output);
-        let mut entries = parse_maven_classpath_output(&combined);
+        let stdout_entries = parse_maven_classpath_output(&output.stdout);
+        let mut entries = if stdout_entries.is_empty() {
+            parse_maven_classpath_output(&output.combined())
+        } else {
+            stdout_entries
+        };
 
         // Best-effort: ensure the module output dir is present even if the chosen
         // classpath strategy omits it.
@@ -332,8 +350,9 @@ impl MavenBuild {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "<root>".to_string());
 
-        let output = self.run(project_root, module_relative, &self.config.build_args)?;
-        let combined = combine_output(&output);
+        let (program, args, output) =
+            self.run(project_root, module_relative, &self.config.build_args)?;
+        let combined = output.combined();
         let diagnostics = crate::parse_javac_diagnostics(&combined, "maven");
 
         cache.update_module(
@@ -357,8 +376,10 @@ impl MavenBuild {
 
         Err(BuildError::CommandFailed {
             tool: "maven",
+            command: format_command(&program, &args),
             code: output.status.code(),
-            output: combined,
+            stdout: output.stdout,
+            stderr: output.stderr,
         })
     }
 
@@ -367,19 +388,39 @@ impl MavenBuild {
         project_root: &Path,
         module_relative: Option<&Path>,
         args: &[String],
-    ) -> Result<std::process::Output> {
-        let mut cmd = Command::new(&self.config.mvn_path);
-        cmd.current_dir(project_root);
+    ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
+        let program = self.mvn_executable(project_root);
+        let mut cmd_args: Vec<String> = Vec::new();
 
         if let Some(module) = module_relative {
-            cmd.arg("-pl").arg(module);
+            cmd_args.push("-pl".into());
+            cmd_args.push(module.to_string_lossy().to_string());
             if self.config.also_make {
-                cmd.arg("-am");
+                cmd_args.push("-am".into());
             }
         }
 
-        cmd.args(args);
-        Ok(cmd.output()?)
+        cmd_args.extend(args.iter().cloned());
+        let output = self.runner.run(project_root, &program, &cmd_args)?;
+        Ok((program, cmd_args, output))
+    }
+
+    fn mvn_executable(&self, project_root: &Path) -> PathBuf {
+        if self.config.prefer_wrapper {
+            let wrapper_candidates = if cfg!(windows) {
+                ["mvnw.cmd", "mvnw"]
+            } else {
+                ["mvnw", "mvnw.cmd"]
+            };
+            for name in wrapper_candidates {
+                let path = project_root.join(name);
+                if path.exists() {
+                    return path;
+                }
+            }
+        }
+
+        self.config.mvn_path.clone()
     }
 
     fn evaluate_path_list(
@@ -425,16 +466,18 @@ impl MavenBuild {
         module_relative: Option<&Path>,
         expression: &str,
     ) -> Result<String> {
-        let args = self.help_evaluate_args(expression);
-        let output = self.run(project_root, module_relative, &args)?;
+        let eval_args = self.help_evaluate_args(expression);
+        let (program, args, output) = self.run(project_root, module_relative, &eval_args)?;
         if !output.status.success() {
             return Err(BuildError::CommandFailed {
                 tool: "maven",
+                command: format_command(&program, &args),
                 code: output.status.code(),
-                output: combine_output(&output),
+                stdout: output.stdout,
+                stderr: output.stderr,
             });
         }
-        Ok(combine_output(&output))
+        Ok(output.combined())
     }
 
     fn help_evaluate_args(&self, expression: &str) -> Vec<String> {
@@ -575,18 +618,6 @@ fn parse_maven_bracket_list(line: &str) -> Vec<PathBuf> {
         entries.push(PathBuf::from(s));
     }
     entries
-}
-
-fn combine_output(output: &std::process::Output) -> String {
-    let mut s = String::new();
-    s.push_str(&String::from_utf8_lossy(&output.stdout));
-    if !output.stderr.is_empty() {
-        if !s.is_empty() && !s.ends_with('\n') {
-            s.push('\n');
-        }
-        s.push_str(&String::from_utf8_lossy(&output.stderr));
-    }
-    s
 }
 
 pub fn collect_maven_build_files(root: &Path) -> Result<Vec<PathBuf>> {
@@ -783,5 +814,30 @@ mod tests {
         assert!(args
             .iter()
             .any(|a| a == "-Dexpression=project.build.outputDirectory"));
+    }
+
+    #[test]
+    fn mvn_executable_prefers_wrapper_when_enabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let wrapper_name = if cfg!(windows) { "mvnw.cmd" } else { "mvnw" };
+        std::fs::write(root.join(wrapper_name), "echo mvn").unwrap();
+
+        let build = MavenBuild::new(MavenConfig::default());
+        assert_eq!(build.mvn_executable(root), root.join(wrapper_name));
+    }
+
+    #[test]
+    fn mvn_executable_falls_back_to_mvn_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        let mut cfg = MavenConfig::default();
+        cfg.prefer_wrapper = true;
+        cfg.mvn_path = PathBuf::from("/custom/mvn");
+
+        let build = MavenBuild::new(cfg.clone());
+        assert_eq!(build.mvn_executable(root), cfg.mvn_path);
     }
 }

@@ -12,7 +12,7 @@ mod maven;
 mod module_graph;
 
 pub use cache::{BuildCache, BuildFileFingerprint};
-pub use command::{CommandRunner, DefaultCommandRunner};
+pub use command::{CommandOutput, CommandRunner, DefaultCommandRunner};
 pub use gradle::{
     collect_gradle_build_files, parse_gradle_classpath_output, parse_gradle_projects_output,
     GradleBuild, GradleConfig, GradleProjectInfo,
@@ -26,6 +26,7 @@ pub use module_graph::{infer_module_graph, ModuleBuildInfo, ModuleGraph, ModuleI
 
 use nova_core::Diagnostic;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -34,11 +35,15 @@ pub enum BuildError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 
-    #[error("{tool} command failed with exit code {code:?}")]
+    #[error(
+        "{tool} command `{command}` failed with exit code {code:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    )]
     CommandFailed {
         tool: &'static str,
+        command: String,
         code: Option<i32>,
-        output: String,
+        stdout: String,
+        stderr: String,
     },
 
     #[error("failed to parse build output: {0}")]
@@ -220,12 +225,7 @@ pub struct BuildManager {
 
 impl BuildManager {
     pub fn new(cache_dir: impl Into<PathBuf>) -> Self {
-        let cache = BuildCache::new(cache_dir);
-        Self {
-            cache,
-            maven: MavenBuild::new(MavenConfig::default()),
-            gradle: GradleBuild::new(GradleConfig::default()),
-        }
+        Self::with_runner(cache_dir, Arc::new(DefaultCommandRunner::default()))
     }
 
     pub fn with_configs(
@@ -233,11 +233,34 @@ impl BuildManager {
         maven: MavenConfig,
         gradle: GradleConfig,
     ) -> Self {
+        Self::with_configs_and_runner(
+            cache_dir,
+            maven,
+            gradle,
+            Arc::new(DefaultCommandRunner::default()),
+        )
+    }
+
+    pub fn with_runner(cache_dir: impl Into<PathBuf>, runner: Arc<dyn CommandRunner>) -> Self {
+        Self::with_configs_and_runner(
+            cache_dir,
+            MavenConfig::default(),
+            GradleConfig::default(),
+            runner,
+        )
+    }
+
+    pub fn with_configs_and_runner(
+        cache_dir: impl Into<PathBuf>,
+        maven: MavenConfig,
+        gradle: GradleConfig,
+        runner: Arc<dyn CommandRunner>,
+    ) -> Self {
         let cache = BuildCache::new(cache_dir);
         Self {
             cache,
-            maven: MavenBuild::new(maven),
-            gradle: GradleBuild::new(gradle),
+            maven: MavenBuild::with_runner(maven, runner.clone()),
+            gradle: GradleBuild::with_runner(gradle, runner),
         }
     }
 

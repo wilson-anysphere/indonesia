@@ -1,25 +1,24 @@
-use nova_build::{BuildCache, CommandRunner, GradleBuild, GradleConfig};
+use nova_build::{BuildCache, CommandOutput, CommandRunner, GradleBuild, GradleConfig};
 use nova_core::DiagnosticSeverity;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Output};
+use std::process::ExitStatus;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 struct Invocation {
     cwd: PathBuf,
     program: PathBuf,
-    args: Vec<OsString>,
+    args: Vec<String>,
 }
 
 #[derive(Debug)]
 struct FakeGradleRunner {
     invocations: Mutex<Vec<Invocation>>,
-    nova_output: Output,
+    nova_output: CommandOutput,
 }
 
 impl FakeGradleRunner {
-    fn new(nova_output: Output) -> Self {
+    fn new(nova_output: CommandOutput) -> Self {
         Self {
             invocations: Mutex::new(Vec::new()),
             nova_output,
@@ -32,7 +31,7 @@ impl FakeGradleRunner {
 }
 
 impl CommandRunner for FakeGradleRunner {
-    fn run(&self, cwd: &Path, program: &Path, args: &[OsString]) -> std::io::Result<Output> {
+    fn run(&self, cwd: &Path, program: &Path, args: &[String]) -> std::io::Result<CommandOutput> {
         self.invocations
             .lock()
             .expect("lock poisoned")
@@ -44,10 +43,7 @@ impl CommandRunner for FakeGradleRunner {
 
         // If the build tries to run `compileJava` at the root, simulate the
         // common Gradle failure for aggregator projects.
-        if args
-            .iter()
-            .any(|arg| arg.to_string_lossy().ends_with("compileJava"))
-        {
+        if args.iter().any(|arg| arg.ends_with("compileJava")) {
             return Ok(output(
                 1,
                 "",
@@ -82,11 +78,11 @@ fn exit_status(code: i32) -> ExitStatus {
     }
 }
 
-fn output(code: i32, stdout: &str, stderr: &str) -> Output {
-    Output {
+fn output(code: i32, stdout: &str, stderr: &str) -> CommandOutput {
+    CommandOutput {
         status: exit_status(code),
-        stdout: stdout.as_bytes().to_vec(),
-        stderr: stderr.as_bytes().to_vec(),
+        stdout: stdout.to_string(),
+        stderr: stderr.to_string(),
     }
 }
 
@@ -110,11 +106,7 @@ fn build_at_gradle_root_uses_aggregate_java_task() {
     assert_eq!(invocations.len(), 1);
     assert_eq!(invocations[0].cwd, project_root);
     assert_eq!(invocations[0].program.file_name().unwrap(), "gradle");
-    let args: Vec<String> = invocations[0]
-        .args
-        .iter()
-        .map(|a| a.to_string_lossy().to_string())
-        .collect();
+    let args = &invocations[0].args;
 
     assert!(args.contains(&"--init-script".to_string()));
     assert!(args.contains(&"novaCompileAllJava".to_string()));

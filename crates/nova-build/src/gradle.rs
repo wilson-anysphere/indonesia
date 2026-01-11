@@ -1,11 +1,11 @@
 use crate::cache::{BuildCache, BuildFileFingerprint, CachedProjectInfo};
+use crate::command::format_command;
 use crate::{
-    BuildError, BuildResult, BuildSystemKind, Classpath, CommandRunner, DefaultCommandRunner,
-    Result,
+    BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
+    DefaultCommandRunner, Result,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -71,17 +71,18 @@ impl GradleBuild {
             }
         }
 
-        let output = self.run_print_projects(project_root)?;
+        let (program, args, output) = self.run_print_projects(project_root)?;
         if !output.status.success() {
-            let combined = combine_output(&output);
             return Err(BuildError::CommandFailed {
                 tool: "gradle",
+                command: format_command(&program, &args),
                 code: output.status.code(),
-                output: combined,
+                stdout: output.stdout,
+                stderr: output.stderr,
             });
         }
 
-        let combined = combine_output(&output);
+        let combined = output.combined();
         let projects = parse_gradle_projects_output(&combined)?;
 
         let cached_projects: Vec<CachedProjectInfo> = projects
@@ -122,17 +123,18 @@ impl GradleBuild {
             }
         }
 
-        let output = self.run_print_classpath(project_root, project_path)?;
+        let (program, args, output) = self.run_print_classpath(project_root, project_path)?;
         if !output.status.success() {
-            let combined = combine_output(&output);
             return Err(BuildError::CommandFailed {
                 tool: "gradle",
+                command: format_command(&program, &args),
                 code: output.status.code(),
-                output: combined,
+                stdout: output.stdout,
+                stderr: output.stderr,
             });
         }
 
-        let combined = combine_output(&output);
+        let combined = output.combined();
         let has_classpath = !combined
             .lines()
             .any(|line| line.trim() == NOVA_NO_CLASSPATH_MARKER);
@@ -166,7 +168,12 @@ impl GradleBuild {
             return Ok(Classpath::new(entries));
         }
 
-        let mut entries = parse_gradle_classpath_output(&combined);
+        let stdout_entries = parse_gradle_classpath_output(&output.stdout);
+        let mut entries = if stdout_entries.is_empty() {
+            parse_gradle_classpath_output(&combined)
+        } else {
+            stdout_entries
+        };
 
         // Best-effort: include the project's compiled classes output directory.
         //
@@ -205,8 +212,8 @@ impl GradleBuild {
         let fingerprint = gradle_build_fingerprint(project_root)?;
         let module_key = project_path.unwrap_or("<root>");
 
-        let output = self.run_compile(project_root, project_path)?;
-        let combined = combine_output(&output);
+        let (program, args, output) = self.run_compile(project_root, project_path)?;
+        let combined = output.combined();
         let diagnostics = crate::parse_javac_diagnostics(&combined, "gradle");
 
         cache.update_module(
@@ -230,8 +237,10 @@ impl GradleBuild {
 
         Err(BuildError::CommandFailed {
             tool: "gradle",
+            command: format_command(&program, &args),
             code: output.status.code(),
-            output: combined,
+            stdout: output.stdout,
+            stderr: output.stderr,
         })
     }
 
@@ -239,78 +248,89 @@ impl GradleBuild {
         &self,
         project_root: &Path,
         project_path: Option<&str>,
-    ) -> Result<std::process::Output> {
+    ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
         let gradle = self.gradle_executable(project_root);
         let init_script = write_init_script(project_root)?;
 
-        let mut args: Vec<OsString> = Vec::new();
-        args.push(OsString::from("--no-daemon"));
-        args.push(OsString::from("--console=plain"));
-        args.push(OsString::from("-q"));
-        args.push(OsString::from("--init-script"));
-        args.push(init_script.clone().into_os_string());
+        let mut args: Vec<String> = Vec::new();
+        args.push("--no-daemon".into());
+        args.push("--console=plain".into());
+        args.push("-q".into());
+        args.push("--init-script".into());
+        args.push(init_script.to_string_lossy().to_string());
 
         let task = match project_path {
             Some(p) => format!("{p}:printNovaClasspath"),
             None => "printNovaClasspath".to_string(),
         };
-        args.push(task.into());
+        args.push(task);
 
         let output = self.runner.run(project_root, &gradle, &args);
         let _ = std::fs::remove_file(&init_script);
-        Ok(output?)
+        Ok((gradle, args, output?))
     }
 
-    fn run_print_projects(&self, project_root: &Path) -> Result<std::process::Output> {
+    fn run_print_projects(
+        &self,
+        project_root: &Path,
+    ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
         let gradle = self.gradle_executable(project_root);
         let init_script = write_init_script(project_root)?;
 
-        let mut args: Vec<OsString> = Vec::new();
-        args.push(OsString::from("--no-daemon"));
-        args.push(OsString::from("--console=plain"));
-        args.push(OsString::from("-q"));
-        args.push(OsString::from("--init-script"));
-        args.push(init_script.clone().into_os_string());
-        args.push(OsString::from("printNovaProjects"));
+        let mut args: Vec<String> = Vec::new();
+        args.push("--no-daemon".into());
+        args.push("--console=plain".into());
+        args.push("-q".into());
+        args.push("--init-script".into());
+        args.push(init_script.to_string_lossy().to_string());
+        args.push("printNovaProjects".into());
 
         let output = self.runner.run(project_root, &gradle, &args);
         let _ = std::fs::remove_file(&init_script);
-        Ok(output?)
+        Ok((gradle, args, output?))
     }
 
     fn run_compile(
         &self,
         project_root: &Path,
         project_path: Option<&str>,
-    ) -> Result<std::process::Output> {
+    ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
         let gradle = self.gradle_executable(project_root);
-        let mut args: Vec<OsString> = Vec::new();
-        args.push(OsString::from("--no-daemon"));
-        args.push(OsString::from("--console=plain"));
+        let mut args: Vec<String> = Vec::new();
+        args.push("--no-daemon".into());
+        args.push("--console=plain".into());
 
         match project_path {
             Some(p) => {
-                args.push(format!("{p}:compileJava").into());
-                Ok(self.runner.run(project_root, &gradle, &args)?)
+                args.push(format!("{p}:compileJava"));
+                let output = self.runner.run(project_root, &gradle, &args)?;
+                Ok((gradle, args, output))
             }
             None => {
                 let init_script = write_compile_all_java_init_script(project_root)?;
-                args.push(OsString::from("--init-script"));
-                args.push(init_script.clone().into_os_string());
-                args.push(OsString::from("novaCompileAllJava"));
+                args.push("--init-script".into());
+                args.push(init_script.to_string_lossy().to_string());
+                args.push("novaCompileAllJava".into());
 
                 let output = self.runner.run(project_root, &gradle, &args);
                 let _ = std::fs::remove_file(&init_script);
-                Ok(output?)
+                Ok((gradle, args, output?))
             }
         }
     }
 
     fn gradle_executable(&self, project_root: &Path) -> PathBuf {
         if self.config.prefer_wrapper {
-            let wrapper = project_root.join("gradlew");
-            if wrapper.exists() {
-                return wrapper;
+            let wrapper_candidates = if cfg!(windows) {
+                ["gradlew.bat", "gradlew"]
+            } else {
+                ["gradlew", "gradlew.bat"]
+            };
+            for name in wrapper_candidates {
+                let wrapper = project_root.join(name);
+                if wrapper.exists() {
+                    return wrapper;
+                }
             }
         }
         self.config.gradle_path.clone()
@@ -501,18 +521,6 @@ pub fn parse_gradle_projects_output(output: &str) -> Result<Vec<GradleProjectInf
     projects.sort_by(|a, b| a.path.cmp(&b.path));
     projects.dedup_by(|a, b| a.path == b.path);
     Ok(projects)
-}
-
-fn combine_output(output: &std::process::Output) -> String {
-    let mut s = String::new();
-    s.push_str(&String::from_utf8_lossy(&output.stdout));
-    if !output.stderr.is_empty() {
-        if !s.is_empty() && !s.ends_with('\n') {
-            s.push('\n');
-        }
-        s.push_str(&String::from_utf8_lossy(&output.stderr));
-    }
-    s
 }
 
 fn union_classpath_entries<I, T>(classpaths: I) -> Vec<PathBuf>
