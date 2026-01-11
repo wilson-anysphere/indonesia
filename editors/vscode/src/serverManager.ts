@@ -344,8 +344,18 @@ async function resolveTag(opts: {
   }
 
   if (opts.releaseChannel === 'stable') {
-    const release = await fetchJson<GitHubRelease>(opts.fetchImpl, `${opts.repo.apiBaseUrl}/releases/latest`);
-    return release.tag_name;
+    try {
+      const release = await fetchJson<GitHubRelease>(opts.fetchImpl, `${opts.repo.apiBaseUrl}/releases/latest`);
+      return release.tag_name;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes('/releases/latest') && /\(404\b/.test(message)) {
+        throw new Error(
+          `No stable releases found for ${opts.repo.owner}/${opts.repo.repo}. If you meant to use prereleases, set nova.server.releaseChannel to \"prerelease\".`,
+        );
+      }
+      throw err;
+    }
   }
 
   const releases = await fetchJson<Array<GitHubRelease & { draft?: boolean; prerelease?: boolean }>>(
