@@ -47,6 +47,26 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Prepare cache directories
+        run: |
+          set -euxo pipefail
+          # `actions/cache` path patterns are resolved before restore. Ensure the
+          # fixture directories exist so the `test-projects/*/` glob matches.
+          python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          pins = Path("test-projects/pins.toml")
+          if pins.exists():
+            data = tomllib.load(pins.open("rb"))
+            root = Path("test-projects")
+            for name in data.keys():
+              (root / name).mkdir(parents=True, exist_ok=True)
+          PY
+
+          # Same idea for Maven caches.
+          mkdir -p ~/.m2/repository ~/.m2/wrapper
+
       - name: Restore test projects cache
         id: test-projects-cache
         uses: actions/cache/restore@v4
