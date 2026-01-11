@@ -1,14 +1,13 @@
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
-use std::{io, str};
+use std::io;
 
 use tempfile::TempDir;
 
 #[derive(Debug)]
 struct JavacOutput {
     status: std::process::ExitStatus,
-    stdout: String,
     stderr: String,
 }
 
@@ -58,7 +57,6 @@ fn run_javac_snippet(source: &str) -> io::Result<JavacOutput> {
     let out = cmd.output()?;
     Ok(JavacOutput {
         status: out.status,
-        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
         stderr: String::from_utf8_lossy(&out.stderr).to_string(),
     })
 }
@@ -130,7 +128,7 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
     let loc_end_colon = loc_end_colon?;
 
     // Parse the trailing number (either column or line).
-    let mut n2_end = loc_end_colon;
+    let n2_end = loc_end_colon;
     let mut n2_start = n2_end;
     while n2_start > 0 && bytes[n2_start - 1].is_ascii_digit() {
         n2_start -= 1;
@@ -142,7 +140,7 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
     let sep2 = n2_start - 1;
 
     // Attempt to parse a previous number (line number) before `sep2`. If present, `n2` is column.
-    let mut n1_end = sep2;
+    let n1_end = sep2;
     let mut n1_start = n1_end;
     while n1_start > 0 && bytes[n1_start - 1].is_ascii_digit() {
         n1_start -= 1;
@@ -225,4 +223,3 @@ public class Test {
     assert!(d0.line > 0);
     assert!(d0.column > 0);
 }
-

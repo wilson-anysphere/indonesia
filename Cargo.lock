@@ -334,6 +334,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-recursion"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b43422f69d8ff38f95f1b2bb76517c91589a924d1559a0e935d7c8ce0274c11"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.114",
+]
+
+[[package]]
 name = "async-signal"
 version = "0.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3284,6 +3295,7 @@ dependencies = [
 name = "nova-apt"
 version = "0.1.0"
 dependencies = [
+ "filetime",
  "nova-build",
  "nova-config",
  "nova-core",
@@ -3292,6 +3304,9 @@ dependencies = [
  "nova-jdk",
  "nova-project",
  "nova-resolve",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -3323,6 +3338,7 @@ version = "0.1.0"
 dependencies = [
  "hex",
  "nova-core",
+ "nova-process",
  "nova-project",
  "serde",
  "serde_json",
@@ -3338,6 +3354,7 @@ dependencies = [
  "anyhow",
  "blake3",
  "nova-core",
+ "nova-process",
  "serde",
  "serde_json",
  "tempfile",
@@ -3365,6 +3382,8 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "ureq",
  "walkdir",
  "zstd 0.13.3",
@@ -3419,11 +3438,9 @@ dependencies = [
  "predicates",
  "serde",
  "serde_json",
- "tar",
  "tokio",
  "tokio-util",
  "tracing",
- "zstd 0.13.3",
 ]
 
 [[package]]
@@ -3478,6 +3495,7 @@ name = "nova-dap"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-recursion",
  "clap",
  "nova-bugreport",
  "nova-config",
@@ -3504,17 +3522,20 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "nova-cache",
+ "nova-classpath",
  "nova-core",
  "nova-hir",
  "nova-index",
  "nova-jdk",
  "nova-memory",
  "nova-project",
+ "nova-resolve",
  "nova-syntax",
  "nova-types",
  "parking_lot",
  "ra_ap_salsa",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.17",
  "tracing",
@@ -3557,7 +3578,7 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
- "toml 0.8.23",
+ "toml",
 ]
 
 [[package]]
@@ -3624,15 +3645,12 @@ version = "0.1.0"
 dependencies = [
  "nova-core",
  "nova-framework",
- "nova-framework-parse",
  "nova-hir",
  "nova-resolve",
+ "nova-syntax",
  "nova-types",
- "once_cell",
  "pretty_assertions",
- "regex",
  "tempfile",
- "tree-sitter",
  "zip 0.6.6",
 ]
 
@@ -3764,6 +3782,7 @@ dependencies = [
  "nova-decompile",
  "nova-ext",
  "nova-framework",
+ "nova-framework-dagger",
  "nova-framework-jpa",
  "nova-framework-lombok",
  "nova-framework-micronaut",
@@ -3823,6 +3842,7 @@ dependencies = [
  "nova-config",
  "nova-core",
  "nova-modules",
+ "nova-process",
  "nova-types",
  "once_cell",
  "serde",
@@ -3930,6 +3950,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "nova-project"
 version = "0.1.0"
 dependencies = [
@@ -3963,9 +3990,11 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "lsp-types",
+ "nova-core",
  "nova-format",
  "nova-index",
  "nova-project",
+ "nova-syntax",
  "nova-test-utils",
  "nova-types",
  "pretty_assertions",
@@ -3983,6 +4012,7 @@ name = "nova-remote-proto"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde",
  "serde_cbor",
 ]
@@ -3993,6 +4023,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "nova-remote-proto",
+ "proptest",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -4085,6 +4116,7 @@ dependencies = [
  "criterion",
  "nova-core",
  "nova-memory",
+ "nova-test-utils",
  "nova-types",
  "nova-vfs",
  "pretty_assertions",
@@ -4092,6 +4124,7 @@ dependencies = [
  "serde",
  "serde_repr",
  "text-size",
+ "thiserror 1.0.69",
  "unicode-ident",
  "xtask",
 ]
@@ -4129,6 +4162,8 @@ dependencies = [
 name = "nova-types"
 version = "0.1.0"
 dependencies = [
+ "nova-classfile",
+ "nova-classpath",
  "nova-ids",
  "pretty_assertions",
  "schemars",
