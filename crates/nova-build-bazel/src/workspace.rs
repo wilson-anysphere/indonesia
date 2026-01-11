@@ -329,12 +329,11 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         // traversal. If `buildfiles(...)` is unsupported, fall back to `deps(...)` and resolve
         // BUILD files on disk.
         let buildfiles_query = BUILDFILES_QUERY_TEMPLATE.replace("TARGET", target);
-        let buildfiles_paths = self.runner.run_with_stdout(
+        let buildfiles_ok = self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["query", &buildfiles_query, "--output=label"],
             |stdout| {
-                let mut paths = Vec::new();
                 let mut line = String::new();
                 loop {
                     line.clear();
@@ -347,29 +346,24 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                         continue;
                     }
                     if let Some(path) = workspace_path_from_label(label) {
-                        paths.push(path);
+                        inputs.insert(self.root.join(path));
                     }
                 }
-                Ok(paths)
+                Ok(())
             },
         );
 
-        match buildfiles_paths {
-            Ok(paths) => {
-                for path in paths {
-                    inputs.insert(self.root.join(path));
-                }
-            }
+        match buildfiles_ok {
+            Ok(()) => {}
             Err(_) => {
                 // Fall back to `deps(target)` and include the BUILD file for each package we can
                 // resolve on disk.
                 let deps_query = DEPS_QUERY_TEMPLATE.replace("TARGET", target);
-                if let Ok(labels) = self.runner.run_with_stdout(
+                let _ = self.runner.run_with_stdout(
                     &self.root,
                     "bazel",
                     &["query", &deps_query, "--output=label"],
                     |stdout| {
-                        let mut labels = Vec::new();
                         let mut line = String::new();
                         loop {
                             line.clear();
@@ -378,19 +372,16 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                                 break;
                             }
                             let label = line.trim();
-                            if !label.is_empty() {
-                                labels.push(label.to_string());
+                            if label.is_empty() {
+                                continue;
+                            }
+                            if let Some(build_file) = build_file_for_label(&self.root, label)? {
+                                inputs.insert(build_file);
                             }
                         }
-                        Ok(labels)
+                        Ok(())
                     },
-                ) {
-                    for label in labels {
-                        if let Some(build_file) = build_file_for_label(&self.root, &label)? {
-                            inputs.insert(build_file);
-                        }
-                    }
-                }
+                );
             }
         }
 
