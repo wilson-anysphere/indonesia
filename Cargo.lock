@@ -3419,8 +3419,11 @@ dependencies = [
  "predicates",
  "serde",
  "serde_json",
+ "tar",
  "tokio",
  "tokio-util",
+ "tracing",
+ "zstd 0.13.3",
 ]
 
 [[package]]

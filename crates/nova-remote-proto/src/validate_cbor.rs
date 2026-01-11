@@ -302,7 +302,7 @@ fn validate_item<'a>(r: &mut Reader<'a>, depth: usize, limits: Limits) -> anyhow
                 );
                 for _ in 0..len {
                     let key = read_map_key(r).context("validate map key")?;
-                    let value_limits = limits_for_map_value(key, Limits::DEFAULT);
+                    let value_limits = limits_for_map_value(key, limits);
                     validate_item(r, depth + 1, value_limits)
                         .with_context(|| format!("validate map value for key {key:?}"))?;
                 }
@@ -362,7 +362,11 @@ fn validate_indefinite_array<'a>(
     }
 }
 
-fn validate_indefinite_map<'a>(r: &mut Reader<'a>, depth: usize, limits: Limits) -> anyhow::Result<()> {
+fn validate_indefinite_map<'a>(
+    r: &mut Reader<'a>,
+    depth: usize,
+    limits: Limits,
+) -> anyhow::Result<()> {
     let mut pairs = 0usize;
     loop {
         let next = r.peek_u8().context("peek indefinite map item")?;
@@ -375,7 +379,7 @@ fn validate_indefinite_map<'a>(r: &mut Reader<'a>, depth: usize, limits: Limits)
             "indefinite map too long (max {MAX_CBOR_MAP_LEN})"
         );
         let key = read_map_key(r).context("validate map key")?;
-        let value_limits = limits_for_map_value(key, Limits::DEFAULT);
+        let value_limits = limits_for_map_value(key, limits);
         validate_item(r, depth, value_limits)
             .with_context(|| format!("validate map value for key {key:?}"))?;
         pairs += 1;
