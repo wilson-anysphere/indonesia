@@ -717,6 +717,8 @@ pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
         &repo_root.join("crates/nova-syntax/testdata/recovery"),
         &mut java_files,
     )?;
+    java_files.sort();
+    java_files.dedup();
 
     let mut sources: Vec<SyntaxLintSource> = java_files
         .into_iter()
