@@ -131,3 +131,26 @@ fn is_sensitive_param(param: &str) -> bool {
         "key" | "token" | "access_token" | "api_key" | "apikey" | "authorization"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_urls_and_sensitive_query_params() {
+        let input = "GET https://user:pass@example.com/path?token=abc&other=1";
+        let out = redact_string(input);
+
+        assert!(out.contains("https://<redacted>@example.com/path?token=<redacted>&other=1"));
+        assert!(!out.contains("user:pass"));
+        assert!(!out.contains("token=abc"));
+    }
+
+    #[test]
+    fn redacts_bearer_tokens() {
+        let input = "Authorization: Bearer abc.def.ghi";
+        let out = redact_string(input);
+
+        assert_eq!(out, "Authorization: Bearer <redacted>");
+    }
+}
