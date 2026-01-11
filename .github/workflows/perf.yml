@@ -6,6 +6,10 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   perf:
     runs-on: ubuntu-latest
@@ -39,7 +43,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          api_url="https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/workflows/perf.yml/runs?branch=main&per_page=20"
+          api_url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/perf.yml/runs?branch=main&per_page=50"
           run_id="$(
             curl -fsSL \
               -H "Authorization: Bearer ${GH_TOKEN}" \
