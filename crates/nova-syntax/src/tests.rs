@@ -994,6 +994,69 @@ fn feature_gate_record_patterns_version_matrix() {
 }
 
 #[test]
+fn feature_gate_pattern_matching_instanceof_version_matrix() {
+    let input = "class Foo { void m(Object x) { if (x instanceof String s) { return; } } }";
+
+    let java13 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 13,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java13.result.errors, Vec::new());
+    assert_eq!(
+        java13.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_PATTERN_MATCHING_INSTANCEOF"]
+    );
+
+    let java14_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 14,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java14_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java14_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_PATTERN_MATCHING_INSTANCEOF"]
+    );
+
+    let java14_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 14,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java14_preview.result.errors, Vec::new());
+    assert!(java14_preview.diagnostics.is_empty());
+
+    let java16 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 16,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java16.result.errors, Vec::new());
+    assert!(java16.diagnostics.is_empty());
+}
+
+#[test]
 fn parse_instanceof_type_patterns() {
     let input = r#"
 class Foo {

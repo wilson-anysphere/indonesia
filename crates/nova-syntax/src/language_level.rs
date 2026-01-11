@@ -81,6 +81,16 @@ impl JavaLanguageLevel {
                 }
             }
 
+            PatternMatchingInstanceof => {
+                if self.major >= 16 {
+                    Stable
+                } else if self.major == 14 || self.major == 15 {
+                    Preview
+                } else {
+                    Unavailable
+                }
+            }
+
             Records => {
                 if self.major >= 16 {
                     Stable
@@ -198,6 +208,7 @@ pub enum JavaFeature {
     VarLocalInference,     // Java 10+
     SwitchExpressions,     // final Java 14 (preview earlier in javac, ignored here)
     TextBlocks,            // final Java 15
+    PatternMatchingInstanceof, // final Java 16 (preview 14/15)
     Records,               // final Java 16 (preview 14/15)
     SealedClasses,         // final Java 17 (preview 15/16)
     PatternMatchingSwitch, // final Java 21 (preview 17-20)
@@ -213,6 +224,7 @@ impl JavaFeature {
             JavaFeature::VarLocalInference => "JAVA_FEATURE_VAR_LOCAL_INFERENCE",
             JavaFeature::SwitchExpressions => "JAVA_FEATURE_SWITCH_EXPRESSIONS",
             JavaFeature::TextBlocks => "JAVA_FEATURE_TEXT_BLOCKS",
+            JavaFeature::PatternMatchingInstanceof => "JAVA_FEATURE_PATTERN_MATCHING_INSTANCEOF",
             JavaFeature::Records => "JAVA_FEATURE_RECORDS",
             JavaFeature::SealedClasses => "JAVA_FEATURE_SEALED_CLASSES",
             JavaFeature::PatternMatchingSwitch => "JAVA_FEATURE_PATTERN_MATCHING_SWITCH",
@@ -228,6 +240,7 @@ impl JavaFeature {
             JavaFeature::VarLocalInference => "local variable type inference (`var`)",
             JavaFeature::SwitchExpressions => "switch expressions",
             JavaFeature::TextBlocks => "text blocks",
+            JavaFeature::PatternMatchingInstanceof => "pattern matching for `instanceof`",
             JavaFeature::Records => "records",
             JavaFeature::SealedClasses => "sealed classes",
             JavaFeature::PatternMatchingSwitch => "pattern matching for switch",
@@ -243,6 +256,7 @@ impl JavaFeature {
             JavaFeature::VarLocalInference => Some(10),
             JavaFeature::SwitchExpressions => Some(14),
             JavaFeature::TextBlocks => Some(15),
+            JavaFeature::PatternMatchingInstanceof => Some(16),
             JavaFeature::Records => Some(16),
             JavaFeature::SealedClasses => Some(17),
             JavaFeature::PatternMatchingSwitch => Some(21),

@@ -12,6 +12,7 @@ pub(crate) fn feature_gate_diagnostics(root: &SyntaxNode, level: JavaLanguageLev
     gate_switch_expressions(root, level, &mut diagnostics);
     gate_pattern_matching_switch(root, level, &mut diagnostics);
     gate_record_patterns(root, level, &mut diagnostics);
+    gate_pattern_matching_instanceof(root, level, &mut diagnostics);
     gate_var_local_inference(root, level, &mut diagnostics);
 
     diagnostics
@@ -180,6 +181,39 @@ fn gate_record_patterns(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut V
             continue;
         };
         out.push(feature_error(level, JavaFeature::RecordPatterns, &tok));
+    }
+}
+
+fn gate_pattern_matching_instanceof(
+    root: &SyntaxNode,
+    level: JavaLanguageLevel,
+    out: &mut Vec<Diagnostic>,
+) {
+    if level.is_enabled(JavaFeature::PatternMatchingInstanceof) {
+        return;
+    }
+
+    // `x instanceof Type binding`
+    for pattern in root.descendants().filter(|n| n.kind() == SyntaxKind::Pattern) {
+        let Some(parent) = pattern.parent() else {
+            continue;
+        };
+        if parent.kind() != SyntaxKind::BinaryExpression {
+            continue;
+        }
+
+        let is_instanceof = parent
+            .children_with_tokens()
+            .filter_map(|e| e.into_token())
+            .any(|t| t.kind() == SyntaxKind::InstanceofKw);
+        if !is_instanceof {
+            continue;
+        }
+
+        let Some(tok) = first_token(&pattern) else {
+            continue;
+        };
+        out.push(feature_error(level, JavaFeature::PatternMatchingInstanceof, &tok));
     }
 }
 
