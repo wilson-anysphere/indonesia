@@ -7,3 +7,4 @@ edition.workspace = true
 anyhow.workspace = true
 bincode.workspace = true
 serde.workspace = true
+serde_cbor = "0.11"
