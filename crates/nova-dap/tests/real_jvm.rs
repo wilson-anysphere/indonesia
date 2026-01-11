@@ -221,13 +221,6 @@ async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
         init_resp.get("success").and_then(|v| v.as_bool()),
         Some(true)
     );
-    let initialized = dap
-        .wait_for_event("initialized", Instant::now() + Duration::from_secs(5))
-        .await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     let attach_deadline = Instant::now() + Duration::from_secs(30);
     let mut seq = 2i64;
@@ -257,6 +250,14 @@ async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         seq += 1;
     }
+
+    let initialized = dap
+        .wait_for_event("initialized", Instant::now() + Duration::from_secs(5))
+        .await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     let set_bps_seq = seq + 1;
     dap.send_request(

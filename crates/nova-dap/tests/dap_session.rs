@@ -91,12 +91,6 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    // Initialized event.
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -108,11 +102,15 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -317,7 +315,6 @@ async fn dap_can_hot_swap_a_class() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    let _initialized = read_next(&mut reader).await;
 
     send_request(
         &mut writer,
@@ -329,7 +326,7 @@ async fn dap_can_hot_swap_a_class() {
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, _initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
@@ -397,7 +394,6 @@ async fn dap_hot_swap_reports_schema_change() {
 
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let _init_resp = read_response(&mut reader, 1).await;
-    let _initialized = read_next(&mut reader).await;
 
     send_request(
         &mut writer,
@@ -409,7 +405,7 @@ async fn dap_hot_swap_reports_schema_change() {
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, _initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
@@ -470,11 +466,6 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -486,11 +477,15 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -704,11 +699,6 @@ async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -720,11 +710,15 @@ async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -935,11 +929,6 @@ async fn dap_step_stop_uses_event_thread_suspend_policy() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -951,11 +940,15 @@ async fn dap_step_stop_uses_event_thread_suspend_policy() {
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(&mut writer, 3, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 3).await;
@@ -1025,11 +1018,6 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -1041,11 +1029,15 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(&mut writer, 3, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 3).await;
@@ -1231,11 +1223,6 @@ async fn dap_exception_info_includes_type_name() {
             .and_then(|v| v.as_bool()),
         Some(true)
     );
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -1247,11 +1234,15 @@ async fn dap_exception_info_includes_type_name() {
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -1388,11 +1379,6 @@ async fn dap_emits_thread_start_and_death_events() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -1404,11 +1390,15 @@ async fn dap_emits_thread_start_and_death_events() {
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     // Trigger the mock VM to emit thread lifecycle events.
     send_request(&mut writer, 3, "continue", json!({})).await;
@@ -1478,8 +1468,6 @@ async fn dap_feature_requests_are_guarded_by_jdwp_capabilities() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    // Initialized event.
-    let _initialized = read_next(&mut reader).await;
 
     send_request(
         &mut writer,
@@ -1491,7 +1479,7 @@ async fn dap_feature_requests_are_guarded_by_jdwp_capabilities() {
         }),
     )
     .await;
-    let attach_resp = read_response(&mut reader, 2).await;
+    let (attach_resp, _initialized) = read_response_and_event(&mut reader, 2, "initialized").await;
     assert!(attach_resp
         .get("success")
         .and_then(|v| v.as_bool())

@@ -58,6 +58,40 @@ struct EvaluateArguments {
     context: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionKind {
+    Attach,
+    Launch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LifecycleState {
+    Uninitialized,
+    Initialized,
+    LaunchedOrAttached,
+    Configured,
+    Running,
+    Stopped,
+    Terminated,
+}
+
+#[derive(Debug)]
+struct SessionLifecycle {
+    lifecycle: LifecycleState,
+    kind: Option<SessionKind>,
+    awaiting_configuration_done_resume: bool,
+}
+
+impl Default for SessionLifecycle {
+    fn default() -> Self {
+        Self {
+            lifecycle: LifecycleState::Uninitialized,
+            kind: None,
+            awaiting_configuration_done_resume: false,
+        }
+    }
+}
+
 /// Run the experimental JDWP-backed DAP adapter over stdio.
 pub async fn run_stdio() -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
@@ -75,6 +109,7 @@ where
     let terminated_sent = Arc::new(AtomicBool::new(false));
     let debugger: Arc<Mutex<Option<Debugger>>> = Arc::new(Mutex::new(None));
     let launched_process: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
+    let session: Arc<Mutex<SessionLifecycle>> = Arc::new(Mutex::new(SessionLifecycle::default()));
     let in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let server_shutdown = CancellationToken::new();
@@ -126,6 +161,7 @@ where
                     seq.clone(),
                     debugger.clone(),
                     launched_process.clone(),
+                    session.clone(),
                     in_flight.clone(),
                     initialized_tx.clone(),
                     initialized_rx.clone(),
@@ -167,6 +203,9 @@ where
         }
     }
 
+    // Best-effort cleanup for launched debuggees if the client disconnects unexpectedly.
+    terminate_existing_process(&launched_process).await;
+
     drop(out_tx);
     let _ = writer_task.await;
     Ok(())
@@ -179,6 +218,7 @@ async fn handle_request(
     seq: Arc<AtomicI64>,
     debugger: Arc<Mutex<Option<Debugger>>>,
     launched_process: Arc<Mutex<Option<Child>>>,
+    session: Arc<Mutex<SessionLifecycle>>,
     in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>>,
     initialized_tx: watch::Sender<bool>,
     initialized_rx: watch::Receiver<bool>,
@@ -196,6 +236,7 @@ async fn handle_request(
         &seq,
         &debugger,
         &launched_process,
+        &session,
         &in_flight,
         &initialized_tx,
         initialized_rx,
@@ -215,6 +256,7 @@ async fn handle_request_inner(
     seq: &Arc<AtomicI64>,
     debugger: &Arc<Mutex<Option<Debugger>>>,
     launched_process: &Arc<Mutex<Option<Child>>>,
+    session: &Arc<Mutex<SessionLifecycle>>,
     in_flight: &Arc<Mutex<HashMap<i64, CancellationToken>>>,
     initialized_tx: &watch::Sender<bool>,
     initialized_rx: watch::Receiver<bool>,
@@ -237,12 +279,20 @@ async fn handle_request_inner(
 
     match request.command.as_str() {
         "initialize" => {
+            {
+                let mut sess = session.lock().await;
+                sess.lifecycle = LifecycleState::Initialized;
+                sess.kind = None;
+                sess.awaiting_configuration_done_resume = false;
+            }
+
             let body = json!({
                 "supportsConfigurationDoneRequest": true,
                 "supportsEvaluateForHovers": true,
                 "supportsPauseRequest": true,
                 "supportsCancelRequest": true,
                 "supportsTerminateRequest": true,
+                "supportsRestartRequest": false,
                 "supportsSetVariable": false,
                 "supportsStepBack": false,
                 "supportsExceptionBreakpoints": true,
@@ -257,8 +307,6 @@ async fn handle_request_inner(
                 "supportsLogPoints": true,
             });
             send_response(out_tx, seq, request, true, Some(body), None);
-            send_event(out_tx, seq, "initialized", None);
-            let _ = initialized_tx.send(true);
         }
         "nova/metrics" => {
             match serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot()) {
@@ -355,7 +403,71 @@ async fn handle_request_inner(
         "configurationDone" => {
             // When `supportsConfigurationDoneRequest` is true, VS Code sends this request
             // after breakpoints have been configured.
-            send_response(out_tx, seq, request, true, None, None);
+            let should_resume = {
+                let mut sess = session.lock().await;
+                sess.lifecycle = LifecycleState::Configured;
+                if sess.awaiting_configuration_done_resume {
+                    sess.awaiting_configuration_done_resume = false;
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if should_resume {
+                let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                    Some(guard) => guard,
+                    None => {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("cancelled".to_string()),
+                        );
+                        return;
+                    }
+                };
+                let Some(dbg) = guard.as_mut() else {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("not attached".to_string()),
+                    );
+                    return;
+                };
+
+                match dbg.continue_(cancel, None).await {
+                    Ok(()) => {
+                        send_response(out_tx, seq, request, true, None, None);
+                        send_event(
+                            out_tx,
+                            seq,
+                            "continued",
+                            Some(json!({ "allThreadsContinued": true })),
+                        );
+                        let mut sess = session.lock().await;
+                        sess.lifecycle = LifecycleState::Running;
+                    }
+                    Err(err) if is_cancelled_error(&err) => {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("cancelled".to_string()),
+                        );
+                    }
+                    Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+                }
+            } else {
+                send_response(out_tx, seq, request, true, None, None);
+            }
         }
         "launch" => {
             let args: LaunchArguments = match serde_json::from_value(request.arguments.clone()) {
@@ -372,6 +484,32 @@ async fn handle_request_inner(
                     return;
                 }
             };
+
+            {
+                let sess = session.lock().await;
+                if sess.lifecycle == LifecycleState::Uninitialized {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("launch is only valid after initialize".to_string()),
+                    );
+                    return;
+                }
+                if sess.kind.is_some() {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("debug session already started".to_string()),
+                    );
+                    return;
+                }
+            }
 
             // Ensure we don't leak previous launched processes if the client retries.
             terminate_existing_process(launched_process).await;
@@ -535,19 +673,22 @@ async fn handle_request_inner(
                         return;
                     };
 
-                    let port = match pick_free_port().await {
-                        Ok(port) => port,
-                        Err(err) => {
-                            send_response(
-                                out_tx,
-                                seq,
-                                request,
-                                false,
-                                None,
-                                Some(format!("failed to select debug port: {err}")),
-                            );
-                            return;
-                        }
+                    let port = match args.port {
+                        Some(port) => port,
+                        None => match pick_free_port().await {
+                            Ok(port) => port,
+                            Err(err) => {
+                                send_response(
+                                    out_tx,
+                                    seq,
+                                    request,
+                                    false,
+                                    None,
+                                    Some(format!("failed to select debug port: {err}")),
+                                );
+                                return;
+                            }
+                        },
                     };
                     let host: IpAddr = "127.0.0.1".parse().unwrap();
 
@@ -561,8 +702,9 @@ async fn handle_request_inner(
                         }
                     };
 
+                    let suspend = if args.stop_on_entry { "y" } else { "n" };
                     let debug_arg = format!(
-                        "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address={port}"
+                        "-agentlib:jdwp=transport=dt_socket,server=y,suspend={suspend},address={port}"
                     );
 
                     let mut cmd = Command::new(java);
@@ -577,9 +719,16 @@ async fn handle_request_inner(
                     }
                     cmd.args(&args.vm_args);
                     cmd.arg(debug_arg);
-                    cmd.arg("-classpath");
-                    cmd.arg(cp_joined);
-                    cmd.arg(main_class);
+                    if let Some(module_name) = args.module_name.as_deref() {
+                        cmd.arg("--module-path");
+                        cmd.arg(cp_joined.clone());
+                        cmd.arg("-m");
+                        cmd.arg(format!("{module_name}/{main_class}"));
+                    } else {
+                        cmd.arg("-classpath");
+                        cmd.arg(cp_joined);
+                        cmd.arg(main_class);
+                    }
                     cmd.args(&args.args);
 
                     let mut child = match cmd.spawn() {
@@ -659,9 +808,45 @@ async fn handle_request_inner(
                 server_shutdown.clone(),
             );
 
+            {
+                let mut sess = session.lock().await;
+                sess.lifecycle = LifecycleState::LaunchedOrAttached;
+                sess.kind = Some(SessionKind::Launch);
+                sess.awaiting_configuration_done_resume =
+                    matches!(mode, LaunchMode::Java) && args.stop_on_entry;
+            }
+
             send_response(out_tx, seq, request, true, None, None);
+            send_event(out_tx, seq, "initialized", None);
+            let _ = initialized_tx.send(true);
         }
         "attach" => {
+            {
+                let sess = session.lock().await;
+                if sess.lifecycle == LifecycleState::Uninitialized {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("attach is only valid after initialize".to_string()),
+                    );
+                    return;
+                }
+                if sess.kind.is_some() {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("debug session already started".to_string()),
+                    );
+                    return;
+                }
+            }
+
             let host = request
                 .arguments
                 .get("host")
@@ -757,7 +942,17 @@ async fn handle_request_inner(
                 terminated_sent.clone(),
                 server_shutdown.clone(),
             );
+
+            {
+                let mut sess = session.lock().await;
+                sess.lifecycle = LifecycleState::LaunchedOrAttached;
+                sess.kind = Some(SessionKind::Attach);
+                sess.awaiting_configuration_done_resume = false;
+            }
+
             send_response(out_tx, seq, request, true, None, None);
+            send_event(out_tx, seq, "initialized", None);
+            let _ = initialized_tx.send(true);
         }
         "setBreakpoints" => {
             if cancel.is_cancelled() {
@@ -2089,7 +2284,14 @@ fn resolve_source_roots(
 fn requires_initialized(command: &str) -> bool {
     !matches!(
         command,
-        "initialize" | "cancel" | "disconnect" | "terminate" | "nova/bugReport" | "nova/metrics"
+        "initialize"
+            | "cancel"
+            | "disconnect"
+            | "terminate"
+            | "attach"
+            | "launch"
+            | "nova/bugReport"
+            | "nova/metrics"
     )
 }
 
@@ -2104,6 +2306,7 @@ struct LaunchArguments {
     #[serde(default)]
     env: BTreeMap<String, String>,
     host: Option<String>,
+    #[serde(alias = "debugPort")]
     port: Option<u16>,
     attach_timeout_ms: Option<u64>,
 
@@ -2112,8 +2315,15 @@ struct LaunchArguments {
     java: Option<String>,
     classpath: Option<Classpath>,
     main_class: Option<String>,
+    module_name: Option<String>,
     #[serde(default)]
     vm_args: Vec<String>,
+    #[serde(default = "default_stop_on_entry")]
+    stop_on_entry: bool,
+}
+
+fn default_stop_on_entry() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2205,6 +2415,28 @@ async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<Child>>>
 async fn terminate_child(child: &mut Child) -> std::io::Result<()> {
     if child.try_wait()?.is_some() {
         return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        if let Some(pid) = child.id() {
+            // Best effort: send SIGTERM first so shutdown hooks can run.
+            let rc = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            if rc != 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(err);
+                }
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(750);
+        while Instant::now() < deadline {
+            if child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     child.start_kill()?;

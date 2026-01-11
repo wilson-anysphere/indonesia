@@ -38,6 +38,21 @@ async fn read_response(
     panic!("did not receive response for seq {request_seq}");
 }
 
+async fn read_event(
+    reader: &mut DapReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    event: &str,
+) -> Value {
+    for _ in 0..50 {
+        let msg = read_next(reader).await;
+        if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some(event)
+        {
+            return msg;
+        }
+    }
+    panic!("did not receive event {event}");
+}
+
 #[tokio::test]
 async fn dap_hit_count_breakpoints_use_jdwp_count_modifier() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
@@ -57,12 +72,6 @@ async fn dap_hit_count_breakpoints_use_jdwp_count_modifier() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    // Initialized event.
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -79,6 +88,12 @@ async fn dap_hit_count_breakpoints_use_jdwp_count_modifier() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+
+    let initialized = read_event(&mut reader, "initialized").await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -124,12 +139,6 @@ async fn dap_logpoints_emit_output_without_stopping() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    // Initialized event.
-    let initialized = read_next(&mut reader).await;
-    assert_eq!(
-        initialized.get("event").and_then(|v| v.as_str()),
-        Some("initialized")
-    );
 
     send_request(
         &mut writer,
@@ -146,6 +155,12 @@ async fn dap_logpoints_emit_output_without_stopping() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+
+    let initialized = read_event(&mut reader, "initialized").await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,

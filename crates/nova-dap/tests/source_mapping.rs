@@ -39,6 +39,21 @@ async fn read_response(
     panic!("did not receive response for seq {request_seq}");
 }
 
+async fn read_event(
+    reader: &mut DapReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    event: &str,
+) -> Value {
+    for _ in 0..50 {
+        let msg = read_next(reader).await;
+        if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some(event)
+        {
+            return msg;
+        }
+    }
+    panic!("did not receive event {event}");
+}
+
 #[tokio::test]
 async fn stack_trace_maps_sources_to_absolute_paths() {
     let temp = TempDir::new().unwrap();
@@ -82,8 +97,6 @@ async fn stack_trace_maps_sources_to_absolute_paths() {
 
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let _init_resp = read_response(&mut reader, 1).await;
-    // Initialized event.
-    let _initialized = read_next(&mut reader).await;
 
     send_request(
         &mut writer,
@@ -101,6 +114,8 @@ async fn stack_trace_maps_sources_to_absolute_paths() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+
+    let _initialized = read_event(&mut reader, "initialized").await;
 
     send_request(&mut writer, 3, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 3).await;

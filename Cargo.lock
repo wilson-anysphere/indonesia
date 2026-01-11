@@ -3514,6 +3514,7 @@ dependencies = [
  "async-recursion",
  "base64 0.22.1",
  "clap",
+ "libc",
  "nova-bugreport",
  "nova-config",
  "nova-core",
