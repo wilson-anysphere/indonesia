@@ -15,7 +15,7 @@ use thiserror::Error;
 use nova_classfile::{parse_module_info_class, ClassFile};
 use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_deps_cache::{DepsClassStub, DepsFieldStub, DepsMethodStub, DependencyIndexBundle, DependencyIndexStore};
-use nova_modules::ModuleInfo;
+use nova_modules::{ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
 #[derive(Debug, Error)]
@@ -28,6 +28,13 @@ pub enum ClasspathError {
     ClassFile(#[from] nova_classfile::Error),
     #[error("bincode error: {0}")]
     Bincode(#[from] Box<bincode::ErrorKind>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModuleNameKind {
+    None,
+    Automatic,
+    Explicit,
 }
 
 /// Optional indexing counters used by tests and the CLI.
@@ -114,6 +121,23 @@ impl ClasspathEntry {
             ClasspathEntry::ClassDir(dir) => read_module_info_from_dir(dir),
             ClasspathEntry::Jar(path) => read_module_info_from_zip(path, ZipKind::Jar),
             ClasspathEntry::Jmod(path) => read_module_info_from_zip(path, ZipKind::Jmod),
+        }
+    }
+
+    pub fn module_meta(&self) -> Result<(Option<ModuleName>, ModuleNameKind), ClasspathError> {
+        match self {
+            ClasspathEntry::ClassDir(_) => Ok((None, ModuleNameKind::None)),
+            ClasspathEntry::Jar(path) | ClasspathEntry::Jmod(path) => {
+                if let Some(info) = self.module_info()? {
+                    return Ok((Some(info.name), ModuleNameKind::Explicit));
+                }
+
+                let name = read_manifest_main_attribute(path, "Automatic-Module-Name")?
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| derive_automatic_module_name(path))
+                    .map(ModuleName::new);
+                Ok((name, ModuleNameKind::Automatic))
+            }
         }
     }
 }
@@ -293,6 +317,9 @@ impl ClasspathIndex {
             };
 
             for stub in stubs {
+                if stubs_by_binary.contains_key(&stub.binary_name) {
+                    continue;
+                }
                 internal_to_binary.insert(stub.internal_name.clone(), stub.binary_name.clone());
                 stubs_by_binary.insert(stub.binary_name.clone(), stub);
             }
@@ -374,6 +401,104 @@ impl TypeProvider for ClasspathIndex {
     }
 }
 
+pub struct ModuleAwareClasspathIndex {
+    pub types: ClasspathIndex,
+    pub type_to_module: HashMap<String, Option<ModuleName>>,
+    pub modules: Vec<(Option<ModuleName>, ModuleNameKind)>,
+}
+
+impl ModuleAwareClasspathIndex {
+    pub fn build(entries: &[ClasspathEntry], cache_dir: Option<&Path>) -> Result<Self, ClasspathError> {
+        let deps_store = DependencyIndexStore::from_env().ok();
+        Self::build_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
+    }
+
+    pub fn build_with_deps_store(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        let mut stubs_by_binary = HashMap::new();
+        let mut internal_to_binary = HashMap::new();
+        let mut type_to_module = HashMap::new();
+        let mut modules = Vec::with_capacity(entries.len());
+
+        for entry in entries {
+            let entry = entry.normalize()?;
+            let (module_name, module_kind) = entry.module_meta()?;
+            modules.push((module_name.clone(), module_kind));
+
+            let stubs = match &entry {
+                ClasspathEntry::ClassDir(_) => {
+                    let fingerprint = entry.fingerprint()?;
+                    if let Some(cache_dir) = cache_dir {
+                        persist::load_or_build_entry(cache_dir, &entry, fingerprint, || {
+                            index_entry(&entry, deps_store, stats)
+                        })?
+                    } else {
+                        index_entry(&entry, deps_store, stats)?
+                    }
+                }
+                ClasspathEntry::Jar(_) | ClasspathEntry::Jmod(_) => index_entry(&entry, deps_store, stats)?,
+            };
+
+            for stub in stubs {
+                if stubs_by_binary.contains_key(&stub.binary_name) {
+                    continue;
+                }
+
+                let binary_name = stub.binary_name.clone();
+                internal_to_binary.insert(stub.internal_name.clone(), binary_name.clone());
+                stubs_by_binary.insert(binary_name.clone(), stub);
+                type_to_module.insert(binary_name, module_name.clone());
+            }
+        }
+
+        let mut binary_names_sorted: Vec<String> = stubs_by_binary.keys().cloned().collect();
+        binary_names_sorted.sort();
+
+        let mut packages: BTreeSet<String> = BTreeSet::new();
+        for name in &binary_names_sorted {
+            if let Some((pkg, _)) = name.rsplit_once('.') {
+                packages.insert(pkg.to_owned());
+            }
+        }
+
+        let types = ClasspathIndex {
+            stubs_by_binary,
+            binary_names_sorted,
+            packages_sorted: packages.into_iter().collect(),
+            internal_to_binary,
+        };
+
+        Ok(Self {
+            types,
+            type_to_module,
+            modules,
+        })
+    }
+
+    pub fn module_of(&self, binary_name: &str) -> Option<&ModuleName> {
+        self.type_to_module.get(binary_name)?.as_ref()
+    }
+
+    pub fn module_kind_of(&self, binary_name: &str) -> ModuleNameKind {
+        let Some(module) = self.type_to_module.get(binary_name) else {
+            return ModuleNameKind::None;
+        };
+
+        let Some(module) = module else {
+            return ModuleNameKind::None;
+        };
+
+        self.modules
+            .iter()
+            .find_map(|(candidate, kind)| candidate.as_ref().filter(|m| *m == module).map(|_| *kind))
+            .unwrap_or(ModuleNameKind::None)
+    }
+}
+
 impl TypeIndex for ClasspathIndex {
     fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
         let dotted = name.to_dotted();
@@ -417,6 +542,30 @@ impl TypeIndex for ClasspathIndex {
                 .any(|m| m.name == needle && is_static(m.access_flags));
 
         found.then(|| StaticMemberId::new(format!("{}::{needle}", owner.as_str())))
+    }
+}
+
+impl TypeProvider for ModuleAwareClasspathIndex {
+    fn lookup_type(&self, binary_name: &str) -> Option<TypeDefStub> {
+        self.types.lookup_type(binary_name)
+    }
+}
+
+impl TypeIndex for ModuleAwareClasspathIndex {
+    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
+        self.types.resolve_type(name)
+    }
+
+    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
+        self.types.resolve_type_in_package(package, name)
+    }
+
+    fn package_exists(&self, package: &PackageName) -> bool {
+        self.types.package_exists(package)
+    }
+
+    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
+        self.types.resolve_static_member(owner, name)
     }
 }
 
@@ -673,6 +822,95 @@ fn manifest_is_multi_release(manifest: &str) -> bool {
         }
     }
     false
+}
+
+fn read_manifest_main_attribute(path: &Path, key: &str) -> Result<Option<String>, ClasspathError> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    let mut file = match archive.by_name("META-INF/MANIFEST.MF") {
+        Ok(file) => file,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(err) => return Err(err.into()),
+    };
+
+    let mut manifest = String::new();
+    file.read_to_string(&mut manifest)?;
+    Ok(manifest_main_attribute(&manifest, key))
+}
+
+fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
+    let mut current_key = None::<&str>;
+    let mut current_value = String::new();
+
+    let flush = |current_key: Option<&str>, current_value: &str, key: &str| -> Option<String> {
+        let current_key = current_key?;
+        if current_key.eq_ignore_ascii_case(key) {
+            Some(current_value.trim().to_string())
+        } else {
+            None
+        }
+    };
+
+    for line in manifest.lines() {
+        if line.starts_with(' ') {
+            if current_key.is_some() {
+                current_value.push_str(line.trim_start());
+            }
+            continue;
+        }
+
+        if let Some(found) = flush(current_key.take(), &current_value, key) {
+            return Some(found);
+        }
+
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        current_key = Some(k.trim());
+        current_value = v.trim_start().to_string();
+    }
+
+    flush(current_key, &current_value, key)
+}
+
+fn derive_automatic_module_name(path: &Path) -> Option<String> {
+    let file_name = path.file_name()?.to_string_lossy();
+
+    let mut name = match file_name.rsplit_once('.') {
+        Some((stem, _)) => stem.to_string(),
+        None => file_name.to_string(),
+    };
+
+    if let Some((before, after)) = name.rsplit_once('-') {
+        if after
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_digit())
+            && after.chars().all(|c| c.is_ascii_digit() || c == '.')
+        {
+            name = before.to_string();
+        }
+    }
+
+    let mut out = String::new();
+    let mut prev_dot = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+            prev_dot = false;
+        } else if !prev_dot {
+            out.push('.');
+            prev_dot = true;
+        }
+    }
+
+    let trimmed = out.trim_matches('.');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
