@@ -21,6 +21,7 @@
     "onCommand:nova.useLocalServerBinary",
     "onCommand:nova.showServerVersion",
     "onCommand:nova.organizeImports",
+    "onCommand:nova.createBugReport",
     "onCommand:nova.discoverTests",
     "onCommand:nova.runTest"
   ],
@@ -42,6 +43,10 @@
       {
         "command": "nova.organizeImports",
         "title": "Nova: Organize Imports"
+      },
+      {
+        "command": "nova.createBugReport",
+        "title": "Nova: Create Bug Report"
       },
       {
         "command": "nova.discoverTests",

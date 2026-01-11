@@ -40,12 +40,28 @@ npm run compile
 - **Nova: Organize Imports** (`nova.organizeImports`)
   - Sends a custom LSP request: `nova/java/organizeImports`.
 
+- **Nova: Create Bug Report** (`nova.createBugReport`)
+  - Prompts for optional reproduction steps and generates a diagnostic bundle via `nova/bugReport`.
+  - After creation, you can open the folder in VS Code or copy the bundle path.
+
 - **Nova: Discover Tests** (`nova.discoverTests`)
   - Sends `nova/test/discover` and prints discovered test IDs.
   - Also refreshes the VS Code Test Explorer tree.
 
 - **Nova: Run Test** (`nova.runTest`)
   - Prompts for a discovered test ID and runs it via `nova/test/run`.
+
+## Safe mode + memory pressure
+
+Nova has resilience features to keep the language server responsive even if a request panics or times out.
+
+- **Safe mode**
+  - When Nova enters safe mode, most `nova/*` requests are disabled so you can safely collect diagnostics.
+  - The extension shows a **“Nova: Safe Mode”** status bar item while safe mode is active. Click it to run **Nova: Create Bug Report**.
+
+- **Memory pressure**
+  - The extension shows a **“Nova Mem: …”** status bar item with the current memory pressure level (Low/Medium/High/Critical).
+  - When pressure becomes High/Critical, the extension shows a one-time warning with an action to create a bug report.
 
 ## Test Explorer
 

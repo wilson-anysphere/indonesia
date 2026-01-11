@@ -21,6 +21,8 @@ const aiItemsByContextId = new Map<string, vscode.CompletionItem[]>();
 const aiRequestsInFlight = new Set<string>();
 const MAX_AI_CONTEXT_IDS = 50;
 
+const BUG_REPORT_COMMAND = 'nova.createBugReport';
+
 type TestKind = 'class' | 'test';
 
 interface LspPosition {
@@ -89,6 +91,20 @@ function readLspArgs(): string[] {
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
 
   return buildNovaLspArgs({ configPath, extraArgs, workspaceRoot });
+}
+
+interface BugReportResponse {
+  path: string;
+}
+
+type MemoryPressureLevel = 'low' | 'medium' | 'high' | 'critical';
+
+interface MemoryStatusResponse {
+  report: {
+    pressure?: string;
+    budget?: { total?: number };
+    usage?: Record<string, number>;
+  };
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -236,6 +252,7 @@ export async function activate(context: vscode.ExtensionContext) {
       client = undefined;
       clientStart = undefined;
       currentServerCommand = undefined;
+      detachObservability();
     }
   }
 
@@ -245,6 +262,7 @@ export async function activate(context: vscode.ExtensionContext) {
     client = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
     // vscode-languageclient v9+ starts asynchronously.
     clientStart = client.start();
+    attachObservability(client, clientStart);
     clientStart.catch((err) => {
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(`Nova: failed to start nova-lsp: ${message}`);
@@ -556,6 +574,181 @@ export async function activate(context: vscode.ExtensionContext) {
       lastCompletionDocumentUri = undefined;
     }),
   );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(BUG_REPORT_COMMAND, async () => {
+      const reproduction = await promptForBugReportReproduction();
+      if (reproduction === undefined) {
+        return;
+      }
+
+      try {
+        const c = await requireClient();
+        const params: { reproduction?: string } = {};
+        if (reproduction.trim().length > 0) {
+          params.reproduction = reproduction;
+        }
+
+        const resp = await vscode.window.withProgress(
+          { location: vscode.ProgressLocation.Notification, title: 'Nova: Creating bug report…' },
+          async () => {
+            return await c.sendRequest<BugReportResponse>('nova/bugReport', params);
+          },
+        );
+
+        const bundlePath = resp?.path;
+        if (typeof bundlePath !== 'string' || bundlePath.length === 0) {
+          vscode.window.showErrorMessage('Nova: bug report failed: server returned an invalid path.');
+          return;
+        }
+
+        const picked = await vscode.window.showInformationMessage(
+          `Nova: Bug report created at ${bundlePath}`,
+          'Open Folder',
+          'Copy Path',
+        );
+
+        switch (picked) {
+          case 'Open Folder':
+            await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(bundlePath), {
+              forceNewWindow: true,
+            });
+            break;
+          case 'Copy Path':
+            await vscode.env.clipboard.writeText(bundlePath);
+            break;
+          default:
+            break;
+        }
+      } catch (err) {
+        const message = formatError(err);
+        vscode.window.showErrorMessage(`Nova: bug report failed: ${message}`);
+      }
+    }),
+  );
+
+  const safeModeStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
+  safeModeStatusItem.text = '$(shield) Nova: Safe Mode';
+  safeModeStatusItem.tooltip = 'Nova is running in safe mode. Click to create a bug report.';
+  safeModeStatusItem.command = BUG_REPORT_COMMAND;
+  safeModeStatusItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+  safeModeStatusItem.hide();
+  context.subscriptions.push(safeModeStatusItem);
+
+  const memoryStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
+  memoryStatusItem.text = '$(pulse) Nova Mem: —';
+  memoryStatusItem.tooltip = 'Nova memory status';
+  memoryStatusItem.show();
+  context.subscriptions.push(memoryStatusItem);
+
+  let lastMemoryPressure: MemoryPressureLevel | undefined;
+
+  const updateSafeModeStatus = (enabled: boolean) => {
+    if (enabled) {
+      safeModeStatusItem.show();
+    } else {
+      safeModeStatusItem.hide();
+    }
+  };
+
+  const updateMemoryStatus = async (payload: unknown) => {
+    const report = (payload as MemoryStatusResponse | undefined)?.report;
+    if (!report || typeof report !== 'object') {
+      return;
+    }
+
+    const pressure = normalizeMemoryPressure(report.pressure);
+    const label = pressure ? memoryPressureLabel(pressure) : 'Unknown';
+
+    const usedBytes = totalMemoryBytes(report.usage);
+    const budgetBytes = typeof report.budget?.total === 'number' ? report.budget.total : undefined;
+    const pct =
+      typeof usedBytes === 'number' && typeof budgetBytes === 'number' && budgetBytes > 0
+        ? Math.round((usedBytes / budgetBytes) * 100)
+        : undefined;
+
+    memoryStatusItem.text = `$(pulse) Nova Mem: ${label}${typeof pct === 'number' ? ` (${pct}%)` : ''}`;
+    memoryStatusItem.tooltip = formatMemoryTooltip(label, usedBytes, budgetBytes, pct);
+
+    if (pressure) {
+      const isHigh = pressure === 'high' || pressure === 'critical';
+      const wasHigh = lastMemoryPressure === 'high' || lastMemoryPressure === 'critical';
+      lastMemoryPressure = pressure;
+
+      if (isHigh && !wasHigh) {
+        const picked = await vscode.window.showWarningMessage(
+          `Nova: memory pressure is ${memoryPressureLabel(pressure)}. Consider creating a bug report.`,
+          'Create Bug Report',
+        );
+        if (picked === 'Create Bug Report') {
+          await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
+        }
+      }
+    }
+  };
+
+  let observabilityDisposables: vscode.Disposable[] = [];
+
+  const resetObservabilityState = () => {
+    lastMemoryPressure = undefined;
+    updateSafeModeStatus(false);
+    memoryStatusItem.text = '$(pulse) Nova Mem: —';
+    memoryStatusItem.tooltip = 'Nova memory status';
+  };
+
+  const detachObservability = () => {
+    for (const disposable of observabilityDisposables) {
+      disposable.dispose();
+    }
+    observabilityDisposables = [];
+    resetObservabilityState();
+  };
+
+  const attachObservability = (languageClient: LanguageClient, startPromise: Promise<void> | undefined) => {
+    detachObservability();
+
+    observabilityDisposables.push(
+      languageClient.onNotification('nova/safeModeChanged', (payload: unknown) => {
+        const enabled = parseSafeModeEnabled(payload);
+        if (typeof enabled === 'boolean') {
+          updateSafeModeStatus(enabled);
+        }
+      }),
+    );
+
+    observabilityDisposables.push(
+      languageClient.onNotification('nova/memoryStatusChanged', (payload: unknown) => {
+        void updateMemoryStatus(payload);
+      }),
+    );
+
+    if (!startPromise) {
+      return;
+    }
+
+    void startPromise
+      .then(async () => {
+        try {
+          const payload = await languageClient.sendRequest('nova/safeModeStatus');
+          const enabled = parseSafeModeEnabled(payload);
+          if (typeof enabled === 'boolean') {
+            updateSafeModeStatus(enabled);
+          }
+        } catch (err) {
+          if (!isMethodNotFoundError(err)) {
+            const message = formatError(err);
+            void vscode.window.showErrorMessage(`Nova: failed to query safe-mode status: ${message}`);
+          }
+        }
+
+        try {
+          const payload = await languageClient.sendRequest('nova/memoryStatus');
+          await updateMemoryStatus(payload);
+        } catch {
+        }
+      })
+      .catch(() => {});
+  };
 
   context.subscriptions.push(
     vscode.commands.registerCommand('nova.organizeImports', async () => {
@@ -935,4 +1128,186 @@ function getTestOutputChannel(): vscode.OutputChannel {
     testOutput = vscode.window.createOutputChannel('Nova Tests');
   }
   return testOutput;
+}
+
+async function promptForBugReportReproduction(): Promise<string | undefined> {
+  const input = vscode.window.createInputBox();
+  input.title = 'Nova: Create Bug Report';
+  input.prompt = 'Optional reproduction steps. Press Enter to continue, Esc to cancel.';
+  input.placeholder = 'What were you doing when the issue occurred?';
+  input.ignoreFocusOut = true;
+  (input as unknown as { multiline?: boolean }).multiline = true;
+
+  return await new Promise((resolve) => {
+    let accepted = false;
+    const subscriptions: vscode.Disposable[] = [];
+
+    subscriptions.push(
+      input.onDidAccept(() => {
+        accepted = true;
+        resolve(input.value);
+        input.hide();
+      }),
+    );
+
+    subscriptions.push(
+      input.onDidHide(() => {
+        if (!accepted) {
+          resolve(undefined);
+        }
+        input.dispose();
+        for (const sub of subscriptions) {
+          sub.dispose();
+        }
+      }),
+    );
+
+    input.show();
+  });
+}
+
+function parseSafeModeEnabled(payload: unknown): boolean | undefined {
+  if (typeof payload === 'boolean') {
+    return payload;
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return undefined;
+  }
+
+  const obj = payload as Record<string, unknown>;
+  const enabled = obj.enabled ?? obj.safeMode ?? obj.active;
+  if (typeof enabled === 'boolean') {
+    return enabled;
+  }
+
+  const status = obj.status;
+  if (status && typeof status === 'object') {
+    const nested = (status as Record<string, unknown>).enabled ?? (status as Record<string, unknown>).active;
+    if (typeof nested === 'boolean') {
+      return nested;
+    }
+  }
+
+  return undefined;
+}
+
+function normalizeMemoryPressure(value: unknown): MemoryPressureLevel | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.toLowerCase();
+  switch (normalized) {
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'critical':
+      return normalized;
+    default:
+      return undefined;
+  }
+}
+
+function memoryPressureLabel(level: MemoryPressureLevel): string {
+  switch (level) {
+    case 'low':
+      return 'Low';
+    case 'medium':
+      return 'Medium';
+    case 'high':
+      return 'High';
+    case 'critical':
+      return 'Critical';
+  }
+}
+
+function totalMemoryBytes(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== 'object') {
+    return undefined;
+  }
+
+  let total = 0;
+  let sawNumber = false;
+  for (const value of Object.values(usage as Record<string, unknown>)) {
+    if (typeof value === 'number') {
+      total += value;
+      sawNumber = true;
+    }
+  }
+  return sawNumber ? total : undefined;
+}
+
+function formatBytes(bytes: number): string {
+  const abs = Math.abs(bytes);
+  const kb = 1024;
+  const mb = 1024 * kb;
+  const gb = 1024 * mb;
+
+  if (abs >= gb) {
+    return `${(bytes / gb).toFixed(1)}GiB`;
+  }
+  if (abs >= mb) {
+    return `${(bytes / mb).toFixed(0)}MiB`;
+  }
+  if (abs >= kb) {
+    return `${(bytes / kb).toFixed(0)}KiB`;
+  }
+  return `${bytes}B`;
+}
+
+function formatMemoryTooltip(
+  label: string,
+  usedBytes: number | undefined,
+  budgetBytes: number | undefined,
+  pct: number | undefined,
+): vscode.MarkdownString {
+  const tooltip = new vscode.MarkdownString(undefined, true);
+  tooltip.appendMarkdown(`**Nova memory pressure:** ${label}\n\n`);
+
+  if (typeof usedBytes === 'number') {
+    if (typeof budgetBytes === 'number') {
+      tooltip.appendMarkdown(`Usage: ${formatBytes(usedBytes)} / ${formatBytes(budgetBytes)}`);
+    } else {
+      tooltip.appendMarkdown(`Usage: ${formatBytes(usedBytes)}`);
+    }
+
+    if (typeof pct === 'number') {
+      tooltip.appendMarkdown(` (${pct}%)`);
+    }
+  } else {
+    tooltip.appendMarkdown('Usage: unavailable');
+  }
+
+  return tooltip;
+}
+
+function formatError(err: unknown): string {
+  if (err instanceof Error) {
+    return err.message;
+  }
+  if (typeof err === 'string') {
+    return err;
+  }
+  if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string') {
+    return (err as { message: string }).message;
+  }
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return String(err);
+  }
+}
+
+function isMethodNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') {
+    return false;
+  }
+
+  const code = (err as { code?: unknown }).code;
+  if (code === -32601) {
+    return true;
+  }
+
+  const message = (err as { message?: unknown }).message;
+  return typeof message === 'string' && message.toLowerCase().includes('method not found');
 }
