@@ -22,6 +22,7 @@ use nova_fuzzy::FuzzyMatcher;
 use nova_types::{Diagnostic, Severity, Span};
 use serde_json::json;
 
+use crate::framework_cache;
 use crate::lombok_intel;
 use crate::micronaut_intel;
 use crate::spring_di;
@@ -205,6 +206,37 @@ fn cursor_inside_value_placeholder(java_source: &str, cursor: usize) -> bool {
     rel_cursor <= key_end_rel
 }
 
+fn spring_value_completion_applicable(db: &dyn Database, file: FileId, java_source: &str) -> bool {
+    let Some(path) = db.file_path(file) else {
+        return java_source.contains("org.springframework");
+    };
+
+    let root = if path.exists() {
+        framework_cache::project_root_for_path(path)
+    } else {
+        // Best-effort fallback for in-memory DB fixtures: if the file path has a
+        // `src/` segment, treat its parent as the project root.
+        let dir = if path.is_file() {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        };
+        dir.ancestors()
+            .find_map(|ancestor| {
+                if ancestor.file_name().and_then(|n| n.to_str()) == Some("src") {
+                    ancestor.parent().map(Path::to_path_buf)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| dir.to_path_buf())
+    };
+
+    framework_cache::project_config(&root)
+        .is_some_and(|cfg| nova_framework_spring::is_spring_applicable(cfg.as_ref()))
+        || java_source.contains("org.springframework")
+}
+
 // -----------------------------------------------------------------------------
 // Diagnostics
 // -----------------------------------------------------------------------------
@@ -374,10 +406,10 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
     {
         if cursor_inside_value_placeholder(text, offset) {
-            // Only attempt Spring `@Value` completions when the file appears to use
-            // Spring (`import org.springframework...`). Micronaut also has `@Value`,
-            // so we gate this to allow a Micronaut-specific fallback.
-            if text.contains("org.springframework.beans.factory.annotation") {
+            // Only attempt Spring `@Value` completions when the project is likely a
+            // Spring workspace. Micronaut also has `@Value`, so this guard ensures
+            // Micronaut projects don't get Spring-key completions.
+            if spring_value_completion_applicable(db, file, text) {
                 let index = spring_workspace_index(db);
                 let items =
                     nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
