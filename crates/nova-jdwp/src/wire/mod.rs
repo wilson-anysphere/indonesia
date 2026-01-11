@@ -5,6 +5,7 @@
 
 mod client;
 mod codec;
+pub mod inspect;
 pub mod types;
 
 pub use client::{EventModifier, JdwpClient, JdwpClientConfig};

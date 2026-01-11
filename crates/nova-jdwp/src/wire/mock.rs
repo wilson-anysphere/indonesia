@@ -130,7 +130,11 @@ const FOO_CLASS_ID: u64 = 0x3002;
 const METHOD_ID: u64 = 0x4001;
 const OBJECT_ID: u64 = 0x5001;
 const EXCEPTION_ID: u64 = 0x5002;
+const STRING_OBJECT_ID: u64 = 0x5003;
+const ARRAY_OBJECT_ID: u64 = 0x5004;
 const OBJECT_CLASS_ID: u64 = 0x6001;
+const STRING_CLASS_ID: u64 = 0x6002;
+const ARRAY_CLASS_ID: u64 = 0x6003;
 const FIELD_ID: u64 = 0x7001;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,9 +351,17 @@ async fn handle_packet(
         }
         // ReferenceType.Signature
         (2, 1) => {
-            let _class_id = r.read_reference_type_id(sizes).unwrap_or(0);
+            let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            w.write_string("LMain;");
+            let sig = match class_id {
+                CLASS_ID => "LMain;",
+                FOO_CLASS_ID => "Lcom/example/Foo;",
+                OBJECT_CLASS_ID => "LObject;",
+                STRING_CLASS_ID => "Ljava/lang/String;",
+                ARRAY_CLASS_ID => "[I",
+                _ => "LObject;",
+            };
+            w.write_string(sig);
             (0, w.into_vec())
         }
         // ReferenceType.Methods
@@ -396,7 +408,7 @@ async fn handle_packet(
             let _method_id = r.read_id(sizes.method_id).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_u32(0); // arg count
-            w.write_u32(2); // slots
+            w.write_u32(4); // slots
 
             // int x (slot 0)
             w.write_u64(0);
@@ -411,6 +423,20 @@ async fn handle_packet(
             w.write_string("LObject;");
             w.write_u32(10);
             w.write_u32(1);
+
+            // String s (slot 2)
+            w.write_u64(0);
+            w.write_string("s");
+            w.write_string("Ljava/lang/String;");
+            w.write_u32(10);
+            w.write_u32(2);
+
+            // int[] arr (slot 3)
+            w.write_u64(0);
+            w.write_string("arr");
+            w.write_string("[I");
+            w.write_u32(10);
+            w.write_u32(3);
 
             (0, w.into_vec())
         }
@@ -437,6 +463,15 @@ async fn handle_packet(
                         w.write_u8(b'L');
                         w.write_object_id(OBJECT_ID, sizes);
                     }
+                    (2, _) => {
+                        // String values are tagged as `s` (JDWP Tag.STRING) in replies.
+                        w.write_u8(b's');
+                        w.write_object_id(STRING_OBJECT_ID, sizes);
+                    }
+                    (3, _) => {
+                        w.write_u8(b'[');
+                        w.write_object_id(ARRAY_OBJECT_ID, sizes);
+                    }
                     _ => {
                         w.write_u8(b'V');
                     }
@@ -446,9 +481,27 @@ async fn handle_packet(
         }
         // ObjectReference.ReferenceType
         (9, 1) => {
-            let _object_id = r.read_object_id(sizes).unwrap_or(0);
+            let object_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            w.write_reference_type_id(OBJECT_CLASS_ID, sizes);
+            match object_id {
+                OBJECT_ID => {
+                    w.write_u8(1); // TypeTag.CLASS
+                    w.write_reference_type_id(OBJECT_CLASS_ID, sizes);
+                }
+                STRING_OBJECT_ID => {
+                    w.write_u8(1); // TypeTag.CLASS
+                    w.write_reference_type_id(STRING_CLASS_ID, sizes);
+                }
+                ARRAY_OBJECT_ID => {
+                    w.write_u8(3); // TypeTag.ARRAY
+                    w.write_reference_type_id(ARRAY_CLASS_ID, sizes);
+                }
+                _ => {
+                    // Default to a generic class reference type for unknown object ids.
+                    w.write_u8(1);
+                    w.write_reference_type_id(OBJECT_CLASS_ID, sizes);
+                }
+            }
             (0, w.into_vec())
         }
         // ObjectReference.GetValues
@@ -483,6 +536,35 @@ async fn handle_packet(
             let _object_id = r.read_object_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
             w.write_string("mock string");
+            (0, w.into_vec())
+        }
+        // ArrayReference.Length
+        (13, 1) => {
+            let array_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            let len = match array_id {
+                ARRAY_OBJECT_ID => 3,
+                _ => 0,
+            };
+            w.write_i32(len);
+            (0, w.into_vec())
+        }
+        // ArrayReference.GetValues
+        (13, 2) => {
+            let array_id = r.read_object_id(sizes).unwrap_or(0);
+            let first_index = r.read_i32().unwrap_or(0);
+            let length = r.read_i32().unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            if array_id == ARRAY_OBJECT_ID {
+                w.write_u8(b'I'); // element tag
+                w.write_u32(length.max(0) as u32);
+                for idx in 0..length.max(0) {
+                    w.write_i32(first_index + idx);
+                }
+            } else {
+                w.write_u8(b'V');
+                w.write_u32(0);
+            }
             (0, w.into_vec())
         }
         // EventRequest.Set

@@ -437,6 +437,34 @@ where
                             Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
                         }
                     }
+                    "nova/pinObject" => {
+                        let variables_reference = request
+                            .arguments
+                            .get("variablesReference")
+                            .and_then(|v| v.as_i64())
+                            .ok_or_else(|| DebuggerError::InvalidRequest("pinObject.variablesReference is required".to_string()))?;
+                        let pinned = request
+                            .arguments
+                            .get("pinned")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let mut guard = debugger.lock().await;
+                        let Some(dbg) = guard.as_mut() else {
+                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
+                            continue;
+                        };
+                        match dbg.set_object_pinned(variables_reference, pinned).await {
+                            Ok(pinned) => send_response(
+                                &out_tx,
+                                &seq,
+                                &request,
+                                true,
+                                Some(json!({ "pinned": pinned })),
+                                None,
+                            ),
+                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
+                        }
+                    }
                     "disconnect" => {
                         let mut guard = debugger.lock().await;
                         if let Some(mut dbg) = guard.take() {

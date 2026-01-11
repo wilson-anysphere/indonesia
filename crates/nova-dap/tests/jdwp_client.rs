@@ -20,14 +20,14 @@ async fn jdwp_client_can_handshake_and_fetch_values() {
         .method_variable_table(frame.location.class_id, frame.location.method_id)
         .await
         .unwrap();
-    assert_eq!(vars.len(), 2);
+    assert_eq!(vars.len(), 4);
 
     let slots: Vec<(u32, String)> = vars.iter().map(|v| (v.slot, v.signature.clone())).collect();
     let values = client
         .stack_frame_get_values(thread, frame.frame_id, &slots)
         .await
         .unwrap();
-    assert_eq!(values.len(), 2);
+    assert_eq!(values.len(), 4);
     assert_eq!(values[0], JdwpValue::Int(42));
 
     let object_id = match values[1] {
@@ -49,6 +49,28 @@ async fn jdwp_client_can_handshake_and_fetch_values() {
         .unwrap();
     assert_eq!(field_values.len(), 1);
     assert_eq!(field_values[0], JdwpValue::Int(7));
+
+    // String reference value.
+    let string_id = match values[2] {
+        JdwpValue::Object { id, .. } => id,
+        _ => panic!("expected string object value"),
+    };
+    let string_value = client.string_reference_value(string_id).await.unwrap();
+    assert_eq!(string_value, "mock string");
+
+    // Array length + values.
+    let array_id = match values[3] {
+        JdwpValue::Object { id, .. } => id,
+        _ => panic!("expected array object value"),
+    };
+    let len = client.array_reference_length(array_id).await.unwrap();
+    assert_eq!(len, 3);
+    let values = client.array_reference_get_values(array_id, 0, 3).await.unwrap();
+    assert_eq!(values, vec![JdwpValue::Int(0), JdwpValue::Int(1), JdwpValue::Int(2)]);
+
+    // Object pinning primitives.
+    client.object_reference_disable_collection(object_id).await.unwrap();
+    client.object_reference_enable_collection(object_id).await.unwrap();
 }
 
 #[tokio::test]

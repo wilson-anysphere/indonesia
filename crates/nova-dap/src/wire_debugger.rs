@@ -9,9 +9,12 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
 use nova_jdwp::wire::{
+    inspect::{Inspector, ObjectKindPreview, ERROR_INVALID_OBJECT},
     ClassInfo, EventModifier, FrameInfo, JdwpClient, JdwpError, JdwpEvent, JdwpValue, LineTable,
     Location, MethodInfo, ObjectId, ReferenceTypeId, ThreadId, VariableInfo,
 };
+
+use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
 
 #[derive(Debug, Error)]
 pub enum DebuggerError {
@@ -52,8 +55,6 @@ struct FrameHandle {
 #[derive(Debug, Clone)]
 enum VarRef {
     FrameLocals(FrameHandle),
-    ObjectFields(ObjectId),
-    ArrayElements(ObjectId),
 }
 
 struct HandleTable<T> {
@@ -85,6 +86,8 @@ impl<T> HandleTable<T> {
 
 pub struct Debugger {
     jdwp: JdwpClient,
+    inspector: Inspector,
+    objects: ObjectRegistry,
     breakpoints: HashMap<String, Vec<BreakpointEntry>>,
     requested_breakpoints: HashMap<String, Vec<i32>>,
     class_prepare_request: Option<i32>,
@@ -112,6 +115,8 @@ impl Debugger {
         let jdwp = JdwpClient::connect(addr).await?;
 
         let mut dbg = Self {
+            inspector: Inspector::new(jdwp.clone()),
+            objects: ObjectRegistry::new(),
             jdwp,
             breakpoints: HashMap::new(),
             requested_breakpoints: HashMap::new(),
@@ -223,12 +228,20 @@ impl Debugger {
 
         let locals_ref = self.var_handles.alloc(VarRef::FrameLocals(frame));
 
-        Ok(vec![json!({
-            "name": "Locals",
-            "presentationHint": "locals",
-            "variablesReference": locals_ref,
-            "expensive": false,
-        })])
+        Ok(vec![
+            json!({
+                "name": "Locals",
+                "presentationHint": "locals",
+                "variablesReference": locals_ref,
+                "expensive": false,
+            }),
+            json!({
+                "name": "Pinned Objects",
+                "presentationHint": "pinned",
+                "variablesReference": PINNED_SCOPE_REF,
+                "expensive": false,
+            }),
+        ])
     }
 
     pub async fn variables(
@@ -237,14 +250,20 @@ impl Debugger {
         start: Option<i64>,
         count: Option<i64>,
     ) -> Result<Vec<serde_json::Value>> {
+        if variables_reference == PINNED_SCOPE_REF {
+            return self.pinned_variables().await;
+        }
+
+        if let Some(handle) = self.objects.handle_from_variables_reference(variables_reference) {
+            return self.object_variables(handle, start, count).await;
+        }
+
         let Some(var_ref) = self.var_handles.get(variables_reference).cloned() else {
             return Ok(Vec::new());
         };
 
         match var_ref {
             VarRef::FrameLocals(frame) => self.locals_variables(&frame).await,
-            VarRef::ObjectFields(object_id) => self.object_fields(object_id).await,
-            VarRef::ArrayElements(array_id) => self.array_elements(array_id, start, count).await,
         }
     }
 
@@ -525,69 +544,86 @@ impl Debugger {
 
         let mut out = Vec::with_capacity(in_scope.len());
         for (var, value) in in_scope.into_iter().zip(values.into_iter()) {
-            out.push(self.render_variable(var.name, value));
+            out.push(
+                self.render_variable(var.name, value, Some(signature_to_type_name(&var.signature)))
+                    .await?,
+            );
         }
         Ok(out)
     }
 
-    async fn object_fields(&mut self, object_id: ObjectId) -> Result<Vec<serde_json::Value>> {
-        if object_id == 0 {
-            return Ok(Vec::new());
-        }
-        let class_id = self.jdwp.object_reference_reference_type(object_id).await?;
-        let fields = self.jdwp.reference_type_fields(class_id).await?;
-        let field_ids: Vec<u64> = fields.iter().map(|f| f.field_id).collect();
-        let values = self
-            .jdwp
-            .object_reference_get_values(object_id, &field_ids)
-            .await?;
-        let mut out = Vec::with_capacity(fields.len());
-        for (field, value) in fields.into_iter().zip(values.into_iter()) {
-            out.push(self.render_variable(field.name, value));
-        }
-        Ok(out)
-    }
-
-    async fn array_elements(
+    async fn object_variables(
         &mut self,
-        array_id: ObjectId,
-        start: Option<i64>,
-        count: Option<i64>,
+        handle: ObjectHandle,
+        _start: Option<i64>,
+        _count: Option<i64>,
     ) -> Result<Vec<serde_json::Value>> {
-        if array_id == 0 {
+        let Some(object_id) = self.objects.object_id(handle) else {
             return Ok(Vec::new());
-        }
-        let total = self.jdwp.array_reference_length(array_id).await? as i64;
-        let start = start.unwrap_or(0).clamp(0, total);
-        let count = count.unwrap_or(100).clamp(0, total - start);
-        let values = self
-            .jdwp
-            .array_reference_get_values(array_id, start as i32, count as i32)
-            .await?;
+        };
 
-        let mut out = Vec::with_capacity(values.len());
-        for (idx, value) in (start..start + count).zip(values.into_iter()) {
-            out.push(self.render_variable(format!("[{idx}]"), value));
+        let children = match self.inspector.object_children(object_id).await {
+            Ok(children) => children,
+            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                self.objects.mark_invalid_object_id(object_id);
+                return Ok(vec![invalid_collected_variable()]);
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let mut out = Vec::with_capacity(children.len());
+        for child in children {
+            out.push(
+                self.render_variable(child.name, child.value, child.static_type)
+                    .await?,
+            );
         }
         Ok(out)
     }
 
-    fn render_variable(&mut self, name: impl Into<String>, value: JdwpValue) -> serde_json::Value {
-        let name = name.into();
-        match value {
-            JdwpValue::Object { tag, id } => {
-                if id == 0 {
-                    json!({"name": name, "value": "null", "variablesReference": 0})
-                } else if tag == b'[' {
-                    let ref_id = self.var_handles.alloc(VarRef::ArrayElements(id));
-                    json!({"name": name, "value": format!("array@0x{id:x}"), "variablesReference": ref_id})
-                } else {
-                    let ref_id = self.var_handles.alloc(VarRef::ObjectFields(id));
-                    json!({"name": name, "value": format!("object@0x{id:x}"), "variablesReference": ref_id})
-                }
-            }
-            v => json!({"name": name, "value": v.to_string(), "variablesReference": 0}),
+    async fn pinned_variables(&mut self) -> Result<Vec<serde_json::Value>> {
+        let pinned: Vec<_> = self.objects.pinned_handles().collect();
+        let mut vars = Vec::with_capacity(pinned.len());
+
+        for handle in pinned {
+            let Some(object_id) = self.objects.object_id(handle) else {
+                continue;
+            };
+
+            let value = JdwpValue::Object { tag: b'L', id: object_id };
+            let formatted = self.format_value(&value, None, 0).await?;
+            vars.push(variable_json(
+                handle.to_string(),
+                formatted.value,
+                formatted.type_name,
+                formatted.variables_reference,
+                Some(format!("__novaPinned[{}]", handle.as_u32())),
+                Some(json!({
+                    "kind": "data",
+                    "attributes": ["pinned"],
+                })),
+            ));
         }
+
+        Ok(vars)
+    }
+
+    async fn render_variable(
+        &mut self,
+        name: impl Into<String>,
+        value: JdwpValue,
+        static_type: Option<String>,
+    ) -> Result<serde_json::Value> {
+        let name = name.into();
+        let formatted = self.format_value(&value, static_type.as_deref(), 0).await?;
+        Ok(variable_json(
+            name.clone(),
+            formatted.value,
+            formatted.type_name,
+            formatted.variables_reference,
+            Some(name),
+            formatted.presentation_hint,
+        ))
     }
 
     async fn location_for_line(
@@ -661,6 +697,56 @@ impl Debugger {
             let _ = self.jdwp.event_request_clear(4, request_id).await;
         }
     }
+
+    pub async fn set_object_pinned(&mut self, variables_reference: i64, pinned: bool) -> Result<bool> {
+        let Some(handle) = ObjectHandle::from_variables_reference(variables_reference) else {
+            return Ok(false);
+        };
+
+        if pinned {
+            self.pin_object(handle).await?;
+        } else {
+            self.unpin_object(handle).await?;
+        }
+
+        Ok(pinned)
+    }
+
+    async fn pin_object(&mut self, handle: ObjectHandle) -> Result<()> {
+        let Some(object_id) = self.objects.object_id(handle) else {
+            return Ok(());
+        };
+
+        match self.jdwp.object_reference_disable_collection(object_id).await {
+            Ok(()) => {}
+            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                self.objects.mark_invalid_object_id(object_id);
+            }
+            Err(err) => return Err(err.into()),
+        }
+
+        self.objects.pin(handle);
+        Ok(())
+    }
+
+    async fn unpin_object(&mut self, handle: ObjectHandle) -> Result<()> {
+        if !self.objects.is_pinned(handle) {
+            return Ok(());
+        }
+
+        if let Some(object_id) = self.objects.object_id(handle) {
+            match self.jdwp.object_reference_enable_collection(object_id).await {
+                Ok(()) => {}
+                Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                    self.objects.mark_invalid_object_id(object_id);
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+
+        self.objects.unpin(handle);
+        Ok(())
+    }
 }
 
 fn is_identifier(s: &str) -> bool {
@@ -677,3 +763,328 @@ fn is_identifier(s: &str) -> bool {
 // `serde_json::Value` isn't in scope by default in this module, but we use it in evaluate to avoid
 // repeated `serde_json::json!` conversions.
 use serde_json::Value;
+
+#[derive(Clone, Debug)]
+struct FormattedValue {
+    value: String,
+    type_name: Option<String>,
+    variables_reference: i64,
+    presentation_hint: Option<Value>,
+}
+
+impl Debugger {
+    async fn format_value(&mut self, value: &JdwpValue, static_type: Option<&str>, depth: usize) -> Result<FormattedValue> {
+        let (display, variables_reference, presentation_hint, runtime_type) =
+            self.format_value_display(value, static_type, depth).await?;
+
+        Ok(FormattedValue {
+            value: display,
+            type_name: static_type
+                .map(|s| s.to_string())
+                .or_else(|| value_type_name(value, runtime_type.as_deref())),
+            variables_reference,
+            presentation_hint,
+        })
+    }
+
+    async fn format_value_display(
+        &mut self,
+        value: &JdwpValue,
+        static_type: Option<&str>,
+        depth: usize,
+    ) -> Result<(String, i64, Option<Value>, Option<String>)> {
+        match value {
+            JdwpValue::Void => Ok(("void".to_string(), 0, None, None)),
+            JdwpValue::Boolean(v) => Ok((v.to_string(), 0, None, None)),
+            JdwpValue::Byte(v) => Ok((v.to_string(), 0, None, None)),
+            JdwpValue::Short(v) => Ok((v.to_string(), 0, None, None)),
+            JdwpValue::Int(v) => Ok((v.to_string(), 0, None, None)),
+            JdwpValue::Long(v) => Ok((v.to_string(), 0, None, None)),
+            JdwpValue::Float(v) => Ok((trim_float(*v as f64), 0, None, None)),
+            JdwpValue::Double(v) => Ok((trim_float(*v), 0, None, None)),
+            JdwpValue::Char(v) => Ok((format!("'{}'", decode_java_char(*v)), 0, None, None)),
+            JdwpValue::Object { id: 0, .. } => Ok(("null".to_string(), 0, None, None)),
+            JdwpValue::Object { id, .. } => self.format_object(*id, static_type, depth).await,
+        }
+    }
+
+    async fn format_object(
+        &mut self,
+        object_id: ObjectId,
+        static_type: Option<&str>,
+        depth: usize,
+    ) -> Result<(String, i64, Option<Value>, Option<String>)> {
+        let fallback_runtime = static_type.unwrap_or("<object>").to_string();
+
+        let runtime_type = match self.inspector.runtime_type_name(object_id).await {
+            Ok(t) => t,
+            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                let handle = self.objects.track_object(object_id, &fallback_runtime);
+                self.objects.mark_invalid_object_id(object_id);
+                let ty = self
+                    .objects
+                    .runtime_type(handle)
+                    .map(simple_type_name)
+                    .unwrap_or("<object>");
+                return Ok((
+                    format!("{ty}{handle} <collected>"),
+                    handle.as_variables_reference(),
+                    Some(json!({
+                        "kind": "virtual",
+                        "attributes": ["invalid"],
+                    })),
+                    Some(fallback_runtime),
+                ));
+            }
+            Err(_err) => fallback_runtime.clone(),
+        };
+
+        let handle = self.objects.track_object(object_id, &runtime_type);
+        let variables_reference = handle.as_variables_reference();
+
+        if depth >= 2 {
+            return Ok((
+                format!("{}{handle}", simple_type_name(&runtime_type)),
+                variables_reference,
+                None,
+                Some(runtime_type),
+            ));
+        }
+
+        let preview = match self.inspector.preview_object(object_id).await {
+            Ok(preview) => preview,
+            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                self.objects.mark_invalid_object_id(object_id);
+                let ty = self
+                    .objects
+                    .runtime_type(handle)
+                    .map(simple_type_name)
+                    .unwrap_or("<object>");
+                return Ok((
+                    format!("{ty}{handle} <collected>"),
+                    variables_reference,
+                    Some(json!({
+                        "kind": "virtual",
+                        "attributes": ["invalid"],
+                    })),
+                    Some(runtime_type),
+                ));
+            }
+            Err(_err) => {
+                return Ok((
+                    format!("{}{handle}", simple_type_name(&runtime_type)),
+                    variables_reference,
+                    Some(json!({ "kind": "data" })),
+                    Some(runtime_type),
+                ));
+            }
+        };
+
+        // Ensure the registry sees the most specific runtime type.
+        let handle = self.objects.track_object(object_id, &preview.runtime_type);
+        let variables_reference = handle.as_variables_reference();
+
+        let runtime_simple = simple_type_name(&preview.runtime_type).to_string();
+        let value = match preview.kind {
+            ObjectKindPreview::Plain => format!("{runtime_simple}{handle}"),
+            ObjectKindPreview::String { value } => {
+                let escaped = escape_java_string(&value, 80);
+                format!("\"{escaped}\"{handle}")
+            }
+            ObjectKindPreview::PrimitiveWrapper { ref value } => {
+                let inner = self.format_inline(value, depth + 1).await?;
+                format!("{runtime_simple}{handle}({inner})")
+            }
+            ObjectKindPreview::Array {
+                element_type,
+                length,
+                sample,
+            } => {
+                let sample = self.format_sample_list(&sample, depth + 1).await?;
+                let element = simple_type_name(&element_type);
+                format!("{element}[{length}]{handle} {{{sample}}}")
+            }
+            ObjectKindPreview::List { size, sample } => {
+                let sample = self.format_sample_list(&sample, depth + 1).await?;
+                format!("{runtime_simple}{handle}(size={size}) [{sample}]")
+            }
+            ObjectKindPreview::Set { size, sample } => {
+                let sample = self.format_sample_list(&sample, depth + 1).await?;
+                format!("{runtime_simple}{handle}(size={size}) [{sample}]")
+            }
+            ObjectKindPreview::Map { size, sample } => {
+                let sample = self.format_sample_map(&sample, depth + 1).await?;
+                format!("{runtime_simple}{handle}(size={size}) {{{sample}}}")
+            }
+            ObjectKindPreview::Optional { value } => match value {
+                Some(inner) => {
+                    let inner = self.format_inline(&inner, depth + 1).await?;
+                    format!("{runtime_simple}{handle}[{inner}]")
+                }
+                None => format!("{runtime_simple}{handle}.empty"),
+            },
+            ObjectKindPreview::Stream { size } => match size {
+                Some(size) => format!("{runtime_simple}{handle}(size={size})"),
+                None => format!("{runtime_simple}{handle}(size=unknown)"),
+            },
+        };
+
+        Ok((
+            value,
+            variables_reference,
+            Some(json!({ "kind": "data" })),
+            Some(preview.runtime_type),
+        ))
+    }
+
+    async fn format_inline(&mut self, value: &JdwpValue, depth: usize) -> Result<String> {
+        let (display, _ref, _hint, _rt) = self.format_value_display(value, None, depth).await?;
+        Ok(display)
+    }
+
+    async fn format_sample_list(&mut self, sample: &[JdwpValue], depth: usize) -> Result<String> {
+        let mut out = Vec::new();
+        for value in sample.iter().take(3) {
+            out.push(self.format_inline(value, depth).await?);
+        }
+        Ok(out.join(", "))
+    }
+
+    async fn format_sample_map(&mut self, sample: &[(JdwpValue, JdwpValue)], depth: usize) -> Result<String> {
+        let mut out = Vec::new();
+        for (k, v) in sample.iter().take(3) {
+            let key = self.format_inline(k, depth).await?;
+            let val = self.format_inline(v, depth).await?;
+            out.push(format!("{key}={val}"));
+        }
+        Ok(out.join(", "))
+    }
+}
+
+fn variable_json(
+    name: String,
+    value: String,
+    type_name: Option<String>,
+    variables_reference: i64,
+    evaluate_name: Option<String>,
+    presentation_hint: Option<Value>,
+) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("name".to_string(), json!(name));
+    obj.insert("value".to_string(), json!(value));
+    obj.insert("variablesReference".to_string(), json!(variables_reference));
+    if let Some(type_name) = type_name {
+        obj.insert("type".to_string(), json!(type_name));
+    }
+    if let Some(evaluate_name) = evaluate_name {
+        obj.insert("evaluateName".to_string(), json!(evaluate_name));
+    }
+    if let Some(hint) = presentation_hint {
+        obj.insert("presentationHint".to_string(), hint);
+    }
+    Value::Object(obj)
+}
+
+fn invalid_collected_variable() -> Value {
+    variable_json(
+        "<collected>".to_string(),
+        "<collected>".to_string(),
+        None,
+        0,
+        None,
+        Some(json!({
+            "kind": "virtual",
+            "attributes": ["invalid"],
+        })),
+    )
+}
+
+fn signature_to_type_name(signature: &str) -> String {
+    let mut sig = signature;
+    let mut dims = 0usize;
+    while let Some(rest) = sig.strip_prefix('[') {
+        dims += 1;
+        sig = rest;
+    }
+
+    let base = if let Some(class) = sig.strip_prefix('L').and_then(|s| s.strip_suffix(';')) {
+        class.replace('/', ".")
+    } else {
+        match sig.as_bytes().first().copied() {
+            Some(b'B') => "byte".to_string(),
+            Some(b'C') => "char".to_string(),
+            Some(b'D') => "double".to_string(),
+            Some(b'F') => "float".to_string(),
+            Some(b'I') => "int".to_string(),
+            Some(b'J') => "long".to_string(),
+            Some(b'S') => "short".to_string(),
+            Some(b'Z') => "boolean".to_string(),
+            Some(b'V') => "void".to_string(),
+            _ => "<unknown>".to_string(),
+        }
+    };
+
+    let mut out = base;
+    for _ in 0..dims {
+        out.push_str("[]");
+    }
+    out
+}
+
+fn simple_type_name(full: &str) -> &str {
+    let tail = full.rsplit('.').next().unwrap_or(full);
+    tail.rsplit('$').next().unwrap_or(tail)
+}
+
+fn value_type_name(value: &JdwpValue, runtime_type: Option<&str>) -> Option<String> {
+    Some(match value {
+        JdwpValue::Void => "void".to_string(),
+        JdwpValue::Boolean(_) => "boolean".to_string(),
+        JdwpValue::Byte(_) => "byte".to_string(),
+        JdwpValue::Short(_) => "short".to_string(),
+        JdwpValue::Int(_) => "int".to_string(),
+        JdwpValue::Long(_) => "long".to_string(),
+        JdwpValue::Float(_) => "float".to_string(),
+        JdwpValue::Double(_) => "double".to_string(),
+        JdwpValue::Char(_) => "char".to_string(),
+        JdwpValue::Object { id: 0, .. } => return None,
+        JdwpValue::Object { .. } => runtime_type.unwrap_or("<object>").to_string(),
+    })
+}
+
+fn trim_float(value: f64) -> String {
+    if value.is_nan() || value.is_infinite() {
+        return value.to_string();
+    }
+    if value.fract() == 0.0 {
+        format!("{:.0}", value)
+    } else {
+        value.to_string()
+    }
+}
+
+fn decode_java_char(code_unit: u16) -> char {
+    std::char::from_u32(code_unit as u32).unwrap_or('\u{FFFD}')
+}
+
+fn escape_java_string(input: &str, max_len: usize) -> String {
+    let mut out = String::new();
+    let mut chars = input.chars();
+    let mut used = 0usize;
+    while let Some(ch) = chars.next() {
+        if used >= max_len {
+            out.push('…');
+            break;
+        }
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\"' => out.push_str("\\\\\""),
+            '\n' => out.push_str("\\\\n"),
+            '\r' => out.push_str("\\\\r"),
+            '\t' => out.push_str("\\\\t"),
+            _ => out.push(ch),
+        }
+        used += 1;
+    }
+    out
+}

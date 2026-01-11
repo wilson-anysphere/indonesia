@@ -466,7 +466,37 @@ impl JdwpClient {
         w.write_object_id(object_id, &sizes);
         let payload = self.send_command_raw(9, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
+        // JDWP spec: ObjectReference.ReferenceType reply starts with a `refTypeTag` byte.
+        let _ref_type_tag = r.read_u8()?;
         r.read_reference_type_id(&sizes)
+    }
+
+    /// StringReference.Value (10, 1)
+    pub async fn string_reference_value(&self, string_id: ObjectId) -> Result<String> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(string_id, &sizes);
+        let payload = self.send_command_raw(10, 1, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_string()
+    }
+
+    /// ObjectReference.DisableCollection (9, 7)
+    pub async fn object_reference_disable_collection(&self, object_id: ObjectId) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(object_id, &sizes);
+        let _ = self.send_command_raw(9, 7, w.into_vec()).await?;
+        Ok(())
+    }
+
+    /// ObjectReference.EnableCollection (9, 8)
+    pub async fn object_reference_enable_collection(&self, object_id: ObjectId) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(object_id, &sizes);
+        let _ = self.send_command_raw(9, 8, w.into_vec()).await?;
+        Ok(())
     }
 
     pub async fn reference_type_fields(&self, class_id: ReferenceTypeId) -> Result<Vec<FieldInfo>> {
@@ -561,10 +591,11 @@ impl JdwpClient {
         w.write_i32(length);
         let payload = self.send_command_raw(13, 2, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
+        // JDWP spec: ArrayReference.GetValues reply contains a single element tag, followed by the values.
+        let tag = r.read_u8()?;
         let count = r.read_u32()? as usize;
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
-            let tag = r.read_u8()?;
             values.push(r.read_value(tag, &sizes)?);
         }
         Ok(values)
