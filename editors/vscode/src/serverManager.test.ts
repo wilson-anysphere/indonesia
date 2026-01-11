@@ -15,6 +15,12 @@ describe('serverManager helpers', () => {
       apiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
     });
 
+    expect(parseGitHubRepo('wilson-anysphere/indonesia/')).toEqual({
+      owner: 'wilson-anysphere',
+      repo: 'indonesia',
+      apiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
+    });
+
     expect(parseGitHubRepo('https://github.com/wilson-anysphere/indonesia')).toEqual({
       owner: 'wilson-anysphere',
       repo: 'indonesia',
@@ -107,6 +113,81 @@ describe('ServerManager install flow', () => {
     expect(result).toEqual({ path: '/storage/server/nova-lsp', version: 'v0.1.0' });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(extractor.extractBinaryFromArchive).not.toHaveBeenCalled();
+  });
+
+  it('selects the latest prerelease when version is latest and releaseChannel is prerelease', async () => {
+    const { Volume, createFsFromVolume } = await import('memfs');
+    const vol = new Volume();
+    const memfs = createFsFromVolume(vol) as typeof import('node:fs');
+
+    vi.doMock('node:fs/promises', () => memfs.promises as unknown as typeof import('node:fs/promises'));
+    vi.doMock('node:fs', () => memfs);
+
+    const { ServerManager } = await import('./serverManager');
+
+    const archiveName = 'nova-lsp-x86_64-unknown-linux-gnu.tar.xz';
+    const archive = Buffer.from('fake-archive-contents');
+    const archiveBytes = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength);
+    const sha256 = await (async () => {
+      const { createHash } = await import('node:crypto');
+      return createHash('sha256').update(archive).digest('hex');
+    })();
+
+    const prereleaseTag = 'v0.2.0-beta.1';
+
+    const releases = [
+      { tag_name: 'v0.1.0', draft: false, prerelease: false, assets: [] },
+      { tag_name: prereleaseTag, draft: false, prerelease: true, assets: [] },
+    ];
+
+    const release = {
+      tag_name: prereleaseTag,
+      assets: [
+        { name: archiveName, browser_download_url: 'https://example.invalid/archive' },
+        { name: `${archiveName}.sha256`, browser_download_url: 'https://example.invalid/archive.sha256' },
+      ],
+    };
+
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.endsWith('/releases?per_page=20')) {
+        return { ok: true, status: 200, json: async () => releases } as unknown as Response;
+      }
+      if (url.endsWith(`/releases/tags/${encodeURIComponent(prereleaseTag)}`)) {
+        return { ok: true, status: 200, json: async () => release } as unknown as Response;
+      }
+      if (url === 'https://example.invalid/archive.sha256') {
+        const body = Buffer.from(sha256);
+        const ab = body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength);
+        return { ok: true, status: 200, arrayBuffer: async () => ab } as unknown as Response;
+      }
+      if (url === 'https://example.invalid/archive') {
+        return { ok: true, status: 200, arrayBuffer: async () => archiveBytes } as unknown as Response;
+      }
+      throw new Error(`Unexpected fetch url: ${url}`);
+    });
+
+    const extractor = {
+      extractBinaryFromArchive: vi.fn(async ({ outputPath }: { outputPath: string }) => {
+        await memfs.promises.writeFile(outputPath, 'binary');
+      }),
+    };
+
+    const manager = new ServerManager('/storage', undefined, {
+      fetch: fetchMock as unknown as typeof fetch,
+      platform: 'linux',
+      arch: 'x64',
+      extractor,
+    });
+
+    const result = await manager.installOrUpdate({
+      path: null,
+      autoDownload: true,
+      releaseChannel: 'prerelease',
+      version: 'latest',
+      releaseUrl: 'wilson-anysphere/indonesia',
+    });
+
+    expect(result.version).toBe(prereleaseTag);
   });
 
   it('downloads, verifies, and installs nova-lsp', async () => {

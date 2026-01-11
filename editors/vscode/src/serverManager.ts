@@ -227,7 +227,7 @@ type InstalledServerMetadata = {
 };
 
 export function parseGitHubRepo(input: string): GitHubRepo | undefined {
-  const trimmed = input.trim();
+  const trimmed = input.trim().replace(/\/+$/, '');
   if (!trimmed) {
     return undefined;
   }
@@ -341,11 +341,13 @@ async function resolveTag(opts: {
     return release.tag_name;
   }
 
-  const releases = await fetchJson<Array<GitHubRelease & { draft?: boolean }>>(
+  const releases = await fetchJson<Array<GitHubRelease & { draft?: boolean; prerelease?: boolean }>>(
     opts.fetchImpl,
     `${opts.repo.apiBaseUrl}/releases?per_page=20`,
   );
-  const candidate = releases.find((r) => !r.draft);
+  const candidate =
+    releases.find((r) => !r.draft && r.prerelease) ??
+    releases.find((r) => !r.draft);
   if (!candidate) {
     throw new Error(`No releases found for ${opts.repo.owner}/${opts.repo.repo}`);
   }
