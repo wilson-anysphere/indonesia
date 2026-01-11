@@ -499,6 +499,13 @@ impl<'a> ScopeBuilder<'a> {
             hir::Expr::FieldAccess { receiver, .. } => {
                 self.record_expr_scopes(scope, body, *receiver);
             }
+            hir::Expr::MethodReference { receiver, .. }
+            | hir::Expr::ConstructorReference { receiver, .. } => {
+                self.record_expr_scopes(scope, body, *receiver);
+            }
+            hir::Expr::ClassLiteral { ty, .. } => {
+                self.record_expr_scopes(scope, body, *ty);
+            }
             hir::Expr::Call { callee, args, .. } => {
                 self.record_expr_scopes(scope, body, *callee);
                 for arg in args {

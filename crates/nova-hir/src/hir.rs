@@ -200,6 +200,20 @@ pub enum Expr {
         name_range: Span,
         range: Span,
     },
+    MethodReference {
+        receiver: ExprId,
+        name: String,
+        name_range: Span,
+        range: Span,
+    },
+    ConstructorReference {
+        receiver: ExprId,
+        range: Span,
+    },
+    ClassLiteral {
+        ty: ExprId,
+        range: Span,
+    },
     Call {
         callee: ExprId,
         args: Vec<ExprId>,
@@ -224,6 +238,9 @@ impl Expr {
             | Expr::Literal { range, .. }
             | Expr::Call { range, .. }
             | Expr::FieldAccess { range, .. }
+            | Expr::MethodReference { range, .. }
+            | Expr::ConstructorReference { range, .. }
+            | Expr::ClassLiteral { range, .. }
             | Expr::Binary { range, .. }
             | Expr::Missing { range } => *range,
         }

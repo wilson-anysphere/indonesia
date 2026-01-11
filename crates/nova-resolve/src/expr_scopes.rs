@@ -211,6 +211,12 @@ impl Builder {
             Expr::FieldAccess { receiver, .. } => {
                 self.visit_expr(body, *receiver, scope);
             }
+            Expr::MethodReference { receiver, .. } | Expr::ConstructorReference { receiver, .. } => {
+                self.visit_expr(body, *receiver, scope);
+            }
+            Expr::ClassLiteral { ty, .. } => {
+                self.visit_expr(body, *ty, scope);
+            }
             Expr::Call { callee, args, .. } => {
                 self.visit_expr(body, *callee, scope);
                 for &arg in args {

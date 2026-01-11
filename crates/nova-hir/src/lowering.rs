@@ -466,12 +466,28 @@ impl<'a> BodyLower<'a> {
                 })
             }
             syntax::Expr::MethodReference(expr) => {
-                self.alloc_expr(Expr::Missing { range: expr.range })
+                let receiver = self.lower_expr(&expr.receiver);
+                self.alloc_expr(Expr::MethodReference {
+                    receiver,
+                    name: expr.name.clone(),
+                    name_range: expr.name_range,
+                    range: expr.range,
+                })
             }
             syntax::Expr::ConstructorReference(expr) => {
-                self.alloc_expr(Expr::Missing { range: expr.range })
+                let receiver = self.lower_expr(&expr.receiver);
+                self.alloc_expr(Expr::ConstructorReference {
+                    receiver,
+                    range: expr.range,
+                })
             }
-            syntax::Expr::ClassLiteral(expr) => self.alloc_expr(Expr::Missing { range: expr.range }),
+            syntax::Expr::ClassLiteral(expr) => {
+                let ty = self.lower_expr(&expr.ty);
+                self.alloc_expr(Expr::ClassLiteral {
+                    ty,
+                    range: expr.range,
+                })
+            }
             syntax::Expr::Missing(range) => self.alloc_expr(Expr::Missing { range: *range }),
         }
     }
