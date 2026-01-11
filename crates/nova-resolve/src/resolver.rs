@@ -39,6 +39,13 @@ pub enum TypeResolution {
     External(TypeName),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StaticLookup {
+    Found(StaticMemberId),
+    Ambiguous(Vec<StaticMemberId>),
+    NotFound,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StaticMemberResolution {
     SourceField(FieldId),
@@ -129,6 +136,61 @@ impl<'a> Resolver<'a> {
         self.classpath
             .and_then(|cp| cp.resolve_static_member(owner, name))
             .or_else(|| self.jdk.resolve_static_member(owner, name))
+    }
+
+    /// Resolve a simple name against static imports and report ambiguity.
+    ///
+    /// Follows JLS 7.5.4-style precedence:
+    /// - Single static imports take precedence over static-on-demand imports.
+    /// - If multiple imports introduce different members for the same name, the
+    ///   result is ambiguous.
+    #[must_use]
+    pub fn resolve_static_imports_detailed(&self, imports: &ImportMap, name: &Name) -> StaticLookup {
+        // 1) Explicit single static member imports (shadow star imports).
+        let mut candidates = Vec::<StaticMemberId>::new();
+        for import in &imports.static_single {
+            if &import.imported != name {
+                continue;
+            }
+
+            let Some(owner) = self.resolve_type_in_index(&import.ty) else {
+                continue;
+            };
+            let Some(static_member) = self.resolve_static_member_in_index(&owner, &import.member)
+            else {
+                continue;
+            };
+            if !candidates.contains(&static_member) {
+                candidates.push(static_member);
+            }
+        }
+
+        if !candidates.is_empty() {
+            return if candidates.len() == 1 {
+                StaticLookup::Found(candidates.remove(0))
+            } else {
+                StaticLookup::Ambiguous(candidates)
+            };
+        }
+
+        // 2) Static star imports.
+        for import in &imports.static_star {
+            let Some(owner) = self.resolve_type_in_index(&import.ty) else {
+                continue;
+            };
+            let Some(static_member) = self.resolve_static_member_in_index(&owner, name) else {
+                continue;
+            };
+            if !candidates.contains(&static_member) {
+                candidates.push(static_member);
+            }
+        }
+
+        match candidates.len() {
+            0 => StaticLookup::NotFound,
+            1 => StaticLookup::Found(candidates.remove(0)),
+            _ => StaticLookup::Ambiguous(candidates),
+        }
     }
 
     /// Best-effort validation of import declarations.
@@ -447,50 +509,17 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_static_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
-        // 1) Explicit single static member imports.
-        let mut single_candidates = Vec::new();
-        for import in &imports.static_single {
-            if &import.imported != name {
-                continue;
-            }
-            let Some(owner) = self.resolve_type_in_index(&import.ty) else {
-                continue;
-            };
-            let Some(static_member) = self.resolve_static_member_in_index(&owner, &import.member)
-            else {
-                continue;
-            };
-            single_candidates.push(Resolution::StaticMember(StaticMemberResolution::External(
-                static_member,
-            )));
-        }
-
-        match single_candidates.len() {
-            0 => {}
-            1 => return NameResolution::Resolved(single_candidates.into_iter().next().unwrap()),
-            _ => return NameResolution::Ambiguous(single_candidates),
-        }
-
-        // 2) Static star imports.
-        let mut seen = HashSet::<StaticMemberId>::new();
-        let mut star_candidates = Vec::new();
-        for import in &imports.static_star {
-            let Some(owner) = self.resolve_type_in_index(&import.ty) else {
-                continue;
-            };
-            if let Some(static_member) = self.resolve_static_member_in_index(&owner, name) {
-                if seen.insert(static_member.clone()) {
-                    star_candidates.push(Resolution::StaticMember(
-                        StaticMemberResolution::External(static_member),
-                    ));
-                }
-            }
-        }
-
-        match star_candidates.len() {
-            0 => NameResolution::Unresolved,
-            1 => NameResolution::Resolved(star_candidates.into_iter().next().unwrap()),
-            _ => NameResolution::Ambiguous(star_candidates),
+        match self.resolve_static_imports_detailed(imports, name) {
+            StaticLookup::Found(member) => NameResolution::Resolved(Resolution::StaticMember(
+                StaticMemberResolution::External(member),
+            )),
+            StaticLookup::Ambiguous(members) => NameResolution::Ambiguous(
+                members
+                    .into_iter()
+                    .map(|m| Resolution::StaticMember(StaticMemberResolution::External(m)))
+                    .collect(),
+            ),
+            StaticLookup::NotFound => NameResolution::Unresolved,
         }
     }
 }
@@ -499,6 +528,136 @@ pub(crate) fn append_package(base: &PackageName, name: &Name) -> PackageName {
     let mut next = PackageName::from_dotted(&base.to_dotted());
     next.push(name.clone());
     next
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    use nova_jdk::JdkIndex;
+    use nova_types::Span;
+
+    use crate::import_map::{StaticSingleImport, StaticStarImport};
+
+    #[derive(Default)]
+    struct TestIndex {
+        types: HashMap<String, TypeName>,
+        package_to_types: HashMap<String, HashMap<String, TypeName>>,
+        packages: HashSet<String>,
+        static_members: HashMap<String, HashMap<String, StaticMemberId>>,
+    }
+
+    impl TestIndex {
+        fn add_type(&mut self, package: &str, name: &str) -> TypeName {
+            let fq = if package.is_empty() {
+                name.to_string()
+            } else {
+                format!("{package}.{name}")
+            };
+            let id = TypeName::new(fq.clone());
+            self.types.insert(fq, id.clone());
+            self.packages.insert(package.to_string());
+            self.package_to_types
+                .entry(package.to_string())
+                .or_default()
+                .insert(name.to_string(), id.clone());
+            id
+        }
+
+        fn add_static_member(&mut self, owner: &str, name: &str) -> StaticMemberId {
+            let id = StaticMemberId::new(format!("{owner}::{name}"));
+            self.static_members
+                .entry(owner.to_string())
+                .or_default()
+                .insert(name.to_string(), id.clone());
+            id
+        }
+    }
+
+    impl TypeIndex for TestIndex {
+        fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
+            self.types.get(&name.to_dotted()).cloned()
+        }
+
+        fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
+            self.package_to_types
+                .get(&package.to_dotted())
+                .and_then(|m| m.get(name.as_str()))
+                .cloned()
+        }
+
+        fn package_exists(&self, package: &PackageName) -> bool {
+            self.packages.contains(&package.to_dotted())
+        }
+
+        fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
+            self.static_members
+                .get(owner.as_str())
+                .and_then(|m| m.get(name.as_str()))
+                .cloned()
+        }
+    }
+
+    #[test]
+    fn static_star_import_detects_ambiguity() {
+        let jdk = JdkIndex::new();
+        let mut index = TestIndex::default();
+        index.add_type("q", "Util");
+        index.add_static_member("q.Util", "max");
+
+        let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+        let mut imports = ImportMap::default();
+        imports.static_star.push(StaticStarImport {
+            ty: QualifiedName::from_dotted("java.lang.Math"),
+            range: Span::new(0, 0),
+        });
+        imports.static_star.push(StaticStarImport {
+            ty: QualifiedName::from_dotted("q.Util"),
+            range: Span::new(0, 0),
+        });
+
+        assert_eq!(
+            resolver.resolve_static_imports_detailed(&imports, &Name::from("max")),
+            StaticLookup::Ambiguous(vec![
+                StaticMemberId::new("java.lang.Math::max"),
+                StaticMemberId::new("q.Util::max"),
+            ])
+        );
+    }
+
+    #[test]
+    fn static_single_import_detects_ambiguity() {
+        let jdk = JdkIndex::new();
+        let mut index = TestIndex::default();
+        index.add_type("q", "Util");
+        index.add_static_member("q.Util", "max");
+
+        let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+        let mut imports = ImportMap::default();
+        imports.static_single.push(StaticSingleImport {
+            ty: QualifiedName::from_dotted("java.lang.Math"),
+            member: Name::from("max"),
+            imported: Name::from("max"),
+            range: Span::new(0, 0),
+        });
+        imports.static_single.push(StaticSingleImport {
+            ty: QualifiedName::from_dotted("q.Util"),
+            member: Name::from("max"),
+            imported: Name::from("max"),
+            range: Span::new(0, 0),
+        });
+
+        assert_eq!(
+            resolver.resolve_static_imports_detailed(&imports, &Name::from("max")),
+            StaticLookup::Ambiguous(vec![
+                StaticMemberId::new("java.lang.Math::max"),
+                StaticMemberId::new("q.Util::max"),
+            ])
+        );
+    }
 }
 
 pub(crate) fn resolve_type_with_nesting(
