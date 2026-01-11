@@ -234,10 +234,32 @@ Useful flags:
 > running editor integration, prefer the in-process LSP request (`nova/bugReport`) so the bundle
 > includes the server’s logs/crash reports.
 
-#### DAP
+#### DAP: `nova/bugReport`
 
-- **DAP**: `nova-dap` installs the same panic hook (so crashes are recorded), but it does not
-  currently expose a DAP request to emit a bug report bundle.
+`nova-dap` supports a custom DAP request command:
+
+- command: `nova/bugReport`
+- arguments:
+  - `maxLogLines` (`number`, optional; default `500`)
+  - `reproduction` (`string`, optional)
+- response body:
+  - `{ "path": "/path/to/nova-bugreport-..." }`
+
+Example request (DAP JSON over stdio):
+
+```json
+{
+  "seq": 1,
+  "type": "request",
+  "command": "nova/bugReport",
+  "arguments": {
+    "maxLogLines": 1000,
+    "reproduction": "Attach to JVM, step over a breakpoint, observe crash"
+  }
+}
+```
+
+This captures diagnostics for the **DAP process** (its logs and crash store).
 
 If you’re embedding Nova into another application (CLI, editor plugin, debug adapter host), you can
 use the `nova-bugreport` library directly to create a bundle from:

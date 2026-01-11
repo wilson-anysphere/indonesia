@@ -6,6 +6,8 @@ use crate::session::DebugSession;
 use crate::smart_step_into::enumerate_step_in_targets_in_line;
 use crate::stream_debug::{run_stream_debug, StreamDebugArguments, STREAM_DEBUG_COMMAND};
 use anyhow::Context;
+use nova_bugreport::{create_bug_report_bundle, global_crash_store, BugReportOptions, PerfStats};
+use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
 use nova_project::{AttachConfig, LaunchConfig};
@@ -161,6 +163,7 @@ impl<C: JdwpClient> DapServer<C> {
             STREAM_DEBUG_COMMAND => self.stream_debug(request),
             "continue" | "next" | "stepIn" | "stepOut" | "pause" => self.execution_control(request),
             "nova/pinObject" => self.pin_object(request),
+            "nova/bugReport" => self.bug_report(request),
             "disconnect" => self.disconnect(request),
             _ => Ok(Outgoing {
                 messages: vec![serde_json::to_value(Response::error(
@@ -686,6 +689,48 @@ impl<C: JdwpClient> DapServer<C> {
         }
 
         self.simple_ok(request, Some(json!({ "pinned": args.pinned })))
+    }
+
+    fn bug_report(&mut self, request: &Request) -> anyhow::Result<Outgoing> {
+        #[derive(Debug, Deserialize, Default)]
+        #[serde(rename_all = "camelCase")]
+        struct Args {
+            #[serde(default)]
+            max_log_lines: Option<usize>,
+            #[serde(default)]
+            reproduction: Option<String>,
+        }
+
+        let args: Args = request
+            .arguments
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()?
+            .unwrap_or_default();
+
+        let cfg = NovaConfig::default();
+        let log_buffer = nova_config::init_tracing_with_config(&cfg);
+        let crash_store = global_crash_store();
+        let perf = PerfStats::default();
+        let options = BugReportOptions {
+            max_log_lines: args.max_log_lines.unwrap_or(500),
+            reproduction: args.reproduction,
+        };
+
+        let bundle = create_bug_report_bundle(
+            &cfg,
+            log_buffer.as_ref(),
+            crash_store.as_ref(),
+            &perf,
+            options,
+        )
+        .map_err(|err| anyhow::anyhow!(err))
+        .context("failed to create bug report bundle")?;
+
+        self.simple_ok(
+            request,
+            Some(json!({ "path": bundle.path().display().to_string() })),
+        )
     }
 
     fn disconnect(&mut self, request: &Request) -> anyhow::Result<Outgoing> {

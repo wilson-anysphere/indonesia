@@ -10,6 +10,9 @@ use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::sync::{broadcast, mpsc, watch, Mutex};
 
+use nova_bugreport::{create_bug_report_bundle, global_crash_store, BugReportOptions, PerfStats};
+use nova_config::NovaConfig;
+
 use crate::{
     dap_tokio::{make_event, make_response, DapError, DapReader, DapWriter, Request},
     wire_debugger::{AttachArgs, Debugger, DebuggerError, StepDepth},
@@ -82,6 +85,52 @@ where
                         });
                         send_response(&out_tx, &seq, &request, true, Some(body), None);
                         send_event(&out_tx, &seq, "initialized", None);
+                    }
+                    "nova/bugReport" => {
+                        let max_log_lines = request
+                            .arguments
+                            .get("maxLogLines")
+                            .and_then(|v| v.as_u64())
+                            .and_then(|v| usize::try_from(v).ok());
+                        let reproduction = request
+                            .arguments
+                            .get("reproduction")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+
+                        let cfg = NovaConfig::default();
+                        let log_buffer = nova_config::init_tracing_with_config(&cfg);
+                        let crash_store = global_crash_store();
+                        let perf = PerfStats::default();
+                        let options = BugReportOptions {
+                            max_log_lines: max_log_lines.unwrap_or(500),
+                            reproduction,
+                        };
+
+                        match create_bug_report_bundle(
+                            &cfg,
+                            log_buffer.as_ref(),
+                            crash_store.as_ref(),
+                            &perf,
+                            options,
+                        ) {
+                            Ok(bundle) => send_response(
+                                &out_tx,
+                                &seq,
+                                &request,
+                                true,
+                                Some(json!({ "path": bundle.path().display().to_string() })),
+                                None,
+                            ),
+                            Err(err) => send_response(
+                                &out_tx,
+                                &seq,
+                                &request,
+                                false,
+                                None,
+                                Some(err.to_string()),
+                            ),
+                        }
                     }
                     "configurationDone" => {
                         // When `supportsConfigurationDoneRequest` is true, VS Code sends this request
