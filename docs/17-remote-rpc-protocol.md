@@ -553,13 +553,14 @@ as a CBOR byte string. The compressed bytes are **not** CBOR.
 
 ---
 
-## 8. Backward compatibility with legacy v2
+## 8. Backward compatibility with the legacy bincode protocol (`legacy_v2`)
 
-Protocol v3 is **not wire-compatible** with the existing MVP protocol (`nova_remote_proto`
-`PROTOCOL_VERSION = 2`).
+Protocol v3 is **not wire-compatible** with the legacy bincode protocol currently used by
+`nova-router`/`nova-worker` (`nova_remote_proto::legacy_v2`, re-exported as
+`nova_remote_proto::PROTOCOL_VERSION`).
 
-- v2: length-prefixed stream of `bincode`-encoded `RpcMessage` enums (lockstep request/response).
-- v3: length-prefixed stream of CBOR `WireFrame` envelopes, with negotiation + multiplexing.
+- Legacy (bincode): length-prefixed stream of `bincode`-encoded `RpcMessage` enums (lockstep request/response).
+- v3 (this document): length-prefixed stream of CBOR `WireFrame` envelopes, with negotiation + multiplexing.
 
 The planned rollout is a coordinated upgrade of router and worker. If mixed-version support is
 needed for a transition period, it SHOULD be implemented explicitly (dual-stack listener/connector)
