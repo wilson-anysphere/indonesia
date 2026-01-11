@@ -16,6 +16,7 @@ pub mod framework_cache;
 pub mod semantics;
 
 pub mod code_intelligence;
+mod file_navigation;
 mod completion;
 mod jpa_intel;
 mod micronaut_intel;
@@ -40,6 +41,7 @@ pub use project::{
 };
 
 pub use code_intelligence::*;
+pub use file_navigation::{declaration, implementation, type_definition};
 pub use refactor::inline_method_code_actions;
 
 /// Spring-specific configuration helpers (config file parsing, metadata lookup,
