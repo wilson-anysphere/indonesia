@@ -19,7 +19,7 @@ v3 is not wire-compatible with `legacy_v2`; mixed router/worker versions will fa
 When v3 is enabled, the reference implementation (`crates/nova-remote-rpc`) currently defaults to:
 
 - Pre-handshake max frame length: **1 MiB** (`nova_remote_rpc::DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN`)
-- Max frame length / max packet length offered in `Hello.capabilities`: **64 MiB** each
+- Max frame length / max packet length offered in `WorkerHello.capabilities`: **64 MiB** each
   (`nova_remote_proto::v3::{DEFAULT_MAX_FRAME_LEN, DEFAULT_MAX_PACKET_LEN}`)
 - Compression: prefer `zstd` (negotiated) and compress payloads ≥ **1 KiB** when it produces smaller
   on-wire bytes
