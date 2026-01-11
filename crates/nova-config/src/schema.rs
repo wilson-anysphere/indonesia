@@ -230,6 +230,55 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
         })),
     );
 
+    // When `ai.provider.url` points at a non-loopback address, `local_only` must be set to `false`.
+    //
+    // This covers the common case where `ai.privacy.local_only` is omitted from `nova.toml` (it
+    // defaults to true at runtime). Since JSON Schema doesn't apply defaults, the `local_only=true`
+    // rule above would not fire, so we also encode the inverse: non-loopback URL implies explicit
+    // opt-out of local-only mode.
+    push_all_of(
+        schema,
+        schema_from_json(json!({
+            "if": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["enabled", "provider"],
+                        "properties": {
+                            "enabled": { "const": true },
+                            "provider": {
+                                "required": ["kind", "url"],
+                                "properties": {
+                                    "kind": { "enum": ["ollama", "open_ai_compatible", "http"] },
+                                    "url": {
+                                        "type": "string",
+                                        "not": { "pattern": "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "then": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["privacy"],
+                        "properties": {
+                            "privacy": {
+                                "required": ["local_only"],
+                                "properties": {
+                                    "local_only": { "const": false }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+
     // `ai.audit_log.enabled` has no effect unless AI is enabled (audit events are only emitted when
     // `ai.enabled=true`).
     push_all_of(

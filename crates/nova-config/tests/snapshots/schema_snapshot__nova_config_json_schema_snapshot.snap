@@ -302,6 +302,71 @@ expression: schema
         "properties": {
           "ai": {
             "required": [
+              "enabled",
+              "provider"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "required": [
+                  "kind",
+                  "url"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "ollama",
+                      "open_ai_compatible",
+                      "http"
+                    ]
+                  },
+                  "url": {
+                    "type": "string",
+                    "not": {
+                      "pattern": "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "privacy"
+            ],
+            "properties": {
+              "privacy": {
+                "required": [
+                  "local_only"
+                ],
+                "properties": {
+                  "local_only": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
               "audit_log"
             ],
             "properties": {

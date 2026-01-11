@@ -90,6 +90,36 @@ fn json_schema_requires_ai_enabled_for_audit_log() {
 }
 
 #[test]
+fn json_schema_requires_local_only_false_for_non_loopback_urls() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let all_of = value
+        .pointer("/allOf")
+        .and_then(|v| v.as_array())
+        .expect("root schema should include allOf semantic constraints");
+
+    let loopback_pattern =
+        "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)";
+
+    let rule = all_of
+        .iter()
+        .find(|entry| {
+            entry
+                .pointer("/if/properties/ai/properties/provider/properties/url/not/pattern")
+                .and_then(|v| v.as_str())
+                == Some(loopback_pattern)
+        })
+        .expect("non-loopback url semantic rule should exist");
+
+    assert_eq!(
+        rule.pointer("/then/properties/ai/properties/privacy/properties/local_only/const")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+}
+
+#[test]
 fn json_schema_includes_deprecated_jdk_home_alias() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");
