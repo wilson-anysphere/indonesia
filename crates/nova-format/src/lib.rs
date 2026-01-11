@@ -657,21 +657,146 @@ fn myers_diff_ops<T: Eq>(a: &[T], b: &[T]) -> Vec<DiffOp> {
 }
 
 fn indent_level_at(tree: &SyntaxTree, source: &str, offset: TextSize) -> usize {
-    let mut indent: usize = 0;
+    #[derive(Debug)]
+    struct SwitchCtx {
+        brace_depth: usize,
+        in_case_body: bool,
+    }
+
     let offset = u32::from(offset);
-    for token in tree.tokens() {
+    let mut brace_depth: usize = 0;
+    let mut pending_switch = false;
+    let mut pending_case_label = false;
+    let mut pending_minus = false;
+    let mut switch_stack: Vec<SwitchCtx> = Vec::new();
+
+    let mut iter = tree.tokens();
+    let mut next_token = None;
+
+    while let Some(token) = iter.next() {
         if token.range.end > offset {
+            next_token = Some(token);
             break;
         }
-        if token.kind != SyntaxKind::Punctuation {
-            continue;
-        }
-        match token.text(source) {
-            "{" => indent = indent.saturating_add(1),
-            "}" => indent = indent.saturating_sub(1),
-            _ => {}
+
+        match token.kind {
+            SyntaxKind::Whitespace
+            | SyntaxKind::LineComment
+            | SyntaxKind::BlockComment
+            | SyntaxKind::DocComment => {
+                pending_minus = false;
+            }
+            SyntaxKind::Identifier => {
+                pending_minus = false;
+                match token.text(source) {
+                    "switch" => pending_switch = true,
+                    "case" | "default" => {
+                        if let Some(ctx) = switch_stack.last_mut() {
+                            if brace_depth == ctx.brace_depth {
+                                ctx.in_case_body = false;
+                                pending_case_label = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            SyntaxKind::Punctuation => {
+                let text = token.text(source);
+                match text {
+                    "{" => {
+                        brace_depth = brace_depth.saturating_add(1);
+                        if pending_switch {
+                            switch_stack.push(SwitchCtx {
+                                brace_depth,
+                                in_case_body: false,
+                            });
+                            pending_switch = false;
+                        }
+                        pending_minus = false;
+                    }
+                    "}" => {
+                        // If we're closing a switch block, drop its context before decrementing.
+                        if switch_stack
+                            .last()
+                            .is_some_and(|ctx| brace_depth == ctx.brace_depth)
+                        {
+                            switch_stack.pop();
+                            pending_case_label = false;
+                        }
+                        brace_depth = brace_depth.saturating_sub(1);
+                        pending_minus = false;
+                    }
+                    ":" => {
+                        if pending_case_label {
+                            if let Some(ctx) = switch_stack.last_mut() {
+                                if brace_depth == ctx.brace_depth {
+                                    ctx.in_case_body = true;
+                                }
+                            }
+                            pending_case_label = false;
+                        }
+                        pending_minus = false;
+                    }
+                    "-" => {
+                        pending_minus = true;
+                    }
+                    ">" => {
+                        if pending_minus {
+                            // Arrow switch labels (`case 1 ->`) terminate the label without
+                            // entering the colon-style case body indentation.
+                            pending_minus = false;
+                            pending_case_label = false;
+                        } else {
+                            pending_minus = false;
+                        }
+                    }
+                    _ => {
+                        pending_minus = false;
+                    }
+                }
+            }
+            _ => {
+                pending_minus = false;
+            }
         }
     }
+
+    // Base indentation: braces + any active switch-case bodies.
+    let case_indent = switch_stack.iter().filter(|ctx| ctx.in_case_body).count();
+    let mut indent = brace_depth.saturating_add(case_indent);
+
+    // If we're at the start of a new case/default label or the closing brace of a switch, drop
+    // the case-body indentation level so range/on-type formatting aligns with the label.
+    let drop_case_indent = switch_stack
+        .last()
+        .is_some_and(|ctx| ctx.in_case_body && brace_depth == ctx.brace_depth);
+
+    if drop_case_indent {
+        let mut sig = next_token;
+        while let Some(token) = sig {
+            match token.kind {
+                SyntaxKind::Whitespace
+                | SyntaxKind::LineComment
+                | SyntaxKind::BlockComment
+                | SyntaxKind::DocComment => {
+                    sig = iter.next();
+                }
+                SyntaxKind::Identifier => {
+                    if matches!(token.text(source), "case" | "default") {
+                        indent = indent.saturating_sub(1);
+                    }
+                    break;
+                }
+                SyntaxKind::Punctuation if token.text(source) == "}" => {
+                    indent = indent.saturating_sub(1);
+                    break;
+                }
+                _ => break,
+            }
+        }
+    }
+
     indent
 }
 

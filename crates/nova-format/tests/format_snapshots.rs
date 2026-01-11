@@ -131,6 +131,48 @@ fn range_formatting_returns_minimal_edits_within_range() {
 }
 
 #[test]
+fn range_formatting_inside_switch_case_uses_case_indent() {
+    let input = "class Foo {\n    void m(int x) {\n        switch(x){\n        case 1:\n        int y=2;\n        break;\n        default:\n        break;\n        }\n    }\n}\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    // Select only the `int y=2;` line.
+    let start = Position::new(4, 0);
+    let end_offset = index.line_end(4).unwrap();
+    let end = index.position(input, end_offset);
+    let range = Range::new(start, end);
+
+    let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
+    let out = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(
+        out,
+        "class Foo {\n    void m(int x) {\n        switch(x){\n        case 1:\n                int y = 2;\n        break;\n        default:\n        break;\n        }\n    }\n}\n"
+    );
+}
+
+#[test]
+fn range_formatting_switch_label_does_not_include_case_body_indent() {
+    let input = "class Foo {\n    void m(int x) {\n        switch(x){\n        case 1:\n            foo();\n        break;\n        default:\n            bar();\n        break;\n        }\n    }\n}\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    // Select only the `default:` label line.
+    let start = Position::new(6, 0);
+    let end_offset = index.line_end(6).unwrap();
+    let end = index.position(input, end_offset);
+    let range = Range::new(start, end);
+
+    let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
+    let out = apply_text_edits(input, &edits).unwrap();
+
+    assert_eq!(
+        out,
+        "class Foo {\n    void m(int x) {\n        switch(x){\n        case 1:\n            foo();\n        break;\n            default:\n            bar();\n        break;\n        }\n    }\n}\n"
+    );
+}
+
+#[test]
 fn formats_with_tabs_indentation() {
     let input = "class Foo{void m(){int x=1;}}\n";
     let tree = parse(input);
