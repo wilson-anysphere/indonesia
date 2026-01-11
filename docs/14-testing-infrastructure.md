@@ -358,7 +358,7 @@ cargo +nightly fuzz list
 These tests validate Nova on large, real OSS Java repositories. They are `#[ignore]` by default because
 they require network access (to clone fixtures) and can take significant time.
 
-CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manual).
+CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manual + push-on-change).
 
 **Where:**
 

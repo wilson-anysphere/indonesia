@@ -64,6 +64,7 @@ These fixtures back ignored integration tests and are intentionally excluded
 from normal `cargo test` runs.
 
 The `Real project fixtures` GitHub Actions workflow runs the real-project tests
-on a schedule and can also be triggered manually. For manual runs, you can
-optionally provide a comma-separated `only` input (e.g. `guava,spring-petclinic`)
-to limit which fixtures are exercised.
+on a schedule, can be triggered manually, and also runs on pushes that touch the
+real-project harness/pins. For manual runs, you can optionally provide a
+comma-separated `only` input (e.g. `guava,spring-petclinic`) to limit which
+fixtures are exercised.
