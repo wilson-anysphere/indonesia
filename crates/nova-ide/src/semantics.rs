@@ -2,7 +2,7 @@ use nova_core::Line;
 use nova_core::{LineIndex, TextSize};
 use nova_syntax::{
     AstNode, ClassDeclaration, ClassMember, CompilationUnit, FieldDeclaration, LambdaBody,
-    LambdaExpression, Modifiers, SyntaxKind, SyntaxNode,
+    LambdaExpression, Modifiers, Name, SyntaxKind, SyntaxNode,
 };
 
 /// A valid location for a line breakpoint.
@@ -29,7 +29,7 @@ pub fn collect_breakpoint_sites(java_source: &str) -> Vec<BreakpointSite> {
     let package = unit
         .package()
         .and_then(|pkg| pkg.name())
-        .and_then(|name| slice_node_text(java_source, name.syntax()).map(str::to_string));
+        .map(|name| name_to_string(&name));
 
     let mut acc = Vec::new();
     let mut class_stack: Vec<String> = Vec::new();
@@ -255,11 +255,15 @@ fn qualify_class_name(package: Option<&str>, class_stack: &[String]) -> String {
     }
 }
 
-fn slice_node_text<'a>(source: &'a str, node: &SyntaxNode) -> Option<&'a str> {
-    let range = node.text_range();
-    let start: usize = u32::from(range.start()) as usize;
-    let end: usize = u32::from(range.end()) as usize;
-    source.get(start..end)
+fn name_to_string(name: &Name) -> String {
+    name.syntax()
+        .children_with_tokens()
+        .filter_map(|it| it.into_token())
+        .filter(|tok| tok.kind() == SyntaxKind::Dot || tok.kind().is_identifier_like())
+        .fold(String::new(), |mut acc, tok| {
+            acc.push_str(tok.text());
+            acc
+        })
 }
 
 fn dap_line(line_index: &LineIndex, offset: TextSize) -> Line {
