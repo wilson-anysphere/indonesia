@@ -334,7 +334,10 @@ Notes:
   "modulePath": [],
   "sourceRoots": ["src/main/java"],
   "source": "17",
-  "targetVersion": "17"
+  "targetVersion": "17",
+  "release": null,
+  "outputDir": null,
+  "enablePreview": false
 }
 ```
 
@@ -388,13 +391,14 @@ Status values are `snake_case`: `"idle" | "building" | "failed"`.
 ```json
 {
   "target": null,
-  "diagnostics": []
+  "diagnostics": [],
+  "source": null
 }
 ```
 
 Notes:
 
-- For Bazel projects the endpoint currently returns an empty diagnostic list (placeholder for BSP / build output parsing).
+- For Bazel projects the endpoint returns diagnostics sourced via BSP when configured (see `NOVA_BSP_PROGRAM`).
 
 ---
 
@@ -405,7 +409,7 @@ Notes:
 - **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`ProjectModelParams`, `ProjectModelResult`,
   `ProjectModelUnit`, `JavaLanguageLevel`)
 - **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_project_model`
-- **Time budget:** 2s (**timeout may enter safe-mode**)
+- **Time budget:** 120s (no safe-mode on timeout)
 
 This endpoint returns a **normalized “project model”** for the workspace so editor clients can build
 their own internal module/target graph without having to re-implement Maven/Gradle/Bazel discovery.
