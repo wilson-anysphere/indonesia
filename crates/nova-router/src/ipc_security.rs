@@ -22,7 +22,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[cfg(unix)]
 pub(crate) fn ensure_unix_socket_dir(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
     let Some(parent) = path.parent() else {
         return Ok(());
@@ -40,10 +40,15 @@ pub(crate) fn ensure_unix_socket_dir(path: &Path) -> Result<()> {
         return Ok(());
     }
 
-    std::fs::create_dir_all(parent).with_context(|| format!("create socket dir {parent:?}"))?;
+    // Create the directory with an explicit 0700 mode (still subject to umask, but umask can only
+    // remove permissions and 0700 already grants none to group/other).
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    builder.mode(0o700);
+    builder.create(parent).with_context(|| format!("create socket dir {parent:?}"))?;
 
-    // `create_dir_all` is subject to the process umask; explicitly chmod to 0700 so other users
-    // cannot traverse the directory to reach the socket path.
+    // Explicitly chmod to 0700 so other users cannot traverse the directory to reach the socket
+    // path (and to correct permissions if the FS/umask created something more permissive).
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
         .with_context(|| format!("chmod socket dir {parent:?} to 0700"))?;
     Ok(())
