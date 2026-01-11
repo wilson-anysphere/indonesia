@@ -506,7 +506,7 @@ In practice, Nova’s CI splits into:
 
 | Workflow | Status | What it runs | Local equivalent |
 |---|---|---|---|
-| `.github/workflows/ci.yml` | in repo | `cargo fmt`, `cargo clippy`, `cargo test` (plus actionlint + VS Code packaging) | See “CI-equivalent smoke run” above |
+| `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, `cargo clippy`, `cargo test` (linux/macos/windows), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
 | `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths` + `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual) | `./scripts/run-real-project-tests.sh` |
