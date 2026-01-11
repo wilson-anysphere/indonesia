@@ -978,7 +978,7 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
 
                 let JavaCompileConfig {
                     compile_classpath,
-                    module_path,
+                    module_path: cfg_module_path,
                     main_source_roots,
                     test_source_roots,
                     source,
@@ -1005,7 +1005,15 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                 Ok(ProjectModelUnit::Maven {
                     module: rel,
                     compile_classpath: paths_to_strings(compile_classpath.iter()),
-                    module_path: paths_to_strings(module_path.iter()),
+                    module_path: if cfg_module_path.is_empty() {
+                        config
+                            .module_path
+                            .iter()
+                            .map(|entry| entry.path.to_string_lossy().to_string())
+                            .collect()
+                    } else {
+                        paths_to_strings(cfg_module_path.iter())
+                    },
                     source_roots,
                     language_level: Some(JavaLanguageLevel {
                         source: source.or_else(|| Some(config.java.source.0.to_string())),
@@ -1055,7 +1063,7 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
 
                 let JavaCompileConfig {
                     compile_classpath,
-                    module_path,
+                    module_path: cfg_module_path,
                     main_source_roots,
                     test_source_roots,
                     source,
@@ -1082,7 +1090,15 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                 Ok(ProjectModelUnit::Gradle {
                     project_path,
                     compile_classpath: paths_to_strings(compile_classpath.iter()),
-                    module_path: paths_to_strings(module_path.iter()),
+                    module_path: if cfg_module_path.is_empty() {
+                        config
+                            .module_path
+                            .iter()
+                            .map(|entry| entry.path.to_string_lossy().to_string())
+                            .collect()
+                    } else {
+                        paths_to_strings(cfg_module_path.iter())
+                    },
                     source_roots,
                     language_level: Some(JavaLanguageLevel {
                         source: source.or_else(|| Some(config.java.source.0.to_string())),
