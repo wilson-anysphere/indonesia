@@ -140,7 +140,9 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     )
     .await?;
 
-    let ack = read_message(&mut stream).await?;
+    let ack = read_message(&mut stream)
+        .await
+        .with_context(|| format!("read RouterHello for shard {}", args.shard_id))?;
     let (worker_id, shard_id, revision, protocol_version) = match ack {
         RpcMessage::RouterHello {
             worker_id,
@@ -469,10 +471,9 @@ impl WorkerState {
 
     async fn run(&mut self, stream: &mut BoxedStream) -> Result<()> {
         loop {
-            let msg = match read_message(stream).await {
-                Ok(msg) => msg,
-                Err(err) => return Err(err),
-            };
+            let msg = read_message(stream)
+                .await
+                .with_context(|| format!("read message from router (shard {})", self.shard_id))?;
 
             match msg {
                 RpcMessage::IndexShard { revision, files } => {
@@ -770,5 +771,5 @@ async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessag
         .read_exact(&mut buf)
         .await
         .context("read message payload")?;
-    nova_remote_proto::decode_message(&buf)
+    nova_remote_proto::decode_message(&buf).context("decode message")
 }

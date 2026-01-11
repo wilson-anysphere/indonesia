@@ -1071,7 +1071,7 @@ async fn handle_new_connection(
             )
             .await
             .ok();
-            return Err(anyhow!("worker authentication failed"));
+            return Err(anyhow!("worker authentication failed for shard {shard_id}"));
         }
     }
 
@@ -1236,7 +1236,7 @@ async fn handle_new_connection(
 
     let cleanup_state = state.clone();
     tokio::spawn(async move {
-        let _ = worker_connection_loop(stream, rx).await;
+        let _ = worker_connection_loop(worker_id, shard_id, stream, rx).await;
         info!(shard_id, worker_id, "worker connection closed");
         let mut guard = cleanup_state.shards.lock().await;
         if let Some(shard) = guard.get_mut(&shard_id) {
@@ -1288,20 +1288,23 @@ async fn handle_new_connection(
 }
 
 async fn worker_connection_loop(
+    worker_id: WorkerId,
+    shard_id: ShardId,
     mut stream: BoxedStream,
     mut rx: mpsc::UnboundedReceiver<WorkerRequest>,
 ) -> Result<()> {
     while let Some(req) = rx.recv().await {
         let message = req.message;
 
-        let write_res = match timeout(
-            WORKER_RPC_WRITE_TIMEOUT,
-            write_message(&mut stream, &message),
-        )
-        .await
+        let write_res = match timeout(WORKER_RPC_WRITE_TIMEOUT, write_message(&mut stream, &message))
+            .await
         {
-            Ok(res) => res,
-            Err(_) => Err(anyhow!("timed out writing worker request")),
+            Ok(res) => res.with_context(|| {
+                format!("write request to worker {worker_id} (shard {shard_id})")
+            }),
+            Err(_) => Err(anyhow!(
+                "timed out writing request to worker {worker_id} (shard {shard_id})"
+            )),
         };
         if let Err(err) = write_res {
             if let Some(reply) = req.reply {
@@ -1318,8 +1321,12 @@ async fn worker_connection_loop(
         }
 
         let read_res = match timeout(WORKER_RPC_READ_TIMEOUT, read_message(&mut stream)).await {
-            Ok(res) => res,
-            Err(_) => Err(anyhow!("timed out waiting for worker response")),
+            Ok(res) => res.with_context(|| {
+                format!("read response from worker {worker_id} (shard {shard_id})")
+            }),
+            Err(_) => Err(anyhow!(
+                "timed out waiting for response from worker {worker_id} (shard {shard_id})"
+            )),
         };
         match read_res {
             Ok(resp) => {
@@ -1949,7 +1956,7 @@ async fn write_message(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMess
 
 async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
     let buf = read_payload(stream).await?;
-    nova_remote_proto::decode_message(&buf)
+    nova_remote_proto::decode_message(&buf).context("decode message")
 }
 
 #[cfg(test)]
