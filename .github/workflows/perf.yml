@@ -124,10 +124,25 @@ jobs:
           EOF
           fi
 
-          # If the CLI claims to support JSON output but didn't produce a file, fail loudly.
+          # Ensure we always have both report artifacts to upload, even if `cargo run` fails
+          # before the CLI has a chance to write them.
+          if [ ! -f perf-report.md ]; then
+            cat > perf-report.md <<EOF
+          ## Nova performance report
+
+          perf compare exited with status ${status} and did not produce perf-report.md.
+          See the job logs for details.
+          EOF
+          fi
+
           if [ ! -f perf-report.json ]; then
-            echo "perf compare did not produce perf-report.json" >&2
-            status=2
+            cat > perf-report.json <<EOF
+          {"error":"perf compare did not produce perf-report.json","exit_code":${status}}
+          EOF
+            if [ "${status}" = "0" ]; then
+              # If the compare succeeded but didn't emit JSON, that's a workflow/CLI contract bug.
+              status=2
+            fi
           fi
 
           # Make sure the summary step doesn't fail if the report couldn't be written.
