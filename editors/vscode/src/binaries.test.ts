@@ -12,6 +12,15 @@ describe('deriveReleaseUrlFromBaseUrl', () => {
     ).toBe('https://github.com/wilson-anysphere/indonesia');
   });
 
+  it('strips /releases/download/<tag> from github.com URLs', () => {
+    expect(
+      deriveReleaseUrlFromBaseUrl(
+        'https://github.com/wilson-anysphere/indonesia/releases/download/v0.1.0',
+        'https://fallback.invalid',
+      ),
+    ).toBe('https://github.com/wilson-anysphere/indonesia');
+  });
+
   it('strips /releases/download suffix from GitHub Enterprise URLs', () => {
     expect(
       deriveReleaseUrlFromBaseUrl(
@@ -31,4 +40,3 @@ describe('deriveReleaseUrlFromBaseUrl', () => {
     ).toBe('https://github.com/wilson-anysphere/indonesia');
   });
 });
-

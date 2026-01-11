@@ -18,9 +18,10 @@ export function deriveReleaseUrlFromBaseUrl(downloadBaseUrl: string, fallbackRel
 
   try {
     const url = new URL(trimmed);
-    const suffix = '/releases/download';
-    if (url.pathname.endsWith(suffix)) {
-      const repoPath = url.pathname.slice(0, -suffix.length);
+    const marker = '/releases/download';
+    const markerIndex = url.pathname.indexOf(marker);
+    if (markerIndex >= 0) {
+      const repoPath = url.pathname.slice(0, markerIndex);
       return `${url.origin}${repoPath}`;
     }
   } catch {
