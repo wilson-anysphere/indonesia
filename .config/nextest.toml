@@ -1,0 +1,23 @@
+# Nextest configuration for the workspace.
+#
+# Primary goals:
+# - Bound hangs (stdio LSP tests, process spawn tests, etc.) with per-test timeouts.
+# - Keep retries off until specific flakes are identified.
+
+[profile.default]
+# Mark tests as slow after 60s, and hard-terminate them after 2 periods (120s).
+# This prevents the test suite from hanging indefinitely while still allowing
+# some slack for slower CI machines.
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Start with no retries. Enable per-test retries once specific flakes are
+# identified.
+retries = 0
+
+[profile.ci]
+# In CI, run the full suite even if some tests fail so we get complete results.
+fail-fast = false
+
+[profile.ci.junit]
+# JUnit report is written to `target/nextest/ci/junit.xml`.
+path = "junit.xml"
