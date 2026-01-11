@@ -15,8 +15,9 @@ It is intended to be implementable without reading Nova’s source code. Where w
 > - The v3 CBOR envelope types/codecs live in `nova_remote_proto::v3`.
 > - A reference v3 transport implementation (handshake + multiplexed calls + per-packet compression)
 >   exists in `crates/nova-remote-rpc`, but `nova-router`/`nova-worker` have not migrated yet.
->   `PacketChunk` reassembly and `Cancel` handling are not yet implemented end-to-end (capabilities
->   default them off).
+>   `PacketChunk` chunking/reassembly is implemented there but disabled by default
+>   (`supports_chunking` defaults to `false`). `Cancel` handling is not yet implemented end-to-end
+>   (`supports_cancel` defaults to `false`).
 
 ## Design background
 
@@ -579,8 +580,10 @@ Chunking is used when a packet would exceed `chosen_capabilities.max_frame_len` 
 
 Chunking is allowed only if `chosen_capabilities.supports_chunking = true`.
 
-If `supports_chunking = false`, a receiver MUST treat any `WireFrame::PacketChunk` as a protocol
-violation and close the connection.
+If `supports_chunking = false`, a sender MUST NOT send `WireFrame::PacketChunk`.
+
+If a receiver nonetheless receives `WireFrame::PacketChunk` when chunking is not negotiated, it
+SHOULD treat this as a protocol violation and close the connection (or ignore the frames).
 
 If `supports_chunking = false`, a sender MUST NOT attempt to transmit a packet that does not fit in
 one frame. If an application-level message cannot fit, the sender MUST fail it locally (e.g. return

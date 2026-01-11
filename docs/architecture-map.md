@@ -381,7 +381,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Not yet wired into the `nova-router`/`nova-worker` binaries (distributed mode is still not editor-facing).
-  - Does not yet implement `PacketChunk` reassembly or `Cancel` handling end-to-end (capabilities default them off).
+  - Does not yet implement `Cancel` handling end-to-end (`supports_cancel` defaults to `false`).
 
 ### `nova-resolve`
 - **Purpose:** name resolution + scope building (currently based on simplified `nova-hir`).
