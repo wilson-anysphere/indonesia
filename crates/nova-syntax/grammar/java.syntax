@@ -37,7 +37,7 @@ ClassMember =
   | AnnotationTypeDeclaration
 
 Statement =
-    Block
+     Block
   | LabeledStatement
   | IfStatement
   | SwitchStatement
@@ -47,10 +47,12 @@ Statement =
   | SynchronizedStatement
   | TryStatement
   | AssertStatement
+  | YieldStatement
   | ReturnStatement
   | ThrowStatement
   | BreakStatement
   | ContinueStatement
+  | LocalTypeDeclarationStatement
   | LocalVariableDeclarationStatement
   | ExpressionStatement
   | EmptyStatement
@@ -73,10 +75,13 @@ Expression =
    | InstanceofExpression
    | AssignmentExpression
    | ConditionalExpression
-  | LambdaExpression
-  | CastExpression
+   | SwitchExpression
+   | LambdaExpression
+   | CastExpression
 
 LambdaBody = Block | Expression
+
+SwitchRuleBody = Block | Statement | Expression
 
 ModuleDirectiveKind =
     RequiresDirective
@@ -243,9 +248,25 @@ SwitchStatement {
   block: SwitchBlock?
 }
 
+SwitchExpression {
+  expression: Expression?
+  block: SwitchBlock?
+}
+
 SwitchBlock {
+  groups: SwitchGroup*
+  rules: SwitchRule*
+  statements: Statement*
+}
+
+SwitchGroup {
   labels: SwitchLabel*
   statements: Statement*
+}
+
+SwitchRule {
+  labels: SwitchLabel*
+  body: SwitchRuleBody?
 }
 
 SwitchLabel {
@@ -334,6 +355,10 @@ AssertStatement {
   message: Expression?
 }
 
+YieldStatement {
+  expression: Expression?
+}
+
 ReturnStatement {
   expression: Expression?
 }
@@ -348,6 +373,10 @@ BreakStatement {
 
 ContinueStatement {
   label_token: Ident?
+}
+
+LocalTypeDeclarationStatement {
+  declaration: TypeDeclaration?
 }
 
 LocalVariableDeclarationStatement {

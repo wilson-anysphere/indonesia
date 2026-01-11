@@ -922,6 +922,36 @@ impl SwitchStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchExpression {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for SwitchExpression {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::SwitchExpression
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl SwitchExpression {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+    pub fn block(&self) -> Option<SwitchBlock> {
+        support::child::<SwitchBlock>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitchBlock {
     syntax: SyntaxNode,
 }
@@ -941,12 +971,76 @@ impl AstNode for SwitchBlock {
 }
 
 impl SwitchBlock {
+    pub fn groups(&self) -> impl Iterator<Item = SwitchGroup> + '_ {
+        support::children::<SwitchGroup>(&self.syntax)
+    }
+
+    pub fn rules(&self) -> impl Iterator<Item = SwitchRule> + '_ {
+        support::children::<SwitchRule>(&self.syntax)
+    }
+
+    pub fn statements(&self) -> impl Iterator<Item = Statement> + '_ {
+        support::children::<Statement>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchGroup {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for SwitchGroup {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::SwitchGroup
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl SwitchGroup {
     pub fn labels(&self) -> impl Iterator<Item = SwitchLabel> + '_ {
         support::children::<SwitchLabel>(&self.syntax)
     }
 
     pub fn statements(&self) -> impl Iterator<Item = Statement> + '_ {
         support::children::<Statement>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchRule {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for SwitchRule {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::SwitchRule
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl SwitchRule {
+    pub fn labels(&self) -> impl Iterator<Item = SwitchLabel> + '_ {
+        support::children::<SwitchLabel>(&self.syntax)
+    }
+
+    pub fn body(&self) -> Option<SwitchRuleBody> {
+        support::child::<SwitchRuleBody>(&self.syntax)
     }
 
 }
@@ -1479,6 +1573,32 @@ impl AssertStatement {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YieldStatement {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for YieldStatement {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::YieldStatement
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl YieldStatement {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReturnStatement {
     syntax: SyntaxNode,
 }
@@ -1578,6 +1698,32 @@ impl AstNode for ContinueStatement {
 impl ContinueStatement {
     pub fn label_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalTypeDeclarationStatement {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for LocalTypeDeclarationStatement {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::LocalTypeDeclarationStatement
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl LocalTypeDeclarationStatement {
+    pub fn declaration(&self) -> Option<TypeDeclaration> {
+        support::child::<TypeDeclaration>(&self.syntax)
     }
 
 }
@@ -3001,10 +3147,12 @@ pub enum Statement {
     SynchronizedStatement(SynchronizedStatement),
     TryStatement(TryStatement),
     AssertStatement(AssertStatement),
+    YieldStatement(YieldStatement),
     ReturnStatement(ReturnStatement),
     ThrowStatement(ThrowStatement),
     BreakStatement(BreakStatement),
     ContinueStatement(ContinueStatement),
+    LocalTypeDeclarationStatement(LocalTypeDeclarationStatement),
     LocalVariableDeclarationStatement(LocalVariableDeclarationStatement),
     ExpressionStatement(ExpressionStatement),
     EmptyStatement(EmptyStatement),
@@ -3022,10 +3170,12 @@ impl AstNode for Statement {
             || SynchronizedStatement::can_cast(kind)
             || TryStatement::can_cast(kind)
             || AssertStatement::can_cast(kind)
+            || YieldStatement::can_cast(kind)
             || ReturnStatement::can_cast(kind)
             || ThrowStatement::can_cast(kind)
             || BreakStatement::can_cast(kind)
             || ContinueStatement::can_cast(kind)
+            || LocalTypeDeclarationStatement::can_cast(kind)
             || LocalVariableDeclarationStatement::can_cast(kind)
             || ExpressionStatement::can_cast(kind)
             || EmptyStatement::can_cast(kind)
@@ -3047,10 +3197,12 @@ impl AstNode for Statement {
         if let Some(it) = SynchronizedStatement::cast(syntax.clone()) { return Some(Self::SynchronizedStatement(it)); }
         if let Some(it) = TryStatement::cast(syntax.clone()) { return Some(Self::TryStatement(it)); }
         if let Some(it) = AssertStatement::cast(syntax.clone()) { return Some(Self::AssertStatement(it)); }
+        if let Some(it) = YieldStatement::cast(syntax.clone()) { return Some(Self::YieldStatement(it)); }
         if let Some(it) = ReturnStatement::cast(syntax.clone()) { return Some(Self::ReturnStatement(it)); }
         if let Some(it) = ThrowStatement::cast(syntax.clone()) { return Some(Self::ThrowStatement(it)); }
         if let Some(it) = BreakStatement::cast(syntax.clone()) { return Some(Self::BreakStatement(it)); }
         if let Some(it) = ContinueStatement::cast(syntax.clone()) { return Some(Self::ContinueStatement(it)); }
+        if let Some(it) = LocalTypeDeclarationStatement::cast(syntax.clone()) { return Some(Self::LocalTypeDeclarationStatement(it)); }
         if let Some(it) = LocalVariableDeclarationStatement::cast(syntax.clone()) { return Some(Self::LocalVariableDeclarationStatement(it)); }
         if let Some(it) = ExpressionStatement::cast(syntax.clone()) { return Some(Self::ExpressionStatement(it)); }
         if let Some(it) = EmptyStatement::cast(syntax.clone()) { return Some(Self::EmptyStatement(it)); }
@@ -3070,10 +3222,12 @@ impl AstNode for Statement {
             Self::SynchronizedStatement(it) => it.syntax(),
             Self::TryStatement(it) => it.syntax(),
             Self::AssertStatement(it) => it.syntax(),
+            Self::YieldStatement(it) => it.syntax(),
             Self::ReturnStatement(it) => it.syntax(),
             Self::ThrowStatement(it) => it.syntax(),
             Self::BreakStatement(it) => it.syntax(),
             Self::ContinueStatement(it) => it.syntax(),
+            Self::LocalTypeDeclarationStatement(it) => it.syntax(),
             Self::LocalVariableDeclarationStatement(it) => it.syntax(),
             Self::ExpressionStatement(it) => it.syntax(),
             Self::EmptyStatement(it) => it.syntax(),
@@ -3100,6 +3254,7 @@ pub enum Expression {
     InstanceofExpression(InstanceofExpression),
     AssignmentExpression(AssignmentExpression),
     ConditionalExpression(ConditionalExpression),
+    SwitchExpression(SwitchExpression),
     LambdaExpression(LambdaExpression),
     CastExpression(CastExpression),
 }
@@ -3123,6 +3278,7 @@ impl AstNode for Expression {
             || InstanceofExpression::can_cast(kind)
             || AssignmentExpression::can_cast(kind)
             || ConditionalExpression::can_cast(kind)
+            || SwitchExpression::can_cast(kind)
             || LambdaExpression::can_cast(kind)
             || CastExpression::can_cast(kind)
     }
@@ -3150,6 +3306,7 @@ impl AstNode for Expression {
         if let Some(it) = InstanceofExpression::cast(syntax.clone()) { return Some(Self::InstanceofExpression(it)); }
         if let Some(it) = AssignmentExpression::cast(syntax.clone()) { return Some(Self::AssignmentExpression(it)); }
         if let Some(it) = ConditionalExpression::cast(syntax.clone()) { return Some(Self::ConditionalExpression(it)); }
+        if let Some(it) = SwitchExpression::cast(syntax.clone()) { return Some(Self::SwitchExpression(it)); }
         if let Some(it) = LambdaExpression::cast(syntax.clone()) { return Some(Self::LambdaExpression(it)); }
         if let Some(it) = CastExpression::cast(syntax.clone()) { return Some(Self::CastExpression(it)); }
 
@@ -3175,6 +3332,7 @@ impl AstNode for Expression {
             Self::InstanceofExpression(it) => it.syntax(),
             Self::AssignmentExpression(it) => it.syntax(),
             Self::ConditionalExpression(it) => it.syntax(),
+            Self::SwitchExpression(it) => it.syntax(),
             Self::LambdaExpression(it) => it.syntax(),
             Self::CastExpression(it) => it.syntax(),
         }
@@ -3208,6 +3366,42 @@ impl AstNode for LambdaBody {
     fn syntax(&self) -> &SyntaxNode {
         match self {
             Self::Block(it) => it.syntax(),
+            Self::Expression(it) => it.syntax(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SwitchRuleBody {
+    Block(Block),
+    Statement(Statement),
+    Expression(Expression),
+}
+
+impl AstNode for SwitchRuleBody {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        Block::can_cast(kind)
+            || Statement::can_cast(kind)
+            || Expression::can_cast(kind)
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        let kind = syntax.kind();
+        if !Self::can_cast(kind) {
+            return None;
+        }
+
+        if let Some(it) = Block::cast(syntax.clone()) { return Some(Self::Block(it)); }
+        if let Some(it) = Statement::cast(syntax.clone()) { return Some(Self::Statement(it)); }
+        if let Some(it) = Expression::cast(syntax.clone()) { return Some(Self::Expression(it)); }
+
+        None
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            Self::Block(it) => it.syntax(),
+            Self::Statement(it) => it.syntax(),
             Self::Expression(it) => it.syntax(),
         }
     }

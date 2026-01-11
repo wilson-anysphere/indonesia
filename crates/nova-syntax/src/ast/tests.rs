@@ -1,6 +1,6 @@
 use crate::ast::{
     AstNode, ClassDeclaration, ClassMember, CompilationUnit, Expression, ModuleDirectiveKind,
-    Statement, TypeDeclaration,
+    Statement, SwitchRuleBody, TypeDeclaration,
 };
 use crate::parse_java;
 use crate::SyntaxKind;
@@ -97,6 +97,10 @@ fn switch_label_iteration() {
         })
         .unwrap();
 
+    let block = switch.block().expect("switch block");
+    assert_eq!(block.groups().count(), 2);
+    assert_eq!(block.rules().count(), 1);
+
     let labels: Vec<_> = switch.labels().collect();
     assert_eq!(labels.len(), 3);
     assert!(labels[0].is_case());
@@ -113,6 +117,151 @@ fn switch_label_iteration() {
     assert!(labels[2].is_case());
     assert!(labels[2].has_arrow());
     assert_eq!(labels[2].arrow_token().unwrap().kind(), SyntaxKind::Arrow);
+}
+
+#[test]
+fn switch_expression_cast_and_selector_access() {
+    let src = "class Foo { int m(int x) { return switch (x) { case 1 -> 10; default -> 0; }; } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+    let method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .unwrap();
+
+    let ret = method
+        .body()
+        .unwrap()
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::ReturnStatement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .unwrap();
+
+    let expr = ret.expression().unwrap();
+    let switch_expr = match expr {
+        Expression::SwitchExpression(it) => it,
+        other => panic!("expected SwitchExpression, got {other:?}"),
+    };
+
+    let selector = switch_expr.expression().unwrap();
+    assert_eq!(selector.syntax().text().to_string(), "x");
+}
+
+#[test]
+fn yield_statement_in_switch_expression_block() {
+    let src = "class Foo { int m(int x) { return switch (x) { default -> { yield x; } }; } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+    let method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .unwrap();
+
+    let ret = method
+        .body()
+        .unwrap()
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::ReturnStatement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .unwrap();
+
+    let expr = ret.expression().unwrap();
+    let switch_expr = match expr {
+        Expression::SwitchExpression(it) => it,
+        other => panic!("expected SwitchExpression, got {other:?}"),
+    };
+
+    let block = switch_expr.block().expect("switch expression block");
+    let rule = block.rules().next().expect("switch rule");
+    let body = rule.body().expect("switch rule body");
+    let block = match body {
+        SwitchRuleBody::Block(block) => block,
+        other => panic!("expected switch rule block body, got {other:?}"),
+    };
+
+    let yield_stmt = block
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::YieldStatement(it) => Some(it),
+            _ => None,
+        })
+        .expect("yield statement");
+    let yielded = yield_stmt.expression().expect("yielded expression");
+    assert_eq!(yielded.syntax().text().to_string(), "x");
+}
+
+#[test]
+fn local_type_declaration_statement_reaches_declaration() {
+    let src = "class Foo { void m() { class Local {} } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+    let method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .unwrap();
+
+    let local_stmt = method
+        .body()
+        .unwrap()
+        .statements()
+        .find_map(|stmt| match stmt {
+            Statement::LocalTypeDeclarationStatement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .expect("local type declaration statement");
+
+    let decl = local_stmt.declaration().expect("local type declaration");
+    let class_decl = match decl {
+        TypeDeclaration::ClassDeclaration(class) => class,
+        other => panic!("expected local class declaration, got {other:?}"),
+    };
+    assert_eq!(class_decl.name_token().unwrap().text(), "Local");
 }
 
 #[test]
