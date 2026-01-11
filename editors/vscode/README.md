@@ -42,9 +42,13 @@ npm run compile
   - Note: `nova-lsp` does not currently implement this request; prefer the standard LSP
     `source.organizeImports` code action (see `docs/protocol-extensions.md`).
 
-- **Nova: Create Bug Report** (`nova.createBugReport`)
-  - Prompts for optional reproduction steps and generates a diagnostic bundle via `nova/bugReport`.
-  - After creation, you can open the folder in VS Code or copy the bundle path.
+- **Nova: Generate Bug Report** (`nova.bugReport`)
+  - Prompts for optional reproduction notes (multi-line) and an optional max number of log lines.
+  - Generates a diagnostic bundle via `nova/bugReport`.
+  - On success, Nova:
+    - reveals the bundle folder in your OS file explorer
+    - copies the bundle path to your clipboard
+    - prints the path to the **Nova Bug Report** output channel
 
 - **Nova: Discover Tests** (`nova.discoverTests`)
   - Sends `nova/test/discover` and prints discovered test IDs.
@@ -59,19 +63,29 @@ npm run compile
 - **Nova: Hot Swap Changed Files** (`nova.hotSwapChangedFiles`)
   - Runs `nova/debug/hotSwap` for recently saved Java files (requires an active Nova debug session).
 
+## Bug report bundles
+
+Bug report bundles are created in your system temporary directory as folders named:
+
+```
+nova-bugreport-*
+```
+
+Each bundle contains sanitized config, recent logs, performance stats, crash reports, and (optionally) your reproduction notes.
+
 ## Safe mode + memory pressure
 
 Nova has resilience features to keep the language server responsive even if a request panics or times out.
 
 - **Safe mode**
   - When Nova enters safe mode, most `nova/*` requests are disabled so you can safely collect diagnostics.
-  - The extension shows a **“Nova: Safe Mode”** status bar item while safe mode is active. Click it to run **Nova: Create Bug Report**.
+  - The extension shows a **“Nova: Safe Mode”** status bar item while safe mode is active. Click it to run **Nova: Generate Bug Report**.
   - The extension also shows a one-time warning notification the first time safe mode is detected.
 
 - **Memory pressure**
   - The extension shows a **“Nova Mem: …”** status bar item with the current memory pressure level (Low/Medium/High/Critical).
-  - When pressure becomes High/Critical, the extension shows a one-time warning with an action to create a bug report.
-  - When pressure is High/Critical, the status bar item becomes highlighted and can be clicked to create a bug report.
+  - When pressure becomes High/Critical, the extension shows a one-time warning with an action to generate a bug report.
+  - When pressure is High/Critical, the status bar item becomes highlighted and can be clicked to generate a bug report.
 
 ## Test Explorer
 

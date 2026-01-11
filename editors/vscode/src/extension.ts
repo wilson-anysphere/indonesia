@@ -16,6 +16,7 @@ let ensureClientStarted: ((opts?: { promptForInstall?: boolean }) => Promise<voi
 let stopClient: (() => Promise<void>) | undefined;
 let setSafeModeEnabled: ((enabled: boolean) => void) | undefined;
 let testOutput: vscode.OutputChannel | undefined;
+let bugReportOutput: vscode.OutputChannel | undefined;
 let testController: vscode.TestController | undefined;
 const vscodeTestItemsById = new Map<string, vscode.TestItem>();
 
@@ -26,7 +27,7 @@ const aiItemsByContextId = new Map<string, vscode.CompletionItem[]>();
 const aiRequestsInFlight = new Set<string>();
 const MAX_AI_CONTEXT_IDS = 50;
 
-const BUG_REPORT_COMMAND = 'nova.createBugReport';
+const BUG_REPORT_COMMAND = 'nova.bugReport';
 
 const SAFE_MODE_EXEMPT_REQUESTS = new Set<string>([
   'nova/bugReport',
@@ -171,6 +172,9 @@ function ensureNovaCompletionItemUri(item: vscode.CompletionItem, uri: string): 
 export async function activate(context: vscode.ExtensionContext) {
   const serverOutput = vscode.window.createOutputChannel('Nova Server');
   context.subscriptions.push(serverOutput);
+
+  bugReportOutput = vscode.window.createOutputChannel('Nova Bug Report');
+  context.subscriptions.push(bugReportOutput);
 
   const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
 
@@ -672,7 +676,12 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   testController.resolveHandler = async () => {
-    await refreshTests();
+    try {
+      await refreshTests();
+    } catch (err) {
+      const message = formatError(err);
+      void vscode.window.showErrorMessage(`Nova: test discovery failed: ${message}`);
+    }
   };
 
   context.subscriptions.push(
@@ -818,13 +827,21 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        const params: { reproduction?: string } = {};
+        const maxLogLines = await promptForBugReportMaxLogLines();
+        if (maxLogLines === undefined) {
+          return;
+        }
+
+        const params: { reproduction?: string; maxLogLines?: number } = {};
         if (reproduction.trim().length > 0) {
           params.reproduction = reproduction;
         }
+        if (typeof maxLogLines === 'number') {
+          params.maxLogLines = maxLogLines;
+        }
 
         const resp = await vscode.window.withProgress(
-          { location: vscode.ProgressLocation.Notification, title: 'Nova: Creating bug report…' },
+          { location: vscode.ProgressLocation.Notification, title: 'Nova: Generating bug report…' },
           async () => {
             return await c.sendRequest<BugReportResponse>('nova/bugReport', params);
           },
@@ -836,22 +853,27 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        const picked = await vscode.window.showInformationMessage(
-          `Nova: Bug report created at ${bundlePath}`,
-          'Open Folder',
-          'Copy Path',
-        );
+        const channel = getBugReportOutputChannel();
+        channel.appendLine('Nova bug report bundle generated:');
+        channel.appendLine(bundlePath);
 
-        switch (picked) {
-          case 'Open Folder':
-            await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(bundlePath), true);
-            break;
-          case 'Copy Path':
-            await vscode.env.clipboard.writeText(bundlePath);
-            break;
-          default:
-            break;
+        let clipboardCopied = false;
+        try {
+          await vscode.env.clipboard.writeText(bundlePath);
+          clipboardCopied = true;
+        } catch {
+          // Best-effort: clipboard may be unavailable in some remote contexts.
         }
+
+        // Best-effort: reveal in the OS file explorer.
+        void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(bundlePath));
+
+        channel.appendLine(clipboardCopied ? 'Path copied to clipboard.' : 'Failed to copy path to clipboard.');
+        channel.show(true);
+
+        void vscode.window.showInformationMessage(
+          clipboardCopied ? 'Nova: bug report bundle created (path copied to clipboard).' : 'Nova: bug report bundle created.',
+        );
       } catch (err) {
         const message = formatError(err);
         vscode.window.showErrorMessage(`Nova: bug report failed: ${message}`);
@@ -861,7 +883,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const safeModeStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
   safeModeStatusItem.text = '$(shield) Nova: Safe Mode';
-  safeModeStatusItem.tooltip = 'Nova is running in safe mode. Click to create a bug report.';
+  safeModeStatusItem.tooltip = 'Nova is running in safe mode. Click to generate a bug report.';
   safeModeStatusItem.command = BUG_REPORT_COMMAND;
   safeModeStatusItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
   safeModeStatusItem.hide();
@@ -892,16 +914,16 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     const reasonSuffix = enabled && safeModeReason ? ` (${formatSafeModeReason(safeModeReason)})` : '';
-    safeModeStatusItem.tooltip = `Nova is running in safe mode${reasonSuffix}. Click to create a bug report.`;
+    safeModeStatusItem.tooltip = `Nova is running in safe mode${reasonSuffix}. Click to generate a bug report.`;
 
     if (enabled && !lastSafeModeEnabled && !safeModeWarningInFlight) {
       safeModeWarningInFlight = (async () => {
         try {
           const picked = await vscode.window.showWarningMessage(
-            `Nova: nova-lsp is running in safe mode${reasonSuffix}. Create a bug report to help diagnose the issue.`,
-            'Create Bug Report',
+            `Nova: nova-lsp is running in safe mode${reasonSuffix}. Generate a bug report to help diagnose the issue.`,
+            'Generate Bug Report',
           );
-          if (picked === 'Create Bug Report') {
+          if (picked === 'Generate Bug Report') {
             await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
           }
         } finally {
@@ -952,27 +974,27 @@ export async function activate(context: vscode.ExtensionContext) {
         prev !== 'critical' &&
         !shouldWarnCritical;
 
-      if (shouldWarnCritical) {
-        warnedCriticalMemoryPressure = true;
-        warnedHighMemoryPressure = true;
-        const picked = await vscode.window.showWarningMessage(
-          'Nova: memory pressure is Critical. Consider creating a bug report.',
-          'Create Bug Report',
-        );
-        if (picked === 'Create Bug Report') {
-          await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
-        }
-      } else if (shouldWarnHigh) {
-        warnedHighMemoryPressure = true;
-        const picked = await vscode.window.showWarningMessage(
-          `Nova: memory pressure is ${memoryPressureLabel(pressure)}. Consider creating a bug report.`,
-          'Create Bug Report',
-        );
-        if (picked === 'Create Bug Report') {
-          await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
+        if (shouldWarnCritical) {
+          warnedCriticalMemoryPressure = true;
+          warnedHighMemoryPressure = true;
+          const picked = await vscode.window.showWarningMessage(
+            'Nova: memory pressure is Critical. Consider generating a bug report.',
+            'Generate Bug Report',
+          );
+          if (picked === 'Generate Bug Report') {
+            await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
+          }
+        } else if (shouldWarnHigh) {
+          warnedHighMemoryPressure = true;
+          const picked = await vscode.window.showWarningMessage(
+            `Nova: memory pressure is ${memoryPressureLabel(pressure)}. Consider generating a bug report.`,
+            'Generate Bug Report',
+          );
+          if (picked === 'Generate Bug Report') {
+            await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
+          }
         }
       }
-    }
   };
 
   let observabilityDisposables: vscode.Disposable[] = [];
@@ -1067,7 +1089,7 @@ export async function activate(context: vscode.ExtensionContext) {
           uri: editor.document.uri.toString(),
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatError(err);
         vscode.window.showErrorMessage(`Nova: organize imports failed: ${message}`);
       }
     }),
@@ -1097,7 +1119,7 @@ export async function activate(context: vscode.ExtensionContext) {
           channel.appendLine(`- ${t.id}`);
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatError(err);
         vscode.window.showErrorMessage(`Nova: test discovery failed: ${message}`);
       }
     }),
@@ -1156,7 +1178,7 @@ export async function activate(context: vscode.ExtensionContext) {
           vscode.window.showErrorMessage(`Nova: Test failed (${picked.label})`);
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = formatError(err);
         vscode.window.showErrorMessage(`Nova: test run failed: ${message}`);
       }
     }),
@@ -1402,7 +1424,7 @@ async function runTestsFromTestExplorer(
       }
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = formatError(err);
     run.appendOutput(`Nova: test run failed: ${message}\n`);
   } finally {
     run.end();
@@ -1454,6 +1476,13 @@ function getTestOutputChannel(): vscode.OutputChannel {
   return testOutput;
 }
 
+function getBugReportOutputChannel(): vscode.OutputChannel {
+  if (!bugReportOutput) {
+    bugReportOutput = vscode.window.createOutputChannel('Nova Bug Report');
+  }
+  return bugReportOutput;
+}
+
 type BuildTool = 'auto' | 'maven' | 'gradle';
 
 async function getTestBuildTool(workspace: vscode.WorkspaceFolder): Promise<BuildTool> {
@@ -1480,12 +1509,12 @@ async function getTestBuildTool(workspace: vscode.WorkspaceFolder): Promise<Buil
 
 async function promptForBugReportReproduction(): Promise<string | undefined> {
   const input = vscode.window.createInputBox();
-  input.title = 'Nova: Create Bug Report';
+  input.title = 'Nova: Generate Bug Report';
   const supportsMultiline = 'multiline' in input;
   const submitKey = process.platform === 'darwin' ? 'Cmd+Enter' : 'Ctrl+Enter';
   input.prompt = supportsMultiline
-    ? `Optional reproduction steps. Press ${submitKey} to create the bug report, Esc to cancel.`
-    : 'Optional reproduction steps. Press Enter to create the bug report, Esc to cancel.';
+    ? `Optional reproduction steps. Press ${submitKey} to generate the bug report, Esc to cancel.`
+    : 'Optional reproduction steps. Press Enter to generate the bug report, Esc to cancel.';
   input.placeholder = 'What were you doing when the issue occurred?';
   input.ignoreFocusOut = true;
   if (supportsMultiline) {
@@ -1518,6 +1547,37 @@ async function promptForBugReportReproduction(): Promise<string | undefined> {
 
     input.show();
   });
+}
+
+async function promptForBugReportMaxLogLines(): Promise<number | null | undefined> {
+  const raw = await vscode.window.showInputBox({
+    title: 'Nova: Generate Bug Report',
+    prompt: 'Max log lines to include (optional)',
+    placeHolder: '500',
+    ignoreFocusOut: true,
+    validateInput: (value) => {
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return undefined;
+      }
+      const parsed = Number.parseInt(trimmed, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        return 'Enter a positive integer, or leave blank to use the default.';
+      }
+      return undefined;
+    },
+  });
+
+  if (raw === undefined) {
+    return undefined;
+  }
+
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  return Number.parseInt(trimmed, 10);
 }
 
 function parseSafeModeEnabled(payload: unknown): boolean | undefined {
@@ -1666,7 +1726,7 @@ function formatMemoryTooltip(
   }
 
   if (includeBugReportHint) {
-    tooltip.appendMarkdown('\n\nClick to create a bug report.');
+    tooltip.appendMarkdown('\n\nClick to generate a bug report.');
   }
 
   return tooltip;
@@ -1705,5 +1765,10 @@ function isMethodNotFoundError(err: unknown): boolean {
 
 function isSafeModeError(err: unknown): boolean {
   const message = formatError(err).toLowerCase();
-  return message.includes('safe-mode') || message.includes('safe mode');
+  if (message.includes('safe-mode') || message.includes('safe mode')) {
+    return true;
+  }
+
+  // Defensive: handle safe-mode guard messages that might not include the exact phrase.
+  return message.includes('nova/bugreport') && message.includes('only') && message.includes('available');
 }
