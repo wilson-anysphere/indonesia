@@ -33,14 +33,11 @@ impl CacheStore for LocalStore {
             });
         }
 
-        if let Some(parent) = dest.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-
-        std::fs::copy(&path, dest)?;
-        Ok(())
+        crate::util::atomic_write_with(dest, |out| {
+            let mut reader = File::open(&path)?;
+            io::copy(&mut reader, out)?;
+            Ok(())
+        })
     }
 }
 
@@ -53,16 +50,11 @@ impl CacheStore for HttpStore {
             message: err.to_string(),
         })?;
 
-        if let Some(parent) = dest.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-
-        let mut reader = response.into_reader();
-        let mut file = File::create(dest)?;
-        io::copy(&mut reader, &mut file)?;
-        Ok(())
+        crate::util::atomic_write_with(dest, |out| {
+            let mut reader = response.into_reader();
+            io::copy(&mut reader, out)?;
+            Ok(())
+        })
     }
 }
 
