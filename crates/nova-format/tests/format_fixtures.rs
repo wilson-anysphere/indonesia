@@ -138,6 +138,15 @@ fn snapshot_switch_case_comments() {
 }
 
 #[test]
+fn snapshot_diamond_operator() {
+    let input = include_str!("fixtures/diamond_operator.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("diamond_operator", formatted);
+    assert_idempotent("diamond_operator", input, &config);
+}
+
+#[test]
 fn on_type_formatting_triggers_inside_argument_lists() {
     let input = "class A {\n    void m() {\nfoo(1,2);\n    }\n}\n";
     let tree = parse(input);

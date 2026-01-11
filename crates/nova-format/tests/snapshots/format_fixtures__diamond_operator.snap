@@ -1,0 +1,12 @@
+---
+source: crates/nova-format/tests/format_fixtures.rs
+expression: formatted
+---
+import java.util.*;
+
+class Diamond {
+    void m() {
+        Map<String, Integer> m = new HashMap<>();
+        List<String> xs = new ArrayList<>();
+    }
+}

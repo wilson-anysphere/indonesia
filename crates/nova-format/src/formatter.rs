@@ -501,6 +501,14 @@ impl<'a> FormatState<'a> {
             return false;
         };
 
+        // Diamond operator `<>` in `new Foo<>()`.
+        if matches!(next, Token::Punct(Punct::Greater)) {
+            return matches!(prev, Some(SigToken::Word(info)) if info.kind == WordKind::New)
+                || matches!(prev, Some(SigToken::Word(info)) if info.type_like)
+                || matches!(prev, Some(SigToken::GenericClose { .. }))
+                || matches!(prev, Some(SigToken::Punct(Punct::Dot | Punct::DoubleColon)));
+        }
+
         // Wildcards (`<?>`) and annotated type arguments are always type-ish.
         let next_is_typeish = match next {
             Token::Punct(Punct::Question) | Token::Punct(Punct::At) => true,
