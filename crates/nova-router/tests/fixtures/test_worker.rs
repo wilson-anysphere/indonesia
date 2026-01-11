@@ -332,53 +332,61 @@ async fn maybe_exit_after_handshake(
 }
 
 async fn run_v3(conn: RpcConnection, shard_id: ShardId) -> Result<()> {
-    let state = std::sync::Arc::new(std::sync::Mutex::new(WorkerState::new(shard_id)));
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let shutdown_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(shutdown_tx)));
+    let state = std::sync::Arc::new(tokio::sync::Mutex::new(WorkerState::new(shard_id)));
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-    let state_clone = state.clone();
-    let shutdown_clone = shutdown_tx.clone();
-    conn.set_request_handler(move |_ctx, req| {
-        let state = state_clone.clone();
-        let shutdown_tx = shutdown_clone.clone();
-        async move {
-            match req {
-                Request::LoadFiles { revision, files } => {
-                    let mut guard = state.lock().unwrap();
-                    guard.revision = revision;
-                    guard.file_count = files.len().try_into().unwrap_or(u32::MAX);
-                    Ok(Response::Ack)
-                }
-                Request::IndexShard { revision, files } => {
-                    let mut guard = state.lock().unwrap();
-                    guard.revision = revision;
-                    guard.file_count = files.len().try_into().unwrap_or(u32::MAX);
-                    guard.index_generation = guard.index_generation.saturating_add(1);
-                    Ok(Response::ShardIndex(guard.shard_index()))
-                }
-                Request::UpdateFile { revision, .. } => {
-                    let mut guard = state.lock().unwrap();
-                    guard.revision = revision;
-                    guard.file_count = guard.file_count.max(1);
-                    guard.index_generation = guard.index_generation.saturating_add(1);
-                    Ok(Response::ShardIndex(guard.shard_index()))
-                }
-                Request::GetWorkerStats => {
-                    let guard = state.lock().unwrap();
-                    Ok(Response::WorkerStats(guard.stats()))
-                }
-                Request::Shutdown => {
-                    if let Some(tx) = shutdown_tx.lock().unwrap().take() {
-                        let _ = tx.send(());
+    conn.set_request_handler({
+        let state = state.clone();
+        let shutdown_tx = shutdown_tx.clone();
+        move |_ctx, req| {
+            let state = state.clone();
+            let shutdown_tx = shutdown_tx.clone();
+            async move {
+                match req {
+                    Request::LoadFiles { revision, files } => {
+                        let mut guard = state.lock().await;
+                        guard.revision = revision;
+                        guard.file_count = files.len().try_into().unwrap_or(u32::MAX);
+                        Ok(Response::Ack)
                     }
-                    Ok(Response::Shutdown)
+                    Request::IndexShard { revision, files } => {
+                        let mut guard = state.lock().await;
+                        guard.revision = revision;
+                        guard.file_count = files.len().try_into().unwrap_or(u32::MAX);
+                        guard.index_generation = guard.index_generation.saturating_add(1);
+                        Ok(Response::ShardIndex(guard.shard_index()))
+                    }
+                    Request::UpdateFile { revision, .. } => {
+                        let mut guard = state.lock().await;
+                        guard.revision = revision;
+                        guard.file_count = guard.file_count.max(1);
+                        guard.index_generation = guard.index_generation.saturating_add(1);
+                        Ok(Response::ShardIndex(guard.shard_index()))
+                    }
+                    Request::GetWorkerStats => {
+                        let guard = state.lock().await;
+                        Ok(Response::WorkerStats(guard.stats()))
+                    }
+                    Request::Shutdown => {
+                        let _ = shutdown_tx.send(true);
+                        Ok(Response::Shutdown)
+                    }
+                    Request::Unknown => Ok(Response::Ack),
                 }
-                Request::Unknown => Ok(Response::Ack),
             }
         }
     });
 
-    let _ = shutdown_rx.await;
+    while shutdown_rx.changed().await.is_ok() {
+        if *shutdown_rx.borrow() {
+            break;
+        }
+    }
+
+    // Best-effort: allow in-flight responses (especially the `Shutdown` response) to flush before
+    // tearing down the Tokio runtime.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = conn.shutdown().await;
     Ok(())
 }
 
