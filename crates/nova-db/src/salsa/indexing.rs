@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nova_cache::Fingerprint;
-use nova_hir::SymbolSummary;
+use nova_hir::token_item_tree::TokenSymbolSummary;
 use nova_index::{ProjectIndexes, SymbolLocation};
 
 use crate::{FileId, ProjectId};
@@ -23,7 +23,7 @@ pub trait NovaIndexing: NovaSemantic + HasQueryStats + HasPersistence {
     fn project_file_fingerprints(&self, project: ProjectId) -> Arc<BTreeMap<String, Fingerprint>>;
 
     /// Range-insensitive per-file symbol summary used for early-cutoff indexing.
-    fn file_symbol_summary(&self, file: FileId) -> Arc<SymbolSummary>;
+    fn file_symbol_summary(&self, file: FileId) -> Arc<TokenSymbolSummary>;
 
     /// Index contributions for a single file.
     fn file_index_delta(&self, file: FileId) -> Arc<ProjectIndexes>;
@@ -82,7 +82,7 @@ fn project_file_fingerprints(
     result
 }
 
-fn file_symbol_summary(db: &dyn NovaIndexing, file: FileId) -> Arc<SymbolSummary> {
+fn file_symbol_summary(db: &dyn NovaIndexing, file: FileId) -> Arc<TokenSymbolSummary> {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
