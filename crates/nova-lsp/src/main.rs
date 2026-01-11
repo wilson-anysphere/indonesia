@@ -649,6 +649,19 @@ fn handle_request(
                 return Ok(server_shutting_down_error(id));
             }
 
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::CHANGE_SIGNATURE_METHOD) {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
             let change: nova_refactor::ChangeSignature = match serde_json::from_value(params) {
                 Ok(params) => params,
                 Err(err) => {

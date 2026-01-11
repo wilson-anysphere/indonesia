@@ -57,9 +57,9 @@ When in safe-mode, **all methods dispatched through** `nova_lsp::handle_custom_r
 > “Nova is running in safe-mode … Only `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` are available for now.”
 
 Note: safe-mode enforcement is currently implemented by `nova_lsp::hardening::guard_method()` and
-therefore only applies to methods dispatched via `nova_lsp::handle_custom_request()`. Some
-endpoints handled directly by the stdio server (e.g. `nova/memoryStatus`, `nova/java/organizeImports`,
-`nova/refactor/changeSignature`) currently bypass that guard and may still succeed during safe-mode.
+is typically enforced by `nova_lsp::handle_custom_request()`, but endpoints handled directly by the
+stdio server must call it explicitly. Some endpoints (e.g. `nova/memoryStatus`,
+`nova/java/organizeImports`) currently bypass that guard and may still succeed during safe-mode.
 
 Safe-mode windows:
 
@@ -1353,6 +1353,8 @@ Notes:
   clients should ensure relevant files are opened/synchronized before calling this endpoint.
 - `nova_refactor::SafeDeleteReport` stores ranges as `nova_index::TextRange` values:
   `start`/`end` are **byte offsets** into the UTF-8 source file (not LSP UTF-16 positions).
+- The stdio server also exposes Safe Delete via `workspace/executeCommand` (`nova.safeDelete`),
+  using the same argument shape as `SafeDeleteParams` and returning the same `SafeDeleteResult`.
 
 #### Errors
 
