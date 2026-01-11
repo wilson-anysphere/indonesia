@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
+use nova_db::persistence::{PersistenceConfig, PersistenceMode};
 use nova_index::{
     load_sharded_index_archives_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
     CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
@@ -50,9 +51,17 @@ impl Workspace {
     pub fn new_in_memory() -> Self {
         let memory = MemoryManager::new(MemoryBudget::default_for_system());
         let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
+        let engine_config = engine::WorkspaceEngineConfig {
+            workspace_root: PathBuf::new(),
+            persistence: PersistenceConfig {
+                mode: PersistenceMode::Disabled,
+                cache: CacheConfig::from_env(),
+            },
+            memory: memory.clone(),
+        };
         Self {
             root: PathBuf::new(),
-            engine: Arc::new(engine::WorkspaceEngine::new()),
+            engine: Arc::new(engine::WorkspaceEngine::new(engine_config)),
             memory,
             symbol_searcher,
         }
@@ -77,9 +86,14 @@ impl Workspace {
         let root = find_project_root(&root);
         let memory = MemoryManager::new(MemoryBudget::default_for_system());
         let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
+        let engine_config = engine::WorkspaceEngineConfig {
+            workspace_root: root.clone(),
+            persistence: PersistenceConfig::from_env(),
+            memory: memory.clone(),
+        };
         Ok(Self {
             root,
-            engine: Arc::new(engine::WorkspaceEngine::new()),
+            engine: Arc::new(engine::WorkspaceEngine::new(engine_config)),
             memory,
             symbol_searcher,
         })

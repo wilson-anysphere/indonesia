@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -6,8 +6,10 @@ use async_channel::{Receiver, Sender};
 use nova_config::EffectiveConfig;
 use nova_core::TextEdit;
 use nova_db::salsa;
+use nova_db::persistence::PersistenceConfig;
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::{ProjectIndexes, SymbolLocation};
+use nova_memory::MemoryManager;
 use nova_scheduler::{Cancelled, KeyedDebouncer, PoolKind, Scheduler};
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
@@ -40,6 +42,13 @@ pub enum WorkspaceEvent {
     },
 }
 
+#[derive(Clone)]
+pub(crate) struct WorkspaceEngineConfig {
+    pub workspace_root: PathBuf,
+    pub persistence: PersistenceConfig,
+    pub memory: MemoryManager,
+}
+
 pub(crate) struct WorkspaceEngine {
     vfs: Vfs<LocalFs>,
     query_db: salsa::Database,
@@ -54,7 +63,7 @@ pub(crate) struct WorkspaceEngine {
 }
 
 impl WorkspaceEngine {
-    pub fn new() -> Self {
+    pub fn new(config: WorkspaceEngineConfig) -> Self {
         let scheduler = Scheduler::default();
         let index_debouncer = KeyedDebouncer::new(
             scheduler.clone(),
@@ -62,9 +71,19 @@ impl WorkspaceEngine {
             // Match the default LSP diagnostics debounce so edits "win" over background work.
             Duration::from_millis(200),
         );
+
+        let WorkspaceEngineConfig {
+            workspace_root,
+            persistence,
+            memory,
+        } = config;
+
+        let query_db = salsa::Database::new_with_persistence(&workspace_root, persistence);
+        query_db.register_salsa_memo_evictor(&memory);
+
         Self {
             vfs: Vfs::new(LocalFs::new()),
-            query_db: salsa::Database::new(),
+            query_db,
             indexes: Arc::new(Mutex::new(ProjectIndexes::default())),
             config: RwLock::new(EffectiveConfig::default()),
             scheduler,
