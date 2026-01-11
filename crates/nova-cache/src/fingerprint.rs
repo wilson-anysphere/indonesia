@@ -33,22 +33,27 @@ impl Fingerprint {
         Self(hex::encode(hasher.finalize()))
     }
 
-    /// Compute the SHA-256 fingerprint of a file's contents.
-    ///
-    /// This uses a streaming implementation to avoid reading large cache files
-    /// (e.g. `.idx` indexes) into memory all at once.
-    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, CacheError> {
-        let mut file = std::fs::File::open(path)?;
+    /// Compute the SHA-256 fingerprint of bytes read from `reader`.
+    pub fn from_reader(mut reader: impl Read) -> Result<Self, CacheError> {
         let mut hasher = Sha256::new();
         let mut buf = [0_u8; 64 * 1024];
         loop {
-            let read = file.read(&mut buf)?;
+            let read = reader.read(&mut buf)?;
             if read == 0 {
                 break;
             }
             hasher.update(&buf[..read]);
         }
         Ok(Self(hex::encode(hasher.finalize())))
+    }
+
+    /// Compute the SHA-256 fingerprint of a file's contents.
+    ///
+    /// This uses a streaming implementation to avoid reading large cache files
+    /// (e.g. `.idx` indexes) into memory all at once.
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, CacheError> {
+        let file = std::fs::File::open(path)?;
+        Self::from_reader(file)
     }
 
     /// Compute a fast fingerprint based on file metadata (size + mtime).

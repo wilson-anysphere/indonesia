@@ -62,9 +62,9 @@ fn rewrite_query_saved_at<T: Serialize + for<'de> Deserialize<'de>>(
     saved_at_millis: u64,
 ) {
     let bytes = std::fs::read(entry_path).unwrap();
-    let mut persisted: PersistedDerivedValueOwned<T> = bincode::deserialize(&bytes).unwrap();
+    let mut persisted: PersistedDerivedValueOwned<T> = ast_bincode_options().deserialize(&bytes).unwrap();
     persisted.saved_at_millis = saved_at_millis;
-    let bytes = bincode::serialize(&persisted).unwrap();
+    let bytes = ast_bincode_options().serialize(&persisted).unwrap();
     std::fs::write(entry_path, bytes).unwrap();
 }
 
@@ -239,10 +239,10 @@ fn max_total_bytes_evicts_oldest_first() {
     let query_dir = cache_dir.queries_dir().join("type_of");
     let old_path = std::fs::read_dir(&query_dir)
         .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .unwrap();
     rewrite_query_saved_at::<u32>(&old_path, 1);
 
     let args2 = Args {
@@ -254,18 +254,22 @@ fn max_total_bytes_evicts_oldest_first() {
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
         .collect();
     entries.sort();
     assert_eq!(entries.len(), 2);
     let new_path = entries.into_iter().find(|p| p != &old_path).unwrap();
     rewrite_query_saved_at::<u32>(&new_path, 2);
 
+    let index_size = std::fs::metadata(query_dir.join("index.json"))
+        .map(|m| m.len())
+        .unwrap_or(0);
     let meta_size = std::fs::metadata(cache_dir.metadata_path()).unwrap().len()
         + std::fs::metadata(cache_dir.metadata_bin_path())
             .unwrap()
             .len();
     let new_size = std::fs::metadata(&new_path).unwrap().len();
-    let limit = meta_size + new_size;
+    let limit = meta_size + index_size + new_size;
 
     prune_cache(
         &cache_dir,

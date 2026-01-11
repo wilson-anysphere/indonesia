@@ -2,9 +2,11 @@ use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::path::normalize_inputs_map;
 use crate::util::{
-    atomic_write, bincode_deserialize, bincode_serialize, now_millis, read_file_limited,
+    atomic_write, bincode_deserialize, bincode_options_limited, bincode_serialize, now_millis,
+    read_file_limited,
 };
-use serde::de::{DeserializeOwned, IgnoredAny};
+use bincode::Options;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -531,16 +533,6 @@ struct PersistedDerivedValueOwned<T> {
     value: T,
 }
 
-#[derive(Debug, Deserialize)]
-struct PersistedDerivedValueHeader {
-    schema_version: u32,
-    nova_version: String,
-    saved_at_millis: u64,
-    query_name: String,
-    key_fingerprint: Fingerprint,
-    value: IgnoredAny,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DerivedQueryIndexEntry {
     saved_at_millis: u64,
@@ -611,15 +603,24 @@ fn is_safe_entry_file_name(file_name: &str) -> bool {
 }
 
 fn read_saved_at_millis(path: &Path) -> Option<u64> {
-    let bytes = read_file_limited(path)?;
-    let header: PersistedDerivedValueHeader = bincode_deserialize(&bytes).ok()?;
-    if header.schema_version != DERIVED_CACHE_SCHEMA_VERSION {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > crate::BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
         return None;
     }
-    if header.nova_version != nova_core::NOVA_VERSION {
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file);
+    let (schema_version, nova_version, saved_at_millis): (u32, String, u64) =
+        bincode_options_limited().deserialize_from(&mut reader).ok()?;
+
+    if schema_version != DERIVED_CACHE_SCHEMA_VERSION {
         return None;
     }
-    Some(header.saved_at_millis)
+    if nova_version != nova_core::NOVA_VERSION {
+        return None;
+    }
+
+    Some(saved_at_millis)
 }
 
 fn sanitize_component(raw: &str) -> String {

@@ -1,7 +1,9 @@
 use crate::ast_cache::AST_ARTIFACT_SCHEMA_VERSION;
 use crate::error::Result;
 use crate::fingerprint::Fingerprint;
-use crate::util::{atomic_write, now_millis};
+use crate::util::{
+    atomic_write, bincode_deserialize, bincode_options_limited, bincode_serialize, now_millis,
+};
 use crate::CacheDir;
 use bincode::Options;
 use serde::{Deserialize, Serialize};
@@ -114,13 +116,7 @@ fn prune_ast(cache_dir: &CacheDir, cutoff_millis: Option<u64>, policy: &PrunePol
     let metadata = load_ast_metadata(&metadata_path, report);
 
     let mut referenced = HashMap::<String, u64>::new();
-    let mut compatible_metadata = metadata.and_then(|m| {
-        if m.schema_version == AST_ARTIFACT_SCHEMA_VERSION && m.nova_version == nova_core::NOVA_VERSION {
-            Some(m)
-        } else {
-            None
-        }
-    });
+    let mut compatible_metadata = metadata.filter(|m| is_compatible_ast_metadata(m));
 
     if let Some(meta) = &compatible_metadata {
         for entry in meta.files.values() {
@@ -160,7 +156,7 @@ fn prune_ast(cache_dir: &CacheDir, cutoff_millis: Option<u64>, policy: &PrunePol
 
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy().to_string();
-        if file_name == "metadata.bin" {
+        if file_name == "metadata.bin" || file_name == "metadata.lock" {
             continue;
         }
 
@@ -455,7 +451,7 @@ fn enforce_total_size(
         return;
     };
 
-    if meta.schema_version != AST_ARTIFACT_SCHEMA_VERSION || meta.nova_version != nova_core::NOVA_VERSION {
+    if !is_compatible_ast_metadata(&meta) {
         return;
     }
 
@@ -502,7 +498,7 @@ fn gather_ast_candidates(cache_dir: &CacheDir, report: &mut PruneReport, out: &m
     let metadata_path = ast_dir.join("metadata.bin");
     let mut artifact_saved_at = HashMap::<String, u64>::new();
     if let Some(meta) = load_ast_metadata(&metadata_path, report) {
-        if meta.schema_version == AST_ARTIFACT_SCHEMA_VERSION && meta.nova_version == nova_core::NOVA_VERSION {
+        if is_compatible_ast_metadata(&meta) {
             for entry in meta.files.values() {
                 artifact_saved_at.insert(entry.artifact_file.clone(), entry.saved_at_millis);
             }
@@ -538,7 +534,7 @@ fn gather_ast_candidates(cache_dir: &CacheDir, report: &mut PruneReport, out: &m
         }
 
         let file_name = entry.file_name().to_string_lossy().to_string();
-        if file_name == "metadata.bin" {
+        if file_name == "metadata.bin" || file_name == "metadata.lock" {
             continue;
         }
 
@@ -754,6 +750,8 @@ fn dir_size_bytes(path: &Path, report: &mut PruneReport) -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AstCacheMetadata {
     schema_version: u32,
+    syntax_schema_version: u32,
+    hir_schema_version: u32,
     nova_version: String,
     files: BTreeMap<String, AstCacheFileEntry>,
 }
@@ -766,24 +764,36 @@ struct AstCacheFileEntry {
     saved_at_millis: u64,
 }
 
-fn ast_bincode_options() -> impl bincode::Options {
-    bincode::DefaultOptions::new()
-        .with_fixint_encoding()
-        .with_little_endian()
-        .with_no_limit()
+fn is_compatible_ast_metadata(meta: &AstCacheMetadata) -> bool {
+    meta.schema_version == AST_ARTIFACT_SCHEMA_VERSION
+        && meta.syntax_schema_version == nova_syntax::SYNTAX_SCHEMA_VERSION
+        && meta.hir_schema_version == nova_hir::HIR_SCHEMA_VERSION
+        && meta.nova_version == nova_core::NOVA_VERSION
 }
 
 fn load_ast_metadata(path: &Path, report: &mut PruneReport) -> Option<AstCacheMetadata> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
             report.push_error(path, "read_ast_metadata", err);
             return None;
         }
     };
+    if meta.len() > crate::BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
+        report.push_error(path, "read_ast_metadata", "metadata payload exceeds limit");
+        return None;
+    }
 
-    match ast_bincode_options().deserialize::<AstCacheMetadata>(&bytes) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            report.push_error(path, "read_ast_metadata", err);
+            return None;
+        }
+    };
+
+    match bincode_deserialize::<AstCacheMetadata>(&bytes) {
         Ok(metadata) => Some(metadata),
         Err(err) => {
             report.push_error(path, "decode_ast_metadata", err);
@@ -797,7 +807,7 @@ fn store_ast_metadata(path: &Path, metadata: &AstCacheMetadata, policy: &PrunePo
         return;
     }
 
-    let bytes = match ast_bincode_options().serialize(metadata) {
+    let bytes = match bincode_serialize(metadata) {
         Ok(bytes) => bytes,
         Err(err) => {
             report.push_error(path, "encode_ast_metadata", err);
@@ -811,36 +821,45 @@ fn store_ast_metadata(path: &Path, metadata: &AstCacheMetadata, policy: &PrunePo
 }
 
 fn derived_entry_saved_at_millis(path: &Path, report: &mut PruneReport) -> Option<u64> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
+    if path.extension().and_then(|ext| ext.to_str()) != Some("bin") {
+        return None;
+    }
+
+    let meta = match std::fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) => {
+            report.push_error(path, "stat_query_entry", err);
+            return None;
+        }
+    };
+    if meta.len() > crate::BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
+        return None;
+    }
+
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
         Err(err) => {
             report.push_error(path, "read_query_entry", err);
             return None;
         }
     };
 
-    let mut cursor = std::io::Cursor::new(bytes);
-    let _: u32 = match bincode::deserialize_from(&mut cursor) {
-        Ok(value) => value,
-        Err(err) => {
-            report.push_error(path, "decode_query_entry_schema", err);
-            return None;
-        }
-    };
+    let mut reader = std::io::BufReader::new(file);
+    let (schema_version, nova_version, saved_at_millis): (u32, String, u64) =
+        match bincode_options_limited().deserialize_from(&mut reader) {
+            Ok(value) => value,
+            Err(err) => {
+                report.push_error(path, "decode_query_entry_header", err);
+                return None;
+            }
+        };
 
-    let _: String = match bincode::deserialize_from(&mut cursor) {
-        Ok(value) => value,
-        Err(err) => {
-            report.push_error(path, "decode_query_entry_nova_version", err);
-            return None;
-        }
-    };
-
-    match bincode::deserialize_from::<_, u64>(&mut cursor) {
-        Ok(value) => Some(value),
-        Err(err) => {
-            report.push_error(path, "decode_query_entry_saved_at", err);
-            None
-        }
+    if schema_version != crate::derived_cache::DERIVED_CACHE_SCHEMA_VERSION {
+        return None;
     }
+    if nova_version != nova_core::NOVA_VERSION {
+        return None;
+    }
+
+    Some(saved_at_millis)
 }
