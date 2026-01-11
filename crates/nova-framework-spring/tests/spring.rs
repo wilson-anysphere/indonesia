@@ -54,6 +54,81 @@ fn bean_and_injection_resolves() {
 }
 
 #[test]
+fn bean_method_param_injection_resolves() {
+    let foo = r#"
+        import org.springframework.stereotype.Component;
+
+        @Component
+        class Foo {
+        }
+    "#;
+    let config = r#"
+        import org.springframework.context.annotation.Bean;
+        import org.springframework.context.annotation.Configuration;
+
+        @Configuration
+        class Config {
+            @Bean
+            Bar bar(Foo foo) { return null; }
+        }
+
+        class Bar {}
+    "#;
+
+    let analysis = analyze_java_sources(&[foo, config]);
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "unexpected diagnostics: {:#?}",
+        analysis.diagnostics
+    );
+
+    let inj_idx = analysis
+        .model
+        .injections
+        .iter()
+        .position(|i| i.owner_class == "Bar" && i.ty == "Foo")
+        .expect("missing Foo injection");
+    assert_eq!(
+        analysis.model.injections[inj_idx].kind,
+        InjectionKind::BeanMethodParam
+    );
+
+    let candidates = &analysis.model.injection_candidates[inj_idx];
+    assert_eq!(candidates.len(), 1);
+    let bean = &analysis.model.beans[candidates[0]];
+    assert_eq!(bean.kind, BeanKind::Component);
+    assert_eq!(bean.ty, "Foo");
+}
+
+#[test]
+fn bean_method_param_missing_dependency_reports_diagnostic() {
+    let config = r#"
+        import org.springframework.context.annotation.Bean;
+        import org.springframework.context.annotation.Configuration;
+
+        @Configuration
+        class Config {
+            @Bean
+            Bar bar(Missing missing) { return null; }
+        }
+
+        class Bar {}
+        class Missing {}
+    "#;
+
+    let analysis = analyze_java_sources(&[config]);
+    assert_eq!(analysis.diagnostics.len(), 1);
+    assert_eq!(
+        analysis.diagnostics[0].diagnostic.code.as_ref(),
+        SPRING_NO_BEAN
+    );
+    assert!(analysis.diagnostics[0]
+        .diagnostic
+        .message
+        .contains("Missing"));
+}
+
+#[test]
 fn no_bean_diagnostic_triggers() {
     let bar = r#"
         import org.springframework.stereotype.Component;

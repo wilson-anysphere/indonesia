@@ -45,6 +45,7 @@ pub struct Bean {
 pub enum InjectionKind {
     Field,
     ConstructorParam,
+    BeanMethodParam,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -519,6 +520,7 @@ fn parse_component_bean(
         "Repository",
         "Controller",
         "Configuration",
+        "TestConfiguration",
         "SpringBootApplication",
     ];
     let stereotype = annotations
@@ -595,7 +597,17 @@ fn parse_class_body(
             }
             "method_declaration" if is_configuration => {
                 if let Some(bean) = parse_bean_method(child, source_idx, source) {
+                    let bean_ty = bean.ty.clone();
                     beans.push(bean);
+                    if collect_injections {
+                        parse_bean_method_param_injections(
+                            child,
+                            source_idx,
+                            source,
+                            &bean_ty,
+                            injections,
+                        );
+                    }
                 }
             }
             _ => {}
@@ -777,6 +789,42 @@ fn parse_constructor_injections(ctors: Vec<ConstructorData>, injections: &mut Ve
                 },
             });
         }
+    }
+}
+
+fn parse_bean_method_param_injections(
+    node: Node<'_>,
+    source_idx: usize,
+    source: &str,
+    bean_ty: &str,
+    injections: &mut Vec<InjectionPoint>,
+) {
+    let params_node = node
+        .child_by_field_name("parameters")
+        .or_else(|| find_named_child(node, "formal_parameters"));
+    let Some(params_node) = params_node else {
+        return;
+    };
+
+    let mut cursor = params_node.walk();
+    for child in params_node.named_children(&mut cursor) {
+        if child.kind() != "formal_parameter" {
+            continue;
+        }
+        let Some(param) = parse_constructor_param(child, source) else {
+            continue;
+        };
+        injections.push(InjectionPoint {
+            kind: InjectionKind::BeanMethodParam,
+            owner_class: bean_ty.to_string(),
+            name: param.name,
+            ty: param.ty,
+            qualifier: param.qualifier,
+            location: SourceSpan {
+                source: source_idx,
+                span: param.span,
+            },
+        });
     }
 }
 
