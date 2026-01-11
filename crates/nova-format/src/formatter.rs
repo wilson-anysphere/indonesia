@@ -895,24 +895,51 @@ impl<'a> FormatState<'a> {
         self.write_indent_level(break_indent);
     }
 
-    fn write_block_comment(&mut self, text: &str) {
-        let mut parts = text.split_inclusive(['\n', '\r']);
-        if let Some(first) = parts.next() {
-            let trimmed = first.trim_end_matches(['\r', '\n']);
-            self.out.push_str(trimmed);
-            self.line_len += trimmed.len();
-            if first.ends_with(['\n', '\r']) {
-                self.ensure_newline();
+    fn push_hardline(&mut self) {
+        while matches!(self.out.as_bytes().last(), Some(b' ' | b'\t')) {
+            match self.out.pop() {
+                Some('\t') => {
+                    self.line_len = self.line_len.saturating_sub(self.config.indent_width);
+                }
+                Some(' ') => {
+                    self.line_len = self.line_len.saturating_sub(1);
+                }
+                Some(_) | None => {}
             }
         }
-        for part in parts {
-            let trimmed = part.trim_end_matches(['\r', '\n']);
-            self.write_indent();
-            let rest = trimmed.trim_start_matches([' ', '\t']);
-            self.out.push_str(rest);
-            self.line_len += rest.len();
-            if part.ends_with(['\n', '\r']) {
-                self.ensure_newline();
+        self.out.push_str(self.newline);
+        self.at_line_start = true;
+        self.line_len = 0;
+        self.last_sig = None;
+    }
+
+    fn write_block_comment(&mut self, text: &str) {
+        if !crate::comment_printer::comment_contains_line_break(text) {
+            self.out.push_str(text);
+            self.line_len += text.len();
+            return;
+        }
+
+        let lines = crate::comment_printer::split_lines(text);
+        if lines.is_empty() {
+            return;
+        }
+
+        let common = crate::comment_printer::common_indent(lines.iter().skip(1).map(|l| l.text));
+
+        for (idx, line) in lines.iter().enumerate() {
+            if idx == 0 {
+                self.out.push_str(line.text);
+                self.line_len += line.text.len();
+            } else {
+                self.write_indent();
+                let trimmed = crate::comment_printer::trim_indent(line.text, common);
+                self.out.push_str(trimmed);
+                self.line_len += trimmed.len();
+            }
+
+            if line.has_line_break {
+                self.push_hardline();
             }
         }
     }

@@ -155,12 +155,12 @@ fn fmt_doc_comment<'a>(text: &'a str) -> Doc<'a> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Line<'a> {
-    text: &'a str,
-    has_line_break: bool,
+pub(crate) struct Line<'a> {
+    pub(crate) text: &'a str,
+    pub(crate) has_line_break: bool,
 }
 
-fn split_lines(text: &str) -> Vec<Line<'_>> {
+pub(crate) fn split_lines(text: &str) -> Vec<Line<'_>> {
     let bytes = text.as_bytes();
     let mut lines = Vec::new();
     let mut start = 0usize;
@@ -199,7 +199,7 @@ fn split_lines(text: &str) -> Vec<Line<'_>> {
     lines
 }
 
-fn common_indent<'a>(lines: impl Iterator<Item = &'a str>) -> usize {
+pub(crate) fn common_indent<'a>(lines: impl Iterator<Item = &'a str>) -> usize {
     let mut min: Option<usize> = None;
 
     for line in lines {
@@ -217,7 +217,7 @@ fn common_indent<'a>(lines: impl Iterator<Item = &'a str>) -> usize {
     min.unwrap_or(0)
 }
 
-fn trim_indent<'a>(line: &'a str, indent: usize) -> &'a str {
+pub(crate) fn trim_indent<'a>(line: &'a str, indent: usize) -> &'a str {
     if indent == 0 {
         return line;
     }

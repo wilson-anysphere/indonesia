@@ -362,6 +362,14 @@ impl<'a> TokenFormatState<'a> {
         out.push(' ');
     }
 
+    fn push_hardline(&mut self, out: &mut String) {
+        while matches!(out.as_bytes().last(), Some(b' ' | b'\t')) {
+            out.pop();
+        }
+        out.push_str(self.newline);
+        self.at_line_start = true;
+    }
+
     fn write_token(&mut self, out: &mut String, kind: SyntaxKind, text: &str, next: Option<&str>) {
         match kind {
             SyntaxKind::LineComment => {
@@ -524,21 +532,29 @@ impl<'a> TokenFormatState<'a> {
     }
 
     fn write_block_comment(&mut self, out: &mut String, text: &str) {
-        // Preserve comment contents, but normalize indentation after line breaks.
-        let mut lines = text.split_inclusive(['\n', '\r']);
-        if let Some(first) = lines.next() {
-            out.push_str(first.trim_end_matches(['\r', '\n']));
-            if first.ends_with(['\n', '\r']) {
-                self.ensure_newline(out);
-            }
+        if !crate::comment_printer::comment_contains_line_break(text) {
+            out.push_str(text);
+            return;
         }
 
-        for part in lines {
-            let trimmed = part.trim_end_matches(['\r', '\n']);
-            self.write_indent(out);
-            out.push_str(trimmed.trim_start_matches([' ', '\t']));
-            if part.ends_with(['\n', '\r']) {
-                self.ensure_newline(out);
+        let lines = crate::comment_printer::split_lines(text);
+        if lines.is_empty() {
+            return;
+        }
+
+        let common = crate::comment_printer::common_indent(lines.iter().skip(1).map(|l| l.text));
+
+        for (idx, line) in lines.iter().enumerate() {
+            if idx == 0 {
+                out.push_str(line.text);
+            } else {
+                self.write_indent(out);
+                let trimmed = crate::comment_printer::trim_indent(line.text, common);
+                out.push_str(trimmed);
+            }
+
+            if line.has_line_break {
+                self.push_hardline(out);
             }
         }
     }
