@@ -150,7 +150,10 @@ pub trait PromptCompletionProvider: Send + Sync {
 }
 
 #[async_trait]
-impl PromptCompletionProvider for nova_ai::AiClient {
+impl<T> PromptCompletionProvider for T
+where
+    T: nova_ai::LlmClient + Send + Sync,
+{
     async fn complete(
         &self,
         prompt: &str,
@@ -159,36 +162,12 @@ impl PromptCompletionProvider for nova_ai::AiClient {
         let request = nova_ai::ChatRequest {
             messages: vec![nova_ai::ChatMessage::user(prompt.to_string())],
             max_tokens: None,
+            temperature: None,
         };
         self.chat(request, cancel.clone())
             .await
             .map_err(|err| match err {
                 nova_ai::AiError::Cancelled => PromptCompletionError::Cancelled,
-                other => PromptCompletionError::Provider(other.to_string()),
-            })
-    }
-}
-
-#[async_trait]
-impl PromptCompletionProvider for nova_ai::CloudLlmClient {
-    async fn complete(
-        &self,
-        prompt: &str,
-        cancel: &CancellationToken,
-    ) -> Result<String, PromptCompletionError> {
-        const DEFAULT_MAX_TOKENS: u32 = 1024;
-        const DEFAULT_TEMPERATURE: f32 = 0.2;
-
-        let request = nova_ai::cloud::GenerateRequest {
-            prompt: prompt.to_string(),
-            max_tokens: DEFAULT_MAX_TOKENS,
-            temperature: DEFAULT_TEMPERATURE,
-        };
-
-        self.generate(request, cancel.clone())
-            .await
-            .map_err(|err| match err {
-                nova_ai::cloud::CloudLlmError::Cancelled => PromptCompletionError::Cancelled,
                 other => PromptCompletionError::Provider(other.to_string()),
             })
     }
