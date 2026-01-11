@@ -25,9 +25,14 @@ fn sanitize_text(text: &str) -> String {
     static BEARER_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?i)(bearer\s+)[A-Za-z0-9\-._=+/]{16,}").expect("valid regex")
     });
+    static BASIC_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)(basic\s+)[A-Za-z0-9\-._=+/]{16,}").expect("valid regex")
+    });
     static HEADER_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\b(authorization|x-[a-z0-9-]*api[-_]?key|api[-_]?key)\s*:\s*([^\r\n]+)")
-            .expect("valid regex")
+        Regex::new(
+            r#"(?i)("?\b(?:authorization|x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|token)\b"?)\s*:\s*([^\r\n]+)"#,
+        )
+        .expect("valid regex")
     });
     static QUERY_PARAM_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?i)([?&](?:key|api[_-]?key|token|access[_-]?token)=)([^&\s]+)")
@@ -57,6 +62,9 @@ fn sanitize_text(text: &str) -> String {
         })
         .into_owned();
     out = BEARER_TOKEN_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| format!("{}[REDACTED]", &caps[1]))
+        .into_owned();
+    out = BASIC_TOKEN_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| format!("{}[REDACTED]", &caps[1]))
         .into_owned();
 
@@ -184,11 +192,16 @@ mod tests {
 
     #[test]
     fn sanitize_text_redacts_url_userinfo_and_tokens() {
-        let input = "POST https://user:pass@example.com/path?access_token=abcd1234 and sk-proj-012345678901234567890123456789";
+        let input = r#"POST https://user:pass@example.com/path?access_token=abcd1234
+Basic abcdefghijklmnop
+{"api_key": "sh0rt"}
+sk-proj-012345678901234567890123456789"#;
         let out = sanitize_prompt_for_audit(input);
         assert!(!out.contains("user:pass@"));
         assert!(!out.contains("access_token=abcd1234"));
         assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("sh0rt"));
+        assert!(!out.contains("abcdefghijklmnop"));
         assert!(!out.contains("sk-proj-012345678901234567890123456789"));
     }
 }
