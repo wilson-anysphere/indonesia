@@ -14,6 +14,8 @@ jobs:
     env:
       # Use a shared target dir so the baseline + current worktrees can reuse build artifacts.
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      # Improves CI triage when `nova` panics or `anyhow` captures a backtrace.
+      RUST_BACKTRACE: "1"
 
     steps:
       - name: Checkout
@@ -51,14 +53,92 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           set -uox pipefail
-          cargo run -p nova-cli --release -- perf compare \
-            --baseline perf-base.json \
-            --current perf-current.json \
-            --config perf/thresholds.toml \
-            --markdown-out perf-report.md
-          status=$?
-          cat perf-report.md >> "${GITHUB_STEP_SUMMARY}"
+
+          # Keep the existing behavior:
+          # - write a markdown report and append it to `GITHUB_STEP_SUMMARY`
+          # - exit nonzero when regressions exceed thresholds
+          #
+          # Additionally: write a machine-readable JSON report when supported.
+          status=0
+
+          # Determine which JSON output mode the CLI supports.
+          help_file="$(mktemp)"
+          cargo run -p nova-cli --release -- perf compare --help >"${help_file}"
+          json_out_supported=0
+          format_supported=0
+          if grep -q -- '--json-out' "${help_file}"; then
+            json_out_supported=1
+          elif grep -Eq -- '^[[:space:]]+--format([[:space:]]|$)' "${help_file}"; then
+            format_supported=1
+          fi
+          rm -f "${help_file}"
+
+          if [ "${json_out_supported}" = "1" ]; then
+            # Prefer a single invocation that emits both markdown + JSON.
+            cargo run -p nova-cli --release -- perf compare \
+              --baseline perf-base.json \
+              --current perf-current.json \
+              --config perf/thresholds.toml \
+              --markdown-out perf-report.md \
+              --json-out perf-report.json
+            status=$?
+          elif [ "${format_supported}" = "1" ]; then
+            # Fallback for CLIs that only support structured output via `--format`.
+            cargo run -p nova-cli --release -- perf compare \
+              --baseline perf-base.json \
+              --current perf-current.json \
+              --config perf/thresholds.toml \
+              --markdown-out perf-report.md
+            status_md=$?
+
+            cargo run -p nova-cli --release -- perf compare \
+              --baseline perf-base.json \
+              --current perf-current.json \
+              --config perf/thresholds.toml \
+              --format json > perf-report.json
+            status_json=$?
+
+            status=$status_md
+            if [ "$status_json" -gt "$status" ]; then
+              status=$status_json
+            fi
+          else
+            # Backwards-compat: write a placeholder JSON file when the CLI can't emit JSON yet.
+            cargo run -p nova-cli --release -- perf compare \
+              --baseline perf-base.json \
+              --current perf-current.json \
+              --config perf/thresholds.toml \
+              --markdown-out perf-report.md
+            status=$?
+
+            cat > perf-report.json <<'EOF'
+          {"error":"nova perf compare did not emit JSON (no supported JSON output flags)"}
+          EOF
+          fi
+
+          # If the CLI claims to support JSON output but didn't produce a file, fail loudly.
+          if [ ! -f perf-report.json ]; then
+            echo "perf compare did not produce perf-report.json" >&2
+            status=2
+          fi
+
+          # Make sure the summary step doesn't fail if the report couldn't be written.
+          if [ -f perf-report.md ]; then
+            cat perf-report.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "perf compare failed (exit ${status}) and did not produce perf-report.md" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
           exit $status
+
+      - name: Upload baseline (main)
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          # Stable artifact name so other workflows can download the latest `main` baseline.
+          name: perf-baseline-main
+          if-no-files-found: error
+          path: perf-current.json
 
       - name: Upload results
         if: always()
@@ -70,4 +150,4 @@ jobs:
             perf-base.json
             perf-current.json
             perf-report.md
-
+            perf-report.json
