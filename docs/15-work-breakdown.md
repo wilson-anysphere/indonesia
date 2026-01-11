@@ -1,6 +1,6 @@
 # 15 - Work Breakdown
 
-[← Back to Main Document](../AGENTS.md) | [Previous: Testing Strategy](14-testing-strategy.md)
+[← Back to Main Document](../AGENTS.md) | [Previous: Testing Infrastructure](14-testing-infrastructure.md) | [Testing Strategy](14-testing-strategy.md)
 
 ## Overview
 
