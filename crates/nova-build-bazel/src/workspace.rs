@@ -154,6 +154,31 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     }
 
     pub fn java_targets(&mut self) -> Result<Vec<String>> {
+        #[cfg(feature = "bsp")]
+        {
+            let prefer_bsp = std::env::var("NOVA_BAZEL_USE_BSP")
+                .map(|v| v != "0" && v.to_ascii_lowercase() != "false")
+                .unwrap_or(true);
+
+            if prefer_bsp {
+                if let Ok(Some(workspace)) = self.bsp_workspace_mut() {
+                    if let Ok(targets) = workspace.build_targets() {
+                        let mut out: Vec<String> = targets
+                            .iter()
+                            .filter(|t| t.language_ids.iter().any(|id| id == "java"))
+                            .filter_map(|t| t.display_name.clone())
+                            .filter(|label| label.starts_with("//"))
+                            .collect();
+                        out.sort();
+                        out.dedup();
+                        if !out.is_empty() {
+                            return Ok(out);
+                        }
+                    }
+                }
+            }
+        }
+
         self.runner.run_with_stdout(
             &self.root,
             "bazel",
