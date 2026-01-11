@@ -510,7 +510,7 @@ Always inspect `git diff` after updating snapshots.
 In practice, Nova’s CI splits into:
 
 - **PR/push gates**: `ci.yml`, `perf.yml`, `javac.yml`
-- **Scheduled/manual heavy jobs**: `fuzz.yml`, `real-projects.yml`
+- **Scheduled/manual heavy jobs**: `fuzz.yml` (and `real-projects.yml`, which also runs on push for relevant changes)
 - **Main branch health jobs** (no PR gate): `coverage.yml`
 - **Release automation** (not a test gate): `release.yml`
 
@@ -519,7 +519,7 @@ In practice, Nova’s CI splits into:
 | `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, `cargo clippy`, `cargo test` (linux/macos/windows), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
 | `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths` + `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
-| `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual) | `./scripts/run-real-project-tests.sh` |
+| `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
 | `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60` |
 | `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html` |
 
