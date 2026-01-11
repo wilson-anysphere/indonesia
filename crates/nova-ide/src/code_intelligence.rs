@@ -159,6 +159,51 @@ fn cursor_inside_jpql_string(java_source: &str, cursor: usize) -> bool {
         })
 }
 
+fn cursor_inside_value_placeholder(java_source: &str, cursor: usize) -> bool {
+    // Best-effort detection for `@Value("${...}")` contexts (Spring or Micronaut).
+    // This is used purely as a guard to avoid running framework analysis for
+    // completions when the cursor isn't inside a placeholder.
+    let prefix = java_source.get(..cursor).unwrap_or(java_source);
+    let Some(value_start) = prefix.rfind("@Value") else {
+        return false;
+    };
+
+    let after_value = &java_source[value_start..];
+    let Some(open_quote_rel) = after_value.find('"') else {
+        return false;
+    };
+    let content_start = value_start + open_quote_rel + 1;
+    let Some(after_open_quote) = java_source.get(content_start..) else {
+        return false;
+    };
+    let Some(close_quote_rel) = after_open_quote.find('"') else {
+        return false;
+    };
+    let content_end = content_start + close_quote_rel;
+
+    if cursor < content_start || cursor > content_end {
+        return false;
+    }
+
+    let content = &java_source[content_start..content_end];
+    let rel_cursor = cursor - content_start;
+    let Some(open_rel) = content[..rel_cursor].rfind("${") else {
+        return false;
+    };
+    let key_start_rel = open_rel + 2;
+    if rel_cursor < key_start_rel {
+        return false;
+    }
+
+    let after_key = &content[key_start_rel..];
+    let key_end_rel = after_key
+        .find(|c| c == '}' || c == ':')
+        .unwrap_or(after_key.len())
+        + key_start_rel;
+
+    rel_cursor <= key_end_rel
+}
+
 // -----------------------------------------------------------------------------
 // Diagnostics
 // -----------------------------------------------------------------------------
@@ -339,14 +384,16 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
 
         // Micronaut `@Value("${...}")` completions as a fallback.
-        if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
-            let items = nova_framework_micronaut::completions_for_value_placeholder(
-                text,
-                offset,
-                &analysis.config_keys,
-            );
-            if !items.is_empty() {
-                return spring_completions_to_lsp(items);
+        if cursor_inside_value_placeholder(text, offset) {
+            if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
+                let items = nova_framework_micronaut::completions_for_value_placeholder(
+                    text,
+                    offset,
+                    &analysis.config_keys,
+                );
+                if !items.is_empty() {
+                    return spring_completions_to_lsp(items);
+                }
             }
         }
     }
