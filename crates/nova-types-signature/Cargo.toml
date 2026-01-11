@@ -1,0 +1,12 @@
+[package]
+name = "nova-types-signature"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+nova-classfile = { path = "../nova-classfile" }
+nova-types = { path = "../nova-types" }
+
+[dev-dependencies]
+pretty_assertions = "1.4"
+

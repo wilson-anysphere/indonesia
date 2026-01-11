@@ -4185,6 +4185,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-types-signature"
+version = "0.1.0"
+dependencies = [
+ "nova-classfile",
+ "nova-types",
+ "pretty_assertions",
+]
+
+[[package]]
 name = "nova-vfs"
 version = "0.1.0"
 dependencies = [

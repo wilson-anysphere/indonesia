@@ -782,6 +782,14 @@ impl TypeStore {
         store
     }
 
+    /// Returns the number of type parameters currently stored in this `TypeStore`.
+    ///
+    /// `TypeVarId`s are allocated densely starting at zero, so this can be used to
+    /// predict the next `TypeVarId` before allocating a batch of parameters.
+    pub fn type_param_count(&self) -> usize {
+        self.type_params.len()
+    }
+
     pub fn add_type_param(
         &mut self,
         name: impl Into<String>,

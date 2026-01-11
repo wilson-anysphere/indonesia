@@ -42,6 +42,7 @@ members = [
     "crates/nova-index",
     "crates/nova-types",
     "crates/nova-types-bridge",
+    "crates/nova-types-signature",
     "crates/nova-vfs",
     "crates/nova-syntax",
     "crates/nova-jdk",
