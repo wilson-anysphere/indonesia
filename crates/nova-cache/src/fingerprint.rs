@@ -182,6 +182,24 @@ impl ProjectSnapshot {
     pub fn file_fingerprints(&self) -> &std::collections::BTreeMap<String, Fingerprint> {
         &self.file_fingerprints
     }
+
+    /// Build a snapshot from already computed fingerprints.
+    ///
+    /// This is intended for workflows like index compaction where the persisted
+    /// cache metadata already records the fingerprints associated with the
+    /// current index state and recomputing them would be wasted work.
+    pub fn from_fingerprints(
+        project_root: impl AsRef<Path>,
+        project_hash: Fingerprint,
+        file_fingerprints: std::collections::BTreeMap<String, Fingerprint>,
+    ) -> Result<Self, CacheError> {
+        let project_root = std::fs::canonicalize(project_root)?;
+        Ok(Self {
+            project_root,
+            project_hash,
+            file_fingerprints,
+        })
+    }
 }
 
 fn git_origin_url(project_root: &Path) -> Option<String> {

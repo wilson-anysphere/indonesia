@@ -4,6 +4,7 @@ mod indexes;
 mod java_types;
 mod memory_cache;
 mod persistence;
+mod segments;
 mod sketch;
 mod symbol_search;
 

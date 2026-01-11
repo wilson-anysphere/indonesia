@@ -1,10 +1,12 @@
 use crate::indexes::{
-    AnnotationIndex, ArchivedAnnotationLocation, ArchivedReferenceLocation, ArchivedSymbolLocation,
-    InheritanceIndex, ProjectIndexes, ReferenceIndex, SymbolIndex,
+    AnnotationIndex, AnnotationLocation, ArchivedAnnotationLocation, ArchivedReferenceLocation,
+    ArchivedSymbolLocation, InheritanceIndex, ProjectIndexes, ReferenceIndex, ReferenceLocation,
+    SymbolIndex, SymbolLocation,
 };
+use crate::segments::{build_file_to_newest_segment_map, build_segment_files, segment_file_name};
 use fs2::FileExt as _;
 use nova_cache::{CacheDir, CacheMetadata, ProjectSnapshot};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
@@ -25,6 +27,9 @@ pub enum IndexPersistenceError {
     Storage(#[from] nova_storage::StorageError),
 
     #[error(transparent)]
+    Json(#[from] serde_json::Error),
+
+    #[error(transparent)]
     Io(#[from] std::io::Error),
 
     #[error("invalid shard count {shard_count}")]
@@ -41,12 +46,107 @@ pub struct LoadedIndexes {
 }
 
 #[derive(Debug)]
+pub struct IndexSegmentArchive {
+    pub id: u64,
+    pub files: Vec<String>,
+    pub archive: nova_storage::PersistedArchive<ProjectIndexes>,
+}
+
+#[derive(Debug)]
 pub struct LoadedIndexArchives {
     pub symbols: nova_storage::PersistedArchive<SymbolIndex>,
     pub references: nova_storage::PersistedArchive<ReferenceIndex>,
     pub inheritance: nova_storage::PersistedArchive<InheritanceIndex>,
     pub annotations: nova_storage::PersistedArchive<AnnotationIndex>,
+    pub segments: Vec<IndexSegmentArchive>,
+    /// Maps each covered file to the newest segment index (0-based into
+    /// [`LoadedIndexArchives::segments`]).
+    pub file_to_segment: BTreeMap<String, usize>,
     pub invalidated_files: Vec<String>,
+}
+
+impl LoadedIndexArchives {
+    #[must_use]
+    pub fn symbol_locations(&self, symbol: &str) -> Vec<SymbolLocation> {
+        let mut out = merged_locations(
+            symbol,
+            &self.file_to_segment,
+            &self.invalidated_files,
+            &self.segments,
+            |segment| segment.archive.archived().symbols.symbols.get(symbol),
+            self.symbols.archived().symbols.get(symbol),
+            |loc| loc.file.as_str(),
+            |loc| SymbolLocation {
+                file: loc.file.as_str().to_string(),
+                line: loc.line,
+                column: loc.column,
+            },
+        );
+        out.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.column.cmp(&b.column))
+        });
+        out
+    }
+
+    #[must_use]
+    pub fn reference_locations(&self, symbol: &str) -> Vec<ReferenceLocation> {
+        let mut out = merged_locations(
+            symbol,
+            &self.file_to_segment,
+            &self.invalidated_files,
+            &self.segments,
+            |segment| segment.archive.archived().references.references.get(symbol),
+            self.references.archived().references.get(symbol),
+            |loc| loc.file.as_str(),
+            |loc| ReferenceLocation {
+                file: loc.file.as_str().to_string(),
+                line: loc.line,
+                column: loc.column,
+            },
+        );
+        out.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.column.cmp(&b.column))
+        });
+        out
+    }
+
+    #[must_use]
+    pub fn annotation_locations(&self, annotation: &str) -> Vec<AnnotationLocation> {
+        let mut out = merged_locations(
+            annotation,
+            &self.file_to_segment,
+            &self.invalidated_files,
+            &self.segments,
+            |segment| {
+                segment
+                    .archive
+                    .archived()
+                    .annotations
+                    .annotations
+                    .get(annotation)
+            },
+            self.annotations.archived().annotations.get(annotation),
+            |loc| loc.file.as_str(),
+            |loc| AnnotationLocation {
+                file: loc.file.as_str().to_string(),
+                line: loc.line,
+                column: loc.column,
+            },
+        );
+        out.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.line.cmp(&b.line))
+                .then_with(|| a.column.cmp(&b.column))
+        });
+        out
+    }
 }
 
 /// A zero-copy, mmap-backed view over persisted project indexes.
@@ -397,6 +497,121 @@ pub fn save_indexes(
     metadata.update_from_snapshot(snapshot);
     metadata.last_updated_millis = generation;
     metadata.save(metadata_path)?;
+    crate::segments::clear_segments(cache_dir)?;
+    Ok(())
+}
+
+/// Append a delta segment (LSM-style) containing only the supplied `delta_indexes`.
+///
+/// `covered_files` must include every file whose base contribution should be
+/// superseded by this segment, including deleted files (tombstones). For deleted
+/// files, `delta_indexes` should contain no entries and `snapshot` will not have
+/// a fingerprint; those files are still recorded in the manifest with a `None`
+/// fingerprint so queries can reliably ignore the base entries.
+pub fn append_index_segment(
+    cache_dir: &CacheDir,
+    snapshot: &ProjectSnapshot,
+    covered_files: &[String],
+    delta_indexes: &mut ProjectIndexes,
+) -> Result<(), IndexPersistenceError> {
+    let indexes_dir = cache_dir.indexes_dir();
+    std::fs::create_dir_all(&indexes_dir)?;
+
+    let _lock = acquire_index_write_lock(&indexes_dir)?;
+
+    let metadata_path = cache_dir.metadata_path();
+    let (mut metadata, previous_generation) = match CacheMetadata::load(&metadata_path) {
+        Ok(existing)
+            if existing.is_compatible() && &existing.project_hash == snapshot.project_hash() =>
+        {
+            let previous = existing.last_updated_millis;
+            (existing, previous)
+        }
+        _ => (CacheMetadata::new(snapshot), 0),
+    };
+
+    let generation = next_generation(previous_generation);
+    delta_indexes.set_generation(generation);
+
+    crate::segments::ensure_segments_dir(&indexes_dir)?;
+    let mut manifest = match crate::segments::load_manifest(&indexes_dir) {
+        Ok(Some(manifest)) if manifest.is_compatible() => manifest,
+        Ok(Some(_)) | Err(_) => {
+            crate::segments::clear_segments(cache_dir)?;
+            crate::segments::SegmentManifest::new()
+        }
+        Ok(None) => crate::segments::SegmentManifest::new(),
+    };
+
+    let id = manifest.next_segment_id();
+    let file_name = segment_file_name(id);
+    let segment_path = crate::segments::segment_path(&indexes_dir, &file_name);
+
+    nova_storage::write_archive_atomic(
+        &segment_path,
+        nova_storage::ArtifactKind::ProjectIndexSegment,
+        INDEX_SCHEMA_VERSION,
+        delta_indexes,
+        nova_storage::Compression::None,
+    )?;
+
+    let bytes = std::fs::metadata(&segment_path).ok().map(|m| m.len());
+    let entry = crate::segments::SegmentEntry {
+        id,
+        created_at_millis: generation,
+        file_name,
+        files: build_segment_files(snapshot, covered_files),
+        bytes,
+    };
+
+    manifest.last_updated_millis = generation;
+    manifest.segments.push(entry);
+    crate::segments::save_manifest(&indexes_dir, &manifest)?;
+
+    metadata.update_from_snapshot(snapshot);
+    metadata.last_updated_millis = generation;
+    metadata.save(metadata_path)?;
+
+    Ok(())
+}
+
+/// Merge all segments into a new compacted base and clear the segment directory.
+pub fn compact_index_segments(cache_dir: &CacheDir) -> Result<(), IndexPersistenceError> {
+    let indexes_dir = cache_dir.indexes_dir();
+    let _lock = acquire_index_write_lock(&indexes_dir)?;
+
+    let manifest = match crate::segments::load_manifest(&indexes_dir) {
+        Ok(Some(manifest)) if manifest.is_compatible() => manifest,
+        Ok(Some(_)) | Err(_) => {
+            crate::segments::clear_segments(cache_dir)?;
+            return Ok(());
+        }
+        Ok(None) => return Ok(()),
+    };
+
+    if manifest.segments.is_empty() {
+        crate::segments::clear_segments(cache_dir)?;
+        return Ok(());
+    }
+
+    let metadata_path = cache_dir.metadata_path();
+    let metadata = match CacheMetadata::load(&metadata_path) {
+        Ok(metadata) if metadata.is_compatible() => metadata,
+        _ => return Ok(()),
+    };
+
+    let snapshot = ProjectSnapshot::from_fingerprints(
+        cache_dir.project_root(),
+        metadata.project_hash.clone(),
+        metadata.file_fingerprints.clone(),
+    )?;
+
+    let Some(mut loaded) = load_indexes(cache_dir, &snapshot)? else {
+        return Ok(());
+    };
+
+    save_indexes(cache_dir, &snapshot, &mut loaded.indexes)?;
+    crate::segments::clear_segments(cache_dir)?;
     Ok(())
 }
 
@@ -455,14 +670,77 @@ pub fn load_index_archives(
         None => return Ok(None),
     };
 
-    let generation = symbols.generation;
-    if references.generation != generation
-        || inheritance.generation != generation
-        || annotations.generation != generation
+    let base_generation = symbols.generation;
+    if references.generation != base_generation
+        || inheritance.generation != base_generation
+        || annotations.generation != base_generation
     {
         return Ok(None);
     }
-    if metadata.last_updated_millis != generation {
+
+    let (segments, file_to_segment, expected_generation) =
+        match crate::segments::load_manifest(&indexes_dir) {
+            Ok(Some(manifest)) => {
+                if !manifest.is_compatible() {
+                    return Ok(None);
+                }
+
+                if manifest.segments.is_empty() {
+                    (Vec::new(), BTreeMap::new(), base_generation)
+                } else {
+                    let expected_generation = manifest.last_updated_millis;
+                    if expected_generation < base_generation {
+                        return Ok(None);
+                    }
+
+                    let file_to_segment = build_file_to_newest_segment_map(&manifest);
+                    let mut segments = Vec::with_capacity(manifest.segments.len());
+                    let mut last_segment_generation = None;
+
+                    for segment in manifest.segments {
+                        let archive = match open_index_file::<ProjectIndexes>(
+                            crate::segments::segment_path(&indexes_dir, &segment.file_name),
+                            nova_storage::ArtifactKind::ProjectIndexSegment,
+                        ) {
+                            Some(value) => value,
+                            None => return Ok(None),
+                        };
+
+                        let seg = archive.archived();
+                        let seg_generation = seg.symbols.generation;
+                        if seg.references.generation != seg_generation
+                            || seg.inheritance.generation != seg_generation
+                            || seg.annotations.generation != seg_generation
+                        {
+                            return Ok(None);
+                        }
+
+                        // Ensure the manifest and segment payload agree about the generation.
+                        if seg_generation != segment.created_at_millis {
+                            return Ok(None);
+                        }
+
+                        last_segment_generation = Some(seg_generation);
+                        let files = segment.files.into_iter().map(|file| file.path).collect();
+                        segments.push(IndexSegmentArchive {
+                            id: segment.id,
+                            files,
+                            archive,
+                        });
+                    }
+
+                    if last_segment_generation != Some(expected_generation) {
+                        return Ok(None);
+                    }
+
+                    (segments, file_to_segment, expected_generation)
+                }
+            }
+            Ok(None) => (Vec::new(), BTreeMap::new(), base_generation),
+            Err(_) => return Ok(None),
+        };
+
+    if metadata.last_updated_millis != expected_generation {
         return Ok(None);
     }
 
@@ -473,6 +751,8 @@ pub fn load_index_archives(
         references,
         inheritance,
         annotations,
+        segments,
+        file_to_segment,
         invalidated_files: invalidated,
     }))
 }
@@ -540,14 +820,76 @@ pub fn load_index_archives_fast(
         None => return Ok(None),
     };
 
-    let generation = symbols.generation;
-    if references.generation != generation
-        || inheritance.generation != generation
-        || annotations.generation != generation
+    let base_generation = symbols.generation;
+    if references.generation != base_generation
+        || inheritance.generation != base_generation
+        || annotations.generation != base_generation
     {
         return Ok(None);
     }
-    if metadata.last_updated_millis != generation {
+
+    let (segments, file_to_segment, expected_generation) =
+        match crate::segments::load_manifest(&indexes_dir) {
+            Ok(Some(manifest)) => {
+                if !manifest.is_compatible() {
+                    return Ok(None);
+                }
+
+                if manifest.segments.is_empty() {
+                    (Vec::new(), BTreeMap::new(), base_generation)
+                } else {
+                    let expected_generation = manifest.last_updated_millis;
+                    if expected_generation < base_generation {
+                        return Ok(None);
+                    }
+
+                    let file_to_segment = build_file_to_newest_segment_map(&manifest);
+                    let mut segments = Vec::with_capacity(manifest.segments.len());
+                    let mut last_segment_generation = None;
+
+                    for segment in manifest.segments {
+                        let archive = match open_index_file::<ProjectIndexes>(
+                            crate::segments::segment_path(&indexes_dir, &segment.file_name),
+                            nova_storage::ArtifactKind::ProjectIndexSegment,
+                        ) {
+                            Some(value) => value,
+                            None => return Ok(None),
+                        };
+
+                        let seg = archive.archived();
+                        let seg_generation = seg.symbols.generation;
+                        if seg.references.generation != seg_generation
+                            || seg.inheritance.generation != seg_generation
+                            || seg.annotations.generation != seg_generation
+                        {
+                            return Ok(None);
+                        }
+
+                        if seg_generation != segment.created_at_millis {
+                            return Ok(None);
+                        }
+
+                        last_segment_generation = Some(seg_generation);
+                        let files = segment.files.into_iter().map(|file| file.path).collect();
+                        segments.push(IndexSegmentArchive {
+                            id: segment.id,
+                            files,
+                            archive,
+                        });
+                    }
+
+                    if last_segment_generation != Some(expected_generation) {
+                        return Ok(None);
+                    }
+
+                    (segments, file_to_segment, expected_generation)
+                }
+            }
+            Ok(None) => (Vec::new(), BTreeMap::new(), base_generation),
+            Err(_) => return Ok(None),
+        };
+
+    if metadata.last_updated_millis != expected_generation {
         return Ok(None);
     }
 
@@ -558,6 +900,8 @@ pub fn load_index_archives_fast(
         references,
         inheritance,
         annotations,
+        segments,
+        file_to_segment,
         invalidated_files: invalidated,
     }))
 }
@@ -593,6 +937,17 @@ pub fn load_indexes(
         inheritance,
         annotations,
     };
+
+    for segment in &archives.segments {
+        for file in &segment.files {
+            indexes.invalidate_file(file);
+        }
+        let delta = match segment.archive.to_owned() {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        indexes.merge_from(delta);
+    }
 
     for file in &archives.invalidated_files {
         indexes.invalidate_file(file);
@@ -695,6 +1050,17 @@ pub fn load_indexes_fast(
         annotations,
     };
 
+    for segment in &archives.segments {
+        for file in &segment.files {
+            indexes.invalidate_file(file);
+        }
+        let delta = match segment.archive.to_owned() {
+            Ok(value) => value,
+            Err(_) => return Ok(None),
+        };
+        indexes.merge_from(delta);
+    }
+
     for file in &archives.invalidated_files {
         indexes.invalidate_file(file);
     }
@@ -764,6 +1130,57 @@ fn acquire_index_write_lock(
 fn next_generation(previous_generation: u64) -> u64 {
     let now = nova_cache::now_millis();
     std::cmp::max(now, previous_generation.saturating_add(1))
+}
+
+fn merged_locations<ArchivedLoc, Out, SegmentGet, FileOf, Convert>(
+    _key: &str,
+    file_to_segment: &BTreeMap<String, usize>,
+    invalidated_files: &[String],
+    segments: &[IndexSegmentArchive],
+    segment_get: SegmentGet,
+    base_locations: Option<&rkyv::vec::ArchivedVec<ArchivedLoc>>,
+    file_of: FileOf,
+    convert: Convert,
+) -> Vec<Out>
+where
+    SegmentGet:
+        for<'a> Fn(&'a IndexSegmentArchive) -> Option<&'a rkyv::vec::ArchivedVec<ArchivedLoc>>,
+    FileOf: Fn(&ArchivedLoc) -> &str,
+    Convert: Fn(&ArchivedLoc) -> Out,
+{
+    let invalidated: HashSet<&str> = invalidated_files.iter().map(|s| s.as_str()).collect();
+    let mut out = Vec::new();
+
+    for (segment_idx, segment) in segments.iter().enumerate() {
+        let Some(locations) = segment_get(segment) else {
+            continue;
+        };
+
+        for loc in locations.iter() {
+            let file = file_of(loc);
+            if invalidated.contains(file) {
+                continue;
+            }
+            if file_to_segment.get(file).copied() == Some(segment_idx) {
+                out.push(convert(loc));
+            }
+        }
+    }
+
+    if let Some(locations) = base_locations {
+        for loc in locations.iter() {
+            let file = file_of(loc);
+            if invalidated.contains(file) {
+                continue;
+            }
+            if file_to_segment.contains_key(file) {
+                continue;
+            }
+            out.push(convert(loc));
+        }
+    }
+
+    out
 }
 
 // ---------------------------------------------------------------------

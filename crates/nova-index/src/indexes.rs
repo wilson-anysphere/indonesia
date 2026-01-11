@@ -47,6 +47,16 @@ impl SymbolIndex {
             .push(location);
     }
 
+    pub fn merge_from(&mut self, other: SymbolIndex) {
+        self.generation = self.generation.max(other.generation);
+        for (symbol, mut locations) in other.symbols {
+            self.symbols
+                .entry(symbol)
+                .or_default()
+                .append(&mut locations);
+        }
+    }
+
     pub fn invalidate_file(&mut self, file: &str) {
         self.symbols.retain(|_, locations| {
             locations.retain(|loc| loc.file != file);
@@ -99,6 +109,16 @@ impl ReferenceIndex {
             .entry(symbol.into())
             .or_default()
             .push(location);
+    }
+
+    pub fn merge_from(&mut self, other: ReferenceIndex) {
+        self.generation = self.generation.max(other.generation);
+        for (symbol, mut locations) in other.references {
+            self.references
+                .entry(symbol)
+                .or_default()
+                .append(&mut locations);
+        }
     }
 
     pub fn invalidate_file(&mut self, file: &str) {
@@ -156,6 +176,12 @@ impl InheritanceIndex {
 
     pub fn extend(&mut self, edges: impl IntoIterator<Item = InheritanceEdge>) {
         self.edges.extend(edges);
+        self.rebuild_maps();
+    }
+
+    pub fn merge_from(&mut self, other: InheritanceIndex) {
+        self.generation = self.generation.max(other.generation);
+        self.edges.extend(other.edges);
         self.rebuild_maps();
     }
 
@@ -265,6 +291,16 @@ impl AnnotationIndex {
             .push(location);
     }
 
+    pub fn merge_from(&mut self, other: AnnotationIndex) {
+        self.generation = self.generation.max(other.generation);
+        for (annotation, mut locations) in other.annotations {
+            self.annotations
+                .entry(annotation)
+                .or_default()
+                .append(&mut locations);
+        }
+    }
+
     pub fn invalidate_file(&mut self, file: &str) {
         self.annotations.retain(|_, locations| {
             locations.retain(|loc| loc.file != file);
@@ -306,5 +342,12 @@ impl ProjectIndexes {
         self.references.invalidate_file(file);
         self.inheritance.invalidate_file(file);
         self.annotations.invalidate_file(file);
+    }
+
+    pub fn merge_from(&mut self, other: ProjectIndexes) {
+        self.symbols.merge_from(other.symbols);
+        self.references.merge_from(other.references);
+        self.inheritance.merge_from(other.inheritance);
+        self.annotations.merge_from(other.annotations);
     }
 }

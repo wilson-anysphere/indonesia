@@ -20,6 +20,8 @@ pub enum ArtifactKind {
     ReferenceIndex = 2,
     InheritanceIndex = 3,
     AnnotationIndex = 4,
+    /// A `ProjectIndexes` delta segment stored under `<cache>/indexes/segments`.
+    ProjectIndexSegment = 5,
     /// Reserved range for cache artifacts.
     AstArtifacts = 100,
     /// Global dependency (JAR/JMOD) classpath stubs.
@@ -35,6 +37,7 @@ impl ArtifactKind {
             2 => Some(Self::ReferenceIndex),
             3 => Some(Self::InheritanceIndex),
             4 => Some(Self::AnnotationIndex),
+            5 => Some(Self::ProjectIndexSegment),
             100 => Some(Self::AstArtifacts),
             101 => Some(Self::DepsIndexBundle),
             102 => Some(Self::ProjectMetadata),
