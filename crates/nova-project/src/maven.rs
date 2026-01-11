@@ -166,15 +166,11 @@ fn discover_modules_recursive(
     // `workspace_root` is canonicalized by `load_project_with_options`.
     visited.insert(workspace_root.to_path_buf());
 
-    if root_pom.modules.is_empty() {
-        return Ok(vec![DiscoveredModule {
-            root: workspace_root.to_path_buf(),
-            raw_pom: root_pom.clone(),
-            effective: root_effective.clone(),
-        }]);
-    }
-
-    let mut out = Vec::new();
+    let mut out = vec![DiscoveredModule {
+        root: workspace_root.to_path_buf(),
+        raw_pom: root_pom.clone(),
+        effective: root_effective.clone(),
+    }];
     let mut queue: VecDeque<(PathBuf, EffectivePom)> = VecDeque::new();
 
     let mut root_modules = root_pom.modules.clone();
