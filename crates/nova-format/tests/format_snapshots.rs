@@ -27,6 +27,14 @@ fn assert_crlf_only(text: &str) {
     }
 }
 
+fn assert_ast_idempotent(input: &str) {
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+    let reparsed = parse_java(&formatted);
+    let formatted_again = format_java_ast(&reparsed, &formatted, &FormatConfig::default());
+    assert_eq!(formatted_again, formatted);
+}
+
 #[test]
 fn formats_basic_class() {
     let input = r#"
@@ -337,16 +345,25 @@ class Foo {
 }
 
 #[test]
-fn ast_formatting_is_idempotent() {
-    fn assert_idempotent(input: &str) {
-        let parse = parse_java(input);
-        let formatted = format_java_ast(&parse, input, &FormatConfig::default());
-        let reparsed = parse_java(&formatted);
-        let formatted_again = format_java_ast(&reparsed, &formatted, &FormatConfig::default());
-        assert_eq!(formatted_again, formatted);
-    }
+fn ast_formatting_is_idempotent_on_selected_fixtures() {
+    // These fixtures exercise generics-heavy real-world patterns. The AST formatter is still
+    // best-effort, but it must be stable across repeated passes.
+    let fixtures = [
+        include_str!("fixtures/generics.java"),
+        include_str!("fixtures/method_reference_type_args.java"),
+        include_str!("fixtures/wildcards_and_varargs.java"),
+        include_str!("fixtures/qualified_generics.java"),
+        include_str!("fixtures/diamond_operator.java"),
+    ];
 
-    assert_idempotent(
+    for fixture in fixtures {
+        assert_ast_idempotent(fixture);
+    }
+}
+
+#[test]
+fn ast_formatting_is_idempotent() {
+    assert_ast_idempotent(
         r#"
  class  Foo{
 public static void main(String[]args){
@@ -357,7 +374,7 @@ if(true){System.out.println("x");}
 "#,
     );
 
-    assert_idempotent(
+    assert_ast_idempotent(
         r#"
 class Foo{
 java.util.List<String>xs;
@@ -370,7 +387,7 @@ java.util.Collections.<String> emptyList();
 "#,
     );
 
-    assert_idempotent(
+    assert_ast_idempotent(
         r#"
 class Foo{void m(){int a=1 / / 2;int b=1 / * 2;int c=1: :2;int d=1- >2;boolean e=1> >2;boolean f=1> =2;boolean g=1= =2;boolean h=1! =2;}}
 "#,
