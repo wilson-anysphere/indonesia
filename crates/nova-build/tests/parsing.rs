@@ -281,7 +281,10 @@ fn parses_maven_classpath_bracket_list() {
 
 #[test]
 fn parses_maven_classpath_path_separator_list() {
-    let out = "/a/b/c.jar:/d/e/f.jar";
+    let out = std::env::join_paths([PathBuf::from("/a/b/c.jar"), PathBuf::from("/d/e/f.jar")])
+        .expect("join paths")
+        .to_string_lossy()
+        .to_string();
     let cp = parse_maven_classpath_output(out);
     assert_eq!(
         cp,
