@@ -53,6 +53,8 @@ jobs:
         with:
           path: test-projects
           key: test-projects-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
+          restore-keys: |
+            test-projects-${{ runner.os }}-
 
       - name: Run real project tests
         env:
