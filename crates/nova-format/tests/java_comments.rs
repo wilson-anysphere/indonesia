@@ -106,10 +106,7 @@ fn line_suffix_does_not_affect_group_fitting() {
         newline: "\n",
     };
 
-    assert_eq!(
-        print(doc, cfg),
-        "a b // this comment is very very long\nc"
-    );
+    assert_eq!(print(doc, cfg), "a b // this comment is very very long\nc");
 }
 
 #[test]
@@ -137,7 +134,9 @@ fn blank_line_between_trailing_and_leading_comments_is_not_duplicated() {
         Doc::text("int"),
     ]);
 
-    assert_eq!(print(doc, PrintConfig::default()), "int x=1; // t\n\n// leading\nint");
+    assert_eq!(
+        print(doc, PrintConfig::default()),
+        "int x=1; // t\n\n// leading\nint"
+    );
     comments.assert_drained();
 }
-

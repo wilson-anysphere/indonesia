@@ -12,7 +12,7 @@ use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_db::salsa::Database as SalsaDatabase;
 use nova_db::{FileId, NovaSemantic, SourceRootId};
 use nova_remote_proto::v3::{
-    Capabilities, CachedIndexInfo, CompressionAlgo, Notification, ProtocolVersion, Request,
+    CachedIndexInfo, Capabilities, CompressionAlgo, Notification, ProtocolVersion, Request,
     Response, RpcError as ProtoRpcError, RpcErrorCode, SupportedVersions,
 };
 use nova_remote_proto::{FileText, ShardId, ShardIndex, WorkerStats};
@@ -104,7 +104,9 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     }
-                    Err(err) => return Err(err).with_context(|| format!("connect named pipe {name}")),
+                    Err(err) => {
+                        return Err(err).with_context(|| format!("connect named pipe {name}"))
+                    }
                 }
             };
             Box::new(client)
@@ -159,7 +161,8 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
 
     let mut worker_cfg = WorkerConfig::new(hello);
     // If the user configured a smaller post-handshake frame cap, apply it pre-handshake as well.
-    worker_cfg.pre_handshake_max_frame_len = worker_cfg.pre_handshake_max_frame_len.min(max_rpc_len);
+    worker_cfg.pre_handshake_max_frame_len =
+        worker_cfg.pre_handshake_max_frame_len.min(max_rpc_len);
 
     let (conn, welcome) = RpcConnection::handshake_as_worker_with_config(stream, worker_cfg)
         .await

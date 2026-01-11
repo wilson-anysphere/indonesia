@@ -58,7 +58,8 @@ fn load_java_sources(root: &Path) -> (Vec<PathBuf>, Vec<String>) {
 
 fn load_file(root: &Path, rel: &str) -> String {
     let path = root.join(rel);
-    fs::read_to_string(&path).unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
+    fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()))
 }
 
 #[test]
@@ -90,10 +91,7 @@ fn spring_fixture_di_snapshot() {
             .get(bean.location.source)
             .map(PathBuf::as_path)
             .unwrap_or_else(|| Path::new("<unknown>"));
-        out.push_str(&format!(
-            "- {}: {} ({:?})",
-            bean.name, bean.ty, bean.kind
-        ));
+        out.push_str(&format!("- {}: {} ({:?})", bean.name, bean.ty, bean.kind));
         if bean.primary {
             out.push_str(" primary");
         }
@@ -206,11 +204,17 @@ fn spring_fixture_config_completions_and_diagnostics_snapshot() {
         .expect("metadata ingest");
 
     let config = load_file(&root, "src/main/resources/application.properties");
-    let consumer = load_file(&root, "src/main/java/com/example/app/consumer/Consumer.java");
+    let consumer = load_file(
+        &root,
+        "src/main/java/com/example/app/consumer/Consumer.java",
+    );
 
     let mut workspace = SpringWorkspaceIndex::new(Arc::new(metadata));
     workspace.add_config_file("src/main/resources/application.properties", &config);
-    workspace.add_java_file("src/main/java/com/example/app/consumer/Consumer.java", &consumer);
+    workspace.add_java_file(
+        "src/main/java/com/example/app/consumer/Consumer.java",
+        &consumer,
+    );
 
     let diags = diagnostics_for_config_file(
         Path::new("src/main/resources/application.properties"),
@@ -232,10 +236,7 @@ SPRING_UNKNOWN_CONFIG_KEY Warning Unknown Spring configuration key 'unknown.key'
 "###
     );
 
-    let offset = consumer
-        .find("${server.p}")
-        .expect("placeholder")
-        + "${server.p".len();
+    let offset = consumer.find("${server.p}").expect("placeholder") + "${server.p".len();
     let mut items = completions_for_value_placeholder(&consumer, offset, &workspace);
     items.sort_by(|a, b| a.label.cmp(&b.label));
 

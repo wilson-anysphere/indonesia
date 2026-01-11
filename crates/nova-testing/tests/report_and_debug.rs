@@ -85,12 +85,18 @@ fn parses_failure_as_empty_element() {
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].id, "com.example.CalculatorTest#emptyFails");
     assert_eq!(cases[0].status, TestStatus::Failed);
-    assert_eq!(cases[0].failure.as_ref().unwrap().message.as_deref(), Some("boom"));
+    assert_eq!(
+        cases[0].failure.as_ref().unwrap().message.as_deref(),
+        Some("boom")
+    );
     assert_eq!(
         cases[0].failure.as_ref().unwrap().kind.as_deref(),
         Some("java.lang.AssertionError")
     );
-    assert_eq!(cases[0].failure.as_ref().unwrap().stack_trace.as_deref(), None);
+    assert_eq!(
+        cases[0].failure.as_ref().unwrap().stack_trace.as_deref(),
+        None
+    );
 }
 
 #[test]
@@ -107,12 +113,18 @@ fn parses_error_as_empty_element() {
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].id, "com.example.CalculatorTest#emptyErrors");
     assert_eq!(cases[0].status, TestStatus::Failed);
-    assert_eq!(cases[0].failure.as_ref().unwrap().message.as_deref(), Some("boom"));
+    assert_eq!(
+        cases[0].failure.as_ref().unwrap().message.as_deref(),
+        Some("boom")
+    );
     assert_eq!(
         cases[0].failure.as_ref().unwrap().kind.as_deref(),
         Some("java.lang.RuntimeException")
     );
-    assert_eq!(cases[0].failure.as_ref().unwrap().stack_trace.as_deref(), None);
+    assert_eq!(
+        cases[0].failure.as_ref().unwrap().stack_trace.as_deref(),
+        None
+    );
 }
 
 #[test]

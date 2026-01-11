@@ -602,7 +602,9 @@ impl<'a> TokenFormatState<'a> {
                     .is_some_and(|depth| self.paren_depth >= depth);
                 let next_is_comment = matches!(
                     next_kind,
-                    Some(SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment)
+                    Some(
+                        SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment
+                    )
                 );
                 if next_is_comment {
                     // Keep trailing comments on the same line.
@@ -836,7 +838,10 @@ fn is_control_keyword(text: &str) -> bool {
 }
 
 fn needs_space_to_avoid_token_merge(last: &SigToken, next_kind: SyntaxKind) -> bool {
-    let SigToken::Token { kind: last_kind, .. } = last else {
+    let SigToken::Token {
+        kind: last_kind, ..
+    } = last
+    else {
         return false;
     };
 
@@ -941,7 +946,8 @@ fn should_start_generic(tokens: &[SyntaxToken], idx: usize, prev: Option<&SigTok
     let next_is_typeish = match next.kind() {
         SyntaxKind::Question | SyntaxKind::At => true,
         kind if kind.is_identifier_like() => {
-            looks_like_type_name(next.text()) || matches!(next2.map(|t| t.kind()), Some(SyntaxKind::Dot))
+            looks_like_type_name(next.text())
+                || matches!(next2.map(|t| t.kind()), Some(SyntaxKind::Dot))
         }
         _ => false,
     };
@@ -963,7 +969,10 @@ fn should_start_generic(tokens: &[SyntaxToken], idx: usize, prev: Option<&SigTok
 fn next_non_trivia(tokens: &[SyntaxToken], mut idx: usize) -> Option<&SyntaxToken> {
     while idx < tokens.len() {
         match tokens[idx].kind() {
-            SyntaxKind::Whitespace | SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment => {
+            SyntaxKind::Whitespace
+            | SyntaxKind::LineComment
+            | SyntaxKind::BlockComment
+            | SyntaxKind::DocComment => {
                 idx += 1;
             }
             _ => return Some(&tokens[idx]),

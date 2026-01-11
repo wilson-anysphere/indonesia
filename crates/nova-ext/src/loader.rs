@@ -262,10 +262,7 @@ impl ExtensionManager {
         for ext in loaded {
             let id = ext.id().trim();
 
-            if let Some(_pattern) = deny
-                .iter()
-                .find(|pattern| id_matches_pattern(id, pattern))
-            {
+            if let Some(_pattern) = deny.iter().find(|pattern| id_matches_pattern(id, pattern)) {
                 errors.push(LoadError::DeniedByConfig {
                     dir: ext.dir.clone(),
                     id: id.to_string(),
@@ -274,10 +271,7 @@ impl ExtensionManager {
             }
 
             if let Some(allow) = allow {
-                if !allow
-                    .iter()
-                    .any(|pattern| id_matches_pattern(id, pattern))
-                {
+                if !allow.iter().any(|pattern| id_matches_pattern(id, pattern)) {
                     errors.push(LoadError::NotAllowedByConfig {
                         dir: ext.dir.clone(),
                         id: id.to_string(),
@@ -449,7 +443,7 @@ impl ExtensionManager {
                             continue;
                         }
                         if let Err(err) = registry.register_diagnostic_provider(
-                            Arc::clone(&plugin) as Arc<dyn DiagnosticProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn DiagnosticProvider<DB>>
                         ) {
                             errors.push(err);
                         }
@@ -464,7 +458,7 @@ impl ExtensionManager {
                             continue;
                         }
                         if let Err(err) = registry.register_completion_provider(
-                            Arc::clone(&plugin) as Arc<dyn CompletionProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn CompletionProvider<DB>>
                         ) {
                             errors.push(err);
                         }
@@ -494,7 +488,7 @@ impl ExtensionManager {
                             continue;
                         }
                         if let Err(err) = registry.register_navigation_provider(
-                            Arc::clone(&plugin) as Arc<dyn NavigationProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn NavigationProvider<DB>>
                         ) {
                             errors.push(err);
                         }
@@ -509,7 +503,7 @@ impl ExtensionManager {
                             continue;
                         }
                         if let Err(err) = registry.register_inlay_hint_provider(
-                            Arc::clone(&plugin) as Arc<dyn InlayHintProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn InlayHintProvider<DB>>
                         ) {
                             errors.push(err);
                         }
@@ -814,7 +808,10 @@ capabilities = ["diagnostics"]
         write_dummy_wasm(&ext_dir, "bin/plugin.wasm");
 
         let ext = ExtensionManager::load_from_dir(&ext_dir).unwrap();
-        assert_eq!(ext.entry_path().strip_prefix(&ext_dir).unwrap(), Path::new("bin/plugin.wasm"));
+        assert_eq!(
+            ext.entry_path().strip_prefix(&ext_dir).unwrap(),
+            Path::new("bin/plugin.wasm")
+        );
     }
 
     #[test]
@@ -909,7 +906,9 @@ capabilities = ["diagnostics"]
             vec!["com.mycorp.rules"]
         );
         assert!(
-            errors.iter().any(|err| matches!(err, LoadError::DeniedByConfig { id, .. } if id == "com.evil.rules")),
+            errors.iter().any(
+                |err| matches!(err, LoadError::DeniedByConfig { id, .. } if id == "com.evil.rules")
+            ),
             "{errors:?}"
         );
         assert!(
@@ -1225,7 +1224,11 @@ capabilities = ["diagnostics"]
                     _ctx: ExtensionContext<TestDb>,
                     _params: DiagnosticParams,
                 ) -> Vec<Diagnostic> {
-                    vec![Diagnostic::warning("TEST", "builtin", Some(Span::new(0, 1)))]
+                    vec![Diagnostic::warning(
+                        "TEST",
+                        "builtin",
+                        Some(Span::new(0, 1)),
+                    )]
                 }
             }
 
@@ -1244,7 +1247,11 @@ abi_version = 1
 capabilities = ["diagnostics", "completions"]
 "#,
             );
-            write_wat_wasm(&dup, "plugin.wasm", &simple_wat("from-dup", Some("from-dup")));
+            write_wat_wasm(
+                &dup,
+                "plugin.wasm",
+                &simple_wat("from-dup", Some("from-dup")),
+            );
 
             let ok = root.join("ok");
             fs::create_dir_all(&ok).unwrap();

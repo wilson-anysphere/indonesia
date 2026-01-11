@@ -189,7 +189,10 @@ fn discovers_tests_in_record_and_enum_declarations() {
         .unwrap();
     assert_eq!(enum_test.kind, TestKind::Class);
     assert_eq!(enum_test.framework, TestFramework::Junit5);
-    assert_eq!(enum_test.path, "src/test/java/com/example/EnumContainerTest.java");
+    assert_eq!(
+        enum_test.path,
+        "src/test/java/com/example/EnumContainerTest.java"
+    );
     assert_eq!(
         enum_test
             .children

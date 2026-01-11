@@ -20,7 +20,9 @@ use once_cell::sync::Lazy;
 use tree_sitter::{Node, Parser};
 
 use nova_db::{Database as TextDatabase, FileId};
-use nova_framework::{AnalyzerRegistry, Database as FrameworkDatabase, MemoryDatabase, VirtualMember};
+use nova_framework::{
+    AnalyzerRegistry, Database as FrameworkDatabase, MemoryDatabase, VirtualMember,
+};
 use nova_framework_lombok::LombokAnalyzer;
 use nova_hir::framework::{Annotation, ClassData, ConstructorData, FieldData, MethodData};
 use nova_types::{ClassId, Parameter, PrimitiveType, Span, Type};
@@ -217,7 +219,10 @@ fn find_virtual_member_span_in_class(
     class_id: ClassId,
     member_name: &str,
 ) -> Option<Span> {
-    for vm in intel.registry.virtual_members_for_class(&intel.db, class_id) {
+    for vm in intel
+        .registry
+        .virtual_members_for_class(&intel.db, class_id)
+    {
         match vm {
             VirtualMember::Field(f) if f.name == member_name => return f.span,
             VirtualMember::Method(m) if m.name == member_name => return m.span,
@@ -256,7 +261,8 @@ fn find_virtual_member_span_in_inner_members(
             VirtualMember::Method(m) if m.name == member_name => return m.span,
             VirtualMember::InnerClass(c) if c.name == member_name => return c.span,
             VirtualMember::InnerClass(c) => {
-                if let Some(span) = find_virtual_member_span_in_inner_members(&c.members, member_name)
+                if let Some(span) =
+                    find_virtual_member_span_in_inner_members(&c.members, member_name)
                 {
                     return Some(span);
                 }
@@ -636,7 +642,10 @@ fn collect_annotations(modifiers: Node<'_>, source: &str) -> Vec<Annotation> {
         }
         if let Some(name) = parse_annotation_name(node_text(source, child)) {
             let range = child.byte_range();
-            out.push(Annotation::new_with_span(name, Span::new(range.start, range.end)));
+            out.push(Annotation::new_with_span(
+                name,
+                Span::new(range.start, range.end),
+            ));
         }
     }
     out

@@ -232,7 +232,10 @@ async fn closed_signal_fires_when_peer_drops_stream() {
 
     let err = router.wait_closed().await;
     assert!(
-        matches!(err, RpcTransportError::Io { .. } | RpcTransportError::ConnectionClosed),
+        matches!(
+            err,
+            RpcTransportError::Io { .. } | RpcTransportError::ConnectionClosed
+        ),
         "unexpected close error: {err:?}"
     );
 }

@@ -53,7 +53,11 @@ fn validate_generated_sources(config: &NovaConfig, out: &mut ValidationDiagnosti
     }
 }
 
-fn validate_jdk(config: &NovaConfig, ctx: ConfigValidationContext<'_>, out: &mut ValidationDiagnostics) {
+fn validate_jdk(
+    config: &NovaConfig,
+    ctx: ConfigValidationContext<'_>,
+    out: &mut ValidationDiagnostics,
+) {
     let Some(home) = config.jdk.home.as_ref() else {
         return;
     };
@@ -94,7 +98,11 @@ fn validate_logging(config: &NovaConfig, out: &mut ValidationDiagnostics) {
     }
 }
 
-fn validate_extensions(config: &NovaConfig, ctx: ConfigValidationContext<'_>, out: &mut ValidationDiagnostics) {
+fn validate_extensions(
+    config: &NovaConfig,
+    ctx: ConfigValidationContext<'_>,
+    out: &mut ValidationDiagnostics,
+) {
     if !config.extensions.enabled {
         return;
     }
@@ -133,7 +141,10 @@ fn validate_extensions(config: &NovaConfig, ctx: ConfigValidationContext<'_>, ou
         }
         if !resolved.is_dir() {
             out.warnings
-                .push(ConfigWarning::ExtensionsWasmPathNotDirectory { toml_path, resolved });
+                .push(ConfigWarning::ExtensionsWasmPathNotDirectory {
+                    toml_path,
+                    resolved,
+                });
         }
     }
 }
@@ -165,7 +176,8 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
 
     if config.ai.cache_enabled {
         if config.ai.cache_max_entries == 0 {
-            out.errors.push(ConfigValidationError::AiCacheMaxEntriesZero);
+            out.errors
+                .push(ConfigValidationError::AiCacheMaxEntriesZero);
         }
         if config.ai.cache_ttl_secs == 0 {
             out.errors.push(ConfigValidationError::AiCacheTtlZero);
@@ -177,10 +189,11 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
             AiProviderKind::InProcessLlama => {}
             AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible | AiProviderKind::Http => {
                 if !url_is_loopback(&config.ai.provider.url) {
-                    out.errors.push(ConfigValidationError::AiLocalOnlyUrlNotLocal {
-                        provider: config.ai.provider.kind.clone(),
-                        url: config.ai.provider.url.to_string(),
-                    });
+                    out.errors
+                        .push(ConfigValidationError::AiLocalOnlyUrlNotLocal {
+                            provider: config.ai.provider.kind.clone(),
+                            url: config.ai.provider.url.to_string(),
+                        });
                 }
             }
             AiProviderKind::OpenAi
@@ -210,15 +223,24 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
     }
 
     if matches!(config.ai.provider.kind, AiProviderKind::AzureOpenAi)
-        && config.ai.provider.azure_deployment.as_deref().unwrap_or("").trim().is_empty()
+        && config
+            .ai
+            .provider
+            .azure_deployment
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
     {
-        out.errors.push(ConfigValidationError::AiMissingAzureDeployment);
+        out.errors
+            .push(ConfigValidationError::AiMissingAzureDeployment);
     }
 
     if matches!(config.ai.provider.kind, AiProviderKind::InProcessLlama)
         && config.ai.provider.in_process_llama.is_none()
     {
-        out.errors.push(ConfigValidationError::AiMissingInProcessConfig);
+        out.errors
+            .push(ConfigValidationError::AiMissingInProcessConfig);
     }
 
     if config.ai.features.completion_ranking && config.ai.timeouts.completion_ranking_ms == 0 {
@@ -228,7 +250,9 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
         });
     }
 
-    if config.ai.features.multi_token_completion && config.ai.timeouts.multi_token_completion_ms == 0 {
+    if config.ai.features.multi_token_completion
+        && config.ai.timeouts.multi_token_completion_ms == 0
+    {
         out.warnings.push(ConfigWarning::InvalidValue {
             toml_path: "ai.timeouts.multi_token_completion_ms".to_string(),
             message: "must be >= 1 when ai.features.multi_token_completion is enabled".to_string(),

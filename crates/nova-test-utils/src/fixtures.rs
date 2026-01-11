@@ -369,9 +369,15 @@ mod tests {
         assert_eq!(fixture.files.get(&b_uri).unwrap(), "😃");
 
         assert_eq!(fixture.marker_uri(0), a_uri);
-        assert_eq!(fixture.marker_uri(10), Uri::from_str("file:///a.txt").unwrap());
+        assert_eq!(
+            fixture.marker_uri(10),
+            Uri::from_str("file:///a.txt").unwrap()
+        );
         assert_eq!(fixture.marker_uri(1), b_uri);
-        assert_eq!(fixture.marker_uri(2), Uri::from_str("file:///b.txt").unwrap());
+        assert_eq!(
+            fixture.marker_uri(2),
+            Uri::from_str("file:///b.txt").unwrap()
+        );
 
         assert_eq!(fixture.marker_offset(0), "α".len());
         assert_eq!(fixture.marker_offset(10), "αβ".len());

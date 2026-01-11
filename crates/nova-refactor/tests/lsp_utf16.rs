@@ -123,13 +123,7 @@ fn position_to_offset_utf16_matches_line_index_and_rejects_surrogates() {
         let expected = index
             .offset_of_position(text, nova_core::Position::new(line, character))
             .map(|offset| u32::from(offset) as usize);
-        let actual = position_to_offset_utf16(
-            text,
-            lsp_types::Position {
-                line,
-                character,
-            },
-        );
+        let actual = position_to_offset_utf16(text, lsp_types::Position { line, character });
         assert_eq!(actual, expected);
     }
 

@@ -460,9 +460,9 @@ fn lexer_reports_invalid_string_escape_sequences() {
         ]
     );
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("invalid escape sequence in string literal")),
+        errors.iter().any(|e| e
+            .message
+            .contains("invalid escape sequence in string literal")),
         "expected invalid escape error, got: {errors:?}"
     );
 }
@@ -2531,8 +2531,7 @@ fn incremental_edit_inside_argument_list_reuses_sibling_statement() {
 
 #[test]
 fn incremental_edit_inside_parameter_list_reuses_method_body_and_shifts_errors() {
-    let old_text =
-        "class Foo { void m(int x) { int a = 0; } int z = 0 int ok = 1; }\n";
+    let old_text = "class Foo { void m(int x) { int a = 0; } int z = 0 int ok = 1; }\n";
     let old = parse_java(old_text);
 
     // Insert a new parameter before the closing `)`.
@@ -2572,10 +2571,8 @@ fn incremental_edit_inside_annotation_arguments_reuses_class_body() {
     let old_text = "@Anno(x = 1)\nclass Foo { int y = 0; }\n";
     let old = parse_java(old_text);
 
-    let edit_offset = old_text
-        .find("x = 1")
-        .expect("expected `x = 1`") as u32
-        + "x = ".len() as u32;
+    let edit_offset =
+        old_text.find("x = 1").expect("expected `x = 1`") as u32 + "x = ".len() as u32;
     let edit = TextEdit::new(
         TextRange {
             start: edit_offset,

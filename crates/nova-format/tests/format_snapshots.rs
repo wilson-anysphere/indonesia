@@ -240,7 +240,10 @@ new java.util.ArrayList<> ();
     let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
     // Smoke check: make sure generic closes don't run into declaration identifiers.
-    assert!(!formatted.contains(">xs"), "expected space after generic close: {formatted}");
+    assert!(
+        !formatted.contains(">xs"),
+        "expected space after generic close: {formatted}"
+    );
     assert!(
         !formatted.contains(">>map"),
         "expected space after generic close: {formatted}"
@@ -338,7 +341,10 @@ fn ast_formatting_disambiguates_shift_operators_from_generic_closes() {
     let parse = parse_java(input);
     let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 
-    assert!(!formatted.contains(">> 1"), "expected shift operator: {formatted}");
+    assert!(
+        !formatted.contains(">> 1"),
+        "expected shift operator: {formatted}"
+    );
     assert!(
         !formatted.contains(">>> 1"),
         "expected unsigned shift operator: {formatted}"

@@ -127,7 +127,9 @@ impl fmt::Debug for RpcMessage {
                 .finish(),
             RpcMessage::GetWorkerStats => f.write_str("GetWorkerStats"),
             RpcMessage::WorkerStats(stats) => f.debug_tuple("WorkerStats").field(stats).finish(),
-            RpcMessage::ShardIndexInfo(info) => f.debug_tuple("ShardIndexInfo").field(info).finish(),
+            RpcMessage::ShardIndexInfo(info) => {
+                f.debug_tuple("ShardIndexInfo").field(info).finish()
+            }
             RpcMessage::SearchSymbols { query, limit } => f
                 .debug_struct("SearchSymbols")
                 .field("query", query)
@@ -139,7 +141,9 @@ impl fmt::Debug for RpcMessage {
                 .finish(),
             RpcMessage::Ack => f.write_str("Ack"),
             RpcMessage::Shutdown => f.write_str("Shutdown"),
-            RpcMessage::Error { message } => f.debug_struct("Error").field("message", message).finish(),
+            RpcMessage::Error { message } => {
+                f.debug_struct("Error").field("message", message).finish()
+            }
         }
     }
 }

@@ -2436,12 +2436,7 @@ fn resolve_source_roots(
 fn requires_initialized(command: &str) -> bool {
     !matches!(
         command,
-        "initialize"
-            | "cancel"
-            | "disconnect"
-            | "terminate"
-            | "nova/bugReport"
-            | "nova/metrics"
+        "initialize" | "cancel" | "disconnect" | "terminate" | "nova/bugReport" | "nova/metrics"
     )
 }
 

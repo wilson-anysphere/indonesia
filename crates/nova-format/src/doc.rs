@@ -303,12 +303,12 @@ pub fn print<'a>(doc: Doc<'a>, config: PrintConfig) -> String {
                             doc: inner.clone(),
                         }];
 
-                        let next_mode = if fits(remaining_width, &stack, &line_suffixes, &lookahead, config)
-                        {
-                            Mode::Flat
-                        } else {
-                            Mode::Break
-                        };
+                        let next_mode =
+                            if fits(remaining_width, &stack, &line_suffixes, &lookahead, config) {
+                                Mode::Flat
+                            } else {
+                                Mode::Break
+                            };
                         stack.push(Command::Doc {
                             indent,
                             mode: next_mode,
@@ -436,7 +436,11 @@ pub fn print<'a>(doc: Doc<'a>, config: PrintConfig) -> String {
                         // Separator part.
                         let sep = parts[index].clone();
                         if index + 1 >= parts.len() {
-                            stack.push(Command::Doc { indent, mode, doc: sep });
+                            stack.push(Command::Doc {
+                                indent,
+                                mode,
+                                doc: sep,
+                            });
                             continue;
                         }
 
@@ -708,7 +712,11 @@ fn fits<'a>(
 
                         let sep = parts[index].clone();
                         if index + 1 >= parts.len() {
-                            stack.push(Command::Doc { indent, mode, doc: sep });
+                            stack.push(Command::Doc {
+                                indent,
+                                mode,
+                                doc: sep,
+                            });
                             continue;
                         }
 

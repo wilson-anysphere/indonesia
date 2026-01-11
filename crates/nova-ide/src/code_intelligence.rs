@@ -626,8 +626,12 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             let Some(index) = spring_config::workspace_index(db, file) else {
                 return Vec::new();
             };
-            let items =
-                nova_framework_spring::completions_for_yaml_file(path, text, offset, index.as_ref());
+            let items = nova_framework_spring::completions_for_yaml_file(
+                path,
+                text,
+                offset,
+                index.as_ref(),
+            );
             return decorate_completions(
                 text,
                 prefix_start,

@@ -35,7 +35,10 @@ fn stdio_server_loads_config_from_flag_and_initializes() {
     let initialize_resp = read_jsonrpc_message(&mut stdout);
     assert_eq!(initialize_resp.get("id").and_then(|v| v.as_i64()), Some(1));
 
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 2, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_jsonrpc_message(&mut stdout);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
@@ -76,4 +79,3 @@ fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
     reader.read_exact(&mut buf).expect("read body");
     serde_json::from_slice(&buf).expect("parse json")
 }
-

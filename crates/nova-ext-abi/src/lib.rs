@@ -12,4 +12,3 @@ pub type AbiVersion = u32;
 pub const ABI_V1: AbiVersion = 1;
 
 pub mod v1;
-

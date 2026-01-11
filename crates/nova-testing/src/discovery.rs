@@ -329,7 +329,10 @@ fn discover_test_methods(
 }
 
 fn is_type_declaration_kind(kind: &str) -> bool {
-    matches!(kind, "class_declaration" | "record_declaration" | "enum_declaration")
+    matches!(
+        kind,
+        "class_declaration" | "record_declaration" | "enum_declaration"
+    )
 }
 
 fn type_declaration_body(node: Node<'_>) -> Option<Node<'_>> {

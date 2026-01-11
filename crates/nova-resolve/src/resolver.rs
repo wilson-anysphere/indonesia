@@ -535,19 +535,18 @@ impl<'a> Resolver<'a> {
                         TypeLookup::NotFound => {}
                     }
 
-                    if let Some(ty) = self.resolve_type_in_package_index(
-                        &PackageName::from_dotted("java.lang"),
-                        name,
-                    ) {
-                        return NameResolution::Resolved(Resolution::Type(TypeResolution::External(
-                            ty,
-                        )));
+                    if let Some(ty) = self
+                        .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
+                    {
+                        return NameResolution::Resolved(Resolution::Type(
+                            TypeResolution::External(ty),
+                        ));
                     }
 
                     if let Some(ty) = star_match {
-                        return NameResolution::Resolved(Resolution::Type(TypeResolution::External(
-                            ty,
-                        )));
+                        return NameResolution::Resolved(Resolution::Type(
+                            TypeResolution::External(ty),
+                        ));
                     }
                 }
                 ScopeKind::Package { package } => {
@@ -661,8 +660,8 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     use nova_core::FileId;
-    use nova_jdk::JdkIndex;
     use nova_hir::item_tree;
+    use nova_jdk::JdkIndex;
     use nova_types::Span;
 
     use crate::import_map::{StaticSingleImport, StaticStarImport};
@@ -810,7 +809,11 @@ mod tests {
 
         let scope_result = build_scopes_for_item_tree(FileId::new(0), &tree);
         assert_eq!(
-            resolver.resolve_name(&scope_result.scopes, scope_result.file_scope, &Name::from("Foo")),
+            resolver.resolve_name(
+                &scope_result.scopes,
+                scope_result.file_scope,
+                &Name::from("Foo")
+            ),
             Some(Resolution::Type(TypeResolution::External(same.clone())))
         );
 
@@ -863,7 +866,11 @@ mod tests {
             ])
         );
         assert_eq!(
-            resolver.resolve_name(&scope_result.scopes, scope_result.file_scope, &Name::from("Foo")),
+            resolver.resolve_name(
+                &scope_result.scopes,
+                scope_result.file_scope,
+                &Name::from("Foo")
+            ),
             None
         );
 
@@ -872,7 +879,10 @@ mod tests {
             resolver.resolve_import_detailed(&imports, None, &Name::from("Foo")),
             TypeLookup::Ambiguous(vec![foo_a.clone(), foo_b.clone()])
         );
-        assert_eq!(resolver.resolve_import(&imports, None, &Name::from("Foo")), None);
+        assert_eq!(
+            resolver.resolve_import(&imports, None, &Name::from("Foo")),
+            None
+        );
     }
 }
 

@@ -1,8 +1,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use nova_framework_parse::{
-    collect_annotations, find_named_child, modifier_node, node_text, parse_class_literal, parse_java,
-    simplify_type, visit_nodes, ParsedAnnotation,
+    collect_annotations, find_named_child, modifier_node, node_text, parse_class_literal,
+    parse_java, simplify_type, visit_nodes, ParsedAnnotation,
 };
 use nova_types::{Diagnostic, Span};
 use tree_sitter::{Node, Tree};
@@ -176,7 +176,8 @@ pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
         };
         let root = tree.root_node();
         let package = parse_package_name(root, src).unwrap_or_default();
-        let in_scan = scan_base_packages.is_empty() || package_matches_any(&package, &scan_base_packages);
+        let in_scan =
+            scan_base_packages.is_empty() || package_matches_any(&package, &scan_base_packages);
 
         visit_nodes(root, &mut |node| {
             if node.kind() == "class_declaration" {
@@ -547,7 +548,9 @@ fn parse_component_bean(
 
     let primary = annotations.iter().any(|a| a.simple_name == "Primary");
     let profiles = extract_profiles(annotations);
-    let conditional = annotations.iter().any(|a| a.simple_name.starts_with("Conditional"));
+    let conditional = annotations
+        .iter()
+        .any(|a| a.simple_name.starts_with("Conditional"));
 
     Some(Bean {
         name,
@@ -817,7 +820,9 @@ fn parse_bean_method(node: Node<'_>, source_idx: usize, source: &str) -> Option<
 
     let primary = annotations.iter().any(|a| a.simple_name == "Primary");
     let profiles = extract_profiles(&annotations);
-    let conditional = annotations.iter().any(|a| a.simple_name.starts_with("Conditional"));
+    let conditional = annotations
+        .iter()
+        .any(|a| a.simple_name.starts_with("Conditional"));
 
     Some(Bean {
         name,
@@ -908,7 +913,10 @@ fn discover_component_scan_base_packages(
                 .or_insert_with(|| package.clone());
 
             let has_scan = annotations.iter().any(|a| {
-                matches!(a.simple_name.as_str(), "ComponentScan" | "SpringBootApplication")
+                matches!(
+                    a.simple_name.as_str(),
+                    "ComponentScan" | "SpringBootApplication"
+                )
             });
             if has_scan {
                 scan_classes.push((package.clone(), annotations));
@@ -926,7 +934,10 @@ fn discover_component_scan_base_packages(
         for ann in &annotations {
             match ann.simple_name.as_str() {
                 "ComponentScan" => {
-                    discovered.extend(parse_string_list_from_args(&ann.args, &["basePackages", "value"]));
+                    discovered.extend(parse_string_list_from_args(
+                        &ann.args,
+                        &["basePackages", "value"],
+                    ));
                     discovered.extend(parse_packages_from_class_literals(
                         ann.args.get("basePackageClasses").map(String::as_str),
                         &class_packages,
@@ -938,9 +949,7 @@ fn discover_component_scan_base_packages(
                         &["scanBasePackages"],
                     ));
                     discovered.extend(parse_packages_from_class_literals(
-                        ann.args
-                            .get("scanBasePackageClasses")
-                            .map(String::as_str),
+                        ann.args.get("scanBasePackageClasses").map(String::as_str),
                         &class_packages,
                     ));
                 }

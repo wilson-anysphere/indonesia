@@ -917,7 +917,9 @@ impl Lowerer {
             SyntaxKind::MethodCallExpression => self.lower_call_expr(node),
             SyntaxKind::FieldAccessExpression => self.lower_field_access_expr(node),
             SyntaxKind::MethodReferenceExpression => self.lower_method_reference_expr(node),
-            SyntaxKind::ConstructorReferenceExpression => self.lower_constructor_reference_expr(node),
+            SyntaxKind::ConstructorReferenceExpression => {
+                self.lower_constructor_reference_expr(node)
+            }
             SyntaxKind::ClassLiteralExpression => self.lower_class_literal_expr(node),
             SyntaxKind::BinaryExpression => self.lower_binary_expr(node),
             SyntaxKind::ParenthesizedExpression => node
@@ -1006,7 +1008,9 @@ impl Lowerer {
     }
 
     fn lower_class_literal_expr(&self, node: &SyntaxNode) -> ast::Expr {
-        let ty_node = node.children().find(|child| is_expression_kind(child.kind()));
+        let ty_node = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()));
         let ty = ty_node
             .as_ref()
             .map(|expr| self.lower_expr(expr))

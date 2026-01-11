@@ -211,7 +211,8 @@ impl Builder {
             Expr::FieldAccess { receiver, .. } => {
                 self.visit_expr(body, *receiver, scope);
             }
-            Expr::MethodReference { receiver, .. } | Expr::ConstructorReference { receiver, .. } => {
+            Expr::MethodReference { receiver, .. }
+            | Expr::ConstructorReference { receiver, .. } => {
                 self.visit_expr(body, *receiver, scope);
             }
             Expr::ClassLiteral { ty, .. } => {

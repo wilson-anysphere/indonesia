@@ -1141,9 +1141,7 @@ fn handle_format(args: FormatArgs) -> Result<i32> {
             let tree = parse(&source);
             edits_for_range_formatting(&tree, &source, range, &config)?
         }
-        None => {
-            edits_for_document_formatting(&source, &config)
-        }
+        None => edits_for_document_formatting(&source, &config),
     };
 
     // Drop no-op edits to keep CLI output stable (and to defend against future

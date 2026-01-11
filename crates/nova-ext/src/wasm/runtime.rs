@@ -11,12 +11,12 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use wasmtime::{Engine, Instance, Linker, Module, Store, StoreLimitsBuilder, TypedFunc};
 
+use nova_ext_abi::v1::capabilities as abi_caps;
 use nova_ext_abi::v1::{
     CodeActionV1, CodeActionsRequestV1, CompletionItemV1, CompletionsRequestV1, DiagnosticV1,
     DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1,
     NavigationTargetV1, SeverityV1, SpanV1, SymbolV1,
 };
-use nova_ext_abi::v1::capabilities as abi_caps;
 use nova_ext_abi::ABI_V1;
 
 const EXPORT_ABI_VERSION: &str = "nova_ext_abi_version";

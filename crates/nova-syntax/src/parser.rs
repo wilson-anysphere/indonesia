@@ -543,9 +543,13 @@ pub(crate) fn parse_argument_list_fragment(input: &str) -> JavaParseResult {
 }
 
 pub(crate) fn parse_annotation_element_value_pair_list_fragment(input: &str) -> JavaParseResult {
-    parse_node_fragment(input, SyntaxKind::AnnotationElementValuePairList, |parser| {
-        parser.parse_annotation_element_value_pair_list_contents();
-    })
+    parse_node_fragment(
+        input,
+        SyntaxKind::AnnotationElementValuePairList,
+        |parser| {
+            parser.parse_annotation_element_value_pair_list_contents();
+        },
+    )
 }
 
 pub(crate) fn parse_parameter_list_fragment(input: &str) -> JavaParseResult {
@@ -1626,13 +1630,17 @@ impl<'a> Parser<'a> {
         if can_start_expression(kind) {
             return true;
         }
-        (is_primitive_type(kind) || kind == SyntaxKind::VoidKw) && self.at_primitive_class_literal_start()
+        (is_primitive_type(kind) || kind == SyntaxKind::VoidKw)
+            && self.at_primitive_class_literal_start()
     }
 
     fn parse_annotation_element_value_array_initializer(&mut self) {
         self.builder
             .start_node(SyntaxKind::AnnotationElementValueArrayInitializer.into());
-        self.expect(SyntaxKind::LBrace, "expected `{` in annotation array initializer");
+        self.expect(
+            SyntaxKind::LBrace,
+            "expected `{` in annotation array initializer",
+        );
 
         while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
             self.eat_trivia();
@@ -2975,10 +2983,8 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     if self.nth(1) == Some(SyntaxKind::ClassKw) {
-                        self.builder.start_node_at(
-                            checkpoint,
-                            SyntaxKind::ClassLiteralExpression.into(),
-                        );
+                        self.builder
+                            .start_node_at(checkpoint, SyntaxKind::ClassLiteralExpression.into());
                         self.bump(); // .
                         self.bump(); // class
                         self.builder.finish_node();
@@ -3103,11 +3109,13 @@ impl<'a> Parser<'a> {
 
     fn at_primitive_class_literal_start(&mut self) -> bool {
         let mut offset = 1usize;
-        while self.nth(offset) == Some(SyntaxKind::LBracket) && self.nth(offset + 1) == Some(SyntaxKind::RBracket)
+        while self.nth(offset) == Some(SyntaxKind::LBracket)
+            && self.nth(offset + 1) == Some(SyntaxKind::RBracket)
         {
             offset += 2;
         }
-        self.nth(offset) == Some(SyntaxKind::Dot) && self.nth(offset + 1) == Some(SyntaxKind::ClassKw)
+        self.nth(offset) == Some(SyntaxKind::Dot)
+            && self.nth(offset + 1) == Some(SyntaxKind::ClassKw)
     }
 
     fn parse_instanceof_type_or_pattern(&mut self) {
@@ -3163,10 +3171,8 @@ impl<'a> Parser<'a> {
         // - `new T[] { ... }`
         // - `new T[expr][] { ... }` (mixed dims)
         if self.at(SyntaxKind::LBracket) || self.at(SyntaxKind::LBrace) {
-            self.builder.start_node_at(
-                checkpoint,
-                SyntaxKind::ArrayCreationExpression.into(),
-            );
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::ArrayCreationExpression.into());
             if self.at(SyntaxKind::LBracket) {
                 self.parse_array_creation_dimensions(allow_lambda);
             }
@@ -3255,7 +3261,10 @@ impl<'a> Parser<'a> {
 
     fn parse_array_initializer(&mut self, allow_lambda: bool) {
         self.builder.start_node(SyntaxKind::ArrayInitializer.into());
-        self.expect(SyntaxKind::LBrace, "expected `{` to start array initializer");
+        self.expect(
+            SyntaxKind::LBrace,
+            "expected `{` to start array initializer",
+        );
 
         self.eat_trivia();
         if !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
@@ -3289,12 +3298,16 @@ impl<'a> Parser<'a> {
             self.builder.finish_node(); // ArrayInitializerList
         }
 
-        self.expect(SyntaxKind::RBrace, "expected `}` to close array initializer");
+        self.expect(
+            SyntaxKind::RBrace,
+            "expected `}` to close array initializer",
+        );
         self.builder.finish_node(); // ArrayInitializer
     }
 
     fn parse_variable_initializer(&mut self, allow_lambda: bool) {
-        self.builder.start_node(SyntaxKind::VariableInitializer.into());
+        self.builder
+            .start_node(SyntaxKind::VariableInitializer.into());
         self.eat_trivia();
         if self.at(SyntaxKind::LBrace) {
             self.parse_array_initializer(allow_lambda);

@@ -39,7 +39,12 @@ impl SourceTypeProvider {
     ///
     /// Existing classes previously produced from `file_path` are removed first,
     /// then the new declarations are inserted.
-    pub fn update_file(&mut self, store: &mut TypeStore, file_path: impl Into<PathBuf>, text: &str) {
+    pub fn update_file(
+        &mut self,
+        store: &mut TypeStore,
+        file_path: impl Into<PathBuf>,
+        text: &str,
+    ) {
         let file_path = file_path.into();
         self.remove_file(store, &file_path);
 
@@ -52,7 +57,10 @@ impl SourceTypeProvider {
         let ast_id_map = AstIdMap::new(&parse_java.syntax());
         let parse = nova_syntax::java::parse(text);
         let tree = lower_item_tree(file_id, parse.compilation_unit(), &parse_java, &ast_id_map);
-        let ctx = ResolveCtx::new(tree.package.as_ref().map(|p| p.name.as_str()), &tree.imports);
+        let ctx = ResolveCtx::new(
+            tree.package.as_ref().map(|p| p.name.as_str()),
+            &tree.imports,
+        );
 
         let object = Type::class(store.well_known().object, vec![]);
         let defs = {
@@ -97,23 +105,43 @@ fn collect_class_defs(
     let (name, kind, members) = match *item {
         Item::Class(id) => {
             let data = tree.class(id);
-            (data.name.as_str(), ClassKind::Class, data.members.as_slice())
+            (
+                data.name.as_str(),
+                ClassKind::Class,
+                data.members.as_slice(),
+            )
         }
         Item::Interface(id) => {
             let data = tree.interface(id);
-            (data.name.as_str(), ClassKind::Interface, data.members.as_slice())
+            (
+                data.name.as_str(),
+                ClassKind::Interface,
+                data.members.as_slice(),
+            )
         }
         Item::Enum(id) => {
             let data = tree.enum_(id);
-            (data.name.as_str(), ClassKind::Class, data.members.as_slice())
+            (
+                data.name.as_str(),
+                ClassKind::Class,
+                data.members.as_slice(),
+            )
         }
         Item::Record(id) => {
             let data = tree.record(id);
-            (data.name.as_str(), ClassKind::Class, data.members.as_slice())
+            (
+                data.name.as_str(),
+                ClassKind::Class,
+                data.members.as_slice(),
+            )
         }
         Item::Annotation(id) => {
             let data = tree.annotation(id);
-            (data.name.as_str(), ClassKind::Interface, data.members.as_slice())
+            (
+                data.name.as_str(),
+                ClassKind::Interface,
+                data.members.as_slice(),
+            )
         }
     };
 
@@ -171,15 +199,9 @@ fn collect_class_defs(
                 });
             }
             Member::Initializer(_) => {}
-            Member::Type(nested) => collect_class_defs(
-                tree,
-                store,
-                ctx,
-                &nested,
-                Some(&binary_name),
-                object,
-                out,
-            ),
+            Member::Type(nested) => {
+                collect_class_defs(tree, store, ctx, &nested, Some(&binary_name), object, out)
+            }
         }
     }
 
@@ -365,7 +387,9 @@ fn parse_param_type_ref(ctx: &ResolveCtx, store: &TypeStore, text: &str) -> (Typ
     }
 
     let base = base.trim();
-    let base = base.split_once('<').map_or(base, |(head, _)| head.trim_end());
+    let base = base
+        .split_once('<')
+        .map_or(base, |(head, _)| head.trim_end());
 
     let mut ty = match base {
         "void" => Type::Void,

@@ -238,7 +238,8 @@ multi_token_completion_ms = 0
             },
             ConfigWarning::InvalidValue {
                 toml_path: "ai.timeouts.multi_token_completion_ms".to_string(),
-                message: "must be >= 1 when ai.features.multi_token_completion is enabled".to_string(),
+                message: "must be >= 1 when ai.features.multi_token_completion is enabled"
+                    .to_string(),
             },
         ]
     );

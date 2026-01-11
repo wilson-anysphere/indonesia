@@ -42,4 +42,3 @@ async fn set_breakpoints_before_attach_are_cached_and_applied_on_attach() {
     client.disconnect().await;
     server_task.await.unwrap().unwrap();
 }
-

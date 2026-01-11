@@ -43,18 +43,20 @@ pub fn run_tests(req: &TestRunRequest) -> Result<TestRunResponse> {
         }
         success &= run_exit_code == 0;
 
-        let label = run
-            .module_rel_path
-            .as_deref()
-            .unwrap_or("<workspace>");
+        let label = run.module_rel_path.as_deref().unwrap_or("<workspace>");
         append_scoped_output(&mut stdout, label, output.stdout, multi_run);
         append_scoped_output(&mut stderr, label, output.stderr, multi_run);
     }
 
     let cutoff = started_at.checked_sub(Duration::from_secs(2));
     let allow_cached_reports = success || !req.tests.is_empty();
-    let mut tests =
-        collect_and_parse_reports(&project_root, tool, cutoff, allow_cached_reports, &req.tests)?;
+    let mut tests = collect_and_parse_reports(
+        &project_root,
+        tool,
+        cutoff,
+        allow_cached_reports,
+        &req.tests,
+    )?;
     tests = filter_results_by_request(tests, &req.tests);
     tests.sort_by(|a, b| a.id.cmp(&b.id));
 
@@ -123,12 +125,7 @@ fn build_runs(project_root: &Path, tool: BuildTool, tests: &[String]) -> Result<
     Ok(groups
         .into_iter()
         .map(|(module_rel_path, ids)| ModuleRun {
-            command: command_for_tests(
-                project_root,
-                tool,
-                module_rel_path.as_deref(),
-                &ids,
-            ),
+            command: command_for_tests(project_root, tool, module_rel_path.as_deref(), &ids),
             module_rel_path,
         })
         .collect())
@@ -839,11 +836,7 @@ mod tests {
             .collect();
         assert_eq!(
             args,
-            vec![
-                ":module-a:test",
-                "--tests",
-                "com.example.DuplicateTest.ok"
-            ]
+            vec![":module-a:test", "--tests", "com.example.DuplicateTest.ok"]
         );
     }
 

@@ -137,7 +137,10 @@ impl<'a> JavaComments<'a> {
                     // - stay at the end of the current line
                     // - do not influence group fitting decisions
                     let text = comment.text(self.source).trim_end_matches(['\r', '\n']);
-                    parts.push(Doc::line_suffix(Doc::concat([Doc::text(" "), Doc::text(text)])));
+                    parts.push(Doc::line_suffix(Doc::concat([
+                        Doc::text(" "),
+                        Doc::text(text),
+                    ])));
                 }
                 _ => {
                     parts.push(fmt_comment(ctx, comment, self.source));

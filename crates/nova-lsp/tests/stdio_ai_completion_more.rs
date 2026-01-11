@@ -168,7 +168,10 @@ fn stdio_server_supports_ai_multi_token_completion_polling() {
     );
     let resolved_resp = read_jsonrpc_response_with_id(&mut stdout, 999);
     let resolved_item: CompletionItem = serde_json::from_value(
-        resolved_resp.get("result").cloned().expect("resolved result"),
+        resolved_resp
+            .get("result")
+            .cloned()
+            .expect("resolved result"),
     )
     .expect("decode resolved CompletionItem");
 

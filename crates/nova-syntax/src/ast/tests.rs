@@ -3,11 +3,11 @@ use crate::ast::{
     Expression, ExpressionFragment, ModuleDirectiveKind, Statement, StatementFragment,
     SwitchRuleBody, TypeDeclaration, UnnamedPattern,
 };
+use crate::SyntaxKind;
 use crate::{
     parse_java, parse_java_block_fragment, parse_java_class_member_fragment,
     parse_java_expression_fragment, parse_java_statement_fragment,
 };
-use crate::SyntaxKind;
 
 #[test]
 fn typed_casts_smoke() {
@@ -57,7 +57,8 @@ fn fragment_root_wrappers_work() {
     let fragment = BlockFragment::cast(block_parse.parse.syntax()).expect("BlockFragment");
     let block = fragment.block().expect("block");
     assert!(
-        block.statements()
+        block
+            .statements()
             .any(|stmt| matches!(stmt, Statement::LocalVariableDeclarationStatement(_))),
         "expected local variable declaration statement in fragment"
     );
@@ -156,7 +157,10 @@ fn switch_label_iteration() {
     assert_eq!(labels[0].expressions().count(), 1);
 
     assert!(labels[1].is_default());
-    assert_eq!(labels[1].default_kw().unwrap().kind(), SyntaxKind::DefaultKw);
+    assert_eq!(
+        labels[1].default_kw().unwrap().kind(),
+        SyntaxKind::DefaultKw
+    );
     assert_eq!(labels[1].expressions().count(), 0);
 
     assert!(labels[2].is_case());
@@ -321,7 +325,8 @@ fn lambda_unnamed_parameter_is_unnamed_pattern_node() {
     let fragment_parse = parse_java_expression_fragment("_ -> 1", 0);
     assert!(fragment_parse.parse.errors.is_empty());
 
-    let fragment = ExpressionFragment::cast(fragment_parse.parse.syntax()).expect("ExpressionFragment");
+    let fragment =
+        ExpressionFragment::cast(fragment_parse.parse.syntax()).expect("ExpressionFragment");
     let expr = fragment.expression().expect("expression");
     let lambda = match expr {
         Expression::LambdaExpression(it) => it,
@@ -408,7 +413,10 @@ fn module_directive_extraction() {
             assert!(req.is_transitive());
             assert!(!req.is_static());
             assert_eq!(req.requires_kw().unwrap().kind(), SyntaxKind::RequiresKw);
-            assert_eq!(req.transitive_kw().unwrap().kind(), SyntaxKind::TransitiveKw);
+            assert_eq!(
+                req.transitive_kw().unwrap().kind(),
+                SyntaxKind::TransitiveKw
+            );
             assert_eq!(req.module().unwrap().text(), "java.sql");
         }
         other => panic!("expected requires, got {other:?}"),
@@ -445,7 +453,10 @@ fn module_directive_extraction() {
     match &directives[4] {
         ModuleDirectiveKind::ProvidesDirective(provides) => {
             assert_eq!(provides.service().unwrap().text(), "com.example.Service");
-            assert_eq!(provides.provides_kw().unwrap().kind(), SyntaxKind::ProvidesKw);
+            assert_eq!(
+                provides.provides_kw().unwrap().kind(),
+                SyntaxKind::ProvidesKw
+            );
             assert_eq!(provides.with_kw().unwrap().kind(), SyntaxKind::WithKw);
             let impls: Vec<_> = provides.implementations().map(|n| n.text()).collect();
             assert_eq!(impls, vec!["com.example.impl.ServiceImpl"]);

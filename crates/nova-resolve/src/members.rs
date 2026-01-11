@@ -190,7 +190,9 @@ fn constructors_of_type(
 ) -> Vec<ResolvedConstructor> {
     match ty {
         Type::Class(nova_types::ClassType { def, .. }) => constructors_of_class(db, registry, *def),
-        Type::VirtualInner { owner, name } => constructors_of_virtual_inner(db, registry, *owner, name),
+        Type::VirtualInner { owner, name } => {
+            constructors_of_virtual_inner(db, registry, *owner, name)
+        }
         _ => Vec::new(),
     }
 }

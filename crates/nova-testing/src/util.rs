@@ -12,7 +12,9 @@ pub(crate) fn rel_path_string(project_root: &Path, path: &Path) -> String {
 }
 
 pub(crate) fn module_rel_path_string(workspace_root: &Path, module_root: &Path) -> String {
-    let rel = module_root.strip_prefix(workspace_root).unwrap_or(module_root);
+    let rel = module_root
+        .strip_prefix(workspace_root)
+        .unwrap_or(module_root);
     let rel_str = pathbuf_to_slash_string(rel);
     if rel_str.is_empty() {
         ".".to_string()

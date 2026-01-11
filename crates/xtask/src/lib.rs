@@ -332,10 +332,7 @@ fn parse_field_ty(src: &str) -> Result<FieldTy> {
         if kind.is_empty() {
             return Err(anyhow!("missing token kind in `{src}`"));
         }
-        if !kind
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        {
+        if !kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             return Err(anyhow!("invalid token kind `{kind}` in `{src}`"));
         }
         return Ok(FieldTy::Token(kind.to_string()));
@@ -404,7 +401,8 @@ fn render_node(out: &mut String, node: &NodeDef) {
     let _ = writeln!(out, "impl {} {{", node.name);
 
     // Track duplicate field types so we can select nth occurrence.
-    let mut seen_counts: std::collections::HashMap<FieldTy, usize> = std::collections::HashMap::new();
+    let mut seen_counts: std::collections::HashMap<FieldTy, usize> =
+        std::collections::HashMap::new();
     for field in &node.fields {
         let count = seen_counts.entry(field.ty.clone()).or_insert(0);
         let nth = *count;
@@ -599,7 +597,11 @@ impl std::fmt::Display for SyntaxLintReport {
             "  grammar: {} nodes, {} enums",
             self.grammar_node_count, self.grammar_enum_count
         )?;
-        writeln!(f, "  parser emitted: {} node kinds", self.emitted_node_count)?;
+        writeln!(
+            f,
+            "  parser emitted: {} node kinds",
+            self.emitted_node_count
+        )?;
 
         if self.is_clean() {
             writeln!(f)?;
@@ -635,7 +637,10 @@ impl std::fmt::Display for SyntaxLintReport {
         }
 
         writeln!(f)?;
-        writeln!(f, "Fix: update `crates/nova-syntax/grammar/java.syntax`, then run:")?;
+        writeln!(
+            f,
+            "Fix: update `crates/nova-syntax/grammar/java.syntax`, then run:"
+        )?;
         writeln!(f, "  cargo xtask codegen")?;
         Ok(())
     }
@@ -645,8 +650,9 @@ pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
     let syntax_kind_path = repo_root.join("crates/nova-syntax/src/syntax_kind.rs");
     let grammar_path = repo_root.join("crates/nova-syntax/grammar/java.syntax");
 
-    let (syntax_kind_all_kinds, syntax_kind_node_kinds) = parse_syntax_kind_kinds(&syntax_kind_path)
-        .with_context(|| format!("failed to parse `{}`", syntax_kind_path.display()))?;
+    let (syntax_kind_all_kinds, syntax_kind_node_kinds) =
+        parse_syntax_kind_kinds(&syntax_kind_path)
+            .with_context(|| format!("failed to parse `{}`", syntax_kind_path.display()))?;
 
     let grammar_src = std::fs::read_to_string(&grammar_path)
         .with_context(|| format!("failed to read `{}`", grammar_path.display()))?;
@@ -675,10 +681,8 @@ pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
                 }
                 FieldTy::Token(kind) => {
                     if !syntax_kind_all_kinds.contains(kind) {
-                        unknown_type_references.push(format!(
-                            "{}.{}: Token({kind})",
-                            node.name, field.name
-                        ));
+                        unknown_type_references
+                            .push(format!("{}.{}: Token({kind})", node.name, field.name));
                     }
                 }
                 FieldTy::Ident => {}
@@ -720,10 +724,8 @@ pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
     java_files.sort();
     java_files.dedup();
 
-    let mut sources: Vec<SyntaxLintSource> = java_files
-        .into_iter()
-        .map(SyntaxLintSource::Path)
-        .collect();
+    let mut sources: Vec<SyntaxLintSource> =
+        java_files.into_iter().map(SyntaxLintSource::Path).collect();
 
     // Small "smoke test" sources that exercise nodes not currently covered by the fixture corpus.
     sources.push(SyntaxLintSource::Inline {
@@ -731,8 +733,8 @@ pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
         text: "class Foo { void m() { class Local {} } }".to_string(),
     });
 
-    let (emitted_node_kinds, first_seen) =
-        collect_emitted_node_kinds(repo_root, &sources).context("failed to collect parser nodes")?;
+    let (emitted_node_kinds, first_seen) = collect_emitted_node_kinds(repo_root, &sources)
+        .context("failed to collect parser nodes")?;
 
     let mut missing_wrappers: Vec<(String, String)> = emitted_node_kinds
         .iter()
@@ -846,7 +848,10 @@ fn record_emitted_kind(
 
 fn parse_syntax_kind_kinds(
     path: &Path,
-) -> Result<(std::collections::BTreeSet<String>, std::collections::BTreeSet<String>)> {
+) -> Result<(
+    std::collections::BTreeSet<String>,
+    std::collections::BTreeSet<String>,
+)> {
     let variants = parse_syntax_kind_variants(path)?;
     let all = variants.iter().cloned().collect();
     let nodes = syntax_kind_node_kinds_from_variants(&variants)?;
@@ -1009,16 +1014,12 @@ Bar {}
         assert!(code.contains("pub fn arrow_token(&self) -> Option<SyntaxToken>"));
         assert!(code.contains("support::token(&self.syntax, SyntaxKind::Arrow)"));
 
-        assert!(code.contains(
-            "pub fn semicolons(&self) -> impl Iterator<Item = SyntaxToken> + '_"
-        ));
+        assert!(code.contains("pub fn semicolons(&self) -> impl Iterator<Item = SyntaxToken> + '_"));
         assert!(code.contains("support::tokens(&self.syntax, SyntaxKind::Semicolon)"));
 
         assert!(code.contains("pub fn name_token(&self) -> Option<SyntaxToken>"));
         assert!(code.contains("support::ident_token(&self.syntax)"));
 
-        assert!(code.contains(
-            "support::tokens(&self.syntax, SyntaxKind::Semicolon).nth(1)"
-        ));
+        assert!(code.contains("support::tokens(&self.syntax, SyntaxKind::Semicolon).nth(1)"));
     }
 }

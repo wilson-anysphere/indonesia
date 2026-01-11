@@ -160,10 +160,8 @@ impl CommentStore {
 
             let line_breaks_before = count_line_breaks_between(source, prev_end, tok.range.start());
             let line_breaks_after = count_line_breaks_between(source, tok.range.end(), next_start);
-            let blank_line_before =
-                has_blank_line_between(source, prev_end, tok.range.start());
-            let blank_line_after =
-                has_blank_line_between(source, tok.range.end(), next_start);
+            let blank_line_before = has_blank_line_between(source, prev_end, tok.range.start());
+            let blank_line_after = has_blank_line_between(source, tok.range.end(), next_start);
 
             let is_inline_with_prev = prev_sig.is_some() && line_breaks_before == 0;
             let is_inline_with_next = next_sig.is_some() && line_breaks_after == 0;

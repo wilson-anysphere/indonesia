@@ -545,9 +545,8 @@ mod tests {
 
         assert_eq!(after_x, builder_ty);
 
-        let built =
-            resolve_method_call(&db, &registry, &after_x, CallKind::Instance, "build", &[])
-                .expect("build() should resolve");
+        let built = resolve_method_call(&db, &registry, &after_x, CallKind::Instance, "build", &[])
+            .expect("build() should resolve");
 
         assert_eq!(built, foo_ty);
     }
@@ -597,4 +596,4 @@ mod tests {
 
         assert_eq!(constructed, foo_ty);
     }
-} 
+}

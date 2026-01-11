@@ -33,7 +33,10 @@ pub fn rename(
     params: RenameParams,
 ) -> Result<WorkspaceEdit, RefactorError> {
     let kind = db.symbol_kind(params.symbol);
-    if !matches!(kind, Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)) {
+    if !matches!(
+        kind,
+        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+    ) {
         return Err(RefactorError::RenameNotSupported { kind });
     }
 

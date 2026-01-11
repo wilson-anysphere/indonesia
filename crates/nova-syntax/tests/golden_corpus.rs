@@ -46,7 +46,8 @@ fn run_parser_fixtures(root: &Path, bless: bool) -> io::Result<()> {
         } else {
             let expected = read_expected(&tree_path)?;
             assert_eq!(
-                tree_dump, expected,
+                tree_dump,
+                expected,
                 "tree mismatch for parser fixture `{}`",
                 java_path.display()
             );
@@ -75,14 +76,16 @@ fn run_recovery_fixtures(root: &Path, bless: bool) -> io::Result<()> {
         } else {
             let expected_tree = read_expected(&tree_path)?;
             assert_eq!(
-                tree_dump, expected_tree,
+                tree_dump,
+                expected_tree,
                 "tree mismatch for recovery fixture `{}`",
                 java_path.display()
             );
 
             let expected_errors = read_expected(&errors_path)?;
             assert_eq!(
-                errors_dump, expected_errors,
+                errors_dump,
+                expected_errors,
                 "errors mismatch for recovery fixture `{}`",
                 java_path.display()
             );
@@ -126,15 +129,13 @@ fn read_normalized(path: &Path) -> io::Result<String> {
 fn read_expected(path: &Path) -> io::Result<String> {
     match fs::read_to_string(path) {
         Ok(contents) => Ok(normalize_newlines(&contents)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "missing expected file `{}` (run with `BLESS=1` to generate)",
-                    path.display()
-                ),
-            ))
-        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "missing expected file `{}` (run with `BLESS=1` to generate)",
+                path.display()
+            ),
+        )),
         Err(err) => Err(err),
     }
 }
@@ -212,4 +213,3 @@ fn debug_dump(node: &SyntaxNode) -> String {
     go(node, 0, &mut out);
     out
 }
-

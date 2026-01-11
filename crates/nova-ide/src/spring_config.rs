@@ -13,7 +13,10 @@ use crate::spring_di::SpringWorkspaceCache;
 static SPRING_CONFIG_CACHE: Lazy<SpringWorkspaceCache<SpringWorkspaceIndex>> =
     Lazy::new(SpringWorkspaceCache::default);
 
-pub(crate) fn workspace_index(db: &dyn Database, file: FileId) -> Option<Arc<SpringWorkspaceIndex>> {
+pub(crate) fn workspace_index(
+    db: &dyn Database,
+    file: FileId,
+) -> Option<Arc<SpringWorkspaceIndex>> {
     let path = db.file_path(file)?;
     let root = crate::spring_di::discover_project_root(path);
 
@@ -22,17 +25,19 @@ pub(crate) fn workspace_index(db: &dyn Database, file: FileId) -> Option<Arc<Spr
     let files = collect_relevant_files(db, &root);
     let fingerprint = sources_fingerprint(db, &files, &metadata);
 
-    Some(SPRING_CONFIG_CACHE.get_or_update_with(root, fingerprint, || {
-        let mut index = SpringWorkspaceIndex::new(metadata);
-        for entry in files {
-            let text = db.file_content(entry.file_id);
-            match entry.kind {
-                FileKind::Java => index.add_java_file(entry.path, text),
-                FileKind::Config => index.add_config_file(entry.path, text),
+    Some(
+        SPRING_CONFIG_CACHE.get_or_update_with(root, fingerprint, || {
+            let mut index = SpringWorkspaceIndex::new(metadata);
+            for entry in files {
+                let text = db.file_content(entry.file_id);
+                match entry.kind {
+                    FileKind::Java => index.add_java_file(entry.path, text),
+                    FileKind::Config => index.add_config_file(entry.path, text),
+                }
             }
-        }
-        index
-    }))
+            index
+        }),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,7 +112,8 @@ fn sources_fingerprint(
 
 fn is_spring_properties_file(path: &Path) -> bool {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    name.starts_with("application") && path.extension().and_then(|e| e.to_str()) == Some("properties")
+    name.starts_with("application")
+        && path.extension().and_then(|e| e.to_str()) == Some("properties")
 }
 
 fn is_spring_yaml_file(path: &Path) -> bool {
@@ -120,4 +126,3 @@ fn is_spring_yaml_file(path: &Path) -> bool {
         Some("yml" | "yaml")
     )
 }
-

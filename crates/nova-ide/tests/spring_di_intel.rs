@@ -34,7 +34,10 @@ fn fixture_multi(
             let pos = offset_to_position(&primary_text, caret_offset);
             (primary_text, pos)
         }
-        None => (primary_text_with_caret.to_string(), lsp_types::Position::new(0, 0)),
+        None => (
+            primary_text_with_caret.to_string(),
+            lsp_types::Position::new(0, 0),
+        ),
     };
 
     let mut db = InMemoryFileStore::new();
@@ -332,8 +335,11 @@ import org.springframework.stereotype.Component;
 class FooImpl implements Foo {}
 "#;
 
-    let (db, file, pos) =
-        fixture_multi(consumer_path, consumer_text, vec![(bean_path, bean_text.to_string())]);
+    let (db, file, pos) = fixture_multi(
+        consumer_path,
+        consumer_text,
+        vec![(bean_path, bean_text.to_string())],
+    );
 
     let loc = goto_definition(&db, file, pos).expect("expected qualifier goto-definition");
     assert!(

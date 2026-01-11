@@ -22,4 +22,3 @@ fn parses_module_qualified_test_ids() {
         }
     );
 }
-

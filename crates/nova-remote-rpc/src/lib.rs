@@ -159,7 +159,10 @@ impl fmt::Debug for WorkerConfig {
             .field("capabilities", &self.hello.capabilities)
             .field("cached_index_info", &self.hello.cached_index_info)
             .field("worker_build", &self.hello.worker_build)
-            .field("pre_handshake_max_frame_len", &self.pre_handshake_max_frame_len)
+            .field(
+                "pre_handshake_max_frame_len",
+                &self.pre_handshake_max_frame_len,
+            )
             .field("compression_threshold", &self.compression_threshold)
             .finish()
     }
@@ -198,7 +201,10 @@ impl fmt::Debug for RouterConfig {
         f.debug_struct("RouterConfig")
             .field("supported_versions", &self.supported_versions)
             .field("capabilities", &self.capabilities)
-            .field("pre_handshake_max_frame_len", &self.pre_handshake_max_frame_len)
+            .field(
+                "pre_handshake_max_frame_len",
+                &self.pre_handshake_max_frame_len,
+            )
             .field("compression_threshold", &self.compression_threshold)
             .field("worker_id", &self.worker_id)
             .field("revision", &self.revision)
@@ -340,12 +346,8 @@ impl RpcConnection {
 
         if let Err(reject) = admit_fn(&hello) {
             let reject_frame = WireFrame::Reject(reject.clone());
-            let _ = write_wire_frame(
-                &mut stream,
-                cfg.pre_handshake_max_frame_len,
-                &reject_frame,
-            )
-            .await;
+            let _ =
+                write_wire_frame(&mut stream, cfg.pre_handshake_max_frame_len, &reject_frame).await;
             return Err(RpcTransportError::HandshakeFailed {
                 message: format!(
                     "handshake rejected (code={:?}): {}",
@@ -835,17 +837,21 @@ async fn read_wire_frame(
     let mut buf = Vec::new();
     buf.try_reserve_exact(len_usize.min(8 * 1024))
         .map_err(|err| RpcTransportError::AllocationFailed {
-            message: format!("allocate frame buffer ({} bytes): {err}", len_usize.min(8 * 1024)),
+            message: format!(
+                "allocate frame buffer ({} bytes): {err}",
+                len_usize.min(8 * 1024)
+            ),
         })?;
 
     while buf.len() < len_usize {
         if buf.capacity() == buf.len() {
             let new_cap = (buf.capacity().saturating_mul(2)).min(len_usize);
             let additional = new_cap.saturating_sub(buf.capacity());
-            buf.try_reserve_exact(additional)
-                .map_err(|err| RpcTransportError::AllocationFailed {
+            buf.try_reserve_exact(additional).map_err(|err| {
+                RpcTransportError::AllocationFailed {
                     message: format!("allocate frame buffer ({} bytes): {err}", new_cap),
-                })?;
+                }
+            })?;
         }
 
         let remaining = len_usize - buf.len();

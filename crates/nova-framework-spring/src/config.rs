@@ -675,7 +675,11 @@ fn property_completion_detail(meta: &PropertyMeta) -> Option<String> {
         }
     }
 
-    if detail.is_empty() { None } else { Some(detail) }
+    if detail.is_empty() {
+        None
+    } else {
+        Some(detail)
+    }
 }
 
 /// Best-effort "find usages" from a config file key to Java `@Value` usages.

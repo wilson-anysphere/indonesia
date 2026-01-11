@@ -170,11 +170,7 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
 }
 "#;
 
-    let foo_offset = source
-        .find("int Foo = 1")
-        .expect("local Foo declaration")
-        + "int ".len()
-        + 1;
+    let foo_offset = source.find("int Foo = 1").expect("local Foo declaration") + "int ".len() + 1;
     let foo_position = lsp_position_utf16(source, foo_offset);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
@@ -276,11 +272,7 @@ fn stdio_server_rejects_field_rename() {
 }
 "#;
 
-    let foo_offset = source
-        .find("int foo = 0")
-        .expect("field foo declaration")
-        + "int ".len()
-        + 1;
+    let foo_offset = source.find("int foo = 0").expect("field foo declaration") + "int ".len() + 1;
     let foo_position = lsp_position_utf16(source, foo_offset);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))

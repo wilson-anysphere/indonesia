@@ -47,7 +47,10 @@ public class B {
         panic!("expected method resolution success, got {call:?}");
     };
 
-    assert_eq!(found.return_type, Type::class(store.well_known().string, vec![]));
+    assert_eq!(
+        found.return_type,
+        Type::class(store.well_known().string, vec![])
+    );
 }
 
 #[test]
@@ -80,7 +83,10 @@ class A {
     let MethodResolution::Found(found) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
-    assert_eq!(found.return_type, Type::class(store.well_known().string, vec![]));
+    assert_eq!(
+        found.return_type,
+        Type::class(store.well_known().string, vec![])
+    );
 
     source.update_file(
         &mut store,

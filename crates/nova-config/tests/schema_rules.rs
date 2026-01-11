@@ -8,7 +8,10 @@ fn json_schema_includes_deprecated_jdk_home_alias() {
     let jdk_home = value
         .pointer("/definitions/JdkConfig/properties/jdk_home")
         .expect("jdk_home schema property exists");
-    assert_eq!(jdk_home.get("deprecated").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        jdk_home.get("deprecated").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 }
 
 #[test]
@@ -19,5 +22,8 @@ fn json_schema_includes_deprecated_ai_privacy_anonymize_alias() {
     let anonymize = value
         .pointer("/definitions/AiPrivacyConfig/properties/anonymize")
         .expect("anonymize schema property exists");
-    assert_eq!(anonymize.get("deprecated").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        anonymize.get("deprecated").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 }

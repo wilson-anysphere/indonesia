@@ -115,7 +115,8 @@ fn normalize_serde_ignored_path(path: serde_ignored::Path) -> String {
     raw.split('.')
         .enumerate()
         .fold(String::new(), |mut out, (idx, segment)| {
-            let is_index = idx > 0 && !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_digit());
+            let is_index =
+                idx > 0 && !segment.is_empty() && segment.bytes().all(|b| b.is_ascii_digit());
             if is_index {
                 out.push('[');
                 out.push_str(segment);

@@ -39,7 +39,9 @@ fn generate_ca() -> anyhow::Result<GeneratedCert> {
         .push(DnType::CommonName, "nova-router-test-ca");
 
     let key = KeyPair::generate().context("generate CA key")?;
-    let cert = params.self_signed(&key).context("self-sign CA certificate")?;
+    let cert = params
+        .self_signed(&key)
+        .context("self-sign CA certificate")?;
     Ok(GeneratedCert { cert, key })
 }
 
@@ -204,20 +206,32 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
     let server_cert_pem = server.cert.pem();
     let server_key_pem = server.key.serialize_pem();
 
-    let client_a =
-        generate_leaf_cert("client-a", Vec::new(), ExtendedKeyUsagePurpose::ClientAuth, &ca)?;
+    let client_a = generate_leaf_cert(
+        "client-a",
+        Vec::new(),
+        ExtendedKeyUsagePurpose::ClientAuth,
+        &ca,
+    )?;
     let client_a_fp = sha256_fingerprint_hex(client_a.cert.der().as_ref());
     let client_a_cert_pem = client_a.cert.pem();
     let client_a_key_pem = client_a.key.serialize_pem();
 
-    let client_b =
-        generate_leaf_cert("client-b", Vec::new(), ExtendedKeyUsagePurpose::ClientAuth, &ca)?;
+    let client_b = generate_leaf_cert(
+        "client-b",
+        Vec::new(),
+        ExtendedKeyUsagePurpose::ClientAuth,
+        &ca,
+    )?;
     let client_b_fp = sha256_fingerprint_hex(client_b.cert.der().as_ref());
     let client_b_cert_pem = client_b.cert.pem();
     let client_b_key_pem = client_b.key.serialize_pem();
 
-    let client_c =
-        generate_leaf_cert("client-c", Vec::new(), ExtendedKeyUsagePurpose::ClientAuth, &ca)?;
+    let client_c = generate_leaf_cert(
+        "client-c",
+        Vec::new(),
+        ExtendedKeyUsagePurpose::ClientAuth,
+        &ca,
+    )?;
     let client_c_fp = sha256_fingerprint_hex(client_c.cert.der().as_ref());
     let client_c_cert_pem = client_c.cert.pem();
     let client_c_key_pem = client_c.key.serialize_pem();

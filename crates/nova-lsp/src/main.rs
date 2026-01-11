@@ -3,10 +3,10 @@ mod codec;
 use codec::{read_json_message, write_json_message};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
-    CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit, TextEdit,
+    CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
     DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
     FileChangeType as LspFileChangeType, Position as LspTypesPosition, Range as LspTypesRange,
-    RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
+    RenameParams as LspRenameParams, TextDocumentPositionParams, TextEdit, Uri as LspUri,
     WorkspaceEdit as LspWorkspaceEdit,
 };
 use nova_ai::context::{
@@ -708,7 +708,10 @@ fn handle_request(
             let report = state.memory.enforce();
             let mut top_components = state.memory.report_detailed().1;
             top_components.truncate(10);
-            let payload = serde_json::to_value(nova_lsp::MemoryStatusResponse { report, top_components });
+            let payload = serde_json::to_value(nova_lsp::MemoryStatusResponse {
+                report,
+                top_components,
+            });
             Ok(match payload {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 Err(err) => {
@@ -2369,9 +2372,10 @@ fn handle_completion(
                 "AI completions are enabled but the Tokio runtime is unavailable".to_string()
             })?;
             let _guard = runtime.enter();
-            let response = state
-                .completion_service
-                .completion_with_document_uri(ctx, cancel, document_uri);
+            let response =
+                state
+                    .completion_service
+                    .completion_with_document_uri(ctx, cancel, document_uri);
             Some(response.context_id.to_string())
         } else {
             None

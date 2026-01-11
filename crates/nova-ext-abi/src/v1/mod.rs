@@ -287,4 +287,3 @@ mod tests {
         assert_eq!(value, json!("warning"));
     }
 }
-

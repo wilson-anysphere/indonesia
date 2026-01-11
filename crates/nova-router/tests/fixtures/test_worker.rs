@@ -1,10 +1,12 @@
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::fmt;
 
 use anyhow::{anyhow, Context, Result};
-use nova_remote_proto::v3::{Capabilities, ProtocolVersion, Request, Response, SupportedVersions, WorkerHello};
+use nova_remote_proto::v3::{
+    Capabilities, ProtocolVersion, Request, Response, SupportedVersions, WorkerHello,
+};
 use nova_remote_proto::{RpcMessage, ShardId, ShardIndex, WorkerStats};
 use nova_remote_rpc::{RpcConnection, RpcTransportError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -288,7 +290,9 @@ async fn connect(connect: &ConnectAddr) -> Result<BoxedStream> {
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     }
-                    Err(err) => return Err(err).with_context(|| format!("connect named pipe {name}")),
+                    Err(err) => {
+                        return Err(err).with_context(|| format!("connect named pipe {name}"))
+                    }
                 }
             };
             Ok(Box::new(client))

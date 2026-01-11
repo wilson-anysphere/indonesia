@@ -104,7 +104,11 @@ fn build_call_chain(depth: usize) -> Doc<'static> {
     // nested documents.
     let mut doc = Doc::text("obj");
     for _ in 0..depth {
-        doc = Doc::concat([doc, Doc::concat([Doc::softline(), Doc::text(".m()")]).indent()]).group();
+        doc = Doc::concat([
+            doc,
+            Doc::concat([Doc::softline(), Doc::text(".m()")]).indent(),
+        ])
+        .group();
     }
     doc
 }
@@ -130,7 +134,12 @@ fn bench_doc_print(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_format_java, bench_edits_for_formatting, bench_doc_print);
+criterion_group!(
+    benches,
+    bench_format_java,
+    bench_edits_for_formatting,
+    bench_doc_print
+);
 
 fn main() {
     // Criterion uses rayon during its analysis/reporting phase. On the multi-agent CI hosts Nova

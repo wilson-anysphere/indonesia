@@ -295,7 +295,12 @@ fn add_deprecated_property(
         .insert(property_name.to_string(), property_schema);
 }
 
-fn set_min_items(schema: &mut RootSchema, definition_name: &str, property_name: &str, min_items: u32) {
+fn set_min_items(
+    schema: &mut RootSchema,
+    definition_name: &str,
+    property_name: &str,
+    min_items: u32,
+) {
     let Some(definition) = schema.definitions.get_mut(definition_name) else {
         return;
     };

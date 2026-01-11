@@ -71,12 +71,12 @@
 
 mod runtime;
 
-pub use nova_ext_abi::{AbiVersion, ABI_V1};
 pub use nova_ext_abi::v1::{
     CodeActionV1, CodeActionsRequestV1, CompletionItemV1, CompletionsRequestV1, DiagnosticV1,
-    DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1, NavigationTargetV1,
-    SeverityV1, SpanV1, SymbolV1,
+    DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1,
+    NavigationTargetV1, SeverityV1, SpanV1, SymbolV1,
 };
+pub use nova_ext_abi::{AbiVersion, ABI_V1};
 pub use runtime::{
     WasmCallError, WasmCapabilities, WasmHostDb, WasmLoadError, WasmPlugin, WasmPluginConfig,
 };

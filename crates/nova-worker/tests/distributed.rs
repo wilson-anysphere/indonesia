@@ -523,7 +523,9 @@ impl TestRouter {
     async fn index_shard(&self, shard_id: ShardId, root: &Path) -> Result<()> {
         let files = collect_java_files(root).await?;
         let revision = self.next_revision();
-        let resp = self.call(shard_id, Request::IndexShard { revision, files }).await?;
+        let resp = self
+            .call(shard_id, Request::IndexShard { revision, files })
+            .await?;
         match resp {
             Response::ShardIndex(index) => {
                 self.state.indexes.lock().await.insert(shard_id, index);
@@ -547,7 +549,9 @@ impl TestRouter {
 
     async fn update_file(&self, shard_id: ShardId, file: FileText) -> Result<()> {
         let revision = self.next_revision();
-        let resp = self.call(shard_id, Request::UpdateFile { revision, file }).await?;
+        let resp = self
+            .call(shard_id, Request::UpdateFile { revision, file })
+            .await?;
         match resp {
             Response::ShardIndex(index) => {
                 self.state.indexes.lock().await.insert(shard_id, index);
@@ -576,10 +580,9 @@ impl TestRouter {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         loop {
             let stats = self.worker_stats(&shards).await?;
-            if expected
-                .iter()
-                .all(|(shard_id, count)| stats.get(shard_id).is_some_and(|s| s.file_count == *count))
-            {
+            if expected.iter().all(|(shard_id, count)| {
+                stats.get(shard_id).is_some_and(|s| s.file_count == *count)
+            }) {
                 return Ok(());
             }
 
@@ -616,7 +619,10 @@ impl TestRouter {
         if query.is_empty() {
             all_symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
             all_symbols.dedup_by(|a, b| a.name == b.name && a.path == b.path);
-            return all_symbols.into_iter().take(WORKSPACE_SYMBOL_LIMIT).collect();
+            return all_symbols
+                .into_iter()
+                .take(WORKSPACE_SYMBOL_LIMIT)
+                .collect();
         }
 
         let mut matcher = FuzzyMatcher::new(query);
