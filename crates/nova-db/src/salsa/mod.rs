@@ -1105,6 +1105,27 @@ mod tests {
     }
 
     #[test]
+    fn hir_queries_hit_cancellation_checkpoint() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+        db.set_file_exists(file, true);
+        db.set_file_content(file, Arc::new("class Foo { int x; }".to_string()));
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let _guard =
+            cancellation::test_support::install_entered_long_running_region_sender(entered_tx);
+
+        // Any HIR query that performs loop checkpoints should trigger the test hook at least once.
+        let _ = db.hir_symbol_names(file);
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("HIR query never hit a cancellation checkpoint (missing unwind_if_cancelled?)");
+    }
+
+    #[test]
     fn memoized_reads_increment_validated_memoized() {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
