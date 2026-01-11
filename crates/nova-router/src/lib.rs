@@ -1301,15 +1301,51 @@ async fn worker_connection_loop(
     mut stream: BoxedStream,
     mut rx: mpsc::UnboundedReceiver<WorkerRequest>,
 ) -> Result<()> {
-    while let Some(req) = rx.recv().await {
+    loop {
+        let req = tokio::select! {
+            req = rx.recv() => {
+                let Some(req) = req else {
+                    break;
+                };
+                req
+            }
+            // If the worker disconnects while no router RPCs are in flight, we'd otherwise never
+            // notice because the protocol is request-driven (the worker doesn't send unsolicited
+            // messages).
+            //
+            // That can leave `shard.worker` set even though the socket is closed, and because the
+            // accept loop rejects a second worker connection for a shard, the router can get stuck
+            // until some RPC attempt fails and triggers cleanup.
+            //
+            // Reading a single byte is enough to detect EOF. Seeing a byte here is unexpected and
+            // indicates a protocol violation (legacy_v2 has no worker→router unsolicited messages),
+            // so we log and drop the connection.
+            res = stream.read_u8() => {
+                match res {
+                    Ok(byte) => {
+                        warn!(
+                            shard_id,
+                            worker_id,
+                            byte,
+                            "received unexpected byte from worker while idle; closing connection"
+                        );
+                    }
+                    Err(_) => {}
+                }
+                break;
+            }
+        };
+
         let message = req.message;
 
-        let write_res = match timeout(WORKER_RPC_WRITE_TIMEOUT, write_message(&mut stream, &message))
-            .await
+        let write_res = match timeout(
+            WORKER_RPC_WRITE_TIMEOUT,
+            write_message(&mut stream, &message),
+        )
+        .await
         {
-            Ok(res) => res.with_context(|| {
-                format!("write request to worker {worker_id} (shard {shard_id})")
-            }),
+            Ok(res) => res
+                .with_context(|| format!("write request to worker {worker_id} (shard {shard_id})")),
             Err(_) => Err(anyhow!(
                 "timed out writing request to worker {worker_id} (shard {shard_id})"
             )),
@@ -1948,7 +1984,8 @@ async fn read_payload(stream: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>> 
     // Use fallible reservation so allocation failure surfaces as an error rather than aborting the
     // process.
     let mut buf = Vec::new();
-    buf.try_reserve_exact(len_usize).context("allocate message buffer")?;
+    buf.try_reserve_exact(len_usize)
+        .context("allocate message buffer")?;
     buf.resize(len_usize, 0);
     stream
         .read_exact(&mut buf)

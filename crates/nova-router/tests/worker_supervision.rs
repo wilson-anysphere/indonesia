@@ -1,7 +1,9 @@
 use std::path::PathBuf;
+use std::process::Stdio;
 
 use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, WorkspaceLayout};
 use tempfile::TempDir;
+use tokio::process::Command;
 use tokio::time::{timeout, Duration, Instant};
 
 #[cfg(unix)]
@@ -209,5 +211,94 @@ async fn worker_supervisor_recovers_when_worker_exits_while_idle() -> anyhow::Re
     assert!(stats.contains_key(&0));
 
     router.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn router_accepts_replacement_worker_after_remote_disconnect() -> anyhow::Result<()> {
+    let tmp = TempDir::new()?;
+    let workspace_root = tmp.path();
+
+    let source_root = workspace_root.join("module_a").join("src");
+    tokio::fs::create_dir_all(&source_root).await?;
+
+    let listen_path = workspace_root.join("router.sock");
+    let cache_dir = workspace_root.join("cache");
+    tokio::fs::create_dir_all(&cache_dir).await?;
+    tokio::fs::write(
+        cache_dir.join("nova-router-test-worker.conf"),
+        "exit_after_handshake_attempts=1\n",
+    )
+    .await?;
+
+    let worker_bin = PathBuf::from(env!("CARGO_BIN_EXE_nova-router-test-worker"));
+
+    let config = DistributedRouterConfig {
+        listen_addr: ListenAddr::Unix(listen_path.clone()),
+        // Not used because spawn_workers is false (we spawn the fixture workers ourselves).
+        worker_command: PathBuf::from("unused-worker-bin"),
+        cache_dir: cache_dir.clone(),
+        auth_token: None,
+        allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
+        spawn_workers: false,
+    };
+
+    let layout = WorkspaceLayout {
+        source_roots: vec![SourceRoot { path: source_root }],
+    };
+    let router = QueryRouter::new_distributed(config, layout).await?;
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while std::fs::metadata(&listen_path).is_err() {
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for router socket {listen_path:?} to be created");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let connect_arg = format!("unix:{}", listen_path.display());
+
+    let mut first = Command::new(&worker_bin);
+    first
+        .kill_on_drop(true)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("--connect")
+        .arg(&connect_arg)
+        .arg("--shard-id")
+        .arg("0")
+        .arg("--cache-dir")
+        .arg(&cache_dir);
+    let mut first = first.spawn()?;
+    let status = timeout(Duration::from_secs(5), first.wait()).await??;
+    assert!(
+        status.success(),
+        "expected first worker to exit cleanly, got {status:?}"
+    );
+
+    // Give the router time to observe the disconnect and clear `shard.worker`.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut second = Command::new(&worker_bin);
+    second
+        .kill_on_drop(true)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("--connect")
+        .arg(&connect_arg)
+        .arg("--shard-id")
+        .arg("0")
+        .arg("--cache-dir")
+        .arg(&cache_dir);
+    let mut second = second.spawn()?;
+
+    let stats = timeout(Duration::from_secs(2), router.worker_stats()).await??;
+    assert!(stats.contains_key(&0));
+
+    router.shutdown().await?;
+    let _ = timeout(Duration::from_secs(5), second.wait()).await?;
     Ok(())
 }
