@@ -1332,6 +1332,13 @@ pub fn load_index_view(
         return Ok(None);
     };
 
+    // Segment overlays are persisted as `ProjectIndexes` archives. `ProjectIndexesView` is a
+    // lightweight wrapper over the base per-index archives; it does not (yet) apply segment
+    // supersession rules. Avoid returning a view that would silently ignore segments.
+    if !archives.segments.is_empty() || !archives.file_to_segment.is_empty() {
+        return Ok(None);
+    }
+
     let invalidated_files = archives
         .invalidated_files
         .into_iter()
@@ -1361,6 +1368,10 @@ pub fn load_index_view_fast(
     let Some(archives) = load_index_archives_fast(cache_dir, project_root, files)? else {
         return Ok(None);
     };
+
+    if !archives.segments.is_empty() || !archives.file_to_segment.is_empty() {
+        return Ok(None);
+    }
 
     let invalidated_files = archives
         .invalidated_files

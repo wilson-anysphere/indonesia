@@ -1,7 +1,7 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
 use nova_index::{
     append_index_segment, compact_index_segments, load_index_archives, save_indexes,
-    ProjectIndexes, SymbolLocation,
+    load_index_view, ProjectIndexes, SymbolLocation,
 };
 use std::path::PathBuf;
 
@@ -76,6 +76,11 @@ fn segments_overlay_and_compaction() {
     )
     .unwrap();
 
+    // The zero-copy view currently only supports the base per-index archives; segment overlays
+    // require supersession rules. Until those are implemented for `ProjectIndexesView`, it must
+    // treat segmented caches as a miss.
+    assert!(load_index_view(&cache_dir, &snapshot_v2).unwrap().is_none());
+
     let store = load_index_archives(&cache_dir, &snapshot_v2)
         .unwrap()
         .expect("expected base+segment store");
@@ -130,4 +135,10 @@ fn segments_overlay_and_compaction() {
             column: 1,
         }]
     );
+
+    // After compaction, segment overlays are removed and the base per-index archives reflect the
+    // new state, so the view should be available again.
+    let view = load_index_view(&cache_dir, &snapshot_v2).unwrap().unwrap();
+    assert!(view.symbol_locations("A").next().is_none());
+    assert_eq!(view.symbol_locations("A2").count(), 1);
 }
