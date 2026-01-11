@@ -12,7 +12,7 @@ pub use client::{EventModifier, JdwpClient, JdwpClientConfig};
 pub use types::{
     ClassInfo, FieldId, FieldInfo, FrameId, FrameInfo, JdwpError, JdwpEvent, JdwpIdSizes,
     JdwpValue, LineTable, LineTableEntry, Location, MethodId, MethodInfo, ObjectId,
-    ReferenceTypeId, ThreadId, VariableInfo,
+    ReferenceTypeId, ThreadId, VariableInfo, VmClassPaths,
 };
 
 #[cfg(feature = "wire-test-support")]

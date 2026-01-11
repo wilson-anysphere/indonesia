@@ -23,7 +23,7 @@ use super::{
     types::{
         ClassInfo, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError, JdwpEvent,
         JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId, MethodInfo,
-        ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo,
+        ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo, VmClassPaths,
     },
 };
 
@@ -272,6 +272,31 @@ impl JdwpClient {
         Ok(caps)
     }
 
+    /// VirtualMachine.ClassPaths (1, 13)
+    pub async fn virtual_machine_class_paths(&self) -> Result<VmClassPaths> {
+        let payload = self.send_command_raw(1, 13, Vec::new()).await?;
+        let mut r = JdwpReader::new(&payload);
+
+        let base_dir = r.read_string()?;
+        let classpath_count = r.read_u32()? as usize;
+        let mut classpaths = Vec::with_capacity(classpath_count);
+        for _ in 0..classpath_count {
+            classpaths.push(r.read_string()?);
+        }
+
+        let boot_classpath_count = r.read_u32()? as usize;
+        let mut boot_classpaths = Vec::with_capacity(boot_classpath_count);
+        for _ in 0..boot_classpath_count {
+            boot_classpaths.push(r.read_string()?);
+        }
+
+        Ok(VmClassPaths {
+            base_dir,
+            classpaths,
+            boot_classpaths,
+        })
+    }
+
     pub async fn all_threads(&self) -> Result<Vec<ThreadId>> {
         let payload = self.send_command_raw(1, 4, Vec::new()).await?;
         let sizes = self.id_sizes().await;
@@ -310,7 +335,6 @@ impl JdwpClient {
         let _ = self.send_command_raw(11, 3, w.into_vec()).await?;
         Ok(())
     }
-
     pub async fn frames(
         &self,
         thread: ThreadId,
@@ -429,7 +453,10 @@ impl JdwpClient {
         r.read_string()
     }
 
-    pub(crate) async fn reference_type_signature_cached(&self, class_id: ReferenceTypeId) -> Result<String> {
+    pub(crate) async fn reference_type_signature_cached(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<String> {
         {
             let cache = self.inner.inspect_cache.lock().await;
             if let Some(sig) = cache.signatures.get(&class_id) {
@@ -441,6 +468,15 @@ impl JdwpClient {
         let mut cache = self.inner.inspect_cache.lock().await;
         cache.signatures.insert(class_id, sig.clone());
         Ok(sig)
+    }
+
+    pub async fn reference_type_class_loader(&self, class_id: ReferenceTypeId) -> Result<ObjectId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        let payload = self.send_command_raw(2, 2, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_object_id(&sizes)
     }
 
     pub async fn reference_type_methods(
@@ -465,7 +501,10 @@ impl JdwpClient {
         Ok(methods)
     }
 
-    pub(crate) async fn reference_type_methods_cached(&self, class_id: ReferenceTypeId) -> Result<Vec<MethodInfo>> {
+    pub(crate) async fn reference_type_methods_cached(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<Vec<MethodInfo>> {
         {
             let cache = self.inner.inspect_cache.lock().await;
             if let Some(methods) = cache.methods.get(&class_id) {
@@ -478,7 +517,6 @@ impl JdwpClient {
         cache.methods.insert(class_id, methods.clone());
         Ok(methods)
     }
-
     pub async fn method_line_table(
         &self,
         class_id: ReferenceTypeId,
@@ -529,6 +567,23 @@ impl JdwpClient {
         Ok((arg_count, vars))
     }
 
+    pub async fn class_loader_define_class(
+        &self,
+        loader: ObjectId,
+        name: &str,
+        bytecode: &[u8],
+    ) -> Result<ReferenceTypeId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(loader, &sizes);
+        w.write_string(name);
+        w.write_u32(bytecode.len() as u32);
+        w.write_bytes(bytecode);
+        let payload = self.send_command_raw(14, 2, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_reference_type_id(&sizes)
+    }
+
     pub async fn stack_frame_get_values(
         &self,
         thread: ThreadId,
@@ -553,6 +608,31 @@ impl JdwpClient {
             values.push(r.read_value(tag, &sizes)?);
         }
         Ok(values)
+    }
+
+    pub async fn class_type_invoke_method(
+        &self,
+        class_id: ReferenceTypeId,
+        thread: ThreadId,
+        method_id: MethodId,
+        args: &[JdwpValue],
+        options: u32,
+    ) -> Result<(JdwpValue, ObjectId)> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        w.write_object_id(thread, &sizes);
+        w.write_id(method_id, sizes.method_id);
+        w.write_u32(args.len() as u32);
+        for arg in args {
+            w.write_tagged_value(arg, &sizes);
+        }
+        w.write_u32(options);
+        let payload = self.send_command_raw(3, 3, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let return_value = r.read_tagged_value(&sizes)?;
+        let exception = r.read_object_id(&sizes)?;
+        Ok((return_value, exception))
     }
 
     pub async fn object_reference_reference_type(
@@ -617,7 +697,10 @@ impl JdwpClient {
         Ok(fields)
     }
 
-    pub(crate) async fn reference_type_fields_cached(&self, class_id: ReferenceTypeId) -> Result<Vec<FieldInfo>> {
+    pub(crate) async fn reference_type_fields_cached(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<Vec<FieldInfo>> {
         {
             let cache = self.inner.inspect_cache.lock().await;
             if let Some(fields) = cache.fields.get(&class_id) {
@@ -652,6 +735,33 @@ impl JdwpClient {
             values.push(r.read_value(tag, &sizes)?);
         }
         Ok(values)
+    }
+
+    pub async fn object_reference_invoke_method(
+        &self,
+        object_id: ObjectId,
+        thread: ThreadId,
+        class_id: ReferenceTypeId,
+        method_id: MethodId,
+        args: &[JdwpValue],
+        options: u32,
+    ) -> Result<(JdwpValue, ObjectId)> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(object_id, &sizes);
+        w.write_object_id(thread, &sizes);
+        w.write_reference_type_id(class_id, &sizes);
+        w.write_id(method_id, sizes.method_id);
+        w.write_u32(args.len() as u32);
+        for arg in args {
+            w.write_tagged_value(arg, &sizes);
+        }
+        w.write_u32(options);
+        let payload = self.send_command_raw(9, 6, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let return_value = r.read_tagged_value(&sizes)?;
+        let exception = r.read_object_id(&sizes)?;
+        Ok((return_value, exception))
     }
 
     pub async fn array_reference_length(&self, array_id: ObjectId) -> Result<i32> {

@@ -92,6 +92,38 @@ impl JdwpWriter {
         self.write_id(loc.method_id, sizes.method_id);
         self.write_u64(loc.index);
     }
+
+    pub fn write_value(&mut self, v: &JdwpValue, sizes: &JdwpIdSizes) {
+        match *v {
+            JdwpValue::Boolean(v) => self.write_bool(v),
+            JdwpValue::Byte(v) => self.write_u8(v as u8),
+            JdwpValue::Char(v) => self.write_u16(v),
+            JdwpValue::Short(v) => self.write_u16(v as u16),
+            JdwpValue::Int(v) => self.write_i32(v),
+            JdwpValue::Long(v) => self.write_i64(v),
+            JdwpValue::Float(v) => self.write_f32(v),
+            JdwpValue::Double(v) => self.write_f64(v),
+            JdwpValue::Object { id, .. } => self.write_object_id(id, sizes),
+            JdwpValue::Void => {}
+        }
+    }
+
+    pub fn write_tagged_value(&mut self, v: &JdwpValue, sizes: &JdwpIdSizes) {
+        let tag = match *v {
+            JdwpValue::Boolean(_) => b'Z',
+            JdwpValue::Byte(_) => b'B',
+            JdwpValue::Char(_) => b'C',
+            JdwpValue::Short(_) => b'S',
+            JdwpValue::Int(_) => b'I',
+            JdwpValue::Long(_) => b'J',
+            JdwpValue::Float(_) => b'F',
+            JdwpValue::Double(_) => b'D',
+            JdwpValue::Object { tag, .. } => tag,
+            JdwpValue::Void => b'V',
+        };
+        self.write_u8(tag);
+        self.write_value(v, sizes);
+    }
 }
 
 pub struct JdwpReader<'a> {
@@ -271,6 +303,11 @@ impl<'a> JdwpReader<'a> {
             },
         };
         Ok(v)
+    }
+
+    pub fn read_tagged_value(&mut self, sizes: &JdwpIdSizes) -> Result<JdwpValue> {
+        let tag = self.read_u8()?;
+        self.read_value(tag, sizes)
     }
 }
 

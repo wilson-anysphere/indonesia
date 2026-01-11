@@ -38,7 +38,10 @@ async fn jdwp_client_can_handshake_and_fetch_values() {
         _ => panic!("expected object value"),
     };
 
-    let (ref_type_tag, class_id) = client.object_reference_reference_type(object_id).await.unwrap();
+    let (ref_type_tag, class_id) = client
+        .object_reference_reference_type(object_id)
+        .await
+        .unwrap();
     assert_eq!(ref_type_tag, 1);
     let fields = client.reference_type_fields(class_id).await.unwrap();
     assert_eq!(fields.len(), 1);
@@ -66,12 +69,24 @@ async fn jdwp_client_can_handshake_and_fetch_values() {
     };
     let len = client.array_reference_length(array_id).await.unwrap();
     assert_eq!(len, 3);
-    let values = client.array_reference_get_values(array_id, 0, 3).await.unwrap();
-    assert_eq!(values, vec![JdwpValue::Int(0), JdwpValue::Int(1), JdwpValue::Int(2)]);
+    let values = client
+        .array_reference_get_values(array_id, 0, 3)
+        .await
+        .unwrap();
+    assert_eq!(
+        values,
+        vec![JdwpValue::Int(0), JdwpValue::Int(1), JdwpValue::Int(2)]
+    );
 
     // Object pinning primitives.
-    client.object_reference_disable_collection(object_id).await.unwrap();
-    client.object_reference_enable_collection(object_id).await.unwrap();
+    client
+        .object_reference_disable_collection(object_id)
+        .await
+        .unwrap();
+    client
+        .object_reference_enable_collection(object_id)
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -173,9 +188,51 @@ async fn jdwp_client_can_fetch_array_values() {
     let len = client.array_reference_length(array_id).await.unwrap();
     assert_eq!(len, 5);
 
-    let values = client.array_reference_get_values(array_id, 1, 3).await.unwrap();
+    let values = client
+        .array_reference_get_values(array_id, 1, 3)
+        .await
+        .unwrap();
     assert_eq!(
         values,
         vec![JdwpValue::Int(20), JdwpValue::Int(30), JdwpValue::Int(40)]
     );
+}
+
+#[tokio::test]
+async fn jdwp_client_supports_classpaths_and_invocation() {
+    let server = MockJdwpServer::spawn().await.unwrap();
+    let client = JdwpClient::connect(server.addr()).await.unwrap();
+    let thread = client.all_threads().await.unwrap()[0];
+
+    let classpaths = client.virtual_machine_class_paths().await.unwrap();
+    assert_eq!(classpaths.base_dir, "/mock");
+    assert_eq!(classpaths.classpaths, vec!["/mock/classes".to_string()]);
+    assert_eq!(classpaths.boot_classpaths, vec!["/mock/boot".to_string()]);
+
+    let loader = client.reference_type_class_loader(0x3001).await.unwrap();
+    assert_eq!(loader, 0x8001);
+
+    let defined_class = client
+        .class_loader_define_class(loader, "Injected", &[0xCA, 0xFE, 0xBA, 0xBE])
+        .await
+        .unwrap();
+    assert_eq!(defined_class, 0x9001);
+
+    let (value, exception) = client
+        .class_type_invoke_method(defined_class, thread, 0x4001, &[JdwpValue::Int(123)], 0)
+        .await
+        .unwrap();
+    assert_eq!(exception, 0);
+    assert_eq!(value, JdwpValue::Int(123));
+
+    let arg = JdwpValue::Object {
+        tag: b'L',
+        id: 0x5001,
+    };
+    let (value, exception) = client
+        .object_reference_invoke_method(0x5001, thread, defined_class, 0x4001, &[arg.clone()], 0)
+        .await
+        .unwrap();
+    assert_eq!(exception, 0);
+    assert_eq!(value, arg);
 }

@@ -204,6 +204,13 @@ pub struct FieldInfo {
     pub mod_bits: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmClassPaths {
+    pub base_dir: String,
+    pub classpaths: Vec<String>,
+    pub boot_classpaths: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum JdwpValue {
     Boolean(bool),

@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     codec::{encode_command, encode_reply, JdwpReader, JdwpWriter, HANDSHAKE, HEADER_LEN},
-    types::{JdwpIdSizes, Location, ObjectId, ReferenceTypeId},
+    types::{JdwpIdSizes, JdwpValue, Location, ObjectId, ReferenceTypeId},
 };
 
 /// A tiny JDWP server used for unit/integration testing.
@@ -275,6 +275,9 @@ pub struct MockExceptionRequest {
     pub uncaught: bool,
 }
 
+const CLASS_LOADER_ID: u64 = 0x8001;
+const DEFINED_CLASS_ID: u64 = 0x9001;
+
 fn default_location() -> Location {
     Location {
         type_tag: 1,
@@ -467,6 +470,16 @@ async fn handle_packet(
         (1, 8) => (0, Vec::new()),
         // VirtualMachine.Resume
         (1, 9) => (0, Vec::new()),
+        // VirtualMachine.ClassPaths
+        (1, 13) => {
+            let mut w = JdwpWriter::new();
+            w.write_string("/mock");
+            w.write_u32(1);
+            w.write_string("/mock/classes");
+            w.write_u32(1);
+            w.write_string("/mock/boot");
+            (0, w.into_vec())
+        }
         // ThreadReference.Name
         (11, 1) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
@@ -521,6 +534,13 @@ async fn handle_packet(
                 _ => "LObject;",
             };
             w.write_string(sig);
+            (0, w.into_vec())
+        }
+        // ReferenceType.ClassLoader
+        (2, 2) => {
+            let _class_id = r.read_reference_type_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            w.write_object_id(CLASS_LOADER_ID, sizes);
             (0, w.into_vec())
         }
         // ReferenceType.Methods
@@ -737,6 +757,33 @@ async fn handle_packet(
             }
             (0, w.into_vec())
         }
+        // ObjectReference.InvokeMethod
+        (9, 6) => {
+            let res = (|| {
+                let _object_id = r.read_object_id(sizes)?;
+                let _thread_id = r.read_object_id(sizes)?;
+                let _class_id = r.read_reference_type_id(sizes)?;
+                let _method_id = r.read_id(sizes.method_id)?;
+                let arg_count = r.read_u32()? as usize;
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(r.read_tagged_value(sizes)?);
+                }
+                let _options = r.read_u32()?;
+                Ok::<_, super::types::JdwpError>(args)
+            })();
+
+            match res {
+                Ok(args) => {
+                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    let mut w = JdwpWriter::new();
+                    w.write_tagged_value(&return_value, sizes);
+                    w.write_object_id(0, sizes); // exception
+                    (0, w.into_vec())
+                }
+                Err(_) => (1, Vec::new()),
+            }
+        }
         // ObjectReference.GetValues
         (9, 2) => {
             let object_id = r.read_object_id(sizes).unwrap_or(0);
@@ -855,7 +902,11 @@ async fn handle_packet(
                     let start = first_index.max(0) as usize;
                     let req = length.max(0) as usize;
                     let end = start.saturating_add(req).min(values.len());
-                    let slice = if start < end { &values[start..end] } else { &[] };
+                    let slice = if start < end {
+                        &values[start..end]
+                    } else {
+                        &[]
+                    };
                     w.write_u8(b'I');
                     w.write_u32(slice.len() as u32);
                     for value in slice {
@@ -866,12 +917,20 @@ async fn handle_packet(
                     let buckets_a = [HASHMAP_NODE_B_OBJECT_ID, HASHMAP_NODE_A_OBJECT_ID];
                     let buckets_b = [HASHMAP_NODE_A_OBJECT_ID, HASHMAP_NODE_B_OBJECT_ID];
                     let call = state.hashmap_bucket_calls.fetch_add(1, Ordering::Relaxed);
-                    let buckets = if call % 2 == 0 { &buckets_a } else { &buckets_b };
+                    let buckets = if call % 2 == 0 {
+                        &buckets_a
+                    } else {
+                        &buckets_b
+                    };
 
                     let start = first_index.max(0) as usize;
                     let req = length.max(0) as usize;
                     let end = start.saturating_add(req).min(buckets.len());
-                    let slice = if start < end { &buckets[start..end] } else { &[] };
+                    let slice = if start < end {
+                        &buckets[start..end]
+                    } else {
+                        &[]
+                    };
 
                     w.write_u8(b'L');
                     w.write_u32(slice.len() as u32);
@@ -885,6 +944,50 @@ async fn handle_packet(
                 }
             }
             (0, w.into_vec())
+        }
+        // ClassLoaderReference.DefineClass
+        (14, 2) => {
+            let res = (|| {
+                let _loader = r.read_object_id(sizes)?;
+                let _name = r.read_string()?;
+                let len = r.read_u32()? as usize;
+                let _bytes = r.read_bytes(len)?;
+                Ok::<_, super::types::JdwpError>(())
+            })();
+
+            if res.is_err() {
+                (1, Vec::new())
+            } else {
+                let mut w = JdwpWriter::new();
+                w.write_reference_type_id(DEFINED_CLASS_ID, sizes);
+                (0, w.into_vec())
+            }
+        }
+        // ClassType.InvokeMethod
+        (3, 3) => {
+            let res = (|| {
+                let _class_id = r.read_reference_type_id(sizes)?;
+                let _thread_id = r.read_object_id(sizes)?;
+                let _method_id = r.read_id(sizes.method_id)?;
+                let arg_count = r.read_u32()? as usize;
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    args.push(r.read_tagged_value(sizes)?);
+                }
+                let _options = r.read_u32()?;
+                Ok::<_, super::types::JdwpError>(args)
+            })();
+
+            match res {
+                Ok(args) => {
+                    let return_value = args.first().cloned().unwrap_or(JdwpValue::Void);
+                    let mut w = JdwpWriter::new();
+                    w.write_tagged_value(&return_value, sizes);
+                    w.write_object_id(0, sizes); // exception
+                    (0, w.into_vec())
+                }
+                Err(_) => (1, Vec::new()),
+            }
         }
         // EventRequest.Set
         (15, 1) => {
