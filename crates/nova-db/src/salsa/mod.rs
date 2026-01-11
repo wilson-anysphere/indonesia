@@ -281,9 +281,14 @@ impl SalsaMemoFootprint {
 #[derive(Debug, Default, Clone)]
 struct SalsaInputs {
     file_exists: HashMap<FileId, bool>,
+    file_project: HashMap<FileId, ProjectId>,
     file_content: HashMap<FileId, Arc<String>>,
+    file_rel_path: HashMap<FileId, Arc<String>>,
     source_root: HashMap<FileId, SourceRootId>,
+    project_files: HashMap<ProjectId, Arc<Vec<FileId>>>,
     project_config: HashMap<ProjectId, Arc<ProjectConfig>>,
+    jdk_index: HashMap<ProjectId, ArcEq<nova_jdk::JdkIndex>>,
+    classpath_index: HashMap<ProjectId, Option<ArcEq<nova_classpath::ClasspathIndex>>>,
 }
 
 impl SalsaInputs {
@@ -291,14 +296,29 @@ impl SalsaInputs {
         for (&file, &exists) in &self.file_exists {
             db.set_file_exists(file, exists);
         }
+        for (&file, &project) in &self.file_project {
+            db.set_file_project(file, project);
+        }
         for (&file, &root) in &self.source_root {
             db.set_source_root(file, root);
         }
         for (&file, content) in &self.file_content {
             db.set_file_content(file, content.clone());
         }
+        for (&file, path) in &self.file_rel_path {
+            db.set_file_rel_path(file, path.clone());
+        }
+        for (&project, files) in &self.project_files {
+            db.set_project_files(project, files.clone());
+        }
         for (&project, config) in &self.project_config {
             db.set_project_config(project, config.clone());
+        }
+        for (&project, index) in &self.jdk_index {
+            db.set_jdk_index(project, index.clone());
+        }
+        for (&project, index) in &self.classpath_index {
+            db.set_classpath_index(project, index.clone());
         }
     }
 }
@@ -727,6 +747,7 @@ impl Database {
         {
             let mut inputs = self.inputs.lock();
             inputs.file_exists.insert(file, true);
+            inputs.file_project.insert(file, ProjectId::from_raw(0));
             inputs.source_root.insert(file, SourceRootId::from_raw(0));
             inputs.file_content.insert(file, text.clone());
         }
@@ -742,10 +763,18 @@ impl Database {
     }
 
     pub fn set_project_files(&self, project: ProjectId, files: Arc<Vec<FileId>>) {
+        self.inputs
+            .lock()
+            .project_files
+            .insert(project, files.clone());
         self.inner.lock().set_project_files(project, files);
     }
 
     pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
+        self.inputs
+            .lock()
+            .file_rel_path
+            .insert(file, Arc::clone(&rel_path));
         let mut db = self.inner.lock();
         db.set_file_rel_path(file, Arc::clone(&rel_path));
         // Keep the non-tracked file path map in sync so existing persistence
@@ -762,11 +791,14 @@ impl Database {
     }
 
     pub fn set_file_project(&self, file: FileId, project: ProjectId) {
+        self.inputs.lock().file_project.insert(file, project);
         self.inner.lock().set_file_project(file, project);
     }
 
     pub fn set_jdk_index(&self, project: ProjectId, index: Arc<nova_jdk::JdkIndex>) {
-        self.inner.lock().set_jdk_index(project, ArcEq::new(index));
+        let index = ArcEq::new(index);
+        self.inputs.lock().jdk_index.insert(project, index.clone());
+        self.inner.lock().set_jdk_index(project, index);
     }
 
     pub fn set_classpath_index(
@@ -774,9 +806,9 @@ impl Database {
         project: ProjectId,
         index: Option<Arc<nova_classpath::ClasspathIndex>>,
     ) {
-        self.inner
-            .lock()
-            .set_classpath_index(project, index.map(ArcEq::new));
+        let index = index.map(ArcEq::new);
+        self.inputs.lock().classpath_index.insert(project, index.clone());
+        self.inner.lock().set_classpath_index(project, index);
     }
 
     pub fn set_source_root(&self, file: FileId, root: SourceRootId) {
