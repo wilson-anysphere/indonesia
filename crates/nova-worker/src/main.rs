@@ -28,7 +28,6 @@ use tokio::net::windows::named_pipe::ClientOptions;
 mod tls;
 
 const FALLBACK_SCAN_LIMIT: usize = 50_000;
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse()?;

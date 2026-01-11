@@ -263,6 +263,7 @@ pub use legacy_v2::{decode_message, encode_message, RpcMessage, PROTOCOL_VERSION
 
 pub mod transport {
     use anyhow::anyhow;
+    use std::sync::OnceLock;
 
     #[cfg(feature = "tokio")]
     use anyhow::Context;
@@ -271,10 +272,26 @@ pub mod transport {
 
     pub const LEN_PREFIX_BYTES: usize = 4;
 
+    const MAX_MESSAGE_SIZE_ENV_VAR: &str = "NOVA_RPC_MAX_MESSAGE_SIZE";
+
+    static MAX_FRAME_SIZE: OnceLock<usize> = OnceLock::new();
+
+    fn max_frame_size() -> usize {
+        *MAX_FRAME_SIZE.get_or_init(|| {
+            std::env::var(MAX_MESSAGE_SIZE_ENV_VAR)
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(MAX_FRAME_BYTES)
+                .min(MAX_FRAME_BYTES)
+        })
+    }
+
     pub fn encode_frame(payload: &[u8]) -> anyhow::Result<Vec<u8>> {
-        if payload.len() > MAX_FRAME_BYTES {
+        let max = max_frame_size();
+        if payload.len() > max {
             return Err(anyhow!(
-                "frame payload too large ({} bytes > MAX_FRAME_BYTES={MAX_FRAME_BYTES})",
+                "frame payload too large ({} bytes > max_frame_bytes={max})",
                 payload.len()
             ));
         }
@@ -299,10 +316,9 @@ pub mod transport {
         }
 
         let len = u32::from_le_bytes(bytes[0..LEN_PREFIX_BYTES].try_into().unwrap()) as usize;
-        if len > MAX_FRAME_BYTES {
-            return Err(anyhow!(
-                "frame payload too large ({len} bytes > MAX_FRAME_BYTES={MAX_FRAME_BYTES})"
-            ));
+        let max = max_frame_size();
+        if len > max {
+            return Err(anyhow!("frame payload too large ({len} bytes > max_frame_bytes={max})"));
         }
 
         let expected_len = LEN_PREFIX_BYTES
@@ -339,9 +355,10 @@ pub mod transport {
     ) -> anyhow::Result<()> {
         use tokio::io::AsyncWriteExt;
 
-        if payload.len() > MAX_FRAME_BYTES {
+        let max = max_frame_size();
+        if payload.len() > max {
             return Err(anyhow!(
-                "frame payload too large ({} bytes > MAX_FRAME_BYTES={MAX_FRAME_BYTES})",
+                "frame payload too large ({} bytes > max_frame_bytes={max})",
                 payload.len()
             ));
         }
@@ -374,10 +391,9 @@ pub mod transport {
             .await
             .context("read message len")?;
         let len = u32::from_le_bytes(prefix) as usize;
-        if len > MAX_FRAME_BYTES {
-            return Err(anyhow!(
-                "frame payload too large ({len} bytes > MAX_FRAME_BYTES={MAX_FRAME_BYTES})"
-            ));
+        let max = max_frame_size();
+        if len > max {
+            return Err(anyhow!("frame payload too large ({len} bytes > max_frame_bytes={max})"));
         }
 
         // Use fallible reservation so allocation failure surfaces as an error rather than

@@ -51,6 +51,13 @@ async fn read_rpc_message(stream: &mut UnixStream) -> Result<RpcMessage> {
 }
 
 async fn start_router(tmp: &TempDir, listen_path: PathBuf) -> Result<QueryRouter> {
+    // Ensure tests don't inherit a restrictive global frame limit from the surrounding
+    // environment.
+    std::env::set_var(
+        "NOVA_RPC_MAX_MESSAGE_SIZE",
+        nova_remote_proto::MAX_MESSAGE_BYTES.to_string(),
+    );
+
     let source_root = tmp.path().join("root");
     tokio::fs::create_dir_all(&source_root)
         .await
