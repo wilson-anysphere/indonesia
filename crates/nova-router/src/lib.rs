@@ -112,7 +112,7 @@ pub enum TcpListenAddr {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DistributedRouterConfig {
     pub listen_addr: ListenAddr,
     pub worker_command: PathBuf,
@@ -132,6 +132,24 @@ pub struct DistributedRouterConfig {
     /// If false, workers are expected to be started externally (e.g. on remote machines)
     /// and connect to `listen_addr` via RPC.
     pub spawn_workers: bool,
+}
+
+impl std::fmt::Debug for DistributedRouterConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("DistributedRouterConfig");
+        s.field("listen_addr", &self.listen_addr)
+            .field("worker_command", &self.worker_command)
+            .field("cache_dir", &self.cache_dir)
+            .field("auth_present", &self.auth_token.is_some())
+            .field("allow_insecure_tcp", &self.allow_insecure_tcp)
+            .field("spawn_workers", &self.spawn_workers);
+        #[cfg(feature = "tls")]
+        s.field(
+            "tls_client_cert_fingerprint_allowlist",
+            &self.tls_client_cert_fingerprint_allowlist,
+        );
+        s.finish()
+    }
 }
 
 #[cfg(feature = "tls")]
