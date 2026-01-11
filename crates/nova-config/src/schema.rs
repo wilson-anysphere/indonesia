@@ -230,6 +230,41 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
         })),
     );
 
+    // `ai.audit_log.enabled` has no effect unless AI is enabled (audit events are only emitted when
+    // `ai.enabled=true`).
+    push_all_of(
+        schema,
+        schema_from_json(json!({
+            "if": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["audit_log"],
+                        "properties": {
+                            "audit_log": {
+                                "required": ["enabled"],
+                                "properties": {
+                                    "enabled": { "const": true }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "then": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["enabled"],
+                        "properties": {
+                            "enabled": { "const": true }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+
     allow_deprecated_aliases(schema);
     disallow_alias_collisions(schema);
 
