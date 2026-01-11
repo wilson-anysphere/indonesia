@@ -474,6 +474,16 @@ async fn handle_packet(
             w.write_string("main");
             (0, w.into_vec())
         }
+        // ThreadReference.Suspend
+        (11, 2) => {
+            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            (0, Vec::new())
+        }
+        // ThreadReference.Resume
+        (11, 3) => {
+            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            (0, Vec::new())
+        }
         // ThreadReference.Frames
         (11, 6) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
@@ -987,7 +997,10 @@ async fn handle_packet(
         }
     };
 
-    let follow_up = if reply_error_code == 0 && packet.command_set == 1 && packet.command == 9 {
+    let follow_up = if reply_error_code == 0
+        && ((packet.command_set == 1 && packet.command == 9)
+            || (packet.command_set == 11 && packet.command == 3))
+    {
         // After a resume, immediately emit a stop event if a request is configured.
         let breakpoint_request = { *state.breakpoint_request.lock().await };
         let step_request = { *state.step_request.lock().await };

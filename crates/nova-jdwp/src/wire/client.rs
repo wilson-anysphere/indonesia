@@ -293,6 +293,24 @@ impl JdwpClient {
         r.read_string()
     }
 
+    /// ThreadReference.Suspend (11, 2)
+    pub async fn thread_suspend(&self, thread: ThreadId) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let _ = self.send_command_raw(11, 2, w.into_vec()).await?;
+        Ok(())
+    }
+
+    /// ThreadReference.Resume (11, 3)
+    pub async fn thread_resume(&self, thread: ThreadId) -> Result<()> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let _ = self.send_command_raw(11, 3, w.into_vec()).await?;
+        Ok(())
+    }
+
     pub async fn frames(
         &self,
         thread: ThreadId,
@@ -906,11 +924,15 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
             }
             6 => {
                 let thread = r.read_object_id(&sizes)?;
-                let _ = inner.events.send(JdwpEvent::ThreadStart { request_id, thread });
+                let _ = inner
+                    .events
+                    .send(JdwpEvent::ThreadStart { request_id, thread });
             }
             7 => {
                 let thread = r.read_object_id(&sizes)?;
-                let _ = inner.events.send(JdwpEvent::ThreadDeath { request_id, thread });
+                let _ = inner
+                    .events
+                    .send(JdwpEvent::ThreadDeath { request_id, thread });
             }
             8 => {
                 let thread = r.read_object_id(&sizes)?;
