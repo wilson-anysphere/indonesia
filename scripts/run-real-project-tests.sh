@@ -87,15 +87,30 @@ fi
 
 echo "==> Running ignored real-project tests"
 
+failures=0
+
+run_test() {
+  # With `set -e` enabled, wrap in `if ! ...` so failures don't abort the script;
+  # we want to run both nova-project and nova-cli suites and report all failures.
+  if ! "$@"; then
+    failures=1
+  fi
+}
+
 if [[ ${#ONLY_PROJECTS[@]} -eq 0 ]]; then
-  cargo test -p nova-project --test real_projects -- --include-ignored
-  cargo test -p nova-cli --test real_projects -- --include-ignored
+  run_test cargo test -p nova-project --test real_projects -- --include-ignored
+  run_test cargo test -p nova-cli --test real_projects -- --include-ignored
 else
   for project in "${ONLY_PROJECTS[@]}"; do
     filter="${project//-/_}"
-    cargo test -p nova-project --test real_projects -- --include-ignored "${filter}"
-    cargo test -p nova-cli --test real_projects -- --include-ignored "${filter}"
+    run_test cargo test -p nova-project --test real_projects -- --include-ignored "${filter}"
+    run_test cargo test -p nova-cli --test real_projects -- --include-ignored "${filter}"
   done
+fi
+
+if [[ $failures -ne 0 ]]; then
+  echo "==> Real-project tests FAILED" >&2
+  exit 1
 fi
 
 echo "==> Done"
