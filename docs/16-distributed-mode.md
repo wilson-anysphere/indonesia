@@ -192,6 +192,11 @@ nova-worker \
 
 The router can listen on TCP and accept workers connecting from other machines.
 
+Note: `spawn_workers = true` is **not supported** with a `tcp+tls:` listen address. The router does
+not yet have a way to pass TLS client configuration (CA cert, SNI domain, optional client cert/key)
+to locally spawned workers. For TLS remote deployments, set `spawn_workers = false` and start
+workers manually with the appropriate TLS flags.
+
 An authentication token is supported as a stub (a shared secret sent by the worker during the
 initial handshake). Because the token is sent on the wire, remote TCP deployments MUST use TLS
 (`tcp+tls:`) to avoid leaking it.

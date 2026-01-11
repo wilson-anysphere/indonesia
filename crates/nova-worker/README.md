@@ -115,6 +115,10 @@ nova-worker \
 When built with the `tls` feature, workers can connect via TLS. For secure remote mode, TLS is
 required.
 
+Note: when the router is listening on `tcp+tls:`, it currently cannot auto-spawn local worker
+processes (`spawn_workers = true` is not supported). Start workers manually and pass the appropriate
+TLS flags.
+
 Bearer token over TLS:
 
 ```bash
