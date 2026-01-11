@@ -52,6 +52,57 @@ impl Default for GeneratedSourcesConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtensionsConfig {
+    /// Whether extensions are enabled.
+    #[serde(default = "default_extensions_enabled")]
+    pub enabled: bool,
+    /// Additional paths searched for extension bundles (`.wasm` or bundle dirs).
+    #[serde(default)]
+    pub wasm_paths: Vec<PathBuf>,
+    /// If set, only extensions with an id in this list will be loaded.
+    #[serde(default)]
+    pub allow: Option<Vec<String>>,
+    /// Extensions with an id in this list will never be loaded.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// Optional memory limit for WASM extensions (in bytes). If unset, the host default is used.
+    #[serde(default)]
+    pub wasm_memory_limit_bytes: Option<u64>,
+    /// Optional execution timeout for WASM extensions (in milliseconds). If unset, the host default is used.
+    #[serde(default)]
+    pub wasm_timeout_ms: Option<u64>,
+}
+
+fn default_extensions_enabled() -> bool {
+    true
+}
+
+impl Default for ExtensionsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_extensions_enabled(),
+            wasm_paths: Vec::new(),
+            allow: None,
+            deny: Vec::new(),
+            wasm_memory_limit_bytes: None,
+            wasm_timeout_ms: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Top-level Nova configuration loaded from TOML.
+///
+/// Extensions can be configured via the `[extensions]` table:
+/// ```toml
+/// [extensions]
+/// enabled = true
+/// wasm_paths = ["./extensions"]
+/// allow = ["example.my_extension"]
+/// deny = ["example.bad_extension"]
+/// wasm_memory_limit_bytes = 268435456
+/// wasm_timeout_ms = 5000
+/// ```
 pub struct NovaConfig {
     #[serde(default)]
     pub generated_sources: GeneratedSourcesConfig,
@@ -59,6 +110,9 @@ pub struct NovaConfig {
     /// Workspace-level JDK override configuration.
     #[serde(default)]
     pub jdk: JdkConfig,
+
+    #[serde(default)]
+    pub extensions: ExtensionsConfig,
 
     /// Global logging settings for Nova crates.
     #[serde(default)]
@@ -74,6 +128,7 @@ impl Default for NovaConfig {
         Self {
             generated_sources: GeneratedSourcesConfig::default(),
             jdk: JdkConfig::default(),
+            extensions: ExtensionsConfig::default(),
             logging: LoggingConfig::default(),
             ai: AiConfig::default(),
         }
@@ -456,9 +511,7 @@ pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigEr
         for candidate in candidates {
             match NovaConfig::load_from_path(&candidate) {
                 Ok(config) => return Ok(config),
-                Err(ConfigError::Io { source, .. })
-                    if source.kind() == io::ErrorKind::NotFound =>
-                {
+                Err(ConfigError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
                     continue;
                 }
                 Err(err) => return Err(err),
@@ -717,5 +770,68 @@ mod tests {
         assert!(decoded.features.multi_token_completion);
         assert_eq!(decoded.timeouts.completion_ranking_ms, 123);
         assert_eq!(decoded.timeouts.multi_token_completion_ms, 456);
+    }
+
+    #[test]
+    fn toml_without_extensions_table_uses_defaults() {
+        let config: NovaConfig = toml::from_str("").expect("config should parse");
+
+        assert!(config.extensions.enabled);
+        assert!(config.extensions.wasm_paths.is_empty());
+        assert!(config.extensions.allow.is_none());
+        assert!(config.extensions.deny.is_empty());
+        assert!(config.extensions.wasm_memory_limit_bytes.is_none());
+        assert!(config.extensions.wasm_timeout_ms.is_none());
+    }
+
+    #[test]
+    fn toml_extensions_table_parses() {
+        let text = r#"
+[extensions]
+enabled = false
+wasm_paths = ["./extensions", "extensions/custom.wasm"]
+allow = ["example.one", "example.two"]
+deny = ["example.bad"]
+wasm_memory_limit_bytes = 134217728
+wasm_timeout_ms = 2500
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+
+        assert!(!config.extensions.enabled);
+        assert_eq!(
+            config.extensions.wasm_paths,
+            vec![
+                PathBuf::from("./extensions"),
+                PathBuf::from("extensions/custom.wasm")
+            ]
+        );
+        assert_eq!(
+            config.extensions.allow,
+            Some(vec!["example.one".to_owned(), "example.two".to_owned()])
+        );
+        assert_eq!(config.extensions.deny, vec!["example.bad".to_owned()]);
+        assert_eq!(config.extensions.wasm_memory_limit_bytes, Some(134_217_728));
+        assert_eq!(config.extensions.wasm_timeout_ms, Some(2_500));
+    }
+
+    #[test]
+    fn toml_extensions_table_partial_uses_defaults() {
+        let text = r#"
+[extensions]
+wasm_paths = ["extensions"]
+"#;
+
+        let config: NovaConfig = toml::from_str(text).expect("config should parse");
+
+        assert!(config.extensions.enabled);
+        assert_eq!(
+            config.extensions.wasm_paths,
+            vec![PathBuf::from("extensions")]
+        );
+        assert!(config.extensions.allow.is_none());
+        assert!(config.extensions.deny.is_empty());
+        assert!(config.extensions.wasm_memory_limit_bytes.is_none());
+        assert!(config.extensions.wasm_timeout_ms.is_none());
     }
 }
