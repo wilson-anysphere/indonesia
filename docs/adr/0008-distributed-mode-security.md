@@ -226,15 +226,25 @@ Negative:
 
 ## Follow-ups
 
-- Implement mTLS support for router↔worker TCP transport (client cert verification on the router,
-  client cert presentation on the worker).
-- Add secure secret input mechanisms (e.g. `--auth-token-file`, `--auth-token-env`) and deprecate
-  passing tokens directly via `--auth-token <token>`.
-- Implement shard-scoped authorization in the handshake and router state:
-  - credentials → allowed shard set,
-  - reject unauthorized shard claims,
-  - enforce duplicate-connection policy (reject by default).
-- Add protocol hardening:
-  - maximum frame size enforcement,
-  - handshake timeouts and per-connection backpressure,
-  - fuzz tests for the codec and handshake.
+Implemented:
+
+- mTLS support for router↔worker TCP transport (router verifies client certs; workers can present a
+  client cert/key).
+- Secure secret input mechanisms for bearer tokens:
+  - `--auth-token-file`
+  - `--auth-token-env`
+  - Passing `--auth-token <token>` is still supported for local testing but discouraged (secrets in
+    argv can be exposed to other local users via process listings).
+- Shard-scoped authorization and blast-radius reduction:
+  - mTLS client certificate fingerprint allowlists (global + per-shard).
+  - Reject duplicate active workers for the same shard by default (no silent takeover).
+- Basic protocol hardening:
+  - maximum frame size enforcement (reject oversized length prefixes),
+  - handshake timeouts and limits on concurrent handshakes.
+
+Remaining work:
+
+- Fuzz tests for the codec and handshake.
+- Rate limiting / connection caps appropriate for untrusted networks.
+- Operational “takeover” support for orchestrated restarts (if needed) should remain an explicit,
+  audited configuration choice.
