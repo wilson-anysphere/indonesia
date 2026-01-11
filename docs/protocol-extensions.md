@@ -824,7 +824,7 @@ JSON string (the generated tests snippet).
 
 ## Performance / observability endpoints
 
-### `nova/memoryStatus`
+### `nova/metrics` (alias) / `nova/memoryStatus`
 
 - **Kind:** request
 - **Stability:** experimental
