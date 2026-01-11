@@ -35,6 +35,7 @@ Best-effort helper to compile the fixtures with their build toolchain (sanity-ch
 # Or compile only some fixtures:
 ./scripts/javac-validate.sh --only guava
 NOVA_TEST_PROJECTS=guava ./scripts/javac-validate.sh
+NOVA_REAL_PROJECT=guava ./scripts/javac-validate.sh
 ```
 
 To focus on a subset of fixtures:
@@ -43,6 +44,7 @@ To focus on a subset of fixtures:
 
 # or:
 NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/javac-validate.sh
+NOVA_REAL_PROJECT=guava,spring-petclinic ./scripts/javac-validate.sh
 ```
 
 Pinned revisions are recorded in `pins.toml` (single source of truth).
@@ -54,6 +56,7 @@ To clone/update only a subset of fixtures:
 
 # or:
 NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/clone-test-projects.sh
+NOVA_REAL_PROJECT=guava,spring-petclinic ./scripts/clone-test-projects.sh
 ```
 
 ## CI

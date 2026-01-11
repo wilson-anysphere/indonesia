@@ -16,6 +16,7 @@ Options:
 Environment:
   NOVA_TEST_PROJECTS  Same as --only (comma-separated). If both are provided,
                       the script exits with an error.
+  NOVA_REAL_PROJECT   Alias for NOVA_TEST_PROJECTS.
 EOF
 }
 
@@ -49,9 +50,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+ENV_ONLY=""
 if [[ -n "${NOVA_TEST_PROJECTS:-}" ]]; then
-  [[ -z "${ONLY_CSV}" ]] || die "both --only and NOVA_TEST_PROJECTS are set; choose one"
-  ONLY_CSV="${NOVA_TEST_PROJECTS}"
+  ENV_ONLY="${NOVA_TEST_PROJECTS//[[:space:]]/}"
+fi
+if [[ -n "${NOVA_REAL_PROJECT:-}" ]]; then
+  real_only="${NOVA_REAL_PROJECT//[[:space:]]/}"
+  if [[ -n "${ENV_ONLY}" && "${real_only}" != "${ENV_ONLY}" ]]; then
+    die "both NOVA_TEST_PROJECTS and NOVA_REAL_PROJECT are set but differ; choose one"
+  fi
+  ENV_ONLY="${ENV_ONLY:-${real_only}}"
+fi
+
+if [[ -n "${ENV_ONLY}" ]]; then
+  [[ -z "${ONLY_CSV}" ]] || die "both --only and NOVA_TEST_PROJECTS/NOVA_REAL_PROJECT are set; choose one"
+  ONLY_CSV="${ENV_ONLY}"
 fi
 
 declare -a ONLY_PROJECTS=()
@@ -65,7 +78,7 @@ if [[ -n "${ONLY_CSV}" ]]; then
   done
   ONLY_PROJECTS=("${filtered[@]}")
 
-  [[ ${#ONLY_PROJECTS[@]} -gt 0 ]] || die "--only/NOVA_TEST_PROJECTS resolved to an empty list"
+  [[ ${#ONLY_PROJECTS[@]} -gt 0 ]] || die "--only/NOVA_TEST_PROJECTS/NOVA_REAL_PROJECT resolved to an empty list"
 fi
 
 contains() {
