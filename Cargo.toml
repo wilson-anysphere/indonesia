@@ -16,6 +16,7 @@ members = [
     "crates/nova-config",
     "crates/nova-config-metadata",
     "crates/nova-core",
+    "crates/nova-ids",
     "crates/nova-dap",
     "crates/nova-stream-debug",
     "crates/nova-db",

@@ -99,25 +99,7 @@ impl CompletionItem {
 // Framework/type-checker stubs
 // -----------------------------------------------------------------------------
 
-/// A project is a build unit with its own classpath/dependencies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ProjectId(pub u32);
-
-impl ProjectId {
-    pub const fn new(raw: u32) -> Self {
-        Self(raw)
-    }
-}
-
-/// Identifier for a Java class (top-level or nested).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct ClassId(pub u32);
-
-impl ClassId {
-    pub const fn new(raw: u32) -> Self {
-        Self(raw)
-    }
-}
+pub use nova_ids::{ClassId, ProjectId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeVarId(pub u32);
@@ -922,7 +904,7 @@ impl TypeStore {
     }
 
     pub fn add_class(&mut self, mut def: ClassDef) -> ClassId {
-        let id = ClassId(self.classes.len() as u32);
+        let id = ClassId::from_raw(self.classes.len() as u32);
         if self.class_by_name.contains_key(&def.name) {
             // Avoid silently creating two ids for the same class.
             // This is a programmer error in tests/builders.
@@ -1177,7 +1159,7 @@ impl TypeStore {
 
 impl TypeEnv for TypeStore {
     fn class(&self, id: ClassId) -> Option<&ClassDef> {
-        self.classes.get(id.0 as usize)
+        self.classes.get(id.to_raw() as usize)
     }
 
     fn type_param(&self, id: TypeVarId) -> Option<&TypeParamDef> {
