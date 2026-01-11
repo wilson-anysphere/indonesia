@@ -15,6 +15,8 @@ pub(crate) fn redact_string(input: &str) -> String {
 fn redact_urls(input: &str) -> String {
     static URL_RE: OnceLock<Regex> = OnceLock::new();
     let re = URL_RE.get_or_init(|| {
+        // Use a raw string literal with `#` so the pattern can include `"` in the
+        // character class without escaping.
         Regex::new(r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s"'<>]+"#)
             .expect("URL regex should compile")
     });
@@ -131,6 +133,7 @@ fn is_sensitive_param(param: &str) -> bool {
         "key" | "token" | "access_token" | "api_key" | "apikey" | "authorization"
     )
 }
+<<<<<<< HEAD
 
 #[cfg(test)]
 mod tests {
@@ -154,3 +157,5 @@ mod tests {
         assert_eq!(out, "Authorization: Bearer <redacted>");
     }
 }
+=======
+>>>>>>> a4d9e42 (fix(nova-bugreport): repair raw string regex literals)
