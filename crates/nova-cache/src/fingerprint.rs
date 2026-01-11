@@ -60,20 +60,21 @@ impl Fingerprint {
     /// Create a fingerprint intended to identify a project directory.
     ///
     /// For sharing caches across machines/CI, we prefer a stable identifier that
-    /// survives different checkout locations:
+    /// survives different checkout locations.
     ///
-    /// - if `NOVA_PROJECT_ID` is set, hash that value
-    /// - else if a git `remote.origin.url` is available, hash that URL
-    /// - else fall back to hashing the canonicalized root path
+    /// Fallback order:
+    /// 1. `NOVA_PROJECT_ID` environment variable (if set and non-empty)
+    /// 2. git `remote "origin"` `url = ...` (walking up from `project_root` looking for `.git`)
+    /// 3. canonicalized `project_root` path
     pub fn for_project_root(project_root: impl AsRef<Path>) -> Result<Self, CacheError> {
-        let canonical = std::fs::canonicalize(project_root)?;
-
         if let Some(id) = std::env::var_os("NOVA_PROJECT_ID") {
             let id = id.to_string_lossy();
             if !id.trim().is_empty() {
                 return Ok(Self::from_bytes(id.as_bytes()));
             }
         }
+
+        let canonical = std::fs::canonicalize(project_root)?;
 
         if let Some(origin) = git_origin_url(&canonical) {
             return Ok(Self::from_bytes(origin.as_bytes()));
@@ -170,9 +171,54 @@ impl ProjectSnapshot {
 }
 
 fn git_origin_url(project_root: &Path) -> Option<String> {
-    let config_path = project_root.join(".git").join("config");
-    let config = std::fs::read_to_string(config_path).ok()?;
+    // Walk upwards looking for `.git` so that nested project roots (e.g. when Nova is
+    // opened in a subdirectory) still share a stable cache key with the repo root.
+    //
+    // We support:
+    // - `.git/config` when `.git` is a directory.
+    // - `.git` as a file that contains `gitdir: <path>` (worktrees, submodules).
+    for repo_root in project_root.ancestors() {
+        let dot_git = repo_root.join(".git");
+        let metadata = match std::fs::metadata(&dot_git) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
 
+        let mut config_paths = Vec::new();
+        if metadata.is_dir() {
+            config_paths.push(dot_git.join("config"));
+        } else if metadata.is_file() {
+            let gitdir = resolve_gitdir(&dot_git, repo_root)?;
+            config_paths.push(gitdir.join("config"));
+
+            // In linked worktrees, the remotes often live in the "common" git
+            // directory. Best-effort read it as well.
+            if let Some(commondir) = resolve_commondir(&gitdir) {
+                config_paths.push(commondir.join("config"));
+            }
+        } else {
+            continue;
+        }
+
+        for config_path in config_paths {
+            let config = match std::fs::read_to_string(config_path) {
+                Ok(config) => config,
+                Err(_) => continue,
+            };
+            if let Some(origin) = parse_git_origin_from_config(&config) {
+                return Some(origin);
+            }
+        }
+
+        // `.git` was found but no origin URL was discovered; stop searching since
+        // this is the repository boundary.
+        return None;
+    }
+
+    None
+}
+
+fn parse_git_origin_from_config(config: &str) -> Option<String> {
     let mut in_origin = false;
     for raw_line in config.lines() {
         let line = raw_line.trim();
@@ -198,4 +244,44 @@ fn git_origin_url(project_root: &Path) -> Option<String> {
     }
 
     None
+}
+
+fn resolve_gitdir(dot_git_file: &Path, repo_root: &Path) -> Option<PathBuf> {
+    let contents = std::fs::read_to_string(dot_git_file).ok()?;
+    for raw_line in contents.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let path = line.strip_prefix("gitdir:")?.trim();
+        if path.is_empty() {
+            return None;
+        }
+
+        let path = PathBuf::from(path);
+        return Some(if path.is_absolute() {
+            path
+        } else {
+            repo_root.join(path)
+        });
+    }
+
+    None
+}
+
+fn resolve_commondir(gitdir: &Path) -> Option<PathBuf> {
+    let commondir_path = gitdir.join("commondir");
+    let contents = std::fs::read_to_string(commondir_path).ok()?;
+    let line = contents.lines().next()?.trim();
+    if line.is_empty() {
+        return None;
+    }
+
+    let path = PathBuf::from(line);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        gitdir.join(path)
+    })
 }
