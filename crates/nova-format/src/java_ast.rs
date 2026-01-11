@@ -7,17 +7,18 @@
 use nova_core::TextEdit;
 use nova_syntax::{JavaParseResult, SyntaxKind, SyntaxToken};
 
-use crate::{minimal_text_edits, FormatConfig};
+use crate::{ends_with_line_break, minimal_text_edits, FormatConfig, NewlineStyle};
 
 /// Format an entire Java source file using the rowan-based Java parser.
 ///
 /// This is the preferred formatter entrypoint for full-document formatting. Range/on-type
 /// formatting still uses the legacy token-only pipeline.
 pub fn format_java_ast(parse: &JavaParseResult, source: &str, config: &FormatConfig) -> String {
-    let input_has_final_newline = source.ends_with('\n');
-    let mut out = format_compilation_unit(parse, config);
+    let newline = NewlineStyle::detect(source);
+    let input_has_final_newline = ends_with_line_break(source);
+    let mut out = format_compilation_unit(parse, config, newline);
 
-    finalize_output(&mut out, config, input_has_final_newline);
+    finalize_output(&mut out, config, input_has_final_newline, newline);
 
     out
 }
@@ -32,7 +33,11 @@ pub fn edits_for_formatting_ast(
     minimal_text_edits(source, &formatted)
 }
 
-fn format_compilation_unit(parse: &JavaParseResult, config: &FormatConfig) -> String {
+fn format_compilation_unit(
+    parse: &JavaParseResult,
+    config: &FormatConfig,
+    newline: NewlineStyle,
+) -> String {
     let tokens: Vec<SyntaxToken> = parse
         .syntax()
         .descendants_with_tokens()
@@ -42,7 +47,7 @@ fn format_compilation_unit(parse: &JavaParseResult, config: &FormatConfig) -> St
         .collect();
 
     let mut out = String::new();
-    let mut state = TokenFormatState::new(config, 0);
+    let mut state = TokenFormatState::new(config, 0, newline);
     let mut sections = TopLevelSections::default();
 
     let mut idx = 0usize;
@@ -156,41 +161,88 @@ fn next_significant(tokens: &[SyntaxToken], mut idx: usize) -> Option<&SyntaxTok
     None
 }
 
-fn ensure_newline(out: &mut String) {
-    while matches!(out.chars().last(), Some(' ' | '\t')) {
+fn ensure_newline(out: &mut String, newline: &'static str) {
+    while matches!(out.as_bytes().last(), Some(b' ' | b'\t')) {
         out.pop();
     }
-    if !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
-    }
-}
 
-fn ensure_blank_line(out: &mut String) {
     if out.is_empty() {
         return;
     }
-    ensure_newline(out);
-    if !out.ends_with("\n\n") {
-        out.push('\n');
+
+    if out.ends_with(newline) {
+        return;
+    }
+
+    // Avoid producing `\r\r\n` if the output already ends with a lone `\r`.
+    if newline == "\r\n" {
+        if out.ends_with('\r') {
+            out.push('\n');
+        } else if out.ends_with('\n') {
+            out.pop();
+            out.push_str("\r\n");
+        } else {
+            out.push_str("\r\n");
+        }
+    } else if newline == "\n" {
+        if out.ends_with("\r\n") {
+            out.pop(); // '\n'
+            out.pop(); // '\r'
+            out.push('\n');
+        } else if out.ends_with('\r') {
+            out.pop();
+            out.push('\n');
+        } else if !out.ends_with('\n') {
+            out.push('\n');
+        }
+    } else if newline == "\r" {
+        if out.ends_with("\r\n") {
+            out.pop(); // '\n'
+        } else if out.ends_with('\n') {
+            out.pop();
+        }
+        if !out.ends_with('\r') {
+            out.push('\r');
+        }
     }
 }
 
-fn finalize_output(out: &mut String, config: &FormatConfig, input_has_final_newline: bool) {
+fn ensure_blank_line(out: &mut String, newline: &'static str) {
+    if out.is_empty() {
+        return;
+    }
+    ensure_newline(out, newline);
+    let nl_len = newline.len();
+    let has_blank_line = out.len() >= nl_len * 2
+        && out.ends_with(newline)
+        && out[..out.len() - nl_len].ends_with(newline);
+    if !has_blank_line {
+        out.push_str(newline);
+    }
+}
+
+fn finalize_output(
+    out: &mut String,
+    config: &FormatConfig,
+    input_has_final_newline: bool,
+    newline: NewlineStyle,
+) {
+    let newline = newline.as_str();
     if config.trim_final_newlines == Some(true) {
-        while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+        while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
             out.pop();
         }
     }
 
     match config.insert_final_newline {
         Some(true) => {
-            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
                 out.pop();
             }
-            out.push('\n');
+            out.push_str(newline);
         }
         Some(false) => {
-            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
                 out.pop();
             }
         }
@@ -201,11 +253,18 @@ fn finalize_output(out: &mut String, config: &FormatConfig, input_has_final_newl
                 while matches!(out.as_bytes().last(), Some(b' ' | b'\t')) {
                     out.pop();
                 }
-                if !out.is_empty() && !out.ends_with('\n') {
-                    out.push('\n');
+                if !out.is_empty() && !out.ends_with(newline) {
+                    if newline == "\r\n" && out.ends_with('\r') {
+                        out.push('\n');
+                    } else if out.ends_with('\n') && newline == "\r\n" {
+                        out.pop();
+                        out.push_str("\r\n");
+                    } else {
+                        out.push_str(newline);
+                    }
                 }
             } else {
-                while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+                while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
                     out.pop();
                 }
             }
@@ -248,6 +307,7 @@ struct TokenFormatState<'a> {
     for_paren_depth: Option<usize>,
     pending_for: bool,
     last_sig: Option<LastToken>,
+    newline: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -257,7 +317,7 @@ struct LastToken {
 }
 
 impl<'a> TokenFormatState<'a> {
-    fn new(config: &'a FormatConfig, initial_indent: usize) -> Self {
+    fn new(config: &'a FormatConfig, initial_indent: usize, newline: NewlineStyle) -> Self {
         Self {
             config,
             indent_level: initial_indent,
@@ -267,16 +327,17 @@ impl<'a> TokenFormatState<'a> {
             for_paren_depth: None,
             pending_for: false,
             last_sig: None,
+            newline: newline.as_str(),
         }
     }
 
     fn ensure_newline(&mut self, out: &mut String) {
-        ensure_newline(out);
+        ensure_newline(out, self.newline);
         self.at_line_start = true;
     }
 
     fn ensure_blank_line(&mut self, out: &mut String) {
-        ensure_blank_line(out);
+        ensure_blank_line(out, self.newline);
         self.at_line_start = true;
     }
 
@@ -292,7 +353,10 @@ impl<'a> TokenFormatState<'a> {
         if self.at_line_start {
             return;
         }
-        if out.is_empty() || matches!(out.chars().last(), Some(' ' | '\n' | '\t')) {
+        if matches!(
+            out.as_bytes().last(),
+            None | Some(b' ' | b'\n' | b'\r' | b'\t')
+        ) {
             return;
         }
         out.push(' ');

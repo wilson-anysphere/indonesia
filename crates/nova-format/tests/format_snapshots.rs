@@ -1,8 +1,8 @@
 use insta::assert_snapshot;
 use nova_core::{apply_text_edits, LineIndex, Position, Range};
 use nova_format::{
-    edits_for_formatting, edits_for_range_formatting, format_java, format_java_ast, FormatConfig,
-    IndentStyle,
+    edits_for_formatting, edits_for_formatting_ast, edits_for_range_formatting, format_java,
+    format_java_ast, FormatConfig, IndentStyle,
 };
 use nova_syntax::{parse, parse_java};
 use pretty_assertions::assert_eq;
@@ -374,4 +374,25 @@ fn preserves_crlf_line_endings_for_range_formatting() {
         out,
         "class Foo {\r\n    void a() { int x=1; }\r\n    void b() {\r\n        int y = 2;\r\n    }\r\n}\r\n"
     );
+}
+
+#[test]
+fn preserves_crlf_line_endings_for_full_ast_formatting() {
+    let input = concat!(
+        "class  Foo{\r\n",
+        "public static void main(String[]args){\r\n",
+        "System.out.println(\"hi\"); // comment\r\n",
+        "if(true){System.out.println(\"x\");}\r\n",
+        "}\r\n",
+        "}\r\n",
+    );
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_crlf_only(&formatted);
+
+    let edits = edits_for_formatting_ast(&parse, input, &FormatConfig::default());
+    let out = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(out, formatted);
+    assert_crlf_only(&out);
 }
