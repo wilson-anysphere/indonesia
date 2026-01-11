@@ -461,7 +461,15 @@ impl<'a> Lexer<'a> {
         }
 
         if let Some(kind) = self.scan_float_suffix() {
+            if matches!(self.peek_byte(0), Some(b'l' | b'L')) {
+                self.pos += 1;
+                return Err("floating-point literal cannot have `L` suffix".to_string());
+            }
             return Ok(kind);
+        }
+        if matches!(self.peek_byte(0), Some(b'l' | b'L')) {
+            self.pos += 1;
+            return Err("floating-point literal cannot have `L` suffix".to_string());
         }
 
         Ok(SyntaxKind::DoubleLiteral)
@@ -518,6 +526,10 @@ impl<'a> Lexer<'a> {
             if whole.invalid_underscore {
                 return Err("`_` must be between digits in numeric literal".to_string());
             }
+            if matches!(self.peek_byte(0), Some(b'l' | b'L')) {
+                self.pos += 1;
+                return Err("floating-point literal cannot have `L` suffix".to_string());
+            }
             return Ok(kind);
         }
 
@@ -530,6 +542,10 @@ impl<'a> Lexer<'a> {
             }
             if whole.invalid_underscore {
                 return Err("`_` must be between digits in numeric literal".to_string());
+            }
+            if matches!(self.peek_byte(0), Some(b'l' | b'L')) {
+                self.pos += 1;
+                return Err("floating-point literal cannot have `L` suffix".to_string());
             }
             return Ok(SyntaxKind::DoubleLiteral);
         }
@@ -647,7 +663,15 @@ impl<'a> Lexer<'a> {
             }
             self.scan_binary_exponent_part()?;
             if let Some(kind) = self.scan_float_suffix() {
+                if matches!(self.peek_byte(0), Some(b'l' | b'L')) {
+                    self.pos += 1;
+                    return Err("floating-point literal cannot have `L` suffix".to_string());
+                }
                 return Ok(kind);
+            }
+            if matches!(self.peek_byte(0), Some(b'l' | b'L')) {
+                self.pos += 1;
+                return Err("floating-point literal cannot have `L` suffix".to_string());
             }
             return Ok(SyntaxKind::DoubleLiteral);
         }

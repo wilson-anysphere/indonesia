@@ -283,7 +283,8 @@ fn lexer_numeric_literals_valid_forms() {
 #[test]
 fn lexer_numeric_literals_invalid_forms_produce_errors() {
     let input =
-        "0x 0b 08 0b102 1_ 1__0 1e 1e+ 1e_2 1e1__0 1.0__1 0x1.0 0x_1 0b1__0 0x1__0 0x1p1__0";
+        "0x 0b 08 0b102 1_ 1__0 1e 1e+ 1e_2 1e1__0 1.0__1 0x1.0 0x_1 0b1__0 0x1__0 0x1p1__0 \
+         1e1L 1.0L .5L 0x1p0L 1fL 0x1.2p3fL";
     let (tokens, errors) = lex_with_errors(input);
 
     let non_trivia: Vec<_> = tokens
@@ -291,9 +292,9 @@ fn lexer_numeric_literals_invalid_forms_produce_errors() {
         .filter(|t| !t.kind.is_trivia() && t.kind != SyntaxKind::Eof)
         .collect();
 
-    assert_eq!(non_trivia.len(), 16);
+    assert_eq!(non_trivia.len(), 22);
     assert!(non_trivia.iter().all(|t| t.kind == SyntaxKind::Error));
-    assert_eq!(errors.len(), 16);
+    assert_eq!(errors.len(), 22);
 }
 
 #[test]
