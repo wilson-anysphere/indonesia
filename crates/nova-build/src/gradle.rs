@@ -145,7 +145,28 @@ impl GradleBuild {
         }
 
         let (program, args, output) =
-            self.run_print_java_compile_config(project_root, project_path)?;
+            match self.run_print_java_compile_config(project_root, project_path) {
+                Ok(output) => output,
+                Err(BuildError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+                    if let Some(cached) = cache.get_module_best_effort(
+                        project_root,
+                        BuildSystemKind::Gradle,
+                        module_key,
+                    )? {
+                        if let Some(cfg) = cached.java_compile_config {
+                            return Ok(cfg);
+                        }
+                        if let Some(entries) = cached.classpath {
+                            return Ok(JavaCompileConfig {
+                                compile_classpath: entries,
+                                ..JavaCompileConfig::default()
+                            });
+                        }
+                    }
+                    return Err(BuildError::Io(err));
+                }
+                Err(err) => return Err(err),
+            };
         if !output.status.success() {
             return Err(BuildError::CommandFailed {
                 tool: "gradle",

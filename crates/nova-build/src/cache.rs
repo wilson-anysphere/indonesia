@@ -7,6 +7,7 @@ use std::io;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 use thiserror::Error;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -271,6 +272,61 @@ impl BuildCache {
             return Ok(None);
         };
         Ok(data.modules.get(module_key).cloned())
+    }
+
+    pub fn get_module_best_effort(
+        &self,
+        project_root: &Path,
+        kind: BuildSystemKind,
+        module_key: &str,
+    ) -> Result<Option<CachedModuleData>> {
+        let dir = {
+            let kind_dir = match kind {
+                BuildSystemKind::Maven => "maven",
+                BuildSystemKind::Gradle => "gradle",
+            };
+            self.project_dir(project_root).join(kind_dir)
+        };
+
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err.into()),
+        };
+
+        let mut candidates: Vec<(SystemTime, PathBuf)> = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            candidates.push((modified, path));
+        }
+
+        candidates.sort_by(|a, b| b.0.cmp(&a.0));
+        for (_, path) in candidates {
+            let bytes = match fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            let data: CachedBuildData = match serde_json::from_slice(&bytes) {
+                Ok(data) => data,
+                Err(_) => continue,
+            };
+            if let Some(module) = data.modules.get(module_key) {
+                return Ok(Some(module.clone()));
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn update_module(

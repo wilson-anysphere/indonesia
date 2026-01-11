@@ -45,6 +45,7 @@ pub mod extract_method;
 pub mod formatting;
 pub mod handlers;
 pub mod hardening;
+pub mod ide_state;
 pub mod imports;
 pub mod refactor;
 pub mod text_pos;
@@ -63,6 +64,7 @@ pub mod workspace_edit;
 
 pub use cancellation::RequestCancellation;
 pub use code_action::{AiCodeAction, AiCodeActionExecutor, CodeActionError, CodeActionOutcome};
+pub use ide_state::{DynDb, NovaLspIdeState};
 #[cfg(feature = "ai")]
 pub use completion_more::{
     CompletionContextId, CompletionMoreConfig, NovaCompletionResponse, NovaCompletionService,

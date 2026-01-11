@@ -3860,6 +3860,7 @@ dependencies = [
  "nova-dap",
  "nova-db",
  "nova-decompile",
+ "nova-ext",
  "nova-format",
  "nova-framework-mapstruct",
  "nova-framework-micronaut",
