@@ -4,8 +4,9 @@
 //! without pulling in a full URL parser. The helpers here only support `file:`
 //! URIs which are what Nova uses to communicate with LSP clients.
 
+use std::ffi::OsString;
 use std::ops::Deref;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// An absolute filesystem path.
 #[derive(Clone, Eq, PartialEq, Hash)]
@@ -152,8 +153,51 @@ pub fn file_uri_to_path(uri: &str) -> Result<AbsPathBuf, UriToPathError> {
         if !decoded.starts_with('/') {
             return Err(UriToPathError::NotAbsolutePath);
         }
-        AbsPathBuf::new(PathBuf::from(decoded)).map_err(|_| UriToPathError::NotAbsolutePath)
+        let normalized = normalize_logical_path(Path::new(&decoded));
+        AbsPathBuf::new(normalized).map_err(|_| UriToPathError::NotAbsolutePath)
     }
+}
+
+fn normalize_logical_path(path: &Path) -> PathBuf {
+    let mut prefix: Option<OsString> = None;
+    let mut has_root = false;
+    let mut stack: Vec<OsString> = Vec::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix_component) => {
+                prefix = Some(prefix_component.as_os_str().to_owned());
+            }
+            Component::RootDir => has_root = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(last) = stack.last() {
+                    if last != ".." {
+                        stack.pop();
+                        continue;
+                    }
+                }
+
+                if !has_root {
+                    stack.push(OsString::from(".."));
+                }
+            }
+            Component::Normal(segment) => stack.push(segment.to_owned()),
+        }
+    }
+
+    let mut out = PathBuf::new();
+    match (prefix, has_root) {
+        (Some(mut prefix), true) => {
+            prefix.push(std::path::MAIN_SEPARATOR.to_string());
+            out.push(prefix);
+        }
+        (Some(prefix), false) => out.push(prefix),
+        (None, true) => out.push(std::path::MAIN_SEPARATOR.to_string()),
+        (None, false) => {}
+    }
+    out.extend(stack);
+    out
 }
 
 #[cfg(feature = "lsp")]
@@ -319,7 +363,8 @@ fn file_uri_to_path_windows(uri: &str) -> Result<AbsPathBuf, UriToPathError> {
             buf.push_str(part);
         }
 
-        return AbsPathBuf::new(PathBuf::from(buf)).map_err(|_| UriToPathError::NotAbsolutePath);
+        let normalized = normalize_logical_path(Path::new(&buf));
+        return AbsPathBuf::new(normalized).map_err(|_| UriToPathError::NotAbsolutePath);
     }
 
     // Local file path.
@@ -334,7 +379,8 @@ fn file_uri_to_path_windows(uri: &str) -> Result<AbsPathBuf, UriToPathError> {
     buf.push('\\');
     buf.push_str(&path[2..].trim_start_matches('/').replace('/', "\\"));
 
-    AbsPathBuf::new(PathBuf::from(buf)).map_err(|_| UriToPathError::NotAbsolutePath)
+    let normalized = normalize_logical_path(Path::new(&buf));
+    AbsPathBuf::new(normalized).map_err(|_| UriToPathError::NotAbsolutePath)
 }
 
 #[cfg(test)]
@@ -361,5 +407,63 @@ mod tests {
 
         let back = file_uri_to_path(&uri).unwrap();
         assert_eq!(back, path);
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_file_uri_normalizes_dotdot() {
+        let path = file_uri_to_path("file:///a/b/../c.java").unwrap();
+        assert_eq!(path, AbsPathBuf::new(PathBuf::from("/a/c.java")).unwrap());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_file_uri_removes_dot_segments() {
+        let path = file_uri_to_path("file:///a/./b/./c.java").unwrap();
+        assert_eq!(path, AbsPathBuf::new(PathBuf::from("/a/b/c.java")).unwrap());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
+    fn unix_file_uri_clamps_dotdot_at_root() {
+        let path = file_uri_to_path("file:///a/../../b.java").unwrap();
+        assert_eq!(path, AbsPathBuf::new(PathBuf::from("/b.java")).unwrap());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_drive_file_uri_normalizes_dotdot() {
+        let path = file_uri_to_path("file:///C:/a/b/../c.java").unwrap();
+        assert_eq!(
+            path,
+            AbsPathBuf::new(PathBuf::from(r"C:\a\c.java")).unwrap()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_drive_file_uri_removes_dot_segments() {
+        let path = file_uri_to_path("file:///C:/a/./b/./c.java").unwrap();
+        assert_eq!(
+            path,
+            AbsPathBuf::new(PathBuf::from(r"C:\a\b\c.java")).unwrap()
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_drive_file_uri_clamps_dotdot_at_root() {
+        let path = file_uri_to_path("file:///C:/a/../../b.java").unwrap();
+        assert_eq!(path, AbsPathBuf::new(PathBuf::from(r"C:\b.java")).unwrap());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_unc_file_uri_is_logically_normalized() {
+        let path = file_uri_to_path("file://server/share/a/b/../c.java").unwrap();
+        assert_eq!(
+            path,
+            AbsPathBuf::new(PathBuf::from(r"\\server\share\a\c.java")).unwrap()
+        );
     }
 }
