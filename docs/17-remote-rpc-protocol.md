@@ -8,12 +8,15 @@ This document is an **on-the-wire spec** for the next-generation router ↔ work
 It is intended to be implementable without reading Nova’s source code. Where words like **MUST**,
 **SHOULD**, and **MAY** are used, they are normative (RFC 2119 style).
 
-> **Implementation status (important):** At the time of writing, `nova-router` and `nova-worker`
-> still speak the legacy lockstep protocol (`nova_remote_proto::legacy_v2`, length-delimited binary
-> encoding, lockstep request/response).
-> The **v3 CBOR envelope** is implemented in `nova_remote_proto::v3` (codec + types) but is not yet
-> wired into the router/worker transport. This document matches the current
-> `nova_remote_proto::v3` wire types and is the target on-the-wire format for the v3 rollout.
+> **Implementation status (important):**
+>
+> - `nova-router` and `nova-worker` currently use the legacy lockstep protocol
+>   (`nova_remote_proto::legacy_v2`, length-prefixed bincode encoding, lockstep request/response).
+> - The v3 CBOR envelope types/codecs live in `nova_remote_proto::v3`.
+> - A reference v3 transport implementation (handshake + multiplexed calls + per-packet compression)
+>   exists in `crates/nova-remote-rpc`, but `nova-router`/`nova-worker` have not migrated yet.
+>   `PacketChunk` reassembly and `Cancel` handling are not yet implemented end-to-end (capabilities
+>   default them off).
 
 ## Design background
 
@@ -88,7 +91,8 @@ There are two distinct guards:
 
 Suggested defaults (informative):
 
-- Pre-handshake max frame length: **64 KiB**.
+- Pre-handshake max frame length: **1 MiB** (used by the current `nova-remote-rpc` reference
+  implementation).
 - Post-handshake max frame length: `chosen_capabilities.max_frame_len` (default offer is **64 MiB**
   in `nova_remote_proto::v3`).
 
