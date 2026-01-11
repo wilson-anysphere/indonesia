@@ -447,4 +447,66 @@ class A {
         assert_eq!(lsp_edit.range.start, position_utf16(source, sym.decl_range.start));
         assert_eq!(lsp_edit.range.end, position_utf16(source, sym.decl_range.end));
     }
+
+    #[test]
+    fn change_signature_workspace_edit_uses_utf16_character_offsets() {
+        let uri: Uri = "file:///A.java".parse().unwrap();
+        let source = concat!(
+            "class A {\n",
+            "    int sum(int a, int b) {\n",
+            "        return a + b;\n",
+            "    }\n",
+            "\n",
+            "    void test() {\n",
+            "        int 𝒂 = sum(1, 2);\n",
+            "    }\n",
+            "}\n",
+        );
+
+        let mut files = BTreeMap::new();
+        files.insert(uri.to_string(), source.to_string());
+        let index = Index::new(files);
+        let target = index.find_method("A", "sum").expect("method exists").id;
+
+        let change = ChangeSignature {
+            target: nova_types::MethodId(target.0),
+            new_name: None,
+            parameters: vec![
+                nova_refactor::ParameterOperation::Existing {
+                    old_index: 1,
+                    new_name: None,
+                    new_type: None,
+                },
+                nova_refactor::ParameterOperation::Existing {
+                    old_index: 0,
+                    new_name: None,
+                    new_type: None,
+                },
+            ],
+            new_return_type: None,
+            new_throws: None,
+            propagate_hierarchy: nova_refactor::HierarchyPropagation::None,
+        };
+
+        let edit = change_signature_workspace_edit(&index, &change).expect("workspace edit");
+        let changes = edit.changes.expect("expected changes map");
+        let edits = changes.get(&uri).expect("edits for uri present");
+
+        let call_offset = source.find("sum(1, 2)").expect("call exists");
+        let call_end = call_offset + "sum(1, 2)".len();
+        let expected_start = position_utf16(source, call_offset);
+        let expected_end = position_utf16(source, call_end);
+
+        let call_edit = edits
+            .iter()
+            .find(|edit| edit.new_text == "sum(2, 1)")
+            .expect("call edit");
+        assert_eq!(call_edit.range.start, expected_start);
+        assert_eq!(call_edit.range.end, expected_end);
+
+        // Sanity check: applying the edits should update both signature and call site.
+        let updated = apply_lsp_edits(source, edits);
+        assert!(updated.contains("int sum(int b, int a)"));
+        assert!(updated.contains("sum(2, 1)"));
+    }
 }
