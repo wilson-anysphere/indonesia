@@ -17,6 +17,8 @@ pub use comments::{Comment, CommentKind, CommentStore, TokenKey};
 
 mod formatter;
 
+pub mod doc;
+
 /// Indents each non-empty line in `block` with `indent`.
 #[must_use]
 pub fn indent_block(block: &str, indent: &str) -> String {
