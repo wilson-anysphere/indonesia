@@ -337,7 +337,9 @@ For the stable spec of Nova’s custom `nova/*` LSP methods, see
 
 ### `nova-remote-proto`
 - **Purpose:** on-the-wire message types for distributed mode (router ↔ worker RPC).
-- **Key entry points:** `crates/nova-remote-proto/src/lib.rs` (`RpcMessage`, `PROTOCOL_VERSION`).
+- **Key entry points:**
+  - `crates/nova-remote-proto/src/lib.rs` — legacy bincode protocol (`RpcMessage`, `PROTOCOL_VERSION`)
+  - `crates/nova-remote-proto/src/v3.rs` — v3 CBOR envelope (`WireFrame`, `RpcPayload`)
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Protocol is still evolving; not yet integrated into `nova-lsp` (distributed mode is experimental).
