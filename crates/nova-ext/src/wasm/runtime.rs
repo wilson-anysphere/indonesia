@@ -77,8 +77,8 @@ fn timeout_to_epoch_deadline(timeout: Duration) -> u64 {
     // is incremented. With `EPOCH_TICK` configured at 1ms, this approximates a wall-clock timeout.
     let timeout_ms = timeout.as_millis();
     let tick_ms = EPOCH_TICK.as_millis().max(1);
-    let ticks = (timeout_ms + tick_ms - 1) / tick_ms;
-    u64::try_from(ticks.max(1)).unwrap_or(u64::MAX)
+    let ticks = timeout_ms.div_ceil(tick_ms).max(1);
+    u64::try_from(ticks).unwrap_or(u64::MAX)
 }
 
 fn unpack_ptr_len(v: u64) -> (u32, u32) {

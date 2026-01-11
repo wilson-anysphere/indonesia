@@ -537,8 +537,10 @@ fn capabilities_drive_registry_registration() {
 
 #[test]
 fn busy_loop_is_interrupted_by_timeout() {
-    let mut config = WasmPluginConfig::default();
-    config.timeout = Duration::from_millis(10);
+    let config = WasmPluginConfig {
+        timeout: Duration::from_millis(10),
+        ..WasmPluginConfig::default()
+    };
     let plugin =
         WasmPlugin::from_wat("busy", WAT_BUSY_LOOP, config).expect("load busy-loop plugin");
 
@@ -563,8 +565,10 @@ fn busy_loop_is_interrupted_by_timeout() {
 
 #[test]
 fn memory_limit_prevents_unbounded_growth() {
-    let mut config = WasmPluginConfig::default();
-    config.max_memory_bytes = 64 * 1024; // 1 page
+    let config = WasmPluginConfig {
+        max_memory_bytes: 64 * 1024, // 1 page
+        ..WasmPluginConfig::default()
+    };
     let plugin = WasmPlugin::from_wat("memlimit", WAT_MEMORY_GROW, config).expect("load module");
 
     let file = FileId::from_raw(1);
@@ -580,8 +584,10 @@ fn memory_limit_prevents_unbounded_growth() {
 #[test]
 fn nova_config_overrides_wasm_timeout_and_memory_limits() {
     // Timeout override.
-    let mut plugin_config = WasmPluginConfig::default();
-    plugin_config.timeout = Duration::from_millis(500);
+    let plugin_config = WasmPluginConfig {
+        timeout: Duration::from_millis(500),
+        ..WasmPluginConfig::default()
+    };
     let plugin =
         WasmPlugin::from_wat("busy-config", WAT_BUSY_LOOP, plugin_config).expect("load module");
 
@@ -607,8 +613,10 @@ fn nova_config_overrides_wasm_timeout_and_memory_limits() {
     assert!(diags.is_empty());
 
     // Memory override.
-    let mut plugin_config = WasmPluginConfig::default();
-    plugin_config.max_memory_bytes = 512 * 1024; // allow growth
+    let plugin_config = WasmPluginConfig {
+        max_memory_bytes: 512 * 1024, // allow growth
+        ..WasmPluginConfig::default()
+    };
     let plugin =
         WasmPlugin::from_wat("mem-config", WAT_MEMORY_GROW, plugin_config).expect("load module");
 

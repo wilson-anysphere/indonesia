@@ -959,13 +959,13 @@ capabilities = ["diagnostics"]
 
         fn simple_wat(diag_message: &str, completion_label: Option<&str>) -> String {
             let diag_json = format!("[{{\"message\":\"{}\"}}]", diag_message);
-            let diag_len = diag_json.as_bytes().len();
+            let diag_len = diag_json.len();
             let diag_wat = escape_wat_string(&diag_json);
 
             let completion_offset = 256;
             let completion = completion_label.map(|label| {
                 let json = format!("[{{\"label\":\"{}\"}}]", label);
-                let len = json.as_bytes().len();
+                let len = json.len();
                 let wat = escape_wat_string(&json);
                 (wat, len)
             });

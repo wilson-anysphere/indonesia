@@ -1,4 +1,6 @@
-use nova_ext_abi::v1::{capabilities, guest, DiagnosticV1, DiagnosticsRequestV1, SeverityV1, SpanV1};
+use nova_ext_abi::v1::{
+    capabilities, guest, DiagnosticV1, DiagnosticsRequestV1, SeverityV1, SpanV1,
+};
 
 #[no_mangle]
 pub extern "C" fn nova_ext_abi_version() -> i32 {
@@ -15,6 +17,12 @@ pub extern "C" fn nova_ext_alloc(len: i32) -> i32 {
     guest::alloc(len)
 }
 
+/// Frees a buffer previously allocated by [`nova_ext_alloc`].
+///
+/// # Safety
+///
+/// `ptr` must have been returned by [`nova_ext_alloc`] with the same `len`, and the buffer must not
+/// be used after calling this function.
 #[no_mangle]
 pub unsafe extern "C" fn nova_ext_free(ptr: i32, len: i32) {
     guest::free(ptr, len);
@@ -51,4 +59,3 @@ fn todos_to_diagnostics(text: &str) -> Vec<DiagnosticV1> {
         })
         .collect()
 }
-

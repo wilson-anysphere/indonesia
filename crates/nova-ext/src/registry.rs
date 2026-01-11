@@ -193,8 +193,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let map = stats.map_mut(kind);
-        map.entry(id.to_string())
-            .or_insert_with(ProviderStats::default);
+        map.entry(id.to_string()).or_default();
     }
 
     fn record_provider_call(
@@ -814,7 +813,7 @@ mod tests {
         let available = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let default_size = available.min(4).max(2);
+        let default_size = available.clamp(2, 4);
 
         match std::env::var(ENV_KEY) {
             Ok(raw) => match raw.parse::<usize>() {
