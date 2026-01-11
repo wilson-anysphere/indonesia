@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use nova_syntax::{parse_java, parse_module_info};
+use nova_syntax::{parse_java_with_options, JavaLanguageLevel, ParseOptions, SyntaxKind};
 use nova_test_utils::javac::{javac_available, run_javac_files_with_options, JavacOptions};
 
 fn collect_java_files(dir: &Path) -> Vec<PathBuf> {
@@ -26,6 +26,13 @@ fn javac_opts() -> JavacOptions {
     }
 }
 
+fn nova_opts() -> ParseOptions {
+    // Match the `javac --release` used for the corpus compilation.
+    ParseOptions {
+        language_level: JavaLanguageLevel::JAVA_17,
+    }
+}
+
 #[test]
 fn javac_corpus_ok() {
     if !javac_available() {
@@ -38,6 +45,7 @@ fn javac_corpus_ok() {
     assert!(!files.is_empty(), "no ok corpus files found at {}", dir.display());
 
     let opts = javac_opts();
+    let parse_opts = nova_opts();
 
     for path in files {
         let filename = path
@@ -56,15 +64,29 @@ fn javac_corpus_ok() {
             out.stderr
         );
 
+        let parsed = parse_java_with_options(&src, parse_opts);
+        assert!(
+            parsed.result.errors.is_empty(),
+            "Nova parse errors in {}: {:#?}",
+            filename,
+            parsed.result.errors
+        );
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "Nova feature-gate diagnostics in {}: {:#?}",
+            filename,
+            parsed.diagnostics
+        );
+
         if filename == "module-info.java" {
-            parse_module_info(&src).expect("module-info should parse");
-        } else {
-            let parsed = parse_java(&src);
             assert!(
-                parsed.errors.is_empty(),
-                "Nova parse errors in {}: {:#?}",
-                filename,
-                parsed.errors
+                parsed
+                    .result
+                    .syntax()
+                    .children()
+                    .any(|n| n.kind() == SyntaxKind::ModuleDeclaration),
+                "expected module declaration in {}",
+                filename
             );
         }
     }
@@ -86,6 +108,7 @@ fn javac_corpus_err() {
     );
 
     let opts = javac_opts();
+    let parse_opts = nova_opts();
 
     for path in files {
         let filename = path
@@ -111,20 +134,11 @@ fn javac_corpus_err() {
             out.stderr
         );
 
-        if filename == "module-info.java" {
-            assert!(
-                parse_module_info(&src).is_err(),
-                "expected module-info parse error for {}",
-                filename
-            );
-        } else {
-            let parsed = parse_java(&src);
-            assert!(
-                !parsed.errors.is_empty(),
-                "expected Nova parse errors for {}, but got none",
-                filename
-            );
-        }
+        let parsed = parse_java_with_options(&src, parse_opts);
+        assert!(
+            !parsed.result.errors.is_empty(),
+            "expected Nova parse errors for {}, but got none",
+            filename
+        );
     }
 }
-
