@@ -36,3 +36,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 rcgen = "0.13.2"
 tempfile.workspace = true
 tokio.workspace = true
+
+[[bin]]
+name = "nova-router-test-worker"
+path = "tests/fixtures/test_worker.rs"

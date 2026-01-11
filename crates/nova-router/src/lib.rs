@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -11,12 +12,12 @@ use nova_remote_proto::{
     WorkerStats,
 };
 use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::{timeout, Duration};
+use tokio::time::{timeout, Duration, Instant};
 
 #[cfg(unix)]
 use tokio::net::UnixListener;
@@ -26,10 +27,19 @@ mod ipc_security;
 #[cfg(feature = "tls")]
 pub mod tls;
 
+mod supervisor;
+
+use supervisor::RestartBackoff;
+
 pub type Result<T> = anyhow::Result<T>;
 
 const WORKSPACE_SYMBOL_LIMIT: usize = 200;
 const FALLBACK_SCAN_LIMIT: usize = 50_000;
+
+const WORKER_RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(50);
+const WORKER_RESTART_BACKOFF_MAX: Duration = Duration::from_secs(5);
+const WORKER_SESSION_RESET_BACKOFF_AFTER: Duration = Duration::from_secs(10);
+const WORKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct SourceRoot {
@@ -626,7 +636,6 @@ impl DistributedRouter {
 
         Ok(())
     }
-
 }
 
 fn scored_symbol_cmp(a: &ScoredSymbol, b: &ScoredSymbol) -> std::cmp::Ordering {
@@ -1009,14 +1018,28 @@ async fn worker_supervisor_loop(
     shutdown_rx: &mut watch::Receiver<bool>,
 ) {
     let connect_arg = state.config.listen_addr.as_worker_connect_arg();
+    let mut backoff =
+        RestartBackoff::new(WORKER_RESTART_BACKOFF_INITIAL, WORKER_RESTART_BACKOFF_MAX);
+    let mut attempt: u64 = 0;
 
     loop {
         if *shutdown_rx.borrow() {
             return;
         }
 
+        let previous_worker_id = {
+            let guard = state.shards.lock().await;
+            guard
+                .get(&shard_id)
+                .and_then(|shard| shard.worker.as_ref().map(|w| w.worker_id))
+        };
+
+        attempt += 1;
+
         let mut cmd = Command::new(&state.config.worker_command);
         cmd.kill_on_drop(true);
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
         cmd.arg("--connect")
             .arg(&connect_arg)
             .arg("--shard-id")
@@ -1031,22 +1054,195 @@ async fn worker_supervisor_loop(
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(err) => {
-                eprintln!("failed to spawn worker for shard {shard_id}: {err:?}");
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                let delay = backoff.next_delay();
+                eprintln!(
+                    "failed to spawn worker for shard {shard_id} (attempt {attempt}); retrying in {delay:?}: {err:?}"
+                );
+                tokio::select! {
+                    _ = shutdown_rx.changed() => {},
+                    _ = tokio::time::sleep(delay) => {},
+                }
                 continue;
             }
         };
 
-        tokio::select! {
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    let _ = child.start_kill();
-                    let _ = child.wait().await;
-                    return;
+        if let Some(stdout) = child.stdout.take() {
+            tokio::spawn(drain_worker_output(shard_id, "stdout", stdout));
+        }
+        if let Some(stderr) = child.stderr.take() {
+            tokio::spawn(drain_worker_output(shard_id, "stderr", stderr));
+        }
+
+        enum SpawnEvent {
+            Shutdown,
+            Exited(std::process::ExitStatus),
+            Connected {
+                worker_id: WorkerId,
+                connected_at: Instant,
+            },
+            HandshakeTimeout,
+        }
+
+        let handshake_deadline = Instant::now() + WORKER_HANDSHAKE_TIMEOUT;
+        let spawn_event = loop {
+            if *shutdown_rx.borrow() {
+                break SpawnEvent::Shutdown;
+            }
+
+            if let Some(worker_id) = {
+                let guard = state.shards.lock().await;
+                guard
+                    .get(&shard_id)
+                    .and_then(|shard| shard.worker.as_ref().map(|w| w.worker_id))
+            } {
+                if Some(worker_id) != previous_worker_id {
+                    break SpawnEvent::Connected {
+                        worker_id,
+                        connected_at: Instant::now(),
+                    };
                 }
             }
-            _ = child.wait() => {
-                tokio::time::sleep(Duration::from_millis(50)).await;
+
+            tokio::select! {
+                _ = shutdown_rx.changed() => {}
+                status = child.wait() => {
+                    match status {
+                        Ok(status) => break SpawnEvent::Exited(status),
+                        Err(err) => {
+                            eprintln!("failed to wait on worker for shard {shard_id}: {err:?}");
+                            break SpawnEvent::HandshakeTimeout;
+                        }
+                    }
+                }
+                _ = state.notify.notified() => {}
+                _ = tokio::time::sleep_until(handshake_deadline) => break SpawnEvent::HandshakeTimeout,
+            }
+        };
+
+        let (stable_session, exit_status) = match spawn_event {
+            SpawnEvent::Shutdown => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return;
+            }
+            SpawnEvent::HandshakeTimeout => {
+                eprintln!(
+                    "worker for shard {shard_id} (attempt {attempt}) did not complete handshake within {WORKER_HANDSHAKE_TIMEOUT:?}; restarting"
+                );
+                let _ = child.start_kill();
+                let status = child.wait().await.ok();
+                (false, status)
+            }
+            SpawnEvent::Exited(status) => {
+                eprintln!(
+                    "worker for shard {shard_id} (attempt {attempt}) exited before handshake: {status:?}"
+                );
+                (false, Some(status))
+            }
+            SpawnEvent::Connected {
+                worker_id,
+                connected_at,
+            } => {
+                eprintln!(
+                    "worker for shard {shard_id} connected (worker_id {worker_id}, attempt {attempt})"
+                );
+
+                enum SessionEvent {
+                    Shutdown,
+                    Exited(std::process::ExitStatus),
+                    Disconnected,
+                }
+
+                let session_event = loop {
+                    if *shutdown_rx.borrow() {
+                        break SessionEvent::Shutdown;
+                    }
+
+                    let current_worker_id = {
+                        let guard = state.shards.lock().await;
+                        guard
+                            .get(&shard_id)
+                            .and_then(|shard| shard.worker.as_ref().map(|w| w.worker_id))
+                    };
+                    if current_worker_id != Some(worker_id) {
+                        break SessionEvent::Disconnected;
+                    }
+
+                    tokio::select! {
+                        _ = shutdown_rx.changed() => {}
+                        status = child.wait() => {
+                            match status {
+                                Ok(status) => break SessionEvent::Exited(status),
+                                Err(err) => {
+                                    eprintln!("failed to wait on worker for shard {shard_id}: {err:?}");
+                                    break SessionEvent::Disconnected;
+                                }
+                            }
+                        }
+                        _ = state.notify.notified() => {}
+                    }
+                };
+
+                let session_duration = connected_at.elapsed();
+                let stable = session_duration >= WORKER_SESSION_RESET_BACKOFF_AFTER;
+
+                match session_event {
+                    SessionEvent::Shutdown => {
+                        let _ = child.start_kill();
+                        let _ = child.wait().await;
+                        return;
+                    }
+                    SessionEvent::Disconnected => {
+                        eprintln!("worker for shard {shard_id} disconnected after {session_duration:?}; restarting");
+                        let _ = child.start_kill();
+                        let status = child.wait().await.ok();
+                        (stable, status)
+                    }
+                    SessionEvent::Exited(status) => {
+                        eprintln!("worker for shard {shard_id} exited after {session_duration:?}: {status:?}");
+                        (stable, Some(status))
+                    }
+                }
+            }
+        };
+
+        if stable_session {
+            backoff.reset();
+        }
+
+        if let Some(status) = exit_status {
+            eprintln!("worker for shard {shard_id} restart scheduled after exit: {status:?}");
+        }
+
+        let delay = backoff.next_delay();
+        eprintln!("restarting worker for shard {shard_id} in {delay:?}");
+        tokio::select! {
+            _ = shutdown_rx.changed() => {},
+            _ = tokio::time::sleep(delay) => {},
+        }
+    }
+}
+
+async fn drain_worker_output<R>(shard_id: ShardId, label: &'static str, reader: R)
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let mut reader = BufReader::new(reader);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => return,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&buf);
+                eprintln!(
+                    "[worker shard {shard_id} {label}] {}",
+                    line.trim_end_matches(&['\r', '\n'][..])
+                );
+            }
+            Err(err) => {
+                eprintln!("[worker shard {shard_id} {label}] output error: {err:?}");
+                return;
             }
         }
     }
