@@ -641,6 +641,7 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 let cfg = manager
                     .java_compile_config_maven(&project_root, module_relative)
                     .map_err(map_build_error)?;
+                let selected_root = module_relative.map(|rel| project_root.join(rel));
 
                 let JavaCompileConfig {
                     compile_classpath,
@@ -671,15 +672,19 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                     .chain(test_source_roots.iter())
                     .map(|p| p.to_string_lossy().to_string())
                     .collect();
-                source_roots.sort();
-                source_roots.dedup();
-                if source_roots.is_empty() {
-                    source_roots = config
+                source_roots.extend(
+                    config
                         .source_roots
                         .iter()
-                        .map(|root| root.path.to_string_lossy().to_string())
-                        .collect();
-                }
+                        .filter(|root| {
+                            selected_root
+                                .as_ref()
+                                .map_or(true, |selected| root.path.starts_with(selected))
+                        })
+                        .map(|root| root.path.to_string_lossy().to_string()),
+                );
+                source_roots.sort();
+                source_roots.dedup();
 
                 let source = cfg_source.or_else(|| Some(config.java.source.0.to_string()));
                 let target_version = cfg_target.or_else(|| Some(config.java.target.0.to_string()));
@@ -700,6 +705,9 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                 let cfg = manager
                     .java_compile_config_gradle(&project_root, project_path.as_deref())
                     .map_err(map_build_error)?;
+                let selected_root = project_path
+                    .as_deref()
+                    .map(|path| project_root.join(gradle_project_path_to_dir(path)));
 
                 let JavaCompileConfig {
                     compile_classpath,
@@ -730,15 +738,19 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
                     .chain(test_source_roots.iter())
                     .map(|p| p.to_string_lossy().to_string())
                     .collect();
-                source_roots.sort();
-                source_roots.dedup();
-                if source_roots.is_empty() {
-                    source_roots = config
+                source_roots.extend(
+                    config
                         .source_roots
                         .iter()
-                        .map(|root| root.path.to_string_lossy().to_string())
-                        .collect();
-                }
+                        .filter(|root| {
+                            selected_root
+                                .as_ref()
+                                .map_or(true, |selected| root.path.starts_with(selected))
+                        })
+                        .map(|root| root.path.to_string_lossy().to_string()),
+                );
+                source_roots.sort();
+                source_roots.dedup();
 
                 let source = cfg_source.or_else(|| Some(config.java.source.0.to_string()));
                 let target_version = cfg_target.or_else(|| Some(config.java.target.0.to_string()));
@@ -980,16 +992,15 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     .chain(test_source_roots.iter())
                     .map(|root| root.to_string_lossy().to_string())
                     .collect();
-                source_roots.sort();
-                source_roots.dedup();
-                if source_roots.is_empty() {
-                    source_roots = config
+                source_roots.extend(
+                    config
                         .source_roots
                         .iter()
                         .filter(|root| root.path.starts_with(&module.root))
-                        .map(|root| root.path.to_string_lossy().to_string())
-                        .collect();
-                }
+                        .map(|root| root.path.to_string_lossy().to_string()),
+                );
+                source_roots.sort();
+                source_roots.dedup();
 
                 Ok(ProjectModelUnit::Maven {
                     module: rel,
@@ -1058,16 +1069,15 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     .chain(test_source_roots.iter())
                     .map(|root| root.to_string_lossy().to_string())
                     .collect();
-                source_roots.sort();
-                source_roots.dedup();
-                if source_roots.is_empty() {
-                    source_roots = config
+                source_roots.extend(
+                    config
                         .source_roots
                         .iter()
                         .filter(|root| root.path.starts_with(&module.root))
-                        .map(|root| root.path.to_string_lossy().to_string())
-                        .collect();
-                }
+                        .map(|root| root.path.to_string_lossy().to_string()),
+                );
+                source_roots.sort();
+                source_roots.dedup();
 
                 Ok(ProjectModelUnit::Gradle {
                     project_path,
