@@ -12,7 +12,6 @@ const ARRAY_PREVIEW_SAMPLE: usize = 3;
 const ARRAY_CHILD_SAMPLE: usize = 25;
 const HASHMAP_SCAN_LIMIT: usize = 64;
 const HASHMAP_CHAIN_LIMIT: usize = 16;
-const FIELD_MODIFIER_STATIC: u32 = 0x0008;
 
 /// JDWP `Error.INVALID_OBJECT` (the object has already been garbage collected).
 pub const ERROR_INVALID_OBJECT: u16 = 20;
@@ -26,9 +25,16 @@ pub(crate) struct InspectCache {
     pub(crate) signatures: HashMap<ReferenceTypeId, String>,
     pub(crate) signatures_with_generic: HashMap<ReferenceTypeId, (String, Option<String>)>,
     pub(crate) fields: HashMap<ReferenceTypeId, Vec<FieldInfo>>,
+    #[allow(dead_code)]
     pub(crate) fields_with_generic: HashMap<ReferenceTypeId, Vec<FieldInfoWithGeneric>>,
+    #[allow(dead_code)]
     pub(crate) methods: HashMap<ReferenceTypeId, Vec<MethodInfo>>,
+    #[allow(dead_code)]
     pub(crate) methods_with_generic: HashMap<ReferenceTypeId, Vec<MethodInfoWithGeneric>>,
+    pub(crate) superclasses: HashMap<ReferenceTypeId, ReferenceTypeId>,
+    #[allow(dead_code)]
+    pub(crate) interfaces: HashMap<ReferenceTypeId, Vec<ReferenceTypeId>>,
+    pub(crate) all_instance_fields: HashMap<ReferenceTypeId, Vec<FieldInfo>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -416,12 +422,7 @@ async fn instance_fields_with_type(
     object_id: ObjectId,
     type_id: ReferenceTypeId,
 ) -> Result<Vec<(String, JdwpValue, Option<String>)>> {
-    let fields: Vec<FieldInfo> = jdwp
-        .reference_type_fields_cached(type_id)
-        .await?
-        .into_iter()
-        .filter(|field| field.mod_bits & FIELD_MODIFIER_STATIC == 0)
-        .collect();
+    let fields: Vec<FieldInfo> = jdwp.reference_type_all_instance_fields_cached(type_id).await?;
     if fields.is_empty() {
         return Ok(Vec::new());
     }
@@ -906,4 +907,43 @@ pub fn signature_to_type_name(signature: &str) -> String {
         out.push_str("[]");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Inspector;
+    use crate::wire::{mock, JdwpClient, JdwpValue};
+
+    #[tokio::test]
+    async fn object_children_includes_inherited_fields() {
+        let server = mock::MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let mut inspector = Inspector::new(client);
+
+        let children = inspector.object_children(mock::EXCEPTION_ID).await.unwrap();
+        assert!(
+            children.iter().any(|child| child.name == "detailMessage"),
+            "expected Throwable.detailMessage to be present in object children"
+        );
+    }
+
+    #[tokio::test]
+    async fn object_children_prefers_most_derived_field_when_names_collide() {
+        let server = mock::MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let mut inspector = Inspector::new(client);
+
+        let children = inspector
+            .object_children(mock::FIELD_HIDING_OBJECT_ID)
+            .await
+            .unwrap();
+        let matches: Vec<_> = children.iter().filter(|child| child.name == "hidden").collect();
+        assert_eq!(matches.len(), 1, "expected a single `hidden` field");
+
+        assert_eq!(
+            matches[0].value,
+            JdwpValue::Int(1),
+            "expected the most-derived `hidden` field value"
+        );
+    }
 }

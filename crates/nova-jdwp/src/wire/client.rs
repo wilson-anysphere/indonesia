@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -37,6 +37,8 @@ use super::{
         EVENT_MODIFIER_KIND_THREAD_ONLY,
     },
 };
+
+const FIELD_MODIFIER_STATIC: u32 = 0x0008;
 
 #[derive(Debug, Clone)]
 pub struct JdwpClientConfig {
@@ -673,6 +675,42 @@ impl JdwpClient {
         r.read_object_id(&sizes)
     }
 
+    /// ReferenceType.Interfaces (2, 10)
+    pub async fn reference_type_interfaces(
+        &self,
+        type_id: ReferenceTypeId,
+    ) -> Result<Vec<ReferenceTypeId>> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(type_id, &sizes);
+        let payload = self.send_command_raw(2, 10, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let count = r.read_u32()? as usize;
+        let mut interfaces = Vec::with_capacity(count);
+        for _ in 0..count {
+            interfaces.push(r.read_reference_type_id(&sizes)?);
+        }
+        Ok(interfaces)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn reference_type_interfaces_cached(
+        &self,
+        type_id: ReferenceTypeId,
+    ) -> Result<Vec<ReferenceTypeId>> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(interfaces) = cache.interfaces.get(&type_id) {
+                return Ok(interfaces.clone());
+            }
+        }
+
+        let interfaces = self.reference_type_interfaces(type_id).await?;
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.interfaces.insert(type_id, interfaces.clone());
+        Ok(interfaces)
+    }
+
     pub async fn reference_type_methods(
         &self,
         class_id: ReferenceTypeId,
@@ -724,6 +762,7 @@ impl JdwpClient {
         Ok(methods)
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn reference_type_methods_cached(
         &self,
         class_id: ReferenceTypeId,
@@ -741,6 +780,7 @@ impl JdwpClient {
         Ok(methods)
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn reference_type_methods_with_generic_cached(
         &self,
         class_id: ReferenceTypeId,
@@ -902,6 +942,33 @@ impl JdwpClient {
         }
         let _ = self.send_command_raw(16, 2, w.into_vec()).await?;
         Ok(())
+    }
+
+    /// ClassType.Superclass (3, 1)
+    pub async fn class_type_superclass(&self, class_id: ReferenceTypeId) -> Result<ReferenceTypeId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        let payload = self.send_command_raw(3, 1, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_reference_type_id(&sizes)
+    }
+
+    pub(crate) async fn class_type_superclass_cached(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<ReferenceTypeId> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(superclass) = cache.superclasses.get(&class_id) {
+                return Ok(*superclass);
+            }
+        }
+
+        let superclass = self.class_type_superclass(class_id).await?;
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.superclasses.insert(class_id, superclass);
+        Ok(superclass)
     }
 
     /// ClassType.SetValues (3, 2)
@@ -1139,6 +1206,7 @@ impl JdwpClient {
         Ok(fields)
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn reference_type_fields_with_generic_cached(
         &self,
         class_id: ReferenceTypeId,
@@ -1154,6 +1222,56 @@ impl JdwpClient {
         let mut cache = self.inner.inspect_cache.lock().await;
         cache.fields_with_generic.insert(class_id, fields.clone());
         Ok(fields)
+    }
+
+    /// Returns all non-static fields declared on `type_id` and its superclasses.
+    ///
+    /// Ordering: fields declared on the most-derived class come first, followed by each superclass
+    /// up to (but excluding) the null superclass (`0`).
+    ///
+    /// If multiple classes declare a field with the same name, the most-derived field wins.
+    pub(crate) async fn reference_type_all_instance_fields_cached(
+        &self,
+        type_id: ReferenceTypeId,
+    ) -> Result<Vec<FieldInfo>> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(fields) = cache.all_instance_fields.get(&type_id) {
+                return Ok(fields.clone());
+            }
+        }
+
+        let mut hierarchy = Vec::new();
+        let mut seen_types = HashSet::new();
+        let mut current = type_id;
+        loop {
+            if current == 0 || !seen_types.insert(current) {
+                break;
+            }
+            hierarchy.push(current);
+            let superclass = self.class_type_superclass_cached(current).await?;
+            if superclass == 0 {
+                break;
+            }
+            current = superclass;
+        }
+
+        let mut seen_names = HashSet::new();
+        let mut out = Vec::new();
+        for class_id in hierarchy {
+            for field in self.reference_type_fields_cached(class_id).await? {
+                if field.mod_bits & FIELD_MODIFIER_STATIC != 0 {
+                    continue;
+                }
+                if seen_names.insert(field.name.clone()) {
+                    out.push(field);
+                }
+            }
+        }
+
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.all_instance_fields.insert(type_id, out.clone());
+        Ok(out)
     }
 
     /// ReferenceType.GetValues (2, 6)

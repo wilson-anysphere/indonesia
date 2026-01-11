@@ -648,18 +648,23 @@ const FOO_CLASS_ID: u64 = 0x3002;
 const METHOD_ID: u64 = 0x4001;
 const GENERIC_METHOD_ID: u64 = 0x4002;
 const OBJECT_ID: u64 = 0x5001;
-const EXCEPTION_ID: u64 = 0x5002;
+pub const EXCEPTION_ID: u64 = 0x5002;
 const STRING_OBJECT_ID: u64 = 0x5003;
 const ARRAY_OBJECT_ID: u64 = 0x5004;
+pub const FIELD_HIDING_OBJECT_ID: u64 = 0x5005;
 const OBJECT_CLASS_ID: u64 = 0x6001;
 const STRING_CLASS_ID: u64 = 0x6002;
 const ARRAY_CLASS_ID: u64 = 0x6003;
 const EXCEPTION_CLASS_ID: u64 = 0x6004;
 const THROWABLE_CLASS_ID: u64 = 0x6005;
+const FIELD_HIDING_SUPERCLASS_ID: u64 = 0x6006;
+const FIELD_HIDING_SUBCLASS_ID: u64 = 0x6007;
 const FIELD_ID: u64 = 0x7001;
 const DETAIL_MESSAGE_FIELD_ID: u64 = 0x7002;
 const GENERIC_LIST_FIELD_ID: u64 = 0x7003;
 const GENERIC_COUNT_FIELD_ID: u64 = 0x7004;
+const FIELD_HIDING_FIELD_SUPER_ID: u64 = 0x7005;
+const FIELD_HIDING_FIELD_SUB_ID: u64 = 0x7006;
 
 // Sample objects used by `nova-dap`'s wire formatter tests.
 const SAMPLE_STRING_OBJECT_ID: u64 = 0x5101;
@@ -1097,6 +1102,8 @@ async fn handle_packet(
                 ARRAY_CLASS_ID => "[I",
                 EXCEPTION_CLASS_ID => "Ljava/lang/RuntimeException;",
                 THROWABLE_CLASS_ID => "Ljava/lang/Throwable;",
+                FIELD_HIDING_SUPERCLASS_ID => "Lcom/example/FieldHidingSuper;",
+                FIELD_HIDING_SUBCLASS_ID => "Lcom/example/FieldHidingSub;",
                 HASHMAP_CLASS_ID => "Ljava/util/HashMap;",
                 HASHSET_CLASS_ID => "Ljava/util/HashSet;",
                 HASHMAP_NODE_CLASS_ID => "Ljava/util/HashMap$Node;",
@@ -1222,6 +1229,20 @@ async fn handle_packet(
                     w.write_string("Ljava/lang/String;");
                     w.write_u32(0);
                 }
+                FIELD_HIDING_SUPERCLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(FIELD_HIDING_FIELD_SUPER_ID, sizes.field_id);
+                    w.write_string("hidden");
+                    w.write_string("I");
+                    w.write_u32(1);
+                }
+                FIELD_HIDING_SUBCLASS_ID => {
+                    w.write_u32(1);
+                    w.write_id(FIELD_HIDING_FIELD_SUB_ID, sizes.field_id);
+                    w.write_string("hidden");
+                    w.write_string("I");
+                    w.write_u32(1);
+                }
                 HASHMAP_CLASS_ID => {
                     w.write_u32(2);
                     w.write_id(HASHMAP_FIELD_SIZE_ID, sizes.field_id);
@@ -1262,6 +1283,13 @@ async fn handle_packet(
                     w.write_u32(0);
                 }
             }
+            (0, w.into_vec())
+        }
+        // ReferenceType.Interfaces
+        (2, 10) => {
+            let _type_id = r.read_reference_type_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            w.write_u32(0);
             (0, w.into_vec())
         }
         // ReferenceType.GetValues (static field access)
@@ -1483,6 +1511,10 @@ async fn handle_packet(
                         w.write_u8(1); // TypeTag.CLASS
                         w.write_reference_type_id(EXCEPTION_CLASS_ID, sizes);
                     }
+                    FIELD_HIDING_OBJECT_ID => {
+                        w.write_u8(1); // TypeTag.CLASS
+                        w.write_reference_type_id(FIELD_HIDING_SUBCLASS_ID, sizes);
+                    }
                     STRING_OBJECT_ID => {
                         w.write_u8(1); // TypeTag.CLASS
                         w.write_reference_type_id(STRING_CLASS_ID, sizes);
@@ -1602,6 +1634,8 @@ async fn handle_packet(
                         tag: b's',
                         id: STRING_OBJECT_ID,
                     },
+                    (FIELD_HIDING_OBJECT_ID, FIELD_HIDING_FIELD_SUPER_ID) => JdwpValue::Int(2),
+                    (FIELD_HIDING_OBJECT_ID, FIELD_HIDING_FIELD_SUB_ID) => JdwpValue::Int(1),
                     (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_SIZE_ID) => JdwpValue::Int(2),
                     (SAMPLE_HASHMAP_OBJECT_ID, HASHMAP_FIELD_TABLE_ID) => JdwpValue::Object {
                         tag: b'[',
@@ -1868,6 +1902,20 @@ async fn handle_packet(
                 w.write_reference_type_id(DEFINED_CLASS_ID, sizes);
                 (0, w.into_vec())
             }
+        }
+        // ClassType.Superclass
+        (3, 1) => {
+            let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            let superclass = match class_id {
+                EXCEPTION_CLASS_ID => THROWABLE_CLASS_ID,
+                THROWABLE_CLASS_ID => 0,
+                FIELD_HIDING_SUBCLASS_ID => FIELD_HIDING_SUPERCLASS_ID,
+                FIELD_HIDING_SUPERCLASS_ID => 0,
+                _ => 0,
+            };
+            w.write_reference_type_id(superclass, sizes);
+            (0, w.into_vec())
         }
         // ClassType.SetValues
         (3, 2) => {
