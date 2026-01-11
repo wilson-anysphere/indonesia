@@ -89,6 +89,8 @@ fn unpack_ptr_len(v: u64) -> (u32, u32) {
 pub struct WasmCapabilities(u32);
 
 impl WasmCapabilities {
+    const KNOWN_MASK: u32 = (1 << 5) - 1;
+
     pub const NONE: Self = Self(0);
     pub const DIAGNOSTICS: Self = Self(1 << 0);
     pub const COMPLETIONS: Self = Self(1 << 1);
@@ -97,7 +99,7 @@ impl WasmCapabilities {
     pub const INLAY_HINTS: Self = Self(1 << 4);
 
     pub const fn from_bits(bits: u32) -> Self {
-        Self(bits)
+        Self(bits & Self::KNOWN_MASK)
     }
 
     pub const fn bits(self) -> u32 {
