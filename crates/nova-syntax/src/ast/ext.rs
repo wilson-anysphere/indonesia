@@ -42,6 +42,8 @@ impl super::Name {
 
 impl super::MethodDeclaration {
     pub fn parameters(&self) -> impl Iterator<Item = super::Parameter> + '_ {
+        // `flat_map(|list| list.parameters())` does not compile because the iterator borrows
+        // the moved `list`. Collect into a small buffer instead.
         self.parameter_list()
             .into_iter()
             .flat_map(|list| list.parameters().collect::<Vec<_>>())

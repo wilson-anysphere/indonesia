@@ -211,13 +211,16 @@ fn index_creates_persistent_cache_and_symbols_work() {
 
     let status: serde_json::Value = serde_json::from_slice(&status_output.stdout).unwrap();
     assert!(status["metadata"].is_object());
+    let indexes = status["indexes"].as_array().unwrap();
+    let has_legacy_symbols = indexes
+        .iter()
+        .any(|idx| idx["name"] == "symbols" && idx["bytes"].as_u64().unwrap_or(0) > 0);
+    let has_sharded_indexes = indexes
+        .iter()
+        .any(|idx| idx["name"] == "shards" && idx["bytes"].as_u64().unwrap_or(0) > 0);
     assert!(
-        status["indexes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|idx| idx["name"] == "symbols" && idx["bytes"].as_u64().unwrap_or(0) > 0),
-        "expected non-empty symbols index, got: {status:#}"
+        has_legacy_symbols || has_sharded_indexes,
+        "expected non-empty symbol index artifacts, got: {status:#}"
     );
 
     // Workspace symbol search should find the Main type in the index.
