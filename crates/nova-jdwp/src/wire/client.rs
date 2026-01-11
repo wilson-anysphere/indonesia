@@ -231,6 +231,9 @@ impl JdwpClient {
             writer.write_all(&packet).await?;
         }
 
+        // Prefer delivering a reply over treating a concurrently-cancelled shutdown token
+        // as an error. This avoids racy `Cancelled` results when the VM sends a terminal
+        // event (e.g. VMDisconnect) immediately after replying to a command.
         let reply = tokio::select! {
             biased;
             res = tokio::time::timeout(self.inner.config.reply_timeout, rx) => {
