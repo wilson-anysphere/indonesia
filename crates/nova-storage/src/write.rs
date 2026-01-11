@@ -3,6 +3,11 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use rkyv::ser::serializers::{
+    CompositeSerializer, HeapScratch, SharedSerializeMap, WriteSerializer,
+};
+use rkyv::ser::Serializer as _;
+
 use crate::header::{ArtifactKind, Compression, StorageHeader, HEADER_LEN};
 use crate::persisted::StorageError;
 
@@ -11,12 +16,16 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteCompression {
     None,
-    Zstd { level: i32 },
+    Zstd {
+        level: i32,
+    },
     /// Automatically selects compression based on the uncompressed archive size.
     ///
     /// If the archived payload is at least `threshold` bytes, zstd compression is
     /// used with the default zstd level (0). Otherwise, no compression is used.
-    Auto { threshold: u64 },
+    Auto {
+        threshold: u64,
+    },
 }
 
 impl Default for WriteCompression {
@@ -50,7 +59,11 @@ pub fn write_archive_atomic<T>(
     compression: Compression,
 ) -> Result<(), StorageError>
 where
-    T: rkyv::Archive + rkyv::Serialize<rkyv::ser::serializers::AllocSerializer<256>>,
+    T: rkyv::Archive
+        + rkyv::Serialize<rkyv::ser::serializers::AllocSerializer<256>>
+        + rkyv::Serialize<
+            CompositeSerializer<WriteSerializer<fs::File>, HeapScratch<256>, SharedSerializeMap>,
+        >,
 {
     let options = WriteArchiveOptions {
         compression: match compression {
@@ -71,7 +84,11 @@ pub fn write_archive_atomic_with_options<T>(
     options: WriteArchiveOptions,
 ) -> Result<(), StorageError>
 where
-    T: rkyv::Archive + rkyv::Serialize<rkyv::ser::serializers::AllocSerializer<256>>,
+    T: rkyv::Archive
+        + rkyv::Serialize<rkyv::ser::serializers::AllocSerializer<256>>
+        + rkyv::Serialize<
+            CompositeSerializer<WriteSerializer<fs::File>, HeapScratch<256>, SharedSerializeMap>,
+        >,
 {
     let parent = path
         .parent()
@@ -83,53 +100,97 @@ where
     };
     fs::create_dir_all(parent)?;
 
-    // Note: `rkyv::to_bytes` allocates the final archive, but we avoid
-    // additional full-sized buffers by streaming the payload to disk and using
-    // zstd's streaming encoder (rather than `bulk::compress`).
-    let archived =
-        rkyv::to_bytes::<_, 256>(value).map_err(|e| StorageError::Validation(e.to_string()))?;
-    let uncompressed = archived.as_slice();
-    let uncompressed_len = uncompressed.len() as u64;
-
-    let (compression, zstd_level) = match options.compression {
-        WriteCompression::None => (Compression::None, None),
-        WriteCompression::Zstd { level } => (Compression::Zstd, Some(level)),
-        WriteCompression::Auto { threshold } => {
-            if uncompressed_len >= threshold {
-                (Compression::Zstd, Some(0))
-            } else {
-                (Compression::None, None)
-            }
-        }
-    };
-
-    let content_hash = content_hash(uncompressed);
-
     let (tmp_path, file) = open_unique_tmp_file(path, parent)?;
 
     let result = (|| -> Result<(), StorageError> {
-        let (mut file, payload_len) = write_payload(file, uncompressed, compression, zstd_level)?;
+        let (mut file, uncompressed_len) = write_uncompressed_archive(file, value)?;
 
-        let header = StorageHeader::new(
-            kind,
-            schema_version,
-            compression,
-            payload_len,
-            uncompressed_len,
-            content_hash,
-        );
-
-        // Overwrite the placeholder header now that we know the final metadata.
-        file.seek(SeekFrom::Start(0))?;
-        file.write_all(&header.encode())?;
-        file.sync_all()?;
-        drop(file);
-
-        if options.validate_after_write {
-            validate_written_file(&tmp_path, &header)?;
+        enum SelectedCompression {
+            None,
+            Zstd { level: i32 },
         }
 
-        rename_overwrite(&tmp_path, path).map_err(StorageError::from)
+        let selected = match options.compression {
+            WriteCompression::None => SelectedCompression::None,
+            WriteCompression::Zstd { level } => SelectedCompression::Zstd { level },
+            WriteCompression::Auto { threshold } => {
+                if uncompressed_len >= threshold {
+                    SelectedCompression::Zstd { level: 0 }
+                } else {
+                    SelectedCompression::None
+                }
+            }
+        };
+
+        match selected {
+            SelectedCompression::None => {
+                let content_hash = hash_uncompressed_payload(&mut file, uncompressed_len)?;
+                let header = StorageHeader::new(
+                    kind,
+                    schema_version,
+                    Compression::None,
+                    uncompressed_len,
+                    uncompressed_len,
+                    content_hash,
+                );
+
+                file.seek(SeekFrom::Start(0))?;
+                file.write_all(&header.encode())?;
+                file.sync_all()?;
+                drop(file);
+
+                if options.validate_after_write {
+                    validate_written_file(&tmp_path, &header)?;
+                }
+
+                rename_overwrite(&tmp_path, path).map_err(StorageError::from)
+            }
+            SelectedCompression::Zstd { level } => {
+                drop(file);
+
+                let (compressed_path, compressed_file) = open_unique_tmp_file(path, parent)?;
+
+                let compressed_result = (|| -> Result<(), StorageError> {
+                    let (mut compressed_file, payload_len, content_hash) =
+                        compress_uncompressed_tmp(
+                            &tmp_path,
+                            compressed_file,
+                            uncompressed_len,
+                            level,
+                        )?;
+
+                    let header = StorageHeader::new(
+                        kind,
+                        schema_version,
+                        Compression::Zstd,
+                        payload_len,
+                        uncompressed_len,
+                        content_hash,
+                    );
+
+                    compressed_file.seek(SeekFrom::Start(0))?;
+                    compressed_file.write_all(&header.encode())?;
+                    compressed_file.sync_all()?;
+                    drop(compressed_file);
+
+                    if options.validate_after_write {
+                        validate_written_file(&compressed_path, &header)?;
+                    }
+
+                    rename_overwrite(&compressed_path, path).map_err(StorageError::from)
+                })();
+
+                // Best-effort cleanup of the intermediate uncompressed temp file.
+                let _ = fs::remove_file(&tmp_path);
+
+                if let Err(err) = compressed_result {
+                    let _ = fs::remove_file(&compressed_path);
+                    return Err(err);
+                }
+
+                Ok(())
+            }
+        }
     })();
 
     if let Err(err) = result {
@@ -140,34 +201,128 @@ where
     Ok(())
 }
 
-fn write_payload(
+fn write_uncompressed_archive<T>(
     mut file: fs::File,
-    payload: &[u8],
-    compression: Compression,
-    zstd_level: Option<i32>,
-) -> Result<(fs::File, u64), StorageError> {
+    value: &T,
+) -> Result<(fs::File, u64), StorageError>
+where
+    T: rkyv::Serialize<
+        CompositeSerializer<WriteSerializer<fs::File>, HeapScratch<256>, SharedSerializeMap>,
+    >,
+{
+    // Placeholder header.
     file.write_all(&[0u8; HEADER_LEN])?;
 
-    match compression {
-        Compression::None => {
-            file.write_all(payload)?;
-            Ok((file, payload.len() as u64))
+    let mut serializer = CompositeSerializer::new(
+        WriteSerializer::with_pos(file, 0),
+        HeapScratch::<256>::new(),
+        SharedSerializeMap::new(),
+    );
+
+    serializer.serialize_value(value).map_err(map_rkyv_error)?;
+
+    let uncompressed_len = serializer.pos() as u64;
+
+    let file = serializer.into_serializer().into_inner();
+
+    Ok((file, uncompressed_len))
+}
+
+fn hash_uncompressed_payload(
+    file: &mut fs::File,
+    uncompressed_len: u64,
+) -> Result<u64, StorageError> {
+    file.seek(SeekFrom::Start(HEADER_LEN as u64))?;
+    let mut limited = file.take(uncompressed_len);
+
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 128 * 1024];
+    let mut remaining = uncompressed_len;
+    while remaining > 0 {
+        let to_read = (remaining.min(buf.len() as u64)) as usize;
+        let n = limited.read(&mut buf[..to_read])?;
+        if n == 0 {
+            break;
         }
-        Compression::Zstd => {
-            let level = zstd_level.unwrap_or(0);
-            let mut encoder = zstd::stream::write::Encoder::new(file, level)
-                .map_err(|e| StorageError::Decompression(e.to_string()))?;
-            encoder.write_all(payload)?;
-            let mut file = encoder
-                .finish()
-                .map_err(|e| StorageError::Decompression(e.to_string()))?;
-            file.seek(SeekFrom::End(0))?;
-            let end = file.stream_position()?;
-            let payload_len = end
-                .checked_sub(HEADER_LEN as u64)
-                .ok_or(StorageError::InvalidHeader("payload length underflow"))?;
-            Ok((file, payload_len))
+        remaining -= n as u64;
+        hasher.update(&buf[..n]);
+    }
+    if remaining != 0 {
+        return Err(StorageError::Truncated {
+            expected: uncompressed_len as usize,
+            found: (uncompressed_len - remaining) as usize,
+        });
+    }
+
+    let hash_bytes = hasher.finalize();
+    Ok(u64::from_le_bytes(
+        hash_bytes.as_bytes()[..8].try_into().expect("hash slice"),
+    ))
+}
+
+fn compress_uncompressed_tmp(
+    uncompressed_path: &Path,
+    mut compressed_file: fs::File,
+    uncompressed_len: u64,
+    level: i32,
+) -> Result<(fs::File, u64, u64), StorageError> {
+    compressed_file.write_all(&[0u8; HEADER_LEN])?;
+
+    let mut src = fs::File::open(uncompressed_path)?;
+    src.seek(SeekFrom::Start(HEADER_LEN as u64))?;
+    let mut limited = src.take(uncompressed_len);
+
+    let mut encoder = zstd::stream::write::Encoder::new(compressed_file, level)
+        .map_err(|e| StorageError::Decompression(e.to_string()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 128 * 1024];
+    let mut remaining = uncompressed_len;
+    while remaining > 0 {
+        let to_read = (remaining.min(buf.len() as u64)) as usize;
+        let n = limited.read(&mut buf[..to_read])?;
+        if n == 0 {
+            break;
         }
+        remaining -= n as u64;
+        hasher.update(&buf[..n]);
+        encoder.write_all(&buf[..n])?;
+    }
+    if remaining != 0 {
+        return Err(StorageError::Truncated {
+            expected: uncompressed_len as usize,
+            found: (uncompressed_len - remaining) as usize,
+        });
+    }
+
+    let mut compressed_file = encoder
+        .finish()
+        .map_err(|e| StorageError::Decompression(e.to_string()))?;
+    compressed_file.seek(SeekFrom::End(0))?;
+    let end = compressed_file.stream_position()?;
+    let payload_len = end
+        .checked_sub(HEADER_LEN as u64)
+        .ok_or(StorageError::InvalidHeader("payload length underflow"))?;
+
+    let content_hash = {
+        let hash_bytes = hasher.finalize();
+        u64::from_le_bytes(hash_bytes.as_bytes()[..8].try_into().expect("hash slice"))
+    };
+
+    Ok((compressed_file, payload_len, content_hash))
+}
+
+fn map_rkyv_error<C, H>(
+    err: rkyv::ser::serializers::CompositeSerializerError<std::io::Error, C, H>,
+) -> StorageError
+where
+    C: std::fmt::Display,
+    H: std::fmt::Display,
+{
+    match err {
+        rkyv::ser::serializers::CompositeSerializerError::SerializerError(err) => {
+            StorageError::Io(err)
+        }
+        other => StorageError::Validation(other.to_string()),
     }
 }
 
@@ -279,6 +434,7 @@ fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::
         let tmp_path = parent.join(tmp_name);
 
         match fs::OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .open(&tmp_path)
@@ -288,9 +444,4 @@ fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::
             Err(err) => return Err(err),
         }
     }
-}
-
-fn content_hash(payload: &[u8]) -> u64 {
-    let hash_bytes = blake3::hash(payload);
-    u64::from_le_bytes(hash_bytes.as_bytes()[..8].try_into().expect("hash slice"))
 }
