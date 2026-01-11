@@ -219,18 +219,6 @@ impl Workspace {
             })?;
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
-        // Load cache metadata (if any) so we can reuse content fingerprints for
-        // unchanged files when persisting updated metadata.
-        let metadata_path = cache_dir.metadata_path();
-        let metadata = CacheMetadata::load(&metadata_path).ok().filter(|meta| {
-            meta.is_compatible() && &meta.project_hash == stamp_snapshot.project_hash()
-        });
-
-        let mut content_fingerprints = metadata
-            .as_ref()
-            .map(|meta| meta.file_fingerprints.clone())
-            .unwrap_or_default();
-
         // Load persisted sharded indexes based on the stamp snapshot. This avoids hashing
         // full file contents before deciding whether the cache is reusable.
         let shard_count = DEFAULT_SHARD_COUNT;
@@ -268,6 +256,34 @@ impl Workspace {
                 stamp_snapshot.file_fingerprints().keys().cloned().collect(),
             ),
         };
+
+        if invalidated_files.is_empty() {
+            let metrics = PerfMetrics {
+                files_total: stamp_snapshot.file_fingerprints().len(),
+                files_indexed: 0,
+                bytes_indexed: 0,
+                files_invalidated: 0,
+                symbols_indexed: count_symbols(&shards),
+                snapshot_ms,
+                index_ms: 0,
+                elapsed_ms: start.elapsed().as_millis(),
+                rss_bytes: current_rss_bytes(),
+            };
+
+            return Ok((stamp_snapshot, cache_dir, shards, metrics));
+        }
+
+        // Load cache metadata (if any) so we can reuse content fingerprints for
+        // unchanged files when persisting updated metadata.
+        let metadata_path = cache_dir.metadata_path();
+        let metadata = CacheMetadata::load(&metadata_path).ok().filter(|meta| {
+            meta.is_compatible() && &meta.project_hash == stamp_snapshot.project_hash()
+        });
+
+        let mut content_fingerprints = metadata
+            .as_ref()
+            .map(|meta| meta.file_fingerprints.clone())
+            .unwrap_or_default();
 
         // If metadata is missing content fingerprints for a file that still
         // exists, force it through the indexer so we can compute a content hash

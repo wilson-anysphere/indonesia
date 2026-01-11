@@ -1943,14 +1943,17 @@ pub fn load_sharded_index_archives_from_fast_snapshot(
     if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
-    let metadata = match CacheMetadata::load(metadata_path) {
-        Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
+    let metadata = match CacheMetadataArchive::open(&metadata_path)? {
+        Some(metadata) => MetadataSource::Archived(metadata),
+        None => match CacheMetadata::load(&metadata_path) {
+            Ok(metadata) => MetadataSource::Owned(metadata),
+            Err(_) => return Ok(None),
+        },
     };
     if !metadata.is_compatible() {
         return Ok(None);
     }
-    if &metadata.project_hash != fast_snapshot.project_hash() {
+    if !metadata.project_hash_matches(fast_snapshot) {
         return Ok(None);
     }
 
@@ -1973,10 +1976,7 @@ pub fn load_sharded_index_archives_from_fast_snapshot(
         shards.push(Some(shard_archives));
     }
 
-    let mut invalidated: BTreeSet<String> = metadata
-        .diff_files_fast(fast_snapshot)
-        .into_iter()
-        .collect();
+    let mut invalidated: BTreeSet<String> = metadata.diff_files_fast(fast_snapshot).into_iter().collect();
 
     if !missing_shards.is_empty() {
         for path in fast_snapshot.file_fingerprints().keys() {
