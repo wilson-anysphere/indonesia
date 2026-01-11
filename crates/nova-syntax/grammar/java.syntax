@@ -58,26 +58,28 @@ Statement =
   | EmptyStatement
 
 Expression =
-      LiteralExpression
-   | NameExpression
-   | ThisExpression
-   | SuperExpression
-   | ParenthesizedExpression
-   | NewExpression
-   | MethodCallExpression
-   | FieldAccessExpression
-   | ArrayAccessExpression
-   | ClassLiteralExpression
-   | MethodReferenceExpression
-   | ConstructorReferenceExpression
-   | UnaryExpression
-   | BinaryExpression
-   | InstanceofExpression
-   | AssignmentExpression
-   | ConditionalExpression
-   | SwitchExpression
-   | LambdaExpression
-   | CastExpression
+       LiteralExpression
+    | NameExpression
+    | ThisExpression
+    | SuperExpression
+    | ParenthesizedExpression
+    | NewExpression
+    | ArrayCreationExpression
+    | MethodCallExpression
+    | FieldAccessExpression
+    | ArrayAccessExpression
+    | ClassLiteralExpression
+    | MethodReferenceExpression
+    | ConstructorReferenceExpression
+    | UnaryExpression
+    | BinaryExpression
+    | InstanceofExpression
+    | AssignmentExpression
+    | ConditionalExpression
+    | SwitchExpression
+    | LambdaExpression
+    | CastExpression
+    | ArrayInitializer
 
 LambdaBody = Block | Expression
 
@@ -462,6 +464,27 @@ NewExpression {
   arguments: ArgumentList?
 }
 
+ArrayCreationExpression {
+  ty: Type?
+  dim_exprs: DimExprs?
+  dims: Dims?
+  initializer: ArrayInitializer?
+}
+
+DimExprs {
+  dims: DimExpr*
+}
+
+DimExpr {
+  expression: Expression?
+}
+
+Dims {
+  dims: Dim*
+}
+
+Dim {}
+
 MethodCallExpression {
   callee: Expression?
   arguments: ArgumentList?
@@ -522,6 +545,19 @@ LambdaExpression {
 
 CastExpression {
   ty: Type?
+  expression: Expression?
+}
+
+ArrayInitializer {
+  initializers: ArrayInitializerList?
+}
+
+ArrayInitializerList {
+  initializers: VariableInitializer*
+}
+
+VariableInitializer {
+  initializer: ArrayInitializer?
   expression: Expression?
 }
 

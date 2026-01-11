@@ -441,7 +441,8 @@ fn lexer_string_literal_escape_sequences() {
 
 #[test]
 fn lexer_reports_invalid_string_escape_sequences() {
-    // `\q` is not a valid Java string escape sequence.
+    // `\q` is not a valid Java string escape sequence; the lexer should surface a diagnostic but
+    // keep the token lossless.
     let input = "\"\\q\"";
     let (tokens, errors) = lex_with_errors(input);
 

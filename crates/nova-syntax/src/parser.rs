@@ -2659,6 +2659,8 @@ impl<'a> Parser<'a> {
             self.bump();
             if self.at(SyntaxKind::Semicolon) || self.at(SyntaxKind::Comma) {
                 self.error_here("expected initializer expression");
+            } else if self.at(SyntaxKind::LBrace) {
+                self.parse_array_initializer(true);
             } else {
                 self.parse_expression(0);
             }
@@ -2856,14 +2858,7 @@ impl<'a> Parser<'a> {
                 self.builder.finish_node();
             }
             SyntaxKind::NewKw => {
-                self.builder
-                    .start_node_at(checkpoint, SyntaxKind::NewExpression.into());
-                self.bump();
-                self.parse_type();
-                if self.at(SyntaxKind::LParen) {
-                    self.parse_argument_list();
-                }
-                self.builder.finish_node();
+                self.parse_new_expression_or_array_creation(checkpoint, allow_lambda);
             }
             SyntaxKind::Plus
             | SyntaxKind::Minus
@@ -3145,6 +3140,182 @@ impl<'a> Parser<'a> {
                 self.bump_any();
             }
         }
+    }
+
+    fn parse_new_expression_or_array_creation(
+        &mut self,
+        checkpoint: rowan::Checkpoint,
+        allow_lambda: bool,
+    ) {
+        // We parse `new` first, then decide whether this is a class instance creation (`new T(...)`)
+        // or an array creation (`new T[...]` / `new T[] {...}`), and finally wrap the whole thing
+        // in the appropriate expression node.
+        self.bump(); // new
+        self.parse_type_no_dims();
+
+        if self.at(SyntaxKind::LParen) {
+            self.builder
+                .start_node_at(checkpoint, SyntaxKind::NewExpression.into());
+            self.parse_argument_list();
+            self.builder.finish_node();
+            return;
+        }
+
+        // Array creation:
+        // - `new T[expr]...`
+        // - `new T[] { ... }`
+        // - `new T[expr][] { ... }` (mixed dims)
+        if self.at(SyntaxKind::LBracket) || self.at(SyntaxKind::LBrace) {
+            self.builder.start_node_at(
+                checkpoint,
+                SyntaxKind::ArrayCreationExpression.into(),
+            );
+            if self.at(SyntaxKind::LBracket) {
+                self.parse_array_creation_dimensions(allow_lambda);
+            }
+            if self.at(SyntaxKind::LBrace) {
+                self.parse_array_initializer(allow_lambda);
+            }
+            self.builder.finish_node();
+            return;
+        }
+
+        // Recovery: keep the old `new Type` node shape when there's no argument list or dims.
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::NewExpression.into());
+        self.builder.finish_node();
+    }
+
+    fn parse_type_no_dims(&mut self) {
+        self.builder.start_node(SyntaxKind::Type.into());
+        self.eat_trivia();
+        if self.at_primitive_type() {
+            self.builder.start_node(SyntaxKind::PrimitiveType.into());
+            self.bump();
+            self.builder.finish_node();
+        } else {
+            self.builder.start_node(SyntaxKind::NamedType.into());
+            self.expect_ident_like("expected type name");
+            while self.at(SyntaxKind::Dot) && self.nth(1).is_some_and(|k| k.is_identifier_like()) {
+                self.bump();
+                self.expect_ident_like("expected type name segment");
+            }
+            if self.at(SyntaxKind::Less) {
+                self.parse_type_arguments();
+            }
+            self.builder.finish_node(); // NamedType
+        }
+        self.builder.finish_node(); // Type
+    }
+
+    fn parse_array_creation_dimensions(&mut self, allow_lambda: bool) {
+        self.eat_trivia();
+
+        if self.at(SyntaxKind::LBracket) && self.nth(1) != Some(SyntaxKind::RBracket) {
+            self.builder.start_node(SyntaxKind::DimExprs.into());
+            while self.at(SyntaxKind::LBracket) && self.nth(1) != Some(SyntaxKind::RBracket) {
+                self.parse_dim_expr(allow_lambda);
+            }
+            self.builder.finish_node(); // DimExprs
+        }
+
+        if self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
+            self.builder.start_node(SyntaxKind::Dims.into());
+            while self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
+                self.parse_dim();
+            }
+            self.builder.finish_node(); // Dims
+        }
+
+        // Recovery: consume any remaining bracket pairs so we don't get stuck on malformed mixes.
+        while self.at(SyntaxKind::LBracket) {
+            if self.nth(1) == Some(SyntaxKind::RBracket) {
+                self.parse_dim();
+            } else {
+                self.parse_dim_expr(allow_lambda);
+            }
+        }
+    }
+
+    fn parse_dim_expr(&mut self, allow_lambda: bool) {
+        self.builder.start_node(SyntaxKind::DimExpr.into());
+        self.expect(SyntaxKind::LBracket, "expected `[`");
+        if self.at(SyntaxKind::RBracket) {
+            self.error_here("expected array dimension expression");
+        } else {
+            self.parse_expression_inner(0, allow_lambda);
+        }
+        self.expect(SyntaxKind::RBracket, "expected `]` after array dimension");
+        self.builder.finish_node(); // DimExpr
+    }
+
+    fn parse_dim(&mut self) {
+        self.builder.start_node(SyntaxKind::Dim.into());
+        self.expect(SyntaxKind::LBracket, "expected `[`");
+        self.expect(SyntaxKind::RBracket, "expected `]`");
+        self.builder.finish_node(); // Dim
+    }
+
+    fn parse_array_initializer(&mut self, allow_lambda: bool) {
+        self.builder.start_node(SyntaxKind::ArrayInitializer.into());
+        self.expect(SyntaxKind::LBrace, "expected `{` to start array initializer");
+
+        self.eat_trivia();
+        if !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            self.builder
+                .start_node(SyntaxKind::ArrayInitializerList.into());
+            while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+                self.eat_trivia();
+                if self.at(SyntaxKind::Comma) {
+                    // Common during typing: `{, 1}`. Don't get stuck; treat as a missing element.
+                    self.error_here("expected array initializer element");
+                    self.bump();
+                    continue;
+                }
+
+                // If we hit a clear statement boundary, bail out and let the caller recover.
+                if matches!(
+                    self.current(),
+                    SyntaxKind::Semicolon | SyntaxKind::RParen | SyntaxKind::RBracket
+                ) {
+                    break;
+                }
+
+                self.parse_variable_initializer(allow_lambda);
+                self.eat_trivia();
+                if self.at(SyntaxKind::Comma) {
+                    self.bump();
+                    continue;
+                }
+                break;
+            }
+            self.builder.finish_node(); // ArrayInitializerList
+        }
+
+        self.expect(SyntaxKind::RBrace, "expected `}` to close array initializer");
+        self.builder.finish_node(); // ArrayInitializer
+    }
+
+    fn parse_variable_initializer(&mut self, allow_lambda: bool) {
+        self.builder.start_node(SyntaxKind::VariableInitializer.into());
+        self.eat_trivia();
+        if self.at(SyntaxKind::LBrace) {
+            self.parse_array_initializer(allow_lambda);
+        } else if can_start_expression(self.current()) {
+            self.parse_expression_inner(0, allow_lambda);
+        } else {
+            self.builder.start_node(SyntaxKind::Error.into());
+            self.error_here("expected initializer");
+            // Avoid consuming expression terminators; callers recover at `,` / `}`.
+            if !matches!(
+                self.current(),
+                SyntaxKind::Comma | SyntaxKind::RBrace | SyntaxKind::Eof
+            ) {
+                self.bump_any();
+            }
+            self.builder.finish_node(); // Error
+        }
+        self.builder.finish_node(); // VariableInitializer
     }
 
     fn parse_lambda_expression(&mut self, checkpoint: rowan::Checkpoint) {

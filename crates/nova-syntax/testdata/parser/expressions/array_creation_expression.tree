@@ -1,0 +1,237 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              LBracket "["
+              RBracket "]"
+              LBracket "["
+              RBracket "]"
+              Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "a"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ArrayCreationExpression
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    PrimitiveType
+                      IntKw "int"
+                  DimExprs
+                    DimExpr
+                      LBracket "["
+                      LiteralExpression
+                        IntLiteral "1"
+                      RBracket "]"
+                    DimExpr
+                      LBracket "["
+                      LiteralExpression
+                        IntLiteral "2"
+                      RBracket "]"
+            Semicolon ";"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              LBracket "["
+              RBracket "]"
+              Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "b"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ArrayCreationExpression
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    PrimitiveType
+                      IntKw "int"
+                  Dims
+                    Dim
+                      LBracket "["
+                      RBracket "]"
+                    Whitespace " "
+                  ArrayInitializer
+                    LBrace "{"
+                    Whitespace " "
+                    ArrayInitializerList
+                      VariableInitializer
+                        LiteralExpression
+                          IntLiteral "1"
+                      Comma ","
+                      Whitespace " "
+                      VariableInitializer
+                        LiteralExpression
+                          IntLiteral "2"
+                      Comma ","
+                      Whitespace " "
+                      VariableInitializer
+                        LiteralExpression
+                          IntLiteral "3"
+                        Whitespace " "
+                    RBrace "}"
+            Semicolon ";"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              LBracket "["
+              RBracket "]"
+              LBracket "["
+              RBracket "]"
+              Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "c"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ArrayCreationExpression
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    PrimitiveType
+                      IntKw "int"
+                  Dims
+                    Dim
+                      LBracket "["
+                      RBracket "]"
+                    Dim
+                      LBracket "["
+                      RBracket "]"
+                    Whitespace " "
+                  ArrayInitializer
+                    LBrace "{"
+                    Whitespace " "
+                    ArrayInitializerList
+                      VariableInitializer
+                        ArrayInitializer
+                          LBrace "{"
+                          Whitespace " "
+                          ArrayInitializerList
+                            VariableInitializer
+                              LiteralExpression
+                                IntLiteral "1"
+                              Whitespace " "
+                          RBrace "}"
+                      Comma ","
+                      Whitespace " "
+                      VariableInitializer
+                        ArrayInitializer
+                          LBrace "{"
+                          Whitespace " "
+                          ArrayInitializerList
+                            VariableInitializer
+                              LiteralExpression
+                                IntLiteral "2"
+                            Comma ","
+                            Whitespace " "
+                            VariableInitializer
+                              LiteralExpression
+                                IntLiteral "3"
+                              Whitespace " "
+                          RBrace "}"
+                      Whitespace " "
+                    RBrace "}"
+            Semicolon ";"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              LBracket "["
+              RBracket "]"
+              LBracket "["
+              RBracket "]"
+              Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "d"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ArrayCreationExpression
+                  NewKw "new"
+                  Type
+                    Whitespace " "
+                    PrimitiveType
+                      IntKw "int"
+                  DimExprs
+                    DimExpr
+                      LBracket "["
+                      LiteralExpression
+                        IntLiteral "1"
+                      RBracket "]"
+                  Dims
+                    Dim
+                      LBracket "["
+                      RBracket "]"
+            Semicolon ";"
+          Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              LBracket "["
+              RBracket "]"
+              Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "e"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ArrayInitializer
+                  LBrace "{"
+                  Whitespace " "
+                  ArrayInitializerList
+                    VariableInitializer
+                      LiteralExpression
+                        IntLiteral "1"
+                    Comma ","
+                    Whitespace " "
+                    VariableInitializer
+                      LiteralExpression
+                        IntLiteral "2"
+                      Whitespace " "
+                  RBrace "}"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

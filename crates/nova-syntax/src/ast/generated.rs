@@ -2299,6 +2299,141 @@ impl NewExpression {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayCreationExpression {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ArrayCreationExpression {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ArrayCreationExpression
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ArrayCreationExpression {
+    pub fn ty(&self) -> Option<Type> {
+        support::child::<Type>(&self.syntax)
+    }
+
+    pub fn dim_exprs(&self) -> Option<DimExprs> {
+        support::child::<DimExprs>(&self.syntax)
+    }
+
+    pub fn dims(&self) -> Option<Dims> {
+        support::child::<Dims>(&self.syntax)
+    }
+
+    pub fn initializer(&self) -> Option<ArrayInitializer> {
+        support::child::<ArrayInitializer>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DimExprs {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for DimExprs {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::DimExprs
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl DimExprs {
+    pub fn dims(&self) -> impl Iterator<Item = DimExpr> + '_ {
+        support::children::<DimExpr>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DimExpr {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for DimExpr {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::DimExpr
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl DimExpr {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dims {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for Dims {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Dims
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl Dims {
+    pub fn dims(&self) -> impl Iterator<Item = Dim> + '_ {
+        support::children::<Dim>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dim {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for Dim {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Dim
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodCallExpression {
     syntax: SyntaxNode,
 }
@@ -2672,6 +2807,88 @@ impl AstNode for CastExpression {
 impl CastExpression {
     pub fn ty(&self) -> Option<Type> {
         support::child::<Type>(&self.syntax)
+    }
+
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayInitializer {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ArrayInitializer {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ArrayInitializer
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ArrayInitializer {
+    pub fn initializers(&self) -> Option<ArrayInitializerList> {
+        support::child::<ArrayInitializerList>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArrayInitializerList {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ArrayInitializerList {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ArrayInitializerList
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ArrayInitializerList {
+    pub fn initializers(&self) -> impl Iterator<Item = VariableInitializer> + '_ {
+        support::children::<VariableInitializer>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariableInitializer {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for VariableInitializer {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::VariableInitializer
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl VariableInitializer {
+    pub fn initializer(&self) -> Option<ArrayInitializer> {
+        support::child::<ArrayInitializer>(&self.syntax)
     }
 
     pub fn expression(&self) -> Option<Expression> {
@@ -3363,6 +3580,7 @@ pub enum Expression {
     SuperExpression(SuperExpression),
     ParenthesizedExpression(ParenthesizedExpression),
     NewExpression(NewExpression),
+    ArrayCreationExpression(ArrayCreationExpression),
     MethodCallExpression(MethodCallExpression),
     FieldAccessExpression(FieldAccessExpression),
     ArrayAccessExpression(ArrayAccessExpression),
@@ -3377,6 +3595,7 @@ pub enum Expression {
     SwitchExpression(SwitchExpression),
     LambdaExpression(LambdaExpression),
     CastExpression(CastExpression),
+    ArrayInitializer(ArrayInitializer),
 }
 
 impl AstNode for Expression {
@@ -3387,6 +3606,7 @@ impl AstNode for Expression {
             || SuperExpression::can_cast(kind)
             || ParenthesizedExpression::can_cast(kind)
             || NewExpression::can_cast(kind)
+            || ArrayCreationExpression::can_cast(kind)
             || MethodCallExpression::can_cast(kind)
             || FieldAccessExpression::can_cast(kind)
             || ArrayAccessExpression::can_cast(kind)
@@ -3401,6 +3621,7 @@ impl AstNode for Expression {
             || SwitchExpression::can_cast(kind)
             || LambdaExpression::can_cast(kind)
             || CastExpression::can_cast(kind)
+            || ArrayInitializer::can_cast(kind)
     }
 
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -3415,6 +3636,7 @@ impl AstNode for Expression {
         if let Some(it) = SuperExpression::cast(syntax.clone()) { return Some(Self::SuperExpression(it)); }
         if let Some(it) = ParenthesizedExpression::cast(syntax.clone()) { return Some(Self::ParenthesizedExpression(it)); }
         if let Some(it) = NewExpression::cast(syntax.clone()) { return Some(Self::NewExpression(it)); }
+        if let Some(it) = ArrayCreationExpression::cast(syntax.clone()) { return Some(Self::ArrayCreationExpression(it)); }
         if let Some(it) = MethodCallExpression::cast(syntax.clone()) { return Some(Self::MethodCallExpression(it)); }
         if let Some(it) = FieldAccessExpression::cast(syntax.clone()) { return Some(Self::FieldAccessExpression(it)); }
         if let Some(it) = ArrayAccessExpression::cast(syntax.clone()) { return Some(Self::ArrayAccessExpression(it)); }
@@ -3429,6 +3651,7 @@ impl AstNode for Expression {
         if let Some(it) = SwitchExpression::cast(syntax.clone()) { return Some(Self::SwitchExpression(it)); }
         if let Some(it) = LambdaExpression::cast(syntax.clone()) { return Some(Self::LambdaExpression(it)); }
         if let Some(it) = CastExpression::cast(syntax.clone()) { return Some(Self::CastExpression(it)); }
+        if let Some(it) = ArrayInitializer::cast(syntax.clone()) { return Some(Self::ArrayInitializer(it)); }
 
         None
     }
@@ -3441,6 +3664,7 @@ impl AstNode for Expression {
             Self::SuperExpression(it) => it.syntax(),
             Self::ParenthesizedExpression(it) => it.syntax(),
             Self::NewExpression(it) => it.syntax(),
+            Self::ArrayCreationExpression(it) => it.syntax(),
             Self::MethodCallExpression(it) => it.syntax(),
             Self::FieldAccessExpression(it) => it.syntax(),
             Self::ArrayAccessExpression(it) => it.syntax(),
@@ -3455,6 +3679,7 @@ impl AstNode for Expression {
             Self::SwitchExpression(it) => it.syntax(),
             Self::LambdaExpression(it) => it.syntax(),
             Self::CastExpression(it) => it.syntax(),
+            Self::ArrayInitializer(it) => it.syntax(),
         }
     }
 }
