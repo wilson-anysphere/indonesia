@@ -4,7 +4,12 @@ use std::{
     io::{self, BufRead, BufReader, Read},
     ops::ControlFlow,
     path::Path,
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    thread,
     time::Duration,
 };
 
@@ -94,15 +99,37 @@ impl CommandRunner for DefaultCommandRunner {
         f: impl FnOnce(&mut dyn BufRead) -> Result<ControlFlow<R, R>>,
     ) -> Result<R> {
         const MAX_STDERR_BYTES: u64 = 1_048_576; // 1 MiB
+        const TIMEOUT: Duration = Duration::from_secs(55);
 
-        let mut child = Command::new(program)
-            .args(args)
+        let mut cmd = Command::new(program);
+        cmd.args(args)
             .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Put the child into its own process group on Unix so timeouts/early-exit kills can
+        // terminate the whole process tree.
+        //
+        // This matches nova-process's behavior for bounded (non-streaming) command execution.
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+
+            cmd.pre_exec(|| {
+                // SAFETY: `setpgid` is async-signal-safe and does not allocate.
+                // This is executed after `fork` in the child process.
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+
+        let mut child = cmd
             .spawn()
             .with_context(|| format!("failed to spawn `{program}`"))?;
+        let pid = child.id();
 
         let stdout = child
             .stdout
@@ -113,57 +140,122 @@ impl CommandRunner for DefaultCommandRunner {
             .take()
             .with_context(|| "failed to open stderr pipe")?;
 
-        let stderr_handle = std::thread::spawn(move || -> io::Result<String> {
+        let stderr_handle = thread::spawn(move || -> io::Result<String> {
             read_truncated_to_string_and_drain(stderr, MAX_STDERR_BYTES)
         });
 
-        let mut stdout_reader = BufReader::new(stdout);
-        let control = f(&mut stdout_reader);
-        match control {
-            Ok(ControlFlow::Continue(value)) => {
-                // Drain remaining stdout to avoid deadlocks if `f` exits early.
-                let mut sink = io::sink();
-                let _ = io::copy(&mut stdout_reader, &mut sink);
+        // Wait for process completion in a separate thread so the timeout logic can be cancelled as
+        // soon as the process exits, even if stdout parsing continues afterwards.
+        let (status_tx, status_rx) = mpsc::channel::<io::Result<ExitStatus>>();
+        let wait_handle = thread::spawn(move || {
+            let _ = status_tx.send(child.wait());
+        });
 
-                let status = child
-                    .wait()
-                    .with_context(|| format!("failed to wait for `{program}`"))?;
-
-                let stderr = match stderr_handle.join() {
-                    Ok(Ok(stderr)) => stderr,
-                    Ok(Err(_)) => String::new(),
-                    Err(_) => String::new(),
-                };
-
-                if !status.success() {
-                    return Err(anyhow!(
-                        "`{program} {}` exited with {}.\nstderr:\n{stderr}",
-                        args.join(" "),
-                        status
-                    ));
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let timed_out_for_timeout = Arc::clone(&timed_out);
+        let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
+        let timeout_handle = thread::spawn(move || {
+            match cancel_rx.recv_timeout(TIMEOUT) {
+                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    timed_out_for_timeout.store(true, Ordering::SeqCst);
+                    kill_process_tree_by_pid(pid);
                 }
+            }
+        });
 
-                Ok(value)
+        let mut stdout_reader = BufReader::new(stdout);
+        let outcome: Result<ControlFlow<R, R>> = f(&mut stdout_reader);
+
+        let mut value: Option<R> = None;
+        let mut broke_early = false;
+        let callback_err = match outcome {
+            Ok(ControlFlow::Continue(v)) => {
+                value = Some(v);
+                None
             }
-            Ok(ControlFlow::Break(value)) => {
-                // Caller indicated it has found what it needs and wants to stop early. Kill the
-                // child process to avoid reading the remainder of stdout into the pipe buffers.
-                drop(stdout_reader);
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stderr_handle.join();
-                Ok(value)
+            Ok(ControlFlow::Break(v)) => {
+                value = Some(v);
+                broke_early = true;
+                None
             }
-            Err(err) => {
-                // The caller encountered an error while reading stdout. Kill the child process to
-                // avoid blocking on full stdout/stderr pipes, then return the original error.
-                drop(stdout_reader);
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stderr_handle.join();
-                Err(err)
-            }
+            Err(err) => Some(err),
+        };
+
+        if broke_early || callback_err.is_some() {
+            // The caller indicated it has found what it needs (or hit an error) and wants to stop
+            // early. Kill the child process to avoid reading the remainder of stdout into the pipe
+            // buffers.
+            drop(stdout_reader);
+            kill_process_tree_by_pid(pid);
+        } else {
+            // Drain remaining stdout to avoid deadlocks if `f` exits early.
+            let mut sink = io::sink();
+            let _ = io::copy(&mut stdout_reader, &mut sink);
         }
+
+        let status_message = status_rx.recv();
+        let stderr = match stderr_handle.join() {
+            Ok(Ok(stderr)) => stderr,
+            Ok(Err(_)) => String::new(),
+            Err(_) => String::new(),
+        };
+
+        // Cancel timeout enforcement now that the process has exited (or we've given up on
+        // waiting).
+        let _ = cancel_tx.send(());
+        let _ = timeout_handle.join();
+        let _ = wait_handle.join();
+
+        let status_result = status_message.map_err(|_| anyhow!("failed to wait for `{program}`"))?;
+
+        if timed_out.load(Ordering::SeqCst) && !broke_early && callback_err.is_none() {
+            return Err(anyhow!(
+                "`{program} {}` timed out after {TIMEOUT:?}.\nstderr:\n{stderr}",
+                args.join(" "),
+            ));
+        }
+
+        if let Some(err) = callback_err {
+            return Err(err);
+        }
+
+        if broke_early {
+            return Ok(value.expect("break should capture value"));
+        }
+
+        let status = status_result.with_context(|| format!("failed to wait for `{program}`"))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "`{program} {}` exited with {}.\nstderr:\n{stderr}",
+                args.join(" "),
+                status
+            ));
+        }
+
+        Ok(value.expect("continue should capture value"))
+    }
+}
+
+fn kill_process_tree_by_pid(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        let pid = pid as i32;
+        // Try killing the process group first (requires `setpgid` in `pre_exec`).
+        let _ = libc::kill(-pid, libc::SIGKILL);
+        // Fallback: kill the immediate process.
+        let _ = libc::kill(pid, libc::SIGKILL);
+    }
+
+    #[cfg(windows)]
+    {
+        let pid = pid.to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid, "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
