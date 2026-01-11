@@ -24,13 +24,13 @@ pub fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
-pub(crate) fn bincode_options() -> impl bincode::Options {
+pub(crate) fn bincode_options() -> impl bincode::Options + Copy {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .with_little_endian()
 }
 
-pub(crate) fn bincode_options_limited() -> impl bincode::Options {
+pub(crate) fn bincode_options_limited() -> impl bincode::Options + Copy {
     bincode_options().with_limit(BINCODE_PAYLOAD_LIMIT_BYTES as u64)
 }
 
