@@ -113,11 +113,25 @@ async function debugTestsFromTestExplorer(
 ): Promise<void> {
   await ensureTestsDiscovered();
 
-  const include = request.include ?? getRootTestItems(controller);
   const exclude = request.exclude ?? [];
-  const includeIds = collectLeafIds(include);
   const excludeIds = new Set(collectLeafIds(exclude));
-  const ids = Array.from(new Set(includeIds.filter((id) => !excludeIds.has(id))));
+  const explicitInclude = request.include;
+
+  let ids: string[];
+  if (explicitInclude && explicitInclude.length === 1) {
+    const candidate = explicitInclude[0].id;
+    const resolved = resolveTestTarget(candidate);
+    if (resolved) {
+      ids = [candidate];
+    } else {
+      const fallback = collectLeafIds([explicitInclude[0]]);
+      ids = Array.from(new Set(fallback.filter((id) => !excludeIds.has(id))));
+    }
+  } else {
+    const include = explicitInclude ?? getRootTestItems(controller);
+    const includeIds = collectLeafIds(include);
+    ids = Array.from(new Set(includeIds.filter((id) => !excludeIds.has(id))));
+  }
 
   if (ids.length === 0) {
     return;
@@ -127,17 +141,21 @@ async function debugTestsFromTestExplorer(
     void vscode.window.showWarningMessage('Nova: Debugging multiple tests at once is not supported yet. Debugging first.');
   }
 
-  const vsTestId = ids[0];
-  const target = resolveTestTarget(vsTestId);
-  if (!target) {
-    throw new Error(`Unknown test item: ${vsTestId}`);
-  }
-
-  const testId = target.lspId;
-  const item = target.item;
   const run = controller.createTestRun(request);
   let cancellationSubscription: vscode.Disposable | undefined;
   try {
+    const vsTestId = ids[0];
+    const target = resolveTestTarget(vsTestId);
+    if (!target) {
+      const message = 'Nova: Select a specific test or test class to debug.';
+      run.appendOutput(`${message}\n`);
+      void vscode.window.showErrorMessage(message);
+      return;
+    }
+
+    const testId = target.lspId;
+    const item = target.item;
+
     if (item) {
       run.enqueued(item);
       run.started(item);
@@ -154,17 +172,20 @@ async function debugTestsFromTestExplorer(
 
     const defaults = getDebugDefaults();
     const desiredHost = defaults.host;
-    const desiredPort = defaults.port;
+    let desiredPort = defaults.port;
 
     const portFree = await isLocalPortFree(desiredHost, desiredPort);
     if (!portFree) {
       const choice = await vscode.window.showWarningMessage(
         `Nova: JDWP port ${desiredHost}:${desiredPort} appears to already be in use. ` +
           `The test JVM may fail to start, or the debugger may attach to an existing process.`,
+        'Use Different Port',
         'Continue',
         'Cancel',
       );
-      if (choice !== 'Continue') {
+      if (choice === 'Use Different Port') {
+        desiredPort = await findFreeLocalPort(desiredHost);
+      } else if (choice !== 'Continue') {
         if (item) {
           run.skipped(item);
         }
@@ -192,12 +213,21 @@ async function debugTestsFromTestExplorer(
     processesByRunId.set(runId, spawned);
 
     let startedSession: vscode.DebugSession | undefined;
-    const cancel = async (reason: string) => {
-      processesByRunId.delete(runId);
-      await spawned.dispose(reason);
-      if (startedSession) {
-        void vscode.debug.stopDebugging(startedSession);
+    let cancelPromise: Promise<void> | undefined;
+    const cancel = (reason: string): Promise<void> => {
+      if (cancelPromise) {
+        return cancelPromise;
       }
+      cancelPromise = (async () => {
+        await spawned.dispose(reason);
+        processesByRunId.delete(runId);
+
+        const session = startedSession ?? (await waitForDebugSession(runId));
+        if (session) {
+          await vscode.debug.stopDebugging(session);
+        }
+      })();
+      return cancelPromise;
     };
 
     cancellationSubscription = token.onCancellationRequested(() => {
@@ -213,6 +243,7 @@ async function debugTestsFromTestExplorer(
     }
 
     if (token.isCancellationRequested) {
+      processesByRunId.delete(runId);
       await spawned.dispose('cancelled before debugger attach');
       return;
     }
@@ -235,6 +266,11 @@ async function debugTestsFromTestExplorer(
 
     const started = await waitForDebugSession(runId);
     startedSession = started ?? undefined;
+
+    if (token.isCancellationRequested) {
+      await cancel('cancelled');
+      return;
+    }
 
     const exit = await waitForExit(child);
     if (item) {
@@ -459,7 +495,10 @@ async function waitForJdwpListening(
 }
 
 async function terminateProcessTree(child: ChildProcess): Promise<void> {
-  if (!child.pid || child.killed) {
+  if (!child.pid) {
+    return;
+  }
+  if (child.exitCode !== null || child.signalCode !== null) {
     return;
   }
 
@@ -525,5 +564,41 @@ async function isLocalPortFree(host: string, port: number): Promise<boolean> {
       server.close(() => resolve(true));
     });
     server.listen(port, hostToListen);
+  });
+}
+
+async function findFreeLocalPort(host: string): Promise<number> {
+  const normalizedHost = host.trim().toLowerCase();
+  const isLocal =
+    normalizedHost === '127.0.0.1' ||
+    normalizedHost === 'localhost' ||
+    normalizedHost === '::1' ||
+    normalizedHost === '[::1]';
+  if (!isLocal) {
+    throw new Error(`Unable to pick a free port for non-local host ${host}`);
+  }
+
+  const hostToListen =
+    normalizedHost === 'localhost' ? undefined : normalizedHost === '[::1]' ? '::1' : normalizedHost;
+
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', (err) => reject(err));
+    server.listen(0, hostToListen, () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        reject(new Error('Failed to resolve ephemeral port'));
+        return;
+      }
+      const port = address.port;
+      server.close((err) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve(port);
+      });
+    });
   });
 }
