@@ -64,7 +64,11 @@ fn hir_item_tree(db: &dyn NovaHir, file: FileId) -> Arc<HirItemTree> {
     cancel::check_cancelled(db);
 
     let parse = db.java_parse(file);
-    let mut check_cancelled = || cancel::check_cancelled(db);
+    let mut steps: u32 = 0;
+    let mut check_cancelled = || {
+        cancel::checkpoint_cancelled(db, steps);
+        steps = steps.wrapping_add(1);
+    };
     let tree = lower_item_tree_with(file, parse.compilation_unit(), &mut check_cancelled);
 
     let result = Arc::new(tree);
@@ -101,7 +105,11 @@ fn hir_body(db: &dyn NovaHir, method: MethodId) -> Arc<HirBody> {
     };
 
     let block = nova_syntax::java::parse_block(block_text, body_range.start);
-    let mut check_cancelled = || cancel::check_cancelled(db);
+    let mut steps: u32 = 0;
+    let mut check_cancelled = || {
+        cancel::checkpoint_cancelled(db, steps);
+        steps = steps.wrapping_add(1);
+    };
     let body = lower_body_with(&block, &mut check_cancelled);
 
     let result = Arc::new(body);
@@ -135,7 +143,11 @@ fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<Hir
     };
 
     let block = nova_syntax::java::parse_block(block_text, body_range.start);
-    let mut check_cancelled = || cancel::check_cancelled(db);
+    let mut steps: u32 = 0;
+    let mut check_cancelled = || {
+        cancel::checkpoint_cancelled(db, steps);
+        steps = steps.wrapping_add(1);
+    };
     let body = lower_body_with(&block, &mut check_cancelled);
 
     let result = Arc::new(body);
@@ -169,7 +181,11 @@ fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<Hir
     };
 
     let block = nova_syntax::java::parse_block(block_text, body_range.start);
-    let mut check_cancelled = || cancel::check_cancelled(db);
+    let mut steps: u32 = 0;
+    let mut check_cancelled = || {
+        cancel::checkpoint_cancelled(db, steps);
+        steps = steps.wrapping_add(1);
+    };
     let body = lower_body_with(&block, &mut check_cancelled);
 
     let result = Arc::new(body);
