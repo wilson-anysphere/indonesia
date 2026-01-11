@@ -2,14 +2,17 @@ use rowan::{NodeOrToken, TokenAtOffset};
 
 use crate::parser::{
     parse_block_fragment, parse_class_body_fragment, parse_class_member_fragment,
-    parse_switch_block_fragment,
+    parse_switch_block_fragment, StatementContext, SwitchContext,
 };
 use crate::{lex, parse_java, JavaParseResult, ParseError, SyntaxKind, TextEdit, TextRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReparseTarget {
-    Block,
-    SwitchBlock,
+    Block(StatementContext),
+    SwitchBlock {
+        stmt_ctx: StatementContext,
+        switch_ctx: SwitchContext,
+    },
     ClassBody(SyntaxKind),
     ClassMember,
 }
@@ -61,8 +64,10 @@ pub fn reparse_java(
     let fragment_text = &new_text[fragment_start..fragment_end];
 
     let fragment = match plan.target {
-        ReparseTarget::Block => parse_block_fragment(fragment_text),
-        ReparseTarget::SwitchBlock => parse_switch_block_fragment(fragment_text),
+        ReparseTarget::Block(stmt_ctx) => parse_block_fragment(fragment_text, stmt_ctx),
+        ReparseTarget::SwitchBlock { stmt_ctx, switch_ctx } => {
+            parse_switch_block_fragment(fragment_text, stmt_ctx, switch_ctx)
+        }
         ReparseTarget::ClassBody(kind) => parse_class_body_fragment(fragment_text, kind),
         ReparseTarget::ClassMember => parse_class_member_fragment(fragment_text),
     };
@@ -317,7 +322,7 @@ fn select_reparse_node(
             }
         }
 
-        if let Some(target) = classify_list_or_block(kind) {
+        if let Some(target) = classify_list_or_block(&cur) {
             if !edit_overlaps_list_delimiters(&cur, edit) {
                 return Some((cur, target));
             }
@@ -335,10 +340,14 @@ fn select_reparse_node(
     None
 }
 
-fn classify_list_or_block(kind: SyntaxKind) -> Option<ReparseTarget> {
+fn classify_list_or_block(node: &crate::SyntaxNode) -> Option<ReparseTarget> {
+    let kind = node.kind();
     Some(match kind {
-        SyntaxKind::Block => ReparseTarget::Block,
-        SyntaxKind::SwitchBlock => ReparseTarget::SwitchBlock,
+        SyntaxKind::Block => ReparseTarget::Block(statement_context_for_block(node)),
+        SyntaxKind::SwitchBlock => {
+            let (stmt_ctx, switch_ctx) = switch_context_for_block(node);
+            ReparseTarget::SwitchBlock { stmt_ctx, switch_ctx }
+        }
         SyntaxKind::ClassBody
         | SyntaxKind::InterfaceBody
         | SyntaxKind::EnumBody
@@ -346,6 +355,42 @@ fn classify_list_or_block(kind: SyntaxKind) -> Option<ReparseTarget> {
         | SyntaxKind::AnnotationBody => ReparseTarget::ClassBody(kind),
         _ => return None,
     })
+}
+
+fn statement_context_for_block(node: &crate::SyntaxNode) -> StatementContext {
+    // `yield` is only a statement inside switch *expressions* (JEP 361). When reparsing a block
+    // fragment, derive the same statement-context the full parser would have used based on the
+    // surrounding syntax.
+    //
+    // The parser explicitly resets to `Normal` when parsing lambda bodies and class bodies, so we
+    // treat those nodes as context boundaries: even if they appear inside a switch expression, a
+    // `yield` inside the nested construct should be parsed as an identifier-like expression.
+    let mut cur = node.parent();
+    while let Some(parent) = cur {
+        match parent.kind() {
+            SyntaxKind::SwitchExpression => return StatementContext::SwitchExpression,
+            SyntaxKind::LambdaExpression
+            | SyntaxKind::ClassBody
+            | SyntaxKind::InterfaceBody
+            | SyntaxKind::EnumBody
+            | SyntaxKind::RecordBody
+            | SyntaxKind::AnnotationBody => return StatementContext::Normal,
+            _ => {}
+        }
+        cur = parent.parent();
+    }
+    StatementContext::Normal
+}
+
+fn switch_context_for_block(node: &crate::SyntaxNode) -> (StatementContext, SwitchContext) {
+    let is_expression = node
+        .parent()
+        .is_some_and(|parent| parent.kind() == SyntaxKind::SwitchExpression);
+    if is_expression {
+        (StatementContext::SwitchExpression, SwitchContext::Expression)
+    } else {
+        (StatementContext::Normal, SwitchContext::Statement)
+    }
 }
 
 fn is_class_member_kind(kind: SyntaxKind) -> bool {

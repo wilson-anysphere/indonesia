@@ -23,14 +23,14 @@ impl TokenSet {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatementContext {
+pub(crate) enum StatementContext {
     Normal,
     /// Within a switch expression body where `yield` should be parsed as a `YieldStatement`.
     SwitchExpression,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SwitchContext {
+pub(crate) enum SwitchContext {
     Statement,
     Expression,
 }
@@ -284,18 +284,22 @@ pub fn parse_expression(input: &str) -> JavaParseResult {
     parse_java_expression(input)
 }
 
-pub(crate) fn parse_block_fragment(input: &str) -> JavaParseResult {
+pub(crate) fn parse_block_fragment(input: &str, stmt_ctx: StatementContext) -> JavaParseResult {
     let mut parser = Parser::new(input);
-    parser.parse_block(StatementContext::Normal);
+    parser.parse_block(stmt_ctx);
     JavaParseResult {
         green: parser.builder.finish(),
         errors: parser.errors,
     }
 }
 
-pub(crate) fn parse_switch_block_fragment(input: &str) -> JavaParseResult {
+pub(crate) fn parse_switch_block_fragment(
+    input: &str,
+    stmt_ctx: StatementContext,
+    switch_ctx: SwitchContext,
+) -> JavaParseResult {
     let mut parser = Parser::new(input);
-    parser.parse_switch_block(StatementContext::Normal, SwitchContext::Statement);
+    parser.parse_switch_block(stmt_ctx, switch_ctx);
     JavaParseResult {
         green: parser.builder.finish(),
         errors: parser.errors,
