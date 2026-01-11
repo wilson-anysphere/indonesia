@@ -1113,6 +1113,22 @@ class Foo {
 }
 
 #[test]
+fn parse_switch_pattern_allows_when_identifier() {
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case String when -> {}
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+}
+
+#[test]
 fn parse_record_patterns() {
     let input = r#"
 class Foo {

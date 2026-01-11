@@ -1614,10 +1614,12 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::Eof
         ) {
             self.error_here("expected binding identifier");
-        } else if allow_guard && self.at(SyntaxKind::WhenKw) {
-            // In a switch case label, `when` introduces a guard, so we never treat it as a binding
-            // identifier. (Elsewhere, e.g. `instanceof` patterns and record pattern components,
-            // `when` remains a contextual keyword and is allowed as an identifier.)
+        } else if allow_guard
+            && self.at(SyntaxKind::WhenKw)
+            // In a switch case label, `when` introduces a guard if it is followed by an expression.
+            // Otherwise, it can still be a binding identifier (contextual keyword).
+            && self.nth(1).map_or(true, can_start_expression)
+        {
             self.error_here("expected binding identifier");
         } else {
             self.expect_ident_like("expected binding identifier");
