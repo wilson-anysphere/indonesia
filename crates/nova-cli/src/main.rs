@@ -11,6 +11,8 @@ use nova_core::{
     apply_text_edits as apply_core_text_edits, LineIndex, Position, Range,
     TextEdit as CoreTextEdit, TextSize,
 };
+mod diagnostics_output;
+use diagnostics_output::{print_github_annotations, print_sarif, write_sarif, DiagnosticsFormat};
 use nova_deps_cache::DependencyIndexStore;
 use nova_format::{edits_for_range_formatting, format_java, minimal_text_edits, FormatConfig};
 use nova_perf::{compare_runs, load_criterion_directory, BenchRun, ThresholdConfig};
@@ -108,9 +110,18 @@ struct IndexArgs {
 struct DiagnosticsArgs {
     /// Path to a project directory or a single file
     path: PathBuf,
+    /// Output format (`human`, `json`, `github`, `sarif`)
+    #[arg(long, value_enum)]
+    format: Option<DiagnosticsFormat>,
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
+    /// Write SARIF v2.1.0 output to the given path.
+    ///
+    /// This is independent of `--format`: you can keep human output on stdout
+    /// while capturing SARIF for GitHub code scanning.
+    #[arg(long)]
+    sarif_out: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -385,7 +396,23 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
             let ws = Workspace::open(&args.path)?;
             let report = ws.diagnostics(&args.path)?;
             let exit = if report.summary.errors > 0 { 1 } else { 0 };
-            print_output(&report, args.json)?;
+
+            if let Some(path) = args.sarif_out.as_deref() {
+                write_sarif(&report, path)?;
+            }
+
+            let format = if args.json {
+                DiagnosticsFormat::Json
+            } else {
+                args.format.unwrap_or(DiagnosticsFormat::Human)
+            };
+
+            match format {
+                DiagnosticsFormat::Human => print_output(&report, false)?,
+                DiagnosticsFormat::Json => print_output(&report, true)?,
+                DiagnosticsFormat::Github => print_github_annotations(&report),
+                DiagnosticsFormat::Sarif => print_sarif(&report)?,
+            }
             Ok(exit)
         }
         Command::Symbols(args) => {

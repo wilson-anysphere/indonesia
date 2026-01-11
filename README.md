@@ -81,6 +81,9 @@ nova index <path>
 # Run diagnostics for a project (or a single file)
 nova diagnostics <path>
 nova diagnostics <path> --json
+nova diagnostics <path> --format github
+nova diagnostics <path> --format sarif
+nova diagnostics <path> --sarif-out nova.sarif
 
 # Workspace symbol search (defaults to current directory)
 nova symbols <query>
@@ -132,6 +135,42 @@ GitHub Actions example:
   with:
     name: nova-cache
     path: nova-cache.tar.zst
+```
+
+### CI diagnostics exports (GitHub annotations + SARIF)
+
+Nova’s `diagnostics` subcommand can emit formats that integrate with GitHub’s PR UX:
+
+#### GitHub Actions annotations
+
+Emit GitHub Actions workflow commands (one per diagnostic) so errors/warnings appear inline in PR checks:
+
+```bash
+nova diagnostics . --format github
+```
+
+#### SARIF (GitHub code scanning)
+
+Emit SARIF v2.1.0 JSON for upload via `upload-sarif`:
+
+```bash
+# Print SARIF to stdout
+nova diagnostics . --format sarif > nova.sarif
+
+# Or write SARIF while keeping normal stdout output
+nova diagnostics . --sarif-out nova.sarif
+```
+
+Minimal GitHub Actions example:
+
+```yaml
+- name: Nova diagnostics (SARIF)
+  run: cargo run -p nova-cli -- diagnostics . --sarif-out nova.sarif
+
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: nova.sarif
 ```
 
 ## Real-world fixture projects (optional)

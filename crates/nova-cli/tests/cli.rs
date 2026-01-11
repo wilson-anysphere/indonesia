@@ -94,6 +94,73 @@ fn diagnostics_exit_nonzero_on_parse_errors() {
 }
 
 #[test]
+fn diagnostics_sarif_emits_results() {
+    let temp = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    temp.child("src").create_dir_all().unwrap();
+    temp.child("src/Bad.java")
+        .write_str("class Bad { int x = ; }")
+        .unwrap();
+
+    let output = nova()
+        .arg("diagnostics")
+        .arg(temp.path())
+        .arg("--format")
+        .arg("sarif")
+        .env("NOVA_CACHE_DIR", cache_root.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1, got {:?} (stderr: {})",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let results = v["runs"][0]["results"].as_array().unwrap();
+    assert!(
+        !results.is_empty(),
+        "expected SARIF results, got: {v:#}"
+    );
+}
+
+#[test]
+fn diagnostics_github_emits_annotations() {
+    let temp = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    temp.child("src").create_dir_all().unwrap();
+    temp.child("src/Bad.java")
+        .write_str("class Bad { int x = ; }")
+        .unwrap();
+
+    let output = nova()
+        .arg("diagnostics")
+        .arg(temp.path())
+        .arg("--format")
+        .arg("github")
+        .env("NOVA_CACHE_DIR", cache_root.path())
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "expected exit code 1, got {:?} (stderr: {})",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("::error file="),
+        "expected GitHub annotation workflow command, got: {stdout}"
+    );
+}
+
+#[test]
 fn index_creates_persistent_cache_and_symbols_work() {
     let temp = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
