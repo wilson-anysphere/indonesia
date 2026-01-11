@@ -1,9 +1,12 @@
 use nova_remote_proto::v3::{
-    self, Capabilities, CompressionAlgo, ProtocolVersion, Request, Response,
-    RpcError as ProtoRpcError, RpcErrorCode, RpcPayload, SupportedVersions, WireFrame, WorkerHello,
+    self, Capabilities, CompressionAlgo, HandshakeReject, ProtocolVersion, RejectCode, Request,
+    Response, RpcError as ProtoRpcError, RpcErrorCode, RpcPayload, SupportedVersions, WireFrame,
+    WorkerHello,
 };
 use nova_remote_proto::{FileText, WorkerStats};
-use nova_remote_rpc::{RpcConnection, RpcTransportError, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN};
+use nova_remote_rpc::{
+    RouterConfig, RpcConnection, RpcTransportError, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn hello(auth_token: Option<String>) -> WorkerHello {
@@ -97,6 +100,42 @@ async fn handshake_rejects_unsupported_version() {
 }
 
 #[tokio::test]
+async fn handshake_allows_router_to_reject_before_welcome() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(hello(None))).await;
+
+    let expected_reject = HandshakeReject {
+        code: RejectCode::InvalidRequest,
+        message: "not admitted".into(),
+    };
+    let reject_for_hook = expected_reject.clone();
+
+    let (router_res, frame) = tokio::join!(
+        async {
+            RpcConnection::handshake_as_router_with_config_and_admit(
+                router_io,
+                RouterConfig::default(),
+                |_hello| Err(reject_for_hook),
+            )
+            .await
+        },
+        async { read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await },
+    );
+
+    let err = match router_res {
+        Ok(_) => panic!("expected router to reject in admission hook"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, RpcTransportError::HandshakeFailed { .. }));
+
+    match frame {
+        WireFrame::Reject(reject) => assert_eq!(reject, expected_reject),
+        other => panic!("expected reject frame, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn multiplexing_matches_responses_by_id() {
     let (router_io, worker_io) = tokio::io::duplex(64 * 1024);
 
@@ -160,6 +199,42 @@ async fn multiplexing_matches_responses_by_id() {
 
     router.shutdown().await.unwrap();
     worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn closed_signal_fires_when_peer_drops_stream() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task = tokio::spawn(async move {
+        RpcConnection::handshake_as_router(router_io, None)
+            .await
+            .unwrap()
+            .0
+    });
+
+    // Manual worker handshake so we can drop the stream without starting a worker RpcConnection.
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(hello(None))).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    assert!(matches!(frame, WireFrame::Welcome(_)));
+
+    let router = router_task.await.unwrap();
+
+    let mut closed_rx = router.subscribe_closed();
+    assert!(!*closed_rx.borrow(), "connection should start open");
+
+    drop(worker_io);
+
+    tokio::time::timeout(std::time::Duration::from_millis(200), closed_rx.changed())
+        .await
+        .expect("timed out waiting for closed signal")
+        .unwrap();
+    assert!(*closed_rx.borrow(), "closed signal should become true");
+
+    let err = router.wait_closed().await;
+    assert!(
+        matches!(err, RpcTransportError::Io { .. } | RpcTransportError::ConnectionClosed),
+        "unexpected close error: {err:?}"
+    );
 }
 
 #[tokio::test]

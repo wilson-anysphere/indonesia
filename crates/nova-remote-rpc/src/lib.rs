@@ -238,11 +238,31 @@ impl RpcConnection {
     }
 
     pub async fn handshake_as_router_with_config<S>(
-        mut stream: S,
-        mut cfg: RouterConfig,
+        stream: S,
+        cfg: RouterConfig,
     ) -> Result<(Self, RouterWelcome), RpcTransportError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::handshake_as_router_with_config_and_admit(stream, cfg, |_| Ok(())).await
+    }
+
+    /// Perform the router side of the v3 handshake with a custom admission hook.
+    ///
+    /// This behaves like [`RpcConnection::handshake_as_router_with_config`], but calls `admit_fn`
+    /// after authentication/version/capability negotiation and **before** sending `Welcome`.
+    ///
+    /// Returning `Ok(())` continues the handshake. Returning `Err(reject)` sends
+    /// `WireFrame::Reject(reject)` to the peer and returns
+    /// [`RpcTransportError::HandshakeFailed`].
+    pub async fn handshake_as_router_with_config_and_admit<S, F>(
+        mut stream: S,
+        mut cfg: RouterConfig,
+        admit_fn: F,
+    ) -> Result<(Self, RouterWelcome), RpcTransportError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        F: FnOnce(&WorkerHello) -> Result<(), HandshakeReject>,
     {
         sanitize_capabilities(&mut cfg.capabilities);
 
@@ -309,6 +329,22 @@ impl RpcConnection {
                     return Err(err);
                 }
             };
+
+        if let Err(reject) = admit_fn(&hello) {
+            let reject_frame = WireFrame::Reject(reject.clone());
+            let _ = write_wire_frame(
+                &mut stream,
+                cfg.pre_handshake_max_frame_len,
+                &reject_frame,
+            )
+            .await;
+            return Err(RpcTransportError::HandshakeFailed {
+                message: format!(
+                    "handshake rejected (code={:?}): {}",
+                    reject.code, reject.message
+                ),
+            });
+        }
 
         let welcome = RouterWelcome {
             worker_id: cfg.worker_id,
@@ -401,6 +437,46 @@ impl RpcConnection {
 
     pub fn role(&self) -> RpcRole {
         self.inner.role
+    }
+
+    /// Subscribe to a connection lifecycle signal.
+    ///
+    /// The returned [`watch::Receiver`] will be `true` once the connection is closed. It is `false`
+    /// for a live connection.
+    ///
+    /// This works across clones of [`RpcConnection`].
+    pub fn subscribe_closed(&self) -> watch::Receiver<bool> {
+        self.inner.shutdown_tx.subscribe()
+    }
+
+    /// Wait until the underlying transport is closed and return the reason it closed.
+    ///
+    /// The returned [`RpcTransportError`] is the same error that would be observed by subsequent
+    /// calls (e.g. [`RpcConnection::call`]) after the connection closes.
+    pub async fn wait_closed(&self) -> RpcTransportError {
+        if let Some(err) = self.inner.is_closed().await {
+            return err;
+        }
+
+        let mut rx = self.inner.shutdown_tx.subscribe();
+        if *rx.borrow() {
+            return self
+                .inner
+                .is_closed()
+                .await
+                .unwrap_or(RpcTransportError::ConnectionClosed);
+        }
+
+        while rx.changed().await.is_ok() {
+            if *rx.borrow() {
+                break;
+            }
+        }
+
+        self.inner
+            .is_closed()
+            .await
+            .unwrap_or(RpcTransportError::ConnectionClosed)
     }
 
     pub fn set_request_handler<H, Fut>(&self, handler: H)
