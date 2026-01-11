@@ -65,6 +65,86 @@ fn fingerprint_changes_on_maven_wrapper_edit() {
 }
 
 #[test]
+fn fingerprint_changes_on_maven_maven_config_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let mvn_dir = root.join(".mvn");
+    std::fs::create_dir_all(&mvn_dir).unwrap();
+    let config = mvn_dir.join("maven.config");
+    std::fs::write(&config, "-DskipTests\n").unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+    std::fs::write(&config, "-DskipTests -Dstyle.color=always\n").unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_changes_on_maven_extensions_xml_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let mvn_dir = root.join(".mvn");
+    std::fs::create_dir_all(&mvn_dir).unwrap();
+    let extensions = mvn_dir.join("extensions.xml");
+    std::fs::write(&extensions, "<extensions></extensions>\n").unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+    std::fs::write(
+        &extensions,
+        "<extensions><!--changed--></extensions>\n",
+    )
+    .unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_changes_on_maven_wrapper_script_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let mvnw = root.join("mvnw");
+    std::fs::write(&mvnw, "#!/bin/sh\necho mvnw\n").unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+    std::fs::write(&mvnw, "#!/bin/sh\necho mvnw changed\n").unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn fingerprint_changes_on_gradle_wrapper_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
@@ -88,6 +168,26 @@ fn fingerprint_changes_on_gradle_wrapper_edit() {
         "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.1-bin.zip\n",
     )
     .unwrap();
+    let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+
+    assert_ne!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_changes_on_gradle_wrapper_script_edit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(root.join("build.gradle"), "plugins { id 'java' }\n").unwrap();
+
+    let gradlew = root.join("gradlew");
+    std::fs::write(&gradlew, "#!/bin/sh\necho gradlew\n").unwrap();
+
+    let fp1 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
+        .unwrap();
+    std::fs::write(&gradlew, "#!/bin/sh\necho gradlew changed\n").unwrap();
     let fp2 = BuildFileFingerprint::from_files(&root, collect_gradle_build_files(&root).unwrap())
         .unwrap();
 
