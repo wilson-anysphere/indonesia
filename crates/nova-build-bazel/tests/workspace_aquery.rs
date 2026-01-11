@@ -56,13 +56,22 @@ impl CommandRunner for TestRunner {
             .unwrap()
             .push(args.iter().map(|s| s.to_string()).collect());
 
-        assert_eq!(args.get(0).copied(), Some("aquery"));
-        assert_eq!(args.get(1).copied(), Some("--output=textproto"));
-        let expr = args.get(2).expect("missing aquery expression");
+        match args.get(0).copied() {
+            Some("query") => {
+                let stdout = "//:dummy\n".as_bytes().to_vec();
+                let mut reader = BufReader::new(Cursor::new(stdout));
+                f(&mut reader)
+            }
+            Some("aquery") => {
+                assert_eq!(args.get(1).copied(), Some("--output=textproto"));
+                let expr = args.get(2).expect("missing aquery expression");
 
-        let reader = (self.aquery_factory)(expr);
-        let mut reader = BufReader::new(reader);
-        f(&mut reader)
+                let reader = (self.aquery_factory)(expr);
+                let mut reader = BufReader::new(reader);
+                f(&mut reader)
+            }
+            other => panic!("unexpected bazel invocation: {other:?}"),
+        }
     }
 }
 

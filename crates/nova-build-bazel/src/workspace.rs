@@ -82,20 +82,33 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     }
 
     pub fn java_targets(&mut self) -> Result<Vec<String>> {
-        let output = self.runner.run(
+        let (targets, hash) = self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["query", r#"kind("java_.* rule", //...)"#],
+            |stdout| {
+                let mut hasher = blake3::Hasher::new();
+                let mut targets = Vec::new();
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let bytes = stdout.read_line(&mut line)?;
+                    if bytes == 0 {
+                        break;
+                    }
+
+                    hasher.update(line.as_bytes());
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        targets.push(trimmed.to_string());
+                    }
+                }
+                Ok((targets, hasher.finalize()))
+            },
         )?;
-        let query_hash = blake3::hash(output.stdout.as_bytes());
-        self.last_query_hash = Some(query_hash);
-        Ok(output
-            .stdout
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect())
+
+        self.last_query_hash = Some(hash);
+        Ok(targets)
     }
 
     /// Resolve Java compilation information for a Bazel target.
@@ -168,12 +181,24 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             return Ok(hash);
         }
 
-        let output = self.runner.run(
+        let hash = self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["query", r#"kind("java_.* rule", //...)"#],
+            |stdout| {
+                let mut hasher = blake3::Hasher::new();
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let bytes = stdout.read_line(&mut line)?;
+                    if bytes == 0 {
+                        break;
+                    }
+                    hasher.update(line.as_bytes());
+                }
+                Ok(hasher.finalize())
+            },
         )?;
-        let hash = blake3::hash(output.stdout.as_bytes());
         self.last_query_hash = Some(hash);
         Ok(hash)
     }
@@ -234,42 +259,64 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
         // Collect all BUILD / BUILD.bazel files that can influence `deps(target)` evaluation.
         let buildfiles_query = format!("buildfiles(deps({target}))");
-        if let Ok(output) = self.runner.run(
+        if let Ok(paths) = self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["query", &buildfiles_query, "--output=label"],
-        ) {
-            for label in output
-                .stdout
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-            {
-                if let Some(path) = workspace_path_from_label(label) {
-                    inputs.insert(path);
+            |stdout| {
+                let mut paths = Vec::new();
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let bytes = stdout.read_line(&mut line)?;
+                    if bytes == 0 {
+                        break;
+                    }
+
+                    let label = line.trim();
+                    if label.is_empty() {
+                        continue;
+                    }
+                    if let Some(path) = workspace_path_from_label(label) {
+                        paths.push(path);
+                    }
                 }
-            }
+                Ok(paths)
+            },
+        ) {
+            inputs.extend(paths);
         }
 
         // Additionally include Starlark `.bzl` files loaded by the target's build graph.
         //
         // Not all Bazel versions support `loadfiles(...)`; treat failures as best-effort.
         let loadfiles_query = format!("loadfiles(deps({target}))");
-        if let Ok(output) = self.runner.run(
+        if let Ok(paths) = self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["query", &loadfiles_query, "--output=label"],
-        ) {
-            for label in output
-                .stdout
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-            {
-                if let Some(path) = workspace_path_from_label(label) {
-                    inputs.insert(path);
+            |stdout| {
+                let mut paths = Vec::new();
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    let bytes = stdout.read_line(&mut line)?;
+                    if bytes == 0 {
+                        break;
+                    }
+
+                    let label = line.trim();
+                    if label.is_empty() {
+                        continue;
+                    }
+                    if let Some(path) = workspace_path_from_label(label) {
+                        paths.push(path);
+                    }
                 }
-            }
+                Ok(paths)
+            },
+        ) {
+            inputs.extend(paths);
         }
 
         Ok(inputs.into_iter().collect())
