@@ -223,7 +223,7 @@ pub struct NovaConfig {
     #[serde(default)]
     pub logging: LoggingConfig,
 
-    /// Offline / local LLM configuration (Ollama, vLLM, etc).
+    /// AI configuration (provider selection, privacy controls, embeddings, etc).
     #[serde(default)]
     pub ai: AiConfig,
 }

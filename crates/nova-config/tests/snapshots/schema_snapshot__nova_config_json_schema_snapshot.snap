@@ -405,7 +405,7 @@ expression: schema
   ],
   "properties": {
     "ai": {
-      "description": "Offline / local LLM configuration (Ollama, vLLM, etc).",
+      "description": "AI configuration (provider selection, privacy controls, embeddings, etc).",
       "default": {
         "api_key": null,
         "audit_log": {
