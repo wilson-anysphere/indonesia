@@ -449,6 +449,52 @@ fn sharded_fast_load_does_not_read_project_file_contents() {
 }
 
 #[test]
+fn sharded_load_works_with_metadata_bin_only() {
+    let shard_count = 16;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    std::fs::write(&a, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    let shard_a = shard_id_for_path("A.java", shard_count) as usize;
+    shards[shard_a].symbols.insert(
+        "A",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
+
+    // Simulate an interruption between writing `metadata.bin` and `metadata.json`.
+    std::fs::remove_file(cache_dir.metadata_path()).unwrap();
+    assert!(cache_dir.metadata_bin_path().exists());
+
+    let loaded = load_sharded_index_archives_fast(
+        &cache_dir,
+        &project_root,
+        vec![PathBuf::from("A.java")],
+        shard_count,
+    )
+    .unwrap();
+    assert!(loaded.is_some());
+}
+
+#[test]
 fn save_sharded_indexes_rewrites_only_affected_shards() {
     let shard_count = 64;
 

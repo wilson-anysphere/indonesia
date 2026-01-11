@@ -1896,7 +1896,7 @@ pub fn load_sharded_index_archives(
     }
 
     let metadata_path = cache_dir.metadata_path();
-    if !metadata_path.exists() {
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
     let metadata = match CacheMetadata::load(metadata_path) {
@@ -1966,7 +1966,7 @@ pub fn load_sharded_index_archives_fast(
     }
 
     let metadata_path = cache_dir.metadata_path();
-    if !metadata_path.exists() {
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
     let metadata = match CacheMetadata::load(metadata_path) {
