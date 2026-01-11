@@ -60,7 +60,7 @@ router logs for handshake timeout / overload warnings.
 
 ```bash
 nova-worker \
-  --connect unix:/tmp/nova-router.sock \
+  --connect unix:$XDG_RUNTIME_DIR/nova-router.sock \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache
 ```
