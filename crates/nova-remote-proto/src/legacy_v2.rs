@@ -1,3 +1,5 @@
+use std::fmt;
+
 use anyhow::{anyhow, bail, ensure, Context};
 use serde::{Deserialize, Serialize};
 
@@ -9,7 +11,7 @@ use crate::{
 
 pub const PROTOCOL_VERSION: u32 = 4;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RpcMessage {
     /// First message sent by the worker on connect.
     WorkerHello {
@@ -83,10 +85,94 @@ pub enum RpcMessage {
     },
 }
 
+impl fmt::Debug for RpcMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RpcMessage::WorkerHello {
+                shard_id,
+                auth_token,
+                has_cached_index,
+            } => f
+                .debug_struct("WorkerHello")
+                .field("shard_id", shard_id)
+                .field("auth_present", &auth_token.is_some())
+                .field("has_cached_index", has_cached_index)
+                .finish(),
+            RpcMessage::RouterHello {
+                worker_id,
+                shard_id,
+                revision,
+                protocol_version,
+            } => f
+                .debug_struct("RouterHello")
+                .field("worker_id", worker_id)
+                .field("shard_id", shard_id)
+                .field("revision", revision)
+                .field("protocol_version", protocol_version)
+                .finish(),
+            RpcMessage::LoadFiles { revision, files } => f
+                .debug_struct("LoadFiles")
+                .field("revision", revision)
+                .field("files", files)
+                .finish(),
+            RpcMessage::IndexShard { revision, files } => f
+                .debug_struct("IndexShard")
+                .field("revision", revision)
+                .field("files", files)
+                .finish(),
+            RpcMessage::UpdateFile { revision, file } => f
+                .debug_struct("UpdateFile")
+                .field("revision", revision)
+                .field("file", file)
+                .finish(),
+            RpcMessage::GetWorkerStats => f.write_str("GetWorkerStats"),
+            RpcMessage::WorkerStats(stats) => f.debug_tuple("WorkerStats").field(stats).finish(),
+            RpcMessage::ShardIndexInfo(info) => f.debug_tuple("ShardIndexInfo").field(info).finish(),
+            RpcMessage::SearchSymbols { query, limit } => f
+                .debug_struct("SearchSymbols")
+                .field("query", query)
+                .field("limit", limit)
+                .finish(),
+            RpcMessage::SearchSymbolsResult { items } => f
+                .debug_struct("SearchSymbolsResult")
+                .field("items", items)
+                .finish(),
+            RpcMessage::Ack => f.write_str("Ack"),
+            RpcMessage::Shutdown => f.write_str("Shutdown"),
+            RpcMessage::Error { message } => f.debug_struct("Error").field("message", message).finish(),
+        }
+    }
+}
+
 pub fn encode_message(msg: &RpcMessage) -> anyhow::Result<Vec<u8>> {
     let mut w = WireWriter::new();
     w.write_rpc_message(msg)?;
     w.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_hello_debug_does_not_expose_auth_token() {
+        let token = "super-secret-token";
+        let msg = RpcMessage::WorkerHello {
+            shard_id: 1,
+            auth_token: Some(token.to_string()),
+            has_cached_index: false,
+        };
+
+        let output = format!("{msg:?}");
+        assert!(
+            !output.contains(token),
+            "RpcMessage::WorkerHello debug output leaked auth token: {output}"
+        );
+        assert!(
+            output.contains("auth_present"),
+            "RpcMessage::WorkerHello debug output should include auth presence indicator: {output}"
+        );
+    }
 }
 
 pub fn decode_message(bytes: &[u8]) -> anyhow::Result<RpcMessage> {
