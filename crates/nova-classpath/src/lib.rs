@@ -21,6 +21,25 @@ use nova_deps_cache::{
 use nova_modules::{ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
+/// Derive the automatic module name for a module-path entry based on its path.
+///
+/// This follows the same derivation the Java module system uses for automatic
+/// modules (see `java.lang.module.ModuleFinder`) and matches the logic used
+/// internally by [`ClasspathEntry::module_meta`].
+///
+/// This is primarily useful when callers treat a directory as a module-path
+/// entry (i.e. an automatic module). `ClasspathEntry::module_meta` returns
+/// `None` for directories because class directories are treated as belonging to
+/// the classpath "unnamed module" by default.
+pub fn derive_automatic_module_name_from_path(path: &Path) -> Option<ModuleName> {
+    if path.is_dir() {
+        let stem = path.file_name()?.to_string_lossy();
+        module_name::derive_automatic_module_name_from_jar_stem(&stem).map(ModuleName::new)
+    } else {
+        module_name::derive_automatic_module_name_from_jar_path(path).map(ModuleName::new)
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ClasspathError {
     #[error("io error: {0}")]
@@ -1164,6 +1183,16 @@ mod tests {
 
     fn test_manifest_named_jar() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/automatic-module-name-1.2.3.jar")
+    }
+
+    #[test]
+    fn derives_automatic_module_name_for_directories() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("foo-bar-1.2.3");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let name = derive_automatic_module_name_from_path(&dir).expect("expected derived name");
+        assert_eq!(name.as_str(), "foo.bar");
     }
 
     #[test]
