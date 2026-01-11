@@ -123,3 +123,38 @@ fn missing_config_returns_defaults() {
     assert_eq!(path, None);
     assert_eq!(config, NovaConfig::default());
 }
+
+#[test]
+fn reload_for_workspace_reports_changes() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::unset(NOVA_CONFIG_ENV_VAR);
+
+    let dir = tempdir().unwrap();
+    let config_path = dir.path().join("nova.toml");
+    std::fs::write(&config_path, "[generated_sources]\nenabled = false\n").unwrap();
+
+    let (config, path) = load_for_workspace(dir.path()).unwrap();
+    assert_eq!(
+        path.as_deref(),
+        Some(
+            config_path
+                .canonicalize()
+                .unwrap_or(config_path.clone())
+                .as_path()
+        )
+    );
+    assert!(!config.generated_sources.enabled);
+
+    let (reloaded, reloaded_path, changed) =
+        nova_config::reload_for_workspace(dir.path(), &config, path.as_deref()).unwrap();
+    assert!(!changed, "expected reload to report unchanged config");
+    assert_eq!(reloaded, config);
+    assert_eq!(reloaded_path, path);
+
+    // Mutate the config file and ensure reload detects it.
+    std::fs::write(&config_path, "[generated_sources]\nenabled = true\n").unwrap();
+    let (reloaded, _reloaded_path, changed) =
+        nova_config::reload_for_workspace(dir.path(), &config, path.as_deref()).unwrap();
+    assert!(changed, "expected reload to report config changes");
+    assert!(reloaded.generated_sources.enabled);
+}
