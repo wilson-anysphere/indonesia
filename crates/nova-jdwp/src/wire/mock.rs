@@ -177,7 +177,9 @@ pub struct RedefineClassesCall {
     pub classes: Vec<(ReferenceTypeId, Vec<u8>)>,
 }
 
-const THREAD_ID: u64 = 0x1001;
+// Use a thread object id with the high bit set so DAP implementations that
+// (correctly) bit-cast `u64 <-> i64` are exercised by integration tests.
+const THREAD_ID: u64 = 0x8000_0000_0000_1001;
 const WORKER_THREAD_ID: u64 = 0x1002;
 const FRAME_ID: u64 = 0x2001;
 const CLASS_ID: u64 = 0x3001;
