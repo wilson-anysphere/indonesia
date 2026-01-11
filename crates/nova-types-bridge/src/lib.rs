@@ -3,14 +3,17 @@
 use std::collections::{HashMap, HashSet};
 
 use nova_classfile::{
-    parse_class_signature, parse_method_descriptor, parse_method_signature, BaseType, ClassTypeSignature,
-    FieldType, MethodDescriptor, ReturnType, TypeArgument, TypeParameter, TypeSignature,
+    parse_class_signature, parse_field_descriptor, parse_field_signature, parse_method_descriptor,
+    parse_method_signature, BaseType, ClassTypeSignature, FieldType, MethodDescriptor, ReturnType,
+    TypeArgument, TypeParameter, TypeSignature,
 };
 use nova_types::{
-    ClassDef, ClassId, ClassKind, ClassType, MethodDef, PrimitiveType, Type, TypeEnv, TypeProvider,
-    TypeStore, TypeVarId, WildcardBound,
+    ClassDef, ClassId, ClassKind, ClassType, ConstructorDef, FieldDef, MethodDef, PrimitiveType, Type,
+    TypeEnv, TypeProvider, TypeStore, TypeVarId, WildcardBound,
 };
 
+const ACC_PRIVATE: u16 = 0x0002;
+const ACC_FINAL: u16 = 0x0010;
 const ACC_INTERFACE: u16 = 0x0200;
 const ACC_STATIC: u16 = 0x0008;
 const ACC_VARARGS: u16 = 0x0080;
@@ -52,7 +55,7 @@ impl<'a> ExternalTypeLoader<'a> {
         let id = self.store.intern_class_id(binary_name);
         self.in_progress.insert(binary_name.to_string());
 
-        let def = self.build_class_def(&stub);
+        let def = self.build_class_def(binary_name, &stub);
         self.store.define_class(id, def);
 
         self.in_progress.remove(binary_name);
@@ -61,7 +64,7 @@ impl<'a> ExternalTypeLoader<'a> {
         Some(id)
     }
 
-    fn build_class_def(&mut self, stub: &nova_types::TypeDefStub) -> ClassDef {
+    fn build_class_def(&mut self, binary_name: &str, stub: &nova_types::TypeDefStub) -> ClassDef {
         let kind = if stub.access_flags & ACC_INTERFACE != 0 {
             ClassKind::Interface
         } else {
@@ -70,6 +73,7 @@ impl<'a> ExternalTypeLoader<'a> {
 
         let mut class_type_vars = HashMap::<String, TypeVarId>::new();
         let mut type_params = Vec::new();
+        let empty_method_type_vars = HashMap::<String, TypeVarId>::new();
 
         let parsed_sig = stub
             .signature
@@ -78,24 +82,36 @@ impl<'a> ExternalTypeLoader<'a> {
 
         let (super_class, interfaces) = if let Some(sig) = parsed_sig {
             for tp in &sig.type_parameters {
-                let bounds = self.convert_type_parameter_bounds(tp, &class_type_vars, &HashMap::new());
+                let bounds = self.convert_type_parameter_bounds(tp, &class_type_vars, &empty_method_type_vars);
                 let id = self.store.add_type_param(tp.name.clone(), bounds);
                 class_type_vars.insert(tp.name.clone(), id);
                 type_params.push(id);
             }
 
-            let super_class = Some(self.class_type_signature(&sig.super_class, &class_type_vars, &HashMap::new()));
+            let super_class = match kind {
+                ClassKind::Interface => None,
+                ClassKind::Class => Some(self.class_type_signature(
+                    &sig.super_class,
+                    &class_type_vars,
+                    &empty_method_type_vars,
+                )),
+            };
             let interfaces = sig
                 .interfaces
                 .iter()
-                .map(|iface| self.class_type_signature(iface, &class_type_vars, &HashMap::new()))
+                .map(|iface| {
+                    self.class_type_signature(iface, &class_type_vars, &empty_method_type_vars)
+                })
                 .collect();
             (super_class, interfaces)
         } else {
-            let super_class = stub
-                .super_binary_name
-                .as_deref()
-                .map(|name| self.binary_class_ref(name));
+            let super_class = match kind {
+                ClassKind::Interface => None,
+                ClassKind::Class => stub
+                    .super_binary_name
+                    .as_deref()
+                    .map(|name| self.binary_class_ref(name)),
+            };
             let interfaces = stub
                 .interfaces
                 .iter()
@@ -104,26 +120,92 @@ impl<'a> ExternalTypeLoader<'a> {
             (super_class, interfaces)
         };
 
-        let mut methods = Vec::new();
-        for method in &stub.methods {
-            if method.name == "<clinit>" {
-                continue;
-            }
+        let fields = stub
+            .fields
+            .iter()
+            .map(|field| {
+                let ty = field
+                    .signature
+                    .as_deref()
+                    .and_then(|sig| parse_field_signature(sig).ok())
+                    .map(|sig| self.type_signature(&sig, &class_type_vars, &empty_method_type_vars))
+                    .or_else(|| {
+                        parse_field_descriptor(&field.descriptor)
+                            .ok()
+                            .map(|desc| self.field_type(&desc))
+                    })
+                    .unwrap_or(Type::Unknown);
 
-            methods.push(self.method_def(method, &class_type_vars));
+                FieldDef {
+                    name: field.name.clone(),
+                    ty,
+                    is_static: field.access_flags & ACC_STATIC != 0,
+                    is_final: field.access_flags & ACC_FINAL != 0,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut methods = Vec::new();
+        let mut constructors = Vec::new();
+        for method in &stub.methods {
+            match method.name.as_str() {
+                "<clinit>" => continue,
+                "<init>" => constructors.push(self.constructor_def(method, &class_type_vars)),
+                _ => methods.push(self.method_def(method, &class_type_vars)),
+            }
         }
 
         ClassDef {
-            name: stub.binary_name.clone(),
+            name: binary_name.to_string(),
             kind,
             type_params,
             super_class,
             interfaces,
+            fields,
+            constructors,
             methods,
         }
     }
 
-    fn method_def(&mut self, stub: &nova_types::MethodStub, class_type_vars: &HashMap<String, TypeVarId>) -> MethodDef {
+    fn constructor_def(
+        &mut self,
+        stub: &nova_types::MethodStub,
+        class_type_vars: &HashMap<String, TypeVarId>,
+    ) -> ConstructorDef {
+        let is_varargs = stub.access_flags & ACC_VARARGS != 0;
+        let is_accessible = stub.access_flags & ACC_PRIVATE == 0;
+        let empty_method_type_vars = HashMap::<String, TypeVarId>::new();
+
+        if let Some(sig) = stub.signature.as_deref().and_then(|s| parse_method_signature(s).ok()) {
+            let params = sig
+                .parameters
+                .iter()
+                .map(|p| self.type_signature(p, class_type_vars, &empty_method_type_vars))
+                .collect();
+            return ConstructorDef {
+                params,
+                is_varargs,
+                is_accessible,
+            };
+        }
+
+        let params = parse_method_descriptor(&stub.descriptor)
+            .ok()
+            .map(|d| self.method_descriptor(&d).0)
+            .unwrap_or_default();
+
+        ConstructorDef {
+            params,
+            is_varargs,
+            is_accessible,
+        }
+    }
+
+    fn method_def(
+        &mut self,
+        stub: &nova_types::MethodStub,
+        class_type_vars: &HashMap<String, TypeVarId>,
+    ) -> MethodDef {
         let is_static = stub.access_flags & ACC_STATIC != 0;
         let is_varargs = stub.access_flags & ACC_VARARGS != 0;
         let is_abstract = stub.access_flags & ACC_ABSTRACT != 0;
@@ -325,4 +407,3 @@ impl<'a> ExternalTypeLoader<'a> {
         }
     }
 }
-
