@@ -36,7 +36,7 @@ pub struct JavaCompileInfo {
     #[serde(default)]
     pub release: Option<String>,
     /// `-d` output directory if present.
-    #[serde(default)]
+    #[serde(default, alias = "output_directory")]
     pub output_dir: Option<String>,
     /// Whether `--enable-preview` is passed.
     #[serde(default, alias = "enable_preview")]
@@ -621,9 +621,10 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
             }
             "--release" => {
                 if let Some(v) = it.next() {
-                    info.release = Some(v.clone());
-                    info.source = Some(v.clone());
-                    info.target = Some(v.clone());
+                    let release = v.clone();
+                    info.release = Some(release.clone());
+                    info.source = Some(release.clone());
+                    info.target = Some(release);
                 }
             }
             "--source" | "-source" => {
@@ -658,8 +659,29 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
                 }
             }
             other => {
-                if let Some(release) = other.strip_prefix("--release=") {
-                    let release = release.to_string();
+                // Support `--flag=value` forms that show up in some Bazel invocations.
+                if let Some(value) = other.strip_prefix("--module-path=") {
+                    info.module_path = split_path_list(value);
+                    continue;
+                }
+                if let Some(value) = other.strip_prefix("--class-path=") {
+                    info.classpath = split_path_list(value);
+                    continue;
+                }
+                if let Some(value) = other.strip_prefix("--source=") {
+                    if info.release.is_none() {
+                        info.source = Some(value.to_string());
+                    }
+                    continue;
+                }
+                if let Some(value) = other.strip_prefix("--target=") {
+                    if info.release.is_none() {
+                        info.target = Some(value.to_string());
+                    }
+                    continue;
+                }
+                if let Some(value) = other.strip_prefix("--release=") {
+                    let release = value.to_string();
                     info.release = Some(release.clone());
                     info.source = Some(release.clone());
                     info.target = Some(release);

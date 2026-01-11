@@ -6,13 +6,16 @@
 //! The implementation is intentionally small: JSON-RPC 2.0 over the standard BSP
 //! framing (`Content-Length` headers) using blocking I/O.
 
+use crate::aquery::JavaCompileInfo;
 use anyhow::{anyhow, Context, Result};
+use nova_core::{file_uri_to_path, AbsPathBuf, Diagnostic as NovaDiagnostic, DiagnosticSeverity};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::BTreeMap,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, ChildStdout, Command, Stdio},
+    process::{Child, Command, Stdio},
 };
 
 /// Configuration required to launch a Bazel BSP server.
@@ -111,9 +114,9 @@ pub fn bsp_publish_diagnostics_to_nova_diagnostics(
 
 #[derive(Debug)]
 pub struct BspClient {
-    child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    child: Option<Child>,
+    stdin: Box<dyn Write + Send>,
+    stdout: BufReader<Box<dyn Read + Send>>,
     next_id: i64,
     diagnostics: Vec<PublishDiagnosticsParams>,
 }
@@ -143,22 +146,40 @@ impl BspClient {
             .spawn()
             .with_context(|| format!("failed to spawn BSP server `{program}`"))?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .with_context(|| "failed to open BSP stdin")?;
-        let stdout = child
-            .stdout
-            .take()
-            .with_context(|| "failed to open BSP stdout")?;
+        let stdin: Box<dyn Write + Send> = Box::new(
+            child
+                .stdin
+                .take()
+                .with_context(|| "failed to open BSP stdin")?,
+        );
+        let stdout: Box<dyn Read + Send> = Box::new(
+            child
+                .stdout
+                .take()
+                .with_context(|| "failed to open BSP stdout")?,
+        );
 
         Ok(Self {
-            child,
+            child: Some(child),
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
             diagnostics: Vec::new(),
         })
+    }
+
+    pub fn from_streams<R, W>(stdout: R, stdin: W) -> Self
+    where
+        R: Read + Send + 'static,
+        W: Write + Send + 'static,
+    {
+        Self {
+            child: None,
+            stdin: Box::new(stdin),
+            stdout: BufReader::new(Box::new(stdout)),
+            next_id: 1,
+            diagnostics: Vec::new(),
+        }
     }
 
     pub fn initialize(&mut self, params: InitializeBuildParams) -> Result<InitializeBuildResult> {
@@ -287,7 +308,267 @@ impl BspClient {
 impl Drop for BspClient {
     fn drop(&mut self) {
         // Best-effort shutdown; ignore errors.
-        let _ = self.child.kill();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BspServerConfig {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+impl Default for BspServerConfig {
+    fn default() -> Self {
+        Self {
+            // `bsp4bazel` is a commonly-installed BSP launcher for Bazel workspaces.
+            //
+            // Users can override this (and args) based on their environment (e.g. `bazel-bsp`).
+            program: "bsp4bazel".to_string(),
+            args: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BspCompileOutcome {
+    pub status_code: i32,
+    pub diagnostics: Vec<NovaDiagnostic>,
+}
+
+/// High-level BSP workspace wrapper for Nova.
+///
+/// This is designed to be the "ergonomic" layer on top of the raw JSON-RPC client:
+/// - spawns a BSP server
+/// - performs initialization handshake
+/// - exposes build target discovery
+/// - fetches Java compilation info (`javacOptions`)
+/// - runs compilation and collects diagnostics
+#[derive(Debug)]
+pub struct BspWorkspace {
+    root: PathBuf,
+    client: BspClient,
+    server: InitializeBuildResult,
+    targets: Option<Vec<BuildTarget>>,
+}
+
+impl BspWorkspace {
+    pub fn connect(root: PathBuf, config: BspServerConfig) -> Result<Self> {
+        let mut root = root.canonicalize().unwrap_or(root);
+        if !root.is_absolute() {
+            root = std::env::current_dir()?.join(root);
+        }
+
+        let args: Vec<&str> = config.args.iter().map(String::as_str).collect();
+        let client = BspClient::spawn_in_dir(&config.program, &args, &root)?;
+        Self::from_client(root, client)
+    }
+
+    pub fn from_client(root: PathBuf, mut client: BspClient) -> Result<Self> {
+        let mut root = root.canonicalize().unwrap_or(root);
+        if !root.is_absolute() {
+            root = std::env::current_dir()?.join(root);
+        }
+        let abs_root = AbsPathBuf::new(root.clone()).context("BSP workspace root must be absolute")?;
+        let root_uri = nova_core::path_to_file_uri(&abs_root)
+            .context("failed to convert workspace root to file:// URI for BSP initialization")?;
+
+        let server = client.initialize(InitializeBuildParams {
+            display_name: "Nova".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            bsp_version: "2.1.0".to_string(),
+            root_uri,
+            capabilities: ClientCapabilities {
+                language_ids: vec!["java".to_string()],
+            },
+            data: None,
+        })?;
+        client.initialized()?;
+
+        Ok(Self {
+            root,
+            client,
+            server,
+            targets: None,
+        })
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn server_info(&self) -> &InitializeBuildResult {
+        &self.server
+    }
+
+    pub fn build_targets(&mut self) -> Result<&[BuildTarget]> {
+        if self.targets.is_none() {
+            let targets = self.client.build_targets()?.targets;
+            self.targets = Some(targets);
+        }
+        Ok(self.targets.as_deref().unwrap_or_default())
+    }
+
+    /// Resolve a build target identifier for a Bazel label.
+    ///
+    /// BSP build target identifiers are URIs, so the provided string is matched against
+    /// `displayName` (preferred) and the raw `id.uri`.
+    pub fn resolve_build_target(&mut self, label_or_uri: &str) -> Result<Option<BuildTargetIdentifier>> {
+        if label_or_uri.contains("://") {
+            return Ok(Some(BuildTargetIdentifier {
+                uri: label_or_uri.to_string(),
+            }));
+        }
+
+        let targets = self.build_targets()?;
+        let mut best: Option<(u8, BuildTargetIdentifier)> = None;
+        for target in targets {
+            let score = if target.display_name.as_deref() == Some(label_or_uri) {
+                3
+            } else if target.id.uri == label_or_uri {
+                2
+            } else if target.id.uri.ends_with(label_or_uri) {
+                1
+            } else {
+                0
+            };
+            if score == 0 {
+                continue;
+            }
+            if best.as_ref().is_some_and(|(best_score, _)| *best_score >= score) {
+                continue;
+            }
+            best = Some((score, target.id.clone()));
+        }
+        Ok(best.map(|(_, id)| id))
+    }
+
+    /// Fetch javac options for the given build targets.
+    pub fn javac_options(
+        &mut self,
+        targets: &[BuildTargetIdentifier],
+    ) -> Result<Vec<(BuildTargetIdentifier, JavaCompileInfo)>> {
+        let result = self.client.javac_options(JavacOptionsParams {
+            targets: targets.to_vec(),
+        })?;
+
+        Ok(result
+            .items
+            .into_iter()
+            .map(|item| {
+                let id = item.target.clone();
+                let info = javac_options_item_to_compile_info(&item);
+                (id, info)
+            })
+            .collect())
+    }
+
+    pub fn javac_options_for_label(&mut self, label: &str) -> Result<Option<JavaCompileInfo>> {
+        let Some(id) = self.resolve_build_target(label)? else {
+            return Ok(None);
+        };
+        let mut items = self.javac_options(&[id])?;
+        Ok(items.pop().map(|(_, info)| info))
+    }
+
+    /// Run compilation for the given build targets, collecting `build/publishDiagnostics`
+    /// notifications regardless of the compilation status code.
+    pub fn compile(&mut self, targets: &[BuildTargetIdentifier]) -> Result<BspCompileOutcome> {
+        self.client.drain_diagnostics();
+
+        let result = self.client.compile(CompileParams {
+            targets: targets.to_vec(),
+        })?;
+
+        let raw = self.client.drain_diagnostics();
+        let diagnostics = collect_nova_diagnostics(raw, &self.server.display_name);
+        Ok(BspCompileOutcome {
+            status_code: result.status_code,
+            diagnostics,
+        })
+    }
+}
+
+fn javac_options_item_to_compile_info(item: &JavacOptionsItem) -> JavaCompileInfo {
+    let mut info = crate::aquery::extract_java_compile_info_from_args(&item.options);
+    let classpath: Vec<String> = if item.classpath.is_empty() {
+        info.classpath.clone()
+    } else {
+        item.classpath.clone()
+    };
+    info.classpath = classpath
+        .iter()
+        .map(|entry| normalize_bsp_uri_to_path(entry).to_string_lossy().to_string())
+        .collect();
+    if !item.class_directory.trim().is_empty() {
+        info.output_dir = Some(
+            normalize_bsp_uri_to_path(&item.class_directory)
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+    info
+}
+
+fn collect_nova_diagnostics(
+    raw: Vec<PublishDiagnosticsParams>,
+    source: &str,
+) -> Vec<NovaDiagnostic> {
+    let mut by_file = BTreeMap::<PathBuf, Vec<NovaDiagnostic>>::new();
+
+    for params in raw {
+        let path = match file_uri_to_path(&params.text_document.uri) {
+            Ok(path) => path.into_path_buf(),
+            Err(_) => continue,
+        };
+
+        let mut converted = Vec::with_capacity(params.diagnostics.len());
+        for diag in params.diagnostics {
+            converted.push(NovaDiagnostic::new(
+                path.clone(),
+                bsp_range_to_nova(diag.range),
+                bsp_severity_to_nova(diag.severity),
+                diag.message,
+                Some(source.to_string()),
+            ));
+        }
+
+        match params.reset {
+            Some(false) => by_file.entry(path).or_default().extend(converted),
+            _ => {
+                by_file.insert(path, converted);
+            }
+        }
+    }
+
+    by_file.into_values().flatten().collect()
+}
+
+fn bsp_range_to_nova(range: Range) -> nova_core::Range {
+    nova_core::Range::new(bsp_position_to_nova(range.start), bsp_position_to_nova(range.end))
+}
+
+fn bsp_position_to_nova(pos: Position) -> nova_core::Position {
+    nova_core::Position::new(clamp_i32(pos.line), clamp_i32(pos.character))
+}
+
+fn clamp_i32(value: i32) -> u32 {
+    if value < 0 {
+        0
+    } else {
+        value as u32
+    }
+}
+
+fn bsp_severity_to_nova(severity: Option<i32>) -> DiagnosticSeverity {
+    match severity.unwrap_or(1) {
+        1 => DiagnosticSeverity::Error,
+        2 => DiagnosticSeverity::Warning,
+        3 => DiagnosticSeverity::Information,
+        4 => DiagnosticSeverity::Hint,
+        _ => DiagnosticSeverity::Error,
     }
 }
 

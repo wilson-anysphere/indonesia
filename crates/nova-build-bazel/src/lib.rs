@@ -17,6 +17,9 @@ mod workspace;
 #[cfg(any(test, feature = "bsp"))]
 pub mod bsp;
 
+#[cfg(feature = "bsp")]
+pub use crate::bsp::{BspClient, BspCompileOutcome, BspServerConfig, BspWorkspace};
+
 pub use crate::{
     aquery::{
         extract_java_compile_info, parse_aquery_textproto, parse_aquery_textproto_streaming,
