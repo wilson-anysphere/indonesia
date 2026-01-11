@@ -4,7 +4,7 @@ use crate::manifest::{
 use crate::{ExtensionRegistry, RegisterError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct LoadedExtension {
@@ -96,6 +96,12 @@ pub enum LoadError {
         id: String,
         entry: PathBuf,
     },
+    #[error("extension {id:?} at {dir:?}: entry path escapes extension directory: {entry:?}")]
+    EntryEscapesDirectory {
+        dir: PathBuf,
+        id: String,
+        entry: PathBuf,
+    },
     #[error("extension {id:?} at {dir:?}: missing entry file {entry_path:?}")]
     MissingEntry {
         dir: PathBuf,
@@ -112,6 +118,10 @@ pub enum LoadError {
     },
     #[error("duplicate extension id {id:?} found in {dirs:?}")]
     DuplicateId { id: String, dirs: Vec<PathBuf> },
+    #[error("extension {id:?} at {dir:?}: denied by configuration")]
+    DeniedByConfig { dir: PathBuf, id: String },
+    #[error("extension {id:?} at {dir:?}: not allowed by configuration")]
+    NotAllowedByConfig { dir: PathBuf, id: String },
     #[error("search path does not exist: {path:?}")]
     SearchPathMissing { path: PathBuf },
     #[error("search path is not a directory: {path:?}")]
@@ -176,7 +186,7 @@ impl ExtensionManager {
             });
         }
 
-        let entry_path = dir.join(&manifest.entry);
+        let entry_path = resolve_entry_path(dir, &manifest)?;
         if !entry_path.is_file() {
             return Err(LoadError::MissingEntry {
                 dir: dir.to_path_buf(),
@@ -239,6 +249,47 @@ impl ExtensionManager {
         loaded.sort_by(|a, b| a.id().cmp(b.id()));
 
         (loaded, errors)
+    }
+
+    pub fn filter_by_id(
+        loaded: Vec<LoadedExtension>,
+        allow: Option<&[String]>,
+        deny: &[String],
+    ) -> (Vec<LoadedExtension>, Vec<LoadError>) {
+        let mut kept = Vec::new();
+        let mut errors = Vec::new();
+
+        for ext in loaded {
+            let id = ext.id().trim();
+
+            if let Some(_pattern) = deny
+                .iter()
+                .find(|pattern| id_matches_pattern(id, pattern))
+            {
+                errors.push(LoadError::DeniedByConfig {
+                    dir: ext.dir.clone(),
+                    id: id.to_string(),
+                });
+                continue;
+            }
+
+            if let Some(allow) = allow {
+                if !allow
+                    .iter()
+                    .any(|pattern| id_matches_pattern(id, pattern))
+                {
+                    errors.push(LoadError::NotAllowedByConfig {
+                        dir: ext.dir.clone(),
+                        id: id.to_string(),
+                    });
+                    continue;
+                }
+            }
+
+            kept.push(ext);
+        }
+
+        (kept, errors)
     }
 
     pub fn list(loaded: &[LoadedExtension]) -> Vec<ExtensionMetadata> {
@@ -347,6 +398,197 @@ impl ExtensionManager {
 
         Ok(())
     }
+
+    pub fn register_all_best_effort<DB>(
+        registry: &mut ExtensionRegistry<DB>,
+        loaded: &[LoadedExtension],
+    ) -> Vec<RegisterError>
+    where
+        DB: ?Sized + Send + Sync + crate::wasm::WasmHostDb + 'static,
+    {
+        use crate::traits::{
+            CodeActionProvider, CompletionProvider, DiagnosticProvider, InlayHintProvider,
+            NavigationProvider,
+        };
+        use crate::wasm::{WasmCapabilities, WasmPlugin, WasmPluginConfig};
+        use std::sync::Arc;
+
+        let mut ordered: Vec<_> = loaded.iter().collect();
+        ordered.sort_by(|a, b| a.id().cmp(b.id()));
+
+        let mut errors = Vec::new();
+
+        for ext in ordered {
+            let plugin = match WasmPlugin::from_wasm_bytes(
+                ext.id(),
+                ext.entry_bytes(),
+                WasmPluginConfig::default(),
+            ) {
+                Ok(plugin) => Arc::new(plugin),
+                Err(err) => {
+                    errors.push(RegisterError::WasmCompile {
+                        id: ext.id().to_string(),
+                        dir: ext.dir().to_path_buf(),
+                        entry_path: ext.entry_path().to_path_buf(),
+                        message: err.to_string(),
+                    });
+                    continue;
+                }
+            };
+            let caps = plugin.capabilities();
+
+            for cap in &ext.manifest().capabilities {
+                match cap {
+                    ExtensionCapability::Diagnostics => {
+                        if !caps.contains(WasmCapabilities::DIAGNOSTICS) {
+                            errors.push(RegisterError::WasmCapabilityNotSupported {
+                                id: ext.id().to_string(),
+                                dir: ext.dir().to_path_buf(),
+                                capability: cap.as_str().to_string(),
+                            });
+                            continue;
+                        }
+                        if let Err(err) = registry.register_diagnostic_provider(
+                            Arc::clone(&plugin) as Arc<dyn DiagnosticProvider<DB>>,
+                        ) {
+                            errors.push(err);
+                        }
+                    }
+                    ExtensionCapability::Completion => {
+                        if !caps.contains(WasmCapabilities::COMPLETIONS) {
+                            errors.push(RegisterError::WasmCapabilityNotSupported {
+                                id: ext.id().to_string(),
+                                dir: ext.dir().to_path_buf(),
+                                capability: cap.as_str().to_string(),
+                            });
+                            continue;
+                        }
+                        if let Err(err) = registry.register_completion_provider(
+                            Arc::clone(&plugin) as Arc<dyn CompletionProvider<DB>>,
+                        ) {
+                            errors.push(err);
+                        }
+                    }
+                    ExtensionCapability::CodeAction => {
+                        if !caps.contains(WasmCapabilities::CODE_ACTIONS) {
+                            errors.push(RegisterError::WasmCapabilityNotSupported {
+                                id: ext.id().to_string(),
+                                dir: ext.dir().to_path_buf(),
+                                capability: cap.as_str().to_string(),
+                            });
+                            continue;
+                        }
+                        if let Err(err) = registry.register_code_action_provider(
+                            Arc::clone(&plugin) as Arc<dyn CodeActionProvider<DB>>,
+                        ) {
+                            errors.push(err);
+                        }
+                    }
+                    ExtensionCapability::Navigation => {
+                        if !caps.contains(WasmCapabilities::NAVIGATION) {
+                            errors.push(RegisterError::WasmCapabilityNotSupported {
+                                id: ext.id().to_string(),
+                                dir: ext.dir().to_path_buf(),
+                                capability: cap.as_str().to_string(),
+                            });
+                            continue;
+                        }
+                        if let Err(err) = registry.register_navigation_provider(
+                            Arc::clone(&plugin) as Arc<dyn NavigationProvider<DB>>,
+                        ) {
+                            errors.push(err);
+                        }
+                    }
+                    ExtensionCapability::InlayHint => {
+                        if !caps.contains(WasmCapabilities::INLAY_HINTS) {
+                            errors.push(RegisterError::WasmCapabilityNotSupported {
+                                id: ext.id().to_string(),
+                                dir: ext.dir().to_path_buf(),
+                                capability: cap.as_str().to_string(),
+                            });
+                            continue;
+                        }
+                        if let Err(err) = registry.register_inlay_hint_provider(
+                            Arc::clone(&plugin) as Arc<dyn InlayHintProvider<DB>>,
+                        ) {
+                            errors.push(err);
+                        }
+                    }
+                }
+            }
+        }
+
+        errors
+    }
+}
+
+fn resolve_entry_path(dir: &Path, manifest: &ExtensionManifest) -> Result<PathBuf, LoadError> {
+    if manifest
+        .entry
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(LoadError::EntryEscapesDirectory {
+            dir: dir.to_path_buf(),
+            id: manifest.id.clone(),
+            entry: manifest.entry.clone(),
+        });
+    }
+
+    let mut entry_path = dir.to_path_buf();
+    for component in manifest.entry.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => entry_path.push(part),
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(LoadError::EntryEscapesDirectory {
+                    dir: dir.to_path_buf(),
+                    id: manifest.id.clone(),
+                    entry: manifest.entry.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(entry_path)
+}
+
+fn id_matches_pattern(id: &str, pattern: &str) -> bool {
+    let id = id.trim();
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return false;
+    }
+
+    if !pattern.contains('*') {
+        return id == pattern;
+    }
+
+    let starts_with_star = pattern.starts_with('*');
+    let ends_with_star = pattern.ends_with('*');
+
+    let parts: Vec<&str> = pattern.split('*').filter(|part| !part.is_empty()).collect();
+    if parts.is_empty() {
+        return true;
+    }
+
+    let mut pos = 0usize;
+    for (idx, part) in parts.iter().enumerate() {
+        let Some(found) = id[pos..].find(part) else {
+            return false;
+        };
+        let found_pos = pos + found;
+        if idx == 0 && !starts_with_star && found_pos != 0 {
+            return false;
+        }
+        pos = found_pos + part.len();
+    }
+
+    if !ends_with_star {
+        return pos == id.len();
+    }
+
+    true
 }
 
 fn discover_extension_dirs(search_path: &Path) -> Result<Vec<PathBuf>, LoadError> {
@@ -412,7 +654,11 @@ mod tests {
     }
 
     fn write_dummy_wasm(dir: &Path, file: &str) {
-        fs::write(dir.join(file), [0u8; 1]).unwrap();
+        let path = dir.join(file);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, [0u8; 1]).unwrap();
     }
 
     #[test]
@@ -524,6 +770,54 @@ capabilities = ["diagnostics"]
     }
 
     #[test]
+    fn rejects_entry_paths_with_parent_dir() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        fs::write(root.join("outside.wasm"), [0u8; 1]).unwrap();
+
+        let ext_dir = root.join("ext");
+        fs::create_dir_all(&ext_dir).unwrap();
+        write_manifest(
+            &ext_dir,
+            r#"
+id = "traversal"
+version = "0.1.0"
+entry = "../outside.wasm"
+abi_version = 1
+capabilities = ["diagnostics"]
+"#,
+        );
+
+        let err = ExtensionManager::load_from_dir(&ext_dir).unwrap_err();
+        assert!(
+            matches!(err, LoadError::EntryEscapesDirectory { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn supports_nested_entry_paths() {
+        let temp = TempDir::new().unwrap();
+        let ext_dir = temp.path().join("ext");
+        fs::create_dir_all(&ext_dir).unwrap();
+        write_manifest(
+            &ext_dir,
+            r#"
+id = "nested"
+version = "0.1.0"
+entry = "bin/plugin.wasm"
+abi_version = 1
+capabilities = ["diagnostics"]
+"#,
+        );
+        write_dummy_wasm(&ext_dir, "bin/plugin.wasm");
+
+        let ext = ExtensionManager::load_from_dir(&ext_dir).unwrap();
+        assert_eq!(ext.entry_path().strip_prefix(&ext_dir).unwrap(), Path::new("bin/plugin.wasm"));
+    }
+
+    #[test]
     fn reports_manifest_parse_errors() {
         let temp = TempDir::new().unwrap();
         let ext_dir = temp.path().join("ext");
@@ -535,6 +829,95 @@ capabilities = ["diagnostics"]
         assert!(matches!(err, LoadError::ManifestParse { .. }), "{err:?}");
     }
 
+    #[test]
+    fn id_glob_matching_supports_simple_wildcards() {
+        assert!(id_matches_pattern("com.mycorp.rules", "com.mycorp.rules"));
+        assert!(id_matches_pattern("com.mycorp.rules", "com.mycorp.*"));
+        assert!(id_matches_pattern("com.mycorp.rules", "*rules*"));
+        assert!(id_matches_pattern("com.mycorp.rules", "com.*.rules*"));
+        assert!(!id_matches_pattern("com.mycorp.other", "com.*.rules*"));
+    }
+
+    #[test]
+    fn filter_by_id_applies_allow_and_deny_lists() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        let loaded = vec![
+            LoadedExtension {
+                dir: root.join("a"),
+                manifest: ExtensionManifest {
+                    id: "com.mycorp.rules".to_string(),
+                    version: semver::Version::parse("0.1.0").unwrap(),
+                    entry: PathBuf::from("plugin.wasm"),
+                    abi_version: SUPPORTED_ABI_VERSION,
+                    capabilities: vec![ExtensionCapability::Diagnostics],
+                    name: None,
+                    description: None,
+                    authors: Vec::new(),
+                    homepage: None,
+                    license: None,
+                    config_schema: None,
+                },
+                entry_path: root.join("a/plugin.wasm"),
+                entry_bytes: Vec::new(),
+            },
+            LoadedExtension {
+                dir: root.join("b"),
+                manifest: ExtensionManifest {
+                    id: "com.evil.rules".to_string(),
+                    version: semver::Version::parse("0.1.0").unwrap(),
+                    entry: PathBuf::from("plugin.wasm"),
+                    abi_version: SUPPORTED_ABI_VERSION,
+                    capabilities: vec![ExtensionCapability::Diagnostics],
+                    name: None,
+                    description: None,
+                    authors: Vec::new(),
+                    homepage: None,
+                    license: None,
+                    config_schema: None,
+                },
+                entry_path: root.join("b/plugin.wasm"),
+                entry_bytes: Vec::new(),
+            },
+            LoadedExtension {
+                dir: root.join("c"),
+                manifest: ExtensionManifest {
+                    id: "com.mycorp.other".to_string(),
+                    version: semver::Version::parse("0.1.0").unwrap(),
+                    entry: PathBuf::from("plugin.wasm"),
+                    abi_version: SUPPORTED_ABI_VERSION,
+                    capabilities: vec![ExtensionCapability::Diagnostics],
+                    name: None,
+                    description: None,
+                    authors: Vec::new(),
+                    homepage: None,
+                    license: None,
+                    config_schema: None,
+                },
+                entry_path: root.join("c/plugin.wasm"),
+                entry_bytes: Vec::new(),
+            },
+        ];
+
+        let allow = vec!["com.*.rules*".to_string()];
+        let deny = vec!["com.evil.*".to_string()];
+
+        let (kept, errors) = ExtensionManager::filter_by_id(loaded, Some(&allow), &deny);
+        assert_eq!(
+            kept.iter().map(|ext| ext.id()).collect::<Vec<_>>(),
+            vec!["com.mycorp.rules"]
+        );
+        assert!(
+            errors.iter().any(|err| matches!(err, LoadError::DeniedByConfig { id, .. } if id == "com.evil.rules")),
+            "{errors:?}"
+        );
+        assert!(
+            errors.iter().any(|err| matches!(err, LoadError::NotAllowedByConfig { id, .. } if id == "com.mycorp.other")),
+            "{errors:?}"
+        );
+    }
+
     mod wasm_tests {
         use super::*;
         use crate::traits::{CompletionParams, DiagnosticParams};
@@ -543,6 +926,7 @@ capabilities = ["diagnostics"]
         use nova_config::NovaConfig;
         use nova_core::{FileId, ProjectId};
         use nova_scheduler::CancellationToken;
+        use nova_types::{Diagnostic, Span};
         use std::sync::Arc;
 
         struct TestDb {
@@ -767,6 +1151,157 @@ capabilities = ["diagnostics", "completions"]
             );
             assert_eq!(completions.len(), 1);
             assert_eq!(completions[0].label, "completion");
+        }
+
+        #[test]
+        fn register_all_best_effort_continues_past_wasm_compile_errors() {
+            let temp = TempDir::new().unwrap();
+            let root = temp.path();
+
+            let bad = root.join("bad");
+            fs::create_dir_all(&bad).unwrap();
+            write_manifest(
+                &bad,
+                r#"
+id = "a.bad"
+version = "0.1.0"
+entry = "plugin.wasm"
+abi_version = 1
+capabilities = ["diagnostics"]
+"#,
+            );
+            write_dummy_wasm(&bad, "plugin.wasm");
+
+            let good = root.join("good");
+            fs::create_dir_all(&good).unwrap();
+            write_manifest(
+                &good,
+                r#"
+id = "b.good"
+version = "0.1.0"
+entry = "plugin.wasm"
+abi_version = 1
+capabilities = ["diagnostics"]
+"#,
+            );
+            write_wat_wasm(&good, "plugin.wasm", &simple_wat("from-good", None));
+
+            let (loaded, errors) = ExtensionManager::load_all(&[root.to_path_buf()]);
+            assert!(errors.is_empty(), "{errors:?}");
+
+            let mut registry = ExtensionRegistry::<TestDb>::default();
+            let errs = ExtensionManager::register_all_best_effort(&mut registry, &loaded);
+            assert_eq!(errs.len(), 1, "{errs:?}");
+            assert!(
+                matches!(errs[0], RegisterError::WasmCompile { ref id, .. } if id == "a.bad"),
+                "{errs:?}"
+            );
+
+            let db = Arc::new(TestDb {
+                text: String::new(),
+            });
+            let out = registry.diagnostics(
+                ctx(db),
+                DiagnosticParams {
+                    file: FileId::from_raw(1),
+                },
+            );
+            assert_eq!(
+                out.into_iter().map(|d| d.message).collect::<Vec<_>>(),
+                vec!["from-good".to_string()]
+            );
+        }
+
+        #[test]
+        fn register_all_best_effort_reports_duplicate_ids_and_continues() {
+            struct BuiltinDiag;
+            impl crate::traits::DiagnosticProvider<TestDb> for BuiltinDiag {
+                fn id(&self) -> &str {
+                    "dup"
+                }
+
+                fn provide_diagnostics(
+                    &self,
+                    _ctx: ExtensionContext<TestDb>,
+                    _params: DiagnosticParams,
+                ) -> Vec<Diagnostic> {
+                    vec![Diagnostic::warning("TEST", "builtin", Some(Span::new(0, 1)))]
+                }
+            }
+
+            let temp = TempDir::new().unwrap();
+            let root = temp.path();
+
+            let dup = root.join("dup");
+            fs::create_dir_all(&dup).unwrap();
+            write_manifest(
+                &dup,
+                r#"
+id = "dup"
+version = "0.1.0"
+entry = "plugin.wasm"
+abi_version = 1
+capabilities = ["diagnostics", "completions"]
+"#,
+            );
+            write_wat_wasm(&dup, "plugin.wasm", &simple_wat("from-dup", Some("from-dup")));
+
+            let ok = root.join("ok");
+            fs::create_dir_all(&ok).unwrap();
+            write_manifest(
+                &ok,
+                r#"
+id = "ok"
+version = "0.1.0"
+entry = "plugin.wasm"
+abi_version = 1
+capabilities = ["diagnostics"]
+"#,
+            );
+            write_wat_wasm(&ok, "plugin.wasm", &simple_wat("from-ok", None));
+
+            let (loaded, errors) = ExtensionManager::load_all(&[root.to_path_buf()]);
+            assert!(errors.is_empty(), "{errors:?}");
+
+            let mut registry = ExtensionRegistry::<TestDb>::default();
+            registry
+                .register_diagnostic_provider(Arc::new(BuiltinDiag))
+                .unwrap();
+
+            let errs = ExtensionManager::register_all_best_effort(&mut registry, &loaded);
+            assert_eq!(errs.len(), 1, "{errs:?}");
+            assert!(
+                matches!(errs[0], RegisterError::DuplicateId { kind, ref id } if kind == "diagnostic" && id == "dup"),
+                "{errs:?}"
+            );
+
+            let db = Arc::new(TestDb {
+                text: String::new(),
+            });
+
+            let diagnostics = registry.diagnostics(
+                ctx(Arc::clone(&db)),
+                DiagnosticParams {
+                    file: FileId::from_raw(1),
+                },
+            );
+            assert_eq!(
+                diagnostics
+                    .into_iter()
+                    .map(|d| d.message)
+                    .collect::<Vec<_>>(),
+                vec!["builtin".to_string(), "from-ok".to_string()]
+            );
+
+            let completions = registry.completions(
+                ctx(db),
+                CompletionParams {
+                    file: FileId::from_raw(1),
+                    offset: 0,
+                },
+            );
+            assert_eq!(completions.len(), 1);
+            assert_eq!(completions[0].label, "from-dup");
         }
     }
 }
