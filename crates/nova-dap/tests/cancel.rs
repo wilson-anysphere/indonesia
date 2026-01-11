@@ -77,6 +77,7 @@ async fn dap_cancel_aborts_long_running_request() {
             command: 6, // ThreadReference.Frames
             delay: Duration::from_secs(5),
         }],
+        ..Default::default()
     })
     .await
     .unwrap();
