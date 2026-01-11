@@ -1,6 +1,9 @@
 use anyhow::{bail, ensure, Context};
 
-use crate::{MAX_FILE_TEXT_BYTES, MAX_MESSAGE_BYTES, MAX_SYMBOLS_PER_SHARD_INDEX};
+use crate::{
+    MAX_FILE_TEXT_BYTES, MAX_FILES_PER_MESSAGE, MAX_MESSAGE_BYTES, MAX_SMALL_STRING_BYTES,
+    MAX_SYMBOLS_PER_SHARD_INDEX,
+};
 
 /// Conservative validation of a CBOR buffer to avoid allocation bombs during `serde_cbor` decode.
 ///
@@ -21,7 +24,7 @@ pub(crate) fn validate_cbor(bytes: &[u8]) -> anyhow::Result<()> {
     );
 
     let mut r = Reader::new(bytes);
-    validate_item(&mut r, 0).context("validate CBOR root item")?;
+    validate_item(&mut r, 0, Limits::DEFAULT).context("validate CBOR root item")?;
     ensure!(
         r.is_empty(),
         "trailing {} bytes after CBOR value",
@@ -32,9 +35,29 @@ pub(crate) fn validate_cbor(bytes: &[u8]) -> anyhow::Result<()> {
 
 const MAX_CBOR_NESTING: usize = 64;
 const MAX_CBOR_MAP_LEN: usize = 1024;
+const MAX_CBOR_KEY_BYTES: usize = 64;
 
-// In practice the largest arrays we carry over the wire are symbols in a shard index.
-const MAX_CBOR_ARRAY_LEN: usize = MAX_SYMBOLS_PER_SHARD_INDEX;
+// For arrays that are expected to contain maps/structs (files, symbols, etc) we require a minimum
+// number of bytes per item. This prevents allocation bombs where a small payload declares a very
+// large array length of tiny items and triggers a huge `Vec<T>::with_capacity(len)` allocation.
+const MIN_BYTES_PER_COMPLEX_ARRAY_ITEM: usize = 8;
+
+#[derive(Clone, Copy)]
+struct Limits {
+    max_text_len: usize,
+    max_bytes_len: usize,
+    max_array_len: usize,
+    min_array_item_bytes: usize,
+}
+
+impl Limits {
+    const DEFAULT: Limits = Limits {
+        max_text_len: MAX_FILE_TEXT_BYTES,
+        max_bytes_len: MAX_MESSAGE_BYTES,
+        max_array_len: MAX_SYMBOLS_PER_SHARD_INDEX,
+        min_array_item_bytes: 1,
+    };
+}
 
 struct Reader<'a> {
     bytes: &'a [u8],
@@ -119,7 +142,76 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn validate_item(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
+fn limits_for_map_value(key: &str, base: Limits) -> Limits {
+    match key {
+        // File payloads.
+        "files" => Limits {
+            max_array_len: MAX_FILES_PER_MESSAGE,
+            min_array_item_bytes: MIN_BYTES_PER_COMPLEX_ARRAY_ITEM,
+            ..base
+        },
+
+        // Symbol payloads.
+        "symbols" => Limits {
+            max_array_len: MAX_SYMBOLS_PER_SHARD_INDEX,
+            min_array_item_bytes: MIN_BYTES_PER_COMPLEX_ARRAY_ITEM,
+            ..base
+        },
+
+        // CBOR byte string, but we also accept an array-of-u8 encoding for compatibility.
+        // An array-of-u8 is safe to be 1 byte per item, so do not apply the complex-item ratio.
+        "data" => Limits {
+            max_bytes_len: MAX_MESSAGE_BYTES,
+            max_array_len: MAX_MESSAGE_BYTES,
+            min_array_item_bytes: 1,
+            ..base
+        },
+
+        // Capability lists are expected to be tiny.
+        "supported_compression" => Limits {
+            max_array_len: 32,
+            max_text_len: MAX_SMALL_STRING_BYTES,
+            ..base
+        },
+
+        // Small strings.
+        "path" | "name" | "auth_token" | "message" | "details" | "worker_build" => Limits {
+            max_text_len: MAX_SMALL_STRING_BYTES,
+            ..base
+        },
+
+        // Enum discriminator strings should always be short.
+        "type" | "compression" => Limits {
+            max_text_len: 64,
+            ..base
+        },
+
+        _ => base,
+    }
+}
+
+fn read_map_key<'a>(r: &mut Reader<'a>) -> anyhow::Result<&'a str> {
+    let head = r.read_u8().context("read map key head")?;
+    let major = head >> 5;
+    let ai = head & 0x1f;
+    ensure!(major == 3, "map key must be a text string");
+    ensure!(ai != 31, "indefinite-length map keys are not supported");
+
+    let len = r.read_len(ai, "map key")?;
+    ensure!(
+        len <= MAX_CBOR_KEY_BYTES,
+        "map key too long: {len} bytes (max {MAX_CBOR_KEY_BYTES})"
+    );
+    ensure!(
+        len <= r.remaining(),
+        "map key length {len} exceeds remaining bytes ({})",
+        r.remaining()
+    );
+    let bytes = r.read_exact(len)?;
+    Ok(std::str::from_utf8(bytes).context("map key is not valid UTF-8")?)
+}
+
+fn validate_item<'a>(r: &mut Reader<'a>, depth: usize, limits: Limits) -> anyhow::Result<()> {
     ensure!(depth <= MAX_CBOR_NESTING, "CBOR nesting too deep");
     let head = r.read_u8().context("read CBOR head")?;
     let major = head >> 5;
@@ -133,12 +225,13 @@ fn validate_item(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
         }
         // byte string
         2 => match ai {
-            31 => validate_indefinite_bytes(r, depth + 1, false),
+            31 => validate_indefinite_bytes(r, depth + 1, false, limits.max_bytes_len),
             _ => {
                 let len = r.read_len(ai, "byte string")?;
                 ensure!(
-                    len <= MAX_MESSAGE_BYTES,
-                    "byte string too large: {len} bytes (max {MAX_MESSAGE_BYTES})"
+                    len <= limits.max_bytes_len,
+                    "byte string too large: {len} bytes (max {})",
+                    limits.max_bytes_len
                 );
                 ensure!(
                     len <= r.remaining(),
@@ -151,12 +244,13 @@ fn validate_item(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
         },
         // text string
         3 => match ai {
-            31 => validate_indefinite_bytes(r, depth + 1, true),
+            31 => validate_indefinite_bytes(r, depth + 1, true, limits.max_text_len),
             _ => {
                 let len = r.read_len(ai, "text string")?;
                 ensure!(
-                    len <= MAX_FILE_TEXT_BYTES,
-                    "text string too large: {len} bytes (max {MAX_FILE_TEXT_BYTES})"
+                    len <= limits.max_text_len,
+                    "text string too large: {len} bytes (max {})",
+                    limits.max_text_len
                 );
                 ensure!(
                     len <= r.remaining(),
@@ -169,28 +263,31 @@ fn validate_item(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
         },
         // array
         4 => match ai {
-            31 => validate_indefinite_array(r, depth + 1),
+            31 => validate_indefinite_array(r, depth + 1, limits),
             _ => {
                 let len = r.read_len(ai, "array")?;
                 ensure!(
-                    len <= MAX_CBOR_ARRAY_LEN,
-                    "array too long: {len} items (max {MAX_CBOR_ARRAY_LEN})"
+                    len <= limits.max_array_len,
+                    "array too long: {len} items (max {})",
+                    limits.max_array_len
                 );
-                // Each child item requires at least one byte, so a longer array can't fit.
+
+                let min_item_bytes = limits.min_array_item_bytes.max(1);
+                let max_by_remaining = r.remaining().checked_div(min_item_bytes).unwrap_or(0);
                 ensure!(
-                    len <= r.remaining(),
-                    "array length {len} exceeds remaining bytes ({})",
+                    len <= max_by_remaining,
+                    "array length {len} exceeds remaining bytes ({}) for min item size {min_item_bytes}",
                     r.remaining()
                 );
                 for _ in 0..len {
-                    validate_item(r, depth + 1)?;
+                    validate_item(r, depth + 1, limits)?;
                 }
                 Ok(())
             }
         },
         // map
         5 => match ai {
-            31 => validate_indefinite_map(r, depth + 1),
+            31 => validate_indefinite_map(r, depth + 1, limits),
             _ => {
                 let len = r.read_len(ai, "map")?;
                 ensure!(
@@ -204,8 +301,10 @@ fn validate_item(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
                     r.remaining()
                 );
                 for _ in 0..len {
-                    validate_item(r, depth + 1).context("validate map key")?;
-                    validate_item(r, depth + 1).context("validate map value")?;
+                    let key = read_map_key(r).context("validate map key")?;
+                    let value_limits = limits_for_map_value(key, Limits::DEFAULT);
+                    validate_item(r, depth + 1, value_limits)
+                        .with_context(|| format!("validate map value for key {key:?}"))?;
                 }
                 Ok(())
             }
@@ -213,7 +312,7 @@ fn validate_item(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
         // tag
         6 => {
             let _ = r.read_uint(ai)?;
-            validate_item(r, depth + 1).context("validate tagged item")
+            validate_item(r, depth + 1, limits).context("validate tagged item")
         }
         // simple / float
         7 => match ai {
@@ -241,7 +340,11 @@ fn validate_item(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
     }
 }
 
-fn validate_indefinite_array(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
+fn validate_indefinite_array<'a>(
+    r: &mut Reader<'a>,
+    depth: usize,
+    limits: Limits,
+) -> anyhow::Result<()> {
     let mut items = 0usize;
     loop {
         let next = r.peek_u8().context("peek indefinite array item")?;
@@ -250,15 +353,16 @@ fn validate_indefinite_array(r: &mut Reader<'_>, depth: usize) -> anyhow::Result
             return Ok(());
         }
         ensure!(
-            items < MAX_CBOR_ARRAY_LEN,
-            "indefinite array too long (max {MAX_CBOR_ARRAY_LEN})"
+            items < limits.max_array_len,
+            "indefinite array too long (max {})",
+            limits.max_array_len
         );
-        validate_item(r, depth)?;
+        validate_item(r, depth, limits)?;
         items += 1;
     }
 }
 
-fn validate_indefinite_map(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<()> {
+fn validate_indefinite_map<'a>(r: &mut Reader<'a>, depth: usize, limits: Limits) -> anyhow::Result<()> {
     let mut pairs = 0usize;
     loop {
         let next = r.peek_u8().context("peek indefinite map item")?;
@@ -270,21 +374,22 @@ fn validate_indefinite_map(r: &mut Reader<'_>, depth: usize) -> anyhow::Result<(
             pairs < MAX_CBOR_MAP_LEN,
             "indefinite map too long (max {MAX_CBOR_MAP_LEN})"
         );
-        validate_item(r, depth).context("validate map key")?;
-        validate_item(r, depth).context("validate map value")?;
+        let key = read_map_key(r).context("validate map key")?;
+        let value_limits = limits_for_map_value(key, Limits::DEFAULT);
+        validate_item(r, depth, value_limits)
+            .with_context(|| format!("validate map value for key {key:?}"))?;
         pairs += 1;
     }
 }
 
-fn validate_indefinite_bytes(r: &mut Reader<'_>, depth: usize, is_text: bool) -> anyhow::Result<()> {
+fn validate_indefinite_bytes<'a>(
+    r: &mut Reader<'a>,
+    depth: usize,
+    is_text: bool,
+    max_total: usize,
+) -> anyhow::Result<()> {
     // Indefinite byte/text strings are a sequence of definite-length chunks terminated by `break`.
     // We validate each chunk individually and also cap the total length.
-    let max_total = if is_text {
-        MAX_FILE_TEXT_BYTES
-    } else {
-        MAX_MESSAGE_BYTES
-    };
-
     let mut total = 0usize;
     loop {
         let next = r.peek_u8().context("peek indefinite string chunk")?;
@@ -324,4 +429,3 @@ fn validate_indefinite_bytes(r: &mut Reader<'_>, depth: usize, is_text: bool) ->
         r.skip(len)?;
     }
 }
-

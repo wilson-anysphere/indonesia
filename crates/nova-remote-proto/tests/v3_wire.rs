@@ -265,4 +265,22 @@ fn decoding_rejects_allocation_bombs() {
         start.elapsed() < Duration::from_millis(250),
         "decode took too long"
     );
+
+    // Map with `symbols: array(1_000_000)` but only 1 byte per array item.
+    // Without a ratio check, `serde_cbor` would reserve space for 1M `Symbol` structs even though
+    // the payload is only ~1MiB and deserialization would fail immediately on the first element.
+    let mut bytes = Vec::with_capacity(1_000_000 + 32);
+    bytes.extend_from_slice(&[
+        0xa1, // map(1)
+        0x67, b's', b'y', b'm', b'b', b'o', b'l', b's', // "symbols"
+        0x9a, 0x00, 0x0f, 0x42, 0x40, // array(1_000_000)
+    ]);
+    bytes.resize(bytes.len() + 1_000_000, 0x00);
+
+    let start = Instant::now();
+    assert!(decode_rpc_payload(&bytes).is_err());
+    assert!(
+        start.elapsed() < Duration::from_millis(250),
+        "decode took too long"
+    );
 }
