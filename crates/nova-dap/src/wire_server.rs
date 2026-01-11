@@ -2226,7 +2226,7 @@ fn spawn_event_task(
                                 BreakpointDisposition::Continue | BreakpointDisposition::Log { .. }
                             )
                         ) {
-                            let _ = dbg.continue_(&server_shutdown).await;
+                            let _ = dbg.continue_(&server_shutdown, Some(*thread as i64)).await;
                         }
                     }
                 }
