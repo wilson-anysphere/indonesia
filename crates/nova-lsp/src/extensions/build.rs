@@ -208,7 +208,10 @@ fn run_build(build: &BuildManager, params: &NovaProjectParams) -> Result<BuildRe
     let root = PathBuf::from(&params.project_root);
     match detect_kind(&root, params.build_tool)? {
         BuildKind::Maven => build
-            .build_maven(&root, params.module.as_deref().map(Path::new))
+            .build_maven(
+                &root,
+                normalize_maven_module_relative(params.module.as_deref()),
+            )
             .map_err(map_build_error),
         BuildKind::Gradle => build
             .build_gradle(&root, params.project_path.as_deref())
@@ -220,11 +223,23 @@ fn run_classpath(build: &BuildManager, params: &NovaProjectParams) -> Result<Cla
     let root = PathBuf::from(&params.project_root);
     match detect_kind(&root, params.build_tool)? {
         BuildKind::Maven => build
-            .classpath_maven(&root, params.module.as_deref().map(Path::new))
+            .classpath_maven(
+                &root,
+                normalize_maven_module_relative(params.module.as_deref()),
+            )
             .map_err(map_build_error),
         BuildKind::Gradle => build
             .classpath_gradle(&root, params.project_path.as_deref())
             .map_err(map_build_error),
+    }
+}
+
+fn normalize_maven_module_relative(module: Option<&str>) -> Option<&Path> {
+    let module = module.map(str::trim)?;
+    if module.is_empty() || module == "." {
+        None
+    } else {
+        Some(Path::new(module))
     }
 }
 
@@ -1032,6 +1047,22 @@ mod tests {
         assert_eq!(params.project_root, "/tmp/project");
         assert_eq!(params.build_tool, Some(BuildTool::Maven));
         assert_eq!(params.project_path.as_deref(), Some(":app"));
+    }
+
+    #[test]
+    fn normalize_maven_module_relative_treats_dot_as_workspace_root() {
+        assert_eq!(normalize_maven_module_relative(None), None);
+        assert_eq!(normalize_maven_module_relative(Some("")), None);
+        assert_eq!(normalize_maven_module_relative(Some("   ")), None);
+        assert_eq!(normalize_maven_module_relative(Some(".")), None);
+        assert_eq!(
+            normalize_maven_module_relative(Some("module-a")),
+            Some(Path::new("module-a"))
+        );
+        assert_eq!(
+            normalize_maven_module_relative(Some(" module-b ")),
+            Some(Path::new("module-b"))
+        );
     }
 
     #[test]

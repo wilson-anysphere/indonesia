@@ -94,15 +94,15 @@ pub fn handle_generated_sources(params: serde_json::Value) -> Result<serde_json:
 
     let (project, config) = load_project_with_workspace_config(&root)?;
     let apt = AptManager::new(project, config);
-    let status = apt.status().map_err(map_io_error)?;
+    let mut status = apt.status().map_err(map_io_error)?;
 
-    let mut resp = convert_status(status);
-    if let Some(module_root) = selected_module_root(&apt, &params) {
-        let module_root = module_root.to_string_lossy().to_string();
-        resp.modules
+    if let Some(module_root) = selected_module_root(apt.project(), &params) {
+        status
+            .modules
             .retain(|module| module.module_root == module_root);
     }
 
+    let resp = convert_status(status);
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 
@@ -124,13 +124,18 @@ pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<ser
         nova_project::BuildSystem::Maven => build
             .build_maven(
                 &apt.project().workspace_root,
-                params.module.as_deref().map(Path::new),
+                normalize_maven_module_relative(params.module.as_deref()),
             )
             .map_err(map_build_error)?,
         nova_project::BuildSystem::Gradle => build
             .build_gradle(
                 &apt.project().workspace_root,
-                params.project_path.as_deref(),
+                params
+                    .project_path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                    .filter(|p| *p != ":"),
             )
             .map_err(map_build_error)?,
         nova_project::BuildSystem::Bazel | nova_project::BuildSystem::Simple => {
@@ -226,22 +231,41 @@ fn map_io_error(err: std::io::Error) -> NovaLspError {
     NovaLspError::Internal(err.to_string())
 }
 
-fn selected_module_root(apt: &AptManager, params: &NovaGeneratedSourcesParams) -> Option<PathBuf> {
-    match apt.project().build_system {
-        nova_project::BuildSystem::Maven => params.module.as_deref().and_then(|module| {
-            let module = module.trim();
+fn selected_module_root(
+    project: &nova_project::ProjectConfig,
+    params: &NovaGeneratedSourcesParams,
+) -> Option<PathBuf> {
+    match project.build_system {
+        nova_project::BuildSystem::Maven => {
+            let module = params.module.as_deref().map(str::trim)?;
             if module.is_empty() || module == "." {
-                Some(apt.project().workspace_root.clone())
+                None
             } else {
-                Some(apt.project().workspace_root.join(module))
+                Some(project.workspace_root.join(module))
             }
-        }),
-        nova_project::BuildSystem::Gradle => params.project_path.as_deref().map(|path| {
-            apt.project()
-                .workspace_root
-                .join(gradle_project_path_to_dir(path))
-        }),
+        }
+        nova_project::BuildSystem::Gradle => {
+            let path = params.project_path.as_deref().map(str::trim)?;
+            if path.is_empty() || path == ":" {
+                None
+            } else {
+                Some(
+                    project
+                        .workspace_root
+                        .join(gradle_project_path_to_dir(path)),
+                )
+            }
+        }
         nova_project::BuildSystem::Bazel | nova_project::BuildSystem::Simple => None,
+    }
+}
+
+fn normalize_maven_module_relative(module: Option<&str>) -> Option<&Path> {
+    let module = module.map(str::trim)?;
+    if module.is_empty() || module == "." {
+        None
+    } else {
+        Some(Path::new(module))
     }
 }
 
@@ -360,5 +384,64 @@ mod tests {
         assert!(value.get("progress").is_some());
         assert!(value.get("progressEvents").is_some());
         assert!(value.get("moduleDiagnostics").is_some());
+    }
+
+    #[test]
+    fn selected_module_root_normalizes_maven_root_module() {
+        let project = nova_project::ProjectConfig {
+            workspace_root: PathBuf::from("/workspace"),
+            build_system: nova_project::BuildSystem::Maven,
+            java: nova_project::JavaConfig::default(),
+            modules: Vec::new(),
+            jpms_modules: Vec::new(),
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+        };
+
+        let params = NovaGeneratedSourcesParams {
+            project_root: "/workspace".into(),
+            module: Some(".".into()),
+            project_path: None,
+            target: None,
+        };
+        assert_eq!(selected_module_root(&project, &params), None);
+
+        let params = NovaGeneratedSourcesParams {
+            project_root: "/workspace".into(),
+            module: Some("module-a".into()),
+            project_path: None,
+            target: None,
+        };
+        assert_eq!(
+            selected_module_root(&project, &params),
+            Some(PathBuf::from("/workspace/module-a"))
+        );
+    }
+
+    #[test]
+    fn selected_module_root_normalizes_gradle_root_project() {
+        let project = nova_project::ProjectConfig {
+            workspace_root: PathBuf::from("/workspace"),
+            build_system: nova_project::BuildSystem::Gradle,
+            java: nova_project::JavaConfig::default(),
+            modules: Vec::new(),
+            jpms_modules: Vec::new(),
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+        };
+
+        let params = NovaGeneratedSourcesParams {
+            project_root: "/workspace".into(),
+            module: None,
+            project_path: Some(":".into()),
+            target: None,
+        };
+        assert_eq!(selected_module_root(&project, &params), None);
     }
 }
