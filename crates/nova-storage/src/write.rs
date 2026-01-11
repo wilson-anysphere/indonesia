@@ -13,8 +13,22 @@ use crate::persisted::StorageError;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub type FileArchiveSerializer =
+    CompositeSerializer<WriteSerializer<fs::File>, HeapScratch<256>, SharedSerializeMap>;
+
+/// Trait alias for values that can be serialized by `nova-storage`'s streaming
+/// writer.
+///
+/// This hides the internal `rkyv` serializer type from downstream crates so
+/// they can write generic helpers without repeating an unwieldy type in their
+/// bounds.
+pub trait WritableArchive: rkyv::Archive + rkyv::Serialize<FileArchiveSerializer> {}
+
+impl<T> WritableArchive for T where T: rkyv::Archive + rkyv::Serialize<FileArchiveSerializer> {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WriteCompression {
+    #[default]
     None,
     Zstd {
         level: i32,
@@ -28,27 +42,12 @@ pub enum WriteCompression {
     },
 }
 
-impl Default for WriteCompression {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WriteArchiveOptions {
     pub compression: WriteCompression,
     /// When enabled, re-reads the temp file and verifies payload size and
     /// content hash (streaming decompress for zstd).
     pub validate_after_write: bool,
-}
-
-impl Default for WriteArchiveOptions {
-    fn default() -> Self {
-        Self {
-            compression: WriteCompression::None,
-            validate_after_write: false,
-        }
-    }
 }
 
 pub fn write_archive_atomic<T>(
@@ -59,11 +58,7 @@ pub fn write_archive_atomic<T>(
     compression: Compression,
 ) -> Result<(), StorageError>
 where
-    T: rkyv::Archive
-        + rkyv::Serialize<rkyv::ser::serializers::AllocSerializer<256>>
-        + rkyv::Serialize<
-            CompositeSerializer<WriteSerializer<fs::File>, HeapScratch<256>, SharedSerializeMap>,
-        >,
+    T: WritableArchive,
 {
     let options = WriteArchiveOptions {
         compression: match compression {
@@ -84,11 +79,7 @@ pub fn write_archive_atomic_with_options<T>(
     options: WriteArchiveOptions,
 ) -> Result<(), StorageError>
 where
-    T: rkyv::Archive
-        + rkyv::Serialize<rkyv::ser::serializers::AllocSerializer<256>>
-        + rkyv::Serialize<
-            CompositeSerializer<WriteSerializer<fs::File>, HeapScratch<256>, SharedSerializeMap>,
-        >,
+    T: WritableArchive,
 {
     let parent = path
         .parent()
@@ -215,9 +206,7 @@ fn write_uncompressed_archive<T>(
     value: &T,
 ) -> Result<(fs::File, u64), StorageError>
 where
-    T: rkyv::Serialize<
-        CompositeSerializer<WriteSerializer<fs::File>, HeapScratch<256>, SharedSerializeMap>,
-    >,
+    T: rkyv::Serialize<FileArchiveSerializer>,
 {
     // Placeholder header.
     file.write_all(&[0u8; HEADER_LEN])?;

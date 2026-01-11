@@ -41,7 +41,8 @@ pub use persisted::{
     MAX_UNCOMPRESSED_LEN_BYTES,
 };
 pub use write::{
-    write_archive_atomic, write_archive_atomic_with_options, WriteArchiveOptions, WriteCompression,
+    write_archive_atomic, write_archive_atomic_with_options, FileArchiveSerializer,
+    WritableArchive, WriteArchiveOptions, WriteCompression,
 };
 
 #[cfg(test)]
@@ -436,6 +437,7 @@ mod tests {
         // Create a sparse file larger than the fallback read cap.
         let file = std::fs::OpenOptions::new()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(&path)
             .unwrap();

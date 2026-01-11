@@ -1435,15 +1435,7 @@ fn write_index_file<T>(
     payload: &T,
 ) -> Result<(), IndexPersistenceError>
 where
-    T: rkyv::Archive
-        + rkyv::Serialize<rkyv::ser::serializers::AllocSerializer<256>>
-        + rkyv::Serialize<
-            rkyv::ser::serializers::CompositeSerializer<
-                rkyv::ser::serializers::WriteSerializer<std::fs::File>,
-                rkyv::ser::serializers::HeapScratch<256>,
-                rkyv::ser::serializers::SharedSerializeMap,
-            >,
-        >,
+    T: nova_storage::WritableArchive,
 {
     nova_storage::write_archive_atomic(
         &path,
