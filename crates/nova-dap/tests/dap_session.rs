@@ -2,8 +2,8 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 use nova_dap::dap_tokio::{DapReader, DapWriter};
-use nova_dap::wire_server;
 use nova_dap::object_registry::{OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
+use nova_dap::wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
 
 async fn send_request(
@@ -98,6 +98,7 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     assert!(verified);
+    assert_eq!(jdwp.breakpoint_suspend_policy().await, Some(1));
 
     send_request(&mut writer, 4, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 4).await;
@@ -260,12 +261,13 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
 }
 
 #[tokio::test]
-async fn dap_can_expand_object_fields_and_pin_objects() {
+async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -273,9 +275,15 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
 
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let init_resp = read_response(&mut reader, 1).await;
-    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
     let initialized = read_next(&mut reader).await;
-    assert_eq!(initialized.get("event").and_then(|v| v.as_str()), Some("initialized"));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -288,7 +296,244 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
     )
     .await;
     let attach_resp = read_response(&mut reader, 2).await;
-    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    send_request(
+        &mut writer,
+        3,
+        "setBreakpoints",
+        json!({
+            "source": { "path": "Main.java" },
+            "breakpoints": [ { "line": 3 } ]
+        }),
+    )
+    .await;
+    let bp_resp = read_response(&mut reader, 3).await;
+    assert!(bp_resp
+        .pointer("/body/breakpoints/0/verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert_eq!(jdwp.breakpoint_suspend_policy().await, Some(1));
+
+    send_request(&mut writer, 4, "threads", json!({})).await;
+    let threads_resp = read_response(&mut reader, 4).await;
+    let thread_id = threads_resp
+        .pointer("/body/threads/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    // Continue to generate an initial stop.
+    send_request(&mut writer, 5, "continue", json!({ "threadId": thread_id })).await;
+    let mut cont_resp = None;
+    let mut stopped = None;
+    for _ in 0..100 {
+        let msg = read_next(&mut reader).await;
+        if msg.get("type").and_then(|v| v.as_str()) == Some("response")
+            && msg.get("request_seq").and_then(|v| v.as_i64()) == Some(5)
+        {
+            cont_resp = Some(msg);
+        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
+            && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("breakpoint")
+        {
+            stopped = Some(msg);
+        }
+
+        if cont_resp.is_some() && stopped.is_some() {
+            break;
+        }
+    }
+    assert!(cont_resp
+        .expect("expected continue response")
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    let stopped = stopped.expect("expected stopped event");
+    assert_eq!(
+        stopped
+            .pointer("/body/allThreadsStopped")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    // Repeated stackTrace calls should return stable frame ids.
+    send_request(
+        &mut writer,
+        6,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+    let stack_a = read_response(&mut reader, 6).await;
+    let frame_id_a = stack_a
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    send_request(
+        &mut writer,
+        7,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+    let stack_b = read_response(&mut reader, 7).await;
+    let frame_id_b = stack_b
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_eq!(frame_id_a, frame_id_b);
+
+    // And repeated scopes calls should return stable locals handles.
+    send_request(&mut writer, 8, "scopes", json!({ "frameId": frame_id_a })).await;
+    let scopes_a = read_response(&mut reader, 8).await;
+    let locals_ref_a = scopes_a
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    send_request(&mut writer, 9, "scopes", json!({ "frameId": frame_id_a })).await;
+    let scopes_b = read_response(&mut reader, 9).await;
+    let locals_ref_b = scopes_b
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_eq!(locals_ref_a, locals_ref_b);
+
+    // Resume; the next stop should allocate fresh handles (stale ids must not alias).
+    send_request(
+        &mut writer,
+        10,
+        "continue",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+    let mut cont_resp = None;
+    let mut stopped = None;
+    for _ in 0..100 {
+        let msg = read_next(&mut reader).await;
+        if msg.get("type").and_then(|v| v.as_str()) == Some("response")
+            && msg.get("request_seq").and_then(|v| v.as_i64()) == Some(10)
+        {
+            cont_resp = Some(msg);
+        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
+            && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("breakpoint")
+        {
+            stopped = Some(msg);
+        }
+
+        if cont_resp.is_some() && stopped.is_some() {
+            break;
+        }
+    }
+    assert!(cont_resp
+        .expect("expected continue response")
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert!(stopped.is_some());
+
+    send_request(
+        &mut writer,
+        11,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+    let stack_after = read_response(&mut reader, 11).await;
+    let frame_id_after = stack_after
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_ne!(frame_id_a, frame_id_after);
+
+    send_request(
+        &mut writer,
+        12,
+        "scopes",
+        json!({ "frameId": frame_id_after }),
+    )
+    .await;
+    let scopes_after = read_response(&mut reader, 12).await;
+    let locals_ref_after = scopes_after
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_ne!(locals_ref_a, locals_ref_after);
+
+    // Old frame ids should be rejected rather than resolving to a different frame.
+    send_request(&mut writer, 13, "scopes", json!({ "frameId": frame_id_a })).await;
+    let stale_scopes = read_response(&mut reader, 13).await;
+    assert_eq!(
+        stale_scopes.get("success").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    // Old variables references should return empty results.
+    send_request(
+        &mut writer,
+        14,
+        "variables",
+        json!({ "variablesReference": locals_ref_a }),
+    )
+    .await;
+    let stale_vars = read_response(&mut reader, 14).await;
+    let vars = stale_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    assert!(vars.is_empty());
+
+    send_request(&mut writer, 15, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 15).await;
+
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_step_stop_uses_event_thread_suspend_policy() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let init_resp = read_response(&mut reader, 1).await;
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    let initialized = read_next(&mut reader).await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     send_request(&mut writer, 3, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 3).await;
@@ -297,7 +542,101 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
         .and_then(|v| v.as_i64())
         .unwrap();
 
-    send_request(&mut writer, 4, "stackTrace", json!({ "threadId": thread_id })).await;
+    send_request(&mut writer, 4, "next", json!({ "threadId": thread_id })).await;
+    let mut next_resp = None;
+    let mut stopped = None;
+    for _ in 0..100 {
+        let msg = read_next(&mut reader).await;
+        if msg.get("type").and_then(|v| v.as_str()) == Some("response")
+            && msg.get("request_seq").and_then(|v| v.as_i64()) == Some(4)
+        {
+            next_resp = Some(msg);
+        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
+            && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("step")
+        {
+            stopped = Some(msg);
+        }
+
+        if next_resp.is_some() && stopped.is_some() {
+            break;
+        }
+    }
+    assert!(next_resp
+        .expect("expected next response")
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert_eq!(jdwp.step_suspend_policy().await, Some(1));
+    let stopped = stopped.expect("expected stopped event");
+    assert_eq!(
+        stopped
+            .pointer("/body/allThreadsStopped")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    send_request(&mut writer, 5, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 5).await;
+
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_can_expand_object_fields_and_pin_objects() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let init_resp = read_response(&mut reader, 1).await;
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    let initialized = read_next(&mut reader).await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    send_request(&mut writer, 3, "threads", json!({})).await;
+    let threads_resp = read_response(&mut reader, 3).await;
+    let thread_id = threads_resp
+        .pointer("/body/threads/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    send_request(
+        &mut writer,
+        4,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
     let stack_resp = read_response(&mut reader, 4).await;
     let frame_id = stack_resp
         .pointer("/body/stackFrames/0/id")
@@ -316,24 +655,49 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
         .unwrap();
     assert_eq!(pinned_ref, PINNED_SCOPE_REF);
 
-    send_request(&mut writer, 6, "variables", json!({ "variablesReference": locals_ref })).await;
+    send_request(
+        &mut writer,
+        6,
+        "variables",
+        json!({ "variablesReference": locals_ref }),
+    )
+    .await;
     let vars_resp = read_response(&mut reader, 6).await;
-    let locals = vars_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
 
     let obj = locals
         .iter()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("obj"))
         .expect("expected locals to contain obj");
-    let obj_ref = obj.get("variablesReference").and_then(|v| v.as_i64()).unwrap();
+    let obj_ref = obj
+        .get("variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
     assert!(
         obj_ref > OBJECT_HANDLE_BASE,
         "expected stable object handle variablesReference"
     );
-    assert!(obj.get("value").and_then(|v| v.as_str()).unwrap_or("").contains('@'));
+    assert!(obj
+        .get("value")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .contains('@'));
 
-    send_request(&mut writer, 7, "variables", json!({ "variablesReference": obj_ref })).await;
+    send_request(
+        &mut writer,
+        7,
+        "variables",
+        json!({ "variablesReference": obj_ref }),
+    )
+    .await;
     let fields_resp = read_response(&mut reader, 7).await;
-    let fields = fields_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
+    let fields = fields_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
     let field = fields
         .iter()
         .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("field"))
@@ -356,7 +720,13 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
     );
 
     // Pinned objects are visible under the synthetic scope.
-    send_request(&mut writer, 9, "variables", json!({ "variablesReference": PINNED_SCOPE_REF })).await;
+    send_request(
+        &mut writer,
+        9,
+        "variables",
+        json!({ "variablesReference": PINNED_SCOPE_REF }),
+    )
+    .await;
     let pinned_vars_resp = read_response(&mut reader, 9).await;
     let pinned_vars = pinned_vars_resp
         .pointer("/body/variables")
@@ -364,11 +734,17 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
         .unwrap();
     assert_eq!(pinned_vars.len(), 1);
     assert_eq!(
-        pinned_vars[0].get("variablesReference").and_then(|v| v.as_i64()),
+        pinned_vars[0]
+            .get("variablesReference")
+            .and_then(|v| v.as_i64()),
         Some(obj_ref)
     );
     assert_eq!(
-        pinned_vars[0].get("presentationHint").and_then(|v| v.get("attributes")).and_then(|v| v.get(0)).and_then(|v| v.as_str()),
+        pinned_vars[0]
+            .get("presentationHint")
+            .and_then(|v| v.get("attributes"))
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.as_str()),
         Some("pinned")
     );
 
@@ -386,7 +762,13 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
         Some(false)
     );
 
-    send_request(&mut writer, 11, "variables", json!({ "variablesReference": PINNED_SCOPE_REF })).await;
+    send_request(
+        &mut writer,
+        11,
+        "variables",
+        json!({ "variablesReference": PINNED_SCOPE_REF }),
+    )
+    .await;
     let pinned_empty_resp = read_response(&mut reader, 11).await;
     let pinned_empty = pinned_empty_resp
         .pointer("/body/variables")
@@ -406,7 +788,8 @@ async fn dap_exception_info_includes_type_name() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -468,13 +851,7 @@ async fn dap_exception_info_includes_type_name() {
         .and_then(|v| v.as_i64())
         .unwrap();
 
-    send_request(
-        &mut writer,
-        5,
-        "continue",
-        json!({ "threadId": thread_id }),
-    )
-    .await;
+    send_request(&mut writer, 5, "continue", json!({ "threadId": thread_id })).await;
 
     let mut cont_resp = None;
     let mut continued = None;
@@ -515,14 +892,22 @@ async fn dap_exception_info_includes_type_name() {
         Some("exception")
     );
 
-    send_request(&mut writer, 6, "exceptionInfo", json!({ "threadId": thread_id })).await;
+    send_request(
+        &mut writer,
+        6,
+        "exceptionInfo",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
     let exc_info = read_response(&mut reader, 6).await;
     assert!(exc_info
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
     assert_eq!(
-        exc_info.pointer("/body/exceptionId").and_then(|v| v.as_str()),
+        exc_info
+            .pointer("/body/exceptionId")
+            .and_then(|v| v.as_str()),
         Some("java.lang.RuntimeException")
     );
     assert_eq!(
@@ -542,7 +927,8 @@ async fn dap_emits_thread_start_and_death_events() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -550,10 +936,16 @@ async fn dap_emits_thread_start_and_death_events() {
 
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let init_resp = read_response(&mut reader, 1).await;
-    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
     // Initialized event.
     let initialized = read_next(&mut reader).await;
-    assert_eq!(initialized.get("event").and_then(|v| v.as_str()), Some("initialized"));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -566,7 +958,10 @@ async fn dap_emits_thread_start_and_death_events() {
     )
     .await;
     let attach_resp = read_response(&mut reader, 2).await;
-    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     // Trigger the mock VM to emit thread lifecycle events.
     send_request(&mut writer, 3, "continue", json!({})).await;
@@ -581,7 +976,10 @@ async fn dap_emits_thread_start_and_death_events() {
             match msg.get("type").and_then(|v| v.as_str()) {
                 Some("response") => {
                     if msg.get("request_seq").and_then(|v| v.as_i64()) == Some(3) {
-                        continue_ok = msg.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                        continue_ok = msg
+                            .get("success")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                     }
                 }
                 Some("event") => {

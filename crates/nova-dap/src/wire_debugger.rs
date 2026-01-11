@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     future::Future,
+    hash::Hash,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
@@ -53,6 +54,12 @@ struct BreakpointEntry {
     request_id: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct FrameKey {
+    thread: ThreadId,
+    frame_id: u64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FrameHandle {
     thread: ThreadId,
@@ -65,9 +72,15 @@ enum VarRef {
     FrameLocals(FrameHandle),
 }
 
-struct HandleTable<T> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum VarKey {
+    FrameLocals(FrameKey),
+}
+
+struct HandleTable<K, T> {
     next: i64,
-    map: HashMap<i64, T>,
+    by_id: HashMap<i64, T>,
+    by_key: HashMap<K, i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,25 +97,42 @@ enum StopReason {
     Exception,
 }
 
-impl<T> Default for HandleTable<T> {
+impl<K, T> Default for HandleTable<K, T> {
     fn default() -> Self {
         Self {
             next: 0,
-            map: HashMap::new(),
+            by_id: HashMap::new(),
+            by_key: HashMap::new(),
         }
     }
 }
 
-impl<T> HandleTable<T> {
-    fn alloc(&mut self, value: T) -> i64 {
+impl<K, T> HandleTable<K, T>
+where
+    K: Eq + Hash,
+{
+    fn intern(&mut self, key: K, value: T) -> i64 {
+        if let Some(id) = self.by_key.get(&key).copied() {
+            // Refresh the stored value so callers can update fields like `location`
+            // without forcing handle invalidation.
+            self.by_id.insert(id, value);
+            return id;
+        }
+
         self.next += 1;
         let id = self.next;
-        self.map.insert(id, value);
+        self.by_id.insert(id, value);
+        self.by_key.insert(key, id);
         id
     }
 
     fn get(&self, id: i64) -> Option<&T> {
-        self.map.get(&id)
+        self.by_id.get(&id)
+    }
+
+    fn clear(&mut self) {
+        self.by_id = HashMap::new();
+        self.by_key = HashMap::new();
     }
 }
 
@@ -129,8 +159,8 @@ pub struct Debugger {
     methods_cache: HashMap<ReferenceTypeId, Vec<MethodInfo>>,
     line_table_cache: HashMap<(ReferenceTypeId, u64), LineTable>,
 
-    frame_handles: HandleTable<FrameHandle>,
-    var_handles: HandleTable<VarRef>,
+    frame_handles: HandleTable<FrameKey, FrameHandle>,
+    var_handles: HandleTable<VarKey, VarRef>,
 }
 
 fn check_cancel(token: &CancellationToken) -> Result<()> {
@@ -211,6 +241,11 @@ impl Debugger {
 
     pub fn jdwp_shutdown_token(&self) -> CancellationToken {
         self.jdwp.shutdown_token()
+    }
+
+    fn invalidate_handles(&mut self) {
+        self.frame_handles.clear();
+        self.var_handles.clear();
     }
 
     pub async fn disconnect(&mut self) {
@@ -300,7 +335,13 @@ impl Debugger {
             )));
         };
 
-        let locals_ref = self.var_handles.alloc(VarRef::FrameLocals(frame));
+        let locals_ref = self.var_handles.intern(
+            VarKey::FrameLocals(FrameKey {
+                thread: frame.thread,
+                frame_id: frame.frame_id,
+            }),
+            VarRef::FrameLocals(frame),
+        );
 
         Ok(vec![
             json!({
@@ -330,7 +371,10 @@ impl Debugger {
             return self.pinned_variables(cancel).await;
         }
 
-        if let Some(handle) = self.objects.handle_from_variables_reference(variables_reference) {
+        if let Some(handle) = self
+            .objects
+            .handle_from_variables_reference(variables_reference)
+        {
             return self.object_variables(cancel, handle, start, count).await;
         }
 
@@ -367,7 +411,8 @@ impl Debugger {
         if let Some(existing) = self.breakpoints.remove(&file) {
             for bp in existing {
                 check_cancel(cancel)?;
-                let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(2, bp.request_id)).await;
+                let _ =
+                    cancellable_jdwp(cancel, self.jdwp.event_request_clear(2, bp.request_id)).await;
             }
         }
 
@@ -401,10 +446,14 @@ impl Debugger {
                     Some(location) => {
                         match cancellable_jdwp(
                             cancel,
-                            self.jdwp
-                                .event_request_set(2, 1, vec![EventModifier::LocationOnly { location }]),
+                            self.jdwp.event_request_set(
+                                2,
+                                1,
+                                vec![EventModifier::LocationOnly { location }],
+                            ),
                         )
-                        .await {
+                        .await
+                        {
                             Ok(request_id) => {
                                 entries.push(BreakpointEntry { request_id });
                                 results.push(json!({"verified": true, "line": line}));
@@ -434,12 +483,14 @@ impl Debugger {
         Ok(results)
     }
 
-    pub async fn continue_(&self, cancel: &CancellationToken) -> Result<()> {
+    pub async fn continue_(&mut self, cancel: &CancellationToken) -> Result<()> {
+        self.invalidate_handles();
         cancellable_jdwp(cancel, self.jdwp.vm_resume()).await?;
         Ok(())
     }
 
-    pub async fn pause(&self, cancel: &CancellationToken) -> Result<()> {
+    pub async fn pause(&mut self, cancel: &CancellationToken) -> Result<()> {
+        self.invalidate_handles();
         cancellable_jdwp(cancel, self.jdwp.vm_suspend()).await?;
         Ok(())
     }
@@ -487,6 +538,7 @@ impl Debugger {
         dap_thread_id: i64,
         depth: StepDepth,
     ) -> Result<()> {
+        self.invalidate_handles();
         check_cancel(cancel)?;
         let thread: ThreadId = dap_thread_id as ThreadId;
 
@@ -550,10 +602,15 @@ impl Debugger {
                 let _ = self.on_class_prepare(*ref_type_tag, *type_id).await;
             }
             JdwpEvent::Breakpoint { thread, .. } => {
-                self.last_stop_reason.insert(*thread, StopReason::Breakpoint);
+                self.invalidate_handles();
+                self.last_stop_reason
+                    .insert(*thread, StopReason::Breakpoint);
                 self.exception_stop_context.remove(thread);
             }
-            JdwpEvent::SingleStep { request_id, thread, .. } => {
+            JdwpEvent::SingleStep {
+                request_id, thread, ..
+            } => {
+                self.invalidate_handles();
                 if self.step_request == Some(*request_id) {
                     let _ = self.jdwp.event_request_clear(1, *request_id).await;
                     self.step_request = None;
@@ -568,6 +625,7 @@ impl Debugger {
                 catch_location,
                 ..
             } => {
+                self.invalidate_handles();
                 self.last_stop_reason.insert(*thread, StopReason::Exception);
                 self.exception_stop_context.insert(
                     *thread,
@@ -621,11 +679,17 @@ impl Debugger {
     }
 
     fn alloc_frame_handle(&mut self, thread: ThreadId, frame: &FrameInfo) -> i64 {
-        self.frame_handles.alloc(FrameHandle {
-            thread,
-            frame_id: frame.frame_id,
-            location: frame.location,
-        })
+        self.frame_handles.intern(
+            FrameKey {
+                thread,
+                frame_id: frame.frame_id,
+            },
+            FrameHandle {
+                thread,
+                frame_id: frame.frame_id,
+                location: frame.location,
+            },
+        )
     }
 
     async fn source_file(
@@ -637,8 +701,7 @@ impl Debugger {
         if let Some(v) = self.source_cache.get(&class_id) {
             return Ok(v.clone());
         }
-        let file =
-            cancellable_jdwp(cancel, self.jdwp.reference_type_source_file(class_id)).await?;
+        let file = cancellable_jdwp(cancel, self.jdwp.reference_type_source_file(class_id)).await?;
         self.source_cache.insert(class_id, file.clone());
         Ok(file)
     }
@@ -655,8 +718,7 @@ impl Debugger {
                 return Ok(Some(m.name.clone()));
             }
         }
-        let methods =
-            cancellable_jdwp(cancel, self.jdwp.reference_type_methods(class_id)).await?;
+        let methods = cancellable_jdwp(cancel, self.jdwp.reference_type_methods(class_id)).await?;
         let name = methods
             .iter()
             .find(|m| m.method_id == method_id)
@@ -677,7 +739,8 @@ impl Debugger {
         let table = if let Some(t) = self.line_table_cache.get(&key) {
             t.clone()
         } else {
-            let t = cancellable_jdwp(cancel, self.jdwp.method_line_table(class_id, method_id)).await?;
+            let t =
+                cancellable_jdwp(cancel, self.jdwp.method_line_table(class_id, method_id)).await?;
             self.line_table_cache.insert(key, t.clone());
             t
         };
@@ -733,7 +796,7 @@ impl Debugger {
                     value,
                     Some(signature_to_type_name(&var.signature)),
                 )
-                    .await?,
+                .await?,
             );
         }
         Ok(out)
@@ -751,15 +814,16 @@ impl Debugger {
             return Ok(Vec::new());
         };
 
-        let children = match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
-            Ok(children) => children,
-            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
-                self.objects.mark_invalid_object_id(object_id);
-                return Ok(vec![invalid_collected_variable()]);
-            }
-            Err(err) => return Err(err.into()),
-        };
+        let children =
+            match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
+                Ok(children) => children,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                    self.objects.mark_invalid_object_id(object_id);
+                    return Ok(vec![invalid_collected_variable()]);
+                }
+                Err(err) => return Err(err.into()),
+            };
 
         let mut out = Vec::with_capacity(children.len());
         for child in children {
@@ -772,7 +836,10 @@ impl Debugger {
         Ok(out)
     }
 
-    async fn pinned_variables(&mut self, cancel: &CancellationToken) -> Result<Vec<serde_json::Value>> {
+    async fn pinned_variables(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
         let pinned: Vec<_> = self.objects.pinned_handles().collect();
         let mut vars = Vec::with_capacity(pinned.len());
@@ -783,7 +850,10 @@ impl Debugger {
                 continue;
             };
 
-            let value = JdwpValue::Object { tag: b'L', id: object_id };
+            let value = JdwpValue::Object {
+                tag: b'L',
+                id: object_id,
+            };
             let formatted = self.format_value(cancel, &value, None, 0).await?;
             vars.push(variable_json(
                 handle.to_string(),
@@ -949,7 +1019,12 @@ impl Debugger {
             return Ok(());
         };
 
-        match cancellable_jdwp(cancel, self.jdwp.object_reference_disable_collection(object_id)).await {
+        match cancellable_jdwp(
+            cancel,
+            self.jdwp.object_reference_disable_collection(object_id),
+        )
+        .await
+        {
             Ok(()) => {}
             Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
             Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
@@ -962,14 +1037,23 @@ impl Debugger {
         Ok(())
     }
 
-    async fn unpin_object(&mut self, cancel: &CancellationToken, handle: ObjectHandle) -> Result<()> {
+    async fn unpin_object(
+        &mut self,
+        cancel: &CancellationToken,
+        handle: ObjectHandle,
+    ) -> Result<()> {
         check_cancel(cancel)?;
         if !self.objects.is_pinned(handle) {
             return Ok(());
         }
 
         if let Some(object_id) = self.objects.object_id(handle) {
-            match cancellable_jdwp(cancel, self.jdwp.object_reference_enable_collection(object_id)).await {
+            match cancellable_jdwp(
+                cancel,
+                self.jdwp.object_reference_enable_collection(object_id),
+            )
+            .await
+            {
                 Ok(()) => {}
                 Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
                 Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
@@ -1036,8 +1120,9 @@ impl Debugger {
         depth: usize,
     ) -> Result<FormattedValue> {
         check_cancel(cancel)?;
-        let (display, variables_reference, presentation_hint, runtime_type) =
-            self.format_value_display(cancel, value, static_type, depth).await?;
+        let (display, variables_reference, presentation_hint, runtime_type) = self
+            .format_value_display(cancel, value, static_type, depth)
+            .await?;
 
         Ok(FormattedValue {
             value: display,
@@ -1068,7 +1153,9 @@ impl Debugger {
             JdwpValue::Double(v) => Ok((trim_float(*v), 0, None, None)),
             JdwpValue::Char(v) => Ok((format!("'{}'", decode_java_char(*v)), 0, None, None)),
             JdwpValue::Object { id: 0, .. } => Ok(("null".to_string(), 0, None, None)),
-            JdwpValue::Object { id, .. } => self.format_object(cancel, *id, static_type, depth).await,
+            JdwpValue::Object { id, .. } => {
+                self.format_object(cancel, *id, static_type, depth).await
+            }
         }
     }
 
@@ -1082,29 +1169,30 @@ impl Debugger {
         check_cancel(cancel)?;
         let fallback_runtime = static_type.unwrap_or("<object>").to_string();
 
-        let runtime_type = match cancellable_jdwp(cancel, self.inspector.runtime_type_name(object_id)).await {
-            Ok(t) => t,
-            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
-                let handle = self.objects.track_object(object_id, &fallback_runtime);
-                self.objects.mark_invalid_object_id(object_id);
-                let ty = self
-                    .objects
-                    .runtime_type(handle)
-                    .map(simple_type_name)
-                    .unwrap_or("<object>");
-                return Ok((
-                    format!("{ty}{handle} <collected>"),
-                    handle.as_variables_reference(),
-                    Some(json!({
-                        "kind": "virtual",
-                        "attributes": ["invalid"],
-                    })),
-                    Some(fallback_runtime),
-                ));
-            }
-            Err(_err) => fallback_runtime.clone(),
-        };
+        let runtime_type =
+            match cancellable_jdwp(cancel, self.inspector.runtime_type_name(object_id)).await {
+                Ok(t) => t,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                    let handle = self.objects.track_object(object_id, &fallback_runtime);
+                    self.objects.mark_invalid_object_id(object_id);
+                    let ty = self
+                        .objects
+                        .runtime_type(handle)
+                        .map(simple_type_name)
+                        .unwrap_or("<object>");
+                    return Ok((
+                        format!("{ty}{handle} <collected>"),
+                        handle.as_variables_reference(),
+                        Some(json!({
+                            "kind": "virtual",
+                            "attributes": ["invalid"],
+                        })),
+                        Some(fallback_runtime),
+                    ));
+                }
+                Err(_err) => fallback_runtime.clone(),
+            };
 
         let handle = self.objects.track_object(object_id, &runtime_type);
         let variables_reference = handle.as_variables_reference();
@@ -1118,7 +1206,8 @@ impl Debugger {
             ));
         }
 
-        let preview = match cancellable_jdwp(cancel, self.inspector.preview_object(object_id)).await {
+        let preview = match cancellable_jdwp(cancel, self.inspector.preview_object(object_id)).await
+        {
             Ok(preview) => preview,
             Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
             Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {

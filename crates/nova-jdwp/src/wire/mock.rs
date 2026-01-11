@@ -92,6 +92,14 @@ impl MockJdwpServer {
     pub async fn exception_request(&self) -> Option<MockExceptionRequest> {
         *self.state.exception_request.lock().await
     }
+
+    pub async fn breakpoint_suspend_policy(&self) -> Option<u8> {
+        *self.state.breakpoint_suspend_policy.lock().await
+    }
+
+    pub async fn step_suspend_policy(&self) -> Option<u8> {
+        *self.state.step_suspend_policy.lock().await
+    }
 }
 
 impl Drop for MockJdwpServer {
@@ -109,6 +117,8 @@ struct State {
     thread_death_request: tokio::sync::Mutex<Option<i32>>,
     threads: tokio::sync::Mutex<Vec<u64>>,
     exception_request: tokio::sync::Mutex<Option<MockExceptionRequest>>,
+    breakpoint_suspend_policy: tokio::sync::Mutex<Option<u8>>,
+    step_suspend_policy: tokio::sync::Mutex<Option<u8>>,
     redefine_classes_error_code: AtomicU16,
     redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
     pinned_object_ids: tokio::sync::Mutex<BTreeSet<ObjectId>>,
@@ -138,6 +148,8 @@ impl State {
             thread_death_request: tokio::sync::Mutex::new(None),
             threads: tokio::sync::Mutex::new(vec![THREAD_ID]),
             exception_request: tokio::sync::Mutex::new(None),
+            breakpoint_suspend_policy: tokio::sync::Mutex::new(None),
+            step_suspend_policy: tokio::sync::Mutex::new(None),
             redefine_classes_error_code: AtomicU16::new(0),
             redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
             pinned_object_ids: tokio::sync::Mutex::new(BTreeSet::new()),
@@ -197,7 +209,11 @@ fn default_location() -> Location {
     }
 }
 
-async fn run(listener: TcpListener, state: Arc<State>, shutdown: CancellationToken) -> std::io::Result<()> {
+async fn run(
+    listener: TcpListener,
+    state: Arc<State>,
+    shutdown: CancellationToken,
+) -> std::io::Result<()> {
     tokio::select! {
         _ = shutdown.cancelled() => return Ok(()),
         accept = listener.accept() => {
@@ -237,7 +253,9 @@ struct Packet {
     payload: Vec<u8>,
 }
 
-async fn read_packet(socket: &mut tokio::net::tcp::OwnedReadHalf) -> std::io::Result<Option<Packet>> {
+async fn read_packet(
+    socket: &mut tokio::net::tcp::OwnedReadHalf,
+) -> std::io::Result<Option<Packet>> {
     let mut header = [0u8; HEADER_LEN];
     match socket.read_exact(&mut header).await {
         Ok(_n) => {}
@@ -357,7 +375,10 @@ async fn handle_packet(
                 .redefine_classes_calls
                 .lock()
                 .await
-                .push(RedefineClassesCall { class_count, classes });
+                .push(RedefineClassesCall {
+                    class_count,
+                    classes,
+                });
 
             let err = state.redefine_classes_error_code.load(Ordering::Relaxed);
             (err, Vec::new())
@@ -617,7 +638,7 @@ async fn handle_packet(
         // EventRequest.Set
         (15, 1) => {
             let event_kind = r.read_u8().unwrap_or(0);
-            let _suspend = r.read_u8().unwrap_or(0);
+            let suspend_policy = r.read_u8().unwrap_or(0);
             let modifiers = r.read_u32().unwrap_or(0) as usize;
             let mut exception_caught = false;
             let mut exception_uncaught = false;
@@ -648,8 +669,14 @@ async fn handle_packet(
             }
             let request_id = state.alloc_request_id();
             match event_kind {
-                1 => *state.step_request.lock().await = Some(request_id),
-                2 => *state.breakpoint_request.lock().await = Some(request_id),
+                1 => {
+                    *state.step_request.lock().await = Some(request_id);
+                    *state.step_suspend_policy.lock().await = Some(suspend_policy);
+                }
+                2 => {
+                    *state.breakpoint_request.lock().await = Some(request_id);
+                    *state.breakpoint_suspend_policy.lock().await = Some(suspend_policy);
+                }
                 4 => {
                     *state.exception_request.lock().await = Some(MockExceptionRequest {
                         request_id,
@@ -736,7 +763,13 @@ async fn handle_packet(
                     threads.push(WORKER_THREAD_ID);
                 }
             }
-            follow_up.extend(make_thread_event_packet(state, id_sizes, 6, request_id, WORKER_THREAD_ID));
+            follow_up.extend(make_thread_event_packet(
+                state,
+                id_sizes,
+                6,
+                request_id,
+                WORKER_THREAD_ID,
+            ));
         }
 
         if let Some(request_id) = thread_death_request {
@@ -744,14 +777,30 @@ async fn handle_packet(
                 let mut threads = state.threads.lock().await;
                 threads.retain(|t| *t != WORKER_THREAD_ID);
             }
-            follow_up.extend(make_thread_event_packet(state, id_sizes, 7, request_id, WORKER_THREAD_ID));
+            follow_up.extend(make_thread_event_packet(
+                state,
+                id_sizes,
+                7,
+                request_id,
+                WORKER_THREAD_ID,
+            ));
         }
 
-        if let Some(stop_packet) = make_stop_event_packet(state, id_sizes, breakpoint_request, step_request, exception_request) {
+        if let Some(stop_packet) = make_stop_event_packet(
+            state,
+            id_sizes,
+            breakpoint_request,
+            step_request,
+            exception_request,
+        ) {
             follow_up.extend(stop_packet);
         }
 
-        if follow_up.is_empty() { None } else { Some(follow_up) }
+        if follow_up.is_empty() {
+            None
+        } else {
+            Some(follow_up)
+        }
     } else {
         None
     };

@@ -159,10 +159,8 @@ async fn handle_request(
     server_shutdown: CancellationToken,
     terminated_sent: Arc<AtomicBool>,
 ) {
-    let _request_metrics = RequestMetricsGuard::new(
-        &request.command,
-        nova_metrics::MetricsRegistry::global(),
-    );
+    let _request_metrics =
+        RequestMetricsGuard::new(&request.command, nova_metrics::MetricsRegistry::global());
     let request_seq = request.seq;
 
     handle_request_inner(
@@ -197,7 +195,14 @@ async fn handle_request_inner(
 ) {
     if requires_initialized(request.command.as_str()) {
         if !wait_initialized(cancel, initialized_rx).await {
-            send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+            send_response(
+                out_tx,
+                seq,
+                request,
+                false,
+                None,
+                Some("cancelled".to_string()),
+            );
             return;
         }
     }
@@ -223,13 +228,22 @@ async fn handle_request_inner(
             send_event(out_tx, seq, "initialized", None);
             let _ = initialized_tx.send(true);
         }
-        "nova/metrics" => match serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot()) {
-            Ok(snapshot) => send_response(out_tx, seq, request, true, Some(snapshot), None),
-            Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
-        },
+        "nova/metrics" => {
+            match serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot()) {
+                Ok(snapshot) => send_response(out_tx, seq, request, true, Some(snapshot), None),
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
         "nova/bugReport" => {
             if cancel.is_cancelled() {
-                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
                 return;
             }
 
@@ -280,7 +294,8 @@ async fn handle_request_inner(
             }
         }
         "cancel" => {
-            let Some(request_id) = request.arguments.get("requestId").and_then(|v| v.as_i64()) else {
+            let Some(request_id) = request.arguments.get("requestId").and_then(|v| v.as_i64())
+            else {
                 send_response(
                     out_tx,
                     seq,
@@ -314,18 +329,37 @@ async fn handle_request_inner(
                 .and_then(|v| v.as_str())
                 .unwrap_or("127.0.0.1");
             let Some(port) = request.arguments.get("port").and_then(|v| v.as_u64()) else {
-                send_response(out_tx, seq, request, false, None, Some("attach.port is required".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("attach.port is required".to_string()),
+                );
                 return;
             };
             let host: IpAddr = match host.parse() {
                 Ok(host) => host,
                 Err(err) => {
-                    send_response(out_tx, seq, request, false, None, Some(format!("invalid host {host:?}: {err}")));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("invalid host {host:?}: {err}")),
+                    );
                     return;
                 }
             };
 
-            let dbg = match Debugger::attach(AttachArgs { host, port: port as u16 }).await {
+            let dbg = match Debugger::attach(AttachArgs {
+                host,
+                port: port as u16,
+            })
+            .await
+            {
                 Ok(dbg) => dbg,
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string()));
@@ -349,7 +383,14 @@ async fn handle_request_inner(
         }
         "setBreakpoints" => {
             if cancel.is_cancelled() {
-                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
                 return;
             }
 
@@ -373,23 +414,58 @@ async fn handle_request_inner(
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
 
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
             match dbg.set_breakpoints(cancel, source_path, lines).await {
                 Ok(bps) if cancel.is_cancelled() => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
-                Ok(bps) => send_response(out_tx, seq, request, true, Some(json!({ "breakpoints": bps })), None),
+                Ok(bps) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "breakpoints": bps })),
+                    None,
+                ),
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -420,7 +496,11 @@ async fn handle_request_inner(
                 }
             }
 
-            if let Some(options) = request.arguments.get("exceptionOptions").and_then(|v| v.as_array()) {
+            if let Some(options) = request
+                .arguments
+                .get("exceptionOptions")
+                .and_then(|v| v.as_array())
+            {
                 for opt in options {
                     match opt.get("breakMode").and_then(|v| v.as_str()) {
                         Some("always") => {
@@ -436,19 +516,40 @@ async fn handle_request_inner(
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
             match dbg.set_exception_breakpoints(caught, uncaught).await {
                 Ok(()) => send_response(out_tx, seq, request, true, None, None),
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -457,53 +558,116 @@ async fn handle_request_inner(
             let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_ref() else {
-                send_response(out_tx, seq, request, true, Some(json!({ "threads": [] })), None);
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "threads": [] })),
+                    None,
+                );
                 return;
             };
 
             match dbg.threads(cancel).await {
                 Ok(threads) if cancel.is_cancelled() => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Ok(threads) => {
                     let threads: Vec<Value> = threads
                         .into_iter()
                         .map(|(id, name)| json!({ "id": id, "name": name }))
                         .collect();
-                    send_response(out_tx, seq, request, true, Some(json!({ "threads": threads })), None);
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "threads": threads })),
+                        None,
+                    );
                 }
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }
         "stackTrace" => {
             let Some(thread_id) = request.arguments.get("threadId").and_then(|v| v.as_i64()) else {
-                send_response(out_tx, seq, request, false, None, Some("stackTrace.threadId is required".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("stackTrace.threadId is required".to_string()),
+                );
                 return;
             };
 
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
             match dbg.stack_trace(cancel, thread_id).await {
                 Ok(frames) if cancel.is_cancelled() => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Ok(frames) => send_response(
                     out_tx,
@@ -514,36 +678,75 @@ async fn handle_request_inner(
                     None,
                 ),
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }
         "scopes" => {
             let Some(frame_id) = request.arguments.get("frameId").and_then(|v| v.as_i64()) else {
-                send_response(out_tx, seq, request, false, None, Some("scopes.frameId is required".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("scopes.frameId is required".to_string()),
+                );
                 return;
             };
 
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, true, Some(json!({ "scopes": [] })), None);
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "scopes": [] })),
+                    None,
+                );
                 return;
             };
 
             match dbg.scopes(frame_id) {
-                Ok(scopes) => send_response(out_tx, seq, request, true, Some(json!({ "scopes": scopes })), None),
+                Ok(scopes) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "scopes": scopes })),
+                    None,
+                ),
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }
         "variables" => {
-            let Some(variables_reference) = request.arguments.get("variablesReference").and_then(|v| v.as_i64()) else {
+            let Some(variables_reference) = request
+                .arguments
+                .get("variablesReference")
+                .and_then(|v| v.as_i64())
+            else {
                 send_response(
                     out_tx,
                     seq,
@@ -560,22 +763,60 @@ async fn handle_request_inner(
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, true, Some(json!({ "variables": [] })), None);
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "variables": [] })),
+                    None,
+                );
                 return;
             };
 
-            match dbg.variables(cancel, variables_reference, start, count).await {
+            match dbg
+                .variables(cancel, variables_reference, start, count)
+                .await
+            {
                 Ok(vars) if cancel.is_cancelled() => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
-                Ok(vars) => send_response(out_tx, seq, request, true, Some(json!({ "variables": vars })), None),
+                Ok(vars) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "variables": vars })),
+                    None,
+                ),
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -596,18 +837,39 @@ async fn handle_request_inner(
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
             match dbg.exception_info(cancel, thread_id).await {
                 Ok(Some(info)) if cancel.is_cancelled() => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Ok(Some(info)) => {
                     let mut body = serde_json::Map::new();
@@ -627,7 +889,14 @@ async fn handle_request_inner(
                     Some(format!("no exception context for threadId {thread_id}")),
                 ),
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -635,21 +904,42 @@ async fn handle_request_inner(
         "continue" => {
             let thread_id = request.arguments.get("threadId").and_then(|v| v.as_i64());
 
-            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
-            let Some(dbg) = guard.as_ref() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+            let Some(dbg) = guard.as_mut() else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
             match dbg.continue_(cancel).await {
                 Ok(()) => {
-                    send_response(out_tx, seq, request, true, Some(json!({ "allThreadsContinued": true })), None);
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "allThreadsContinued": true })),
+                        None,
+                    );
 
                     let mut body = serde_json::Map::new();
                     body.insert("allThreadsContinued".to_string(), json!(true));
@@ -659,7 +949,14 @@ async fn handle_request_inner(
                     send_event(out_tx, seq, "continued", Some(Value::Object(body)));
                 }
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -667,15 +964,29 @@ async fn handle_request_inner(
         "pause" => {
             let thread_id = request.arguments.get("threadId").and_then(|v| v.as_i64());
 
-            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
-            let Some(dbg) = guard.as_ref() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+            let Some(dbg) = guard.as_mut() else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
@@ -691,7 +1002,14 @@ async fn handle_request_inner(
                     send_event(out_tx, seq, "stopped", Some(Value::Object(body)));
                 }
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -717,19 +1035,40 @@ async fn handle_request_inner(
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
             match dbg.step(cancel, thread_id, depth).await {
                 Ok(()) => send_response(out_tx, seq, request, true, None, None),
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -740,27 +1079,59 @@ async fn handle_request_inner(
                 .get("expression")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let frame_id = request.arguments.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+            let frame_id = request
+                .arguments
+                .get("frameId")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
 
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
             match dbg.evaluate(cancel, frame_id, expression).await {
                 Ok(body) if cancel.is_cancelled() => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Ok(body) => send_response(out_tx, seq, request, true, body, None),
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -790,22 +1161,60 @@ async fn handle_request_inner(
             let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
             let Some(dbg) = guard.as_mut() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
-            match dbg.set_object_pinned(cancel, variables_reference, pinned).await {
+            match dbg
+                .set_object_pinned(cancel, variables_reference, pinned)
+                .await
+            {
                 Ok(pinned) if cancel.is_cancelled() => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
-                Ok(pinned) => send_response(out_tx, seq, request, true, Some(json!({ "pinned": pinned })), None),
+                Ok(pinned) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "pinned": pinned })),
+                    None,
+                ),
                 Err(err) if is_cancelled_error(&err) => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
@@ -837,10 +1246,16 @@ fn is_cancelled_error(err: &DebuggerError) -> bool {
 }
 
 fn requires_initialized(command: &str) -> bool {
-    !matches!(command, "initialize" | "cancel" | "disconnect" | "nova/bugReport" | "nova/metrics")
+    !matches!(
+        command,
+        "initialize" | "cancel" | "disconnect" | "nova/bugReport" | "nova/metrics"
+    )
 }
 
-async fn wait_initialized(cancel: &CancellationToken, mut initialized: watch::Receiver<bool>) -> bool {
+async fn wait_initialized(
+    cancel: &CancellationToken,
+    mut initialized: watch::Receiver<bool>,
+) -> bool {
     loop {
         if *initialized.borrow() {
             return true;
@@ -867,7 +1282,12 @@ async fn lock_or_cancel<'a, T>(
     }
 }
 
-fn send_event(tx: &mpsc::UnboundedSender<Value>, seq: &Arc<AtomicI64>, event: impl Into<String>, body: Option<Value>) {
+fn send_event(
+    tx: &mpsc::UnboundedSender<Value>,
+    seq: &Arc<AtomicI64>,
+    event: impl Into<String>,
+    body: Option<Value>,
+) {
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let evt = make_event(s, event, body);
     let _ = tx.send(serde_json::to_value(evt).unwrap_or_else(|_| json!({})));
@@ -907,7 +1327,8 @@ impl<'a> RequestMetricsGuard<'a> {
 
 impl Drop for RequestMetricsGuard<'_> {
     fn drop(&mut self) {
-        self.metrics.record_request(self.command, self.start.elapsed());
+        self.metrics
+            .record_request(self.command, self.start.elapsed());
         if std::thread::panicking() {
             self.metrics.record_panic(self.command);
             self.metrics.record_error(self.command);
@@ -1012,10 +1433,20 @@ fn spawn_event_task(
                     );
                 }
                 nova_jdwp::wire::JdwpEvent::ThreadStart { thread, .. } => {
-                    send_event(&tx, &seq, "thread", Some(json!({"reason": "started", "threadId": thread as i64})));
+                    send_event(
+                        &tx,
+                        &seq,
+                        "thread",
+                        Some(json!({"reason": "started", "threadId": thread as i64})),
+                    );
                 }
                 nova_jdwp::wire::JdwpEvent::ThreadDeath { thread, .. } => {
-                    send_event(&tx, &seq, "thread", Some(json!({"reason": "exited", "threadId": thread as i64})));
+                    send_event(
+                        &tx,
+                        &seq,
+                        "thread",
+                        Some(json!({"reason": "exited", "threadId": thread as i64})),
+                    );
                 }
                 nova_jdwp::wire::JdwpEvent::VmDeath => {
                     send_terminated_once(&tx, &seq, &terminated_sent);
