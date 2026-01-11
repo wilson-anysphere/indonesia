@@ -89,6 +89,23 @@ In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 > When `NOVA_AI_AUDIT_LOGGING` is enabled in that mode, `nova-lsp` will best-effort enable the
 > dedicated AI audit log file channel so prompts/results are not captured in the normal log buffer.
 
+### Config diagnostics (unknown keys + validation)
+
+Nova’s TOML parsing is intentionally permissive so existing installs don’t break when new keys are
+added. To make typos and misconfigurations visible, `nova-config` also provides diagnostic-aware
+loaders:
+
+- `nova_config::load_for_workspace_with_diagnostics(workspace_root)`
+  - returns `(NovaConfig, Option<PathBuf>, ConfigDiagnostics)`
+- `NovaConfig::load_from_path_with_diagnostics(path)`
+  - returns `(NovaConfig, ConfigDiagnostics)`
+
+Diagnostics include:
+
+- unknown keys (full TOML paths, e.g. `ai.provider.kindd`)
+- deprecation warnings (for legacy aliases)
+- semantic validation warnings/errors (for example invalid `logging.level` directive strings)
+
 ### Environment variables
 
 Nova uses `tracing_subscriber::EnvFilter`, so the standard `RUST_LOG` environment variable can be

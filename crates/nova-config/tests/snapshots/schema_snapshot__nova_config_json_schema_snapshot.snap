@@ -153,14 +153,14 @@ expression: schema
           "default": 256,
           "type": "integer",
           "format": "uint",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "cache_ttl_secs": {
           "description": "Cache TTL in seconds.",
           "default": 300,
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "embeddings": {
           "description": "Local embedding model configuration used for offline semantic search.",
@@ -250,7 +250,7 @@ expression: schema
           "default": 32,
           "type": "integer",
           "format": "uint",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "enabled": {
           "description": "Enable local embeddings for semantic search and context building.",
@@ -262,7 +262,7 @@ expression: schema
           "default": 536870912,
           "type": "integer",
           "format": "uint",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "model_dir": {
           "description": "Directory containing embedding model files / cache.",
@@ -365,7 +365,7 @@ expression: schema
             "null"
           ],
           "format": "uint",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "in_process_llama": {
           "description": "Configuration for in-process inference when `kind = \"in_process_llama\"`.",
@@ -393,7 +393,7 @@ expression: schema
           "default": 1024,
           "type": "integer",
           "format": "uint32",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "model": {
           "description": "Default model name.",
@@ -405,12 +405,13 @@ expression: schema
           "default": 60000,
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "url": {
           "description": "Base URL for the provider (e.g. http://localhost:11434, http://localhost:8000).",
           "default": "http://localhost:11434/",
-          "type": "string"
+          "type": "string",
+          "format": "uri"
         }
       },
       "additionalProperties": false
@@ -483,14 +484,14 @@ expression: schema
           "default": 20,
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "multi_token_completion_ms": {
           "description": "Timeout for multi-token completion requests.",
           "default": 250,
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 1.0
         }
       },
       "additionalProperties": false
@@ -547,7 +548,7 @@ expression: schema
             "null"
           ],
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "wasm_paths": {
           "description": "Directories searched for extension bundles.\n\nEach directory is scanned for extension bundle folders containing a `nova-ext.toml` manifest.",
@@ -565,7 +566,7 @@ expression: schema
             "null"
           ],
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 1.0
         }
       },
       "additionalProperties": false
@@ -611,7 +612,7 @@ expression: schema
           "default": 4096,
           "type": "integer",
           "format": "uint",
-          "minimum": 0.0
+          "minimum": 1.0
         },
         "gpu_layers": {
           "description": "Number of layers to offload to GPU (if supported by the build).\n\nA value of `0` disables GPU offload.",

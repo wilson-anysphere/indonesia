@@ -91,12 +91,14 @@ pub struct ExtensionsConfig {
     /// When set, the runtime uses the *minimum* of this value and the per-plugin default.
     /// If unset, the per-plugin default applies.
     #[serde(default)]
+    #[schemars(range(min = 1))]
     pub wasm_memory_limit_bytes: Option<u64>,
     /// Optional upper bound for WASM extension execution timeouts (in milliseconds).
     ///
     /// When set, the runtime uses the *minimum* of this value and the per-plugin default.
     /// If unset, the per-plugin default applies.
     #[serde(default)]
+    #[schemars(range(min = 1))]
     pub wasm_timeout_ms: Option<u64>,
 }
 
@@ -311,10 +313,12 @@ impl Default for AiFeaturesConfig {
 pub struct AiTimeoutsConfig {
     /// Timeout for completion ranking requests.
     #[serde(default = "default_completion_ranking_timeout_ms")]
+    #[schemars(range(min = 1))]
     pub completion_ranking_ms: u64,
 
     /// Timeout for multi-token completion requests.
     #[serde(default = "default_multi_token_completion_timeout_ms")]
+    #[schemars(range(min = 1))]
     pub multi_token_completion_ms: u64,
 }
 
@@ -386,10 +390,12 @@ pub struct AiConfig {
 
     /// Maximum number of cached responses to keep in memory.
     #[serde(default = "default_ai_cache_max_entries")]
+    #[schemars(range(min = 1))]
     pub cache_max_entries: usize,
 
     /// Cache TTL in seconds.
     #[serde(default = "default_ai_cache_ttl_secs")]
+    #[schemars(range(min = 1))]
     pub cache_ttl_secs: u64,
 }
 
@@ -433,10 +439,12 @@ pub struct AiEmbeddingsConfig {
 
     /// Maximum batch size for embedding requests.
     #[serde(default = "default_embeddings_batch_size")]
+    #[schemars(range(min = 1))]
     pub batch_size: usize,
 
     /// Soft memory budget (in bytes) for embedding models / caches.
     #[serde(default = "default_embeddings_max_memory_bytes")]
+    #[schemars(range(min = 1))]
     pub max_memory_bytes: usize,
 }
 
@@ -528,7 +536,7 @@ pub struct AiProviderConfig {
 
     /// Base URL for the provider (e.g. http://localhost:11434, http://localhost:8000).
     #[serde(default = "default_provider_url")]
-    #[schemars(with = "String")]
+    #[schemars(schema_with = "crate::schema::url_schema")]
     pub url: Url,
 
     /// Default model name.
@@ -549,10 +557,12 @@ pub struct AiProviderConfig {
 
     /// Default max tokens for responses.
     #[serde(default = "default_max_tokens")]
+    #[schemars(range(min = 1))]
     pub max_tokens: u32,
 
     /// Per-request timeout.
     #[serde(default = "default_timeout_ms")]
+    #[schemars(range(min = 1))]
     pub timeout_ms: u64,
 
     /// Maximum number of concurrent requests Nova will make to the backend.
@@ -561,6 +571,7 @@ pub struct AiProviderConfig {
     /// - `1` for [`AiProviderKind::InProcessLlama`]
     /// - `4` for HTTP providers
     #[serde(default)]
+    #[schemars(range(min = 1))]
     pub concurrency: Option<usize>,
 
     /// Configuration for in-process inference when `kind = "in_process_llama"`.
@@ -634,6 +645,7 @@ pub struct InProcessLlamaConfig {
     ///
     /// Larger values increase memory usage roughly linearly.
     #[serde(default = "default_in_process_llama_context_size")]
+    #[schemars(range(min = 1))]
     pub context_size: usize,
 
     /// Number of CPU threads to use (`n_threads`).
