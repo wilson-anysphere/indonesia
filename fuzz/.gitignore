@@ -2,7 +2,8 @@
 Cargo.lock
 
 # cargo output (also covered by repo-level **/target/).
-target/
+# We also ignore common custom target dir names used with `cargo fuzz --target-dir ...`.
+target*/
 
 # cargo-fuzz output.
 artifacts/
