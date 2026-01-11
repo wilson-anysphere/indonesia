@@ -170,6 +170,65 @@ expression: schema
           }
         }
       }
+    },
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "enabled",
+              "provider"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "open_ai",
+                      "anthropic",
+                      "gemini",
+                      "azure_open_ai"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "privacy"
+            ],
+            "properties": {
+              "privacy": {
+                "required": [
+                  "local_only"
+                ],
+                "properties": {
+                  "local_only": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "properties": {

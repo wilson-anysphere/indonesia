@@ -141,6 +141,46 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
         })),
     );
 
+    // Cloud providers require explicitly opting out of `local_only` (defaults to true).
+    push_all_of(
+        schema,
+        schema_from_json(json!({
+            "if": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["enabled", "provider"],
+                        "properties": {
+                            "enabled": { "const": true },
+                            "provider": {
+                                "required": ["kind"],
+                                "properties": {
+                                    "kind": { "enum": ["open_ai", "anthropic", "gemini", "azure_open_ai"] }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "then": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["privacy"],
+                        "properties": {
+                            "privacy": {
+                                "required": ["local_only"],
+                                "properties": {
+                                    "local_only": { "const": false }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+
     allow_deprecated_aliases(schema);
 }
 
