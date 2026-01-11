@@ -60,3 +60,39 @@ fn loads_generic_class_without_panicking() {
     assert_eq!(get.return_type, Type::TypeVar(e));
 }
 
+#[test]
+fn resolves_self_referential_type_param_bounds() {
+    // Roughly models `Enum<E extends Enum<E>>`.
+    let enum_stub = TypeDefStub {
+        binary_name: "java.lang.Enum".to_string(),
+        access_flags: 0x0000,
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: Some("<E:Ljava/lang/Enum<TE;>;>Ljava/lang/Object;".to_string()),
+        fields: vec![],
+        methods: vec![],
+    };
+
+    let mut provider = MapProvider::default();
+    provider
+        .stubs
+        .insert("java.lang.Enum".to_string(), enum_stub);
+
+    let mut store = nova_types::TypeStore::default();
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+
+    let enum_id = loader
+        .ensure_class("java.lang.Enum")
+        .expect("class should load from provider");
+
+    let def = store.class(enum_id).expect("class def should be present");
+    assert_eq!(def.type_params.len(), 1);
+    let e = def.type_params[0];
+
+    let bounds = store.type_param(e).expect("type param should be defined");
+    assert_eq!(bounds.upper_bounds.len(), 1);
+    assert_eq!(
+        bounds.upper_bounds[0],
+        Type::class(enum_id, vec![Type::TypeVar(e)])
+    );
+}

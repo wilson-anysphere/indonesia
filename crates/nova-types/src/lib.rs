@@ -757,6 +757,34 @@ impl TypeStore {
         id
     }
 
+    /// Overwrite the existing type parameter definition at `id`.
+    ///
+    /// This is useful for external type loaders that need to allocate `TypeVarId`s
+    /// up-front (to support self-referential bounds like `T extends Comparable<T>`)
+    /// and then fill in the final bounds once all type variables are in scope.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is out of bounds, or if `def.name` does not match the name
+    /// originally associated with `id`.
+    pub fn define_type_param(&mut self, id: TypeVarId, def: TypeParamDef) {
+        let slot = self
+            .type_params
+            .get_mut(id.0 as usize)
+            .unwrap_or_else(|| panic!("define_type_param: invalid TypeVarId {:?}", id));
+        let expected_name = slot.name.clone();
+
+        assert!(
+            def.name == expected_name,
+            "define_type_param: attempted to define {:?} with name {:?}, but id is reserved for {:?}",
+            id,
+            def.name,
+            expected_name
+        );
+
+        *slot = def;
+    }
+
     fn add_capture_type_param(
         &mut self,
         upper_bounds: Vec<Type>,

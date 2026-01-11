@@ -9,7 +9,7 @@ use nova_classfile::{
 };
 use nova_types::{
     ClassDef, ClassId, ClassKind, ClassType, ConstructorDef, FieldDef, MethodDef, PrimitiveType,
-    Type, TypeEnv, TypeProvider, TypeStore, TypeVarId, WildcardBound,
+    Type, TypeEnv, TypeParamDef, TypeProvider, TypeStore, TypeVarId, WildcardBound,
 };
 
 const ACC_INTERFACE: u16 = 0x0200;
@@ -81,11 +81,29 @@ impl<'a> ExternalTypeLoader<'a> {
             .and_then(|sig| parse_class_signature(sig).ok());
 
         let (super_class, interfaces) = if let Some(sig) = parsed_sig {
+            // Two-pass allocation so self-referential bounds (`T extends Comparable<T>`) can resolve.
+            let placeholder_bounds = vec![self.object_type()];
             for tp in &sig.type_parameters {
-                let bounds = self.convert_type_parameter_bounds(tp, &class_type_vars, &empty_method_type_vars);
-                let id = self.store.add_type_param(tp.name.clone(), bounds);
+                let id = self
+                    .store
+                    .add_type_param(tp.name.clone(), placeholder_bounds.clone());
                 class_type_vars.insert(tp.name.clone(), id);
                 type_params.push(id);
+            }
+            for tp in &sig.type_parameters {
+                let Some(id) = class_type_vars.get(&tp.name).copied() else {
+                    continue;
+                };
+                let bounds =
+                    self.convert_type_parameter_bounds(tp, &class_type_vars, &empty_method_type_vars);
+                self.store.define_type_param(
+                    id,
+                    TypeParamDef {
+                        name: tp.name.clone(),
+                        upper_bounds: bounds,
+                        lower_bound: None,
+                    },
+                );
             }
 
             let super_class = match kind {
@@ -213,11 +231,28 @@ impl<'a> ExternalTypeLoader<'a> {
         if let Some(sig) = stub.signature.as_deref().and_then(|s| parse_method_signature(s).ok()) {
             let mut method_type_vars = HashMap::<String, TypeVarId>::new();
             let mut type_params = Vec::new();
+            // Two-pass allocation so self-referential bounds can resolve.
+            let placeholder_bounds = vec![self.object_type()];
             for tp in &sig.type_parameters {
-                let bounds = self.convert_type_parameter_bounds(tp, class_type_vars, &method_type_vars);
-                let id = self.store.add_type_param(tp.name.clone(), bounds);
+                let id = self
+                    .store
+                    .add_type_param(tp.name.clone(), placeholder_bounds.clone());
                 method_type_vars.insert(tp.name.clone(), id);
                 type_params.push(id);
+            }
+            for tp in &sig.type_parameters {
+                let Some(id) = method_type_vars.get(&tp.name).copied() else {
+                    continue;
+                };
+                let bounds = self.convert_type_parameter_bounds(tp, class_type_vars, &method_type_vars);
+                self.store.define_type_param(
+                    id,
+                    TypeParamDef {
+                        name: tp.name.clone(),
+                        upper_bounds: bounds,
+                        lower_bound: None,
+                    },
+                );
             }
 
             let params = sig
