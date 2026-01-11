@@ -2471,17 +2471,28 @@ impl<'a> Parser<'a> {
                 _ => {}
             }
 
+            // `instanceof` (type test / pattern match) has relational precedence but the RHS is
+            // not a normal expression in modern Java.
+            if op == SyntaxKind::InstanceofKw {
+                let (l_bp, _r_bp) = (50, 51);
+                if l_bp < min_bp {
+                    break;
+                }
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::InstanceofExpression.into());
+                self.bump(); // instanceof
+                self.parse_instanceof_type_or_pattern();
+                self.builder.finish_node();
+                continue;
+            }
+
             if let Some((l_bp, r_bp, expr_kind)) = infix_binding_power(op) {
                 if l_bp < min_bp {
                     break;
                 }
                 self.builder.start_node_at(checkpoint, expr_kind.into());
                 self.bump();
-                if op == SyntaxKind::InstanceofKw {
-                    self.parse_instanceof_type_or_pattern();
-                } else {
-                    self.parse_expression_inner(r_bp, allow_lambda);
-                }
+                self.parse_expression_inner(r_bp, allow_lambda);
                 self.builder.finish_node();
                 continue;
             }
@@ -3319,8 +3330,7 @@ fn infix_binding_power(op: SyntaxKind) -> Option<(u8, u8, SyntaxKind)> {
         SyntaxKind::Less
         | SyntaxKind::LessEq
         | SyntaxKind::Greater
-        | SyntaxKind::GreaterEq
-        | SyntaxKind::InstanceofKw => (50, 51, SyntaxKind::BinaryExpression),
+        | SyntaxKind::GreaterEq => (50, 51, SyntaxKind::BinaryExpression),
         SyntaxKind::EqEq | SyntaxKind::BangEq => (45, 46, SyntaxKind::BinaryExpression),
         SyntaxKind::Amp => (40, 41, SyntaxKind::BinaryExpression),
         SyntaxKind::Caret => (39, 40, SyntaxKind::BinaryExpression),

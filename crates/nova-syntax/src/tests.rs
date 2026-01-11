@@ -1591,13 +1591,14 @@ class Foo {
     assert_eq!(result.errors, Vec::new());
 
     let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::InstanceofExpression));
     assert!(kinds.contains(&SyntaxKind::Pattern));
     assert!(kinds.contains(&SyntaxKind::TypePattern));
 }
 
 #[test]
-fn ast_binary_expression_instanceof_pattern_accessors_work() {
-    use crate::{AstNode, BinaryExpression};
+fn ast_instanceof_expression_pattern_accessors_work() {
+    use crate::{AstNode, InstanceofExpression};
 
     let input = "class Foo { boolean m(Object x) { return x instanceof String s; } }";
     let result = parse_java(input);
@@ -1606,8 +1607,8 @@ fn ast_binary_expression_instanceof_pattern_accessors_work() {
     let expr = result
         .syntax()
         .descendants()
-        .find_map(BinaryExpression::cast)
-        .expect("expected a binary expression");
+        .find_map(InstanceofExpression::cast)
+        .expect("expected an instanceof expression");
 
     assert!(expr.ty().is_none());
     let pattern = expr.pattern().expect("expected a parsed pattern");
@@ -1616,8 +1617,8 @@ fn ast_binary_expression_instanceof_pattern_accessors_work() {
 }
 
 #[test]
-fn ast_binary_expression_instanceof_type_test_accessors_work() {
-    use crate::{AstNode, BinaryExpression};
+fn ast_instanceof_expression_type_test_accessors_work() {
+    use crate::{AstNode, InstanceofExpression};
 
     let input = "class Foo { boolean m(Object x) { return x instanceof String; } }";
     let result = parse_java(input);
@@ -1626,8 +1627,8 @@ fn ast_binary_expression_instanceof_type_test_accessors_work() {
     let expr = result
         .syntax()
         .descendants()
-        .find_map(BinaryExpression::cast)
-        .expect("expected a binary expression");
+        .find_map(InstanceofExpression::cast)
+        .expect("expected an instanceof expression");
 
     assert!(expr.pattern().is_none());
     assert!(expr.ty().is_some());

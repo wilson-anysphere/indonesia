@@ -2065,6 +2065,32 @@ impl BinaryExpression {
         support::children::<Expression>(&self.syntax).nth(1)
     }
 
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceofExpression {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for InstanceofExpression {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::InstanceofExpression
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl InstanceofExpression {
+    pub fn lhs(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
     pub fn ty(&self) -> Option<Type> {
         support::child::<Type>(&self.syntax)
     }
@@ -2412,6 +2438,7 @@ pub enum Expression {
     ArrayAccessExpression(ArrayAccessExpression),
     UnaryExpression(UnaryExpression),
     BinaryExpression(BinaryExpression),
+    InstanceofExpression(InstanceofExpression),
     AssignmentExpression(AssignmentExpression),
     ConditionalExpression(ConditionalExpression),
     LambdaExpression(LambdaExpression),
@@ -2431,6 +2458,7 @@ impl AstNode for Expression {
             || ArrayAccessExpression::can_cast(kind)
             || UnaryExpression::can_cast(kind)
             || BinaryExpression::can_cast(kind)
+            || InstanceofExpression::can_cast(kind)
             || AssignmentExpression::can_cast(kind)
             || ConditionalExpression::can_cast(kind)
             || LambdaExpression::can_cast(kind)
@@ -2454,6 +2482,7 @@ impl AstNode for Expression {
         if let Some(it) = ArrayAccessExpression::cast(syntax.clone()) { return Some(Self::ArrayAccessExpression(it)); }
         if let Some(it) = UnaryExpression::cast(syntax.clone()) { return Some(Self::UnaryExpression(it)); }
         if let Some(it) = BinaryExpression::cast(syntax.clone()) { return Some(Self::BinaryExpression(it)); }
+        if let Some(it) = InstanceofExpression::cast(syntax.clone()) { return Some(Self::InstanceofExpression(it)); }
         if let Some(it) = AssignmentExpression::cast(syntax.clone()) { return Some(Self::AssignmentExpression(it)); }
         if let Some(it) = ConditionalExpression::cast(syntax.clone()) { return Some(Self::ConditionalExpression(it)); }
         if let Some(it) = LambdaExpression::cast(syntax.clone()) { return Some(Self::LambdaExpression(it)); }
@@ -2475,6 +2504,7 @@ impl AstNode for Expression {
             Self::ArrayAccessExpression(it) => it.syntax(),
             Self::UnaryExpression(it) => it.syntax(),
             Self::BinaryExpression(it) => it.syntax(),
+            Self::InstanceofExpression(it) => it.syntax(),
             Self::AssignmentExpression(it) => it.syntax(),
             Self::ConditionalExpression(it) => it.syntax(),
             Self::LambdaExpression(it) => it.syntax(),

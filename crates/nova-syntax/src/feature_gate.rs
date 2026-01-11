@@ -256,7 +256,7 @@ fn gate_pattern_matching_instanceof(
         let Some(parent) = pattern.parent() else {
             continue;
         };
-        if parent.kind() != SyntaxKind::BinaryExpression {
+        if parent.kind() != SyntaxKind::InstanceofExpression {
             continue;
         }
 
