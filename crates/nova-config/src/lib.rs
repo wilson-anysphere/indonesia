@@ -849,15 +849,18 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
             })
             .map(|file| Arc::new(Mutex::new(file)));
 
-        let audit_file = ai
+        let audit_path = ai
             .filter(|ai| ai.enabled && ai.audit_log.enabled)
-            .and_then(|ai| {
-                let path = ai
-                    .audit_log
+            .map(|ai| {
+                ai.audit_log
                     .path
                     .clone()
-                    .unwrap_or_else(|| std::env::temp_dir().join("nova-ai-audit.log"));
-
+                    .unwrap_or_else(|| std::env::temp_dir().join("nova-ai-audit.log"))
+            });
+        let audit_enabled = audit_path.is_some();
+        let audit_file = audit_path
+            .as_ref()
+            .and_then(|path| {
                 std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -865,7 +868,7 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
                     .ok()
             })
             .map(|file| Arc::new(Mutex::new(file)));
-        let audit_enabled = audit_file.is_some();
+        let audit_open_failed = audit_enabled && audit_file.is_none();
 
         let mut make_writer = BoxMakeWriter::new(LogBufferMakeWriter {
             buffer: buffer.clone(),
@@ -935,14 +938,27 @@ fn init_tracing_inner(logging: &LoggingConfig, ai: Option<&AiConfig>) -> Arc<Log
             .with(filter)
             .with(base_layer)
             .with(audit_layer);
-        let _ = tracing::subscriber::set_global_default(subscriber);
+        if tracing::subscriber::set_global_default(subscriber).is_ok() && audit_open_failed {
+            if let Some(path) = audit_path {
+                tracing::warn!(
+                    target: "nova.config",
+                    path = %path.display(),
+                    "failed to open AI audit log file; audit events will be dropped"
+                );
+            } else {
+                tracing::warn!(
+                    target: "nova.config",
+                    "failed to open AI audit log file; audit events will be dropped"
+                );
+            }
+        }
     });
 
     buffer
 }
 
 #[cfg(test)]
-mod tests {
+mod toml_tests {
     use super::*;
 
     #[test]

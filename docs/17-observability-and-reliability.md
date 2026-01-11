@@ -169,7 +169,8 @@ When enabled, Nova emits **prompts and model responses** as `INFO` tracing event
 
 In `nova-lsp`’s env-var based AI mode, enabling `NOVA_AI_AUDIT_LOGGING` will also best-effort enable
 the file-backed audit log channel, so the above “otherwise” case should be rare (only if the audit
-file cannot be opened).
+file cannot be opened). If the audit file cannot be opened, Nova logs a warning and **drops** audit
+events rather than capturing prompts/results in the normal log buffer.
 
 Audit events are sanitized to redact common credential patterns, but may still contain code/context.
 Enable only when you explicitly want this level of visibility and can safely handle the resulting
