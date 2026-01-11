@@ -360,6 +360,10 @@ Distributed mode currently prioritizes correctness and simplicity over throughpu
 - **Hard message size limits.** The current legacy protocol enforces defensive hard limits to avoid
   OOM on untrusted inputs (e.g. max ~64MiB per RPC payload and max ~8MiB per file text). If a shard
   snapshot exceeds these limits, indexing will fail; split large source roots into smaller shards.
+  - For debugging/testing, you can further *lower* the framed transport limit by setting the
+    `NOVA_RPC_MAX_MESSAGE_SIZE` environment variable (bytes). The value is clamped to the built-in
+    64MiB max and cannot raise the limit. If you run workers remotely, set the env var on both the
+    router and worker processes.
 - **Sequential indexing.** `index_workspace` currently indexes shards in a straightforward loop,
   rather than aggressively parallelizing shard RPCs.
 

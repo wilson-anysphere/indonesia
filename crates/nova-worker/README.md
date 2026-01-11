@@ -63,9 +63,13 @@ The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
 Transport-level timeouts (handshake/TLS accept, plus per-RPC read/write timeouts) are enforced by
 the router/worker and are not currently user-configurable knobs.
 
-The current legacy protocol also enforces fixed hard limits to prevent OOM on untrusted inputs (for
-example: ~64MiB max RPC payload, ~8MiB max file text). If indexing fails with a “too large” style
-error, split large source roots into smaller shards.
+The current legacy protocol also enforces hard limits to prevent OOM on untrusted inputs (for
+example: ~64MiB max framed RPC payload, ~8MiB max file text). If indexing fails with a “too large”
+style error, split large source roots into smaller shards.
+
+For debugging and testing, you can further *lower* the framed transport limit by setting
+`NOVA_RPC_MAX_MESSAGE_SIZE` (bytes). The value is read once (on first use) and clamped to the built-in
+64MiB maximum; it cannot raise the limit.
 
 On the router, the initial handshake is subject to a short timeout (currently **5s**) and the
 listener caps the number of concurrent pending handshakes (currently **128**). If the worker’s
