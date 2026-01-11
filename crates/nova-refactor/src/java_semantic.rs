@@ -431,6 +431,10 @@ impl RefactorDatabase for InMemoryJavaDatabase {
         self.symbols.get(symbol.as_usize()).map(|s| s.def.scope)
     }
 
+    fn symbol_kind(&self, symbol: SymbolId) -> Option<JavaSymbolKind> {
+        self.symbols.get(symbol.as_usize()).map(|s| s.kind)
+    }
+
     fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId> {
         self.scopes
             .get(scope as usize)

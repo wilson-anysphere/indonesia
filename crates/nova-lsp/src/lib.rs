@@ -551,6 +551,30 @@ fn find_project_root(path: &Path) -> PathBuf {
     nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
 }
 
+fn looks_like_project_root(path: &Path) -> bool {
+    // `nova_project::workspace_root` falls back to the filesystem root for ad-hoc file URIs, and
+    // `RefactorWorkspaceSnapshot` uses this heuristic to decide whether it is safe to scan the
+    // workspace recursively.
+    //
+    // Keep this check intentionally conservative: if we can't confidently identify the directory
+    // as a project root, skip the scan and only operate on the focused file.
+    [
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "gradlew",
+        "mvnw",
+        "WORKSPACE",
+        "WORKSPACE.bazel",
+        "MODULE.bazel",
+        ".git",
+    ]
+    .iter()
+    .any(|marker| path.join(marker).exists())
+}
+
 fn uri_from_file_path(path: &Path) -> Option<lsp_types::Uri> {
     let url = url::Url::from_file_path(path).ok()?;
     lsp_types::Uri::from_str(url.as_str()).ok()

@@ -1,5 +1,5 @@
 use crate::edit::{FileId, TextRange};
-use crate::java::SymbolId;
+use crate::java::{JavaSymbolKind, SymbolId};
 
 /// Semantic representation of program changes.
 ///
@@ -101,6 +101,9 @@ pub trait RefactorDatabase {
 
     fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition>;
     fn symbol_scope(&self, symbol: SymbolId) -> Option<u32>;
+    fn symbol_kind(&self, _symbol: SymbolId) -> Option<JavaSymbolKind> {
+        None
+    }
 
     fn resolve_name_in_scope(&self, scope: u32, name: &str) -> Option<SymbolId>;
     fn would_shadow(&self, scope: u32, name: &str) -> Option<SymbolId>;

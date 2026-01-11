@@ -343,10 +343,6 @@ impl Debugger {
         self.jdwp.subscribe_events()
     }
 
-    pub(crate) fn jdwp_client(&self) -> JdwpClient {
-        self.jdwp.clone()
-    }
-
     pub async fn capabilities(&self) -> nova_jdwp::wire::types::JdwpCapabilitiesNew {
         self.jdwp.capabilities().await
     }

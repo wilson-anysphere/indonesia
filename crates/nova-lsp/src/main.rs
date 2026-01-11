@@ -32,8 +32,9 @@ use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
-    FileId as RefactorFileId, OrganizeImportsParams, RenameParams as RefactorRenameParams,
-    SafeDeleteTarget, SemanticRefactorError,
+    FileId as RefactorFileId, JavaSymbolKind, OrganizeImportsParams,
+    RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
+    TreeSitterJavaDatabase,
 };
 use nova_vfs::{ContentChange, Document, FileIdRegistry, VfsPath};
 use serde::Deserialize;
@@ -794,9 +795,11 @@ fn handle_request(
             let result = handle_rename(params, state);
             Ok(match result {
                 Ok(edit) => json!({ "jsonrpc": "2.0", "id": id, "result": edit }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
+                Err((code, message)) => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }),
             })
         }
         "textDocument/definition" => {
@@ -1797,6 +1800,26 @@ fn handle_prepare_rename(
         return Ok(serde_json::Value::Null);
     };
 
+    let file_path = uri.to_string();
+    let file = RefactorFileId::new(file_path.clone());
+    let db = TreeSitterJavaDatabase::single_file(file_path, source.clone());
+
+    let symbol = db.symbol_at(&file, offset).or_else(|| {
+        offset
+            .checked_sub(1)
+            .and_then(|offset| db.symbol_at(&file, offset))
+    });
+    let Some(symbol) = symbol else {
+        return Ok(serde_json::Value::Null);
+    };
+
+    if !matches!(
+        db.symbol_kind(symbol),
+        Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)
+    ) {
+        return Ok(serde_json::Value::Null);
+    }
+
     let Some((start, end)) = ident_range_at(&source, offset) else {
         return Ok(serde_json::Value::Null);
     };
@@ -1811,38 +1834,51 @@ fn handle_prepare_rename(
 fn handle_rename(
     params: serde_json::Value,
     state: &mut ServerState,
-) -> Result<LspWorkspaceEdit, String> {
-    let params: LspRenameParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+) -> Result<LspWorkspaceEdit, (i32, String)> {
+    let params: LspRenameParams =
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
     let uri = params.text_document_position.text_document.uri;
     let Some(source) = load_document_text(state, uri.as_str()) else {
-        return Err(format!("missing document text for `{}`", uri.as_str()));
+        return Err((
+            -32602,
+            format!("missing document text for `{}`", uri.as_str()),
+        ));
     };
 
     let Some(offset) = position_to_offset_utf16(&source, params.text_document_position.position)
     else {
-        return Err("position out of bounds".to_string());
+        return Err((-32602, "position out of bounds".to_string()));
     };
 
-    let snapshot = state.refactor_snapshot(&uri)?;
-    let file = RefactorFileId::new(uri.to_string());
-    let symbol = snapshot
-        .db()
-        .symbol_at(&file, offset)
-        .ok_or_else(|| "no symbol at cursor".to_string())?;
+    let file_path = uri.to_string();
+    let file = RefactorFileId::new(file_path.clone());
+    let db = TreeSitterJavaDatabase::single_file(file_path, source.clone());
+
+    let symbol = db.symbol_at(&file, offset).or_else(|| {
+        offset
+            .checked_sub(1)
+            .and_then(|offset| db.symbol_at(&file, offset))
+    });
+    let Some(symbol) = symbol else {
+        return Err((-32602, "no symbol at cursor".to_string()));
+    };
 
     let edit = semantic_rename(
-        snapshot.refactor_db(),
+        &db,
         RefactorRenameParams {
             symbol,
             new_name: params.new_name,
         },
     )
     .map_err(|err| match err {
-        SemanticRefactorError::Conflicts(conflicts) => format!("rename conflicts: {conflicts:?}"),
-        other => other.to_string(),
+        SemanticRefactorError::Conflicts(conflicts) => {
+            (-32602, format!("rename conflicts: {conflicts:?}"))
+        }
+        err @ SemanticRefactorError::RenameNotSupported { .. } => (-32602, err.to_string()),
+        other => (-32603, other.to_string()),
     })?;
 
-    workspace_edit_to_lsp(snapshot.refactor_db(), &edit).map_err(|e| e.to_string())
+    workspace_edit_to_lsp(&db, &edit).map_err(|e| (-32603, e.to_string()))
 }
 
 fn handle_definition(

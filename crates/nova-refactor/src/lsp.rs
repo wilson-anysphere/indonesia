@@ -9,7 +9,7 @@ use nova_index::Index;
 use thiserror::Error;
 
 use crate::edit::{apply_workspace_edit, FileId, FileOp, TextEdit, WorkspaceEdit};
-use crate::java::SymbolId;
+use crate::java::{JavaSymbolKind, SymbolId};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
 
 /// Minimal [`RefactorDatabase`] implementation backed by raw file text.
@@ -42,6 +42,10 @@ impl RefactorDatabase for TextDatabase {
         None
     }
 
+    fn symbol_kind(&self, _symbol: SymbolId) -> Option<JavaSymbolKind> {
+        None
+    }
+
     fn resolve_name_in_scope(&self, _scope: u32, _name: &str) -> Option<SymbolId> {
         None
     }
@@ -65,6 +69,10 @@ impl RefactorDatabase for Index {
     }
 
     fn symbol_scope(&self, _symbol: SymbolId) -> Option<u32> {
+        None
+    }
+
+    fn symbol_kind(&self, _symbol: SymbolId) -> Option<JavaSymbolKind> {
         None
     }
 

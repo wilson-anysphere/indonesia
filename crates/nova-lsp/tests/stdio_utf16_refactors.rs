@@ -94,6 +94,8 @@ class C {
             "params": {
                 "textDocument": {
                     "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
                     "text": source,
                 }
             }
@@ -140,6 +142,228 @@ class C {
     let actual = apply_lsp_text_edits(&source, edits);
     let expected = source.replace("foo", "bar");
     assert_eq!(actual, expected);
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 4);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let source = r#"class Test {
+  @interface Foo {}
+
+  void m() {
+    int Foo = 1;
+    java.util.List<Foo> xs = null;
+    @Foo int y = Foo;
+  }
+}
+"#;
+
+    let foo_offset = source
+        .find("int Foo = 1")
+        .expect("local Foo declaration")
+        + "int ".len()
+        + 1;
+    let foo_position = lsp_position_utf16(source, foo_offset);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+
+    // 2) open document
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    // 3) rename local Foo -> Bar
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/rename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": foo_position,
+                "newName": "Bar"
+            }
+        }),
+    );
+
+    let rename_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let result = rename_resp.get("result").cloned().expect("workspace edit");
+    let edit: WorkspaceEdit = serde_json::from_value(result).expect("decode workspace edit");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+
+    let actual = apply_lsp_text_edits(source, edits);
+    let expected = r#"class Test {
+  @interface Foo {}
+
+  void m() {
+    int Bar = 1;
+    java.util.List<Foo> xs = null;
+    @Foo int y = Bar;
+  }
+}
+"#;
+    assert_eq!(actual, expected);
+
+    // 4) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_rejects_field_rename() {
+    let uri = Uri::from_str("file:///Test.java").unwrap();
+    let source = r#"class Test {
+  int foo = 0;
+
+  void m() {
+    foo = 1;
+  }
+}
+"#;
+
+    let foo_offset = source
+        .find("int foo = 0")
+        .expect("field foo declaration")
+        + "int ".len()
+        + 1;
+    let foo_position = lsp_position_utf16(source, foo_offset);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+
+    // 2) open document
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    // 3) prepareRename on field => null
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/prepareRename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": foo_position,
+            }
+        }),
+    );
+    let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    assert_eq!(resp.get("result"), Some(&serde_json::Value::Null));
+
+    // 4) rename on field => InvalidParams
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "textDocument/rename",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": foo_position,
+                "newName": "bar"
+            }
+        }),
+    );
+    let rename_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let error = rename_resp.get("error").expect("expected error response");
+    assert_eq!(error.get("code").and_then(|c| c.as_i64()), Some(-32602));
+    let message = error
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
+    assert!(
+        message.contains("rename is only supported"),
+        "unexpected error message: {message}"
+    );
 
     // 5) shutdown + exit
     write_jsonrpc_message(
@@ -203,6 +427,8 @@ class C {
             "params": {
                 "textDocument": {
                     "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
                     "text": source,
                 }
             }

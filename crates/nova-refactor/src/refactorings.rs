@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 use crate::edit::{apply_text_edits, FileId, TextEdit, TextRange, WorkspaceEdit};
-use crate::java::SymbolId;
+use crate::java::{JavaSymbolKind, SymbolId};
 use crate::materialize::{materialize, MaterializeError};
 use crate::semantic::{Conflict, RefactorDatabase, SemanticChange};
 
@@ -11,6 +11,8 @@ use crate::semantic::{Conflict, RefactorDatabase, SemanticChange};
 pub enum RefactorError {
     #[error("refactoring has conflicts: {0:?}")]
     Conflicts(Vec<Conflict>),
+    #[error("rename is only supported for local variables and parameters (got {kind:?})")]
+    RenameNotSupported { kind: Option<JavaSymbolKind> },
     #[error(transparent)]
     Materialize(#[from] MaterializeError),
     #[error("unknown file {0:?}")]
@@ -30,6 +32,11 @@ pub fn rename(
     db: &dyn RefactorDatabase,
     params: RenameParams,
 ) -> Result<WorkspaceEdit, RefactorError> {
+    let kind = db.symbol_kind(params.symbol);
+    if !matches!(kind, Some(JavaSymbolKind::Local | JavaSymbolKind::Parameter)) {
+        return Err(RefactorError::RenameNotSupported { kind });
+    }
+
     let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
     if !conflicts.is_empty() {
         return Err(RefactorError::Conflicts(conflicts));

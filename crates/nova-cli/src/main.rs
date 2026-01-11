@@ -25,7 +25,7 @@ use nova_perf::{
 use nova_refactor::{
     apply_text_edits as apply_refactor_text_edits, organize_imports as refactor_organize_imports,
     rename as refactor_rename, Conflict, FileId as RefactorFileId, InMemoryJavaDatabase,
-    OrganizeImportsParams, RenameParams, SemanticRefactorError,
+    OrganizeImportsParams, RenameParams, SemanticRefactorError, TreeSitterJavaDatabase,
     WorkspaceTextEdit as RefactorTextEdit,
 };
 use nova_syntax::parse;
@@ -1261,48 +1261,6 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
     Ok(0)
 }
 
-fn collect_java_files(root: &Path) -> Result<Vec<PathBuf>> {
-    fn should_skip_dir(path: &Path) -> bool {
-        matches!(
-            path.file_name().and_then(|s| s.to_str()),
-            Some(".git" | "target" | ".nova" | "out" | "build")
-        )
-    }
-
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        if should_skip_dir(&dir) && dir != root {
-            continue;
-        }
-        for entry in fs::read_dir(&dir).with_context(|| format!("read_dir {}", dir.display()))? {
-            let entry = entry?;
-            let path = entry.path();
-            let ty = entry.file_type()?;
-            if ty.is_dir() {
-                stack.push(path);
-            } else if ty.is_file() && path.extension().and_then(|e| e.to_str()) == Some("java") {
-                out.push(path);
-            }
-        }
-    }
-
-    out.sort();
-    Ok(out)
-}
-
-fn path_relative_to(root: &Path, path: &Path) -> Result<String> {
-    let rel = path.strip_prefix(root).with_context(|| {
-        format!(
-            "{} is not under workspace root {}",
-            path.display(),
-            root.display()
-        )
-    })?;
-    Ok(rel.to_string_lossy().replace('\\', "/"))
-}
-
 fn conflicts_to_json(
     files: &BTreeMap<String, String>,
     conflicts: Vec<Conflict>,
@@ -1388,46 +1346,25 @@ fn conflicts_to_json(
 }
 
 fn handle_rename(args: RenameArgs) -> Result<i32> {
-    let ws = Workspace::open(&args.file)?;
-    let root = ws.root().to_path_buf();
-
-    let java_files = collect_java_files(&root)?;
-    anyhow::ensure!(
-        !java_files.is_empty(),
-        "no .java files found under {}",
-        root.display()
-    );
+    // Rename is restricted to locals/parameters, so we can operate on a single file without
+    // instantiating a full workspace (which would spin up background thread pools).
+    let target_file_id_str = display_path(&args.file);
+    let target_file = RefactorFileId::new(target_file_id_str.clone());
+    let target_text = fs::read_to_string(&args.file)
+        .with_context(|| format!("failed to read {}", args.file.display()))?;
 
     let mut file_texts: BTreeMap<String, String> = BTreeMap::new();
-    let mut db_files = Vec::with_capacity(java_files.len());
-    for path in java_files {
-        let file_id = path_relative_to(&root, &path)?;
-        let text = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        file_texts.insert(file_id.clone(), text.clone());
-        db_files.push((RefactorFileId::new(file_id), text));
-    }
+    file_texts.insert(target_file_id_str.clone(), target_text.clone());
 
-    let db = InMemoryJavaDatabase::new(db_files);
-    let target_path = fs::canonicalize(&args.file)
-        .with_context(|| format!("canonicalize {}", args.file.display()))?;
-    let target_file_id_str = path_relative_to(&root, &target_path)?;
-    let target_file = RefactorFileId::new(target_file_id_str.clone());
-    let Some(target_text) = file_texts.get(&target_file_id_str) else {
-        // Should be impossible because we loaded the workspace file list.
-        return Ok(rename_error(
-            args.json,
-            format!("file {target_file_id_str:?} was not loaded from workspace"),
-        )?);
-    };
+    let db = TreeSitterJavaDatabase::single_file(target_file_id_str.clone(), target_text.clone());
 
     let pos = match parse_cli_position(args.line, args.col) {
         Ok(pos) => pos,
         Err(err) => return Ok(rename_error(args.json, err.to_string())?),
     };
 
-    let index = LineIndex::new(target_text);
-    let Some(offset) = index.offset_of_position(target_text, pos) else {
+    let index = LineIndex::new(&target_text);
+    let Some(offset) = index.offset_of_position(&target_text, pos) else {
         return Ok(rename_error(
             args.json,
             format!("no offset for position line={} col={}", args.line, args.col),
@@ -1478,6 +1415,24 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
             }
             return Ok(1);
         }
+        Err(err @ SemanticRefactorError::RenameNotSupported { .. }) => {
+            let output = CliJsonOutput {
+                ok: false,
+                files_changed: Vec::new(),
+                edits: Vec::new(),
+                conflicts: Vec::new(),
+                error: Some(CliJsonError {
+                    kind: "RenameNotSupported".to_string(),
+                    message: err.to_string(),
+                }),
+            };
+            if args.json {
+                print_cli_json(&output)?;
+            } else {
+                eprintln!("{err}");
+            }
+            return Ok(1);
+        }
         Err(err) => return Err(anyhow::anyhow!(err)),
     };
 
@@ -1517,7 +1472,11 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
 
     if args.in_place {
         for (file, text) in &new_texts {
-            let path = root.join(Path::new(file));
+            let path = if *file == target_file_id_str {
+                args.file.clone()
+            } else {
+                PathBuf::from(file)
+            };
             atomic_write(&path, text.as_bytes())
                 .with_context(|| format!("failed to write {}", path.display()))?;
         }
