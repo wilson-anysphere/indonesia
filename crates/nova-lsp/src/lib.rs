@@ -40,6 +40,8 @@ pub mod hardening;
 pub mod refactor;
 pub mod handlers;
 pub mod formatting;
+pub mod imports;
+mod completion_resolve;
 
 mod cancellation;
 mod diagnostics;
@@ -64,6 +66,7 @@ pub use refactor::{
 };
 pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
 pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
+pub use completion_resolve::resolve_completion_item;
 #[cfg(feature = "ai")]
 pub use completion_more::{CompletionContextId, NovaCompletionResponse, NovaCompletionService};
 #[cfg(feature = "ai")]
@@ -335,13 +338,17 @@ pub fn diagnostics(
 }
 
 use lsp_types::{
-    DeclarationCapability, ImplementationProviderCapability, ServerCapabilities,
+    CompletionOptions, DeclarationCapability, ImplementationProviderCapability, ServerCapabilities,
     TypeDefinitionProviderCapability,
 };
 
 #[must_use]
 pub fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
+        completion_provider: Some(CompletionOptions {
+            resolve_provider: Some(true),
+            ..CompletionOptions::default()
+        }),
         document_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         document_range_formatting_provider: Some(lsp_types::OneOf::Left(true)),
         document_on_type_formatting_provider: Some(lsp_types::DocumentOnTypeFormattingOptions {
