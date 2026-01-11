@@ -257,6 +257,8 @@ This requires a local JDK (`java` + `javac` on `PATH`) and is opt-in so normal C
 cargo test -p nova-dap --features real-jvm-tests --test real_jvm -- --nocapture
 ```
 
+If `java`/`javac` are missing, the test prints a message and returns early.
+
 ---
 
 ### 4) Differential tests vs `javac`
@@ -277,6 +279,9 @@ JDK. CI runs them separately in `.github/workflows/javac.yml`.
 ```bash
 cargo test -p nova-types --test javac_differential -- --ignored
 ```
+
+If `javac` is not available, the tests print a message and return early (Rust’s test harness has no
+built-in “skip”). Ensure `javac` is on `PATH` if you expect these to actually exercise the compiler.
 
 **Related helper:** validate the pinned real-project fixtures build with their toolchain (best-effort):
 
