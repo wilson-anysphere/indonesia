@@ -3,6 +3,11 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::io::BufRead;
 
+// `read_line` grows the backing buffer to fit the longest line seen. Some Bazel action arguments
+// (e.g. long classpaths) can be very large; cap the retained buffer size to avoid permanently
+// holding onto multi-megabyte allocations.
+const MAX_LINE_BUF_CAPACITY_BYTES: usize = 1024 * 1024;
+
 /// A parsed `Javac` action from `bazel aquery --output=textproto`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JavacAction {
@@ -107,6 +112,9 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
 
         loop {
             self.line_buf.clear();
+            if self.line_buf.capacity() > MAX_LINE_BUF_CAPACITY_BYTES {
+                self.line_buf.shrink_to(MAX_LINE_BUF_CAPACITY_BYTES);
+            }
             let bytes = match self.reader.read_line(&mut self.line_buf) {
                 Ok(0) => {
                     self.done = true;
@@ -267,6 +275,9 @@ fn apply_javac_argument(
                 info.output_dir = Some(arg.to_string());
             }
             PendingJavacArg::SourcePath => {
+                // Once a `-sourcepath` is provided we no longer need to track source roots from
+                // individual `.java` arguments.
+                java_file_roots.clear();
                 for root in split_path_list(arg) {
                     if !root.is_empty() {
                         sourcepath_roots.insert(root);
@@ -303,6 +314,9 @@ fn apply_javac_argument(
             }
 
             if other.ends_with(".java") {
+                if !sourcepath_roots.is_empty() {
+                    return;
+                }
                 if let Some(parent) = other.rsplit_once('/') {
                     if !java_file_roots.contains(parent.0) {
                         java_file_roots.insert(parent.0.to_string());
@@ -327,6 +341,9 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
 
         loop {
             self.line_buf.clear();
+            if self.line_buf.capacity() > MAX_LINE_BUF_CAPACITY_BYTES {
+                self.line_buf.shrink_to(MAX_LINE_BUF_CAPACITY_BYTES);
+            }
             let bytes = match self.reader.read_line(&mut self.line_buf) {
                 Ok(0) => {
                     self.done = true;
