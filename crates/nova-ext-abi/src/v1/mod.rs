@@ -56,7 +56,10 @@ pub mod guest {
             return 0;
         }
 
-        let cap = usize::try_from(len).unwrap_or(usize::MAX);
+        let cap = match usize::try_from(len) {
+            Ok(cap) => cap,
+            Err(_) => return 0,
+        };
         let mut buf = Vec::<u8>::with_capacity(cap);
         let ptr = buf.as_mut_ptr();
         core::mem::forget(buf);
@@ -75,7 +78,10 @@ pub mod guest {
             return;
         }
 
-        let cap = usize::try_from(len).unwrap_or(usize::MAX);
+        let cap = match usize::try_from(len) {
+            Ok(cap) => cap,
+            Err(_) => return,
+        };
         // Safety: caller must uphold the contract described above.
         drop(Vec::<u8>::from_raw_parts(ptr as *mut u8, 0, cap));
     }
@@ -90,7 +96,10 @@ pub mod guest {
         if ptr == 0 || len <= 0 {
             return &[];
         }
-        let len = usize::try_from(len).unwrap_or(usize::MAX);
+        let len = match usize::try_from(len) {
+            Ok(len) => len,
+            Err(_) => return &[],
+        };
         // Safety: caller must uphold pointer validity.
         core::slice::from_raw_parts(ptr as *const u8, len)
     }
@@ -105,7 +114,10 @@ pub mod guest {
             return (0, 0);
         }
 
-        let len_i32 = i32::try_from(bytes.len()).unwrap_or(i32::MAX);
+        let len_i32 = match i32::try_from(bytes.len()) {
+            Ok(len) => len,
+            Err(_) => return (0, 0),
+        };
         let ptr = alloc(len_i32);
         if ptr == 0 {
             return (0, 0);

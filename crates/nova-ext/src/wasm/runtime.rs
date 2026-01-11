@@ -403,7 +403,7 @@ impl WasmPlugin {
         let req_len_i32 = i32::try_from(req_bytes.len()).unwrap_or(i32::MAX);
         let req_ptr = alloc
             .call(&mut store, req_len_i32)
-            .map_err(classify_call_error)? as usize;
+            .map_err(classify_call_error)? as u32 as usize;
 
         memory
             .write(&mut store, req_ptr, &req_bytes)

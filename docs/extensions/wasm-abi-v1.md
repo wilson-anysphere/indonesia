@@ -45,6 +45,8 @@ Helper functions are available in `nova_ext_abi::v1::guest`:
 
 All provider functions accept a single JSON object request and return a JSON array response.
 
+Offsets/spans are **byte offsets** into the UTF-8 `text` provided in the request.
+
 ### Diagnostics
 
 Export:
@@ -72,6 +74,110 @@ Response: `Vec<nova_ext_abi::v1::DiagnosticV1>`
     "severity": "info",
     "span": { "start": 10, "end": 14 }
   }
+]
+```
+
+### Completions
+
+Export:
+
+- `nova_ext_completions(req_ptr: i32, req_len: i32) -> i64`
+
+Request: `nova_ext_abi::v1::CompletionsRequestV1`
+
+```json
+{
+  "projectId": 1,
+  "fileId": 42,
+  "filePath": "/path/to/File.java",
+  "offset": 123,
+  "text": "..."
+}
+```
+
+Response: `Vec<nova_ext_abi::v1::CompletionItemV1>`
+
+```json
+[
+  { "label": "from-wasm", "detail": "optional detail" }
+]
+```
+
+### Code actions
+
+Export:
+
+- `nova_ext_code_actions(req_ptr: i32, req_len: i32) -> i64`
+
+Request: `nova_ext_abi::v1::CodeActionsRequestV1`
+
+```json
+{
+  "projectId": 1,
+  "fileId": 42,
+  "filePath": "/path/to/File.java",
+  "span": { "start": 10, "end": 14 },
+  "text": "..."
+}
+```
+
+Response: `Vec<nova_ext_abi::v1::CodeActionV1>`
+
+```json
+[
+  { "title": "Example action", "kind": "quickfix" }
+]
+```
+
+### Navigation
+
+Export:
+
+- `nova_ext_navigation(req_ptr: i32, req_len: i32) -> i64`
+
+Request: `nova_ext_abi::v1::NavigationRequestV1`
+
+```json
+{
+  "projectId": 1,
+  "symbol": { "kind": "file", "id": 42 }
+}
+```
+
+Response: `Vec<nova_ext_abi::v1::NavigationTargetV1>`
+
+```json
+[
+  {
+    "fileId": 42,
+    "span": { "start": 0, "end": 1 },
+    "label": "target label"
+  }
+]
+```
+
+### Inlay hints
+
+Export:
+
+- `nova_ext_inlay_hints(req_ptr: i32, req_len: i32) -> i64`
+
+Request: `nova_ext_abi::v1::InlayHintsRequestV1`
+
+```json
+{
+  "projectId": 1,
+  "fileId": 42,
+  "filePath": "/path/to/File.java",
+  "text": "..."
+}
+```
+
+Response: `Vec<nova_ext_abi::v1::InlayHintV1>`
+
+```json
+[
+  { "span": { "start": 10, "end": 11 }, "label": ": i32" }
 ]
 ```
 
@@ -154,4 +260,3 @@ entry = "plugin.wasm"
 abi_version = 1
 capabilities = ["diagnostics"]
 ```
-
