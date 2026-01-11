@@ -38,6 +38,7 @@ At a high level, v3 adds:
   - worker-initiated IDs are **odd** (`1, 3, 5, ...`).
 - **Chunking** for large messages via `PacketChunk` (bounded reassembly).
 - Optional negotiated **compression** (`none` / `zstd`) on a per-packet basis.
+- Optional negotiated **cancellation** (`Cancel`) for best-effort abort of in-flight work.
 
 v3 is a framed stream (a `u32` little-endian length prefix followed by a CBOR `WireFrame` payload).
 
@@ -53,10 +54,13 @@ The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
 - Max frame length / max packet length offered in `WorkerHello.capabilities`:
   - **64 MiB** max frame (`nova_remote_proto::v3::DEFAULT_MAX_FRAME_LEN`)
   - **64 MiB** max packet (`nova_remote_proto::v3::DEFAULT_MAX_PACKET_LEN`)
-- Compression: offer `zstd` + `none` and compress payloads ≥ **1 KiB** (zstd level 3) when it
-  produces smaller on-wire bytes.
-- Chunking: supported when negotiated (`supports_chunking=true`) and used when a single frame would
-  exceed the negotiated `max_frame_len`.
+- Compression: always offer `none`; when built with zstd support (`nova-remote-rpc` feature `zstd`),
+  offer `zstd` and compress payloads ≥ **1 KiB** (zstd level 3) when it produces smaller on-wire
+  bytes.
+- Chunking: supported and advertised by default (`supports_chunking=true`) and used when a single
+  frame would exceed the negotiated `max_frame_len`.
+- Cancellation: supported and advertised by default (`supports_cancel=true`). Incoming `Cancel`
+  updates a per-RPC cancellation token; responders may return a structured `cancelled` error.
 - Keepalive: there is no application-level heartbeat yet; idle connections rely on TCP / deployment
   infrastructure.
 

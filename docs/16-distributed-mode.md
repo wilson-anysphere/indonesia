@@ -21,12 +21,12 @@ When v3 is enabled, the reference implementation (`crates/nova-remote-rpc`) curr
 - Pre-handshake max frame length: **1 MiB** (`nova_remote_rpc::DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN`)
 - Max frame length / max packet length offered in `WorkerHello.capabilities`: **64 MiB** each
   (`nova_remote_proto::v3::{DEFAULT_MAX_FRAME_LEN, DEFAULT_MAX_PACKET_LEN}`)
-- Compression: prefer `zstd` (negotiated) and compress payloads ≥ **1 KiB** when it produces smaller
-  on-wire bytes
-- Chunking: available when negotiated (`supports_chunking=true`) and used when a single frame would
-  exceed the negotiated `max_frame_len`
-- Cancellation: available when negotiated (`supports_cancel=true`) and supported end-to-end via
-  `RpcPayload::Cancel` + the structured `cancelled` error code
+- Compression: always support `none`; when built with zstd support (`nova-remote-rpc` feature `zstd`),
+  prefer `zstd` (negotiated) and compress payloads ≥ **1 KiB** when it produces smaller on-wire bytes
+- Chunking: supported and advertised by default (`supports_chunking=true`) and used when a single
+  frame would exceed the negotiated `max_frame_len`
+- Cancellation: supported and advertised by default (`supports_cancel=true`) and supported end-to-end
+  via `RpcPayload::Cancel` + the structured `cancelled` error code
 - Keepalive: no application-level heartbeat yet
 
 These are internal defaults rather than user-facing CLI knobs.
