@@ -43,10 +43,15 @@ pub struct ValidationDiagnostics {
     pub errors: Vec<ConfigValidationError>,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigWarning {
     DeprecatedKey {
         path: String,
+        message: String,
+    },
+    InvalidValue {
+        toml_path: String,
         message: String,
     },
     ExtensionsWasmPathMissing {
@@ -64,10 +69,15 @@ pub enum ConfigWarning {
     },
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigValidationError {
     AiMissingApiKey {
         provider: crate::AiProviderKind,
+    },
+    InvalidValue {
+        toml_path: String,
+        message: String,
     },
     AiMissingAzureDeployment,
     AiMissingInProcessConfig,

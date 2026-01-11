@@ -155,3 +155,124 @@ level = "warn,nova=foo"
         }]
     );
 }
+
+#[test]
+fn validates_ai_provider_limits_are_positive() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.provider]
+max_tokens = 0
+timeout_ms = 0
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![
+            ConfigValidationError::InvalidValue {
+                toml_path: "ai.provider.timeout_ms".to_string(),
+                message: "must be >= 1".to_string(),
+            },
+            ConfigValidationError::InvalidValue {
+                toml_path: "ai.provider.max_tokens".to_string(),
+                message: "must be >= 1".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn validates_ai_feature_timeouts_are_positive() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.features]
+completion_ranking = true
+multi_token_completion = true
+
+[ai.timeouts]
+completion_ranking_ms = 0
+multi_token_completion_ms = 0
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![
+            ConfigWarning::InvalidValue {
+                toml_path: "ai.timeouts.completion_ranking_ms".to_string(),
+                message: "must be >= 1 when ai.features.completion_ranking is enabled".to_string(),
+            },
+            ConfigWarning::InvalidValue {
+                toml_path: "ai.timeouts.multi_token_completion_ms".to_string(),
+                message: "must be >= 1 when ai.features.multi_token_completion is enabled".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn validates_ai_embeddings_limits_are_positive() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.embeddings]
+enabled = true
+batch_size = 0
+max_memory_bytes = 0
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![
+            ConfigValidationError::InvalidValue {
+                toml_path: "ai.embeddings.batch_size".to_string(),
+                message: "must be >= 1 when ai.embeddings.enabled is true".to_string(),
+            },
+            ConfigValidationError::InvalidValue {
+                toml_path: "ai.embeddings.max_memory_bytes".to_string(),
+                message: "must be >= 1 when ai.embeddings.enabled is true".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn validates_extensions_wasm_limits_are_positive() {
+    let text = r#"
+[extensions]
+enabled = true
+wasm_memory_limit_bytes = 0
+wasm_timeout_ms = 0
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![
+            ConfigWarning::InvalidValue {
+                toml_path: "extensions.wasm_memory_limit_bytes".to_string(),
+                message: "must be >= 1".to_string(),
+            },
+            ConfigWarning::InvalidValue {
+                toml_path: "extensions.wasm_timeout_ms".to_string(),
+                message: "must be >= 1".to_string(),
+            },
+        ]
+    );
+}

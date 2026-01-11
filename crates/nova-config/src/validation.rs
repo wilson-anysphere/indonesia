@@ -69,6 +69,20 @@ fn validate_extensions(config: &NovaConfig, ctx: ConfigValidationContext<'_>, ou
         return;
     }
 
+    if matches!(config.extensions.wasm_memory_limit_bytes, Some(0)) {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "extensions.wasm_memory_limit_bytes".to_string(),
+            message: "must be >= 1".to_string(),
+        });
+    }
+
+    if matches!(config.extensions.wasm_timeout_ms, Some(0)) {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "extensions.wasm_timeout_ms".to_string(),
+            message: "must be >= 1".to_string(),
+        });
+    }
+
     let base_dir = ctx.base_dir();
 
     for (idx, path) in config.extensions.wasm_paths.iter().enumerate() {
@@ -97,6 +111,20 @@ fn validate_extensions(config: &NovaConfig, ctx: ConfigValidationContext<'_>, ou
 fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
     if !config.ai.enabled {
         return;
+    }
+
+    if config.ai.provider.timeout_ms == 0 {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.timeout_ms".to_string(),
+            message: "must be >= 1".to_string(),
+        });
+    }
+
+    if config.ai.provider.max_tokens == 0 {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "ai.provider.max_tokens".to_string(),
+            message: "must be >= 1".to_string(),
+        });
     }
 
     if matches!(config.ai.provider.concurrency, Some(0)) {
@@ -159,6 +187,47 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
         && config.ai.provider.in_process_llama.is_none()
     {
         out.errors.push(ConfigValidationError::AiMissingInProcessConfig);
+    }
+
+    if config.ai.features.completion_ranking && config.ai.timeouts.completion_ranking_ms == 0 {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "ai.timeouts.completion_ranking_ms".to_string(),
+            message: "must be >= 1 when ai.features.completion_ranking is enabled".to_string(),
+        });
+    }
+
+    if config.ai.features.multi_token_completion && config.ai.timeouts.multi_token_completion_ms == 0 {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "ai.timeouts.multi_token_completion_ms".to_string(),
+            message: "must be >= 1 when ai.features.multi_token_completion is enabled".to_string(),
+        });
+    }
+
+    if config.ai.embeddings.enabled {
+        if config.ai.embeddings.batch_size == 0 {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "ai.embeddings.batch_size".to_string(),
+                message: "must be >= 1 when ai.embeddings.enabled is true".to_string(),
+            });
+        }
+
+        if config.ai.embeddings.max_memory_bytes == 0 {
+            out.errors.push(ConfigValidationError::InvalidValue {
+                toml_path: "ai.embeddings.max_memory_bytes".to_string(),
+                message: "must be >= 1 when ai.embeddings.enabled is true".to_string(),
+            });
+        }
+    }
+
+    if matches!(config.ai.provider.kind, AiProviderKind::InProcessLlama) {
+        if let Some(cfg) = config.ai.provider.in_process_llama.as_ref() {
+            if cfg.context_size == 0 {
+                out.errors.push(ConfigValidationError::InvalidValue {
+                    toml_path: "ai.provider.in_process_llama.context_size".to_string(),
+                    message: "must be >= 1".to_string(),
+                });
+            }
+        }
     }
 }
 
