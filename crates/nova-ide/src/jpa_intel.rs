@@ -13,8 +13,6 @@ use nova_framework_jpa::{
 };
 use nova_project::ProjectConfig;
 
-static PROJECT_CONFIG_CACHE: Lazy<Mutex<HashMap<PathBuf, Option<Arc<ProjectConfig>>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
 static JPA_ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<CachedJpaProject>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -48,20 +46,17 @@ pub(crate) fn project_for_file(
 ) -> Option<Arc<CachedJpaProject>> {
     let file_path = db.file_path(file)?.to_path_buf();
 
-    // Prefer a true project/workspace root discovered from build markers and the
-    // `nova-project` config. If that fails (e.g. unit tests with virtual paths),
-    // fall back to the common root of Java sources currently in the DB.
-    let config = project_config_for_path(&file_path);
+    // Prefer a build-marker-discovered project root and `nova-project`-derived
+    // config when available. If we fail to load a `ProjectConfig` (common in
+    // unit tests with virtual in-memory paths), fall back to the common prefix
+    // of Java sources currently known to the DB.
+    let root_candidate = crate::framework_cache::project_root_for_path(&file_path);
+    let config = crate::framework_cache::project_config(&root_candidate);
     let root = config
         .as_ref()
-        .map(|cfg| cfg.workspace_root.clone())
+        .map(|_| root_candidate.clone())
         .or_else(|| fallback_root(db))
-        .unwrap_or_else(|| {
-            file_path
-                .parent()
-                .unwrap_or_else(|| Path::new("/"))
-                .to_path_buf()
-        });
+        .unwrap_or(root_candidate);
 
     let java_files = collect_java_files(db, &root);
     if java_files.is_empty() {
@@ -171,53 +166,6 @@ fn fingerprint_sources(db: &dyn FileDatabase, files: &[(PathBuf, FileId)]) -> u6
         db.file_content(*file_id).hash(&mut hasher);
     }
     hasher.finish()
-}
-
-fn project_config_for_path(path: &Path) -> Option<Arc<ProjectConfig>> {
-    let root = build_tool_root(path)?;
-    load_project_config_cached(&root)
-}
-
-fn load_project_config_cached(root: &Path) -> Option<Arc<ProjectConfig>> {
-    let key = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-
-    if let Some(hit) = PROJECT_CONFIG_CACHE
-        .lock()
-        .expect("project config cache mutex poisoned")
-        .get(&key)
-    {
-        return hit.clone();
-    }
-
-    let cfg = nova_project::load_project(&key).ok().map(Arc::new);
-    PROJECT_CONFIG_CACHE
-        .lock()
-        .expect("project config cache mutex poisoned")
-        .insert(key, cfg.clone());
-    cfg
-}
-
-fn build_tool_root(path: &Path) -> Option<PathBuf> {
-    let start = if path.is_dir() { path } else { path.parent()? };
-
-    for dir in start.ancestors() {
-        if is_build_root(dir) {
-            return Some(dir.to_path_buf());
-        }
-    }
-
-    None
-}
-
-fn is_build_root(dir: &Path) -> bool {
-    dir.join("pom.xml").is_file()
-        || dir.join("build.gradle").is_file()
-        || dir.join("build.gradle.kts").is_file()
-        || dir.join("settings.gradle").is_file()
-        || dir.join("settings.gradle.kts").is_file()
-        || dir.join("WORKSPACE").is_file()
-        || dir.join("WORKSPACE.bazel").is_file()
-        || dir.join("MODULE.bazel").is_file()
 }
 
 fn fallback_root(db: &dyn FileDatabase) -> Option<PathBuf> {
