@@ -53,6 +53,19 @@ jobs:
       - name: test
         run: cargo test
 
+  wasm:
+    name: wasm example (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: check (wasm32-unknown-unknown)
+        run: cargo check -p nova-ext-wasm-example-todos --target wasm32-unknown-unknown
+
   workflows:
     runs-on: ubuntu-latest
     steps:

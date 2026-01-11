@@ -1,0 +1,9 @@
+id = "example.todos"
+version = "0.1.0"
+entry = "plugin.wasm"
+abi_version = 1
+capabilities = ["diagnostics"]
+
+name = "TODO diagnostics example"
+description = "Flags TODO occurrences as diagnostics (example extension)."
+

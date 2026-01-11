@@ -23,6 +23,7 @@ members = [
     "crates/nova-db",
     "crates/nova-decompile",
     "crates/nova-ext",
+    "crates/nova-ext-abi",
     "crates/nova-devtools",
     "crates/nova-flow",
     "crates/nova-format",
@@ -67,6 +68,7 @@ members = [
     "crates/nova-worker",
     "crates/nova-yaml",
     "crates/xtask",
+    "examples/nova-ext-wasm-example-todos",
 ]
 
 [workspace.package]

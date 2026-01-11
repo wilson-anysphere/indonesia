@@ -11,11 +11,13 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use wasmtime::{Engine, Instance, Linker, Module, Store, StoreLimitsBuilder, TypedFunc};
 
-use super::abi::{
+use nova_ext_abi::v1::{
     CodeActionV1, CodeActionsRequestV1, CompletionItemV1, CompletionsRequestV1, DiagnosticV1,
     DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1,
-    NavigationTargetV1, SeverityV1, SpanV1, SymbolV1, ABI_V1,
+    NavigationTargetV1, SeverityV1, SpanV1, SymbolV1,
 };
+use nova_ext_abi::v1::capabilities as abi_caps;
+use nova_ext_abi::ABI_V1;
 
 const EXPORT_ABI_VERSION: &str = "nova_ext_abi_version";
 const EXPORT_CAPABILITIES: &str = "nova_ext_capabilities";
@@ -41,7 +43,15 @@ fn engine() -> &'static Engine {
     ENGINE.get_or_init(|| {
         let mut config = wasmtime::Config::new();
         config.epoch_interruption(true);
+        // Wasmtime's default memory configuration attempts to reserve the full 4GiB `wasm32`
+        // address space (plus a guard region) for each module memory. This is fast, but it also
+        // requires a large virtual address-space reservation (often 8GiB) which can exceed the
+        // address-space limits used by Nova's multi-agent test harnesses.
+        //
+        // Nova extensions already have explicit per-plugin memory limits enforced via
+        // `StoreLimits`, so prefer dynamic memories with smaller guard regions.
         config.static_memory_maximum_size(0);
+        config.static_memory_guard_size(0);
         config.dynamic_memory_guard_size(0);
         config.dynamic_memory_reserved_for_growth(0);
 
@@ -92,14 +102,14 @@ fn unpack_ptr_len(v: u64) -> (u32, u32) {
 pub struct WasmCapabilities(u32);
 
 impl WasmCapabilities {
-    const KNOWN_MASK: u32 = (1 << 5) - 1;
+    const KNOWN_MASK: u32 = abi_caps::KNOWN_MASK;
 
     pub const NONE: Self = Self(0);
-    pub const DIAGNOSTICS: Self = Self(1 << 0);
-    pub const COMPLETIONS: Self = Self(1 << 1);
-    pub const CODE_ACTIONS: Self = Self(1 << 2);
-    pub const NAVIGATION: Self = Self(1 << 3);
-    pub const INLAY_HINTS: Self = Self(1 << 4);
+    pub const DIAGNOSTICS: Self = Self(abi_caps::DIAGNOSTICS);
+    pub const COMPLETIONS: Self = Self(abi_caps::COMPLETIONS);
+    pub const CODE_ACTIONS: Self = Self(abi_caps::CODE_ACTIONS);
+    pub const NAVIGATION: Self = Self(abi_caps::NAVIGATION);
+    pub const INLAY_HINTS: Self = Self(abi_caps::INLAY_HINTS);
 
     pub const fn from_bits(bits: u32) -> Self {
         Self(bits & Self::KNOWN_MASK)

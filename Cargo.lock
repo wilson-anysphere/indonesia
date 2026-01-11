@@ -3613,6 +3613,7 @@ version = "0.1.0"
 dependencies = [
  "nova-config",
  "nova-core",
+ "nova-ext-abi",
  "nova-scheduler",
  "nova-types",
  "semver",
@@ -3624,6 +3625,22 @@ dependencies = [
  "tracing",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "nova-ext-abi"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "nova-ext-wasm-example-todos"
+version = "0.1.0"
+dependencies = [
+ "nova-ext-abi",
+ "serde_json",
 ]
 
 [[package]]

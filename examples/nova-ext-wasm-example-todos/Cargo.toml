@@ -1,0 +1,13 @@
+[package]
+name = "nova-ext-wasm-example-todos"
+version.workspace = true
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nova-ext-abi = { path = "../../crates/nova-ext-abi" }
+serde_json = { workspace = true }
+

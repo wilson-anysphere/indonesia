@@ -192,6 +192,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Known gaps vs intended docs:**
   - Not currently the primary framework/plugin system used by `nova-lsp` or `nova-workspace`.
 
+### `nova-ext-abi`
+- **Purpose:** standalone, wasm-friendly Nova extension ABI types (serde JSON wire structs) for guest plugin authors.
+- **Key entry points:** `crates/nova-ext-abi/src/lib.rs` (`ABI_V1`), `crates/nova-ext-abi/src/v1/mod.rs` (ABI v1 structs + guest helpers).
+- **Maturity:** scaffolding
+- **Known gaps vs intended docs:**
+  - ABI surface is still small and versioned only for v1; future v2 will require explicit evolution + compatibility policy.
+
 ### `nova-flow`
 - **Purpose:** flow analysis (CFG, definite assignment, null tracking) for Java method bodies.
 - **Key entry points:** `crates/nova-flow/src/lib.rs` (`analyze`, `ControlFlowGraph`).

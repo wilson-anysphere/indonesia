@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 wasm-extensions = [
+    "dep:nova-ext-abi",
     "dep:serde",
     "dep:serde_json",
     "dep:wasmtime",
@@ -20,6 +21,8 @@ nova-core = { path = "../nova-core" }
 nova-types = { path = "../nova-types" }
 nova-scheduler = { path = "../nova-scheduler" }
 tracing = { workspace = true }
+
+nova-ext-abi = { path = "../nova-ext-abi", optional = true }
 
 semver = { version = "1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }

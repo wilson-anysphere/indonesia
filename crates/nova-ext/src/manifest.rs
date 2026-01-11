@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use toml::Value;
 
 pub const MANIFEST_FILE_NAME: &str = "nova-ext.toml";
-pub const SUPPORTED_ABI_VERSION: u32 = 1;
+pub const SUPPORTED_ABI_VERSION: u32 = nova_ext_abi::ABI_V1;
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct ExtensionManifest {

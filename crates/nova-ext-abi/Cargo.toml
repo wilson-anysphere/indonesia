@@ -1,0 +1,13 @@
+[package]
+name = "nova-ext-abi"
+version.workspace = true
+edition = "2021"
+
+[features]
+default = []
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -184,7 +184,8 @@ The v1 ABI uses simple, capability-specific JSON payloads. Fields MAY be added o
 
 At minimum, v1 defines:
 
-- per-capability request/response structs defined in `crates/nova-ext/src/wasm/abi.rs`:
+- per-capability request/response structs defined in `crates/nova-ext-abi/src/v1/mod.rs` (and
+  re-exported from `nova-ext::wasm` when the `wasm-extensions` feature is enabled):
   - requests include `projectId` (u32), `fileId` (u32), and/or `symbol` depending on the capability
   - any offset/span values are **byte offsets** into `text` (matching Nova’s internal `Span` model)
 

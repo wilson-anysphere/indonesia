@@ -54,8 +54,9 @@
 //!
 //! # Payload format
 //!
-//! Request and response payloads are UTF-8 encoded JSON. Rust `serde` types for ABI v1 are defined
-//! in [`abi`]. This is intentionally simple to keep the guest toolchain flexible (WAT, Rust, etc.).
+//! Request and response payloads are UTF-8 encoded JSON. Rust `serde` types for ABI v1 live in the
+//! standalone [`nova_ext_abi`] crate and are re-exported from this module. This is intentionally
+//! simple to keep the guest toolchain flexible (WAT, Rust, etc.).
 //!
 //! # Sandboxing
 //!
@@ -68,13 +69,13 @@
 //! Any trap/panic/timeout is treated as a provider failure: the host returns an empty result set and
 //! emits a `tracing` warning.
 
-mod abi;
 mod runtime;
 
-pub use abi::{
-    AbiVersion, CodeActionV1, CodeActionsRequestV1, CompletionItemV1, CompletionsRequestV1,
-    DiagnosticV1, DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1,
-    NavigationTargetV1, SeverityV1, SpanV1, SymbolV1, ABI_V1,
+pub use nova_ext_abi::{AbiVersion, ABI_V1};
+pub use nova_ext_abi::v1::{
+    CodeActionV1, CodeActionsRequestV1, CompletionItemV1, CompletionsRequestV1, DiagnosticV1,
+    DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1, NavigationTargetV1,
+    SeverityV1, SpanV1, SymbolV1,
 };
 pub use runtime::{
     WasmCallError, WasmCapabilities, WasmHostDb, WasmLoadError, WasmPlugin, WasmPluginConfig,
