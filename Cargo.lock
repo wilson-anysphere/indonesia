@@ -3983,6 +3983,7 @@ name = "nova-remote-proto"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde",
  "serde_cbor",
 ]
