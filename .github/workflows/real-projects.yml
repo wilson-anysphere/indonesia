@@ -3,7 +3,8 @@ name: Real project fixtures
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 3 * * *"
+    # Offset from other nightly workflows (e.g. fuzz.yml) to avoid running all heavy jobs at once.
+    - cron: "0 4 * * *"
 
 permissions:
   contents: read
