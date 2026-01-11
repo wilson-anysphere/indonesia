@@ -48,6 +48,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - AI features are opt-in and mostly wired through the `nova-lsp` binary, not the incremental query engine.
   - Embeddings-backed semantic search is feature-gated (`embeddings`) and still experimental.
 
+### `nova-ai-codegen`
+- **Purpose:** AI “code edit/codegen” pipeline: parse a structured patch response, enforce safety policies, apply edits to a virtual workspace, format touched files, and validate (syntax/type) diagnostics before returning a patch.
+- **Key entry points:** `crates/nova-ai-codegen/src/lib.rs` (`generate_patch`, `CodeGenerationConfig`, `CodeGenerationResult`, `PatchSafetyConfig`, `CodegenProgressReporter`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Primarily used by the `nova-lsp` AI endpoints today; not yet integrated into the Salsa DB / persistent workspace model.
+
 ### `nova-apt`
 - **Purpose:** annotation-processing support (discovering generated source roots; triggering APT builds).
 - **Key entry points:** `crates/nova-apt/src/lib.rs` (`AptManager`, `discover_generated_source_roots`).
