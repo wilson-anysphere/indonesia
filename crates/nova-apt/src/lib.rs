@@ -591,6 +591,21 @@ impl AptManager {
         self.status()
     }
 
+    /// Like [`AptManager::run_annotation_processing_for_target`] but first attempts to populate
+    /// per-module annotation processing configuration from the build tool.
+    ///
+    /// This is best-effort: if build metadata extraction fails, Nova falls back to conventional
+    /// generated source roots when deciding which modules are stale.
+    pub fn run_annotation_processing_for_target_with_build(
+        &mut self,
+        build: &BuildManager,
+        target: AptRunTarget,
+        progress: &mut dyn ProgressReporter,
+    ) -> nova_build::Result<BuildResult> {
+        let _ = self.apply_build_annotation_processing(build);
+        self.run_annotation_processing_for_target(build, target, progress)
+    }
+
     pub fn run_annotation_processing(
         &self,
         build: &BuildManager,

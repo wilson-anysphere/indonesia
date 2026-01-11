@@ -143,11 +143,12 @@ pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<ser
     let build = super::build_manager_for_root(&root, Duration::from_secs(300));
 
     let (project, config) = load_project_with_workspace_config(&root)?;
-    let apt = AptManager::new(project, config);
+    let mut apt = AptManager::new(project, config);
+    let target = resolve_target(&apt, &params)?;
 
     let mut reporter = VecProgress::default();
     let build_result = apt
-        .run_annotation_processing_for_target(&build, resolve_target(&apt, &params)?, &mut reporter)
+        .run_annotation_processing_for_target_with_build(&build, target, &mut reporter)
         .map_err(map_build_error)?;
 
     // Reload project + generated roots after the build.
