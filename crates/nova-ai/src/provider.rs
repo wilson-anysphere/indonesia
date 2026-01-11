@@ -1,9 +1,8 @@
-use crate::cancel::CancellationToken as SyncCancellationToken;
 use futures::future::BoxFuture;
 use std::time::Duration;
 use thiserror::Error;
-use tokio_util::sync::CancellationToken;
 
+use crate::CancellationToken;
 use crate::MultiTokenCompletion;
 
 #[derive(Debug, Error)]
@@ -17,11 +16,7 @@ pub enum AiProviderError {
 }
 
 pub trait AiProvider: Send + Sync {
-    fn complete(
-        &self,
-        prompt: &str,
-        cancel: &SyncCancellationToken,
-    ) -> Result<String, AiProviderError>;
+    fn complete(&self, prompt: &str, cancel: &CancellationToken) -> Result<String, AiProviderError>;
 }
 
 #[derive(Clone, Debug)]

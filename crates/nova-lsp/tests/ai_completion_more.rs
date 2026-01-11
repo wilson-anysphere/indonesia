@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use nova_ai::{
-    AdditionalEdit, AiProviderError, CompletionContextBuilder, MultiTokenCompletion,
+    AdditionalEdit, AiProviderError, CancellationToken, CompletionContextBuilder, MultiTokenCompletion,
     MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenCompletionRequest,
     MultiTokenInsertTextFormat,
 };
@@ -135,12 +135,8 @@ async fn completion_more_returns_multi_token_items_async() {
     );
     let service = NovaCompletionService::new(engine);
 
-    let completion = service.completion(ctx());
-    assert!(completion
-        .list
-        .items
-        .iter()
-        .any(|item| item.label == "filter"));
+    let completion = service.completion(ctx(), CancellationToken::new());
+    assert!(completion.list.items.iter().any(|item| item.label == "filter"));
 
     let first_poll = service.completion_more(MoreCompletionsParams {
         context_id: completion.context_id.to_string(),
@@ -235,7 +231,7 @@ async fn completion_can_be_cancelled() {
     );
     let service = NovaCompletionService::new(engine);
 
-    let completion = service.completion(ctx());
+    let completion = service.completion(ctx(), CancellationToken::new());
 
     tokio::time::timeout(Duration::from_secs(1), provider.wait_started())
         .await
@@ -295,7 +291,7 @@ async fn completion_times_out_and_returns_no_items() {
     );
     let service = NovaCompletionService::new(engine);
 
-    let completion = service.completion(ctx());
+    let completion = service.completion(ctx(), CancellationToken::new());
 
     tokio::time::timeout(Duration::from_secs(1), provider.wait_started())
         .await

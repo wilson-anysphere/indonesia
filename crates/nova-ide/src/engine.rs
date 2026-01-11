@@ -1,11 +1,10 @@
 use crate::{validate_ai_completion, CompletionConfig, NovaCompletionItem};
 use nova_ai::{
-    CompletionContextBuilder, MultiTokenCompletionContext, MultiTokenCompletionProvider,
+    CancellationToken, CompletionContextBuilder, MultiTokenCompletionContext, MultiTokenCompletionProvider,
     MultiTokenCompletionRequest,
 };
 use std::sync::Arc;
 use tokio::time;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct CompletionEngine {
@@ -99,6 +98,10 @@ impl CompletionEngine {
             Ok(suggestions) => suggestions,
             Err(_err) => return Vec::new(),
         };
+
+        if cancel.is_cancelled() {
+            return Vec::new();
+        }
 
         let mut items = Vec::new();
         for suggestion in suggestions {

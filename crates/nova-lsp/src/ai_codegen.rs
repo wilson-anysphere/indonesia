@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use nova_ai::cancel::CancellationToken;
 use nova_ai::patch::{parse_structured_patch, Patch, PatchParseError};
 use nova_ai::provider::{AiProvider, AiProviderError};
 use nova_ai::safety::{
@@ -9,6 +8,7 @@ use nova_ai::safety::{
 use nova_ai::workspace::{AppliedPatch, PatchApplyConfig, PatchApplyError, VirtualWorkspace};
 use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError};
 use nova_config::AiPrivacyConfig;
+use nova_ai::CancellationToken;
 use nova_core::{LineIndex, TextRange};
 use nova_ide::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
 use nova_ide::format::Formatter;
@@ -447,4 +447,97 @@ fn render_context(source: &str, range: TextRange, context_lines: usize) -> Strin
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Mutex,
+    };
+    use std::time::Duration;
+
+    struct BlockingProvider {
+        started_tx: Mutex<Option<mpsc::Sender<()>>>,
+        resume_rx: Mutex<Option<mpsc::Receiver<()>>>,
+        calls: AtomicUsize,
+    }
+
+    impl BlockingProvider {
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl AiProvider for BlockingProvider {
+        fn complete(
+            &self,
+            _prompt: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<String, AiProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+
+            if let Some(tx) = self.started_tx.lock().expect("poisoned mutex").take() {
+                let _ = tx.send(());
+            }
+            if let Some(rx) = self.resume_rx.lock().expect("poisoned mutex").take() {
+                let _ = rx.recv();
+            }
+
+            Ok(r#"{"edits":[]}"#.to_string())
+        }
+    }
+
+    #[test]
+    fn cancelled_token_stops_code_generation_quickly() {
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (resume_tx, resume_rx) = mpsc::channel::<()>();
+        let provider = Arc::new(BlockingProvider {
+            started_tx: Mutex::new(Some(started_tx)),
+            resume_rx: Mutex::new(Some(resume_rx)),
+            calls: AtomicUsize::new(0),
+        });
+
+        let workspace = VirtualWorkspace::new([(
+            "Example.java".to_string(),
+            "public class Example {}".to_string(),
+        )]);
+
+        let config = CodeGenerationConfig::default();
+        let cancel = CancellationToken::new();
+        let cancel_for_thread = cancel.clone();
+
+        let (result_tx, result_rx) = mpsc::channel();
+        let handle = std::thread::spawn({
+            let provider = Arc::clone(&provider);
+            let workspace = workspace.clone();
+            move || {
+                let result = run_code_generation(
+                    provider.as_ref(),
+                    &workspace,
+                    "Generate a patch.",
+                    &config,
+                    &AiPrivacyConfig::default(),
+                    &cancel_for_thread,
+                );
+                let _ = result_tx.send(result);
+            }
+        });
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("provider should start");
+
+        cancel.cancel();
+        resume_tx.send(()).expect("resume provider");
+
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("codegen should return quickly after cancellation");
+        assert!(matches!(result, Err(CodeGenerationError::Cancelled)));
+        assert_eq!(provider.calls(), 1);
+
+        handle.join().expect("codegen thread panicked");
+    }
 }

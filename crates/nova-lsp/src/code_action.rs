@@ -226,7 +226,7 @@ mod tests {
 
         let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
         let workspace = example_workspace();
-        let cancel = CancellationToken::default();
+        let cancel = CancellationToken::new();
 
         let action = AiCodeAction::GenerateMethodBody {
             file: "Example.java".into(),
@@ -280,7 +280,7 @@ mod tests {
 
         let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
         let workspace = example_workspace();
-        let cancel = CancellationToken::default();
+        let cancel = CancellationToken::new();
 
         let action = AiCodeAction::GenerateMethodBody {
             file: "Example.java".into(),
@@ -330,7 +330,7 @@ mod tests {
 
         let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
         let workspace = VirtualWorkspace::default();
-        let cancel = CancellationToken::default();
+        let cancel = CancellationToken::new();
 
         let action = AiCodeAction::GenerateTest {
             file: "secret/Config.java".into(),

@@ -156,7 +156,7 @@ impl NovaCompletionService {
     }
 
     /// Equivalent to `textDocument/completion` for the multi-token completion prototype.
-    pub fn completion(&self, ctx: MultiTokenCompletionContext) -> NovaCompletionResponse {
+    pub fn completion(&self, ctx: MultiTokenCompletionContext, cancel: CancellationToken) -> NovaCompletionResponse {
         self.cancel_all_sessions();
 
         let context_id = CompletionContextId(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -185,7 +185,7 @@ impl NovaCompletionService {
             let engine = self.engine.clone();
             let ctx_clone = ctx.clone();
             let context_id_clone = context_id;
-            let cancel = CancellationToken::new();
+            let cancel = cancel.child_token();
             let cancel_task = cancel.clone();
             let permit_fut = Arc::clone(&self.ai_semaphore).acquire_owned();
             let ttl = self.config.session_ttl;
@@ -261,7 +261,9 @@ impl NovaCompletionService {
         match &mut session.ai_state {
             AiState::Pending(rx) => match rx.try_recv() {
                 Ok(items) => {
-                    sessions.remove(&context_id);
+                    if let Some(session) = sessions.remove(&context_id) {
+                        session.cancel();
+                    }
                     MoreCompletionsResult {
                         items,
                         is_incomplete: false,

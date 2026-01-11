@@ -3,9 +3,8 @@ pub mod in_process_llama;
 pub mod ollama;
 pub mod openai_compatible;
 
-use crate::{types::AiStream, AiError, ChatRequest};
+use crate::{types::AiStream, AiError, CancellationToken, ChatRequest};
 use async_trait::async_trait;
-use tokio_util::sync::CancellationToken;
 
 #[async_trait]
 pub trait AiProvider: Send + Sync {
