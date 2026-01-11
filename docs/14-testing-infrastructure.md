@@ -306,6 +306,8 @@ NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/javac-validate.sh
 Nova uses `cargo-fuzz` for “never panic” hardening (parser, formatter, classfile parsing, and selected
 refactoring surfaces).
 
+CI runs these fuzz targets in `.github/workflows/fuzz.yml` (scheduled + manual).
+
 For deeper details (timeouts, minimization, artifacts), see [`docs/fuzzing.md`](fuzzing.md).
 
 CI runs short, time-boxed fuzz jobs in `.github/workflows/fuzz.yml` (scheduled + manual).
