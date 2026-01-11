@@ -62,8 +62,9 @@ pub use move_member::{
     move_method, move_static_member, MoveMemberError, MoveMethodParams, MoveStaticMemberParams,
 };
 pub use safe_delete::{
-    apply_edits, safe_delete, SafeDeleteError, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteReport,
-    SafeDeleteSymbol, SafeDeleteTarget, TextEdit, Usage, UsageKind,
+    apply_edits, safe_delete, safe_delete_delete_anyway_edit, safe_delete_preview, SafeDeleteError,
+    SafeDeleteMode, SafeDeleteOutcome, SafeDeleteReport, SafeDeleteSymbol, SafeDeleteTarget,
+    TextEdit, Usage, UsageKind,
 };
 
 // Common byte-range type used by existing refactorings (move, extract member, safe delete).

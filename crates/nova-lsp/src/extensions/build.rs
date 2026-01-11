@@ -1394,7 +1394,10 @@ mod tests {
         let fake_jar_str = fake_jar.to_string_lossy().to_string();
         write_executable(
             &bin_dir.join("gradle"),
-            &format!("#!/bin/sh\n\necho {}\n", &fake_jar_str),
+            &format!(
+                "#!/bin/sh\n\ncat <<'EOF'\nNOVA_JSON_BEGIN\n{{\"compileClasspath\":[\"{}\"]}}\nNOVA_JSON_END\nEOF\n",
+                &fake_jar_str
+            ),
         );
 
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));

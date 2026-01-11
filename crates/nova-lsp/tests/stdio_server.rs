@@ -80,7 +80,7 @@ fn stdio_server_handles_metrics_request() {
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
-    // metrics (alias for memory status)
+    // metrics snapshot
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -92,15 +92,15 @@ fn stdio_server_handles_metrics_request() {
     );
 
     let resp = read_response_with_id(&mut stdout, 2);
-    let report = resp
+    let totals = resp
         .get("result")
-        .and_then(|v| v.get("report"))
-        .expect("result.report");
-    let pressure = report
-        .get("pressure")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    assert!(!pressure.is_empty(), "expected pressure string, got: {resp:#}");
+        .and_then(|v| v.get("totals"))
+        .expect("result.totals");
+    let request_count = totals
+        .get("requestCount")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    assert!(request_count > 0, "expected requestCount > 0, got: {resp:#}");
 
     // shutdown + exit
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));

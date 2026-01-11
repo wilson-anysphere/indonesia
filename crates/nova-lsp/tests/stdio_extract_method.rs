@@ -7,6 +7,7 @@ use std::fs;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
+use url::Url;
 
 use support::{read_response_with_id, write_jsonrpc_message};
 
@@ -28,7 +29,11 @@ class C {
     let (source, selection) = extract_range(fixture);
     fs::write(&file_path, &source).expect("write file");
 
-    let uri = Uri::from_file_path(&file_path).expect("uri");
+    let uri: Uri = Url::from_file_path(&file_path)
+        .expect("uri")
+        .to_string()
+        .parse()
+        .expect("uri");
     let range = Range {
         start: offset_to_position(&source, selection.start),
         end: offset_to_position(&source, selection.end),

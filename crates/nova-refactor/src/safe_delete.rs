@@ -1,8 +1,17 @@
 use std::collections::BTreeMap;
 
-use nova_index::{Index, ReferenceCandidate, ReferenceKind, SymbolId, SymbolKind, TextRange};
+use nova_index::{
+    Index, ReferenceCandidate, ReferenceKind, SymbolId as IndexSymbolId, SymbolKind,
+    TextRange as IndexTextRange,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::edit::{
+    FileId, TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange, WorkspaceEdit,
+};
+use crate::java::SymbolId as SemanticSymbolId;
+use crate::semantic::{Reference, RefactorDatabase, SymbolDefinition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,13 +23,13 @@ pub enum SafeDeleteMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "id", rename_all = "camelCase")]
 pub enum SafeDeleteTarget {
-    Symbol(SymbolId),
+    Symbol(IndexSymbolId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextEdit {
     pub file: String,
-    pub range: TextRange,
+    pub range: IndexTextRange,
     pub replacement: String,
 }
 
@@ -37,7 +46,7 @@ pub enum UsageKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub file: String,
-    pub range: TextRange,
+    pub range: IndexTextRange,
     pub kind: UsageKind,
 }
 
@@ -48,13 +57,13 @@ pub struct Usage {
 /// sketch parser) and not all of them are `serde`-friendly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SafeDeleteSymbol {
-    pub id: SymbolId,
+    pub id: IndexSymbolId,
     pub kind: SymbolKind,
     pub name: String,
     pub container: Option<String>,
     pub file: String,
-    pub name_range: TextRange,
-    pub decl_range: TextRange,
+    pub name_range: IndexTextRange,
+    pub decl_range: IndexTextRange,
     pub is_override: bool,
     pub extends: Option<String>,
 }
@@ -67,7 +76,7 @@ pub struct SafeDeleteReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SafeDeleteOutcome {
-    Applied { edits: Vec<TextEdit> },
+    Applied { edit: WorkspaceEdit },
     Preview { report: SafeDeleteReport },
 }
 
@@ -79,6 +88,8 @@ pub enum SafeDeleteError {
     FileNotFound(String),
     #[error("unsupported symbol kind: {0:?}")]
     UnsupportedSymbolKind(SymbolKind),
+    #[error(transparent)]
+    Edit(#[from] crate::edit::EditError),
 }
 
 /// Execute Safe Delete.
@@ -148,8 +159,12 @@ fn safe_delete_method(
     usages.dedup_by(|a, b| a.file == b.file && a.range == b.range && a.kind == b.kind);
 
     if usages.is_empty() {
-        let edit = delete_range_edit(&target.file, target.decl_range);
-        return Ok(SafeDeleteOutcome::Applied { edits: vec![edit] });
+        let mut edit = WorkspaceEdit::new(vec![delete_range_workspace_edit(
+            &target.file,
+            target.decl_range,
+        )]);
+        edit.normalize()?;
+        return Ok(SafeDeleteOutcome::Applied { edit });
     }
 
     match mode {
@@ -160,7 +175,7 @@ fn safe_delete_method(
             },
         }),
         SafeDeleteMode::DeleteAnyway => {
-            let mut edits = Vec::new();
+            let mut edits: Vec<WorkspaceTextEdit> = Vec::new();
             // Best-effort: delete each usage statement (call) and then delete the declaration.
             for usage in &usages {
                 if usage.file == target.file && ranges_overlap(usage.range, target.decl_range) {
@@ -168,32 +183,59 @@ fn safe_delete_method(
                 }
                 if let Some(text) = index.file_text(&usage.file) {
                     if let Some(range) = best_effort_delete_usage(text, usage.range) {
-                        edits.push(delete_range_edit(&usage.file, range));
+                        edits.push(delete_range_workspace_edit(&usage.file, range));
                     } else {
-                        edits.push(delete_range_edit(&usage.file, usage.range));
+                        edits.push(delete_range_workspace_edit(&usage.file, usage.range));
                     }
                 }
             }
-            edits.push(delete_range_edit(&target.file, target.decl_range));
-            edits.sort_by(|a, b| {
-                a.file
-                    .cmp(&b.file)
-                    .then_with(|| a.range.start.cmp(&b.range.start))
-            });
-            Ok(SafeDeleteOutcome::Applied { edits })
+            edits.push(delete_range_workspace_edit(&target.file, target.decl_range));
+
+            merge_overlapping_deletes(&mut edits);
+
+            let mut edit = WorkspaceEdit::new(edits);
+            edit.normalize()?;
+            Ok(SafeDeleteOutcome::Applied { edit })
         }
     }
 }
 
-fn delete_range_edit(file: &str, range: TextRange) -> TextEdit {
-    TextEdit {
-        file: file.to_string(),
-        range,
-        replacement: String::new(),
-    }
+fn delete_range_workspace_edit(file: &str, range: IndexTextRange) -> WorkspaceTextEdit {
+    WorkspaceTextEdit::delete(
+        FileId::new(file),
+        WorkspaceTextRange::new(range.start, range.end),
+    )
 }
 
-fn ranges_overlap(a: TextRange, b: TextRange) -> bool {
+fn merge_overlapping_deletes(edits: &mut Vec<WorkspaceTextEdit>) {
+    edits.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.range.start.cmp(&b.range.start))
+            .then_with(|| a.range.end.cmp(&b.range.end))
+    });
+
+    let mut merged: Vec<WorkspaceTextEdit> = Vec::with_capacity(edits.len());
+    for edit in edits.drain(..) {
+        if edit.replacement.is_empty() {
+            if let Some(last) = merged.last_mut() {
+                if last.replacement.is_empty()
+                    && last.file == edit.file
+                    && edit.range.start <= last.range.end
+                {
+                    last.range.end = last.range.end.max(edit.range.end);
+                    continue;
+                }
+            }
+        }
+
+        merged.push(edit);
+    }
+
+    *edits = merged;
+}
+
+fn ranges_overlap(a: IndexTextRange, b: IndexTextRange) -> bool {
     a.start < b.end && b.start < a.end
 }
 
@@ -393,7 +435,7 @@ fn resolve_method_call<'a>(
     index: &'a Index,
     mut receiver_class: &'a str,
     method_name: &str,
-) -> Option<SymbolId> {
+) -> Option<IndexSymbolId> {
     loop {
         if let Some(id) = index.method_symbol_id(receiver_class, method_name) {
             return Some(id);
@@ -402,7 +444,7 @@ fn resolve_method_call<'a>(
     }
 }
 
-fn best_effort_delete_usage(text: &str, range: TextRange) -> Option<TextRange> {
+fn best_effort_delete_usage(text: &str, range: IndexTextRange) -> Option<IndexTextRange> {
     // Try to delete the entire statement `...;` containing the usage.
     let bytes = text.as_bytes();
     let mut start = range.start;
@@ -427,10 +469,48 @@ fn best_effort_delete_usage(text: &str, range: TextRange) -> Option<TextRange> {
         if end < bytes.len() && bytes[end] == b'\n' {
             end += 1;
         }
-        return Some(TextRange::new(start, end));
+        return Some(IndexTextRange::new(start, end));
     }
 
     None
+}
+
+/// Convert a [`SafeDeleteReport`] into a preview by calculating the "delete anyway"
+/// edit set and then running it through the diff preview generator.
+pub fn safe_delete_preview(
+    index: &Index,
+    report: &SafeDeleteReport,
+) -> Result<crate::RefactoringPreview, SafeDeleteError> {
+    let edit = safe_delete_delete_anyway_edit(index, report)?;
+    Ok(crate::generate_preview(index, &edit)?)
+}
+
+/// Calculate the "delete anyway" edit set corresponding to a [`SafeDeleteReport`].
+///
+/// This is useful for clients that show a preview/report first but still want to
+/// render a diff for the destructive follow-up action.
+pub fn safe_delete_delete_anyway_edit(
+    index: &Index,
+    report: &SafeDeleteReport,
+) -> Result<WorkspaceEdit, SafeDeleteError> {
+    let target = &report.target;
+
+    let mut edits: Vec<WorkspaceTextEdit> = Vec::new();
+    for usage in &report.usages {
+        if usage.file == target.file && ranges_overlap(usage.range, target.decl_range) {
+            continue;
+        }
+        if let Some(text) = index.file_text(&usage.file) {
+            let delete_range = best_effort_delete_usage(text, usage.range).unwrap_or(usage.range);
+            edits.push(delete_range_workspace_edit(&usage.file, delete_range));
+        }
+    }
+    edits.push(delete_range_workspace_edit(&target.file, target.decl_range));
+
+    merge_overlapping_deletes(&mut edits);
+    let mut edit = WorkspaceEdit::new(edits);
+    edit.normalize()?;
+    Ok(edit)
 }
 
 /// Apply a set of edits to a workspace. This helper is used by tests.
@@ -456,4 +536,30 @@ pub fn apply_edits(
     }
 
     out
+}
+
+impl RefactorDatabase for Index {
+    fn file_text(&self, file: &FileId) -> Option<&str> {
+        Index::file_text(self, &file.0)
+    }
+
+    fn symbol_definition(&self, _symbol: SemanticSymbolId) -> Option<SymbolDefinition> {
+        None
+    }
+
+    fn symbol_scope(&self, _symbol: SemanticSymbolId) -> Option<u32> {
+        None
+    }
+
+    fn resolve_name_in_scope(&self, _scope: u32, _name: &str) -> Option<SemanticSymbolId> {
+        None
+    }
+
+    fn would_shadow(&self, _scope: u32, _name: &str) -> Option<SemanticSymbolId> {
+        None
+    }
+
+    fn find_references(&self, _symbol: SemanticSymbolId) -> Vec<Reference> {
+        Vec::new()
+    }
 }

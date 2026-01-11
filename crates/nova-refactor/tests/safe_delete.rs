@@ -2,9 +2,28 @@ use std::collections::BTreeMap;
 
 use nova_index::Index;
 use nova_refactor::{
-    apply_edits, safe_delete, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, UsageKind,
+    apply_text_edits, safe_delete, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, UsageKind,
+    WorkspaceEdit, WorkspaceTextEdit,
 };
 use pretty_assertions::assert_eq;
+
+fn apply_workspace_edit(
+    files: &BTreeMap<String, String>,
+    edit: &WorkspaceEdit,
+) -> BTreeMap<String, String> {
+    let mut out = files.clone();
+
+    for (file, edits) in edit.edits_by_file() {
+        let Some(text) = out.get(file.0.as_str()).cloned() else {
+            continue;
+        };
+        let edits: Vec<WorkspaceTextEdit> = edits.into_iter().cloned().collect();
+        let updated = apply_text_edits(&text, &edits).expect("edits apply");
+        out.insert(file.0.clone(), updated);
+    }
+
+    out
+}
 
 #[test]
 fn safe_delete_succeeds_for_unused_private_method() {
@@ -31,12 +50,12 @@ class A {
         SafeDeleteMode::Safe,
     )
     .expect("safe delete runs");
-    let edits = match outcome {
-        SafeDeleteOutcome::Applied { edits } => edits,
+    let edit = match outcome {
+        SafeDeleteOutcome::Applied { edit } => edit,
         SafeDeleteOutcome::Preview { .. } => panic!("expected direct application"),
     };
 
-    let updated = apply_edits(&files, &edits);
+    let updated = apply_workspace_edit(&files, &edit);
     let a = updated.get("A.java").unwrap();
     assert!(
         !a.contains("unused()"),

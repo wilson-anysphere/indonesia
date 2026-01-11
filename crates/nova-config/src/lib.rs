@@ -443,7 +443,7 @@ impl Default for AuditLogConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderKind {
     /// Ollama HTTP API (e.g. http://localhost:11434)

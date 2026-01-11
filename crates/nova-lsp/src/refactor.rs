@@ -134,21 +134,19 @@ pub fn safe_delete_code_action(
 
     let outcome = safe_delete(index, target, SafeDeleteMode::Safe).ok()?;
     match outcome {
-        SafeDeleteOutcome::Applied { edits } => Some(CodeActionOrCommand::CodeAction(CodeAction {
+        SafeDeleteOutcome::Applied { edit } => Some(CodeActionOrCommand::CodeAction(CodeAction {
             title: title_base,
             kind: Some(CodeActionKind::REFACTOR),
-            edit: Some(workspace_edit_from_safe_delete(index, &edits).ok()?),
+            edit: Some(workspace_edit_to_lsp(index, &edit).ok()?),
             ..CodeAction::default()
         })),
-        SafeDeleteOutcome::Preview { report } => {
-            Some(CodeActionOrCommand::CodeAction(CodeAction {
-                title: format!("{title_base}…"),
-                kind: Some(CodeActionKind::REFACTOR),
-                // In a full server we'd attach this to a command that returns the preview.
-                data: Some(serde_json::to_value(RefactorResponse::Preview { report }).ok()?),
-                ..CodeAction::default()
-            }))
-        }
+        SafeDeleteOutcome::Preview { report } => Some(CodeActionOrCommand::CodeAction(CodeAction {
+            title: format!("{title_base}…"),
+            kind: Some(CodeActionKind::REFACTOR),
+            // In a full server we'd attach this to a command that returns the preview.
+            data: Some(serde_json::to_value(RefactorResponse::Preview { report }).ok()?),
+            ..CodeAction::default()
+        })),
     }
 }
 
@@ -247,70 +245,26 @@ pub fn handle_safe_delete(
                 report,
             }))
         }
-        SafeDeleteOutcome::Applied { edits } => Ok(SafeDeleteResult::WorkspaceEdit(
-            workspace_edit_from_safe_delete(index, &edits)?,
-        )),
+        SafeDeleteOutcome::Applied { edit } => {
+            let edit = workspace_edit_to_lsp(index, &edit)
+                .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+            Ok(SafeDeleteResult::WorkspaceEdit(edit))
+        }
     }
-}
-
-fn workspace_edit_from_safe_delete(
-    index: &Index,
-    edits: &[nova_refactor::TextEdit],
-) -> crate::Result<WorkspaceEdit> {
-    let mut changes: std::collections::HashMap<Uri, Vec<lsp_types::TextEdit>> =
-        std::collections::HashMap::new();
-
-    for edit in edits {
-        let text = index.file_text(&edit.file).ok_or_else(|| {
-            crate::NovaLspError::InvalidParams(format!("file `{}` not found in index", edit.file))
-        })?;
-        let uri: Uri = edit.file.parse().map_err(|_| {
-            crate::NovaLspError::InvalidParams(format!("invalid uri: `{}`", edit.file))
-        })?;
-
-        let start = u32::try_from(edit.range.start).map_err(|_| {
-            crate::NovaLspError::InvalidParams("edit range start out of bounds".into())
-        })?;
-        let end = u32::try_from(edit.range.end).map_err(|_| {
-            crate::NovaLspError::InvalidParams("edit range end out of bounds".into())
-        })?;
-
-        let line_index = LineIndex::new(text);
-        let start = line_index.position(text, TextSize::from(start));
-        let end = line_index.position(text, TextSize::from(end));
-        let range = Range::new(
-            Position::new(start.line, start.character),
-            Position::new(end.line, end.character),
-        );
-
-        changes.entry(uri).or_default().push(lsp_types::TextEdit {
-            range,
-            new_text: edit.replacement.clone(),
-        });
-    }
-
-    // LSP clients tend to apply edits sequentially. Provide them in reverse
-    // order to avoid offset shifting even if a client ignores the spec.
-    for edits in changes.values_mut() {
-        edits.sort_by(|a, b| {
-            b.range
-                .start
-                .line
-                .cmp(&a.range.start.line)
-                .then_with(|| b.range.start.character.cmp(&a.range.start.character))
-                .then_with(|| b.range.end.line.cmp(&a.range.end.line))
-                .then_with(|| b.range.end.character.cmp(&a.range.end.character))
-        });
-    }
-
-    Ok(WorkspaceEdit {
-        changes: Some(changes),
-        ..WorkspaceEdit::default()
-    })
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    fn position_utf16(text: &str, offset: usize) -> Position {
+        let offset = offset.min(text.len());
+        let prefix = &text[..offset];
+        let line = prefix.bytes().filter(|b| *b == b'\n').count() as u32;
+        let line_start = prefix.rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let col = text[line_start..offset].encode_utf16().count() as u32;
+        Position::new(line, col)
+    }
 
     fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
         let index = LineIndex::new(text);
@@ -468,5 +422,40 @@ class A {
             updated.contains("void entry()"),
             "other methods should remain"
         );
+    }
+
+    #[test]
+    fn safe_delete_lsp_workspace_edit_uses_utf16_character_offsets() {
+        let uri: Uri = "file:///Test.java".parse().unwrap();
+        let source = concat!(
+            "class A {\n",
+            "  private void unused() { String s = \"😀\"; }\n",
+            "}\n",
+        );
+
+        let mut files = BTreeMap::new();
+        files.insert(uri.to_string(), source.to_string());
+        let index = Index::new(files);
+
+        let target = index.find_method("A", "unused").expect("method exists").id;
+        let sym = index.find_symbol(target).expect("symbol exists");
+
+        let action = safe_delete_code_action(&index, SafeDeleteTarget::Symbol(target))
+            .expect("code action emitted");
+        let action = match action {
+            CodeActionOrCommand::CodeAction(action) => action,
+            _ => panic!("expected CodeAction"),
+        };
+
+        let edit = action.edit.expect("workspace edit present");
+        let changes = edit.changes.expect("workspace edit changes present");
+        let edits = changes.get(&uri).expect("edits for uri present");
+        assert_eq!(edits.len(), 1);
+
+        let lsp_edit = &edits[0];
+        assert_eq!(lsp_edit.new_text, "");
+
+        assert_eq!(lsp_edit.range.start, position_utf16(source, sym.decl_range.start));
+        assert_eq!(lsp_edit.range.end, position_utf16(source, sym.decl_range.end));
     }
 }
