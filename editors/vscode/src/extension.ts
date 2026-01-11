@@ -213,13 +213,26 @@ export async function activate(context: vscode.ExtensionContext) {
         aiRequestsInFlight.add(contextId);
 
         void (async () => {
+          const requestClient = client;
+          const requestClientStart = clientStart;
           try {
-            if (!client || !clientStart) {
+            if (!requestClient || !requestClientStart) {
               return;
             }
 
-            await clientStart;
-            const more = await requestMoreCompletions(client, baseItems, { token });
+            try {
+              await requestClientStart;
+            } catch {
+              return;
+            }
+
+            // If the language server restarted, don't attempt to use stale state
+            // or send requests against a disposed client instance.
+            if (client !== requestClient) {
+              return;
+            }
+
+            const more = await requestMoreCompletions(requestClient, baseItems, { token });
             if (!more?.length) {
               return;
             }
@@ -264,6 +277,8 @@ export async function activate(context: vscode.ExtensionContext) {
             } finally {
               aiRefreshInProgress = false;
             }
+          } catch {
+            // Best-effort: ignore errors from background AI completion polling.
           } finally {
             aiRequestsInFlight.delete(contextId);
           }
