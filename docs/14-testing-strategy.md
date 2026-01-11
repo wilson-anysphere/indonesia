@@ -443,10 +443,19 @@ mod lsp_tests {
 
 ### Performance Tests
 
-**Implementation note (current repo):** Nova’s performance regression guard is implemented in:
-`crates/nova-core/benches/critical_paths.rs` + `perf/thresholds.toml` and enforced in CI by
-`.github/workflows/perf.yml`. For operational details, see:
-[`perf/README.md`](../perf/README.md) and [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
+**Implementation note (current repo):** CI’s performance regression guard (`.github/workflows/perf.yml`)
+covers core critical paths, syntax parsing, formatting, refactors, and classpath indexing via Criterion
+bench suites:
+
+- `crates/nova-core/benches/critical_paths.rs` (`cargo bench -p nova-core --bench critical_paths`)
+- `crates/nova-syntax/benches/parse_java.rs` (`cargo bench -p nova-syntax --bench parse_java`)
+- `crates/nova-format/benches/format.rs` (`cargo bench -p nova-format --bench format`)
+- `crates/nova-refactor/benches/refactor.rs` (`cargo bench -p nova-refactor --bench refactor`)
+- `crates/nova-classpath/benches/index.rs` (`cargo bench -p nova-classpath --bench index`)
+
+Benchmark thresholds live in `perf/thresholds.toml`; runtime snapshot thresholds live in
+`perf/runtime-thresholds.toml`. For operational details, see [`perf/README.md`](../perf/README.md) and
+[`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ```rust
 #[cfg(test)]

@@ -37,7 +37,7 @@ cargo run -p nova-cli --release -- perf capture \
 cargo run -p nova-cli --release -- perf compare \
   --baseline perf-base.json \
   --current perf-current.json \
-  --config perf/thresholds.toml
+  --thresholds-config perf/thresholds.toml
 ```
 
 Use `--allow <bench-id>` (repeatable) or `allow_regressions = ["..."]` in `thresholds.toml`
@@ -74,5 +74,5 @@ Compare two snapshots with per-metric thresholds:
 cargo run -p nova-cli --release -- perf compare-runtime \
   --baseline runtime-base.json \
   --current runtime-current.json \
-  --config perf/runtime-thresholds.toml
+  --thresholds-config perf/runtime-thresholds.toml
 ```

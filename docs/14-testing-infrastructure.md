@@ -80,8 +80,12 @@ cargo test -p nova-types --test javac_differential -- --ignored
 # Note: the differential harness runs `javac` with `-XDrawDiagnostics` so tests can
 # assert stable diagnostic *keys* instead of brittle human-readable strings.
 
-# perf.yml (benchmark; see below for capture/compare)
+# perf.yml (criterion benchmarks; see below for capture/compare)
 cargo bench -p nova-core --bench critical_paths
+cargo bench -p nova-syntax --bench parse_java
+cargo bench -p nova-format --bench format
+cargo bench -p nova-refactor --bench refactor
+cargo bench -p nova-classpath --bench index
 ```
 
 ---
@@ -419,14 +423,25 @@ NOVA_REAL_PROJECT=spring-petclinic,maven-resolver ./scripts/clone-test-projects.
 
 **Where:**
 
-- Benchmarks: `crates/nova-core/benches/critical_paths.rs`
-- Threshold config: `perf/thresholds.toml`
+- Bench suites:
+  - `crates/nova-core/benches/critical_paths.rs`
+  - `crates/nova-syntax/benches/parse_java.rs`
+  - `crates/nova-format/benches/format.rs`
+  - `crates/nova-refactor/benches/refactor.rs`
+  - `crates/nova-classpath/benches/index.rs`
+- Threshold configs:
+  - `perf/thresholds.toml` (bench comparisons)
+  - `perf/runtime-thresholds.toml` (runtime snapshot comparisons)
 - CI workflow: `.github/workflows/perf.yml`
 
 **Run locally (benchmark):**
 
 ```bash
 cargo bench -p nova-core --bench critical_paths
+cargo bench -p nova-syntax --bench parse_java
+cargo bench -p nova-format --bench format
+cargo bench -p nova-refactor --bench refactor
+cargo bench -p nova-classpath --bench index
 ```
 
 **Capture + compare locally (same tooling CI uses):**
@@ -441,10 +456,10 @@ cargo run -p nova-cli --release -- perf capture \
 cargo run -p nova-cli --release -- perf compare \
   --baseline perf-base.json \
   --current perf-current.json \
-  --config perf/thresholds.toml
+  --thresholds-config perf/thresholds.toml
 ```
 
-See `perf/README.md` for details.
+See [`perf/README.md`](../perf/README.md) for details.
 
 ---
 
@@ -517,7 +532,7 @@ In practice, Nova’s CI splits into:
 | Workflow | Status | What it runs | Local equivalent |
 |---|---|---|---|
 | `.github/workflows/ci.yml` | in repo | Docs consistency, `cargo fmt`, crate boundary check, `cargo clippy`, `cargo test` (linux/macos/windows), plus actionlint + VS Code version sync/tests/packaging | See “CI-equivalent smoke run” above |
-| `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths` + `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
+| `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths`, `cargo bench -p nova-syntax --bench parse_java`, `cargo bench -p nova-format --bench format`, `cargo bench -p nova-refactor --bench refactor`, `cargo bench -p nova-classpath --bench index`, plus `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual / push-on-change) | `./scripts/run-real-project-tests.sh` |
 | `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60` |
