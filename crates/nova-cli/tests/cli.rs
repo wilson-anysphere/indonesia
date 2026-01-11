@@ -251,3 +251,33 @@ fn parse_json_reports_errors_and_exits_nonzero() {
         "expected at least one parse error, got: {v:#}"
     );
 }
+
+#[test]
+fn bugreport_command_generates_bundle() {
+    let output = nova().arg("bugreport").arg("--json").output().unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let path = v["path"].as_str().expect("path string");
+    let root = std::path::Path::new(path);
+
+    for filename in [
+        "meta.json",
+        "config.json",
+        "logs.txt",
+        "performance.json",
+        "crashes.json",
+    ] {
+        assert!(
+            root.join(filename).exists(),
+            "missing {} in bundle at {}",
+            filename,
+            root.display()
+        );
+    }
+}

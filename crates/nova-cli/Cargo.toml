@@ -23,6 +23,7 @@ nova-perf = { path = "../nova-perf" }
 nova-ai = { path = "../nova-ai" }
 nova-classpath = { path = "../nova-classpath" }
 nova-config = { path = "../nova-config" }
+nova-bugreport = { path = "../nova-bugreport" }
 nova-deps-cache = { path = "../nova-deps-cache" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-util = "0.7"

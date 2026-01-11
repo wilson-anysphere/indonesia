@@ -182,6 +182,10 @@ custom LSP request:
 
 - `nova/bugReport` → returns `{ "path": "/tmp/nova-bugreport-..." }`
 
+If you are troubleshooting the headless CLI itself, you can also generate a bundle directly:
+
+- `nova bugreport` (or `nova bugreport --json`)
+
 Compress the directory and attach it to your issue along with reproduction steps. See
 [`docs/17-observability-and-reliability.md`](./docs/17-observability-and-reliability.md) for details
 (logging, safe mode behavior, bundle contents/redaction).

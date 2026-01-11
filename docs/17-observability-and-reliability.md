@@ -215,8 +215,27 @@ Example response:
 
 This repository’s primary bug-report surface area is the LSP request above.
 
-- **CLI**: the `nova` CLI does not currently expose a `bugreport` subcommand in this repository
-  snapshot.
+#### CLI: `nova bugreport`
+
+The `nova` CLI includes a `bugreport` subcommand for generating the same bundle format:
+
+```bash
+nova bugreport
+nova bugreport --json
+```
+
+Useful flags:
+
+- `--config <path>`: load a TOML `NovaConfig` (otherwise defaults are used)
+- `--reproduction <text>` or `--reproduction-file <path>`: attach repro steps
+- `--max-log-lines <n>`: cap included log lines (default: 500)
+
+> Note: `nova bugreport` captures diagnostics for the **CLI process**. If you are troubleshooting a
+> running editor integration, prefer the in-process LSP request (`nova/bugReport`) so the bundle
+> includes the server’s logs/crash reports.
+
+#### DAP
+
 - **DAP**: `nova-dap` installs the same panic hook (so crashes are recorded), but it does not
   currently expose a DAP request to emit a bug report bundle.
 

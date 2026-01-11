@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use nova_ai::AiClient;
+use nova_bugreport::{create_bug_report_bundle, global_crash_store, BugReportOptions, PerfStats};
 use nova_cache::{
     atomic_write, fetch_cache_package, install_cache_package, pack_cache_package, CacheConfig,
     CacheDir, CachePackageInstallOutcome,
@@ -64,6 +65,9 @@ enum Command {
     OrganizeImports(OrganizeImportsArgs),
     /// Semantic refactoring commands
     Refactor(RefactorArgs),
+    /// Generate a diagnostic bundle (logs/config/crash reports) for troubleshooting.
+    #[command(name = "bugreport")]
+    BugReport(BugReportArgs),
     /// Local AI utilities (Ollama / OpenAI-compatible endpoints)
     Ai(AiArgs),
 }
@@ -249,6 +253,29 @@ struct WorkspaceArgs {
 struct ParseArgs {
     /// File to parse
     file: PathBuf,
+    /// Emit JSON suitable for CI
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct BugReportArgs {
+    /// Optional path to a TOML config file (defaults to in-memory defaults).
+    #[arg(long)]
+    config: Option<PathBuf>,
+
+    /// Include reproduction steps directly in the bundle.
+    #[arg(long, conflicts_with = "reproduction_file")]
+    reproduction: Option<String>,
+
+    /// Path to a UTF-8 file containing reproduction steps to include in the bundle.
+    #[arg(long, value_name = "FILE", conflicts_with = "reproduction")]
+    reproduction_file: Option<PathBuf>,
+
+    /// Maximum number of log lines to include from the in-memory ring buffer.
+    #[arg(long)]
+    max_log_lines: Option<usize>,
+
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
@@ -543,6 +570,52 @@ fn run(cli: Cli) -> Result<i32> {
         Command::Refactor(args) => match args.command {
             RefactorCommand::Rename(args) => handle_rename(args),
         },
+        Command::BugReport(args) => {
+            let cfg = match args.config.as_ref() {
+                Some(path) => NovaConfig::load_from_path(path)?,
+                None => NovaConfig::default(),
+            };
+
+            // Best-effort: initialize structured logging so the bundle captures any
+            // logs emitted by this `nova` process.
+            let log_buffer = nova_config::init_tracing_with_config(&cfg);
+
+            let reproduction = match (args.reproduction, args.reproduction_file) {
+                (Some(text), None) => Some(text),
+                (None, Some(path)) => Some(
+                    fs::read_to_string(&path)
+                        .with_context(|| format!("read reproduction file {}", path.display()))?,
+                ),
+                (None, None) => None,
+                (Some(_), Some(_)) => unreachable!("clap enforces conflicts"),
+            };
+
+            let options = BugReportOptions {
+                max_log_lines: args.max_log_lines.unwrap_or(500),
+                reproduction,
+            };
+
+            let perf = PerfStats::default();
+            let crash_store = global_crash_store();
+            let bundle = create_bug_report_bundle(
+                &cfg,
+                log_buffer.as_ref(),
+                crash_store.as_ref(),
+                &perf,
+                options,
+            )
+            .map_err(|err| anyhow::anyhow!(err))
+            .context("failed to create bug report bundle")?;
+
+            let path = bundle.path().display().to_string();
+            if args.json {
+                print_output(&serde_json::json!({ "path": path }), true)?;
+            } else {
+                println!("bug report bundle: {path}");
+            }
+
+            Ok(0)
+        }
         Command::Ai(args) => match args.command {
             AiCommand::Models(args) => {
                 let cfg = match args.config.as_ref() {
