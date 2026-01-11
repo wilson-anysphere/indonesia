@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    future::Future,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
 };
@@ -132,6 +133,35 @@ pub struct Debugger {
     var_handles: HandleTable<VarRef>,
 }
 
+fn check_cancel(token: &CancellationToken) -> Result<()> {
+    if token.is_cancelled() {
+        Err(JdwpError::Cancelled.into())
+    } else {
+        Ok(())
+    }
+}
+
+fn check_cancel_jdwp(token: &CancellationToken) -> std::result::Result<(), JdwpError> {
+    if token.is_cancelled() {
+        Err(JdwpError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
+
+async fn cancellable_jdwp<T, F>(
+    token: &CancellationToken,
+    fut: F,
+) -> std::result::Result<T, JdwpError>
+where
+    F: Future<Output = std::result::Result<T, JdwpError>>,
+{
+    tokio::select! {
+        _ = token.cancelled() => Err(JdwpError::Cancelled),
+        res = fut => res,
+    }
+}
+
 impl Debugger {
     pub async fn attach(args: AttachArgs) -> Result<Self> {
         let addr = SocketAddr::new(args.host, args.port);
@@ -184,21 +214,27 @@ impl Debugger {
         self.jdwp.shutdown();
     }
 
-    pub async fn threads(&self) -> Result<Vec<(i64, String)>> {
-        let threads = self.jdwp.all_threads().await?;
+    pub async fn threads(&self, cancel: &CancellationToken) -> Result<Vec<(i64, String)>> {
+        check_cancel(cancel)?;
+        let threads = cancellable_jdwp(cancel, self.jdwp.all_threads()).await?;
         let mut out = Vec::with_capacity(threads.len());
         for thread_id in threads {
-            let name = self
-                .jdwp
-                .thread_name(thread_id)
-                .await
-                .unwrap_or_else(|_| "thread".to_string());
+            check_cancel(cancel)?;
+            let name = match cancellable_jdwp(cancel, self.jdwp.thread_name(thread_id)).await {
+                Ok(name) => name,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => "thread".to_string(),
+            };
             out.push((thread_id as i64, name));
         }
         Ok(out)
     }
 
-    pub async fn stack_trace(&mut self, dap_thread_id: i64) -> Result<Vec<serde_json::Value>> {
+    pub async fn stack_trace(
+        &mut self,
+        cancel: &CancellationToken,
+        dap_thread_id: i64,
+    ) -> Result<Vec<serde_json::Value>> {
         // Thread ids originate from JDWP `ObjectId` values, which are opaque 64-bit numbers.
         // Represent them in DAP as `i64` (required by the protocol) using a lossless bit-cast:
         // `u64 -> i64` and back via `as` preserves the underlying bits even if the sign flips.
@@ -206,15 +242,20 @@ impl Debugger {
 
         // Some JVMs treat an oversized `length` as `INVALID_LENGTH` instead of clamping.
         // JDWP allows `length = -1` to request all frames starting at `start`.
-        let frames = self.jdwp.frames(thread, 0, -1).await?;
+        let frames = cancellable_jdwp(cancel, self.jdwp.frames(thread, 0, -1)).await?;
         let mut out = Vec::with_capacity(frames.len());
         for frame in frames {
+            check_cancel(cancel)?;
             let frame_id = self.alloc_frame_handle(thread, &frame);
             let name = self
-                .method_name(frame.location.class_id, frame.location.method_id)
-                .await
+                .method_name(cancel, frame.location.class_id, frame.location.method_id)
+                .await?
                 .unwrap_or_else(|| "frame".to_string());
-            let source_name = self.source_file(frame.location.class_id).await.ok();
+            let source_name = match self.source_file(cancel, frame.location.class_id).await {
+                Ok(name) => Some(name),
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => None,
+            };
             let source = source_name.as_ref().map(|name| {
                 let path = self
                     .source_paths
@@ -223,14 +264,19 @@ impl Debugger {
                     .unwrap_or_else(|| name.clone());
                 json!({"name": name, "path": path})
             });
-            let line = self
+            let line = match self
                 .line_number(
+                    cancel,
                     frame.location.class_id,
                     frame.location.method_id,
                     frame.location.index,
                 )
                 .await
-                .unwrap_or(1);
+            {
+                Ok(line) => line,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => 1,
+            };
 
             out.push(json!({
                 "id": frame_id,
@@ -271,16 +317,18 @@ impl Debugger {
 
     pub async fn variables(
         &mut self,
+        cancel: &CancellationToken,
         variables_reference: i64,
         start: Option<i64>,
         count: Option<i64>,
     ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
         if variables_reference == PINNED_SCOPE_REF {
-            return self.pinned_variables().await;
+            return self.pinned_variables(cancel).await;
         }
 
         if let Some(handle) = self.objects.handle_from_variables_reference(variables_reference) {
-            return self.object_variables(handle, start, count).await;
+            return self.object_variables(cancel, handle, start, count).await;
         }
 
         let Some(var_ref) = self.var_handles.get(variables_reference).cloned() else {
@@ -288,15 +336,17 @@ impl Debugger {
         };
 
         match var_ref {
-            VarRef::FrameLocals(frame) => self.locals_variables(&frame).await,
+            VarRef::FrameLocals(frame) => self.locals_variables(cancel, &frame).await,
         }
     }
 
     pub async fn set_breakpoints(
         &mut self,
+        cancel: &CancellationToken,
         source_path: &str,
         lines: Vec<i32>,
     ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
         let file = Path::new(source_path)
             .file_name()
             .and_then(|s| s.to_str())
@@ -313,7 +363,8 @@ impl Debugger {
 
         if let Some(existing) = self.breakpoints.remove(&file) {
             for bp in existing {
-                let _ = self.jdwp.event_request_clear(2, bp.request_id).await;
+                check_cancel(cancel)?;
+                let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(2, bp.request_id)).await;
             }
         }
 
@@ -323,11 +374,18 @@ impl Debugger {
         let mut results = Vec::with_capacity(lines.len());
 
         // Best-effort: attempt to apply now for already-loaded classes.
-        let classes = self.jdwp.all_classes().await?;
+        let classes = cancellable_jdwp(cancel, self.jdwp.all_classes()).await?;
         let mut class_candidates = Vec::new();
         for class_info in classes {
-            if self.source_file(class_info.type_id).await.ok().as_deref() == Some(file.as_str()) {
-                class_candidates.push(class_info);
+            check_cancel(cancel)?;
+            match self.source_file(cancel, class_info.type_id).await {
+                Ok(source_file) => {
+                    if source_file.as_str() == file.as_str() {
+                        class_candidates.push(class_info);
+                    }
+                }
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => {}
             }
         }
 
@@ -335,18 +393,23 @@ impl Debugger {
         if let Some(class) = class {
             let mut entries = Vec::new();
             for &line in &lines {
-                match self.location_for_line(&class, line).await? {
+                check_cancel(cancel)?;
+                match self.location_for_line(cancel, &class, line).await? {
                     Some(location) => {
-                        match self
-                            .jdwp
-                            .event_request_set(2, 1, vec![EventModifier::LocationOnly { location }])
-                            .await
-                        {
+                        match cancellable_jdwp(
+                            cancel,
+                            self.jdwp
+                                .event_request_set(2, 1, vec![EventModifier::LocationOnly { location }]),
+                        )
+                        .await {
                             Ok(request_id) => {
                                 entries.push(BreakpointEntry { request_id });
                                 results.push(json!({"verified": true, "line": line}));
                             }
                             Err(err) => {
+                                if matches!(err, JdwpError::Cancelled) {
+                                    return Err(JdwpError::Cancelled.into());
+                                }
                                 results.push(json!({"verified": false, "line": line, "message": err.to_string()}));
                             }
                         }
@@ -368,20 +431,25 @@ impl Debugger {
         Ok(results)
     }
 
-    pub async fn continue_(&self) -> Result<()> {
-        self.jdwp.vm_resume().await?;
+    pub async fn continue_(&self, cancel: &CancellationToken) -> Result<()> {
+        cancellable_jdwp(cancel, self.jdwp.vm_resume()).await?;
         Ok(())
     }
 
-    pub async fn pause(&self) -> Result<()> {
-        self.jdwp.vm_suspend().await?;
+    pub async fn pause(&self, cancel: &CancellationToken) -> Result<()> {
+        cancellable_jdwp(cancel, self.jdwp.vm_suspend()).await?;
         Ok(())
     }
 
-    pub async fn exception_info(&mut self, dap_thread_id: i64) -> Result<Option<ExceptionInfo>> {
-        let thread: ThreadId = dap_thread_id
-            .try_into()
-            .map_err(|_| DebuggerError::InvalidRequest(format!("invalid threadId {dap_thread_id}")))?;
+    pub async fn exception_info(
+        &mut self,
+        cancel: &CancellationToken,
+        dap_thread_id: i64,
+    ) -> Result<Option<ExceptionInfo>> {
+        check_cancel(cancel)?;
+
+        // `dap_thread_id` is an `i64` bit-cast of the JDWP `ObjectId` representing the thread.
+        let thread: ThreadId = dap_thread_id as ThreadId;
 
         if self.last_stop_reason.get(&thread) != Some(&StopReason::Exception) {
             return Ok(None);
@@ -391,7 +459,7 @@ impl Debugger {
             return Ok(None);
         };
 
-        let exception_id = match self.object_type_name(ctx.exception).await {
+        let exception_id = match self.object_type_name(cancel, ctx.exception).await {
             Ok(Some(name)) => name,
             Ok(None) => format!("exception@0x{:x}", ctx.exception),
             Err(_) => format!("exception@0x{:x}", ctx.exception),
@@ -410,11 +478,17 @@ impl Debugger {
         }))
     }
 
-    pub async fn step(&mut self, dap_thread_id: i64, depth: StepDepth) -> Result<()> {
+    pub async fn step(
+        &mut self,
+        cancel: &CancellationToken,
+        dap_thread_id: i64,
+        depth: StepDepth,
+    ) -> Result<()> {
+        check_cancel(cancel)?;
         let thread: ThreadId = dap_thread_id as ThreadId;
 
         if let Some(old) = self.step_request.take() {
-            let _ = self.jdwp.event_request_clear(1, old).await;
+            let _ = cancellable_jdwp(cancel, self.jdwp.event_request_clear(1, old)).await;
         }
 
         let depth = match depth {
@@ -423,9 +497,9 @@ impl Debugger {
             StepDepth::Out => 2,
         };
 
-        let req = self
-            .jdwp
-            .event_request_set(
+        let req = cancellable_jdwp(
+            cancel,
+            self.jdwp.event_request_set(
                 1,
                 1,
                 vec![EventModifier::Step {
@@ -433,10 +507,11 @@ impl Debugger {
                     size: 1, // line
                     depth,
                 }],
-            )
-            .await?;
+            ),
+        )
+        .await?;
         self.step_request = Some(req);
-        self.jdwp.vm_resume().await?;
+        cancellable_jdwp(cancel, self.jdwp.vm_resume()).await?;
         Ok(())
     }
 
@@ -506,6 +581,7 @@ impl Debugger {
 
     pub async fn evaluate(
         &mut self,
+        cancel: &CancellationToken,
         frame_id: i64,
         expression: &str,
     ) -> Result<Option<serde_json::Value>> {
@@ -523,8 +599,9 @@ impl Debugger {
                 "unknown frameId {frame_id}"
             )));
         };
-        let vars = self.locals_variables(&frame).await?;
+        let vars = self.locals_variables(cancel, &frame).await?;
         for v in vars {
+            check_cancel(cancel)?;
             if v.get("name").and_then(|v| v.as_str()) == Some(expr) {
                 let result = v
                     .get("value")
@@ -550,48 +627,61 @@ impl Debugger {
 
     async fn source_file(
         &mut self,
+        cancel: &CancellationToken,
         class_id: ReferenceTypeId,
     ) -> std::result::Result<String, JdwpError> {
+        check_cancel_jdwp(cancel)?;
         if let Some(v) = self.source_cache.get(&class_id) {
             return Ok(v.clone());
         }
-        let file = self.jdwp.reference_type_source_file(class_id).await?;
+        let file =
+            cancellable_jdwp(cancel, self.jdwp.reference_type_source_file(class_id)).await?;
         self.source_cache.insert(class_id, file.clone());
         Ok(file)
     }
 
-    async fn method_name(&mut self, class_id: ReferenceTypeId, method_id: u64) -> Option<String> {
+    async fn method_name(
+        &mut self,
+        cancel: &CancellationToken,
+        class_id: ReferenceTypeId,
+        method_id: u64,
+    ) -> std::result::Result<Option<String>, JdwpError> {
+        check_cancel_jdwp(cancel)?;
         if let Some(methods) = self.methods_cache.get(&class_id) {
             if let Some(m) = methods.iter().find(|m| m.method_id == method_id) {
-                return Some(m.name.clone());
+                return Ok(Some(m.name.clone()));
             }
         }
-        let methods = self.jdwp.reference_type_methods(class_id).await.ok()?;
+        let methods =
+            cancellable_jdwp(cancel, self.jdwp.reference_type_methods(class_id)).await?;
         let name = methods
             .iter()
             .find(|m| m.method_id == method_id)
             .map(|m| m.name.clone());
         self.methods_cache.insert(class_id, methods);
-        name
+        Ok(name)
     }
 
     async fn line_number(
         &mut self,
+        cancel: &CancellationToken,
         class_id: ReferenceTypeId,
         method_id: u64,
         index: u64,
     ) -> std::result::Result<i32, JdwpError> {
+        check_cancel_jdwp(cancel)?;
         let key = (class_id, method_id);
         let table = if let Some(t) = self.line_table_cache.get(&key) {
             t.clone()
         } else {
-            let t = self.jdwp.method_line_table(class_id, method_id).await?;
+            let t = cancellable_jdwp(cancel, self.jdwp.method_line_table(class_id, method_id)).await?;
             self.line_table_cache.insert(key, t.clone());
             t
         };
 
         let mut best = None;
         for entry in &table.lines {
+            check_cancel_jdwp(cancel)?;
             if entry.code_index <= index {
                 best = Some(entry.line);
             }
@@ -599,11 +689,18 @@ impl Debugger {
         Ok(best.unwrap_or(1))
     }
 
-    async fn locals_variables(&mut self, frame: &FrameHandle) -> Result<Vec<serde_json::Value>> {
-        let (_argc, vars) = self
-            .jdwp
-            .method_variable_table(frame.location.class_id, frame.location.method_id)
-            .await?;
+    async fn locals_variables(
+        &mut self,
+        cancel: &CancellationToken,
+        frame: &FrameHandle,
+    ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
+        let (_argc, vars) = cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .method_variable_table(frame.location.class_id, frame.location.method_id),
+        )
+        .await?;
 
         let in_scope: Vec<VariableInfo> = vars
             .into_iter()
@@ -617,15 +714,22 @@ impl Debugger {
             .iter()
             .map(|v| (v.slot, v.signature.clone()))
             .collect();
-        let values = self
-            .jdwp
-            .stack_frame_get_values(frame.thread, frame.frame_id, &slots)
-            .await?;
+        let values = cancellable_jdwp(
+            cancel,
+            self.jdwp
+                .stack_frame_get_values(frame.thread, frame.frame_id, &slots),
+        )
+        .await?;
 
         let mut out = Vec::with_capacity(in_scope.len());
         for (var, value) in in_scope.into_iter().zip(values.into_iter()) {
             out.push(
-                self.render_variable(var.name, value, Some(signature_to_type_name(&var.signature)))
+                self.render_variable(
+                    cancel,
+                    var.name,
+                    value,
+                    Some(signature_to_type_name(&var.signature)),
+                )
                     .await?,
             );
         }
@@ -634,16 +738,19 @@ impl Debugger {
 
     async fn object_variables(
         &mut self,
+        cancel: &CancellationToken,
         handle: ObjectHandle,
         _start: Option<i64>,
         _count: Option<i64>,
     ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
         let Some(object_id) = self.objects.object_id(handle) else {
             return Ok(Vec::new());
         };
 
-        let children = match self.inspector.object_children(object_id).await {
+        let children = match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
             Ok(children) => children,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
             Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
                 self.objects.mark_invalid_object_id(object_id);
                 return Ok(vec![invalid_collected_variable()]);
@@ -653,25 +760,28 @@ impl Debugger {
 
         let mut out = Vec::with_capacity(children.len());
         for child in children {
+            check_cancel(cancel)?;
             out.push(
-                self.render_variable(child.name, child.value, child.static_type)
+                self.render_variable(cancel, child.name, child.value, child.static_type)
                     .await?,
             );
         }
         Ok(out)
     }
 
-    async fn pinned_variables(&mut self) -> Result<Vec<serde_json::Value>> {
+    async fn pinned_variables(&mut self, cancel: &CancellationToken) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
         let pinned: Vec<_> = self.objects.pinned_handles().collect();
         let mut vars = Vec::with_capacity(pinned.len());
 
         for handle in pinned {
+            check_cancel(cancel)?;
             let Some(object_id) = self.objects.object_id(handle) else {
                 continue;
             };
 
             let value = JdwpValue::Object { tag: b'L', id: object_id };
-            let formatted = self.format_value(&value, None, 0).await?;
+            let formatted = self.format_value(cancel, &value, None, 0).await?;
             vars.push(variable_json(
                 handle.to_string(),
                 formatted.value,
@@ -690,12 +800,16 @@ impl Debugger {
 
     async fn render_variable(
         &mut self,
+        cancel: &CancellationToken,
         name: impl Into<String>,
         value: JdwpValue,
         static_type: Option<String>,
     ) -> Result<serde_json::Value> {
+        check_cancel(cancel)?;
         let name = name.into();
-        let formatted = self.format_value(&value, static_type.as_deref(), 0).await?;
+        let formatted = self
+            .format_value(cancel, &value, static_type.as_deref(), 0)
+            .await?;
         Ok(variable_json(
             name.clone(),
             formatted.value,
@@ -706,47 +820,69 @@ impl Debugger {
         ))
     }
 
-    async fn object_type_name(&mut self, object_id: ObjectId) -> Result<Option<String>> {
+    async fn object_type_name(
+        &mut self,
+        cancel: &CancellationToken,
+        object_id: ObjectId,
+    ) -> Result<Option<String>> {
         if object_id == 0 {
             return Ok(None);
         }
-        let class_id = self.jdwp.object_reference_reference_type(object_id).await?;
-        let sig = self.jdwp.reference_type_signature(class_id).await?;
-        Ok(signature_to_type_name(&sig))
+        check_cancel(cancel)?;
+        let class_id = cancellable_jdwp(cancel, self.jdwp.object_reference_reference_type(object_id)).await?;
+        let sig = cancellable_jdwp(cancel, self.jdwp.reference_type_signature(class_id)).await?;
+        Ok(signature_to_object_type_name(&sig))
     }
 
-    async fn location_for_line(&mut self, class: &ClassInfo, line: i32) -> Result<Option<Location>> {
+    async fn location_for_line(
+        &mut self,
+        cancel: &CancellationToken,
+        class: &ClassInfo,
+        line: i32,
+    ) -> Result<Option<Location>> {
+        check_cancel(cancel)?;
         let methods = if let Some(methods) = self.methods_cache.get(&class.type_id) {
             methods.clone()
         } else {
-            let methods = self.jdwp.reference_type_methods(class.type_id).await?;
+            let methods =
+                cancellable_jdwp(cancel, self.jdwp.reference_type_methods(class.type_id)).await?;
             self.methods_cache.insert(class.type_id, methods.clone());
             methods
         };
 
         for method in methods {
-            let table = self
-                .jdwp
-                .method_line_table(class.type_id, method.method_id)
-                .await
-                .ok();
+            check_cancel(cancel)?;
+            let table = match cancellable_jdwp(
+                cancel,
+                self.jdwp.method_line_table(class.type_id, method.method_id),
+            )
+            .await
+            {
+                Ok(table) => Some(table),
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => None,
+            };
             let Some(table) = table else {
                 continue;
             };
-            if let Some(entry) = table.lines.iter().find(|e| e.line == line) {
-                return Ok(Some(Location {
-                    type_tag: class.ref_type_tag,
-                    class_id: class.type_id,
-                    method_id: method.method_id,
-                    index: entry.code_index,
-                }));
+            for entry in &table.lines {
+                check_cancel(cancel)?;
+                if entry.line == line {
+                    return Ok(Some(Location {
+                        type_tag: class.ref_type_tag,
+                        class_id: class.type_id,
+                        method_id: method.method_id,
+                        index: entry.code_index,
+                    }));
+                }
             }
         }
         Ok(None)
     }
 
     async fn on_class_prepare(&mut self, ref_type_tag: u8, type_id: ReferenceTypeId) -> Result<()> {
-        let file = self.source_file(type_id).await?;
+        let cancel = CancellationToken::new();
+        let file = self.source_file(&cancel, type_id).await?;
         let Some(lines) = self.requested_breakpoints.get(&file).cloned() else {
             return Ok(());
         };
@@ -762,7 +898,7 @@ impl Debugger {
         };
         let mut entries = Vec::new();
         for line in lines {
-            if let Some(location) = self.location_for_line(&class, line).await? {
+            if let Some(location) = self.location_for_line(&cancel, &class, line).await? {
                 if let Ok(request_id) = self
                     .jdwp
                     .event_request_set(2, 1, vec![EventModifier::LocationOnly { location }])
@@ -783,27 +919,35 @@ impl Debugger {
         }
     }
 
-    pub async fn set_object_pinned(&mut self, variables_reference: i64, pinned: bool) -> Result<bool> {
+    pub async fn set_object_pinned(
+        &mut self,
+        cancel: &CancellationToken,
+        variables_reference: i64,
+        pinned: bool,
+    ) -> Result<bool> {
+        check_cancel(cancel)?;
         let Some(handle) = ObjectHandle::from_variables_reference(variables_reference) else {
             return Ok(false);
         };
 
         if pinned {
-            self.pin_object(handle).await?;
+            self.pin_object(cancel, handle).await?;
         } else {
-            self.unpin_object(handle).await?;
+            self.unpin_object(cancel, handle).await?;
         }
 
         Ok(pinned)
     }
 
-    async fn pin_object(&mut self, handle: ObjectHandle) -> Result<()> {
+    async fn pin_object(&mut self, cancel: &CancellationToken, handle: ObjectHandle) -> Result<()> {
+        check_cancel(cancel)?;
         let Some(object_id) = self.objects.object_id(handle) else {
             return Ok(());
         };
 
-        match self.jdwp.object_reference_disable_collection(object_id).await {
+        match cancellable_jdwp(cancel, self.jdwp.object_reference_disable_collection(object_id)).await {
             Ok(()) => {}
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
             Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
                 self.objects.mark_invalid_object_id(object_id);
             }
@@ -814,14 +958,16 @@ impl Debugger {
         Ok(())
     }
 
-    async fn unpin_object(&mut self, handle: ObjectHandle) -> Result<()> {
+    async fn unpin_object(&mut self, cancel: &CancellationToken, handle: ObjectHandle) -> Result<()> {
+        check_cancel(cancel)?;
         if !self.objects.is_pinned(handle) {
             return Ok(());
         }
 
         if let Some(object_id) = self.objects.object_id(handle) {
-            match self.jdwp.object_reference_enable_collection(object_id).await {
+            match cancellable_jdwp(cancel, self.jdwp.object_reference_enable_collection(object_id)).await {
                 Ok(()) => {}
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
                 Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
                     self.objects.mark_invalid_object_id(object_id);
                 }
@@ -834,7 +980,7 @@ impl Debugger {
     }
 }
 
-fn signature_to_type_name(sig: &str) -> Option<String> {
+fn signature_to_object_type_name(sig: &str) -> Option<String> {
     let mut sig = sig.trim();
     let mut dims = 0;
     while let Some(rest) = sig.strip_prefix('[') {
@@ -879,9 +1025,16 @@ struct FormattedValue {
 }
 
 impl Debugger {
-    async fn format_value(&mut self, value: &JdwpValue, static_type: Option<&str>, depth: usize) -> Result<FormattedValue> {
+    async fn format_value(
+        &mut self,
+        cancel: &CancellationToken,
+        value: &JdwpValue,
+        static_type: Option<&str>,
+        depth: usize,
+    ) -> Result<FormattedValue> {
+        check_cancel(cancel)?;
         let (display, variables_reference, presentation_hint, runtime_type) =
-            self.format_value_display(value, static_type, depth).await?;
+            self.format_value_display(cancel, value, static_type, depth).await?;
 
         Ok(FormattedValue {
             value: display,
@@ -895,10 +1048,12 @@ impl Debugger {
 
     async fn format_value_display(
         &mut self,
+        cancel: &CancellationToken,
         value: &JdwpValue,
         static_type: Option<&str>,
         depth: usize,
     ) -> Result<(String, i64, Option<Value>, Option<String>)> {
+        check_cancel(cancel)?;
         match value {
             JdwpValue::Void => Ok(("void".to_string(), 0, None, None)),
             JdwpValue::Boolean(v) => Ok((v.to_string(), 0, None, None)),
@@ -910,20 +1065,23 @@ impl Debugger {
             JdwpValue::Double(v) => Ok((trim_float(*v), 0, None, None)),
             JdwpValue::Char(v) => Ok((format!("'{}'", decode_java_char(*v)), 0, None, None)),
             JdwpValue::Object { id: 0, .. } => Ok(("null".to_string(), 0, None, None)),
-            JdwpValue::Object { id, .. } => self.format_object(*id, static_type, depth).await,
+            JdwpValue::Object { id, .. } => self.format_object(cancel, *id, static_type, depth).await,
         }
     }
 
     async fn format_object(
         &mut self,
+        cancel: &CancellationToken,
         object_id: ObjectId,
         static_type: Option<&str>,
         depth: usize,
     ) -> Result<(String, i64, Option<Value>, Option<String>)> {
+        check_cancel(cancel)?;
         let fallback_runtime = static_type.unwrap_or("<object>").to_string();
 
-        let runtime_type = match self.inspector.runtime_type_name(object_id).await {
+        let runtime_type = match cancellable_jdwp(cancel, self.inspector.runtime_type_name(object_id)).await {
             Ok(t) => t,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
             Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
                 let handle = self.objects.track_object(object_id, &fallback_runtime);
                 self.objects.mark_invalid_object_id(object_id);
@@ -957,8 +1115,9 @@ impl Debugger {
             ));
         }
 
-        let preview = match self.inspector.preview_object(object_id).await {
+        let preview = match cancellable_jdwp(cancel, self.inspector.preview_object(object_id)).await {
             Ok(preview) => preview,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
             Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
                 self.objects.mark_invalid_object_id(object_id);
                 let ty = self
@@ -998,7 +1157,7 @@ impl Debugger {
                 format!("\"{escaped}\"{handle}")
             }
             ObjectKindPreview::PrimitiveWrapper { ref value } => {
-                let inner = self.format_inline(value, depth + 1).await?;
+                let inner = self.format_inline(cancel, value, depth + 1).await?;
                 format!("{runtime_simple}{handle}({inner})")
             }
             ObjectKindPreview::Array {
@@ -1006,25 +1165,25 @@ impl Debugger {
                 length,
                 sample,
             } => {
-                let sample = self.format_sample_list(&sample, depth + 1).await?;
+                let sample = self.format_sample_list(cancel, &sample, depth + 1).await?;
                 let element = simple_type_name(&element_type);
                 format!("{element}[{length}]{handle} {{{sample}}}")
             }
             ObjectKindPreview::List { size, sample } => {
-                let sample = self.format_sample_list(&sample, depth + 1).await?;
+                let sample = self.format_sample_list(cancel, &sample, depth + 1).await?;
                 format!("{runtime_simple}{handle}(size={size}) [{sample}]")
             }
             ObjectKindPreview::Set { size, sample } => {
-                let sample = self.format_sample_list(&sample, depth + 1).await?;
+                let sample = self.format_sample_list(cancel, &sample, depth + 1).await?;
                 format!("{runtime_simple}{handle}(size={size}) [{sample}]")
             }
             ObjectKindPreview::Map { size, sample } => {
-                let sample = self.format_sample_map(&sample, depth + 1).await?;
+                let sample = self.format_sample_map(cancel, &sample, depth + 1).await?;
                 format!("{runtime_simple}{handle}(size={size}) {{{sample}}}")
             }
             ObjectKindPreview::Optional { value } => match value {
                 Some(inner) => {
-                    let inner = self.format_inline(&inner, depth + 1).await?;
+                    let inner = self.format_inline(cancel, &inner, depth + 1).await?;
                     format!("{runtime_simple}{handle}[{inner}]")
                 }
                 None => format!("{runtime_simple}{handle}.empty"),
@@ -1043,24 +1202,43 @@ impl Debugger {
         ))
     }
 
-    async fn format_inline(&mut self, value: &JdwpValue, depth: usize) -> Result<String> {
-        let (display, _ref, _hint, _rt) = self.format_value_display(value, None, depth).await?;
+    async fn format_inline(
+        &mut self,
+        cancel: &CancellationToken,
+        value: &JdwpValue,
+        depth: usize,
+    ) -> Result<String> {
+        let (display, _ref, _hint, _rt) = self.format_value_display(cancel, value, None, depth).await?;
         Ok(display)
     }
 
-    async fn format_sample_list(&mut self, sample: &[JdwpValue], depth: usize) -> Result<String> {
+    async fn format_sample_list(
+        &mut self,
+        cancel: &CancellationToken,
+        sample: &[JdwpValue],
+        depth: usize,
+    ) -> Result<String> {
+        check_cancel(cancel)?;
         let mut out = Vec::new();
         for value in sample.iter().take(3) {
-            out.push(self.format_inline(value, depth).await?);
+            check_cancel(cancel)?;
+            out.push(self.format_inline(cancel, value, depth).await?);
         }
         Ok(out.join(", "))
     }
 
-    async fn format_sample_map(&mut self, sample: &[(JdwpValue, JdwpValue)], depth: usize) -> Result<String> {
+    async fn format_sample_map(
+        &mut self,
+        cancel: &CancellationToken,
+        sample: &[(JdwpValue, JdwpValue)],
+        depth: usize,
+    ) -> Result<String> {
+        check_cancel(cancel)?;
         let mut out = Vec::new();
         for (k, v) in sample.iter().take(3) {
-            let key = self.format_inline(k, depth).await?;
-            let val = self.format_inline(v, depth).await?;
+            check_cancel(cancel)?;
+            let key = self.format_inline(cancel, k, depth).await?;
+            let val = self.format_inline(cancel, v, depth).await?;
             out.push(format!("{key}={val}"));
         }
         Ok(out.join(", "))

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     net::IpAddr,
     sync::{
         atomic::{AtomicBool, AtomicI64, Ordering},
@@ -6,9 +7,14 @@ use std::{
     },
 };
 
+use nova_jdwp::wire::JdwpError;
+use nova_scheduler::CancellationToken;
 use serde_json::{json, Value};
 use thiserror::Error;
-use tokio::sync::{broadcast, mpsc, watch, Mutex};
+use tokio::{
+    sync::{broadcast, mpsc, watch, Mutex},
+    task::JoinSet,
+};
 
 use nova_bugreport::{create_bug_report_bundle, global_crash_store, BugReportOptions, PerfStats};
 use nova_config::NovaConfig;
@@ -44,8 +50,10 @@ where
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
-    let (terminate_tx, mut terminate_rx) = watch::channel(false);
     let debugger: Arc<Mutex<Option<Debugger>>> = Arc::new(Mutex::new(None));
+    let in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>> = Arc::new(Mutex::new(HashMap::new()));
+    let server_shutdown = CancellationToken::new();
+    let (initialized_tx, initialized_rx) = watch::channel(false);
 
     let writer_task = tokio::spawn(async move {
         let mut writer = DapWriter::new(writer);
@@ -55,477 +63,76 @@ where
     });
 
     let mut reader = DapReader::new(reader);
+    let mut tasks = JoinSet::new();
+    let mut shutdown_request_seq: Option<i64> = None;
 
     loop {
+        let has_tasks = !tasks.is_empty();
         tokio::select! {
-            _ = terminate_rx.changed() => break,
-            request = reader.read_request() => {
-                let Some(request) = request? else {
+            _ = server_shutdown.cancelled() => break,
+            Some(res) = tasks.join_next(), if has_tasks => {
+                let _ = res;
+            }
+            res = reader.read_request() => {
+                let Some(request) = res? else {
                     break;
                 };
                 if request.message_type != "request" {
                     continue;
                 }
 
-                match request.command.as_str() {
-                    "initialize" => {
-                        let body = json!({
-                            "supportsConfigurationDoneRequest": true,
-                            "supportsEvaluateForHovers": true,
-                            "supportsPauseRequest": true,
-                            "supportsSetVariable": false,
-                            "supportsStepBack": false,
-                            "supportsExceptionInfoRequest": true,
-                            "exceptionBreakpointFilters": [
-                                { "filter": "caught", "label": "Caught Exceptions", "default": false },
-                                { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
-                                { "filter": "all", "label": "All Exceptions", "default": false },
-                            ],
-                            "supportsConditionalBreakpoints": false,
-                        });
-                        send_response(&out_tx, &seq, &request, true, Some(body), None);
-                        send_event(&out_tx, &seq, "initialized", None);
-                    }
-                    "nova/bugReport" => {
-                        let max_log_lines = request
-                            .arguments
-                            .get("maxLogLines")
-                            .and_then(|v| v.as_u64())
-                            .and_then(|v| usize::try_from(v).ok());
-                        let reproduction = request
-                            .arguments
-                            .get("reproduction")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
+                let request_token = CancellationToken::new();
+                {
+                    let mut in_flight = in_flight.lock().await;
+                    in_flight.insert(request.seq, request_token.clone());
+                }
 
-                        let cfg = NovaConfig::default();
-                        let log_buffer = nova_config::init_tracing_with_config(&cfg);
-                        let crash_store = global_crash_store();
-                        let perf = PerfStats::default();
-                        let options = BugReportOptions {
-                            max_log_lines: max_log_lines.unwrap_or(500),
-                            reproduction,
-                        };
+                let is_disconnect = request.command == "disconnect";
+                if is_disconnect {
+                    shutdown_request_seq = Some(request.seq);
+                    server_shutdown.cancel();
+                }
 
-                        match create_bug_report_bundle(
-                            &cfg,
-                            log_buffer.as_ref(),
-                            crash_store.as_ref(),
-                            &perf,
-                            options,
-                        ) {
-                            Ok(bundle) => send_response(
-                                &out_tx,
-                                &seq,
-                                &request,
-                                true,
-                                Some(json!({ "path": bundle.path().display().to_string() })),
-                                None,
-                            ),
-                            Err(err) => send_response(
-                                &out_tx,
-                                &seq,
-                                &request,
-                                false,
-                                None,
-                                Some(err.to_string()),
-                            ),
-                        }
-                    }
-                    "configurationDone" => {
-                        // When `supportsConfigurationDoneRequest` is true, VS Code sends this request
-                        // after breakpoints have been configured.
-                        send_response(&out_tx, &seq, &request, true, None, None);
-                    }
-                    "attach" => {
-                        let host = request
-                            .arguments
-                            .get("host")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("127.0.0.1");
-                        let port = match request.arguments.get("port").and_then(|v| v.as_u64()) {
-                            Some(port) => port,
-                            None => {
-                                send_response(
-                                    &out_tx,
-                                    &seq,
-                                    &request,
-                                    false,
-                                    None,
-                                    Some("attach.port is required".to_string()),
-                                );
-                                continue;
-                            }
-                        };
+                tasks.spawn(handle_request(
+                    request,
+                    request_token,
+                    out_tx.clone(),
+                    seq.clone(),
+                    debugger.clone(),
+                    in_flight.clone(),
+                    initialized_tx.clone(),
+                    initialized_rx.clone(),
+                    server_shutdown.clone(),
+                    terminated_sent.clone(),
+                ));
 
-                        let host: IpAddr = match host.parse() {
-                            Ok(host) => host,
-                            Err(err) => {
-                                send_response(
-                                    &out_tx,
-                                    &seq,
-                                    &request,
-                                    false,
-                                    None,
-                                    Some(format!("invalid host {host:?}: {err}")),
-                                );
-                                continue;
-                            }
-                        };
-
-                        match Debugger::attach(AttachArgs { host, port: port as u16 }).await {
-                            Ok(dbg) => {
-                                let mut guard = debugger.lock().await;
-                                *guard = Some(dbg);
-                                drop(guard);
-
-                                spawn_event_task(
-                                    debugger.clone(),
-                                    out_tx.clone(),
-                                    seq.clone(),
-                                    terminated_sent.clone(),
-                                    terminate_tx.clone(),
-                                );
-                                send_response(&out_tx, &seq, &request, true, None, None);
-                            }
-                            Err(err) => {
-                                send_response(&out_tx, &seq, &request, false, None, Some(err.to_string()));
-                            }
-                        }
-                    }
-                    "setBreakpoints" => {
-                        let source_path = request
-                            .arguments
-                            .get("source")
-                            .and_then(|s| s.get("path"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let lines: Vec<i32> = request
-                            .arguments
-                            .get("breakpoints")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|bp| bp.get("line").and_then(|l| l.as_i64()).map(|l| l as i32))
-                                    .collect()
-                            })
-                            .unwrap_or_default();
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(
-                                &out_tx,
-                                &seq,
-                                &request,
-                                false,
-                                None,
-                                Some("not attached".to_string()),
-                            );
-                            continue;
-                        };
-                        match dbg.set_breakpoints(source_path, lines).await {
-                            Ok(bps) => send_response(
-                                &out_tx,
-                                &seq,
-                                &request,
-                                true,
-                                Some(json!({ "breakpoints": bps })),
-                                None,
-                            ),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "setExceptionBreakpoints" => {
-                        let filters: Vec<String> = request
-                            .arguments
-                            .get("filters")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                            .unwrap_or_default();
-
-                        let mut caught = false;
-                        let mut uncaught = false;
-                        for filter in &filters {
-                            match filter.as_str() {
-                                "all" => {
-                                    caught = true;
-                                    uncaught = true;
-                                }
-                                "caught" => caught = true,
-                                "uncaught" => uncaught = true,
-                                _ => {}
-                            }
-                        }
-
-                        if let Some(options) = request.arguments.get("exceptionOptions").and_then(|v| v.as_array()) {
-                            for opt in options {
-                                match opt.get("breakMode").and_then(|v| v.as_str()) {
-                                    Some("always") => {
-                                        caught = true;
-                                        uncaught = true;
-                                    }
-                                    Some("unhandled" | "userUnhandled") => uncaught = true,
-                                    _ => {}
-                                }
-                            }
-                        }
-
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
-                            continue;
-                        };
-
-                        match dbg.set_exception_breakpoints(caught, uncaught).await {
-                            Ok(()) => send_response(&out_tx, &seq, &request, true, None, None),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "threads" => {
-                        let guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_ref() else {
-                            send_response(&out_tx, &seq, &request, true, Some(json!({ "threads": [] })), None);
-                            continue;
-                        };
-                        let threads = dbg.threads().await?;
-                        let threads: Vec<Value> = threads
-                            .into_iter()
-                            .map(|(id, name)| json!({ "id": id, "name": name }))
-                            .collect();
-                        send_response(&out_tx, &seq, &request, true, Some(json!({ "threads": threads })), None);
-                    }
-                    "stackTrace" => {
-                        let thread_id = request
-                            .arguments
-                            .get("threadId")
-                            .and_then(|v| v.as_i64())
-                            .ok_or_else(|| DebuggerError::InvalidRequest("stackTrace.threadId is required".to_string()))?;
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
-                            continue;
-                        };
-                        match dbg.stack_trace(thread_id).await {
-                            Ok(frames) => send_response(
-                                &out_tx,
-                                &seq,
-                                &request,
-                                true,
-                                Some(json!({ "stackFrames": frames, "totalFrames": frames.len() })),
-                                None,
-                            ),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "scopes" => {
-                        let frame_id = request
-                            .arguments
-                            .get("frameId")
-                            .and_then(|v| v.as_i64())
-                            .ok_or_else(|| DebuggerError::InvalidRequest("scopes.frameId is required".to_string()))?;
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(&out_tx, &seq, &request, true, Some(json!({ "scopes": [] })), None);
-                            continue;
-                        };
-                        match dbg.scopes(frame_id) {
-                            Ok(scopes) => send_response(&out_tx, &seq, &request, true, Some(json!({ "scopes": scopes })), None),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "variables" => {
-                        let variables_reference = request
-                            .arguments
-                            .get("variablesReference")
-                            .and_then(|v| v.as_i64())
-                            .ok_or_else(|| DebuggerError::InvalidRequest("variables.variablesReference is required".to_string()))?;
-                        let start = request.arguments.get("start").and_then(|v| v.as_i64());
-                        let count = request.arguments.get("count").and_then(|v| v.as_i64());
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(&out_tx, &seq, &request, true, Some(json!({ "variables": [] })), None);
-                            continue;
-                        };
-                        match dbg.variables(variables_reference, start, count).await {
-                            Ok(vars) => send_response(&out_tx, &seq, &request, true, Some(json!({ "variables": vars })), None),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "exceptionInfo" => {
-                        let thread_id = request
-                            .arguments
-                            .get("threadId")
-                            .and_then(|v| v.as_i64())
-                            .ok_or_else(|| DebuggerError::InvalidRequest("exceptionInfo.threadId is required".to_string()))?;
-
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
-                            continue;
-                        };
-
-                        match dbg.exception_info(thread_id).await {
-                            Ok(Some(info)) => {
-                                let exception_id = info.exception_id;
-                                let break_mode = info.break_mode;
-                                let description = info.description;
-                                let body = if let Some(description) = description {
-                                    json!({"exceptionId": exception_id, "description": description, "breakMode": break_mode})
-                                } else {
-                                    json!({"exceptionId": exception_id, "breakMode": break_mode})
-                                };
-                                send_response(&out_tx, &seq, &request, true, Some(body), None);
-                            }
-                            Ok(None) => send_response(
-                                &out_tx,
-                                &seq,
-                                &request,
-                                false,
-                                None,
-                                Some(format!("no exception context for threadId {thread_id}")),
-                            ),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "continue" => {
-                        let thread_id = request.arguments.get("threadId").and_then(|v| v.as_i64());
-                        let guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_ref() else {
-                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
-                            continue;
-                        };
-                        match dbg.continue_().await {
-                            Ok(()) => {
-                                send_response(
-                                    &out_tx,
-                                    &seq,
-                                    &request,
-                                    true,
-                                    Some(json!({ "allThreadsContinued": true })),
-                                    None,
-                                );
-
-                                let mut body = serde_json::Map::new();
-                                body.insert("allThreadsContinued".to_string(), json!(true));
-                                if let Some(thread_id) = thread_id {
-                                    body.insert("threadId".to_string(), json!(thread_id));
-                                }
-                                send_event(&out_tx, &seq, "continued", Some(Value::Object(body)));
-                            }
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "pause" => {
-                        let thread_id = request.arguments.get("threadId").and_then(|v| v.as_i64());
-                        let guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_ref() else {
-                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
-                            continue;
-                        };
-                        match dbg.pause().await {
-                            Ok(()) => {
-                                send_response(&out_tx, &seq, &request, true, None, None);
-                                let mut body = serde_json::Map::new();
-                                body.insert("reason".to_string(), json!("pause"));
-                                body.insert("allThreadsStopped".to_string(), json!(true));
-                                if let Some(thread_id) = thread_id {
-                                    body.insert("threadId".to_string(), json!(thread_id));
-                                }
-                                send_event(&out_tx, &seq, "stopped", Some(Value::Object(body)));
-                            }
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "next" | "stepIn" | "stepOut" => {
-                        let thread_id = request
-                            .arguments
-                            .get("threadId")
-                            .and_then(|v| v.as_i64())
-                            .ok_or_else(|| DebuggerError::InvalidRequest(format!("{}.threadId is required", request.command)))?;
-                        let depth = match request.command.as_str() {
-                            "next" => StepDepth::Over,
-                            "stepIn" => StepDepth::Into,
-                            _ => StepDepth::Out,
-                        };
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
-                            continue;
-                        };
-                        match dbg.step(thread_id, depth).await {
-                            Ok(()) => send_response(&out_tx, &seq, &request, true, None, None),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "evaluate" => {
-                        let expression = request
-                            .arguments
-                            .get("expression")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let frame_id = request.arguments.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
-                            continue;
-                        };
-                        match dbg.evaluate(frame_id, expression).await {
-                            Ok(body) => send_response(&out_tx, &seq, &request, true, body, None),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "nova/pinObject" => {
-                        let variables_reference = request
-                            .arguments
-                            .get("variablesReference")
-                            .and_then(|v| v.as_i64())
-                            .ok_or_else(|| DebuggerError::InvalidRequest("pinObject.variablesReference is required".to_string()))?;
-                        let pinned = request
-                            .arguments
-                            .get("pinned")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false);
-                        let mut guard = debugger.lock().await;
-                        let Some(dbg) = guard.as_mut() else {
-                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
-                            continue;
-                        };
-                        match dbg.set_object_pinned(variables_reference, pinned).await {
-                            Ok(pinned) => send_response(
-                                &out_tx,
-                                &seq,
-                                &request,
-                                true,
-                                Some(json!({ "pinned": pinned })),
-                                None,
-                            ),
-                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
-                        }
-                    }
-                    "disconnect" => {
-                        let mut guard = debugger.lock().await;
-                        if let Some(mut dbg) = guard.take() {
-                            dbg.disconnect().await;
-                        }
-                        send_response(&out_tx, &seq, &request, true, None, None);
-                        send_terminated_once(&out_tx, &seq, &terminated_sent);
-                        let _ = terminate_tx.send(true);
-                        break;
-                    }
-                    _ => {
-                        send_response(
-                            &out_tx,
-                            &seq,
-                            &request,
-                            false,
-                            None,
-                            Some(format!("unhandled request {}", request.command)),
-                        );
-                    }
+                if is_disconnect {
+                    break;
                 }
             }
         }
     }
 
+    // Ensure any background tasks (including event forwarding) observe shutdown.
+    server_shutdown.cancel();
+
+    // Cancel in-flight requests so long JDWP operations unwind quickly.
+    {
+        let in_flight_guard = in_flight.lock().await;
+        for (seq, token) in in_flight_guard.iter() {
+            if shutdown_request_seq.map(|s| s == *seq).unwrap_or(false) {
+                continue;
+            }
+            token.cancel();
+        }
+    }
+
+    while let Some(res) = tasks.join_next().await {
+        let _ = res;
+    }
+
+    // Best-effort: ensure the JDWP connection is torn down even if the DAP client
+    // disconnects without sending the explicit request.
     {
         let mut guard = debugger.lock().await;
         if let Some(mut dbg) = guard.take() {
@@ -538,12 +145,711 @@ where
     Ok(())
 }
 
-fn send_event(
-    tx: &mpsc::UnboundedSender<Value>,
-    seq: &Arc<AtomicI64>,
-    event: impl Into<String>,
-    body: Option<Value>,
+async fn handle_request(
+    request: Request,
+    cancel: CancellationToken,
+    out_tx: mpsc::UnboundedSender<Value>,
+    seq: Arc<AtomicI64>,
+    debugger: Arc<Mutex<Option<Debugger>>>,
+    in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>>,
+    initialized_tx: watch::Sender<bool>,
+    initialized_rx: watch::Receiver<bool>,
+    server_shutdown: CancellationToken,
+    terminated_sent: Arc<AtomicBool>,
 ) {
+    let request_seq = request.seq;
+
+    handle_request_inner(
+        &request,
+        &cancel,
+        &out_tx,
+        &seq,
+        &debugger,
+        &in_flight,
+        &initialized_tx,
+        initialized_rx,
+        &server_shutdown,
+        &terminated_sent,
+    )
+    .await;
+
+    let mut guard = in_flight.lock().await;
+    guard.remove(&request_seq);
+}
+
+async fn handle_request_inner(
+    request: &Request,
+    cancel: &CancellationToken,
+    out_tx: &mpsc::UnboundedSender<Value>,
+    seq: &Arc<AtomicI64>,
+    debugger: &Arc<Mutex<Option<Debugger>>>,
+    in_flight: &Arc<Mutex<HashMap<i64, CancellationToken>>>,
+    initialized_tx: &watch::Sender<bool>,
+    initialized_rx: watch::Receiver<bool>,
+    server_shutdown: &CancellationToken,
+    terminated_sent: &Arc<AtomicBool>,
+) {
+    if requires_initialized(request.command.as_str()) {
+        if !wait_initialized(cancel, initialized_rx).await {
+            send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+            return;
+        }
+    }
+
+    match request.command.as_str() {
+        "initialize" => {
+            let body = json!({
+                "supportsConfigurationDoneRequest": true,
+                "supportsEvaluateForHovers": true,
+                "supportsPauseRequest": true,
+                "supportsCancelRequest": true,
+                "supportsSetVariable": false,
+                "supportsStepBack": false,
+                "supportsExceptionInfoRequest": true,
+                "exceptionBreakpointFilters": [
+                    { "filter": "caught", "label": "Caught Exceptions", "default": false },
+                    { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
+                    { "filter": "all", "label": "All Exceptions", "default": false },
+                ],
+                "supportsConditionalBreakpoints": false,
+            });
+            send_response(out_tx, seq, request, true, Some(body), None);
+            send_event(out_tx, seq, "initialized", None);
+            let _ = initialized_tx.send(true);
+        }
+        "nova/bugReport" => {
+            if cancel.is_cancelled() {
+                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                return;
+            }
+
+            let max_log_lines = request
+                .arguments
+                .get("maxLogLines")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| usize::try_from(v).ok());
+            let reproduction = request
+                .arguments
+                .get("reproduction")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+
+            let cfg = NovaConfig::default();
+            let log_buffer = nova_config::init_tracing_with_config(&cfg);
+            let crash_store = global_crash_store();
+            let perf = PerfStats::default();
+            let options = BugReportOptions {
+                max_log_lines: max_log_lines.unwrap_or(500),
+                reproduction,
+            };
+
+            match create_bug_report_bundle(
+                &cfg,
+                log_buffer.as_ref(),
+                crash_store.as_ref(),
+                &perf,
+                options,
+            ) {
+                Ok(bundle) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "path": bundle.path().display().to_string() })),
+                    None,
+                ),
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "cancel" => {
+            let Some(request_id) = request.arguments.get("requestId").and_then(|v| v.as_i64()) else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancel.requestId is required".to_string()),
+                );
+                return;
+            };
+
+            let token = {
+                let in_flight = in_flight.lock().await;
+                in_flight.get(&request_id).cloned()
+            };
+            if let Some(token) = token {
+                token.cancel();
+            }
+            // Best-effort: DAP `cancel` doesn't guarantee the target is still running.
+            send_response(out_tx, seq, request, true, None, None);
+        }
+        "configurationDone" => {
+            // When `supportsConfigurationDoneRequest` is true, VS Code sends this request
+            // after breakpoints have been configured.
+            send_response(out_tx, seq, request, true, None, None);
+        }
+        "attach" => {
+            let host = request
+                .arguments
+                .get("host")
+                .and_then(|v| v.as_str())
+                .unwrap_or("127.0.0.1");
+            let Some(port) = request.arguments.get("port").and_then(|v| v.as_u64()) else {
+                send_response(out_tx, seq, request, false, None, Some("attach.port is required".to_string()));
+                return;
+            };
+            let host: IpAddr = match host.parse() {
+                Ok(host) => host,
+                Err(err) => {
+                    send_response(out_tx, seq, request, false, None, Some(format!("invalid host {host:?}: {err}")));
+                    return;
+                }
+            };
+
+            let dbg = match Debugger::attach(AttachArgs { host, port: port as u16 }).await {
+                Ok(dbg) => dbg,
+                Err(err) => {
+                    send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                    return;
+                }
+            };
+
+            {
+                let mut guard = debugger.lock().await;
+                *guard = Some(dbg);
+            }
+
+            spawn_event_task(
+                debugger.clone(),
+                out_tx.clone(),
+                seq.clone(),
+                terminated_sent.clone(),
+                server_shutdown.clone(),
+            );
+            send_response(out_tx, seq, request, true, None, None);
+        }
+        "setBreakpoints" => {
+            if cancel.is_cancelled() {
+                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                return;
+            }
+
+            let source_path = request
+                .arguments
+                .get("source")
+                .and_then(|s| s.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let lines: Vec<i32> = request
+                .arguments
+                .get("breakpoints")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|bp| bp.get("line").and_then(|l| l.as_i64()).map(|l| l as i32))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.set_breakpoints(cancel, source_path, lines).await {
+                Ok(bps) if cancel.is_cancelled() => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Ok(bps) => send_response(out_tx, seq, request, true, Some(json!({ "breakpoints": bps })), None),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "setExceptionBreakpoints" => {
+            let filters: Vec<String> = request
+                .arguments
+                .get("filters")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let mut caught = false;
+            let mut uncaught = false;
+            for filter in &filters {
+                match filter.as_str() {
+                    "all" => {
+                        caught = true;
+                        uncaught = true;
+                    }
+                    "caught" => caught = true,
+                    "uncaught" => uncaught = true,
+                    _ => {}
+                }
+            }
+
+            if let Some(options) = request.arguments.get("exceptionOptions").and_then(|v| v.as_array()) {
+                for opt in options {
+                    match opt.get("breakMode").and_then(|v| v.as_str()) {
+                        Some("always") => {
+                            caught = true;
+                            uncaught = true;
+                        }
+                        Some("unhandled" | "userUnhandled") => uncaught = true,
+                        _ => {}
+                    }
+                }
+            }
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.set_exception_breakpoints(caught, uncaught).await {
+                Ok(()) => send_response(out_tx, seq, request, true, None, None),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "threads" => {
+            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_ref() else {
+                send_response(out_tx, seq, request, true, Some(json!({ "threads": [] })), None);
+                return;
+            };
+
+            match dbg.threads(cancel).await {
+                Ok(threads) if cancel.is_cancelled() => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Ok(threads) => {
+                    let threads: Vec<Value> = threads
+                        .into_iter()
+                        .map(|(id, name)| json!({ "id": id, "name": name }))
+                        .collect();
+                    send_response(out_tx, seq, request, true, Some(json!({ "threads": threads })), None);
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "stackTrace" => {
+            let Some(thread_id) = request.arguments.get("threadId").and_then(|v| v.as_i64()) else {
+                send_response(out_tx, seq, request, false, None, Some("stackTrace.threadId is required".to_string()));
+                return;
+            };
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.stack_trace(cancel, thread_id).await {
+                Ok(frames) if cancel.is_cancelled() => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Ok(frames) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    true,
+                    Some(json!({ "stackFrames": frames, "totalFrames": frames.len() })),
+                    None,
+                ),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "scopes" => {
+            let Some(frame_id) = request.arguments.get("frameId").and_then(|v| v.as_i64()) else {
+                send_response(out_tx, seq, request, false, None, Some("scopes.frameId is required".to_string()));
+                return;
+            };
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, true, Some(json!({ "scopes": [] })), None);
+                return;
+            };
+
+            match dbg.scopes(frame_id) {
+                Ok(scopes) => send_response(out_tx, seq, request, true, Some(json!({ "scopes": scopes })), None),
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "variables" => {
+            let Some(variables_reference) = request.arguments.get("variablesReference").and_then(|v| v.as_i64()) else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("variables.variablesReference is required".to_string()),
+                );
+                return;
+            };
+            let start = request.arguments.get("start").and_then(|v| v.as_i64());
+            let count = request.arguments.get("count").and_then(|v| v.as_i64());
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, true, Some(json!({ "variables": [] })), None);
+                return;
+            };
+
+            match dbg.variables(cancel, variables_reference, start, count).await {
+                Ok(vars) if cancel.is_cancelled() => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Ok(vars) => send_response(out_tx, seq, request, true, Some(json!({ "variables": vars })), None),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "exceptionInfo" => {
+            let Some(thread_id) = request.arguments.get("threadId").and_then(|v| v.as_i64()) else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("exceptionInfo.threadId is required".to_string()),
+                );
+                return;
+            };
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.exception_info(cancel, thread_id).await {
+                Ok(Some(info)) if cancel.is_cancelled() => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Ok(Some(info)) => {
+                    let mut body = serde_json::Map::new();
+                    body.insert("exceptionId".to_string(), json!(info.exception_id));
+                    if let Some(description) = info.description {
+                        body.insert("description".to_string(), json!(description));
+                    }
+                    body.insert("breakMode".to_string(), json!(info.break_mode));
+                    send_response(out_tx, seq, request, true, Some(Value::Object(body)), None);
+                }
+                Ok(None) => send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some(format!("no exception context for threadId {thread_id}")),
+                ),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "continue" => {
+            let thread_id = request.arguments.get("threadId").and_then(|v| v.as_i64());
+
+            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_ref() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.continue_(cancel).await {
+                Ok(()) => {
+                    send_response(out_tx, seq, request, true, Some(json!({ "allThreadsContinued": true })), None);
+
+                    let mut body = serde_json::Map::new();
+                    body.insert("allThreadsContinued".to_string(), json!(true));
+                    if let Some(thread_id) = thread_id {
+                        body.insert("threadId".to_string(), json!(thread_id));
+                    }
+                    send_event(out_tx, seq, "continued", Some(Value::Object(body)));
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "pause" => {
+            let thread_id = request.arguments.get("threadId").and_then(|v| v.as_i64());
+
+            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_ref() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.pause(cancel).await {
+                Ok(()) => {
+                    send_response(out_tx, seq, request, true, None, None);
+                    let mut body = serde_json::Map::new();
+                    body.insert("reason".to_string(), json!("pause"));
+                    body.insert("allThreadsStopped".to_string(), json!(true));
+                    if let Some(thread_id) = thread_id {
+                        body.insert("threadId".to_string(), json!(thread_id));
+                    }
+                    send_event(out_tx, seq, "stopped", Some(Value::Object(body)));
+                }
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "next" | "stepIn" | "stepOut" => {
+            let Some(thread_id) = request.arguments.get("threadId").and_then(|v| v.as_i64()) else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some(format!("{}.threadId is required", request.command)),
+                );
+                return;
+            };
+            let depth = match request.command.as_str() {
+                "next" => StepDepth::Over,
+                "stepIn" => StepDepth::Into,
+                _ => StepDepth::Out,
+            };
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.step(cancel, thread_id, depth).await {
+                Ok(()) => send_response(out_tx, seq, request, true, None, None),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "evaluate" => {
+            let expression = request
+                .arguments
+                .get("expression")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let frame_id = request.arguments.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.evaluate(cancel, frame_id, expression).await {
+                Ok(body) if cancel.is_cancelled() => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Ok(body) => send_response(out_tx, seq, request, true, body, None),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "nova/pinObject" => {
+            let Some(variables_reference) = request
+                .arguments
+                .get("variablesReference")
+                .and_then(|v| v.as_i64())
+            else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("pinObject.variablesReference is required".to_string()),
+                );
+                return;
+            };
+            let pinned = request
+                .arguments
+                .get("pinned")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let mut guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+            let Some(dbg) = guard.as_mut() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            match dbg.set_object_pinned(cancel, variables_reference, pinned).await {
+                Ok(pinned) if cancel.is_cancelled() => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Ok(pinned) => send_response(out_tx, seq, request, true, Some(json!({ "pinned": pinned })), None),
+                Err(err) if is_cancelled_error(&err) => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                }
+                Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
+            }
+        }
+        "disconnect" => {
+            let mut guard = debugger.lock().await;
+            if let Some(mut dbg) = guard.take() {
+                dbg.disconnect().await;
+            }
+            send_response(out_tx, seq, request, true, None, None);
+            send_terminated_once(out_tx, seq, terminated_sent);
+            server_shutdown.cancel();
+        }
+        _ => {
+            send_response(
+                out_tx,
+                seq,
+                request,
+                false,
+                None,
+                Some(format!("unhandled request {}", request.command)),
+            );
+        }
+    }
+}
+
+fn is_cancelled_error(err: &DebuggerError) -> bool {
+    matches!(err, DebuggerError::Jdwp(JdwpError::Cancelled))
+}
+
+fn requires_initialized(command: &str) -> bool {
+    !matches!(command, "initialize" | "cancel" | "disconnect")
+}
+
+async fn wait_initialized(cancel: &CancellationToken, mut initialized: watch::Receiver<bool>) -> bool {
+    loop {
+        if *initialized.borrow() {
+            return true;
+        }
+
+        tokio::select! {
+            _ = cancel.cancelled() => return false,
+            changed = initialized.changed() => {
+                if changed.is_err() {
+                    return false;
+                }
+            }
+        }
+    }
+}
+
+async fn lock_or_cancel<'a, T>(
+    cancel: &'a CancellationToken,
+    mutex: &'a Mutex<T>,
+) -> Option<tokio::sync::MutexGuard<'a, T>> {
+    tokio::select! {
+        _ = cancel.cancelled() => None,
+        guard = mutex.lock() => Some(guard),
+    }
+}
+
+fn send_event(tx: &mpsc::UnboundedSender<Value>, seq: &Arc<AtomicI64>, event: impl Into<String>, body: Option<Value>) {
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let evt = make_event(s, event, body);
     let _ = tx.send(serde_json::to_value(evt).unwrap_or_else(|_| json!({})));
@@ -580,43 +886,44 @@ fn spawn_event_task(
     tx: mpsc::UnboundedSender<Value>,
     seq: Arc<AtomicI64>,
     terminated_sent: Arc<AtomicBool>,
-    terminate_tx: watch::Sender<bool>,
+    server_shutdown: CancellationToken,
 ) {
     tokio::spawn(async move {
         let mut events: Option<broadcast::Receiver<nova_jdwp::wire::JdwpEvent>> = None;
-        let mut shutdown = None;
+        let mut jdwp_shutdown: Option<CancellationToken> = None;
 
         {
             let guard = debugger.lock().await;
             if let Some(dbg) = guard.as_ref() {
                 events = Some(dbg.subscribe_events());
-                shutdown = Some(dbg.jdwp_shutdown_token());
+                jdwp_shutdown = Some(dbg.jdwp_shutdown_token());
             }
         }
 
         let Some(mut events) = events else {
             return;
         };
-        let Some(shutdown) = shutdown else {
+        let Some(jdwp_shutdown) = jdwp_shutdown else {
             return;
         };
 
         loop {
             let event = tokio::select! {
-                _ = shutdown.cancelled() => {
+                _ = server_shutdown.cancelled() => return,
+                _ = jdwp_shutdown.cancelled() => {
                     send_terminated_once(&tx, &seq, &terminated_sent);
-                    let _ = terminate_tx.send(true);
+                    server_shutdown.cancel();
                     return;
                 }
                 event = events.recv() => match event {
                     Ok(e) => e,
                     Err(broadcast::error::RecvError::Closed) => {
                         send_terminated_once(&tx, &seq, &terminated_sent);
-                        let _ = terminate_tx.send(true);
+                        server_shutdown.cancel();
                         return;
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                }
+                },
             };
 
             {
@@ -659,7 +966,7 @@ fn spawn_event_task(
                 }
                 nova_jdwp::wire::JdwpEvent::VmDeath => {
                     send_terminated_once(&tx, &seq, &terminated_sent);
-                    let _ = terminate_tx.send(true);
+                    server_shutdown.cancel();
                     return;
                 }
                 _ => {}

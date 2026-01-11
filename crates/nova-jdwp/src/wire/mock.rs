@@ -1,10 +1,11 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         atomic::{AtomicI32, AtomicU16, AtomicU32, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use tokio::{
@@ -28,14 +29,34 @@ pub struct MockJdwpServer {
     state: Arc<State>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct MockJdwpServerConfig {
+    /// Reply delays keyed by `(command_set, command)`.
+    ///
+    /// The server will still accept and respond to other commands while a delayed reply
+    /// is pending.
+    pub delayed_replies: Vec<DelayedReply>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DelayedReply {
+    pub command_set: u8,
+    pub command: u8,
+    pub delay: Duration,
+}
+
 impl MockJdwpServer {
     pub async fn spawn() -> std::io::Result<Self> {
+        Self::spawn_with_config(MockJdwpServerConfig::default()).await
+    }
+
+    pub async fn spawn_with_config(config: MockJdwpServerConfig) -> std::io::Result<Self> {
         let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
         let listener = TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
         let shutdown = CancellationToken::new();
 
-        let state = Arc::new(State::default());
+        let state = Arc::new(State::new(config));
         let task_shutdown = shutdown.clone();
         let task_state = state.clone();
 
@@ -89,10 +110,22 @@ struct State {
     redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
     pinned_object_ids: tokio::sync::Mutex<BTreeSet<ObjectId>>,
     last_classes_by_signature: tokio::sync::Mutex<Option<String>>,
+    delayed_replies: HashMap<(u8, u8), Duration>,
 }
 
 impl Default for State {
     fn default() -> Self {
+        Self::new(MockJdwpServerConfig::default())
+    }
+}
+
+impl State {
+    fn new(config: MockJdwpServerConfig) -> Self {
+        let mut delayed_replies = HashMap::new();
+        for entry in config.delayed_replies {
+            delayed_replies.insert((entry.command_set, entry.command), entry.delay);
+        }
+
         Self {
             next_request_id: AtomicI32::new(0),
             next_packet_id: AtomicU32::new(0),
@@ -103,17 +136,20 @@ impl Default for State {
             redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
             pinned_object_ids: tokio::sync::Mutex::new(BTreeSet::new()),
             last_classes_by_signature: tokio::sync::Mutex::new(None),
+            delayed_replies,
         }
     }
-}
 
-impl State {
     fn alloc_request_id(&self) -> i32 {
         self.next_request_id.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     fn alloc_packet_id(&self) -> u32 {
         self.next_packet_id.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn reply_delay(&self, command_set: u8, command: u8) -> Option<Duration> {
+        self.delayed_replies.get(&(command_set, command)).copied()
     }
 }
 
@@ -154,13 +190,9 @@ fn default_location() -> Location {
     }
 }
 
-async fn run(
-    listener: TcpListener,
-    state: Arc<State>,
-    shutdown: CancellationToken,
-) -> std::io::Result<()> {
+async fn run(listener: TcpListener, state: Arc<State>, shutdown: CancellationToken) -> std::io::Result<()> {
     tokio::select! {
-        _ = shutdown.cancelled() => Ok(()),
+        _ = shutdown.cancelled() => return Ok(()),
         accept = listener.accept() => {
             let (mut socket, _) = accept?;
 
@@ -173,19 +205,20 @@ async fn run(
             socket.write_all(HANDSHAKE).await?;
 
             let id_sizes = JdwpIdSizes::default();
+            let (mut reader, writer) = socket.into_split();
+            let writer = Arc::new(tokio::sync::Mutex::new(writer));
 
             loop {
                 tokio::select! {
-                    _ = shutdown.cancelled() => break,
-                    res = read_packet(&mut socket) => {
+                    _ = shutdown.cancelled() => return Ok(()),
+                    res = read_packet(&mut reader) => {
                         let Some(packet) = res? else {
-                            break;
+                            return Ok(());
                         };
-                        handle_packet(&mut socket, &state, &id_sizes, packet).await?;
+                        handle_packet(&writer, &state, &id_sizes, packet, shutdown.clone()).await?;
                     }
                 }
             }
-            Ok(())
         }
     }
 }
@@ -197,7 +230,7 @@ struct Packet {
     payload: Vec<u8>,
 }
 
-async fn read_packet(socket: &mut tokio::net::TcpStream) -> std::io::Result<Option<Packet>> {
+async fn read_packet(socket: &mut tokio::net::tcp::OwnedReadHalf) -> std::io::Result<Option<Packet>> {
     let mut header = [0u8; HEADER_LEN];
     match socket.read_exact(&mut header).await {
         Ok(_n) => {}
@@ -228,10 +261,11 @@ async fn read_packet(socket: &mut tokio::net::TcpStream) -> std::io::Result<Opti
 }
 
 async fn handle_packet(
-    socket: &mut tokio::net::TcpStream,
+    writer: &Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
     state: &State,
     id_sizes: &JdwpIdSizes,
     packet: Packet,
+    shutdown: CancellationToken,
 ) -> std::io::Result<()> {
     let sizes = id_sizes;
     let mut r = JdwpReader::new(&packet.payload);
@@ -313,10 +347,7 @@ async fn handle_packet(
                 .redefine_classes_calls
                 .lock()
                 .await
-                .push(RedefineClassesCall {
-                    class_count,
-                    classes,
-                });
+                .push(RedefineClassesCall { class_count, classes });
 
             let err = state.redefine_classes_error_code.load(Ordering::Relaxed);
             (err, Vec::new())
@@ -652,39 +683,84 @@ async fn handle_packet(
         _ => {
             // Unknown command: reply with a generic error.
             let _ = r;
-            return socket.write_all(&encode_reply(packet.id, 1, &[])).await;
+            let reply = encode_reply(packet.id, 1, &[]);
+            return write_reply(
+                writer,
+                reply,
+                None,
+                state.reply_delay(packet.command_set, packet.command),
+                shutdown,
+            )
+            .await;
         }
     };
 
-    socket
-        .write_all(&encode_reply(packet.id, reply_error_code, &reply_payload))
-        .await?;
-    if reply_error_code == 0 && packet.command_set == 1 && packet.command == 9 {
+    let follow_up = if reply_error_code == 0 && packet.command_set == 1 && packet.command == 9 {
         // After a resume, immediately emit a stop event if a request is configured.
         let breakpoint_request = { *state.breakpoint_request.lock().await };
         let step_request = { *state.step_request.lock().await };
         let exception_request = { *state.exception_request.lock().await };
-        emit_stop_event(
-            socket,
+        make_stop_event_packet(
             state,
             id_sizes,
             breakpoint_request,
             step_request,
             exception_request,
         )
-        .await?;
+    } else {
+        None
+    };
+
+    write_reply(
+        writer,
+        encode_reply(packet.id, reply_error_code, &reply_payload),
+        follow_up,
+        state.reply_delay(packet.command_set, packet.command),
+        shutdown,
+    )
+    .await
+}
+
+async fn write_reply(
+    writer: &Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>,
+    reply: Vec<u8>,
+    follow_up: Option<Vec<u8>>,
+    delay: Option<Duration>,
+    shutdown: CancellationToken,
+) -> std::io::Result<()> {
+    let delay = delay.filter(|d| !d.is_zero());
+    if let Some(delay) = delay {
+        let writer = writer.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = shutdown.cancelled() => {}
+                _ = tokio::time::sleep(delay) => {
+                    let mut guard = writer.lock().await;
+                    let _ = guard.write_all(&reply).await;
+                    if let Some(follow_up) = follow_up {
+                        let _ = guard.write_all(&follow_up).await;
+                    }
+                }
+            }
+        });
+        return Ok(());
+    }
+
+    let mut guard = writer.lock().await;
+    guard.write_all(&reply).await?;
+    if let Some(follow_up) = follow_up {
+        guard.write_all(&follow_up).await?;
     }
     Ok(())
 }
 
-async fn emit_stop_event(
-    socket: &mut tokio::net::TcpStream,
+fn make_stop_event_packet(
     state: &State,
     id_sizes: &JdwpIdSizes,
     breakpoint_request: Option<i32>,
     step_request: Option<i32>,
     exception_request: Option<MockExceptionRequest>,
-) -> std::io::Result<()> {
+) -> Option<Vec<u8>> {
     let (kind, request_id) = if let Some(request_id) = breakpoint_request {
         (2, request_id)
     } else if let Some(request_id) = step_request {
@@ -692,7 +768,7 @@ async fn emit_stop_event(
     } else if let Some(request) = exception_request {
         (4, request.request_id)
     } else {
-        return Ok(());
+        return None;
     };
 
     let mut w = JdwpWriter::new();
@@ -719,8 +795,5 @@ async fn emit_stop_event(
 
     let payload = w.into_vec();
     let packet_id = state.alloc_packet_id();
-    socket
-        .write_all(&encode_command(packet_id, 64, 100, &payload))
-        .await?;
-    Ok(())
+    Some(encode_command(packet_id, 64, 100, &payload))
 }
