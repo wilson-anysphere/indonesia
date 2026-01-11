@@ -2,6 +2,7 @@ use lsp_types::{
     CodeAction, CodeActionDisabled, CodeActionKind, CodeActionOrCommand, Position, Range, Uri,
     WorkspaceEdit,
 };
+use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_index::Index;
 use nova_refactor::{
     convert_to_record, safe_delete, ConvertToRecordError, ConvertToRecordOptions, SafeDeleteMode,
@@ -49,7 +50,10 @@ pub enum RefactorResponse {
 ///
 /// If the delete is unsafe this returns a code action whose `data` contains a
 /// `nova/refactor/preview` payload.
-pub fn safe_delete_code_action(index: &Index, target: SafeDeleteTarget) -> Option<CodeActionOrCommand> {
+pub fn safe_delete_code_action(
+    index: &Index,
+    target: SafeDeleteTarget,
+) -> Option<CodeActionOrCommand> {
     let title_base = match target {
         SafeDeleteTarget::Symbol(id) => index
             .find_symbol(id)
@@ -66,18 +70,30 @@ pub fn safe_delete_code_action(index: &Index, target: SafeDeleteTarget) -> Optio
                 let uri: Uri = edit.file.parse().ok()?;
                 let range = index
                     .file_text(&edit.file)
-                    .map(|text| {
+                    .and_then(|text| {
+                        let start = u32::try_from(edit.range.start).ok()?;
+                        let end = u32::try_from(edit.range.end).ok()?;
                         let line_index = LineIndex::new(text);
-                        Range::new(
-                            line_index.position(edit.range.start),
-                            line_index.position(edit.range.end),
-                        )
+                        let start = line_index.position(text, TextSize::from(start));
+                        let end = line_index.position(text, TextSize::from(end));
+                        Some(Range::new(
+                            Position::new(start.line, start.character),
+                            Position::new(end.line, end.character),
+                        ))
                     })
-                    .unwrap_or_else(|| Range::new(Position::new(0, edit.range.start as u32), Position::new(0, edit.range.end as u32)));
-                changes.entry(uri).or_insert_with(Vec::new).push(lsp_types::TextEdit {
-                    range,
-                    new_text: edit.replacement,
-                });
+                    .unwrap_or_else(|| {
+                        Range::new(
+                            Position::new(0, edit.range.start as u32),
+                            Position::new(0, edit.range.end as u32),
+                        )
+                    });
+                changes
+                    .entry(uri)
+                    .or_insert_with(Vec::new)
+                    .push(lsp_types::TextEdit {
+                        range,
+                        new_text: edit.replacement,
+                    });
             }
 
             Some(CodeActionOrCommand::CodeAction(CodeAction {
@@ -90,13 +106,15 @@ pub fn safe_delete_code_action(index: &Index, target: SafeDeleteTarget) -> Optio
                 ..CodeAction::default()
             }))
         }
-        SafeDeleteOutcome::Preview { report } => Some(CodeActionOrCommand::CodeAction(CodeAction {
-            title: format!("{title_base}…"),
-            kind: Some(CodeActionKind::REFACTOR),
-            // In a full server we'd attach this to a command that returns the preview.
-            data: Some(serde_json::to_value(RefactorResponse::Preview { report }).ok()?),
-            ..CodeAction::default()
-        })),
+        SafeDeleteOutcome::Preview { report } => {
+            Some(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!("{title_base}…"),
+                kind: Some(CodeActionKind::REFACTOR),
+                // In a full server we'd attach this to a command that returns the preview.
+                data: Some(serde_json::to_value(RefactorResponse::Preview { report }).ok()?),
+                ..CodeAction::default()
+            }))
+        }
     }
 }
 
@@ -134,14 +152,20 @@ pub fn convert_to_record_code_action(
     position: Position,
 ) -> Option<CodeActionOrCommand> {
     let line_index = LineIndex::new(source);
-    let offset = line_index.offset(position)?;
+    let offset = line_index
+        .offset_of_position(source, CorePosition::new(position.line, position.character))?;
+    let offset: usize = u32::from(offset) as usize;
 
     let file = uri.to_string();
     match convert_to_record(&file, source, offset, ConvertToRecordOptions::default()) {
         Ok(edit) => {
+            let start = TextSize::from(u32::try_from(edit.range.start).ok()?);
+            let end = TextSize::from(u32::try_from(edit.range.end).ok()?);
+            let start = line_index.position(source, start);
+            let end = line_index.position(source, end);
             let range = Range::new(
-                line_index.position(edit.range.start),
-                line_index.position(edit.range.end),
+                Position::new(start.line, start.character),
+                Position::new(end.line, end.character),
             );
 
             let mut changes = std::collections::HashMap::new();
@@ -173,43 +197,6 @@ pub fn convert_to_record_code_action(
             }),
             ..CodeAction::default()
         })),
-    }
-}
-
-/// Maps between byte offsets and LSP positions.
-///
-/// Nova treats the LSP `character` value as a UTF-8 code unit offset. This is
-/// sufficient for the ASCII-only fixtures used by refactoring tests.
-#[derive(Debug, Clone)]
-struct LineIndex {
-    line_starts: Vec<usize>,
-}
-
-impl LineIndex {
-    fn new(text: &str) -> Self {
-        let mut line_starts = vec![0];
-        for (idx, b) in text.bytes().enumerate() {
-            if b == b'\n' {
-                line_starts.push(idx + 1);
-            }
-        }
-        Self { line_starts }
-    }
-
-    fn position(&self, offset: usize) -> Position {
-        let line = match self.line_starts.binary_search(&offset) {
-            Ok(line) => line,
-            Err(next) => next.saturating_sub(1),
-        };
-        let line_start = self.line_starts.get(line).copied().unwrap_or(0);
-        Position::new(line as u32, (offset - line_start) as u32)
-    }
-
-    fn offset(&self, position: Position) -> Option<usize> {
-        let line = position.line as usize;
-        let col = position.character as usize;
-        let line_start = *self.line_starts.get(line)?;
-        Some(line_start + col)
     }
 }
 

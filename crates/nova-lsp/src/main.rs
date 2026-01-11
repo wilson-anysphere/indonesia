@@ -6,19 +6,21 @@ use lsp_types::{
     RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
     WorkspaceEdit as LspWorkspaceEdit,
 };
-use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ContextRequest, ProviderKind, RetryConfig};
+use nova_ai::{
+    AiService, CloudLlmClient, CloudLlmConfig, ContextRequest, ProviderKind, RetryConfig,
+};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
-    GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction,
-    CODE_ACTION_KIND_AI_GENERATE, CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN,
-    COMMAND_EXPLAIN_ERROR,
+    GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
+    CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN, COMMAND_EXPLAIN_ERROR,
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
-use nova_refactor::{
-    code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp, FileId,
-    InMemoryJavaDatabase, OrganizeImportsParams, RenameParams as RefactorRenameParams, SemanticRefactorError,
-};
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
+use nova_refactor::{
+    code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
+    FileId, InMemoryJavaDatabase, OrganizeImportsParams, RenameParams as RefactorRenameParams,
+    SemanticRefactorError,
+};
 use nova_vfs::{ContentChange, Document};
 use serde::Deserialize;
 use serde_json::json;
@@ -74,7 +76,11 @@ fn main() -> std::io::Result<()> {
             })) {
                 Ok(result) => result?,
                 Err(_) => {
-                    tracing::error!(target = "nova.lsp", method, "panic while handling notification");
+                    tracing::error!(
+                        target = "nova.lsp",
+                        method,
+                        "panic while handling notification"
+                    );
                 }
             }
             flush_memory_status_notifications(&mut writer, &mut state)?;
@@ -185,23 +191,25 @@ fn handle_request(
             // capabilities that Nova supports today; editor integrations can
             // still call custom `nova/*` requests directly.
             let result = json!({
-                    "capabilities": {
-                        "textDocumentSync": { "openClose": true, "change": 2 },
-                        "documentFormattingProvider": true,
-                        "documentRangeFormattingProvider": true,
-                        "documentOnTypeFormattingProvider": {
-                            "firstTriggerCharacter": "}",
-                            "moreTriggerCharacter": [";"]
-                        },
-                        "renameProvider": { "prepareProvider": true },
-                        "codeActionProvider": {
+                "capabilities": {
+                    "textDocumentSync": { "openClose": true, "change": 2 },
+                    "documentFormattingProvider": true,
+                    "documentRangeFormattingProvider": true,
+                    "documentOnTypeFormattingProvider": {
+                        "firstTriggerCharacter": "}",
+                        "moreTriggerCharacter": [";"]
+                    },
+                    "renameProvider": { "prepareProvider": true },
+                    "codeActionProvider": {
+                        "resolveProvider": true,
                         "codeActionKinds": [
                             CODE_ACTION_KIND_EXPLAIN,
                             CODE_ACTION_KIND_AI_GENERATE,
                             CODE_ACTION_KIND_AI_TESTS,
                             "source.organizeImports",
                             "refactor.extract",
-                            "refactor.inline"
+                            "refactor.inline",
+                            "refactor.rewrite"
                         ]
                     },
                     "executeCommandProvider": {
@@ -231,7 +239,9 @@ fn handle_request(
             let payload = serde_json::to_value(nova_lsp::MemoryStatusResponse { report });
             Ok(match payload {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                }
             })
         }
         "textDocument/codeAction" => {
@@ -241,7 +251,21 @@ fn handle_request(
             let result = handle_code_action(params, state);
             Ok(match result {
                 Ok(actions) => json!({ "jsonrpc": "2.0", "id": id, "result": actions }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "codeAction/resolve" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_code_action_resolve(params, state);
+            Ok(match result {
+                Ok(action) => json!({ "jsonrpc": "2.0", "id": id, "result": action }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         "textDocument/prepareRename" => {
@@ -251,7 +275,9 @@ fn handle_request(
             let result = handle_prepare_rename(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         "textDocument/rename" => {
@@ -261,7 +287,9 @@ fn handle_request(
             let result = handle_rename(params, state);
             Ok(match result {
                 Ok(edit) => json!({ "jsonrpc": "2.0", "id": id, "result": edit }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         "workspace/executeCommand" => {
@@ -271,7 +299,9 @@ fn handle_request(
             let result = handle_execute_command(params, state, writer);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+                Err((code, message)) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                }
             })
         }
         nova_lsp::DOCUMENT_FORMATTING_METHOD
@@ -300,16 +330,18 @@ fn handle_request(
                 }));
             };
 
-            Ok(match nova_lsp::handle_formatting_request(method, params, doc.text()) {
-                Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                Err(err) => {
-                    let (code, message) = match err {
-                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                    };
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                }
-            })
+            Ok(
+                match nova_lsp::handle_formatting_request(method, params, doc.text()) {
+                    Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                    Err(err) => {
+                        let (code, message) = match err {
+                            nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                            nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                        };
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                    }
+                },
+            )
         }
         _ => {
             if state.shutdown_requested {
@@ -320,7 +352,9 @@ fn handle_request(
                 let result = handle_ai_custom_request(method, params, state, writer);
                 Ok(match result {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+                    Err((code, message)) => {
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                    }
                 })
             } else if method.starts_with("nova/") {
                 Ok(match nova_lsp::handle_custom_request(method, params) {
@@ -358,7 +392,11 @@ fn server_shutting_down_error(id: serde_json::Value) -> serde_json::Value {
     })
 }
 
-fn handle_notification(method: &str, message: &serde_json::Value, state: &mut ServerState) -> std::io::Result<()> {
+fn handle_notification(
+    method: &str,
+    message: &serde_json::Value,
+    state: &mut ServerState,
+) -> std::io::Result<()> {
     match method {
         "exit" => {
             // By convention `exit` is only respected after shutdown; this server
@@ -390,10 +428,17 @@ fn handle_notification(method: &str, message: &serde_json::Value, state: &mut Se
                 return Ok(());
             };
 
-            let changes: Vec<ContentChange> =
-                params.content_changes.into_iter().map(ContentChange::from).collect();
+            let changes: Vec<ContentChange> = params
+                .content_changes
+                .into_iter()
+                .map(ContentChange::from)
+                .collect();
             if let Err(err) = doc.apply_changes(params.text_document.version, &changes) {
-                tracing::warn!(target = "nova.lsp", uri, "failed to apply document changes: {err}");
+                tracing::warn!(
+                    target = "nova.lsp",
+                    uri,
+                    "failed to apply document changes: {err}"
+                );
                 return Ok(());
             }
             state.refresh_document_memory();
@@ -404,9 +449,7 @@ fn handle_notification(method: &str, message: &serde_json::Value, state: &mut Se
             ) else {
                 return Ok(());
             };
-            state
-                .documents
-                .remove(params.text_document.uri.as_str());
+            state.documents.remove(params.text_document.uri.as_str());
             state.refresh_document_memory();
         }
         _ => {}
@@ -428,8 +471,10 @@ fn flush_memory_status_notifications(
     events.clear();
     drop(events);
 
-    let params = serde_json::to_value(nova_lsp::MemoryStatusResponse { report: last.report })
-        .unwrap_or(serde_json::Value::Null);
+    let params = serde_json::to_value(nova_lsp::MemoryStatusResponse {
+        report: last.report,
+    })
+    .unwrap_or(serde_json::Value::Null);
     let notification = json!({
         "jsonrpc": "2.0",
         "method": nova_lsp::MEMORY_STATUS_NOTIFICATION,
@@ -493,7 +538,10 @@ fn to_ide_range(range: &Range) -> nova_ide::LspRange {
     }
 }
 
-fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<serde_json::Value, String> {
+fn handle_code_action(
+    params: serde_json::Value,
+    state: &ServerState,
+) -> Result<serde_json::Value, String> {
     let params: CodeActionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let text = load_document_text(state, &params.text_document.uri);
     let text = text.as_deref();
@@ -505,17 +553,42 @@ fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<
         if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
             let range = to_lsp_types_range(&params.range);
             if let Some(action) =
-                nova_ide::code_action::extract_method_code_action(text, uri.clone(), range)
+                nova_ide::code_action::extract_method_code_action(text, uri.clone(), range.clone())
             {
                 actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
             }
 
+            let is_cursor = params.range.start.line == params.range.end.line
+                && params.range.start.character == params.range.end.character;
             let cursor = LspTypesPosition {
                 line: params.range.start.line,
                 character: params.range.start.character,
             };
-            for action in nova_ide::refactor::inline_method_code_actions(&uri, text, cursor) {
-                actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+            if is_cursor {
+                for action in nova_ide::refactor::inline_method_code_actions(&uri, text, cursor) {
+                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                }
+                if let Some(action) =
+                    nova_lsp::refactor::convert_to_record_code_action(uri.clone(), text, cursor)
+                {
+                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                }
+            } else {
+                let uri_string = uri.to_string();
+                for mut action in nova_ide::refactor::extract_member_code_actions(&uri, text, range)
+                {
+                    if let lsp_types::CodeActionOrCommand::CodeAction(code_action) = &mut action {
+                        if let Some(data) = code_action.data.as_mut() {
+                            if let Some(obj) = data.as_object_mut() {
+                                obj.insert(
+                                    "uri".to_string(),
+                                    serde_json::Value::String(uri_string.clone()),
+                                );
+                            }
+                        }
+                    }
+                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                }
             }
         }
     }
@@ -579,6 +652,39 @@ fn handle_code_action(params: serde_json::Value, state: &ServerState) -> Result<
     Ok(serde_json::Value::Array(actions))
 }
 
+fn handle_code_action_resolve(
+    params: serde_json::Value,
+    state: &ServerState,
+) -> Result<serde_json::Value, String> {
+    let mut action: CodeAction = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let Some(data) = action.data.clone() else {
+        return serde_json::to_value(action).map_err(|e| e.to_string());
+    };
+
+    let is_extract_member = data
+        .get("type")
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| t == "ExtractMember");
+    if !is_extract_member {
+        return serde_json::to_value(action).map_err(|e| e.to_string());
+    }
+
+    let Some(uri) = data.get("uri").and_then(|v| v.as_str()) else {
+        return serde_json::to_value(action).map_err(|e| e.to_string());
+    };
+    let Ok(uri) = uri.parse::<LspUri>() else {
+        return serde_json::to_value(action).map_err(|e| e.to_string());
+    };
+    let Some(source) = load_document_text(state, uri.as_str()) else {
+        return serde_json::to_value(action).map_err(|e| e.to_string());
+    };
+
+    nova_ide::refactor::resolve_extract_member_code_action(&uri, &source, &mut action, None)
+        .map_err(|e| e.to_string())?;
+
+    serde_json::to_value(action).map_err(|e| e.to_string())
+}
+
 fn organize_imports_code_action(uri: &LspUri, source: &str) -> Option<CodeAction> {
     let file = FileId::new(uri.to_string());
     let db = InMemoryJavaDatabase::new([(file.clone(), source.to_string())]);
@@ -594,8 +700,12 @@ fn organize_imports_code_action(uri: &LspUri, source: &str) -> Option<CodeAction
     ))
 }
 
-fn handle_prepare_rename(params: serde_json::Value, state: &ServerState) -> Result<serde_json::Value, String> {
-    let params: TextDocumentPositionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+fn handle_prepare_rename(
+    params: serde_json::Value,
+    state: &ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: TextDocumentPositionParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
     let Some(source) = load_document_text(state, uri.as_str()) else {
         return Ok(serde_json::Value::Null);
@@ -616,14 +726,18 @@ fn handle_prepare_rename(params: serde_json::Value, state: &ServerState) -> Resu
     serde_json::to_value(range).map_err(|e| e.to_string())
 }
 
-fn handle_rename(params: serde_json::Value, state: &ServerState) -> Result<LspWorkspaceEdit, String> {
+fn handle_rename(
+    params: serde_json::Value,
+    state: &ServerState,
+) -> Result<LspWorkspaceEdit, String> {
     let params: LspRenameParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document_position.text_document.uri;
     let Some(source) = load_document_text(state, uri.as_str()) else {
         return Err(format!("missing document text for `{}`", uri.as_str()));
     };
 
-    let Some(offset) = position_to_offset_utf16(&source, params.text_document_position.position) else {
+    let Some(offset) = position_to_offset_utf16(&source, params.text_document_position.position)
+    else {
         return Err("position out of bounds".to_string());
     };
 
@@ -770,10 +884,15 @@ fn handle_execute_command(
 
     match params.command.as_str() {
         "nova.extractMethod" => {
-            let args: nova_ide::code_action::ExtractMethodCommandArgs = parse_first_arg(params.arguments)?;
+            let args: nova_ide::code_action::ExtractMethodCommandArgs =
+                parse_first_arg(params.arguments)?;
             let uri = args.uri.clone();
-            let source = load_document_text(state, uri.as_str())
-                .ok_or_else(|| (-32603, format!("missing document text for `{}`", uri.as_str())))?;
+            let source = load_document_text(state, uri.as_str()).ok_or_else(|| {
+                (
+                    -32603,
+                    format!("missing document text for `{}`", uri.as_str()),
+                )
+            })?;
             let edit = nova_lsp::extract_method::execute(&source, args).map_err(|e| (-32603, e))?;
             serde_json::to_value(edit).map_err(|e| (-32603, e.to_string()))
         }
@@ -1162,7 +1281,10 @@ fn extract_range_text(text: &str, range: &Range) -> Option<String> {
     Some(text[start..end].to_string())
 }
 
-fn byte_range_for_ide_range(text: &str, range: nova_ide::LspRange) -> Option<std::ops::Range<usize>> {
+fn byte_range_for_ide_range(
+    text: &str,
+    range: nova_ide::LspRange,
+) -> Option<std::ops::Range<usize>> {
     let start = offset_from_position(
         text,
         &Position {
@@ -1255,7 +1377,8 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
         "openai" => CloudLlmConfig {
             provider: ProviderKind::OpenAi,
             endpoint: url::Url::parse(
-                &std::env::var("NOVA_AI_ENDPOINT").unwrap_or_else(|_| "https://api.openai.com/".to_string()),
+                &std::env::var("NOVA_AI_ENDPOINT")
+                    .unwrap_or_else(|_| "https://api.openai.com/".to_string()),
             )
             .map_err(|e| e.to_string())?,
             api_key,
@@ -1267,7 +1390,8 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
         "anthropic" => CloudLlmConfig {
             provider: ProviderKind::Anthropic,
             endpoint: url::Url::parse(
-                &std::env::var("NOVA_AI_ENDPOINT").unwrap_or_else(|_| "https://api.anthropic.com/".to_string()),
+                &std::env::var("NOVA_AI_ENDPOINT")
+                    .unwrap_or_else(|_| "https://api.anthropic.com/".to_string()),
             )
             .map_err(|e| e.to_string())?,
             api_key,
@@ -1279,7 +1403,8 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
         "gemini" => CloudLlmConfig {
             provider: ProviderKind::Gemini,
             endpoint: url::Url::parse(
-                &std::env::var("NOVA_AI_ENDPOINT").unwrap_or_else(|_| "https://generativelanguage.googleapis.com/".to_string()),
+                &std::env::var("NOVA_AI_ENDPOINT")
+                    .unwrap_or_else(|_| "https://generativelanguage.googleapis.com/".to_string()),
             )
             .map_err(|e| e.to_string())?,
             api_key,
@@ -1291,12 +1416,16 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
         "azure" => {
             let endpoint = std::env::var("NOVA_AI_ENDPOINT")
                 .map_err(|_| "NOVA_AI_ENDPOINT is required for azure provider".to_string())?;
-            let deployment = std::env::var("NOVA_AI_AZURE_DEPLOYMENT")
-                .map_err(|_| "NOVA_AI_AZURE_DEPLOYMENT is required for azure provider".to_string())?;
+            let deployment = std::env::var("NOVA_AI_AZURE_DEPLOYMENT").map_err(|_| {
+                "NOVA_AI_AZURE_DEPLOYMENT is required for azure provider".to_string()
+            })?;
             let api_version = std::env::var("NOVA_AI_AZURE_API_VERSION")
                 .unwrap_or_else(|_| "2024-02-01".to_string());
             CloudLlmConfig {
-                provider: ProviderKind::AzureOpenAi { deployment, api_version },
+                provider: ProviderKind::AzureOpenAi {
+                    deployment,
+                    api_version,
+                },
                 endpoint: url::Url::parse(&endpoint).map_err(|e| e.to_string())?,
                 api_key,
                 model,
