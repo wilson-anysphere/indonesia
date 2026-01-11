@@ -5,7 +5,7 @@ use crate::util::{
     atomic_write, bincode_deserialize, bincode_serialize, now_millis, read_file_limited,
 };
 use fs2::FileExt as _;
-use nova_hir::{ItemTree, SymbolSummary};
+use nova_hir::token_item_tree::{TokenItemTree, TokenSymbolSummary};
 use nova_syntax::ParseResult;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -26,9 +26,9 @@ pub struct FileAstArtifacts {
     /// Lossless syntax tree + parse errors.
     pub parse: ParseResult,
     /// Cheap structural summary for name resolution / indexing.
-    pub item_tree: ItemTree,
+    pub item_tree: TokenItemTree,
     /// Optional per-file symbol summary.
-    pub symbol_summary: Option<SymbolSummary>,
+    pub symbol_summary: Option<TokenSymbolSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,7 +289,7 @@ fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, CacheError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nova_hir::item_tree;
+    use nova_hir::token_item_tree::token_item_tree;
     use nova_syntax::parse;
     use tempfile::TempDir;
 
@@ -300,7 +300,7 @@ mod tests {
 
         let text = "class Foo { /* comment */ }";
         let parsed = parse(text);
-        let it = item_tree(&parsed, text);
+        let it = token_item_tree(&parsed, text);
         let artifacts = FileAstArtifacts {
             parse: parsed,
             item_tree: it,
@@ -339,7 +339,7 @@ mod tests {
 
         let text = "class Foo {}";
         let parsed = parse(text);
-        let it = item_tree(&parsed, text);
+        let it = token_item_tree(&parsed, text);
         let artifacts = FileAstArtifacts {
             parse: parsed,
             item_tree: it,
@@ -367,7 +367,7 @@ mod tests {
 
         let text = "class Foo {}";
         let parsed = parse(text);
-        let it = item_tree(&parsed, text);
+        let it = token_item_tree(&parsed, text);
         let artifacts = FileAstArtifacts {
             parse: parsed,
             item_tree: it,
@@ -389,7 +389,7 @@ mod tests {
 
         let text = "class Foo {}";
         let parsed = parse(text);
-        let it = item_tree(&parsed, text);
+        let it = token_item_tree(&parsed, text);
         let artifacts = FileAstArtifacts {
             parse: parsed,
             item_tree: it,
@@ -412,7 +412,7 @@ mod tests {
 
         let text = "class A {}";
         let parsed = parse(text);
-        let it = item_tree(&parsed, text);
+        let it = token_item_tree(&parsed, text);
         let artifacts = FileAstArtifacts {
             parse: parsed,
             item_tree: it,

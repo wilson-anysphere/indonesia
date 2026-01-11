@@ -327,6 +327,7 @@ impl RootDatabase {
                 classpath: Vec::new(),
                 output_dirs: Vec::new(),
                 dependencies: Vec::new(),
+                workspace_model: None,
             }),
         );
 

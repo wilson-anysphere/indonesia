@@ -531,7 +531,7 @@ struct PersistedDerivedValueOwned<T> {
     value: T,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct PersistedDerivedValueHeader {
     schema_version: u32,
     nova_version: String,

@@ -223,129 +223,15 @@ pub mod framework {
 pub mod body;
 
 // ---------------------------------------------------------------------
-// ItemTree (persisted, per-file structural summary)
+// Token-based per-file summary (early-cutoff demo).
 
-/// Version of the on-disk HIR schema used by `nova-cache`.
+/// Version of the on-disk token-HIR schema used by `nova-cache`.
 ///
-/// Bump this whenever the serialized `ItemTree`/`SymbolSummary` format changes
-/// in an incompatible way.
+/// Bump this whenever the serialized `TokenItemTree` / `TokenSymbolSummary`
+/// format changes in an incompatible way.
 pub const HIR_SCHEMA_VERSION: u32 = 1;
 
-use nova_syntax::{ParseResult, SyntaxKind, TextRange};
-use serde::{Deserialize, Serialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize_repr, Deserialize_repr,
-)]
-#[repr(u8)]
-pub enum ItemKind {
-    Class = 0,
-    Interface = 1,
-    Enum = 2,
-    Record = 3,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Item {
-    pub kind: ItemKind,
-    pub name: String,
-    pub name_range: TextRange,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ItemTree {
-    pub items: Vec<Item>,
-}
-
-impl ItemTree {
-    pub fn empty() -> Self {
-        Self { items: Vec::new() }
-    }
-}
-
-/// Optional per-file symbol summary used by indexing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SymbolSummary {
-    pub names: Vec<String>,
-}
-
-impl SymbolSummary {
-    pub fn from_item_tree(item_tree: &ItemTree) -> Self {
-        Self {
-            names: item_tree.items.iter().map(|it| it.name.clone()).collect(),
-        }
-    }
-}
-
-fn token_text<'a>(text: &'a str, range: TextRange) -> &'a str {
-    let start = range.start as usize;
-    let end = range.end as usize;
-    &text[start..end]
-}
-
-fn is_trivia(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::Whitespace
-            | SyntaxKind::LineComment
-            | SyntaxKind::BlockComment
-            | SyntaxKind::DocComment
-    )
-}
-
-/// Build a per-file `ItemTree` from a flat token stream.
-///
-/// The current implementation uses a tiny recognizer (it looks for `class`,
-/// `interface`, `enum`, `record` followed by an identifier). The full Nova parser
-/// will replace this with a real Java grammar while keeping the persisted
-/// `ItemTree` format stable via schema versioning.
-pub fn item_tree(parse: &ParseResult, text: &str) -> ItemTree {
-    let tokens: Vec<_> = parse.tokens().collect();
-    let mut items = Vec::new();
-    let mut i = 0usize;
-
-    while i < tokens.len() {
-        let tok = tokens[i];
-        if tok.kind != SyntaxKind::Identifier {
-            i += 1;
-            continue;
-        }
-
-        let kw = token_text(text, tok.range);
-        let (kind, is_decl) = match kw {
-            "class" => (ItemKind::Class, true),
-            "interface" => (ItemKind::Interface, true),
-            "enum" => (ItemKind::Enum, true),
-            "record" => (ItemKind::Record, true),
-            _ => (ItemKind::Class, false),
-        };
-
-        if !is_decl {
-            i += 1;
-            continue;
-        }
-
-        // Find the next non-trivia token.
-        let mut j = i + 1;
-        while j < tokens.len() && is_trivia(tokens[j].kind) {
-            j += 1;
-        }
-
-        if j < tokens.len() && tokens[j].kind == SyntaxKind::Identifier {
-            let name_tok = tokens[j];
-            items.push(Item {
-                kind,
-                name: token_text(text, name_tok.range).to_string(),
-                name_range: name_tok.range,
-            });
-        }
-
-        i = j + 1;
-    }
-
-    ItemTree { items }
-}
+pub mod token_item_tree;
 
 // ---------------------------------------------------------------------
 // Experimental semantic substrate (`ItemTree` + body HIR with stable IDs)

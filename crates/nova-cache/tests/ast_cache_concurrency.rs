@@ -1,6 +1,6 @@
 use bincode::Options as _;
 use nova_cache::{AstArtifactCache, FileAstArtifacts, Fingerprint, AST_ARTIFACT_SCHEMA_VERSION};
-use nova_hir::item_tree;
+use nova_hir::token_item_tree::token_item_tree;
 use nova_syntax::parse;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -46,7 +46,7 @@ fn concurrent_store_does_not_lose_metadata_entries() {
             let file_path = format!("src/Foo{i}.java");
             let text = format!("class Foo{i} {{}}");
             let parsed = parse(&text);
-            let it = item_tree(&parsed, &text);
+            let it = token_item_tree(&parsed, &text);
             let artifacts = FileAstArtifacts {
                 parse: parsed,
                 item_tree: it,
@@ -95,7 +95,7 @@ fn concurrent_store_does_not_corrupt_metadata_and_corruption_is_cache_miss() {
         handles.push(thread::spawn(move || {
             let text = format!("class T{thread_id} {{}}");
             let parsed = parse(&text);
-            let it = item_tree(&parsed, &text);
+            let it = token_item_tree(&parsed, &text);
             let artifacts = FileAstArtifacts {
                 parse: parsed,
                 item_tree: it,

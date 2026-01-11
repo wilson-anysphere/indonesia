@@ -21,7 +21,9 @@ use nova_cache::{
     Fingerprint,
 };
 pub use nova_core::{FileId, ProjectId, SourceRootId};
-use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
+use nova_hir::token_item_tree::{
+    token_item_tree as build_item_tree, TokenItemTree, TokenSymbolSummary,
+};
 use nova_syntax::{parse as syntax_parse, ParseResult};
 
 /// A small in-memory store for file contents keyed by a compact [`FileId`].
@@ -125,8 +127,8 @@ struct FileData {
 struct CachedAst {
     fingerprint: Fingerprint,
     parse: Arc<ParseResult>,
-    item_tree: Arc<ItemTree>,
-    symbol_summary: Option<Arc<SymbolSummary>>,
+    item_tree: Arc<TokenItemTree>,
+    symbol_summary: Option<Arc<TokenSymbolSummary>>,
 }
 
 /// A minimal query facade with persisted AST/HIR artifacts for warm starts.
@@ -227,7 +229,7 @@ impl AnalysisDatabase {
         self.parse_count += 1;
         let parsed = syntax_parse(&text);
         let it = build_item_tree(&parsed, &text);
-        let sym = SymbolSummary::from_item_tree(&it);
+        let sym = TokenSymbolSummary::from_item_tree(&it);
 
         let artifacts = FileAstArtifacts {
             parse: parsed,
@@ -253,7 +255,7 @@ impl AnalysisDatabase {
         Ok(parse)
     }
 
-    pub fn item_tree(&mut self, file_path: &str) -> Result<Arc<ItemTree>, AnalysisDbError> {
+    pub fn item_tree(&mut self, file_path: &str) -> Result<Arc<TokenItemTree>, AnalysisDbError> {
         let file_path = normalize_rel_path(file_path);
         let fingerprint = self.file_data(&file_path)?.fingerprint.clone();
         if let Some(cached) = self.ast.get(&file_path) {
@@ -273,7 +275,7 @@ impl AnalysisDatabase {
     pub fn symbol_summary(
         &mut self,
         file_path: &str,
-    ) -> Result<Option<Arc<SymbolSummary>>, AnalysisDbError> {
+    ) -> Result<Option<Arc<TokenSymbolSummary>>, AnalysisDbError> {
         let file_path = normalize_rel_path(file_path);
         let fingerprint = self.file_data(&file_path)?.fingerprint.clone();
         if let Some(cached) = self.ast.get(&file_path) {

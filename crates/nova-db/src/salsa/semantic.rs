@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nova_cache::{FileAstArtifacts, Fingerprint};
-use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
+use nova_hir::token_item_tree::{
+    token_item_tree as build_item_tree, TokenItemTree, TokenSymbolSummary,
+};
 
 use crate::FileId;
 
@@ -18,11 +20,11 @@ pub trait NovaSemantic: NovaSyntax + HasQueryStats {
     /// This is the canonical "early-cutoff" demo: whitespace edits re-run `parse`
     /// but generally keep `item_tree` identical, which avoids recomputing its
     /// dependents.
-    fn item_tree(&self, file: FileId) -> Arc<ItemTree>;
+    fn item_tree(&self, file: FileId) -> Arc<TokenItemTree>;
 
     /// Further derived query (depends on `item_tree`) used by tests to verify
     /// early-cutoff.
-    fn symbol_summary(&self, file: FileId) -> Arc<SymbolSummary>;
+    fn symbol_summary(&self, file: FileId) -> Arc<TokenSymbolSummary>;
 
     /// Dummy downstream query used by tests to validate early-cutoff behavior.
     fn symbol_count(&self, file: FileId) -> usize;
@@ -35,7 +37,7 @@ pub trait NovaSemantic: NovaSyntax + HasQueryStats {
     fn synthetic_semantic_work(&self, file: FileId, steps: u32) -> u64;
 }
 
-fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<ItemTree> {
+fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenItemTree> {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
@@ -94,7 +96,7 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<ItemTree> {
     result
 }
 
-fn symbol_summary(db: &dyn NovaSemantic, file: FileId) -> Arc<SymbolSummary> {
+fn symbol_summary(db: &dyn NovaSemantic, file: FileId) -> Arc<TokenSymbolSummary> {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
@@ -103,7 +105,7 @@ fn symbol_summary(db: &dyn NovaSemantic, file: FileId) -> Arc<SymbolSummary> {
     cancel::check_cancelled(db);
 
     let it = db.item_tree(file);
-    let summary = SymbolSummary::from_item_tree(&it);
+    let summary = TokenSymbolSummary::from_item_tree(&it);
     let result = Arc::new(summary);
     db.record_query_stat("symbol_summary", start.elapsed());
     result

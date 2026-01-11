@@ -3,7 +3,7 @@ use nova_cache::{
     prune_cache, AstArtifactCache, CacheConfig, CacheDir, CacheMetadata, DerivedArtifactCache,
     FileAstArtifacts, Fingerprint, ProjectSnapshot, PrunePolicy,
 };
-use nova_hir::item_tree;
+use nova_hir::token_item_tree::token_item_tree;
 use nova_syntax::parse;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -35,7 +35,7 @@ fn new_cache_dir() -> (tempfile::TempDir, CacheDir) {
 fn store_ast(cache_dir: &CacheDir, file_path: &str, text: &str) -> String {
     let cache = AstArtifactCache::new(cache_dir.ast_dir());
     let parsed = parse(text);
-    let it = item_tree(&parsed, text);
+    let it = token_item_tree(&parsed, text);
     let artifacts = FileAstArtifacts {
         parse: parsed,
         item_tree: it,
@@ -81,6 +81,8 @@ struct PersistedDerivedValueOwned<T> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TestAstCacheMetadata {
     schema_version: u32,
+    syntax_schema_version: u32,
+    hir_schema_version: u32,
     nova_version: String,
     files: BTreeMap<String, TestAstCacheFileEntry>,
 }

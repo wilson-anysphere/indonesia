@@ -1,5 +1,5 @@
 use nova_cache::{AstArtifactCache, FileAstArtifacts, Fingerprint};
-use nova_hir::item_tree;
+use nova_hir::token_item_tree::token_item_tree;
 use nova_syntax::parse;
 
 #[test]
@@ -9,7 +9,7 @@ fn ast_cache_oversized_metadata_is_cache_miss() {
 
     let text = "class Foo {}";
     let parsed = parse(text);
-    let it = item_tree(&parsed, text);
+    let it = token_item_tree(&parsed, text);
     let artifacts = FileAstArtifacts {
         parse: parsed,
         item_tree: it,
@@ -35,7 +35,7 @@ fn ast_cache_oversized_artifact_is_cache_miss() {
 
     let text = "class Foo {}";
     let parsed = parse(text);
-    let it = item_tree(&parsed, text);
+    let it = token_item_tree(&parsed, text);
     let artifacts = FileAstArtifacts {
         parse: parsed,
         item_tree: it,
