@@ -78,9 +78,14 @@ jobs:
           BASELINE_RUN_ID: ${{ steps.baseline-run.outputs.run_id }}
         run: |
           set -euxo pipefail
-          if [ -f baseline/perf-current.json ]; then
+          if [ -s baseline/perf-current.json ]; then
             cp baseline/perf-current.json perf-base.json
-            echo "BASELINE_SOURCE=perf-baseline-main (run-id ${BASELINE_RUN_ID})" >> "${GITHUB_ENV}"
+            if python3 -c 'import json; json.load(open("perf-base.json"))' >/dev/null 2>&1; then
+              echo "BASELINE_SOURCE=perf-baseline-main (run-id ${BASELINE_RUN_ID})" >> "${GITHUB_ENV}"
+            else
+              echo "Downloaded baseline perf-current.json is not valid JSON; falling back to worktree bench." >&2
+              rm -f perf-base.json
+            fi
           fi
 
       - name: Bench (baseline)
