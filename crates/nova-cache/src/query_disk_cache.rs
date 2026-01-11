@@ -2,7 +2,7 @@ use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::util::{
     atomic_write, bincode_deserialize, bincode_options_limited, bincode_serialize, now_millis,
-    read_file_limited,
+    read_file_limited, BINCODE_PAYLOAD_LIMIT_BYTES,
 };
 use bincode::Options;
 use serde::de::IgnoredAny;
@@ -72,6 +72,12 @@ impl QueryDiskCache {
     }
 
     pub fn store(&self, key: &str, value: &[u8]) -> Result<(), CacheError> {
+        // Don't bother persisting entries that we won't be willing to deserialize
+        // later (see `read_file_limited` / `bincode_options_limited`).
+        if value.len() > BINCODE_PAYLOAD_LIMIT_BYTES {
+            return Ok(());
+        }
+
         let key_fingerprint = Fingerprint::from_bytes(key.as_bytes());
         let path = self.entry_path(&key_fingerprint);
         let persisted = PersistedQueryValue {
@@ -94,7 +100,12 @@ impl QueryDiskCache {
         let path = self.entry_path(&key_fingerprint);
         let bytes = match read_file_limited(&path) {
             Some(bytes) => bytes,
-            None => return Ok(None),
+            None => {
+                // Corrupted / oversized / unreadable entries are treated as a miss and
+                // cleaned up so they don't permanently occupy disk.
+                let _ = std::fs::remove_file(&path);
+                return Ok(None);
+            }
         };
 
         let persisted: PersistedQueryValueOwned = match bincode_deserialize(&bytes) {

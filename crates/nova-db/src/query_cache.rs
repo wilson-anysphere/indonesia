@@ -513,6 +513,10 @@ mod disk_cache_tests {
         std::fs::write(&path, bytes).unwrap();
 
         assert_eq!(cache.load("key1").unwrap(), None);
+        assert!(
+            path.exists(),
+            "collision misses should not delete the underlying cache entry"
+        );
     }
 
     #[test]
