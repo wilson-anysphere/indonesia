@@ -917,8 +917,7 @@ async fn accept_loop_unix(
             }
             res = listener.accept() => {
                 let (stream, _) = res.with_context(|| format!("accept unix socket {path:?}"))?;
-                #[cfg(all(unix, target_os = "linux"))]
-                {
+                if state.config.auth_token.is_none() {
                     match ipc_security::unix_peer_uid_matches_current_user(&stream) {
                         Ok(true) => {}
                         Ok(false) => {

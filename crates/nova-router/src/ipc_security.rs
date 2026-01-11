@@ -90,6 +90,48 @@ pub(crate) fn unix_peer_uid_matches_current_user(stream: &tokio::net::UnixStream
     Ok(cred.uid == euid)
 }
 
+#[cfg(all(
+    unix,
+    any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )
+))]
+pub(crate) fn unix_peer_uid_matches_current_user(stream: &tokio::net::UnixStream) -> Result<bool> {
+    use std::os::unix::io::AsRawFd;
+
+    let fd = stream.as_raw_fd();
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    let rc = unsafe { libc::getpeereid(fd, &mut uid, &mut gid) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("getpeereid");
+    }
+
+    let euid = unsafe { libc::geteuid() };
+    Ok(uid == euid)
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))
+))]
+pub(crate) fn unix_peer_uid_matches_current_user(_stream: &tokio::net::UnixStream) -> Result<bool> {
+    // Best-effort: not all Unix platforms expose a stable "peer uid" API for unix domain sockets.
+    // On those platforms we rely on filesystem permissions (0700 dir + 0600 socket) and token auth.
+    Ok(true)
+}
+
 #[cfg(unix)]
 pub(crate) fn restrict_unix_socket_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
