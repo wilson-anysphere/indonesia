@@ -82,6 +82,22 @@ fn rejects_unc_paths() {
 }
 
 #[test]
+fn rejects_windows_device_paths() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: r"\\?\C:\Windows\system32\evil.java".to_string(),
+            range: zero_range(),
+            text: "x".to_string(),
+        }],
+        ops: Vec::new(),
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::NonRelativePath { .. }));
+}
+
+#[test]
 fn rejects_parent_directory_segments() {
     let workspace = VirtualWorkspace::default();
     let patch = Patch::Json(JsonPatch {
