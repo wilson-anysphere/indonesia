@@ -251,6 +251,12 @@ export async function activate(context: vscode.ExtensionContext) {
     return vscode.workspace.getConfiguration('nova').get<boolean>('download.allowVersionMismatch', false);
   };
 
+  const setAllowVersionMismatch = async (value: boolean): Promise<void> => {
+    await vscode.workspace
+      .getConfiguration('nova')
+      .update('download.allowVersionMismatch', value, vscode.ConfigurationTarget.Global);
+  };
+
   async function checkBinaryVersion(binaryPath: string): Promise<{
     ok: boolean;
     version?: string;
@@ -538,6 +544,33 @@ export async function activate(context: vscode.ExtensionContext) {
       const refreshed = readServerSettings();
       const resolved = await serverManager.resolveServerPath({ path: refreshed.path });
       if (resolved) {
+        const check = await checkBinaryVersion(resolved);
+        if (!check.ok || !check.version) {
+          const suffix = check.version
+            ? `found v${check.version}, expected v${extensionVersion}`
+            : check.error
+              ? check.error
+              : 'unavailable';
+          const actions: string[] = [];
+          if (check.version && !allowVersionMismatch()) {
+            actions.push('Enable allowVersionMismatch');
+          }
+          actions.push('Open Settings', 'Open install docs');
+          const choice = await vscode.window.showErrorMessage(
+            `Nova: installed nova-lsp is not usable (${suffix}): ${resolved}`,
+            ...actions,
+          );
+          if (choice === 'Enable allowVersionMismatch') {
+            await setAllowVersionMismatch(true);
+            await ensureLanguageClientRunning(resolved);
+            missingServerPrompted = false;
+          } else if (choice === 'Open Settings') {
+            await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.releaseTag');
+          } else if (choice === 'Open install docs') {
+            await openInstallDocs(context);
+          }
+          return;
+        }
         await ensureLanguageClientRunning(resolved);
       }
       missingServerPrompted = false;
@@ -574,6 +607,29 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     const serverPath = picked[0].fsPath;
+    const check = await checkBinaryVersion(serverPath);
+    if (!check.ok || !check.version) {
+      const suffix = check.version
+        ? `found v${check.version}, expected v${extensionVersion}`
+        : check.error
+          ? check.error
+          : 'unavailable';
+      const actions: string[] = [];
+      if (check.version && !allowVersionMismatch()) {
+        actions.push('Enable allowVersionMismatch');
+      }
+      actions.push('Cancel');
+      const choice = await vscode.window.showErrorMessage(
+        `Nova: selected nova-lsp is not usable (${suffix}): ${serverPath}`,
+        ...actions,
+      );
+      if (choice === 'Enable allowVersionMismatch') {
+        await setAllowVersionMismatch(true);
+      } else {
+        return;
+      }
+    }
+
     await setServerPath(serverPath);
     missingServerPrompted = false;
     await ensureLanguageClientRunning(serverPath);
@@ -725,11 +781,17 @@ export async function activate(context: vscode.ExtensionContext) {
             ? check.error
             : 'unavailable';
         const actions = ['Use Local Server Binary...', 'Clear Setting'];
+        if (check.version && !allowVersionMismatch()) {
+          actions.unshift('Enable allowVersionMismatch');
+        }
         const choice = await vscode.window.showErrorMessage(
           `Nova: nova.server.path is not usable (${suffix}): ${settings.path}`,
           ...actions,
         );
-        if (choice === 'Use Local Server Binary...') {
+        if (choice === 'Enable allowVersionMismatch') {
+          await setAllowVersionMismatch(true);
+          continue;
+        } else if (choice === 'Use Local Server Binary...') {
           await useLocalServerBinary();
         } else if (choice === 'Clear Setting') {
           await setServerPath(null);

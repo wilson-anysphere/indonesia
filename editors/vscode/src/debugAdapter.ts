@@ -70,6 +70,12 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
     return config.get<boolean>('download.allowVersionMismatch', false);
   }
 
+  private async setAllowVersionMismatch(value: boolean): Promise<void> {
+    await vscode.workspace
+      .getConfiguration('nova')
+      .update('download.allowVersionMismatch', value, vscode.ConfigurationTarget.Global);
+  }
+
   private readDapSettings(config: vscode.WorkspaceConfiguration): NovaServerSettings {
     const downloadMode = this.readDownloadMode(config);
     const allowPrerelease = config.get<boolean>('download.allowPrerelease', false);
@@ -133,7 +139,37 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
     );
 
     this.output.appendLine(`Installed nova-dap ${installed.version}.`);
-    return installed.path;
+
+    const allowMismatch = this.allowVersionMismatch(config);
+    const check = await this.checkBinaryVersion(installed.path, allowMismatch);
+    if (check.ok && check.version) {
+      return installed.path;
+    }
+
+    const suffix = check.version
+      ? `found v${check.version}, expected v${this.extensionVersion}`
+      : check.error
+        ? check.error
+        : 'unavailable';
+    const actions: string[] = [];
+    if (check.version && !allowMismatch) {
+      actions.push('Enable allowVersionMismatch');
+    }
+    actions.push('Open Settings', 'Open install docs');
+    const choice = await vscode.window.showErrorMessage(
+      `Nova: installed nova-dap is not usable (${suffix}): ${installed.path}`,
+      ...actions,
+    );
+    if (choice === 'Enable allowVersionMismatch') {
+      await this.setAllowVersionMismatch(true);
+      return installed.path;
+    }
+    if (choice === 'Open Settings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.releaseTag');
+    } else if (choice === 'Open install docs') {
+      await openInstallDocs(this.context);
+    }
+    throw new UserFacingError('nova-dap is not installed');
   }
 
   private async resolveNovaDapCommand(session: vscode.DebugSession): Promise<string> {
@@ -170,11 +206,19 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
         : check.error
           ? check.error
           : 'unavailable';
+      const actions: string[] = [];
+      if (check.version && !allowMismatch) {
+        actions.push('Enable allowVersionMismatch');
+      }
+      actions.push('Open Settings');
       const action = await vscode.window.showErrorMessage(
         `Nova: nova.dap.path is not usable (${suffix}): ${resolvedPath}`,
-        'Open Settings',
+        ...actions,
       );
-      if (action === 'Open Settings') {
+      if (action === 'Enable allowVersionMismatch') {
+        await this.setAllowVersionMismatch(true);
+        return resolvedPath;
+      } else if (action === 'Open Settings') {
         await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.dap.path');
       }
       throw new UserFacingError('nova-dap path is invalid');
