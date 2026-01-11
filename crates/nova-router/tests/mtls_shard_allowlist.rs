@@ -237,7 +237,7 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
         &RpcMessage::WorkerHello {
             shard_id: 0,
             auth_token: None,
-            cached_index: None,
+            has_cached_index: false,
         },
     )
     .await?;
@@ -269,7 +269,7 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
         &RpcMessage::WorkerHello {
             shard_id: 1,
             auth_token: None,
-            cached_index: None,
+            has_cached_index: false,
         },
     )
     .await?;
@@ -298,7 +298,7 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
         &RpcMessage::WorkerHello {
             shard_id: 1,
             auth_token: None,
-            cached_index: None,
+            has_cached_index: false,
         },
     )
     .await?;
