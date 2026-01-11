@@ -178,6 +178,17 @@ struct WorkerHello {
   worker_build: Option<String>,
 }
 
+/// Optional metadata about a locally cached shard index.
+///
+/// This is used for telemetry / quick staleness checks without sending the full index in the
+/// handshake.
+struct CachedIndexInfo {
+  revision: u64,
+  /// Monotonically increasing generation counter, local to the worker.
+  index_generation: u64,
+  symbol_count: u32,
+}
+
 struct SupportedVersions {
   min: ProtocolVersion,
   max: ProtocolVersion,
@@ -389,6 +400,36 @@ enum Response {
 enum Notification {
   CachedIndex(ShardIndex),
   Unknown,
+}
+```
+
+Shared structs referenced above (normative):
+
+```rust
+/// A file path + full UTF-8 text contents.
+struct FileText {
+  path: String,
+  text: String,
+}
+
+struct Symbol {
+  name: String,
+  path: String,
+}
+
+struct ShardIndex {
+  shard_id: u32,
+  revision: u64,
+  /// Monotonically increasing generation counter, local to the worker.
+  index_generation: u64,
+  symbols: Vec<Symbol>,
+}
+
+struct WorkerStats {
+  shard_id: u32,
+  revision: u64,
+  index_generation: u64,
+  file_count: u32,
 }
 ```
 
