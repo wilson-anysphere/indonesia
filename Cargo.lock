@@ -3492,6 +3492,7 @@ dependencies = [
 name = "nova-index"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "criterion",
  "nova-cache",
  "nova-core",
