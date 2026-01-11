@@ -407,7 +407,10 @@ async fn client_handshake(
             reject.code,
             reject.message
         )),
-        other => Err(anyhow!("unexpected handshake frame: {other:?}")),
+        other => Err(anyhow!(
+            "unexpected handshake frame: {}",
+            wire_frame_type(&other)
+        )),
     }
 }
 
@@ -419,17 +422,17 @@ async fn server_handshake(
     let hello = match frame {
         WireFrame::Hello(hello) => hello,
         other => {
+            let frame_type = wire_frame_type(&other);
             let reject = HandshakeReject {
                 code: RejectCode::InvalidRequest,
-                message: format!("expected hello, got {other:?}"),
+                message: format!("expected hello, got {frame_type}"),
             };
-            let _ = write_wire_frame(
-                stream,
-                config.pre_handshake_max_frame_len,
-                &WireFrame::Reject(reject.clone()),
-            )
-            .await;
-            return Err(anyhow!("invalid handshake: {other:?}"));
+            let reject_frame = WireFrame::Reject(reject);
+            let _ =
+                write_wire_frame(stream, config.pre_handshake_max_frame_len, &reject_frame).await;
+            return Err(anyhow!(
+                "invalid handshake: expected hello, got {frame_type}"
+            ));
         }
     };
 
@@ -718,7 +721,7 @@ async fn read_loop(
                 tracing::trace!(
                     target: TRACE_TARGET,
                     event = "unexpected_frame",
-                    frame = ?other
+                    frame_type = wire_frame_type(&other)
                 );
                 continue;
             }
@@ -806,6 +809,17 @@ fn payload_kind(payload: &RpcPayload) -> &'static str {
         RpcPayload::Notification(_) => "notification",
         RpcPayload::Cancel => "cancel",
         RpcPayload::Unknown => "unknown",
+    }
+}
+
+fn wire_frame_type(frame: &WireFrame) -> &'static str {
+    match frame {
+        WireFrame::Hello(_) => "hello",
+        WireFrame::Welcome(_) => "welcome",
+        WireFrame::Reject(_) => "reject",
+        WireFrame::Packet { .. } => "packet",
+        WireFrame::PacketChunk { .. } => "packet_chunk",
+        WireFrame::Unknown => "unknown",
     }
 }
 
