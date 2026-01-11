@@ -119,7 +119,10 @@ jobs:
       - name: Compare
         if: github.event_name == 'pull_request'
         run: |
+          # `nova perf compare` uses its exit code to signal regressions; don't use `-e`
+          # so we can always write/upload report artifacts even when thresholds fail.
           set -uox pipefail
+          set +e
 
           # Keep the existing behavior:
           # - write a markdown report and append it to `GITHUB_STEP_SUMMARY`
