@@ -109,6 +109,16 @@ fn multiline_doc_comment_normalizes_star_lines() {
 }
 
 #[test]
+fn blank_lines_inside_block_comments_are_preserved() {
+    let src = "/*\n\n*/";
+    let ctx = FmtCtx::new(0);
+    let comment = make_comment(CommentKind::Block, src);
+
+    let doc = fmt_comment(&ctx, &comment, src);
+    assert_eq!(print(doc, PrintConfig::default()), "/*\n\n*/");
+}
+
+#[test]
 fn count_line_breaks_is_crlf_aware() {
     let text = "a\r\nb\r\nc";
     assert_eq!(nova_format::comment_printer::count_line_breaks(text), 2);
