@@ -126,25 +126,20 @@ impl MavenBuild {
             });
         }
 
+        let module_dir = module_dir(project_root, module_relative);
         let stdout_entries = parse_maven_classpath_output(&output.stdout);
         let mut entries = if stdout_entries.is_empty() {
             parse_maven_classpath_output(&output.combined())
         } else {
             stdout_entries
         };
+        entries = absolutize_paths(&module_dir, entries);
 
         // Best-effort: ensure the module output dir is present even if the chosen
         // classpath strategy omits it.
-        if let Some(module_rel) = module_relative {
-            let out_dir = project_root.join(module_rel).join("target").join("classes");
-            if !entries.iter().any(|p| p == &out_dir) {
-                entries.insert(0, out_dir);
-            }
-        } else {
-            let out_dir = project_root.join("target").join("classes");
-            if !entries.iter().any(|p| p == &out_dir) {
-                entries.insert(0, out_dir);
-            }
+        let out_dir = module_dir.join("target").join("classes");
+        if !entries.iter().any(|p| p == &out_dir) {
+            entries.insert(0, out_dir);
         }
 
         cache.update_module(
@@ -208,20 +203,30 @@ impl MavenBuild {
             }
         }
 
-        let mut compile_classpath = self.evaluate_path_list(
-            project_root,
-            module_relative,
-            "project.compileClasspathElements",
-        )?;
+        let module_dir = module_dir(project_root, module_relative);
 
-        let mut test_classpath = self.evaluate_path_list(
-            project_root,
-            module_relative,
-            "project.testClasspathElements",
-        )?;
+        let mut compile_classpath = absolutize_paths(
+            &module_dir,
+            self.evaluate_path_list(
+                project_root,
+                module_relative,
+                "project.compileClasspathElements",
+            )?,
+        );
 
-        let main_source_roots =
-            self.evaluate_path_list(project_root, module_relative, "project.compileSourceRoots")?;
+        let mut test_classpath = absolutize_paths(
+            &module_dir,
+            self.evaluate_path_list(
+                project_root,
+                module_relative,
+                "project.testClasspathElements",
+            )?,
+        );
+
+        let main_source_roots = absolutize_paths(
+            &module_dir,
+            self.evaluate_path_list(project_root, module_relative, "project.compileSourceRoots")?,
+        );
 
         let test_source_roots = {
             let roots = self.evaluate_path_list(
@@ -229,11 +234,12 @@ impl MavenBuild {
                 module_relative,
                 "project.testCompileSourceRoots",
             )?;
-            if roots.is_empty() {
+            let roots = if roots.is_empty() {
                 self.evaluate_path_list(project_root, module_relative, "project.testSourceRoots")?
             } else {
                 roots
-            }
+            };
+            absolutize_paths(&module_dir, roots)
         };
 
         let main_output_dir = self
@@ -243,14 +249,8 @@ impl MavenBuild {
                 "project.build.outputDirectory",
             )?
             .map(PathBuf::from)
-            .or_else(|| {
-                let rel = module_relative.unwrap_or_else(|| Path::new(""));
-                if rel.as_os_str().is_empty() {
-                    Some(project_root.join("target").join("classes"))
-                } else {
-                    Some(project_root.join(rel).join("target").join("classes"))
-                }
-            });
+            .map(|p| absolutize_path(&module_dir, p))
+            .or_else(|| Some(module_dir.join("target").join("classes")));
 
         let test_output_dir = self
             .evaluate_scalar_best_effort(
@@ -259,14 +259,8 @@ impl MavenBuild {
                 "project.build.testOutputDirectory",
             )?
             .map(PathBuf::from)
-            .or_else(|| {
-                let rel = module_relative.unwrap_or_else(|| Path::new(""));
-                if rel.as_os_str().is_empty() {
-                    Some(project_root.join("target").join("test-classes"))
-                } else {
-                    Some(project_root.join(rel).join("target").join("test-classes"))
-                }
-            });
+            .map(|p| absolutize_path(&module_dir, p))
+            .or_else(|| Some(module_dir.join("target").join("test-classes")));
 
         let release = self.evaluate_scalar_best_effort(
             project_root,
@@ -532,6 +526,28 @@ impl MavenBuild {
         }
 
         args
+    }
+}
+
+fn module_dir(project_root: &Path, module_relative: Option<&Path>) -> PathBuf {
+    match module_relative {
+        Some(rel) => project_root.join(rel),
+        None => project_root.to_path_buf(),
+    }
+}
+
+fn absolutize_paths(base_dir: &Path, paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .map(|p| absolutize_path(base_dir, p))
+        .collect()
+}
+
+fn absolutize_path(base_dir: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        base_dir.join(path)
     }
 }
 
