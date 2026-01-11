@@ -238,7 +238,7 @@ impl CommandRunner for DefaultCommandRunner {
     }
 }
 
-fn kill_process_tree_by_pid(pid: u32) {
+pub(crate) fn kill_process_tree_by_pid(pid: u32) {
     #[cfg(unix)]
     unsafe {
         let pid = pid as i32;

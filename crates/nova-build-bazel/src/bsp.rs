@@ -16,6 +16,12 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    thread,
+    time::Duration,
 };
 
 /// Configuration required to launch a Bazel BSP server.
@@ -52,7 +58,12 @@ pub fn bsp_compile_and_collect_diagnostics(
         .context("failed to convert workspace root to file URI")?;
 
     let args: Vec<&str> = config.args.iter().map(String::as_str).collect();
-    let mut client = BspClient::spawn_in_dir(&config.program, &args, root_abs.as_path())?;
+    let mut client = BspClient::spawn_in_dir_with_timeout(
+        &config.program,
+        &args,
+        root_abs.as_path(),
+        Duration::from_secs(300),
+    )?;
 
     // Initialize the BSP session.
     let _init_result = client.initialize(InitializeBuildParams {
@@ -126,6 +137,10 @@ pub struct BspClient {
     stdout: BufReader<Box<dyn Read + Send>>,
     next_id: i64,
     diagnostics: Vec<PublishDiagnosticsParams>,
+    timeout: Option<Duration>,
+    timed_out: Arc<AtomicBool>,
+    timeout_cancel: Option<mpsc::Sender<()>>,
+    timeout_handle: Option<thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for BspClient {
@@ -154,12 +169,52 @@ impl BspClient {
     /// Many BSP servers expect to be launched from the workspace root so they can discover
     /// configuration files and caches.
     pub fn spawn_in_dir(program: &str, args: &[&str], cwd: &Path) -> Result<Self> {
-        let mut child = Command::new(program)
-            .args(args)
+        Self::spawn_in_dir_inner(program, args, cwd, None)
+    }
+
+    /// Spawn a BSP server process with a best-effort wall-clock timeout.
+    ///
+    /// When the timeout elapses, Nova kills the whole process tree rooted at the BSP server (Unix
+    /// process groups; `taskkill /T` on Windows). This is a safety valve to prevent the language
+    /// server from hanging indefinitely if the BSP server wedges.
+    pub fn spawn_in_dir_with_timeout(
+        program: &str,
+        args: &[&str],
+        cwd: &Path,
+        timeout: Duration,
+    ) -> Result<Self> {
+        Self::spawn_in_dir_inner(program, args, cwd, Some(timeout))
+    }
+
+    fn spawn_in_dir_inner(
+        program: &str,
+        args: &[&str],
+        cwd: &Path,
+        timeout: Option<Duration>,
+    ) -> Result<Self> {
+        let mut cmd = Command::new(program);
+        cmd.args(args)
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::inherit());
+
+        // Put the child into its own process group on Unix so timeouts can kill the entire tree
+        // (e.g. BSP launcher scripts that spawn a JVM).
+        #[cfg(unix)]
+        unsafe {
+            use std::os::unix::process::CommandExt;
+
+            cmd.pre_exec(|| {
+                // SAFETY: `setpgid` is async-signal-safe and does not allocate.
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+
+        let mut child = cmd
             .spawn()
             .with_context(|| format!("failed to spawn BSP server `{program}`"))?;
 
@@ -176,12 +231,36 @@ impl BspClient {
                 .with_context(|| "failed to open BSP stdout")?,
         );
 
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let mut timeout_cancel = None;
+        let mut timeout_handle = None;
+        if let Some(timeout) = timeout {
+            let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
+            timeout_cancel = Some(cancel_tx);
+
+            let pid = child.id();
+            let timed_out_for_thread = Arc::clone(&timed_out);
+            timeout_handle = Some(thread::spawn(move || {
+                match cancel_rx.recv_timeout(timeout) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        timed_out_for_thread.store(true, Ordering::SeqCst);
+                        crate::command::kill_process_tree_by_pid(pid);
+                    }
+                }
+            }));
+        }
+
         Ok(Self {
             child: Some(child),
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
             diagnostics: Vec::new(),
+            timeout,
+            timed_out,
+            timeout_cancel,
+            timeout_handle,
         })
     }
 
@@ -196,6 +275,10 @@ impl BspClient {
             stdout: BufReader::new(Box::new(stdout)),
             next_id: 1,
             diagnostics: Vec::new(),
+            timeout: None,
+            timed_out: Arc::new(AtomicBool::new(false)),
+            timeout_cancel: None,
+            timeout_handle: None,
         }
     }
 
@@ -308,12 +391,19 @@ impl BspClient {
     }
 
     fn read_message(&mut self) -> Result<Value> {
+        const MAX_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
         let mut content_length: Option<usize> = None;
 
         loop {
             let mut line = String::new();
             let bytes = self.stdout.read_line(&mut line)?;
             if bytes == 0 {
+                if self.timed_out.load(Ordering::SeqCst) {
+                    if let Some(timeout) = self.timeout {
+                        return Err(anyhow!("BSP server timed out after {timeout:?}"));
+                    }
+                    return Err(anyhow!("BSP server timed out"));
+                }
                 return Err(anyhow!("BSP server closed the connection"));
             }
 
@@ -331,6 +421,11 @@ impl BspClient {
         }
 
         let len = content_length.with_context(|| "missing Content-Length header")?;
+        if len > MAX_MESSAGE_BYTES {
+            return Err(anyhow!(
+                "BSP message too large: {len} bytes (limit {MAX_MESSAGE_BYTES})"
+            ));
+        }
         let mut buf = vec![0u8; len];
         self.stdout.read_exact(&mut buf)?;
         Ok(serde_json::from_slice(&buf)?)
@@ -339,9 +434,16 @@ impl BspClient {
 
 impl Drop for BspClient {
     fn drop(&mut self) {
+        if let Some(cancel) = self.timeout_cancel.take() {
+            let _ = cancel.send(());
+        }
+        if let Some(handle) = self.timeout_handle.take() {
+            let _ = handle.join();
+        }
+
         // Best-effort shutdown; ignore errors.
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
+            crate::command::kill_process_tree_by_pid(child.id());
             let _ = child.wait();
         }
     }
@@ -821,7 +923,12 @@ pub fn target_compile_info_via_bsp(
     let root_uri = nova_core::path_to_file_uri(&root_abs)
         .context("failed to convert workspace root to file URI")?;
 
-    let mut client = BspClient::spawn_in_dir(bsp_program, bsp_args, root_abs.as_path())?;
+    let mut client = BspClient::spawn_in_dir_with_timeout(
+        bsp_program,
+        bsp_args,
+        root_abs.as_path(),
+        Duration::from_secs(55),
+    )?;
 
     // Initialize the BSP session.
     let _init_result = client.initialize(InitializeBuildParams {
