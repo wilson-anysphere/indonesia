@@ -37,23 +37,36 @@ fn gate_sealed_classes(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Ve
         return;
     }
 
-    for tok in root.descendants_with_tokens().filter_map(|e| e.into_token()) {
-        match tok.kind() {
-            SyntaxKind::SealedKw | SyntaxKind::NonSealedKw => {
-                if tok.parent().map_or(false, |p| p.kind() == SyntaxKind::Modifiers) {
-                    out.push(feature_error(level, JavaFeature::SealedClasses, &tok));
-                }
-            }
-            // `permits` in a type header.
-            SyntaxKind::PermitsKw => {
-                if tok
-                    .parent()
-                    .map_or(false, |p| p.kind() == SyntaxKind::PermitsClause)
-                {
-                    out.push(feature_error(level, JavaFeature::SealedClasses, &tok));
-                }
-            }
-            _ => {}
+    for decl in root.descendants().filter(|n| {
+        matches!(
+            n.kind(),
+            SyntaxKind::ClassDeclaration | SyntaxKind::InterfaceDeclaration
+        )
+    }) {
+        let sealed_kw = decl
+            .children()
+            .find(|n| n.kind() == SyntaxKind::Modifiers)
+            .and_then(|mods| {
+                mods.children_with_tokens()
+                    .filter_map(|e| e.into_token())
+                    .find(|t| matches!(t.kind(), SyntaxKind::SealedKw | SyntaxKind::NonSealedKw))
+            });
+        if let Some(tok) = sealed_kw {
+            out.push(feature_error(level, JavaFeature::SealedClasses, &tok));
+            continue;
+        }
+
+        let permits_kw = decl
+            .children()
+            .find(|n| n.kind() == SyntaxKind::PermitsClause)
+            .and_then(|permits| {
+                permits
+                    .children_with_tokens()
+                    .filter_map(|e| e.into_token())
+                    .find(|t| t.kind() == SyntaxKind::PermitsKw)
+            });
+        if let Some(tok) = permits_kw {
+            out.push(feature_error(level, JavaFeature::SealedClasses, &tok));
         }
     }
 }

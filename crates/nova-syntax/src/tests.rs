@@ -507,3 +507,99 @@ fn feature_gate_var_local_inference_version_matrix() {
     assert_eq!(java10.result.errors, Vec::new());
     assert!(java10.diagnostics.is_empty());
 }
+
+#[test]
+fn feature_gate_sealed_classes_version_matrix() {
+    let input = "sealed class C permits A, B {}";
+
+    let java14 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 14,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java14.result.errors, Vec::new());
+    assert_eq!(
+        java14.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_SEALED_CLASSES"]
+    );
+
+    let java16_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 16,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java16_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java16_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_SEALED_CLASSES"]
+    );
+
+    let java16_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 16,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java16_preview.result.errors, Vec::new());
+    assert!(java16_preview.diagnostics.is_empty());
+
+    let java17 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 17,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java17.result.errors, Vec::new());
+    assert!(java17.diagnostics.is_empty());
+}
+
+#[test]
+fn feature_gate_switch_expressions_version_matrix() {
+    let input =
+        "class Foo { void m(int x) { switch (x) { case 1 -> { return; } default -> { return; } } } }";
+
+    let java13 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 13,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java13.result.errors, Vec::new());
+    assert_eq!(
+        java13.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_SWITCH_EXPRESSIONS", "JAVA_FEATURE_SWITCH_EXPRESSIONS"]
+    );
+
+    let java14 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 14,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java14.result.errors, Vec::new());
+    assert!(java14.diagnostics.is_empty());
+}
