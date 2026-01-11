@@ -422,3 +422,102 @@ api_key = "SUPER-SECRET"
     assert!(archive_path.is_file());
     assert_eq!(archive_path, &bundle_path.with_extension("zip"));
 }
+
+#[test]
+fn cache_list_json_reports_project_caches_and_skips_deps() {
+    let cache_root = TempDir::new().unwrap();
+
+    cache_root.child("deps").create_dir_all().unwrap();
+    cache_root
+        .child("deps/keep.txt")
+        .write_str("do not touch")
+        .unwrap();
+
+    for (name, last_updated) in [("proj-a", 10_u64), ("proj-b", 20_u64)] {
+        let dir = cache_root.child(name);
+        dir.create_dir_all().unwrap();
+        dir.child("metadata.json")
+            .write_str(&format!(
+                r#"{{"schema_version":{},"nova_version":"test","last_updated_millis":{last_updated}}}"#,
+                nova_cache::CACHE_METADATA_SCHEMA_VERSION
+            ))
+            .unwrap();
+        dir.child("blob.bin").write_binary(&vec![0_u8; 8]).unwrap();
+    }
+
+    let output = nova()
+        .arg("cache")
+        .arg("list")
+        .arg("--json")
+        .env("NOVA_CACHE_DIR", cache_root.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let caches = v["caches"].as_array().unwrap();
+    let names: Vec<String> = caches
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, vec!["proj-a", "proj-b"]);
+}
+
+#[test]
+fn cache_gc_removes_project_cache_dirs_and_preserves_deps() {
+    let cache_root = TempDir::new().unwrap();
+
+    cache_root.child("deps").create_dir_all().unwrap();
+    cache_root
+        .child("deps/keep.txt")
+        .write_str("do not touch")
+        .unwrap();
+
+    cache_root.child("proj-a").create_dir_all().unwrap();
+    cache_root
+        .child("proj-a/blob.bin")
+        .write_binary(&vec![0_u8; 8])
+        .unwrap();
+
+    cache_root.child("proj-b").create_dir_all().unwrap();
+    cache_root
+        .child("proj-b/blob.bin")
+        .write_binary(&vec![0_u8; 8])
+        .unwrap();
+
+    let output = nova()
+        .arg("cache")
+        .arg("gc")
+        .arg("--max-total-bytes")
+        .arg("0")
+        .arg("--keep-latest-n")
+        .arg("0")
+        .arg("--json")
+        .env("NOVA_CACHE_DIR", cache_root.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        !cache_root.child("proj-a").path().exists(),
+        "proj-a should be removed"
+    );
+    assert!(
+        !cache_root.child("proj-b").path().exists(),
+        "proj-b should be removed"
+    );
+    assert!(
+        cache_root.child("deps").path().exists(),
+        "deps should not be removed"
+    );
+}
