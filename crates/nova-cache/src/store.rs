@@ -195,6 +195,9 @@ async fn sync_parent_dir_best_effort(dest: &Path) {
         })
         .await;
     }
+
+    #[cfg(not(unix))]
+    let _ = dest;
 }
 
 #[cfg(feature = "s3")]
