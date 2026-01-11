@@ -1,0 +1,10 @@
+[package]
+name = "nova-types-bridge"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+nova-classfile = { path = "../nova-classfile" }
+nova-types = { path = "../nova-types" }
+thiserror = "1"
+

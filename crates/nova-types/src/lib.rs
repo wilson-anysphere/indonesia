@@ -934,6 +934,63 @@ impl TypeStore {
         id
     }
 
+    /// Ensure a `ClassId` exists for `binary_name`, inserting a placeholder definition if needed.
+    ///
+    /// This is primarily intended for on-demand external type loading where we need to reserve a
+    /// stable `ClassId` before recursively loading referenced classes (cycle-safe interning).
+    pub fn intern_class_id(&mut self, binary_name: &str) -> ClassId {
+        if let Some(id) = self.class_by_name.get(binary_name).copied() {
+            return id;
+        }
+
+        let id = ClassId(self.classes.len() as u32);
+        self.class_by_name.insert(binary_name.to_string(), id);
+        self.classes.push(ClassDef {
+            name: binary_name.to_string(),
+            kind: ClassKind::Class,
+            type_params: vec![],
+            super_class: None,
+            interfaces: vec![],
+            methods: vec![],
+        });
+        id
+    }
+
+    /// Define (or overwrite) the `ClassDef` for `id`.
+    ///
+    /// This is used to replace placeholder/minimal definitions with a richer model (e.g. after
+    /// loading a class stub from an external provider).
+    pub fn define_class(&mut self, id: ClassId, def: ClassDef) {
+        let idx = id.0 as usize;
+        if idx >= self.classes.len() {
+            // Callers are expected to use `intern_class_id` first, but keep the method resilient in
+            // case an external caller passes an out-of-bounds id.
+            self.classes.resize_with(idx + 1, || ClassDef {
+                name: "<uninitialized>".to_string(),
+                kind: ClassKind::Class,
+                type_params: vec![],
+                super_class: None,
+                interfaces: vec![],
+                methods: vec![],
+            });
+        }
+
+        let old_name = self.classes[idx].name.clone();
+        if old_name != def.name {
+            self.class_by_name.remove(&old_name);
+            if let Some(existing) = self.class_by_name.get(&def.name).copied() {
+                if existing != id {
+                    panic!("duplicate class definition for {} (existing {:?})", def.name, existing);
+                }
+            }
+            self.class_by_name.insert(def.name.clone(), id);
+        } else {
+            self.class_by_name.insert(def.name.clone(), id);
+        }
+
+        self.classes[idx] = def;
+    }
+
     pub fn class_id(&self, name: &str) -> Option<ClassId> {
         self.lookup_class(name)
     }

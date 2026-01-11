@@ -38,6 +38,7 @@ members = [
     "crates/nova-ide",
     "crates/nova-index",
     "crates/nova-types",
+    "crates/nova-types-bridge",
     "crates/nova-vfs",
     "crates/nova-syntax",
     "crates/nova-jdk",

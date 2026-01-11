@@ -4142,6 +4142,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-types-bridge"
+version = "0.1.0"
+dependencies = [
+ "nova-classfile",
+ "nova-types",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "nova-vfs"
 version = "0.1.0"
 dependencies = [
