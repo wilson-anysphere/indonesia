@@ -76,6 +76,30 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
       .update('download.allowVersionMismatch', value, vscode.ConfigurationTarget.Global);
   }
 
+  private isPermissionError(message: string | undefined): boolean {
+    if (process.platform === 'win32') {
+      return false;
+    }
+    const lower = message?.toLowerCase() ?? '';
+    return lower.includes('eacces') || lower.includes('permission denied');
+  }
+
+  private async makeExecutable(binaryPath: string): Promise<boolean> {
+    if (process.platform === 'win32') {
+      return false;
+    }
+    try {
+      await fs.chmod(binaryPath, 0o755);
+      this.output.appendLine(`Marked ${binaryPath} as executable.`);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.output.appendLine(`Failed to mark ${binaryPath} as executable: ${message}`);
+      void vscode.window.showErrorMessage(`Nova: failed to make ${binaryPath} executable: ${message}`);
+      return false;
+    }
+  }
+
   private readDapSettings(config: vscode.WorkspaceConfiguration): NovaServerSettings {
     const downloadMode = this.readDownloadMode(config);
     const allowPrerelease = config.get<boolean>('download.allowPrerelease', false);
@@ -152,6 +176,9 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
         ? check.error
         : 'unavailable';
     const actions: string[] = [];
+    if (check.error && this.isPermissionError(check.error)) {
+      actions.push('Make Executable');
+    }
     if (check.version && !allowMismatch) {
       actions.push('Enable allowVersionMismatch');
     }
@@ -160,7 +187,15 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
       `Nova: installed nova-dap is not usable (${suffix}): ${installed.path}`,
       ...actions,
     );
-    if (choice === 'Enable allowVersionMismatch') {
+    if (choice === 'Make Executable') {
+      const updated = await this.makeExecutable(installed.path);
+      if (updated) {
+        const rechecked = await this.checkBinaryVersion(installed.path, allowMismatch);
+        if (rechecked.ok && rechecked.version) {
+          return installed.path;
+        }
+      }
+    } else if (choice === 'Enable allowVersionMismatch') {
       await this.setAllowVersionMismatch(true);
       return installed.path;
     }
@@ -223,6 +258,9 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
           ? check.error
           : 'unavailable';
       const actions: string[] = [];
+      if (check.error && this.isPermissionError(check.error)) {
+        actions.push('Make Executable');
+      }
       if (check.version && !allowMismatch) {
         actions.push('Enable allowVersionMismatch');
       }
@@ -231,7 +269,15 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
         `Nova: nova.dap.path is not usable (${suffix}): ${resolvedPath}`,
         ...actions,
       );
-      if (action === 'Enable allowVersionMismatch') {
+      if (action === 'Make Executable') {
+        const updated = await this.makeExecutable(resolvedPath);
+        if (updated) {
+          const rechecked = await this.checkBinaryVersion(resolvedPath, allowMismatch);
+          if (rechecked.ok && rechecked.version) {
+            return resolvedPath;
+          }
+        }
+      } else if (action === 'Enable allowVersionMismatch') {
         await this.setAllowVersionMismatch(true);
         return resolvedPath;
       } else if (action === 'Open Settings') {

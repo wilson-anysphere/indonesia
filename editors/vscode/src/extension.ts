@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { LanguageClient, State, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
 import * as path from 'path';
+import * as fs from 'node:fs/promises';
 import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { registerNovaDebugAdapter } from './debugAdapter';
@@ -250,6 +251,30 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const allowVersionMismatch = (): boolean => {
     return vscode.workspace.getConfiguration('nova').get<boolean>('download.allowVersionMismatch', false);
+  };
+
+  const isPermissionError = (message: string | undefined): boolean => {
+    if (process.platform === 'win32') {
+      return false;
+    }
+    const lower = message?.toLowerCase() ?? '';
+    return lower.includes('eacces') || lower.includes('permission denied');
+  };
+
+  const makeExecutable = async (binaryPath: string): Promise<boolean> => {
+    if (process.platform === 'win32') {
+      return false;
+    }
+    try {
+      await fs.chmod(binaryPath, 0o755);
+      serverOutput.appendLine(`Marked ${binaryPath} as executable.`);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      serverOutput.appendLine(`Failed to mark ${binaryPath} as executable: ${message}`);
+      void vscode.window.showErrorMessage(`Nova: failed to make ${binaryPath} executable: ${message}`);
+      return false;
+    }
   };
 
   const setAllowVersionMismatch = async (value: boolean): Promise<void> => {
@@ -553,6 +578,9 @@ export async function activate(context: vscode.ExtensionContext) {
               ? check.error
               : 'unavailable';
           const actions: string[] = [];
+          if (check.error && isPermissionError(check.error)) {
+            actions.push('Make Executable');
+          }
           if (check.version && !allowVersionMismatch()) {
             actions.push('Enable allowVersionMismatch');
           }
@@ -561,7 +589,18 @@ export async function activate(context: vscode.ExtensionContext) {
             `Nova: installed nova-lsp is not usable (${suffix}): ${resolved}`,
             ...actions,
           );
-          if (choice === 'Enable allowVersionMismatch') {
+          if (choice === 'Make Executable') {
+            const updated = await makeExecutable(resolved);
+            if (updated) {
+              const rechecked = await checkBinaryVersion(resolved);
+              if (rechecked.ok && rechecked.version) {
+                await ensureLanguageClientRunning(resolved);
+                missingServerPrompted = false;
+                return;
+              }
+            }
+            return;
+          } else if (choice === 'Enable allowVersionMismatch') {
             await setAllowVersionMismatch(true);
             await ensureLanguageClientRunning(resolved);
             missingServerPrompted = false;
@@ -616,6 +655,9 @@ export async function activate(context: vscode.ExtensionContext) {
           ? check.error
           : 'unavailable';
       const actions: string[] = [];
+      if (check.error && isPermissionError(check.error)) {
+        actions.push('Make Executable');
+      }
       if (check.version && !allowVersionMismatch()) {
         actions.push('Enable allowVersionMismatch');
       }
@@ -624,7 +666,17 @@ export async function activate(context: vscode.ExtensionContext) {
         `Nova: selected nova-lsp is not usable (${suffix}): ${serverPath}`,
         ...actions,
       );
-      if (choice === 'Enable allowVersionMismatch') {
+      if (choice === 'Make Executable') {
+        const updated = await makeExecutable(serverPath);
+        if (updated) {
+          const rechecked = await checkBinaryVersion(serverPath);
+          if (!rechecked.ok || !rechecked.version) {
+            return;
+          }
+        } else {
+          return;
+        }
+      } else if (choice === 'Enable allowVersionMismatch') {
         await setAllowVersionMismatch(true);
       } else {
         return;
@@ -785,11 +837,20 @@ export async function activate(context: vscode.ExtensionContext) {
         if (check.version && !allowVersionMismatch()) {
           actions.unshift('Enable allowVersionMismatch');
         }
+        if (check.error && isPermissionError(check.error)) {
+          actions.unshift('Make Executable');
+        }
         const choice = await vscode.window.showErrorMessage(
           `Nova: nova.server.path is not usable (${suffix}): ${settings.path}`,
           ...actions,
         );
-        if (choice === 'Enable allowVersionMismatch') {
+        if (choice === 'Make Executable') {
+          const updated = await makeExecutable(settings.path);
+          if (updated) {
+            continue;
+          }
+          return;
+        } else if (choice === 'Enable allowVersionMismatch') {
           await setAllowVersionMismatch(true);
           continue;
         } else if (choice === 'Use Local Server Binary...') {
