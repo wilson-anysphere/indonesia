@@ -173,6 +173,12 @@ fn is_keyword(upper: &str) -> bool {
 
 /// Extract JPQL strings from Java source annotations (`@Query`, `@NamedQuery`).
 pub fn extract_jpql_strings(java_source: &str) -> Vec<(String, Span)> {
+    // Fast path: avoid parsing Java sources that clearly cannot contain JPQL
+    // strings.
+    if !(java_source.contains("@Query") || java_source.contains("@NamedQuery")) {
+        return Vec::new();
+    }
+
     let mut out = Vec::new();
     let parse = parse_java(java_source);
     let root = parse.syntax();

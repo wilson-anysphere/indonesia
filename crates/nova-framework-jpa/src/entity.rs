@@ -136,6 +136,15 @@ pub(crate) fn analyze_entities(sources: &[&str]) -> AnalysisResult {
 }
 
 fn parse_entities(source: &str, source_idx: usize) -> Result<Vec<Entity>, String> {
+    // Fast path: avoid running the full Java parser for files that clearly
+    // cannot contain entities.
+    if !(source.contains("@Entity")
+        || source.contains("@jakarta.persistence.Entity")
+        || source.contains("@javax.persistence.Entity"))
+    {
+        return Ok(Vec::new());
+    }
+
     let mut out = Vec::new();
 
     let parse = parse_java(source);
