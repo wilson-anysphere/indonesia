@@ -491,7 +491,9 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::ModuleBody.into());
         self.expect(SyntaxKind::LBrace, "expected `{` for module body");
         while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            let before = self.tokens.len();
             self.parse_module_directive();
+            self.force_progress(before, MODULE_DIRECTIVE_RECOVERY);
         }
         self.expect(SyntaxKind::RBrace, "expected `}` to close module body");
         self.builder.finish_node(); // ModuleBody
