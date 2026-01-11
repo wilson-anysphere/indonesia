@@ -125,6 +125,7 @@ impl AiClient {
         } else {
             None
         };
+        let request_id = audit::next_request_id();
 
         let cache_key = self.cache.as_ref().map(|_| {
             let mut builder = CacheKeyBuilder::new("ai_chat_v1");
@@ -159,6 +160,7 @@ impl AiClient {
                 if let Some(prompt) = prompt_for_log.as_deref() {
                     let started_at = Instant::now();
                     audit::log_llm_request(
+                        request_id,
                         self.provider_label,
                         &self.model,
                         prompt,
@@ -167,6 +169,7 @@ impl AiClient {
                         /*stream=*/ false,
                     );
                     audit::log_llm_response(
+                        request_id,
                         self.provider_label,
                         &self.model,
                         &hit,
@@ -190,6 +193,7 @@ impl AiClient {
         let started_at = Instant::now();
         if let Some(prompt) = prompt_for_log.as_deref() {
             audit::log_llm_request(
+                request_id,
                 self.provider_label,
                 &self.model,
                 prompt,
@@ -206,6 +210,7 @@ impl AiClient {
                 }
                 if self.audit_enabled {
                     audit::log_llm_response(
+                        request_id,
                         self.provider_label,
                         &self.model,
                         &completion,
@@ -220,6 +225,7 @@ impl AiClient {
             Err(err) => {
                 if self.audit_enabled {
                     audit::log_llm_error(
+                        request_id,
                         self.provider_label,
                         &self.model,
                         &err.to_string(),
@@ -266,9 +272,11 @@ impl AiClient {
         } else {
             None
         };
+        let request_id = audit::next_request_id();
         let started_at = Instant::now();
         if let Some(prompt) = prompt_for_log.as_deref() {
             audit::log_llm_request(
+                request_id,
                 self.provider_label,
                 &self.model,
                 prompt,
@@ -283,6 +291,7 @@ impl AiClient {
             Err(err) => {
                 if self.audit_enabled {
                     audit::log_llm_error(
+                        request_id,
                         self.provider_label,
                         &self.model,
                         &err.to_string(),
@@ -296,6 +305,7 @@ impl AiClient {
         };
 
         let audit_enabled = self.audit_enabled;
+        let request_id_for_stream = request_id;
         let provider_label = self.provider_label;
         let model = self.model.clone();
         let started_at_for_stream = started_at;
@@ -315,6 +325,7 @@ impl AiClient {
                     Err(err) => {
                         if audit_enabled {
                             audit::log_llm_error(
+                                request_id_for_stream,
                                 provider_label,
                                 &model,
                                 &err.to_string(),
@@ -330,6 +341,7 @@ impl AiClient {
 
             if audit_enabled {
                 audit::log_llm_response(
+                    request_id_for_stream,
                     provider_label,
                     &model,
                     &completion,

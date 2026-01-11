@@ -263,15 +263,27 @@ impl CloudLlmClient {
         mut req: GenerateRequest,
         cancel: CancellationToken,
     ) -> Result<String, CloudLlmError> {
+        let request_id = audit::next_request_id();
+        let provider = provider_label(&self.cfg.provider);
+
         if cancel.is_cancelled() {
+            if self.cfg.audit_logging {
+                audit::log_llm_error(
+                    request_id,
+                    provider,
+                    &self.cfg.model,
+                    "request cancelled",
+                    Duration::ZERO,
+                    /*retry_count=*/ 0,
+                    /*stream=*/ false,
+                );
+            }
             return Err(CloudLlmError::Cancelled);
         }
 
         if self.cfg.audit_logging {
             req.prompt = audit::sanitize_prompt_for_audit(&req.prompt);
         }
-
-        let provider = provider_label(&self.cfg.provider);
 
         let cache_key = self
             .cache
@@ -282,6 +294,7 @@ impl CloudLlmClient {
                 if self.cfg.audit_logging {
                     let safe_url = audit::sanitize_url_for_log(&self.cfg.endpoint);
                     audit::log_llm_request(
+                        request_id,
                         provider,
                         &self.cfg.model,
                         &req.prompt,
@@ -290,6 +303,7 @@ impl CloudLlmClient {
                         /*stream=*/ false,
                     );
                     audit::log_llm_response(
+                        request_id,
                         provider,
                         &self.cfg.model,
                         &hit,
@@ -316,6 +330,7 @@ impl CloudLlmClient {
             if cancel.is_cancelled() {
                 if self.cfg.audit_logging {
                     audit::log_llm_error(
+                        request_id,
                         provider,
                         &self.cfg.model,
                         "request cancelled",
@@ -332,6 +347,7 @@ impl CloudLlmClient {
 
             if self.cfg.audit_logging {
                 audit::log_llm_request(
+                    request_id,
                     provider,
                     &self.cfg.model,
                     &req.prompt,
@@ -353,6 +369,7 @@ impl CloudLlmClient {
                 _ = cancel.cancelled() => {
                     if self.cfg.audit_logging {
                         audit::log_llm_error(
+                            request_id,
                             provider,
                             &self.cfg.model,
                             "request cancelled",
@@ -370,6 +387,7 @@ impl CloudLlmClient {
                 Err(err) => {
                     if self.cfg.audit_logging {
                         audit::log_llm_error(
+                            request_id,
                             provider,
                             &self.cfg.model,
                             &format!("request error to {safe_url}: {err}"),
@@ -387,6 +405,7 @@ impl CloudLlmClient {
                 _ = cancel.cancelled() => {
                     if self.cfg.audit_logging {
                         audit::log_llm_error(
+                            request_id,
                             provider,
                             &self.cfg.model,
                             "request cancelled",
@@ -404,6 +423,7 @@ impl CloudLlmClient {
                 Err(err) => {
                     if self.cfg.audit_logging {
                         audit::log_llm_error(
+                            request_id,
                             provider,
                             &self.cfg.model,
                             &format!("failed to read response bytes from {safe_url}: {err}"),
@@ -431,6 +451,7 @@ impl CloudLlmClient {
                 }
                 if self.cfg.audit_logging {
                     audit::log_llm_error(
+                        request_id,
                         provider,
                         &self.cfg.model,
                         &format!("bad status {status} from {safe_url}: {body}"),
@@ -447,6 +468,7 @@ impl CloudLlmClient {
                 Err(err) => {
                     if self.cfg.audit_logging {
                         audit::log_llm_error(
+                            request_id,
                             provider,
                             &self.cfg.model,
                             &format!("failed to parse response from {safe_url}: {err}"),
@@ -460,6 +482,7 @@ impl CloudLlmClient {
             };
             if self.cfg.audit_logging {
                 audit::log_llm_response(
+                    request_id,
                     provider,
                     &self.cfg.model,
                     &completion,

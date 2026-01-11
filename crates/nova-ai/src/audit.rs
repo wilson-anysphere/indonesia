@@ -1,7 +1,14 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tracing::info;
+
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_request_id() -> u64 {
+    NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Redact common secret patterns from audit logs.
 ///
@@ -101,6 +108,7 @@ pub(crate) fn sanitize_completion_for_audit(completion: &str) -> String {
 }
 
 pub(crate) fn log_llm_request(
+    request_id: u64,
     provider: &str,
     model: &str,
     prompt: &str,
@@ -112,6 +120,7 @@ pub(crate) fn log_llm_request(
     info!(
         target: nova_config::AI_AUDIT_TARGET,
         event = "llm_request",
+        request_id = request_id,
         provider = provider,
         model = model,
         endpoint = endpoint,
@@ -122,6 +131,7 @@ pub(crate) fn log_llm_request(
 }
 
 pub(crate) fn log_llm_response(
+    request_id: u64,
     provider: &str,
     model: &str,
     completion: &str,
@@ -134,6 +144,7 @@ pub(crate) fn log_llm_response(
     info!(
         target: nova_config::AI_AUDIT_TARGET,
         event = "llm_response",
+        request_id = request_id,
         provider = provider,
         model = model,
         latency_ms = latency.as_millis() as u64,
@@ -145,6 +156,7 @@ pub(crate) fn log_llm_response(
 }
 
 pub(crate) fn log_llm_error(
+    request_id: u64,
     provider: &str,
     model: &str,
     error: &str,
@@ -156,6 +168,7 @@ pub(crate) fn log_llm_error(
     info!(
         target: nova_config::AI_AUDIT_TARGET,
         event = "llm_error",
+        request_id = request_id,
         provider = provider,
         model = model,
         latency_ms = latency.as_millis() as u64,
