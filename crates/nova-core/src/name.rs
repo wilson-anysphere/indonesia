@@ -83,7 +83,7 @@ impl NameInterner {
     }
 
     #[inline]
-    pub fn resolve<'a>(&'a self, name: InternedName) -> &'a str {
+    pub fn resolve(&self, name: InternedName) -> &str {
         self.rodeo.resolve(&name.0)
     }
 }

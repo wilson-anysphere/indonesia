@@ -31,7 +31,7 @@ pub fn collect_files_with_extension(root: &Path, extension: &str) -> io::Result<
                 continue;
             }
 
-            if file_type.is_file() && path.extension().map_or(false, |ext| ext == extension) {
+            if file_type.is_file() && path.extension().is_some_and(|ext| ext == extension) {
                 files.push(path);
             }
         }

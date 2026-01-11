@@ -66,8 +66,8 @@ pub fn parse_method_descriptor(desc: &str) -> Result<MethodDescriptor> {
         return Err(Error::InvalidDescriptor(desc.to_string()));
     }
 
-    let (return_type, rest) = if return_part.starts_with('V') {
-        (ReturnType::Void, &return_part[1..])
+    let (return_type, rest) = if let Some(rest) = return_part.strip_prefix('V') {
+        (ReturnType::Void, rest)
     } else {
         let (ty, rest) = parse_field_type(return_part)?;
         (ReturnType::Type(ty), rest)
@@ -141,4 +141,3 @@ mod tests {
         );
     }
 }
-
