@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
 import * as yauzl from 'yauzl';
@@ -107,15 +108,6 @@ export class ServerManager {
       archiveName,
     });
 
-    const archiveBytes = await downloadBytes(this.fetchImpl, archiveAsset.browser_download_url);
-    const actualSha256 = sha256Hex(Buffer.from(archiveBytes));
-
-    if (!sha256Equal(actualSha256, expectedSha256)) {
-      throw new Error(
-        `Checksum mismatch for ${archiveName}: expected ${expectedSha256}, got ${actualSha256}. Refusing to install.`,
-      );
-    }
-
     const tmpArchivePath = path.join(serverDir, `${archiveName}.tmp`);
     const tmpBinaryPath = path.join(serverDir, `${novaLspBinaryName(this.platform)}.tmp`);
     const finalBinaryPath = this.getManagedServerPath();
@@ -125,7 +117,13 @@ export class ServerManager {
     await safeRm(fs, tmpBinaryPath);
 
     try {
-      await fs.writeFile(tmpArchivePath, new Uint8Array(archiveBytes));
+      const actualSha256 = await downloadToFileAndSha256(this.fetchImpl, archiveAsset.browser_download_url, tmpArchivePath);
+      if (!sha256Equal(actualSha256, expectedSha256)) {
+        throw new Error(
+          `Checksum mismatch for ${archiveName}: expected ${expectedSha256}, got ${actualSha256}. Refusing to install.`,
+        );
+      }
+
       await this.extractor.extractBinaryFromArchive({
         archivePath: tmpArchivePath,
         binaryName: novaLspBinaryName(this.platform),
@@ -320,10 +318,6 @@ async function downloadBytes(fetchImpl: typeof fetch, url: string): Promise<Arra
   return await resp.arrayBuffer();
 }
 
-function sha256Hex(data: Buffer): string {
-  return createHash('sha256').update(data).digest('hex');
-}
-
 function sha256Equal(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
@@ -416,6 +410,38 @@ async function safeRm(fsImpl: typeof fs, filePath: string): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+async function downloadToFileAndSha256(fetchImpl: typeof fetch, url: string, destPath: string): Promise<string> {
+  const resp = await fetchImpl(url, {
+    headers: {
+      'User-Agent': 'nova-vscode',
+    },
+  });
+  if (!resp.ok) {
+    throw new Error(`Download failed (${resp.status}): ${url}`);
+  }
+
+  const hash = createHash('sha256');
+
+  if (resp.body) {
+    const nodeReadable = Readable.fromWeb(resp.body as unknown as globalThis.ReadableStream<Uint8Array>);
+    const hasher = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        hash.update(chunk);
+        callback(null, chunk);
+      },
+    });
+
+    await pipeline(nodeReadable, hasher, fsSync.createWriteStream(destPath));
+    return hash.digest('hex');
+  }
+
+  const bytes = await resp.arrayBuffer();
+  const buf = Buffer.from(bytes);
+  hash.update(buf);
+  await fs.writeFile(destPath, buf);
+  return hash.digest('hex');
 }
 
 type ExtractBinaryOptions = {
