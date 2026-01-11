@@ -1,5 +1,6 @@
 use crate::error::{CacheError, Result};
 use crate::fingerprint::Fingerprint;
+use crate::CacheLock;
 use crate::{CacheDir, CacheMetadata, ProjectSnapshot};
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
@@ -98,8 +99,23 @@ pub fn install_cache_package(
 
     extract_selected(package_file, &manifest, temp_dir.path(), full_install)?;
 
+    // Lock around the final on-disk replace/rename operations to avoid racing
+    // with other Nova processes writing into the same cache directory.
+    let _project_lock = CacheLock::lock_exclusive(&cache_dir.root().join(".lock"))?;
+    let _indexes_lock = CacheLock::lock_exclusive(&cache_dir.indexes_dir().join(".lock"))?;
+    let _queries_lock = if full_install {
+        Some(CacheLock::lock_exclusive(&cache_dir.queries_dir().join(".lock"))?)
+    } else {
+        None
+    };
+    let _ast_lock = if full_install {
+        Some(CacheLock::lock_exclusive(&cache_dir.ast_dir().join(".lock"))?)
+    } else {
+        None
+    };
+
     if full_install {
-        replace_dir_atomically(temp_dir.path(), cache_dir.root())?;
+        install_full(temp_dir.path(), cache_dir.root())?;
         Ok(CachePackageInstallOutcome::Full)
     } else {
         install_indexes_only(temp_dir.path(), cache_dir.root())?;
@@ -157,6 +173,9 @@ fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>> {
             // names like `<dest>.tmp.<pid>.<counter>`.
             let file_name = entry.file_name().to_string_lossy();
             if file_name.ends_with(".tmp") || file_name.contains(".tmp.") {
+                continue;
+            }
+            if entry.file_name() == OsStr::new(".lock") {
                 continue;
             }
 
@@ -230,6 +249,9 @@ fn extract_selected(
         let mut entry = entry?;
         let entry_path = entry.path()?.into_owned();
         validate_archive_relative_path(&entry_path)?;
+        if entry_path.file_name() == Some(OsStr::new(".lock")) {
+            continue;
+        }
         let entry_path_str = archive_path_string(&entry_path)?;
 
         if entry_path_str == CACHE_PACKAGE_MANIFEST_PATH {
@@ -408,44 +430,34 @@ fn sample_files<'a>(
         .collect()
 }
 
-fn replace_dir_atomically(src_dir: &Path, dest_dir: &Path) -> Result<()> {
-    let parent = dest_dir
-        .parent()
-        .ok_or_else(|| CacheError::InvalidArchivePath {
-            path: dest_dir.to_path_buf(),
-        })?;
-    std::fs::create_dir_all(parent)?;
+fn install_full(src_dir: &Path, dest_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest_dir)?;
 
-    let backup_dir = sibling_with_suffix(dest_dir, "old");
-    if backup_dir.exists() {
-        std::fs::remove_dir_all(&backup_dir)?;
-    }
-
-    if dest_dir.exists() {
-        std::fs::rename(dest_dir, &backup_dir)?;
-    }
-
-    std::fs::rename(src_dir, dest_dir)?;
-
-    if backup_dir.exists() {
-        std::fs::remove_dir_all(&backup_dir)?;
-    }
+    install_indexes_dir(src_dir, dest_dir)?;
+    install_component_dir(&src_dir.join("queries"), &dest_dir.join("queries"))?;
+    install_ast_dir(&src_dir.join("ast"), &dest_dir.join("ast"))?;
+    install_metadata_files(src_dir, dest_dir)?;
 
     Ok(())
 }
 
 fn install_indexes_only(src_dir: &Path, dest_dir: &Path) -> Result<()> {
     std::fs::create_dir_all(dest_dir)?;
+    install_indexes_dir(src_dir, dest_dir)?;
+    install_metadata_files(src_dir, dest_dir)
+}
 
-    let src_indexes = src_dir.join("indexes");
-    if src_indexes.is_dir() {
-        let dest_indexes = dest_dir.join("indexes");
-        replace_dir_atomically(&src_indexes, &dest_indexes)?;
-    }
+fn install_indexes_dir(src_dir: &Path, dest_dir: &Path) -> Result<()> {
+    install_component_dir(&src_dir.join("indexes"), &dest_dir.join("indexes"))
+}
 
-    let src_metadata = src_dir.join("metadata.json");
-    if src_metadata.is_file() {
-        replace_file_atomically(&src_metadata, &dest_dir.join("metadata.json"))?;
+fn install_metadata_files(src_dir: &Path, dest_dir: &Path) -> Result<()> {
+    let src_metadata_json = src_dir.join(crate::metadata::CACHE_METADATA_JSON_FILENAME);
+    if src_metadata_json.is_file() {
+        replace_file_atomically(
+            &src_metadata_json,
+            &dest_dir.join(crate::metadata::CACHE_METADATA_JSON_FILENAME),
+        )?;
     }
 
     let src_metadata_bin = src_dir.join(crate::metadata::CACHE_METADATA_BIN_FILENAME);
@@ -454,6 +466,69 @@ fn install_indexes_only(src_dir: &Path, dest_dir: &Path) -> Result<()> {
             &src_metadata_bin,
             &dest_dir.join(crate::metadata::CACHE_METADATA_BIN_FILENAME),
         )?;
+    }
+
+    Ok(())
+}
+
+fn install_component_dir(src_dir: &Path, dest_dir: &Path) -> Result<()> {
+    if !src_dir.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dest_dir)?;
+
+    let mut files = Vec::new();
+    for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.file_name() == OsStr::new(".lock") {
+            continue;
+        }
+        files.push(entry.path().to_path_buf());
+    }
+
+    for src_file in files {
+        let rel = src_file
+            .strip_prefix(src_dir)
+            .map_err(|_| CacheError::InvalidArchivePath {
+                path: src_file.clone(),
+            })?;
+        replace_file_atomically(&src_file, &dest_dir.join(rel))?;
+    }
+
+    Ok(())
+}
+
+fn install_ast_dir(src_dir: &Path, dest_dir: &Path) -> Result<()> {
+    if !src_dir.is_dir() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dest_dir)?;
+
+    let mut files = Vec::new();
+    for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
+        let entry = entry?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry.file_name() == OsStr::new(".lock") {
+            continue;
+        }
+        files.push(entry.path().to_path_buf());
+    }
+
+    // Ensure `metadata.bin` is installed after the artifact files it points to.
+    files.sort_by_key(|path| path.file_name() == Some(OsStr::new("metadata.bin")));
+
+    for src_file in files {
+        let rel = src_file
+            .strip_prefix(src_dir)
+            .map_err(|_| CacheError::InvalidArchivePath {
+                path: src_file.clone(),
+            })?;
+        replace_file_atomically(&src_file, &dest_dir.join(rel))?;
     }
 
     Ok(())

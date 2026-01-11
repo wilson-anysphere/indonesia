@@ -4,19 +4,16 @@ use crate::indexes::{
     SymbolIndex, SymbolLocation,
 };
 use crate::segments::{build_file_to_newest_segment_map, build_segment_files, segment_file_name};
-use fs2::FileExt as _;
-use nova_cache::{CacheDir, CacheMetadata, CacheMetadataArchive, Fingerprint, ProjectSnapshot};
+use nova_cache::{CacheDir, CacheLock, CacheMetadata, CacheMetadataArchive, Fingerprint, ProjectSnapshot};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
 pub const INDEX_SCHEMA_VERSION: u32 = 2;
 
-const INDEX_WRITE_LOCK_NAME: &str = "indexes.lock";
+const INDEX_WRITE_LOCK_NAME: &str = ".lock";
 
 const MAX_SEGMENTS_BEFORE_COMPACTION: usize = 32;
 const MAX_SEGMENT_BYTES_BEFORE_COMPACTION: u64 = 256 * 1024 * 1024;
-
 pub const DEFAULT_SHARD_COUNT: u32 = 64;
 
 pub type ShardId = u32;
@@ -1459,30 +1456,8 @@ where
         .unwrap_or_default()
 }
 
-struct IndexWriteLock {
-    file: std::fs::File,
-}
-
-impl Drop for IndexWriteLock {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
-}
-
-fn acquire_index_write_lock(
-    indexes_dir: &Path,
-) -> Result<Option<IndexWriteLock>, IndexPersistenceError> {
-    let lock_path = indexes_dir.join(INDEX_WRITE_LOCK_NAME);
-    let file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(lock_path)?;
-
-    match file.lock_exclusive() {
-        Ok(()) => Ok(Some(IndexWriteLock { file })),
-        Err(_) => Ok(None),
-    }
+fn acquire_index_write_lock(indexes_dir: &Path) -> Result<CacheLock, IndexPersistenceError> {
+    Ok(CacheLock::lock_exclusive(&indexes_dir.join(INDEX_WRITE_LOCK_NAME))?)
 }
 
 fn next_generation(previous_generation: u64) -> u64 {
