@@ -3,6 +3,20 @@ use unicode_ident::{is_xid_continue, is_xid_start};
 use crate::syntax_kind::SyntaxKind;
 use crate::TextRange;
 
+// NOTE: The JLS specifies that Unicode escape translation (`\\uXXXX`) happens *before*
+// lexical analysis. Nova's lexer currently operates on the raw source text and does
+// not perform this translation yet, so escapes inside identifiers/keywords/comments
+// are treated as the literal bytes `\\`, `u`, etc.
+//
+// TODO: Implement full JLS Unicode escape translation with an offset mapping so
+// diagnostics/ranges remain stable.
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LexError {
+    pub message: String,
+    pub range: TextRange,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub kind: SyntaxKind,
@@ -16,20 +30,33 @@ impl Token {
 }
 
 pub fn lex(input: &str) -> Vec<Token> {
-    Lexer::new(input).lex()
+    lex_with_errors(input).0
+}
+
+pub fn lex_with_errors(input: &str) -> (Vec<Token>, Vec<LexError>) {
+    Lexer::new(input).lex_with_errors()
 }
 
 pub struct Lexer<'a> {
     input: &'a str,
     pos: usize,
+    errors: Vec<LexError>,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
-        Self { input, pos: 0 }
+        Self {
+            input,
+            pos: 0,
+            errors: Vec::new(),
+        }
     }
 
     pub fn lex(mut self) -> Vec<Token> {
+        self.lex_with_errors().0
+    }
+
+    pub fn lex_with_errors(mut self) -> (Vec<Token>, Vec<LexError>) {
         let mut tokens = Vec::new();
         while !self.is_eof() {
             let start = self.pos;
@@ -44,7 +71,7 @@ impl<'a> Lexer<'a> {
             kind: SyntaxKind::Eof,
             range: TextRange::new(self.pos, self.pos),
         });
-        tokens
+        (tokens, self.errors)
     }
 
     fn next_kind(&mut self) -> SyntaxKind {
@@ -120,11 +147,16 @@ impl<'a> Lexer<'a> {
             b'$' | b'_' | b'a'..=b'z' | b'A'..=b'Z' => self.scan_identifier_or_keyword(),
             _ => {
                 // Non-ascii identifier start or unknown byte.
+                let start = self.pos;
                 let ch = self.peek_char().unwrap_or('\0');
                 if is_ident_start(ch) {
                     self.scan_identifier_or_keyword()
                 } else {
                     self.bump_char();
+                    self.errors.push(LexError {
+                        message: format!("unexpected character `{}`", ch.escape_debug()),
+                        range: TextRange::new(start, self.pos),
+                    });
                     SyntaxKind::Error
                 }
             }
@@ -174,20 +206,25 @@ impl<'a> Lexer<'a> {
     }
 
     fn scan_block_comment(&mut self) -> SyntaxKind {
+        let start = self.pos;
         let is_doc = self.peek_byte(2) == Some(b'*');
         self.pos += 2; // /*
         while !self.is_eof() {
             if self.peek_byte(0) == Some(b'*') && self.peek_byte(1) == Some(b'/') {
                 self.pos += 2;
-                break;
+                return if is_doc {
+                    SyntaxKind::DocComment
+                } else {
+                    SyntaxKind::BlockComment
+                };
             }
             self.bump_char();
         }
-        if is_doc {
-            SyntaxKind::DocComment
-        } else {
-            SyntaxKind::BlockComment
-        }
+        self.errors.push(LexError {
+            message: "unterminated block comment".to_string(),
+            range: TextRange::new(start, self.pos),
+        });
+        SyntaxKind::Error
     }
 
     fn scan_quote(&mut self) -> SyntaxKind {
@@ -202,6 +239,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn scan_string_literal(&mut self) -> SyntaxKind {
+        let start = self.pos;
         self.pos += 1; // opening "
         while let Some(ch) = self.peek_char() {
             match ch {
@@ -218,6 +256,10 @@ impl<'a> Lexer<'a> {
                 }
                 '\n' | '\r' => {
                     // Unterminated string.
+                    self.errors.push(LexError {
+                        message: "unterminated string literal".to_string(),
+                        range: TextRange::new(start, self.pos),
+                    });
                     return SyntaxKind::Error;
                 }
                 _ => {
@@ -225,10 +267,15 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
+        self.errors.push(LexError {
+            message: "unterminated string literal".to_string(),
+            range: TextRange::new(start, self.pos),
+        });
         SyntaxKind::Error
     }
 
     fn scan_char_literal(&mut self) -> SyntaxKind {
+        let start = self.pos;
         self.pos += 1; // opening '
         while let Some(ch) = self.peek_char() {
             match ch {
@@ -242,16 +289,27 @@ impl<'a> Lexer<'a> {
                         self.bump_char();
                     }
                 }
-                '\n' | '\r' => return SyntaxKind::Error,
+                '\n' | '\r' => {
+                    self.errors.push(LexError {
+                        message: "unterminated character literal".to_string(),
+                        range: TextRange::new(start, self.pos),
+                    });
+                    return SyntaxKind::Error;
+                }
                 _ => {
                     self.bump_char();
                 }
             }
         }
+        self.errors.push(LexError {
+            message: "unterminated character literal".to_string(),
+            range: TextRange::new(start, self.pos),
+        });
         SyntaxKind::Error
     }
 
     fn scan_text_block(&mut self) -> SyntaxKind {
+        let start = self.pos;
         // opening """
         self.pos += 3;
         while !self.is_eof() {
@@ -265,6 +323,10 @@ impl<'a> Lexer<'a> {
             }
             self.bump_char();
         }
+        self.errors.push(LexError {
+            message: "unterminated text block".to_string(),
+            range: TextRange::new(start, self.pos),
+        });
         SyntaxKind::Error
     }
 
@@ -322,111 +384,366 @@ impl<'a> Lexer<'a> {
 
     fn scan_number(&mut self, started_with_dot: bool) -> SyntaxKind {
         let start = self.pos;
-        if started_with_dot {
-            self.pos += 1; // '.'
-            self.consume_digits(10);
-            self.consume_exponent(10);
-            return self.finish_number_literal(start, true);
-        }
-
-        // Prefix: 0x, 0b.
-        let mut base = 10;
-        if self.peek_byte(0) == Some(b'0') {
-            if matches!(self.peek_byte(1), Some(b'x' | b'X')) {
-                base = 16;
-                self.pos += 2;
-                self.consume_digits(base);
-            } else if matches!(self.peek_byte(1), Some(b'b' | b'B')) {
-                base = 2;
-                self.pos += 2;
-                self.consume_digits(base);
-            } else {
-                // Octal-ish / decimal with leading zero.
-                self.pos += 1;
-                self.consume_digits(10);
+        let result = if started_with_dot {
+            self.scan_decimal_float_after_dot()
+        } else if self.peek_byte(0) == Some(b'0') {
+            match self.peek_byte(1) {
+                Some(b'x' | b'X') => self.scan_hex_number(),
+                Some(b'b' | b'B') => self.scan_binary_number(),
+                _ => self.scan_decimal_or_octal_number(),
             }
         } else {
-            self.consume_digits(10);
+            self.scan_decimal_or_octal_number()
+        };
+
+        match result {
+            Ok(kind) => kind,
+            Err(message) => {
+                self.errors.push(LexError {
+                    message,
+                    range: TextRange::new(start, self.pos),
+                });
+                SyntaxKind::Error
+            }
+        }
+    }
+
+    fn scan_decimal_float_after_dot(&mut self) -> Result<SyntaxKind, String> {
+        // Assumes current token begins with `.` and the following character is a digit.
+        self.pos += 1; // '.'
+        let frac = self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b.is_ascii_digit());
+        if frac.trailing_underscore {
+            return Err("numeric literal cannot end with `_`".to_string());
         }
 
+        if self.try_scan_exponent_part(b'e', b'E')? {
+            // already consumed exponent
+        }
+
+        if let Some(kind) = self.scan_float_suffix() {
+            return Ok(kind);
+        }
+
+        Ok(SyntaxKind::DoubleLiteral)
+    }
+
+    fn scan_decimal_or_octal_number(&mut self) -> Result<SyntaxKind, String> {
+        let start = self.pos;
+        let started_with_zero = self.peek_byte(0) == Some(b'0');
+        let whole =
+            self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b.is_ascii_digit());
+        let whole_end = self.pos;
+
+        // Floating point part.
         let mut is_float = false;
 
-        // Fractional part.
         if self.peek_byte(0) == Some(b'.') && self.peek_byte(1) != Some(b'.') {
             is_float = true;
-            self.pos += 1;
-            self.consume_digits(base.max(10));
+            self.pos += 1; // '.'
+
+            // Digits after `.` are optional, but if we see `._<digit>` we want to
+            // consume it to report the underscore placement error.
+            if matches!(self.peek_byte(0), Some(b'0'..=b'9'))
+                || (self.peek_byte(0) == Some(b'_')
+                    && matches!(self.peek_byte(1), Some(b'0'..=b'9')))
+            {
+                let frac = self.scan_digits_with_underscores(
+                    |b| b.is_ascii_digit(),
+                    |b| b.is_ascii_digit(),
+                );
+                if frac.leading_underscore {
+                    return Err("`_` is not allowed directly after `.` in a numeric literal".to_string());
+                }
+                if frac.trailing_underscore {
+                    return Err("numeric literal cannot end with `_`".to_string());
+                }
+            }
         }
 
-        // Exponent.
-        if base == 16 {
-            if matches!(self.peek_byte(0), Some(b'p' | b'P')) {
-                is_float = true;
-                self.consume_exponent(16);
-            }
-        } else if matches!(self.peek_byte(0), Some(b'e' | b'E')) {
+        // Exponent part (only for decimal floats).
+        if self.try_scan_exponent_part(b'e', b'E')? {
             is_float = true;
-            self.consume_exponent(10);
         }
 
-        self.finish_number_literal(start, is_float)
-    }
+        if let Some(kind) = self.scan_float_suffix() {
+            if whole.trailing_underscore {
+                return Err(
+                    "`_` is not allowed at the end of the integer part of a numeric literal"
+                        .to_string(),
+                );
+            }
+            return Ok(kind);
+        }
 
-    fn consume_digits(&mut self, base: u8) {
-        while let Some(b) = self.peek_byte(0) {
-            match b {
-                b'_' => {
-                    self.pos += 1;
-                }
-                b'0'..=b'9' => {
-                    self.pos += 1;
-                }
-                b'a'..=b'f' | b'A'..=b'F' if base == 16 => {
-                    self.pos += 1;
-                }
-                _ => break,
+        if is_float {
+            if whole.trailing_underscore {
+                return Err(
+                    "`_` is not allowed at the end of the integer part of a numeric literal"
+                        .to_string(),
+                );
+            }
+            return Ok(SyntaxKind::DoubleLiteral);
+        }
+
+        // Integer suffix.
+        let int_suffix = self.peek_byte(0);
+        let has_long_suffix = matches!(int_suffix, Some(b'l' | b'L'));
+        if has_long_suffix {
+            self.pos += 1;
+        }
+
+        // Validate underscores for integer literal.
+        if whole.leading_underscore {
+            // This can only happen for weird things like `_1` which we don't lex as a number.
+            return Err("numeric literal cannot start with `_`".to_string());
+        }
+        if whole.trailing_underscore {
+            return Err("numeric literal cannot end with `_`".to_string());
+        }
+
+        // Validate octal digits when the literal starts with `0` and is longer than `0`.
+        if started_with_zero && whole.digits > 1 {
+            let digits_text = &self.input[start..whole_end];
+            if let Some(invalid) = digits_text
+                .as_bytes()
+                .iter()
+                .copied()
+                .find(|b| matches!(b, b'8' | b'9'))
+            {
+                return Err(format!(
+                    "invalid digit `{}` in octal literal",
+                    invalid as char
+                ));
             }
         }
+
+        Ok(if has_long_suffix {
+            SyntaxKind::LongLiteral
+        } else {
+            SyntaxKind::IntLiteral
+        })
     }
 
-    fn consume_exponent(&mut self, base: u8) {
-        match self.peek_byte(0) {
-            Some(b'e' | b'E') if base == 10 => {}
-            Some(b'p' | b'P') if base == 16 => {}
-            _ => return,
+    fn scan_hex_number(&mut self) -> Result<SyntaxKind, String> {
+        // `0x` / `0X`
+        self.pos += 2;
+
+        // Digits before optional dot.
+        let before = self.scan_digits_with_underscores(is_hex_digit, is_hex_digit);
+
+        let mut has_dot = false;
+        let mut after = DigitsScan::empty();
+
+        if self.peek_byte(0) == Some(b'.') && self.peek_byte(1) != Some(b'.') {
+            // Treat `.` as part of a hex float candidate when it is followed by:
+            // - a hex digit (`0x1.0p0`)
+            // - `p`/`P` (`0x1.p0`)
+            // - `_<hex digit>` to surface underscore placement errors.
+            let next = self.peek_byte(1);
+            let next2 = self.peek_byte(2);
+            let dot_is_part_of_literal = matches!(next, Some(b'p' | b'P'))
+                || next.is_some_and(is_hex_digit)
+                || (next == Some(b'_') && next2.is_some_and(is_hex_digit));
+            if dot_is_part_of_literal {
+                has_dot = true;
+                self.pos += 1; // '.'
+
+                let require_after = before.digits == 0;
+                if matches!(self.peek_byte(0), Some(b'_'))
+                    && matches!(self.peek_byte(1), Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'))
+                {
+                    after = self.scan_digits_with_underscores(is_hex_digit, is_hex_digit);
+                } else if self.peek_byte(0).is_some_and(is_hex_digit) {
+                    after = self.scan_digits_with_underscores(is_hex_digit, is_hex_digit);
+                }
+
+                if require_after && after.digits == 0 {
+                    return Err("expected hexadecimal digits after `0x.`".to_string());
+                }
+                if after.leading_underscore {
+                    return Err("`_` is not allowed directly after `.` in a numeric literal".to_string());
+                }
+                if after.trailing_underscore {
+                    return Err("numeric literal cannot end with `_`".to_string());
+                }
+            }
         }
+
+        let has_exponent = self.peek_byte(0).is_some_and(|b| b == b'p' || b == b'P');
+        if has_exponent {
+            if before.leading_underscore {
+                return Err("`_` is not allowed directly after `0x` in a numeric literal".to_string());
+            }
+            if before.trailing_underscore {
+                return Err("numeric literal cannot end with `_`".to_string());
+            }
+            if before.digits == 0 && !has_dot {
+                return Err("expected hexadecimal digits after `0x`".to_string());
+            }
+            self.scan_binary_exponent_part()?;
+            if let Some(kind) = self.scan_float_suffix() {
+                return Ok(kind);
+            }
+            return Ok(SyntaxKind::DoubleLiteral);
+        }
+
+        // If we consumed a dot, we were attempting a hexadecimal floating point literal but
+        // didn't find the required `p`/`P` binary exponent.
+        if has_dot {
+            return Err("hexadecimal floating-point literal requires a `p` exponent".to_string());
+        }
+
+        // Integer literal.
+        if before.digits == 0 {
+            // Attempt to consume `_...` to surface the underscore error.
+            if self.peek_byte(0) == Some(b'_') && self.peek_byte(1).is_some_and(is_hex_digit) {
+                self.scan_digits_with_underscores(is_hex_digit, is_hex_digit);
+                return Err("`_` is not allowed directly after `0x` in a numeric literal".to_string());
+            }
+            return Err("expected hexadecimal digits after `0x`".to_string());
+        }
+        if before.leading_underscore {
+            return Err("`_` is not allowed directly after `0x` in a numeric literal".to_string());
+        }
+        if before.trailing_underscore {
+            return Err("numeric literal cannot end with `_`".to_string());
+        }
+
+        let suffix = self.peek_byte(0);
+        if matches!(suffix, Some(b'l' | b'L')) {
+            self.pos += 1;
+            Ok(SyntaxKind::LongLiteral)
+        } else {
+            Ok(SyntaxKind::IntLiteral)
+        }
+    }
+
+    fn scan_binary_number(&mut self) -> Result<SyntaxKind, String> {
+        // `0b` / `0B`
+        self.pos += 2;
+        let digits = self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b == b'0' || b == b'1');
+
+        if digits.digits == 0 {
+            return Err("expected binary digits after `0b`".to_string());
+        }
+        if digits.leading_underscore {
+            return Err("`_` is not allowed directly after `0b` in a numeric literal".to_string());
+        }
+        if digits.trailing_underscore {
+            return Err("numeric literal cannot end with `_`".to_string());
+        }
+        if let Some(b) = digits.invalid_digit {
+            return Err(format!("invalid digit `{}` in binary literal", b as char));
+        }
+
+        let suffix = self.peek_byte(0);
+        if matches!(suffix, Some(b'l' | b'L')) {
+            self.pos += 1;
+            Ok(SyntaxKind::LongLiteral)
+        } else {
+            Ok(SyntaxKind::IntLiteral)
+        }
+    }
+
+    fn scan_binary_exponent_part(&mut self) -> Result<(), String> {
+        // Assumes current is `p`/`P`.
         self.pos += 1;
         if matches!(self.peek_byte(0), Some(b'+' | b'-')) {
             self.pos += 1;
         }
-        self.consume_digits(10);
+        let exp = self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b.is_ascii_digit());
+        if exp.digits == 0 {
+            return Err("expected exponent digits after `p`".to_string());
+        }
+        if exp.leading_underscore {
+            return Err("`_` is not allowed directly after the exponent sign in a numeric literal".to_string());
+        }
+        if exp.trailing_underscore {
+            return Err("numeric literal cannot end with `_`".to_string());
+        }
+        Ok(())
     }
 
-    fn finish_number_literal(&mut self, start: usize, is_float: bool) -> SyntaxKind {
-        // Suffix.
-        let suffix = self.peek_byte(0);
-        if let Some(b) = suffix {
-            match b {
-                b'l' | b'L' => {
-                    self.pos += 1;
-                    return SyntaxKind::LongLiteral;
-                }
-                b'f' | b'F' => {
-                    self.pos += 1;
-                    return SyntaxKind::FloatLiteral;
-                }
-                b'd' | b'D' => {
-                    self.pos += 1;
-                    return SyntaxKind::DoubleLiteral;
-                }
-                _ => {}
-            }
+    fn try_scan_exponent_part(&mut self, lower: u8, upper: u8) -> Result<bool, String> {
+        let Some(b) = self.peek_byte(0) else {
+            return Ok(false);
+        };
+        if b != lower && b != upper {
+            return Ok(false);
         }
 
-        if is_float || self.input[start..self.pos].contains('.') {
-            SyntaxKind::DoubleLiteral
-        } else {
-            SyntaxKind::IntLiteral
+        self.pos += 1; // e/E
+        if matches!(self.peek_byte(0), Some(b'+' | b'-')) {
+            self.pos += 1;
+        }
+
+        let exp = self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b.is_ascii_digit());
+        if exp.digits == 0 {
+            return Err("expected exponent digits after `e`".to_string());
+        }
+        if exp.leading_underscore {
+            return Err("`_` is not allowed directly after the exponent sign in a numeric literal".to_string());
+        }
+        if exp.trailing_underscore {
+            return Err("numeric literal cannot end with `_`".to_string());
+        }
+
+        Ok(true)
+    }
+
+    fn scan_float_suffix(&mut self) -> Option<SyntaxKind> {
+        match self.peek_byte(0) {
+            Some(b'f' | b'F') => {
+                self.pos += 1;
+                Some(SyntaxKind::FloatLiteral)
+            }
+            Some(b'd' | b'D') => {
+                self.pos += 1;
+                Some(SyntaxKind::DoubleLiteral)
+            }
+            _ => None,
+        }
+    }
+
+    fn scan_digits_with_underscores(
+        &mut self,
+        allowed_digit: fn(u8) -> bool,
+        validate_digit: fn(u8) -> bool,
+    ) -> DigitsScan {
+        let mut digits = 0usize;
+        let mut leading_underscore = false;
+        let mut trailing_underscore = false;
+        let mut prev_underscore = false;
+        let mut invalid_digit = None;
+
+        while let Some(b) = self.peek_byte(0) {
+            if b == b'_' {
+                if digits == 0 {
+                    leading_underscore = true;
+                }
+                prev_underscore = true;
+                self.pos += 1;
+                continue;
+            }
+            if allowed_digit(b) {
+                digits += 1;
+                if invalid_digit.is_none() && !validate_digit(b) {
+                    invalid_digit = Some(b);
+                }
+                prev_underscore = false;
+                self.pos += 1;
+                continue;
+            }
+            break;
+        }
+
+        trailing_underscore = prev_underscore;
+
+        DigitsScan {
+            digits,
+            leading_underscore,
+            trailing_underscore,
+            invalid_digit,
         }
     }
 
@@ -569,6 +886,29 @@ impl<'a> Lexer<'a> {
         self.pos += ch.len_utf8();
         Some(ch)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DigitsScan {
+    digits: usize,
+    leading_underscore: bool,
+    trailing_underscore: bool,
+    invalid_digit: Option<u8>,
+}
+
+impl DigitsScan {
+    fn empty() -> Self {
+        Self {
+            digits: 0,
+            leading_underscore: false,
+            trailing_underscore: false,
+            invalid_digit: None,
+        }
+    }
+}
+
+fn is_hex_digit(b: u8) -> bool {
+    matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
 }
 
 fn is_ident_start(ch: char) -> bool {

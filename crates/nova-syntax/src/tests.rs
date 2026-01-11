@@ -1,6 +1,9 @@
 use pretty_assertions::assert_eq;
 
-use crate::{lex, parse_java, parse_java_with_options, JavaLanguageLevel, ParseOptions, SyntaxKind};
+use crate::{
+    lex, lex_with_errors, parse_java, parse_java_with_options, JavaLanguageLevel, ParseOptions,
+    SyntaxKind,
+};
 
 fn bless_enabled() -> bool {
     let Ok(val) = std::env::var("BLESS") else {
@@ -13,6 +16,14 @@ fn bless_enabled() -> bool {
 fn dump_tokens(input: &str) -> Vec<(SyntaxKind, String)> {
     lex(input)
         .into_iter()
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect()
+}
+
+fn dump_non_trivia(input: &str) -> Vec<(SyntaxKind, String)> {
+    lex(input)
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
         .map(|t| (t.kind, t.text(input).to_string()))
         .collect()
 }
@@ -68,6 +79,185 @@ fn lexer_accepts_float_with_trailing_dot() {
         (SyntaxKind::Eof, "".into()),
     ];
     assert_eq!(tokens, expected);
+}
+
+#[test]
+fn lexer_emits_all_java_operators_and_separators() {
+    // Keep each token separated by whitespace to avoid comment starts.
+    let input = r#"(
+) { } [ ] ; , . ... @ ? : :: -> ++ -- + - * / % ~ ! != = == < <= > >= & && &= | || |= ^ ^= << <<= >> >>= >>> >>>= += -= *= /= %= "#;
+
+    let tokens = dump_non_trivia(input);
+    let expected = vec![
+        (SyntaxKind::LParen, "(".into()),
+        (SyntaxKind::RParen, ")".into()),
+        (SyntaxKind::LBrace, "{".into()),
+        (SyntaxKind::RBrace, "}".into()),
+        (SyntaxKind::LBracket, "[".into()),
+        (SyntaxKind::RBracket, "]".into()),
+        (SyntaxKind::Semicolon, ";".into()),
+        (SyntaxKind::Comma, ",".into()),
+        (SyntaxKind::Dot, ".".into()),
+        (SyntaxKind::Ellipsis, "...".into()),
+        (SyntaxKind::At, "@".into()),
+        (SyntaxKind::Question, "?".into()),
+        (SyntaxKind::Colon, ":".into()),
+        (SyntaxKind::DoubleColon, "::".into()),
+        (SyntaxKind::Arrow, "->".into()),
+        (SyntaxKind::PlusPlus, "++".into()),
+        (SyntaxKind::MinusMinus, "--".into()),
+        (SyntaxKind::Plus, "+".into()),
+        (SyntaxKind::Minus, "-".into()),
+        (SyntaxKind::Star, "*".into()),
+        (SyntaxKind::Slash, "/".into()),
+        (SyntaxKind::Percent, "%".into()),
+        (SyntaxKind::Tilde, "~".into()),
+        (SyntaxKind::Bang, "!".into()),
+        (SyntaxKind::BangEq, "!=".into()),
+        (SyntaxKind::Eq, "=".into()),
+        (SyntaxKind::EqEq, "==".into()),
+        (SyntaxKind::Less, "<".into()),
+        (SyntaxKind::LessEq, "<=".into()),
+        (SyntaxKind::Greater, ">".into()),
+        (SyntaxKind::GreaterEq, ">=".into()),
+        (SyntaxKind::Amp, "&".into()),
+        (SyntaxKind::AmpAmp, "&&".into()),
+        (SyntaxKind::AmpEq, "&=".into()),
+        (SyntaxKind::Pipe, "|".into()),
+        (SyntaxKind::PipePipe, "||".into()),
+        (SyntaxKind::PipeEq, "|=".into()),
+        (SyntaxKind::Caret, "^".into()),
+        (SyntaxKind::CaretEq, "^=".into()),
+        (SyntaxKind::LeftShift, "<<".into()),
+        (SyntaxKind::LeftShiftEq, "<<=".into()),
+        (SyntaxKind::RightShift, ">>".into()),
+        (SyntaxKind::RightShiftEq, ">>=".into()),
+        (SyntaxKind::UnsignedRightShift, ">>>".into()),
+        (SyntaxKind::UnsignedRightShiftEq, ">>>=".into()),
+        (SyntaxKind::PlusEq, "+=".into()),
+        (SyntaxKind::MinusEq, "-=".into()),
+        (SyntaxKind::StarEq, "*=".into()),
+        (SyntaxKind::SlashEq, "/=".into()),
+        (SyntaxKind::PercentEq, "%=".into()),
+        (SyntaxKind::Eof, "".into()),
+    ];
+
+    assert_eq!(tokens, expected);
+}
+
+#[test]
+fn lexer_numeric_literals_valid_forms() {
+    let input = "0 123 1_000 07 0_7 0b1010_0110 0xCAFE_BABE 123L 0x7fff_ffff_ffff_ffffL \
+                 1.0 1. .5 1e10 1e+10 1e-10 1f 1d 1.0f \
+                 0x1p0 0x1.2p3 0x1.p3 0x.1p2 0x1p1_0 0x1.2p3f";
+
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    let expected = vec![
+        (SyntaxKind::IntLiteral, "0".into()),
+        (SyntaxKind::IntLiteral, "123".into()),
+        (SyntaxKind::IntLiteral, "1_000".into()),
+        (SyntaxKind::IntLiteral, "07".into()),
+        (SyntaxKind::IntLiteral, "0_7".into()),
+        (SyntaxKind::IntLiteral, "0b1010_0110".into()),
+        (SyntaxKind::IntLiteral, "0xCAFE_BABE".into()),
+        (SyntaxKind::LongLiteral, "123L".into()),
+        (SyntaxKind::LongLiteral, "0x7fff_ffff_ffff_ffffL".into()),
+        (SyntaxKind::DoubleLiteral, "1.0".into()),
+        (SyntaxKind::DoubleLiteral, "1.".into()),
+        (SyntaxKind::DoubleLiteral, ".5".into()),
+        (SyntaxKind::DoubleLiteral, "1e10".into()),
+        (SyntaxKind::DoubleLiteral, "1e+10".into()),
+        (SyntaxKind::DoubleLiteral, "1e-10".into()),
+        (SyntaxKind::FloatLiteral, "1f".into()),
+        (SyntaxKind::DoubleLiteral, "1d".into()),
+        (SyntaxKind::FloatLiteral, "1.0f".into()),
+        (SyntaxKind::DoubleLiteral, "0x1p0".into()),
+        (SyntaxKind::DoubleLiteral, "0x1.2p3".into()),
+        (SyntaxKind::DoubleLiteral, "0x1.p3".into()),
+        (SyntaxKind::DoubleLiteral, "0x.1p2".into()),
+        (SyntaxKind::DoubleLiteral, "0x1p1_0".into()),
+        (SyntaxKind::FloatLiteral, "0x1.2p3f".into()),
+        (SyntaxKind::Eof, "".into()),
+    ];
+
+    assert_eq!(tokens, expected);
+}
+
+#[test]
+fn lexer_numeric_literals_invalid_forms_produce_errors() {
+    let input = "0x 0b 08 0b102 1_ 1e 1e+ 1e_2 0x1.0 0x_1";
+    let (tokens, errors) = lex_with_errors(input);
+
+    let non_trivia: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia() && t.kind != SyntaxKind::Eof)
+        .collect();
+
+    assert_eq!(non_trivia.len(), 10);
+    assert!(non_trivia.iter().all(|t| t.kind == SyntaxKind::Error));
+    assert_eq!(errors.len(), 10);
+}
+
+#[test]
+fn lexer_reports_unterminated_literals_and_comments() {
+    for (input, expected_msg) in [
+        ("\"unterminated", "unterminated string literal"),
+        ("'x", "unterminated character literal"),
+        ("\"\"\"unterminated", "unterminated text block"),
+        ("/* unterminated", "unterminated block comment"),
+    ] {
+        let (tokens, errors) = lex_with_errors(input);
+        assert_eq!(tokens[0].kind, SyntaxKind::Error);
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].message.contains(expected_msg),
+            "expected `{}` in `{}`",
+            expected_msg,
+            errors[0].message
+        );
+    }
+}
+
+#[test]
+fn lexer_text_blocks_allow_escaped_triple_quotes() {
+    let input = "\"\"\"hello \\\"\"\" world\"\"\"";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::TextBlock, input.to_string()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
+fn parse_java_surfaces_lexer_errors_as_parse_errors() {
+    let input = "class Foo { String s = \"unterminated\n }";
+    let result = parse_java(input);
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("unterminated string literal")),
+        "expected lexer error to be surfaced via parse errors"
+    );
 }
 
 #[test]

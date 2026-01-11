@@ -16,7 +16,7 @@ mod tree_store;
 mod util;
 
 pub use ast::*;
-pub use lexer::{lex, Lexer, Token};
+pub use lexer::{lex, lex_with_errors, LexError, Lexer, Token};
 pub use parser::{parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
 pub use tree_store::SyntaxTreeStore;
@@ -159,144 +159,146 @@ impl ParseResult {
 /// The parser currently produces a flat `ParseResult`, so this is sufficient.
 pub type SyntaxTree = ParseResult;
 
-fn is_whitespace(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\n' | b'\r')
-}
-
-fn is_ident_start(b: u8) -> bool {
-    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$')
-}
-
-fn is_ident_continue(b: u8) -> bool {
-    is_ident_start(b) || matches!(b, b'0'..=b'9')
-}
-
 /// Parse source text into a persistent, lossless green tree and error list.
 ///
 /// This is currently a token-level "parser" that produces a flat
 /// `CompilationUnit` node. The full Java grammar lives under [`parse_java`].
 pub fn parse(text: &str) -> ParseResult {
-    let bytes = text.as_bytes();
-    let mut i = 0usize;
-    let mut children: Vec<GreenChild> = Vec::new();
-    let mut errors = Vec::new();
-
-    while i < bytes.len() {
-        let start = i;
-        let b = bytes[i];
-
-        let kind = if is_whitespace(b) {
-            i += 1;
-            while i < bytes.len() && is_whitespace(bytes[i]) {
-                i += 1;
-            }
+    fn map_kind(kind: SyntaxKind, text: &str) -> SyntaxKind {
+        match kind {
             SyntaxKind::Whitespace
-        } else if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            i += 2;
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            SyntaxKind::LineComment
-        } else if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            let is_doc = i + 2 < bytes.len() && bytes[i + 2] == b'*';
-            i += 2;
-            let mut terminated = false;
-            while i + 1 < bytes.len() {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    i += 2;
-                    terminated = true;
-                    break;
-                }
-                i += 1;
-            }
-            if !terminated {
-                // Consume the rest of the file.
-                i = bytes.len();
-                errors.push(ParseError {
-                    message: "Unterminated block comment".to_string(),
-                    range: TextRange::new(start, i),
-                });
-            }
-            if is_doc {
-                SyntaxKind::DocComment
-            } else {
-                SyntaxKind::BlockComment
-            }
-        } else if b == b'\'' {
-            i += 1;
-            let mut terminated = false;
-            while i < bytes.len() {
-                match bytes[i] {
-                    b'\\' => {
-                        // Skip escape.
-                        i += 1;
-                        if i < bytes.len() {
-                            i += 1;
-                        }
-                    }
-                    b'\'' => {
-                        i += 1;
-                        terminated = true;
-                        break;
-                    }
-                    b'\n' => break,
-                    _ => i += 1,
-                }
-            }
-            if !terminated {
-                errors.push(ParseError {
-                    message: "Unterminated char literal".to_string(),
-                    range: TextRange::new(start, i),
-                });
-            }
-            SyntaxKind::CharLiteral
-        } else if is_ident_start(b) {
-            i += 1;
-            while i < bytes.len() && is_ident_continue(bytes[i]) {
-                i += 1;
-            }
-            SyntaxKind::Identifier
-        } else if matches!(b, b'0'..=b'9') {
-            i += 1;
-            while i < bytes.len() && matches!(bytes[i], b'0'..=b'9') {
-                i += 1;
-            }
-            SyntaxKind::Number
-        } else if b == b'"' {
-            i += 1;
-            let mut terminated = false;
-            while i < bytes.len() {
-                match bytes[i] {
-                    b'\\' => {
-                        // Skip escape.
-                        i += 1;
-                        if i < bytes.len() {
-                            i += 1;
-                        }
-                    }
-                    b'"' => {
-                        i += 1;
-                        terminated = true;
-                        break;
-                    }
-                    _ => i += 1,
-                }
-            }
-            if !terminated {
-                errors.push(ParseError {
-                    message: "Unterminated string literal".to_string(),
-                    range: TextRange::new(start, i),
-                });
-            }
-            SyntaxKind::StringLiteral
-        } else {
-            i += 1;
-            SyntaxKind::Punctuation
-        };
+            | SyntaxKind::LineComment
+            | SyntaxKind::BlockComment
+            | SyntaxKind::DocComment => kind,
 
+            // Identifiers and keywords are all treated as identifier-like tokens in the cache layer.
+            SyntaxKind::Identifier
+            | SyntaxKind::AbstractKw
+            | SyntaxKind::AssertKw
+            | SyntaxKind::BooleanKw
+            | SyntaxKind::BreakKw
+            | SyntaxKind::ByteKw
+            | SyntaxKind::CaseKw
+            | SyntaxKind::CatchKw
+            | SyntaxKind::CharKw
+            | SyntaxKind::ClassKw
+            | SyntaxKind::ConstKw
+            | SyntaxKind::ContinueKw
+            | SyntaxKind::DefaultKw
+            | SyntaxKind::DoKw
+            | SyntaxKind::DoubleKw
+            | SyntaxKind::ElseKw
+            | SyntaxKind::EnumKw
+            | SyntaxKind::ExtendsKw
+            | SyntaxKind::FinalKw
+            | SyntaxKind::FinallyKw
+            | SyntaxKind::FloatKw
+            | SyntaxKind::ForKw
+            | SyntaxKind::GotoKw
+            | SyntaxKind::IfKw
+            | SyntaxKind::ImplementsKw
+            | SyntaxKind::ImportKw
+            | SyntaxKind::InstanceofKw
+            | SyntaxKind::IntKw
+            | SyntaxKind::InterfaceKw
+            | SyntaxKind::LongKw
+            | SyntaxKind::NativeKw
+            | SyntaxKind::NewKw
+            | SyntaxKind::PackageKw
+            | SyntaxKind::PrivateKw
+            | SyntaxKind::ProtectedKw
+            | SyntaxKind::PublicKw
+            | SyntaxKind::ReturnKw
+            | SyntaxKind::ShortKw
+            | SyntaxKind::StaticKw
+            | SyntaxKind::StrictfpKw
+            | SyntaxKind::SuperKw
+            | SyntaxKind::SwitchKw
+            | SyntaxKind::SynchronizedKw
+            | SyntaxKind::ThisKw
+            | SyntaxKind::ThrowKw
+            | SyntaxKind::ThrowsKw
+            | SyntaxKind::TransientKw
+            | SyntaxKind::TryKw
+            | SyntaxKind::VoidKw
+            | SyntaxKind::VolatileKw
+            | SyntaxKind::WhileKw
+            | SyntaxKind::TrueKw
+            | SyntaxKind::FalseKw
+            | SyntaxKind::NullKw
+            | SyntaxKind::VarKw
+            | SyntaxKind::YieldKw
+            | SyntaxKind::RecordKw
+            | SyntaxKind::SealedKw
+            | SyntaxKind::PermitsKw
+            | SyntaxKind::NonSealedKw
+            | SyntaxKind::WhenKw
+            | SyntaxKind::ModuleKw
+            | SyntaxKind::OpenKw
+            | SyntaxKind::OpensKw
+            | SyntaxKind::RequiresKw
+            | SyntaxKind::TransitiveKw
+            | SyntaxKind::ExportsKw
+            | SyntaxKind::ToKw
+            | SyntaxKind::UsesKw
+            | SyntaxKind::ProvidesKw
+            | SyntaxKind::WithKw => SyntaxKind::Identifier,
+
+            SyntaxKind::IntLiteral
+            | SyntaxKind::LongLiteral
+            | SyntaxKind::FloatLiteral
+            | SyntaxKind::DoubleLiteral => SyntaxKind::Number,
+
+            SyntaxKind::CharLiteral => SyntaxKind::CharLiteral,
+            SyntaxKind::StringLiteral | SyntaxKind::TextBlock => SyntaxKind::StringLiteral,
+
+            SyntaxKind::Error => {
+                // The cache layer wants to preserve "string-like"/"comment-like" behavior even when
+                // the lexer reports an error (e.g. unterminated literals).
+                if text.starts_with("/*") {
+                    if text.starts_with("/**") {
+                        SyntaxKind::DocComment
+                    } else {
+                        SyntaxKind::BlockComment
+                    }
+                } else if text.starts_with('"') {
+                    SyntaxKind::StringLiteral
+                } else if text.starts_with('\'') {
+                    SyntaxKind::CharLiteral
+                } else if text
+                    .as_bytes()
+                    .first()
+                    .is_some_and(|b| b.is_ascii_digit() || *b == b'.')
+                {
+                    SyntaxKind::Number
+                } else {
+                    SyntaxKind::Punctuation
+                }
+            }
+
+            // Everything else is treated as punctuation in the cache layer.
+            _ => SyntaxKind::Punctuation,
+        }
+    }
+
+    let (tokens, lex_errors) = lexer::lex_with_errors(text);
+    let errors = lex_errors
+        .into_iter()
+        .map(|err| ParseError {
+            message: err.message,
+            range: err.range,
+        })
+        .collect();
+
+    let mut children: Vec<GreenChild> = Vec::new();
+    for token in tokens {
+        if token.kind == SyntaxKind::Eof {
+            continue;
+        }
+        let kind = map_kind(token.kind, token.text(text));
         children.push(GreenChild::Token(GreenToken {
             kind,
-            range: TextRange::new(start, i),
+            range: token.range,
         }));
     }
 

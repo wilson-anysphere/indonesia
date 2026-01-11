@@ -5,7 +5,7 @@ use rowan::NodeOrToken;
 use rowan::{GreenNode, GreenNodeBuilder};
 use text_size::TextSize;
 
-use crate::lexer::{lex, Token};
+use crate::lexer::{lex_with_errors, Token};
 use crate::syntax_kind::{JavaLanguage, SyntaxKind};
 use crate::{ParseError, TextRange};
 
@@ -49,11 +49,19 @@ struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     fn new(input: &'a str) -> Self {
+        let (tokens, lex_errors) = lex_with_errors(input);
+        let errors: Vec<ParseError> = lex_errors
+            .into_iter()
+            .map(|err| ParseError {
+                message: err.message,
+                range: err.range,
+            })
+            .collect();
         Self {
             input,
-            tokens: VecDeque::from(lex(input)),
+            tokens: VecDeque::from(tokens),
             builder: GreenNodeBuilder::new(),
-            errors: Vec::new(),
+            errors,
         }
     }
 
