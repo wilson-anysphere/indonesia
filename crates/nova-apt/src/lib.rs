@@ -187,7 +187,9 @@ impl AptBuildExecutor for BuildManager {
     }
 
     fn build_bazel(&self, project_root: &Path, target: &str) -> nova_build::Result<BuildResult> {
-        let runner = nova_build::DefaultCommandRunner::default();
+        let runner = nova_build::DefaultCommandRunner {
+            timeout: Some(Duration::from_secs(300)),
+        };
         let args = vec!["build".to_string(), target.to_string()];
         let output = runner.run(project_root, Path::new("bazel"), &args)?;
         if output.status.success() {
