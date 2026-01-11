@@ -426,6 +426,14 @@ mod tests {
         assert_eq!(VfsPath::uri(uri), VfsPath::Local(expected));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn file_uri_unc_paths_are_logically_normalized() {
+        let uri = "file://server/share/a/b/../c.java";
+        let expected = PathBuf::from(r"\\server\share\a\c.java");
+        assert_eq!(VfsPath::uri(uri), VfsPath::Local(expected));
+    }
+
     #[test]
     fn jar_uris_reject_entry_traversal() {
         let dir = tempfile::tempdir().unwrap();
