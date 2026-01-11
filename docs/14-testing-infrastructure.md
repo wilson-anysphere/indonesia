@@ -291,6 +291,24 @@ See `perf/README.md` for details.
 
 ---
 
+### 8) Coverage (`cargo llvm-cov`)
+
+Nova tracks test coverage drift via `.github/workflows/coverage.yml` (scheduled + manual). Coverage
+is not a strict gate today, but it’s useful for spotting untested areas and regressions.
+
+**Run locally (HTML report):**
+
+```bash
+cargo install cargo-llvm-cov --locked
+rustup component add llvm-tools-preview
+
+cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html
+```
+
+HTML is written under `target/llvm-cov/html/`.
+
+---
+
 ## Snapshot / expectation update flows
 
 ### Golden file updates (`BLESS=1`)

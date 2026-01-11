@@ -130,10 +130,11 @@ are not checked into git; they are cloned locally under `test-projects/`.
 
 ## Benchmarks
 
-If/when benchmarks are added, run them with:
+Nova has criterion benchmarks (used by the performance regression guard in `.github/workflows/perf.yml`).
+Run them with:
 
 ```bash
-cargo bench
+cargo bench -p nova-core --bench critical_paths
 ```
 
 ## Fuzzing
