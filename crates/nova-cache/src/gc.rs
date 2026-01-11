@@ -158,6 +158,12 @@ pub fn enumerate_project_caches(
             }
         }
 
+        if last_updated_millis.is_none() {
+            // Best-effort fallback: use the directory/symlink mtime. This avoids treating
+            // brand-new (but not yet fully initialized) cache directories as stale.
+            last_updated_millis = modified_millis(&path);
+        }
+
         let size_bytes = dir_size_bytes_nofollow(&path);
 
         caches.push(ProjectCacheInfo {
