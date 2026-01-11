@@ -43,6 +43,31 @@ jdk_home = "/tmp/jdk"
 }
 
 #[test]
+fn reports_deprecated_ai_privacy_anonymize_alias() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+anonymize = false
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::DeprecatedKey {
+            path: "ai.privacy.anonymize".to_string(),
+            message:
+                "ai.privacy.anonymize is deprecated; use ai.privacy.anonymize_identifiers instead"
+                    .to_string(),
+        }]
+    );
+}
+
+#[test]
 fn validates_ai_provider_requirements() {
     let text = r#"
 [ai]
@@ -296,8 +321,8 @@ allow_code_edits_without_anonymization = true
     assert_eq!(
         diagnostics.warnings,
         vec![ConfigWarning::InvalidValue {
-            toml_path: "ai.privacy.anonymize".to_string(),
-            message: "cloud code edits are disabled while anonymization is enabled; set ai.privacy.anonymize=false".to_string(),
+            toml_path: "ai.privacy.anonymize_identifiers".to_string(),
+            message: "cloud code edits are disabled while identifier anonymization is enabled; set ai.privacy.anonymize_identifiers=false".to_string(),
         }]
     );
 }
@@ -341,7 +366,7 @@ enabled = true
 
 [ai.privacy]
 local_only = false
-anonymize = false
+anonymize_identifiers = false
 allow_cloud_code_edits = false
 allow_code_edits_without_anonymization = true
 "#;
@@ -355,6 +380,55 @@ allow_code_edits_without_anonymization = true
         vec![ConfigWarning::InvalidValue {
             toml_path: "ai.privacy.allow_code_edits_without_anonymization".to_string(),
             message: "has no effect unless ai.privacy.allow_cloud_code_edits=true".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn validates_jdk_home_exists() {
+    let dir = tempdir().expect("tempdir");
+    let missing = dir.path().join("missing-jdk");
+    let text = format!(
+        r#"
+[jdk]
+home = "{}"
+"#,
+        missing.display()
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "jdk.home".to_string(),
+            message: format!("path does not exist: {}", missing.display()),
+        }]
+    );
+}
+
+#[test]
+fn validates_jdk_home_is_directory() {
+    let dir = tempdir().expect("tempdir");
+    let file_path = dir.path().join("not-a-dir");
+    std::fs::write(&file_path, "not a dir").expect("write file");
+    let text = format!(
+        r#"
+[jdk]
+home = "{}"
+"#,
+        file_path.display()
+    );
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(&text).expect("config should parse");
+
+    assert_eq!(
+        diagnostics.errors,
+        vec![ConfigValidationError::InvalidValue {
+            toml_path: "jdk.home".to_string(),
+            message: format!("path is not a directory: {}", file_path.display()),
         }]
     );
 }

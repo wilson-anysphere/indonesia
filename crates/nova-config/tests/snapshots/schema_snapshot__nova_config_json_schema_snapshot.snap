@@ -258,10 +258,13 @@ expression: schema
         "privacy": {
           "allow_cloud_code_edits": false,
           "allow_code_edits_without_anonymization": false,
-          "anonymize": null,
+          "anonymize_identifiers": null,
           "excluded_paths": [],
           "local_only": true,
-          "redact_patterns": []
+          "redact_numeric_literals": null,
+          "redact_patterns": [],
+          "redact_sensitive_strings": null,
+          "strip_or_redact_comments": null
         },
         "provider": {
           "azure_api_version": null,
@@ -421,10 +424,13 @@ expression: schema
           "default": {
             "allow_cloud_code_edits": false,
             "allow_code_edits_without_anonymization": false,
-            "anonymize": null,
+            "anonymize_identifiers": null,
             "excluded_paths": [],
             "local_only": true,
-            "redact_patterns": []
+            "redact_numeric_literals": null,
+            "redact_patterns": [],
+            "redact_sensitive_strings": null,
+            "strip_or_redact_comments": null
           },
           "allOf": [
             {
@@ -530,7 +536,16 @@ expression: schema
           "type": "boolean"
         },
         "anonymize": {
-          "description": "If unset, defaults to: - `false` when `local_only = true` - `true` when `local_only = false` (cloud mode)\n\nThis matches Nova's privacy philosophy: anonymize when sending code to a third-party, but avoid needless transformations when everything stays local.",
+          "description": "Deprecated alias for `ai.privacy.anonymize_identifiers`.",
+          "default": null,
+          "deprecated": true,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "anonymize_identifiers": {
+          "description": "If unset, defaults to: - `false` when `local_only = true` - `true` when `local_only = false` (cloud mode)\n\nThis matches Nova's privacy philosophy: anonymize identifiers when sending code to a third-party, but avoid needless transformations when everything stays local.\n\nBackwards compatibility: `ai.privacy.anonymize` is accepted as an alias for this field.",
           "default": null,
           "type": [
             "boolean",
@@ -550,6 +565,14 @@ expression: schema
           "default": true,
           "type": "boolean"
         },
+        "redact_numeric_literals": {
+          "description": "Redact suspiciously long numeric literals (IDs / hashes) before sending code to an AI provider.\n\nIf unset, defaults to: - `false` when `local_only = true` (unless identifier anonymization is explicitly enabled) - `true` when `local_only = false` (cloud mode)",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "redact_patterns": {
           "description": "Regex patterns to redact from any text that will be sent to the LLM.",
           "default": [],
@@ -557,6 +580,22 @@ expression: schema
           "items": {
             "type": "string"
           }
+        },
+        "redact_sensitive_strings": {
+          "description": "Redact suspicious string literals (API keys, tokens, passwords) before sending code to an AI provider.\n\nIf unset, defaults to: - `false` when `local_only = true` (unless identifier anonymization is explicitly enabled) - `true` when `local_only = false` (cloud mode)",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "strip_or_redact_comments": {
+          "description": "Strip or redact comment bodies before sending code to an AI provider.\n\nIf unset, defaults to: - `false` when `local_only = true` (unless identifier anonymization is explicitly enabled) - `true` when `local_only = false` (cloud mode)",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
         }
       },
       "additionalProperties": false

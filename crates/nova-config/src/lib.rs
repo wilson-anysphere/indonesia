@@ -993,6 +993,22 @@ fn deprecation_warnings(value: &toml::Value) -> Vec<ConfigWarning> {
         }
     }
 
+    if let Some(privacy) = value
+        .get("ai")
+        .and_then(|v| v.as_table())
+        .and_then(|ai| ai.get("privacy"))
+        .and_then(|v| v.as_table())
+    {
+        if privacy.contains_key("anonymize") {
+            out.push(ConfigWarning::DeprecatedKey {
+                path: "ai.privacy.anonymize".to_string(),
+                message:
+                    "ai.privacy.anonymize is deprecated; use ai.privacy.anonymize_identifiers instead"
+                        .to_string(),
+            });
+        }
+    }
+
     out
 }
 

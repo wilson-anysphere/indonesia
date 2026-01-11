@@ -39,6 +39,7 @@ impl NovaConfig {
         validate_ai(self, &mut out);
         validate_extensions(self, ctx, &mut out);
         validate_generated_sources(self, &mut out);
+        validate_jdk(self, ctx, &mut out);
         validate_logging(self, &mut out);
 
         out
@@ -49,6 +50,35 @@ fn validate_generated_sources(config: &NovaConfig, out: &mut ValidationDiagnosti
     if matches!(&config.generated_sources.override_roots, Some(roots) if roots.is_empty()) {
         out.warnings
             .push(ConfigWarning::GeneratedSourcesOverrideRootsEmpty);
+    }
+}
+
+fn validate_jdk(config: &NovaConfig, ctx: ConfigValidationContext<'_>, out: &mut ValidationDiagnostics) {
+    let Some(home) = config.jdk.home.as_ref() else {
+        return;
+    };
+
+    let base_dir = ctx.base_dir();
+    let resolved = if home.is_absolute() {
+        home.clone()
+    } else if let Some(base_dir) = base_dir {
+        base_dir.join(home)
+    } else {
+        // No base directory to resolve relative paths. Callers that load from disk should use
+        // `validate_with_context` via the diagnostics-aware loaders.
+        return;
+    };
+
+    if !resolved.exists() {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "jdk.home".to_string(),
+            message: format!("path does not exist: {}", resolved.display()),
+        });
+    } else if !resolved.is_dir() {
+        out.errors.push(ConfigValidationError::InvalidValue {
+            toml_path: "jdk.home".to_string(),
+            message: format!("path is not a directory: {}", resolved.display()),
+        });
     }
 }
 
@@ -265,8 +295,8 @@ fn validate_ai_code_edit_policy(config: &NovaConfig, out: &mut ValidationDiagnos
     if privacy.allow_cloud_code_edits {
         if privacy.effective_anonymize() {
             out.warnings.push(ConfigWarning::InvalidValue {
-                toml_path: "ai.privacy.anonymize".to_string(),
-                message: "cloud code edits are disabled while anonymization is enabled; set ai.privacy.anonymize=false".to_string(),
+                toml_path: "ai.privacy.anonymize_identifiers".to_string(),
+                message: "cloud code edits are disabled while identifier anonymization is enabled; set ai.privacy.anonymize_identifiers=false".to_string(),
             });
         }
 

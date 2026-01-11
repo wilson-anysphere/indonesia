@@ -11,3 +11,13 @@ fn json_schema_includes_deprecated_jdk_home_alias() {
     assert_eq!(jdk_home.get("deprecated").and_then(|v| v.as_bool()), Some(true));
 }
 
+#[test]
+fn json_schema_includes_deprecated_ai_privacy_anonymize_alias() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let anonymize = value
+        .pointer("/definitions/AiPrivacyConfig/properties/anonymize")
+        .expect("anonymize schema property exists");
+    assert_eq!(anonymize.get("deprecated").and_then(|v| v.as_bool()), Some(true));
+}

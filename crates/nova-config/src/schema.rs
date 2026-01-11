@@ -207,6 +207,18 @@ fn allow_deprecated_aliases(schema: &mut RootSchema) {
             "type": ["string", "null"]
         })),
     );
+
+    add_deprecated_property(
+        schema,
+        "AiPrivacyConfig",
+        "anonymize",
+        schema_from_json(json!({
+            "deprecated": true,
+            "description": "Deprecated alias for `ai.privacy.anonymize_identifiers`.",
+            "default": null,
+            "type": ["boolean", "null"]
+        })),
+    );
 }
 
 fn add_deprecated_property(
