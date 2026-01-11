@@ -129,3 +129,24 @@ fn discovers_jaxrs_endpoints() {
     assert_eq!(endpoints[1].path, "/hello/create");
     assert_eq!(endpoints[1].methods, vec!["POST"]);
 }
+
+#[test]
+fn discovers_spring_mvc_endpoints() {
+    let src = r#"
+        import org.springframework.web.bind.annotation.GetMapping;
+        import org.springframework.web.bind.annotation.RequestMapping;
+        import org.springframework.web.bind.annotation.RestController;
+
+        @RestController
+        @RequestMapping("/api")
+        public class HelloController {
+          @GetMapping("/hello")
+          public String hello() { return "hello"; }
+        }
+    "#;
+
+    let endpoints = analyze_java_sources(&[src]).endpoints;
+    assert_eq!(endpoints.len(), 1, "endpoints: {:#?}", endpoints);
+    assert_eq!(endpoints[0].path, "/api/hello");
+    assert_eq!(endpoints[0].methods, vec!["GET"]);
+}

@@ -63,7 +63,7 @@ pub struct AnalysisResult {
 pub fn analyze_java_sources(sources: &[&str]) -> AnalysisResult {
     let CdiAnalysis { model, diagnostics } = cdi::analyze_cdi(sources);
 
-    let endpoints = nova_framework_web::extract_jaxrs_endpoints(sources);
+    let endpoints = nova_framework_web::extract_http_endpoints_from_sources(sources);
     let config_properties = config::collect_config_property_names(sources, &[]);
 
     AnalysisResult {

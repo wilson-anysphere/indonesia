@@ -23,6 +23,15 @@ pub fn extract_jaxrs_endpoints(sources: &[&str]) -> Vec<Endpoint> {
         .collect()
 }
 
+/// Convenience wrapper for [`extract_http_endpoints_from_source`] when source file paths are
+/// unavailable.
+pub fn extract_http_endpoints_from_sources(sources: &[&str]) -> Vec<Endpoint> {
+    sources
+        .iter()
+        .flat_map(|src| extract_http_endpoints_from_source(src, None))
+        .collect()
+}
+
 /// Extract HTTP endpoints from Java sources across supported web frameworks.
 ///
 /// This is a best-effort line-based extractor intended for lightweight tooling
