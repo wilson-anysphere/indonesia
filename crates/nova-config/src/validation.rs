@@ -113,6 +113,8 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
         return;
     }
 
+    validate_ai_code_edit_policy(config, out);
+
     if config.ai.provider.timeout_ms == 0 {
         out.errors.push(ConfigValidationError::InvalidValue {
             toml_path: "ai.provider.timeout_ms".to_string(),
@@ -227,6 +229,54 @@ fn validate_ai(config: &NovaConfig, out: &mut ValidationDiagnostics) {
                     message: "must be >= 1".to_string(),
                 });
             }
+        }
+    }
+}
+
+fn validate_ai_code_edit_policy(config: &NovaConfig, out: &mut ValidationDiagnostics) {
+    let privacy = &config.ai.privacy;
+
+    if privacy.local_only {
+        if privacy.allow_cloud_code_edits {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: "ai.privacy.allow_cloud_code_edits".to_string(),
+                message: "ignored while ai.privacy.local_only=true".to_string(),
+            });
+        }
+
+        if privacy.allow_code_edits_without_anonymization {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: "ai.privacy.allow_code_edits_without_anonymization".to_string(),
+                message: "ignored while ai.privacy.local_only=true".to_string(),
+            });
+        }
+
+        return;
+    }
+
+    // Cloud mode: validate the explicit opt-ins for code-editing workflows.
+    if privacy.allow_code_edits_without_anonymization && !privacy.allow_cloud_code_edits {
+        out.warnings.push(ConfigWarning::InvalidValue {
+            toml_path: "ai.privacy.allow_code_edits_without_anonymization".to_string(),
+            message: "has no effect unless ai.privacy.allow_cloud_code_edits=true".to_string(),
+        });
+    }
+
+    if privacy.allow_cloud_code_edits {
+        if privacy.effective_anonymize() {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: "ai.privacy.anonymize".to_string(),
+                message: "cloud code edits are disabled while anonymization is enabled; set ai.privacy.anonymize=false".to_string(),
+            });
+        }
+
+        if !privacy.allow_code_edits_without_anonymization {
+            out.warnings.push(ConfigWarning::InvalidValue {
+                toml_path: "ai.privacy.allow_code_edits_without_anonymization".to_string(),
+                message:
+                    "cloud code edits require ai.privacy.allow_code_edits_without_anonymization=true"
+                        .to_string(),
+            });
         }
     }
 }

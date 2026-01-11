@@ -276,3 +276,85 @@ wasm_timeout_ms = 0
         ]
     );
 }
+
+#[test]
+fn warns_when_cloud_code_edits_enabled_without_disabling_anonymize() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+local_only = false
+allow_cloud_code_edits = true
+allow_code_edits_without_anonymization = true
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "ai.privacy.anonymize".to_string(),
+            message: "cloud code edits are disabled while anonymization is enabled; set ai.privacy.anonymize=false".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn warns_when_cloud_code_edit_flags_are_set_in_local_only_mode() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+local_only = true
+allow_cloud_code_edits = true
+allow_code_edits_without_anonymization = true
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![
+            ConfigWarning::InvalidValue {
+                toml_path: "ai.privacy.allow_cloud_code_edits".to_string(),
+                message: "ignored while ai.privacy.local_only=true".to_string(),
+            },
+            ConfigWarning::InvalidValue {
+                toml_path: "ai.privacy.allow_code_edits_without_anonymization".to_string(),
+                message: "ignored while ai.privacy.local_only=true".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn warns_when_allow_code_edits_without_anonymization_is_set_without_cloud_opt_in() {
+    let text = r#"
+[ai]
+enabled = true
+
+[ai.privacy]
+local_only = false
+anonymize = false
+allow_cloud_code_edits = false
+allow_code_edits_without_anonymization = true
+"#;
+
+    let (_config, diagnostics) =
+        NovaConfig::load_from_str_with_diagnostics(text).expect("config should parse");
+
+    assert!(diagnostics.errors.is_empty());
+    assert_eq!(
+        diagnostics.warnings,
+        vec![ConfigWarning::InvalidValue {
+            toml_path: "ai.privacy.allow_code_edits_without_anonymization".to_string(),
+            message: "has no effect unless ai.privacy.allow_cloud_code_edits=true".to_string(),
+        }]
+    );
+}
