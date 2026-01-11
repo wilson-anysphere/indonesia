@@ -286,6 +286,159 @@ Notes:
 
 ---
 
+### `nova/projectConfiguration`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/project.rs` (`ProjectConfigurationParams`, `ProjectConfigurationResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/project.rs::handle_project_configuration`
+- **Time budget:** 60s (no safe-mode on timeout)
+
+This endpoint returns a **single snapshot** of Nova’s inferred project configuration for a
+workspace root: build system kind, Java language level, source roots, classpath/module-path,
+output directories, and a best-effort dependency list.
+
+#### Request params
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace" }
+```
+
+`projectRoot` also accepts the legacy alias `root`.
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "workspaceRoot": "/absolute/path/to/workspace",
+  "buildSystem": "maven",
+  "java": { "source": 17, "target": 17 },
+  "modules": [{ "name": "app", "root": "/absolute/path/to/workspace" }],
+  "sourceRoots": [
+    { "kind": "main", "origin": "source", "path": "/absolute/path/to/workspace/src/main/java" }
+  ],
+  "classpath": [{ "kind": "jar", "path": "/path/to/dependency.jar" }],
+  "modulePath": [],
+  "outputDirs": [{ "kind": "main", "path": "/absolute/path/to/workspace/target/classes" }],
+  "dependencies": [{ "groupId": "org.junit.jupiter", "artifactId": "junit-jupiter", "scope": "test" }]
+}
+```
+
+Notes:
+
+- `buildSystem` is one of: `"maven" | "gradle" | "bazel" | "simple"`.
+- Most paths are returned as **absolute filesystem paths** (Nova canonicalizes the workspace root).
+- `dependencies` is best-effort and may be empty, especially for Gradle/Bazel projects.
+
+#### Errors
+
+- `-32602` if `projectRoot` is missing/empty or params do not match the schema.
+- `-32603` for internal failures (filesystem errors, build tool integration failures).
+
+---
+
+### `nova/java/sourcePaths`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/java.rs` (`JavaSourcePathsParams`, `JavaSourcePathsResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/java.rs::handle_source_paths`
+- **Time budget:** 30s (no safe-mode on timeout)
+
+This is a convenience endpoint that returns the workspace’s Java source roots (including generated
+roots when known).
+
+#### Request params
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace" }
+```
+
+`projectRoot` also accepts the legacy alias `root`.
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "roots": [
+    { "kind": "main", "origin": "source", "path": "/absolute/path/to/workspace/src/main/java" },
+    { "kind": "test", "origin": "source", "path": "/absolute/path/to/workspace/src/test/java" }
+  ]
+}
+```
+
+This is equivalent to `nova/projectConfiguration.sourceRoots` (subset).
+
+#### Errors
+
+- `-32602` if `projectRoot` is missing/empty or params do not match the schema.
+- `-32603` for internal failures while loading the project configuration.
+
+---
+
+### `nova/java/resolveMainClass`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/java.rs` (`ResolveMainClassParams`, `ResolveMainClassResponse`, `ResolvedJavaClass`)
+- **Handler:** `crates/nova-lsp/src/extensions/java.rs::handle_resolve_main_class`
+- **Time budget:** 60s (no safe-mode on timeout)
+
+Discover runnable entry points (“main classes”) or Spring Boot application classes.
+
+#### Request params
+
+Either provide `projectRoot` (scan the project) **or** a `uri` (only inspect that file):
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace", "includeTests": false }
+```
+
+```json
+{ "uri": "file:///absolute/path/to/Foo.java", "includeTests": true }
+```
+
+Notes:
+
+- `projectRoot` also accepts the legacy alias `root`.
+- `uri` must be a `file://` URI.
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "classes": [
+    {
+      "qualifiedName": "com.example.Main",
+      "simpleName": "Main",
+      "path": "/absolute/path/to/workspace/src/main/java/com/example/Main.java",
+      "hasMain": true,
+      "isTest": false,
+      "isSpringBootApp": false
+    }
+  ]
+}
+```
+
+Filtering behavior:
+
+- When `includeTests` is `false` (default), the server returns:
+  - classes with `hasMain = true`, and
+  - classes with `isSpringBootApp = true`.
+- When `includeTests` is `true`, the server also returns test classes (`isTest = true`).
+
+The returned list is sorted by `qualifiedName`, then `path`, for determinism.
+
+#### Errors
+
+- `-32602` if neither `projectRoot` nor `uri` is provided, or if `uri` is not a valid `file://` URI.
+- `-32603` for IO errors reading the file(s) or internal failures during discovery.
+
+---
+
 ### `nova/reloadProject`
 
 - **Kind:** request
