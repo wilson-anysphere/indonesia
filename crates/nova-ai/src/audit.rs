@@ -39,7 +39,7 @@ fn sanitize_text(text: &str) -> String {
         .expect("valid regex")
     });
     static QUERY_PARAM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)([?&](?:key|api[_-]?key|token|access[_-]?token)=)([^&\s]+)")
+        Regex::new(r"(?i)([?&](?:key|api[_-]?key|token|access[_-]?token|authorization)=)([^&\s]+)")
             .expect("valid regex")
     });
     static URL_USERINFO_RE: Lazy<Regex> =
@@ -215,6 +215,7 @@ mod tests {
     #[test]
     fn sanitize_text_redacts_url_userinfo_and_tokens() {
         let input = r#"POST https://user:pass@example.com/path?access_token=abcd1234
+GET https://example.com/path?authorization=abcd1234
 Basic abcdefghijklmnop
 {"api_key": "sh0rt"}
 api_key=sh0rt2
@@ -223,6 +224,7 @@ sk-proj-012345678901234567890123456789"#;
         let out = sanitize_prompt_for_audit(input);
         assert!(!out.contains("user:pass@"));
         assert!(!out.contains("access_token=abcd1234"));
+        assert!(!out.contains("authorization=abcd1234"));
         assert!(out.contains("[REDACTED]"));
         assert!(!out.contains("sh0rt"));
         assert!(!out.contains("sh0rt2"));
