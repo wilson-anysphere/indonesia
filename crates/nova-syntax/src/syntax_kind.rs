@@ -6,7 +6,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 /// Bump this whenever serialized syntax artifacts become incompatible with
 /// previously persisted data (e.g. `SyntaxKind` numeric values change, new token
 /// kinds are inserted, node kinds are renamed/reordered, etc.).
-pub const SYNTAX_SCHEMA_VERSION: u32 = 1;
+pub const SYNTAX_SCHEMA_VERSION: u32 = 2;
 
 /// Unified syntax kind for both tokens and AST nodes.
 ///
@@ -257,7 +257,6 @@ pub enum SyntaxKind {
     ConditionalExpression,
     LambdaExpression,
     CastExpression,
-    ExpressionRoot,
 
     // --- Declarations / generics / annotation defaults ---
     ExtendsClause,
@@ -293,6 +292,7 @@ pub enum SyntaxKind {
     ProvidesDirective,
 
     DefaultValue,
+    ExpressionRoot,
 
     __Last,
 }
