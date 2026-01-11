@@ -7,7 +7,13 @@
 //!
 //! `QueryCache` is primarily an in-memory cache. When constructed with a cache
 //! directory (see [`QueryCache::new_with_disk`]) it will also persist cold values
-//! to disk for warm starts.
+//! to disk for warm starts via `nova-cache`'s [`QueryDiskCache`].
+//!
+//! The on-disk `QueryDiskCache` format is **best-effort** and intentionally *not*
+//! a long-term stability guarantee: values are only reused when the cache schema
+//! and Nova version match (and are assumed to be readable on the current
+//! platform). Any mismatch, corruption, or I/O failure is treated as a cache
+//! miss.
 //!
 //! For query-result persistence keyed by query name/arguments/input fingerprints,
 //! use [`PersistentQueryCache`], which builds on `nova-cache`'s versioned
@@ -916,6 +922,25 @@ mod tests {
         inputs
     }
 
+    fn persisted_entry_path<T: Serialize>(
+        cache_dir: &CacheDir,
+        query_name: &str,
+        query_schema_version: u32,
+        args: &T,
+        inputs: &BTreeMap<String, Fingerprint>,
+    ) -> PathBuf {
+        let key_args = VersionedArgs {
+            schema_version: query_schema_version,
+            args,
+        };
+        let fingerprint =
+            DerivedArtifactCache::key_fingerprint(query_name, &key_args, inputs).unwrap();
+        cache_dir
+            .queries_dir()
+            .join(query_name)
+            .join(format!("{}.bin", fingerprint.as_str()))
+    }
+
     #[test]
     fn persistent_query_cache_roundtrip() {
         let tmp = TempDir::new().unwrap();
@@ -987,13 +1012,7 @@ mod tests {
             target_bytes: 0,
         });
 
-        let query_dir = cache_dir.queries_dir().join("type_of");
-        let entry_path = std::fs::read_dir(&query_dir)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let entry_path = persisted_entry_path(&cache_dir, "type_of", 1, &args, &inputs);
 
         let bytes = std::fs::read(&entry_path).unwrap();
         let mut persisted: PersistedDerivedValueOwned<Vec<u8>> = bincode_deserialize(&bytes);
@@ -1027,13 +1046,7 @@ mod tests {
             target_bytes: 0,
         });
 
-        let query_dir = cache_dir.queries_dir().join("type_of");
-        let entry_path = std::fs::read_dir(&query_dir)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let entry_path = persisted_entry_path(&cache_dir, "type_of", 1, &args, &inputs);
 
         let bytes = std::fs::read(&entry_path).unwrap();
         let mut persisted: PersistedDerivedValueOwned<Vec<u8>> = bincode_deserialize(&bytes);
@@ -1067,13 +1080,7 @@ mod tests {
             target_bytes: 0,
         });
 
-        let query_dir = cache_dir.queries_dir().join("type_of");
-        let entry_path = std::fs::read_dir(&query_dir)
-            .unwrap()
-            .next()
-            .unwrap()
-            .unwrap()
-            .path();
+        let entry_path = persisted_entry_path(&cache_dir, "type_of", 1, &args, &inputs);
 
         std::fs::write(&entry_path, b"not a valid bincode payload").unwrap();
 
