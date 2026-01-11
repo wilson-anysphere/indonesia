@@ -264,6 +264,7 @@ This document provides the strategic overview. For detailed technical design, im
 **For project planning:**
 1. [Work Breakdown](docs/15-work-breakdown.md) - Organization and phasing
 2. [Testing Strategy](docs/14-testing-strategy.md) - Quality assurance approach
+3. [Testing Infrastructure](docs/14-testing-infrastructure.md) - How to run/update suites locally and what CI enforces
 
 ---
 

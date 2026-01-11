@@ -660,4 +660,4 @@ pub mod test_utils {
 
 ---
 
-[← Previous: AI Augmentation](13-ai-augmentation.md) | [Next: Work Breakdown →](15-work-breakdown.md)
+[← Previous: AI Augmentation](13-ai-augmentation.md) | [Testing Infrastructure](14-testing-infrastructure.md) | [Next: Work Breakdown →](15-work-breakdown.md)
