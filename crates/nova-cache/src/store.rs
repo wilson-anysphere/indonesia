@@ -219,12 +219,22 @@ async fn stream_async_read_to_path(
                 }
 
                 // If we can't rename, fall back to copying the temp file into place.
+                //
+                // Note: this is less atomic than `rename()`, but keeps the behavior working on
+                // platforms/filesystems where rename cannot replace the destination path.
                 let mut tmp_reader = tokio::fs::File::open(&tmp_path).await?;
-                let mut dest_file = tokio::fs::File::create(dest).await?;
-                tokio::io::copy(&mut tmp_reader, &mut dest_file).await?;
-                dest_file.flush().await?;
-                let _ = dest_file.sync_all().await;
-                drop(dest_file);
+                let copy_result = async {
+                    let mut dest_file = tokio::fs::File::create(dest).await?;
+                    tokio::io::copy(&mut tmp_reader, &mut dest_file).await?;
+                    dest_file.flush().await?;
+                    let _ = dest_file.sync_all().await;
+                    Ok::<(), std::io::Error>(())
+                }
+                .await;
+                if let Err(err) = copy_result {
+                    let _ = tokio::fs::remove_file(dest).await;
+                    return Err(err.into());
+                }
                 let _ = tokio::fs::remove_file(&tmp_path).await;
                 Ok(copied)
             }
