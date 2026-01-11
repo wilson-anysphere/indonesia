@@ -6,7 +6,7 @@ use nova_cache::{
     atomic_write, fetch_cache_package, install_cache_package, pack_cache_package, CacheConfig,
     CacheDir, CachePackageInstallOutcome,
 };
-use nova_config::NovaConfig;
+use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig};
 use nova_core::{
     apply_text_edits as apply_core_text_edits, LineIndex, Position, Range,
     TextEdit as CoreTextEdit, TextSize,
@@ -39,6 +39,10 @@ use tokio_util::sync::CancellationToken;
     about = "Nova CLI (indexing, diagnostics, cache, perf)"
 )]
 struct Cli {
+    /// Optional path to a TOML config file.
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -86,9 +90,6 @@ enum AiCommand {
 
 #[derive(Args)]
 struct AiModelsArgs {
-    /// Optional path to a TOML config file (defaults to in-memory defaults).
-    #[arg(long)]
-    config: Option<PathBuf>,
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
@@ -228,8 +229,8 @@ enum PerfCommand {
         #[arg(long)]
         current: PathBuf,
         /// Optional thresholds config (TOML).
-        #[arg(long)]
-        config: Option<PathBuf>,
+        #[arg(long = "thresholds-config")]
+        thresholds_config: Option<PathBuf>,
         /// Allow regressions for these benchmark IDs (repeatable).
         #[arg(long)]
         allow: Vec<String>,
@@ -260,21 +261,25 @@ struct ParseArgs {
 
 #[derive(Args)]
 struct BugReportArgs {
-    /// Optional path to a TOML config file (defaults to in-memory defaults).
+    /// Maximum number of log lines to include in the bundle.
+    #[arg(long, default_value_t = 500)]
+    max_log_lines: usize,
+
+    /// Path to a file containing reproduction steps (will be copied into the bundle).
+    #[arg(long, conflicts_with = "repro_text")]
+    repro: Option<PathBuf>,
+
+    /// Reproduction steps as plain text (will be copied into the bundle).
+    #[arg(long, conflicts_with = "repro")]
+    repro_text: Option<String>,
+
+    /// Output directory (defaults to a temp directory).
     #[arg(long)]
-    config: Option<PathBuf>,
+    out: Option<PathBuf>,
 
-    /// Include reproduction steps directly in the bundle.
-    #[arg(long, conflicts_with = "reproduction_file")]
-    reproduction: Option<String>,
-
-    /// Path to a UTF-8 file containing reproduction steps to include in the bundle.
-    #[arg(long, value_name = "FILE", conflicts_with = "reproduction")]
-    reproduction_file: Option<PathBuf>,
-
-    /// Maximum number of log lines to include from the in-memory ring buffer.
+    /// Also write a `.tar.zst` archive alongside the output directory.
     #[arg(long)]
-    max_log_lines: Option<usize>,
+    archive: bool,
 
     /// Emit JSON suitable for CI
     #[arg(long)]
@@ -339,10 +344,25 @@ struct RenameArgs {
     #[arg(long)]
     json: bool,
 }
-
 fn main() {
     let cli = Cli::parse();
-    let exit_code = match run(cli) {
+
+    let config = match cli.config.as_ref() {
+        Some(path) => match NovaConfig::load_from_path(path)
+            .with_context(|| format!("load config from {}", path.display()))
+        {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("{:#}", err);
+                std::process::exit(2);
+            }
+        },
+        None => NovaConfig::default(),
+    };
+
+    let _ = init_tracing_with_config(&config);
+
+    let exit_code = match run(cli, &config) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("{:#}", err);
@@ -353,7 +373,7 @@ fn main() {
     std::process::exit(exit_code);
 }
 
-fn run(cli: Cli) -> Result<i32> {
+fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
     match cli.command {
         Command::Index(args) => {
             let ws = Workspace::open(&args.path)?;
@@ -536,7 +556,7 @@ fn run(cli: Cli) -> Result<i32> {
             PerfCommand::Compare {
                 baseline,
                 current,
-                config,
+                thresholds_config,
                 allow,
                 markdown_out,
             } => {
@@ -545,13 +565,13 @@ fn run(cli: Cli) -> Result<i32> {
                 let current_run = load_run_from_path(&current)
                     .with_context(|| format!("load current run from {}", current.display()))?;
 
-                let config = match config {
+                let thresholds = match thresholds_config {
                     Some(path) => ThresholdConfig::read_toml(&path)
                         .with_context(|| format!("load thresholds config {}", path.display()))?,
                     None => ThresholdConfig::default(),
                 };
 
-                let comparison = compare_runs(&baseline_run, &current_run, &config, &allow);
+                let comparison = compare_runs(&baseline_run, &current_run, &thresholds, &allow);
                 let markdown = comparison.to_markdown();
 
                 if let Some(path) = markdown_out {
@@ -571,34 +591,27 @@ fn run(cli: Cli) -> Result<i32> {
             RefactorCommand::Rename(args) => handle_rename(args),
         },
         Command::BugReport(args) => {
-            let cfg = match args.config.as_ref() {
-                Some(path) => NovaConfig::load_from_path(path)?,
-                None => NovaConfig::default(),
-            };
+            tracing::info!(target = "nova.cli", "creating bug report bundle");
 
-            // Best-effort: initialize structured logging so the bundle captures any
-            // logs emitted by this `nova` process.
-            let log_buffer = nova_config::init_tracing_with_config(&cfg);
-
-            let reproduction = match (args.reproduction, args.reproduction_file) {
-                (Some(text), None) => Some(text),
-                (None, Some(path)) => Some(
-                    fs::read_to_string(&path)
+            let reproduction = if let Some(path) = args.repro.as_ref() {
+                Some(
+                    fs::read_to_string(path)
                         .with_context(|| format!("read reproduction file {}", path.display()))?,
-                ),
-                (None, None) => None,
-                (Some(_), Some(_)) => unreachable!("clap enforces conflicts"),
+                )
+            } else {
+                args.repro_text.clone()
             };
 
             let options = BugReportOptions {
-                max_log_lines: args.max_log_lines.unwrap_or(500),
+                max_log_lines: args.max_log_lines,
                 reproduction,
             };
 
             let perf = PerfStats::default();
+            let log_buffer = global_log_buffer();
             let crash_store = global_crash_store();
             let bundle = create_bug_report_bundle(
-                &cfg,
+                config,
                 log_buffer.as_ref(),
                 crash_store.as_ref(),
                 &perf,
@@ -607,23 +620,39 @@ fn run(cli: Cli) -> Result<i32> {
             .map_err(|err| anyhow::anyhow!(err))
             .context("failed to create bug report bundle")?;
 
-            let path = bundle.path().display().to_string();
-            if args.json {
-                print_output(&serde_json::json!({ "path": path }), true)?;
+            let mut bundle_path = bundle.path().to_path_buf();
+            if let Some(out) = args.out.as_ref() {
+                let dest = resolve_bugreport_output_path(out, &bundle_path)?;
+                move_dir(&bundle_path, &dest)?;
+                bundle_path = dest;
+            }
+
+            let archive_path = if args.archive {
+                let archive_path = bundle_path.with_extension("tar.zst");
+                write_tar_zst(&bundle_path, &archive_path)?;
+                Some(archive_path)
             } else {
-                println!("bug report bundle: {path}");
+                None
+            };
+
+            if args.json {
+                let mut payload = serde_json::json!({ "path": bundle_path });
+                if let Some(path) = &archive_path {
+                    payload["archive"] = serde_json::json!(path);
+                }
+                print_output(&payload, true)?;
+            } else {
+                println!("bugreport: {}", bundle_path.display());
+                if let Some(path) = &archive_path {
+                    println!("archive: {}", path.display());
+                }
             }
 
             Ok(0)
         }
         Command::Ai(args) => match args.command {
             AiCommand::Models(args) => {
-                let cfg = match args.config.as_ref() {
-                    Some(path) => NovaConfig::load_from_path(path)?,
-                    None => NovaConfig::default(),
-                };
-
-                let client = AiClient::from_config(&cfg.ai)?;
+                let client = AiClient::from_config(&config.ai)?;
                 let rt = tokio::runtime::Runtime::new()?;
                 let models = rt.block_on(client.list_models(CancellationToken::new()))?;
 
@@ -1410,4 +1439,89 @@ fn load_run_from_path(path: &PathBuf) -> Result<BenchRun> {
         return load_criterion_directory(path);
     }
     BenchRun::read_json(path)
+}
+
+fn resolve_bugreport_output_path(out: &PathBuf, bundle_path: &PathBuf) -> Result<PathBuf> {
+    if out.exists() {
+        if out.is_dir() {
+            let name = bundle_path
+                .file_name()
+                .context("bugreport bundle path has no file name")?;
+            Ok(out.join(name))
+        } else {
+            anyhow::bail!("bugreport output path {} already exists", out.display());
+        }
+    } else {
+        Ok(out.clone())
+    }
+}
+
+fn move_dir(src: &PathBuf, dest: &PathBuf) -> Result<()> {
+    if dest.exists() {
+        anyhow::bail!("bugreport destination {} already exists", dest.display());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    match std::fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::CrossDeviceLink => {
+            copy_dir_all(src, dest)?;
+            std::fs::remove_dir_all(src)
+                .with_context(|| format!("failed to remove {}", src.display()))?;
+            Ok(())
+        }
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to move bugreport bundle from {} to {}",
+                src.display(),
+                dest.display()
+            )
+        }),
+    }
+}
+
+fn copy_dir_all(src: &PathBuf, dest: &PathBuf) -> Result<()> {
+    std::fs::create_dir_all(dest)
+        .with_context(|| format!("failed to create {}", dest.display()))?;
+    for entry in std::fs::read_dir(src).with_context(|| format!("read {}", src.display()))? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_all(&from, &to)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&from, &to).with_context(|| {
+                format!("failed to copy {} to {}", from.display(), to.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn write_tar_zst(src_dir: &PathBuf, out_file: &PathBuf) -> Result<()> {
+    use std::fs::File;
+
+    if let Some(parent) = out_file.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let out = File::create(out_file)
+        .with_context(|| format!("failed to create archive {}", out_file.display()))?;
+    let encoder = zstd::Encoder::new(out, 19)?;
+    let mut builder = tar::Builder::new(encoder);
+
+    let dir_name = src_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("nova-bugreport");
+    builder.append_dir_all(dir_name, src_dir)?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
 }

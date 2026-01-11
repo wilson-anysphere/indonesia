@@ -16,7 +16,8 @@ fn help_mentions_core_commands() {
             .and(predicate::str::contains("deps"))
             .and(predicate::str::contains("cache"))
             .and(predicate::str::contains("perf"))
-            .and(predicate::str::contains("parse")),
+            .and(predicate::str::contains("parse"))
+            .and(predicate::str::contains("bugreport")),
     );
 }
 
@@ -253,8 +254,32 @@ fn parse_json_reports_errors_and_exits_nonzero() {
 }
 
 #[test]
-fn bugreport_command_generates_bundle() {
-    let output = nova().arg("bugreport").arg("--json").output().unwrap();
+fn bugreport_json_creates_bundle_files() {
+    let temp = TempDir::new().unwrap();
+    temp.child("config.toml")
+        .write_str(
+            r#"
+[logging]
+level = "debug"
+
+[ai]
+enabled = true
+api_key = "SUPER-SECRET"
+"#,
+        )
+        .unwrap();
+
+    let out_dir = temp.child("bugreport-out");
+
+    let output = nova()
+        .arg("--config")
+        .arg(temp.child("config.toml").path())
+        .arg("bugreport")
+        .arg("--out")
+        .arg(out_dir.path())
+        .arg("--json")
+        .output()
+        .unwrap();
 
     assert!(
         output.status.success(),
@@ -263,21 +288,30 @@ fn bugreport_command_generates_bundle() {
     );
 
     let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let path = v["path"].as_str().expect("path string");
-    let root = std::path::Path::new(path);
+    let bundle_path = std::path::Path::new(v["path"].as_str().unwrap());
+    assert!(bundle_path.is_dir());
 
-    for filename in [
+    for file in [
         "meta.json",
         "config.json",
         "logs.txt",
         "performance.json",
         "crashes.json",
     ] {
-        assert!(
-            root.join(filename).exists(),
-            "missing {} in bundle at {}",
-            filename,
-            root.display()
-        );
+        let path = bundle_path.join(file);
+        assert!(path.is_file(), "missing {}", path.display());
     }
+
+    // Config file should be included but secrets redacted.
+    let config_json = std::fs::read_to_string(bundle_path.join("config.json")).unwrap();
+    assert!(config_json.contains("\"level\": \"debug\""));
+    assert!(!config_json.contains("SUPER-SECRET"));
+    assert!(config_json.contains("<redacted>"));
+
+    // Logs should include at least the bugreport creation line.
+    let logs = std::fs::read_to_string(bundle_path.join("logs.txt")).unwrap();
+    assert!(
+        logs.contains("creating bug report bundle"),
+        "expected logs to mention bugreport creation, got:\n{logs}"
+    );
 }
