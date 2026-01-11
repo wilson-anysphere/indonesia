@@ -1,8 +1,11 @@
 use httpmock::prelude::*;
+mod support;
 use pretty_assertions::assert_eq;
 use serde_json::json;
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::process::{Command, Stdio};
+
+use support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
 
 #[test]
 fn stdio_server_handles_ai_explain_error_code_action() {
@@ -40,7 +43,7 @@ fn stdio_server_handles_ai_explain_error_code_action() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_response(&mut stdout, 1);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     // 2) open a document so the server can attach code snippets.
     write_jsonrpc_message(
@@ -85,7 +88,7 @@ fn stdio_server_handles_ai_explain_error_code_action() {
         }),
     );
 
-    let code_actions_resp = read_jsonrpc_response(&mut stdout, 2);
+    let code_actions_resp = read_response_with_id(&mut stdout, 2);
     let actions = code_actions_resp
         .get("result")
         .and_then(|v| v.as_array())
@@ -159,56 +162,11 @@ fn stdio_server_handles_ai_explain_error_code_action() {
 
     // 5) shutdown + exit
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
-    let _shutdown_resp = read_jsonrpc_response(&mut stdout, 4);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
 
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
     let status = child.wait().expect("wait");
     assert!(status.success());
-}
-
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_response(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
-    loop {
-        let msg = read_jsonrpc_message(reader);
-        match msg.get("id").and_then(|v| v.as_i64()) {
-            Some(got) if got == id => return msg,
-            _ => {
-                // Notification or unrelated response; ignore.
-            }
-        }
-    }
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
 }

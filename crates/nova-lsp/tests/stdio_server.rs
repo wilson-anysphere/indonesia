@@ -3,7 +3,7 @@ use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -11,6 +11,9 @@ use std::process::{Command, Stdio};
 #[cfg(unix)]
 use std::thread;
 use tempfile::TempDir;
+
+mod support;
+use support::{read_response_with_id, write_jsonrpc_message};
 
 #[derive(Debug, Clone, Deserialize)]
 struct LspPosition {
@@ -80,7 +83,7 @@ fn stdio_server_handles_test_discover_request() {
             }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     // 2) discover tests
     write_jsonrpc_message(
@@ -95,7 +98,7 @@ fn stdio_server_handles_test_discover_request() {
         }),
     );
 
-    let discover_resp = read_jsonrpc_message(&mut stdout);
+    let discover_resp = read_response_with_id(&mut stdout, 2);
     let result = discover_resp.get("result").cloned().expect("result");
     let resp: TestDiscoverResponse = serde_json::from_value(result).expect("decode response");
     assert_eq!(resp.schema_version, nova_testing::SCHEMA_VERSION);
@@ -109,7 +112,7 @@ fn stdio_server_handles_test_discover_request() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
 
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
@@ -140,7 +143,7 @@ fn stdio_server_handles_document_formatting_request() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     let uri = "file:///test/Foo.java";
     let text = "class Foo{void m(){int x=1;}}\n";
@@ -174,7 +177,7 @@ fn stdio_server_handles_document_formatting_request() {
         }),
     );
 
-    let formatting_resp = read_jsonrpc_message(&mut stdout);
+    let formatting_resp = read_response_with_id(&mut stdout, 2);
     let result = formatting_resp.get("result").cloned().expect("result");
     let edits: Vec<LspTextEdit> = serde_json::from_value(result).expect("decode text edits");
     let formatted = apply_lsp_text_edits(text, &edits);
@@ -188,7 +191,7 @@ fn stdio_server_handles_document_formatting_request() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -330,7 +333,7 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -342,7 +345,7 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
         }),
     );
 
-    let discover_resp = read_jsonrpc_message(&mut stdout);
+    let discover_resp = read_response_with_id(&mut stdout, 2);
     let result = discover_resp.get("result").cloned().expect("result");
     let resp: TestDiscoverResponse = serde_json::from_value(result).expect("decode response");
     assert!(resp.tests.iter().any(|t| t.id == "com.example.SimpleTest"));
@@ -351,7 +354,7 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
 
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
@@ -417,7 +420,7 @@ fn stdio_server_handles_debug_configurations_request() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -428,7 +431,7 @@ fn stdio_server_handles_debug_configurations_request() {
             "params": { "projectRoot": root.to_string_lossy() }
         }),
     );
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
     let configs = result.as_array().expect("configs array");
 
@@ -443,7 +446,7 @@ fn stdio_server_handles_debug_configurations_request() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
 
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
@@ -474,7 +477,7 @@ fn stdio_server_provides_inline_method_code_action() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     let uri = "file:///A.java";
     let source = r#"class A {
@@ -521,7 +524,7 @@ fn stdio_server_provides_inline_method_code_action() {
         }),
     );
 
-    let resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
     let actions = result.as_array().expect("actions array");
 
@@ -560,7 +563,7 @@ fn stdio_server_provides_inline_method_code_action() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -593,7 +596,7 @@ fn stdio_server_handles_generated_sources_request() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -605,7 +608,7 @@ fn stdio_server_handles_generated_sources_request() {
         }),
     );
 
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
     let modules = result
         .get("modules")
@@ -626,7 +629,7 @@ fn stdio_server_handles_generated_sources_request() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -659,7 +662,7 @@ fn stdio_server_handles_run_annotation_processing_request() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -671,7 +674,7 @@ fn stdio_server_handles_run_annotation_processing_request() {
         }),
     );
 
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
     let progress = result
         .get("progress")
@@ -685,7 +688,7 @@ fn stdio_server_handles_run_annotation_processing_request() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -758,7 +761,7 @@ fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     let expected = vec![
         root.join("target/classes").to_string_lossy().to_string(),
@@ -776,7 +779,7 @@ fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
             "params": { "projectRoot": root.to_string_lossy() }
         }),
     );
-    let classpath_resp = read_jsonrpc_message(&mut stdout);
+    let classpath_resp = read_response_with_id(&mut stdout, 2);
     let result = classpath_resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -800,7 +803,7 @@ fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
             "params": { "projectRoot": root.to_string_lossy() }
         }),
     );
-    let cached_resp = read_jsonrpc_message(&mut stdout);
+    let cached_resp = read_response_with_id(&mut stdout, 3);
     let result = cached_resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -815,7 +818,7 @@ fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -888,7 +891,7 @@ exit 1
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -900,7 +903,7 @@ exit 1
         }),
     );
 
-    let build_resp = read_jsonrpc_message(&mut stdout);
+    let build_resp = read_response_with_id(&mut stdout, 2);
     let result = build_resp.get("result").cloned().expect("result");
     let diags = result
         .get("diagnostics")
@@ -932,7 +935,7 @@ exit 1
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -1002,7 +1005,7 @@ esac
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     let expected = vec![
         root.join("build/classes/java/main")
@@ -1021,7 +1024,7 @@ esac
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
         }),
     );
-    let classpath_resp = read_jsonrpc_message(&mut stdout);
+    let classpath_resp = read_response_with_id(&mut stdout, 2);
     let result = classpath_resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -1045,7 +1048,7 @@ esac
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
         }),
     );
-    let cached_resp = read_jsonrpc_message(&mut stdout);
+    let cached_resp = read_response_with_id(&mut stdout, 3);
     let result = cached_resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -1060,7 +1063,7 @@ esac
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 4);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -1132,7 +1135,7 @@ exit 0
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1144,7 +1147,7 @@ exit 0
         }),
     );
 
-    let build_resp = read_jsonrpc_message(&mut stdout);
+    let build_resp = read_response_with_id(&mut stdout, 2);
     let result = build_resp.get("result").cloned().expect("result");
     let diags = result
         .get("diagnostics")
@@ -1172,7 +1175,7 @@ exit 0
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -1311,7 +1314,7 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1327,7 +1330,7 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
         }),
     );
 
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
     let results = result
         .get("results")
@@ -1343,7 +1346,7 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -1423,7 +1426,7 @@ fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     // 1) Prime the cache.
     write_jsonrpc_message(
@@ -1435,7 +1438,7 @@ fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "maven" }
         }),
     );
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -1469,7 +1472,7 @@ fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "maven" }
         }),
     );
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -1496,7 +1499,7 @@ fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "maven" }
         }),
     );
-    let _reload_resp = read_jsonrpc_message(&mut stdout);
+    let _reload_resp = read_response_with_id(&mut stdout, 4);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1507,7 +1510,7 @@ fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "maven" }
         }),
     );
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 5);
     let result = resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -1528,7 +1531,7 @@ fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -1596,7 +1599,7 @@ esac
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1607,7 +1610,7 @@ esac
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
         }),
     );
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 2);
     let result = resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -1638,7 +1641,7 @@ esac
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
         }),
     );
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -1666,7 +1669,7 @@ esac
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
         }),
     );
-    let _reload_resp = read_jsonrpc_message(&mut stdout);
+    let _reload_resp = read_response_with_id(&mut stdout, 4);
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1677,7 +1680,7 @@ esac
             "params": { "projectRoot": root.to_string_lossy(), "buildTool": "gradle" }
         }),
     );
-    let resp = read_jsonrpc_message(&mut stdout);
+    let resp = read_response_with_id(&mut stdout, 5);
     let result = resp.get("result").cloned().expect("result");
     let classpath = result
         .get("classpath")
@@ -1700,54 +1703,12 @@ esac
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
     let status = child.wait().expect("wait");
     assert!(status.success());
-}
-
-fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
-    let bytes = serde_json::to_vec(message).expect("serialize");
-    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
-    writer.write_all(&bytes).expect("write body");
-    writer.flush().expect("flush");
-}
-
-fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
-    let mut content_length: Option<usize> = None;
-
-    loop {
-        let mut line = String::new();
-        let bytes_read = reader.read_line(&mut line).expect("read header line");
-        assert!(bytes_read > 0, "unexpected EOF while reading headers");
-
-        let line = line.trim_end_matches(['\r', '\n']);
-        if line.is_empty() {
-            break;
-        }
-
-        if let Some((name, value)) = line.split_once(':') {
-            if name.eq_ignore_ascii_case("Content-Length") {
-                content_length = value.trim().parse::<usize>().ok();
-            }
-        }
-    }
-
-    let len = content_length.expect("Content-Length header");
-    let mut buf = vec![0u8; len];
-    reader.read_exact(&mut buf).expect("read body");
-    serde_json::from_slice(&buf).expect("parse json")
-}
-
-fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_json::Value {
-    loop {
-        let msg = read_jsonrpc_message(reader);
-        if msg.get("id").and_then(|v| v.as_i64()) == Some(id) {
-            return msg;
-        }
-    }
 }
 
 #[cfg(unix)]
