@@ -42,6 +42,7 @@ actionlint
 
 # VS Code extension packaging (also checks version sync)
 ./scripts/sync-versions.sh
+git diff --exit-code
 cd editors/vscode
 npm ci
 npm run package
@@ -311,8 +312,8 @@ See `perf/README.md` for details.
 
 ### 8) Coverage (`cargo llvm-cov`)
 
-Nova tracks test coverage drift via `.github/workflows/coverage.yml` (scheduled + manual). Coverage
-is not a strict gate today, but it’s useful for spotting untested areas and regressions.
+Nova tracks test coverage drift via `.github/workflows/coverage.yml` (runs on `main` + scheduled + manual).
+Coverage is not a strict gate today, but it’s useful for spotting untested areas and regressions.
 
 **Run locally (HTML report):**
 
