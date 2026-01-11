@@ -423,7 +423,10 @@ fn sources_fingerprint(db: &dyn Database, sources: &[JavaSource]) -> u64 {
 }
 
 fn looks_like_spring_source(text: &str) -> bool {
-    text.contains("org.springframework")
+    // Keep this heuristic narrow: it's used as a fallback when we can't load the
+    // workspace `ProjectConfig` (e.g. in-memory fixtures), and we don't want
+    // random strings in comments to trigger Spring DI analysis.
+    text.contains("import org.springframework") || text.contains("@org.springframework")
 }
 
 fn discovered_profile_completions(db: &dyn Database, root: &Path) -> Vec<CompletionItem> {

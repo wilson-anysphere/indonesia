@@ -10,10 +10,10 @@ use std::str::FromStr;
 
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItem,
-    CompletionItemKind, CompletionTextEdit, DiagnosticSeverity, DocumentSymbol, Hover, HoverContents,
-    InlayHint, InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
-    SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp, SignatureInformation,
-    SymbolKind, TextEdit, TypeHierarchyItem,
+    CompletionItemKind, CompletionTextEdit, DiagnosticSeverity, DocumentSymbol, Hover,
+    HoverContents, InlayHint, InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString,
+    Position, Range, SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp,
+    SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem,
 };
 
 use nova_core::{path_to_file_uri, AbsPathBuf};
@@ -208,7 +208,7 @@ fn cursor_inside_value_placeholder(java_source: &str, cursor: usize) -> bool {
 
 fn spring_value_completion_applicable(db: &dyn Database, file: FileId, java_source: &str) -> bool {
     let Some(path) = db.file_path(file) else {
-        return java_source.contains("org.springframework");
+        return looks_like_spring_source(java_source);
     };
 
     let root = if path.exists() {
@@ -234,7 +234,14 @@ fn spring_value_completion_applicable(db: &dyn Database, file: FileId, java_sour
 
     framework_cache::project_config(&root)
         .is_some_and(|cfg| nova_framework_spring::is_spring_applicable(cfg.as_ref()))
-        || java_source.contains("org.springframework")
+        || looks_like_spring_source(java_source)
+}
+
+fn looks_like_spring_source(text: &str) -> bool {
+    // Keep this heuristic narrow: it is used as a fallback when we can't load a
+    // `ProjectConfig` (e.g. in-memory fixtures), and we don't want random strings
+    // in comments to trigger Spring-specific behavior.
+    text.contains("import org.springframework") || text.contains("@org.springframework")
 }
 
 // -----------------------------------------------------------------------------
@@ -406,13 +413,23 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             let index = spring_workspace_index(db);
             let items =
                 nova_framework_spring::completions_for_properties_file(path, text, offset, &index);
-            return decorate_completions(text, prefix_start, offset, spring_completions_to_lsp(items));
+            return decorate_completions(
+                text,
+                prefix_start,
+                offset,
+                spring_completions_to_lsp(items),
+            );
         }
         if is_spring_yaml_file(path) {
             let index = spring_workspace_index(db);
             let items =
                 nova_framework_spring::completions_for_yaml_file(path, text, offset, &index);
-            return decorate_completions(text, prefix_start, offset, spring_completions_to_lsp(items));
+            return decorate_completions(
+                text,
+                prefix_start,
+                offset,
+                spring_completions_to_lsp(items),
+            );
         }
     }
 
@@ -495,7 +512,12 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     &analysis.model,
                 );
                 if !items.is_empty() {
-                    return decorate_completions(text, prefix_start, offset, jpa_completions_to_lsp(items));
+                    return decorate_completions(
+                        text,
+                        prefix_start,
+                        offset,
+                        jpa_completions_to_lsp(items),
+                    );
                 }
             }
         }
@@ -512,7 +534,12 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         );
     }
 
-    decorate_completions(text, prefix_start, offset, general_completions(db, file, &prefix))
+    decorate_completions(
+        text,
+        prefix_start,
+        offset,
+        general_completions(db, file, &prefix),
+    )
 }
 
 fn decorate_completions(
@@ -521,7 +548,10 @@ fn decorate_completions(
     offset: usize,
     mut items: Vec<CompletionItem>,
 ) -> Vec<CompletionItem> {
-    let replace_range = Range::new(offset_to_position(text, prefix_start), offset_to_position(text, offset));
+    let replace_range = Range::new(
+        offset_to_position(text, prefix_start),
+        offset_to_position(text, offset),
+    );
 
     for item in &mut items {
         if item.text_edit.is_none() {
