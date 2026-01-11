@@ -5,6 +5,7 @@ use nova_ext::{
     NavigationTarget, ProjectId, Span, Symbol,
 };
 use nova_scheduler::CancellationToken;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 pub struct IdeExtensions<DB: ?Sized + Send + Sync + 'static> {
@@ -195,6 +196,68 @@ where
 
         actions
     }
+
+    /// Combine Nova's built-in inlay hints with extension-provided inlay hints.
+    pub fn inlay_hints_lsp(
+        &self,
+        cancel: CancellationToken,
+        file: nova_ext::FileId,
+        range: lsp_types::Range,
+    ) -> Vec<lsp_types::InlayHint> {
+        let text = self.db.file_content(file);
+        let start_offset = crate::text::position_to_offset(text, range.start).unwrap_or(0);
+        let end_offset = crate::text::position_to_offset(text, range.end).unwrap_or(text.len());
+
+        let mut hints = crate::code_intelligence::inlay_hints(self.db.as_ref(), file, range);
+
+        let mut seen: HashSet<(u32, u32, String)> = hints
+            .iter()
+            .map(|hint| {
+                (
+                    hint.position.line,
+                    hint.position.character,
+                    match &hint.label {
+                        lsp_types::InlayHintLabel::String(label) => label.clone(),
+                        lsp_types::InlayHintLabel::LabelParts(parts) => parts
+                            .iter()
+                            .map(|part| part.value.as_str())
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    },
+                )
+            })
+            .collect();
+
+        for hint in self.inlay_hints(cancel, file) {
+            let Some(span) = hint.span else {
+                continue;
+            };
+
+            if span.start < start_offset || span.start > end_offset {
+                continue;
+            }
+
+            let position = crate::text::offset_to_position(text, span.start);
+            let label = hint.label;
+            let key = (position.line, position.character, label.clone());
+            if !seen.insert(key) {
+                continue;
+            }
+
+            hints.push(lsp_types::InlayHint {
+                position,
+                label: lsp_types::InlayHintLabel::String(label),
+                kind: None,
+                text_edits: None,
+                tooltip: None,
+                padding_left: None,
+                padding_right: None,
+                data: None,
+            });
+        }
+
+        hints
+    }
 }
 
 impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
@@ -289,12 +352,74 @@ impl IdeExtensions<dyn nova_db::Database + Send + Sync> {
 
         actions
     }
+
+    /// Combine Nova's built-in inlay hints with extension-provided inlay hints.
+    pub fn inlay_hints_lsp(
+        &self,
+        cancel: CancellationToken,
+        file: nova_ext::FileId,
+        range: lsp_types::Range,
+    ) -> Vec<lsp_types::InlayHint> {
+        let text = self.db.file_content(file);
+        let start_offset = crate::text::position_to_offset(text, range.start).unwrap_or(0);
+        let end_offset = crate::text::position_to_offset(text, range.end).unwrap_or(text.len());
+
+        let mut hints = crate::code_intelligence::inlay_hints(self.db.as_ref(), file, range);
+
+        let mut seen: HashSet<(u32, u32, String)> = hints
+            .iter()
+            .map(|hint| {
+                (
+                    hint.position.line,
+                    hint.position.character,
+                    match &hint.label {
+                        lsp_types::InlayHintLabel::String(label) => label.clone(),
+                        lsp_types::InlayHintLabel::LabelParts(parts) => parts
+                            .iter()
+                            .map(|part| part.value.as_str())
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    },
+                )
+            })
+            .collect();
+
+        for hint in self.inlay_hints(cancel, file) {
+            let Some(span) = hint.span else {
+                continue;
+            };
+
+            if span.start < start_offset || span.start > end_offset {
+                continue;
+            }
+
+            let position = crate::text::offset_to_position(text, span.start);
+            let label = hint.label;
+            let key = (position.line, position.character, label.clone());
+            if !seen.insert(key) {
+                continue;
+            }
+
+            hints.push(lsp_types::InlayHint {
+                position,
+                label: lsp_types::InlayHintLabel::String(label),
+                kind: None,
+                text_edits: None,
+                tooltip: None,
+                padding_left: None,
+                padding_right: None,
+                data: None,
+            });
+        }
+
+        hints
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nova_ext::{CodeActionProvider, CompletionProvider, DiagnosticProvider};
+    use nova_ext::{CodeActionProvider, CompletionProvider, DiagnosticProvider, InlayHintProvider};
     use nova_framework::{Database, FrameworkAnalyzer, FrameworkAnalyzerAdapter, MemoryDatabase};
     use std::path::PathBuf;
 
@@ -553,6 +678,90 @@ class A {
         assert!(
             titles.iter().any(|t| *t == "extra action"),
             "expected extension action; got {titles:?}"
+        );
+    }
+
+    #[test]
+    fn combines_builtin_and_extension_inlay_hints() {
+        use nova_db::RootDatabase;
+
+        struct ExtraInlayHintProvider;
+        impl InlayHintProvider<dyn nova_db::Database + Send + Sync> for ExtraInlayHintProvider {
+            fn id(&self) -> &str {
+                "extra.inlay_hints"
+            }
+
+            fn provide_inlay_hints(
+                &self,
+                _ctx: ExtensionContext<dyn nova_db::Database + Send + Sync>,
+                _params: InlayHintParams,
+            ) -> Vec<InlayHint> {
+                vec![InlayHint {
+                    span: Some(Span::new(0, 1)),
+                    label: "extension hint".to_string(),
+                }]
+            }
+        }
+
+        let mut db = RootDatabase::new();
+        let file = db.file_id_for_path(PathBuf::from("/inlay_hints.java"));
+        db.set_file_text(
+            file,
+            r#"
+class A {
+  void m() {
+    var x = "";
+  }
+}
+"#
+            .to_string(),
+        );
+
+        let db: Arc<dyn nova_db::Database + Send + Sync> = Arc::new(db);
+        let mut ide = IdeExtensions::new(db, Arc::new(NovaConfig::default()), ProjectId::new(0));
+        ide.registry_mut()
+            .register_inlay_hint_provider(Arc::new(ExtraInlayHintProvider))
+            .unwrap();
+
+        let range = lsp_types::Range::new(
+            lsp_types::Position::new(0, 0),
+            lsp_types::Position::new(u32::MAX, u32::MAX),
+        );
+
+        let hints = ide.inlay_hints_lsp(CancellationToken::new(), file, range);
+
+        let labels: Vec<String> = hints
+            .iter()
+            .map(|hint| match &hint.label {
+                lsp_types::InlayHintLabel::String(label) => label.clone(),
+                lsp_types::InlayHintLabel::LabelParts(parts) => parts
+                    .iter()
+                    .map(|part| part.value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(""),
+            })
+            .collect();
+
+        assert!(
+            labels.iter().any(|label| label == ": String"),
+            "expected built-in var type hint; got {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|label| label == "extension hint"),
+            "expected extension inlay hint; got {labels:?}"
+        );
+
+        let builtin_idx = labels
+            .iter()
+            .position(|label| label == ": String")
+            .expect("missing built-in hint");
+        let extension_idx = labels
+            .iter()
+            .position(|label| label == "extension hint")
+            .expect("missing extension hint");
+        assert!(
+            builtin_idx < extension_idx,
+            "expected built-in hints to come first; got {labels:?}"
         );
     }
 }
