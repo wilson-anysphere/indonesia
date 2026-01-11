@@ -113,11 +113,14 @@ fn workspace_model_respects_generated_sources_override_roots() {
     let model = load_workspace_model(root).expect("load workspace model");
     let expected = root.join("gen").canonicalize().unwrap();
     assert!(
-        model.modules.iter().any(|module| module.source_roots.iter().any(|source_root| {
-            source_root.origin == SourceRootOrigin::Generated
-                && source_root.kind == SourceRootKind::Main
-                && source_root.path == expected
-        })),
+        model
+            .modules
+            .iter()
+            .any(|module| module.source_roots.iter().any(|source_root| {
+                source_root.origin == SourceRootOrigin::Generated
+                    && source_root.kind == SourceRootKind::Main
+                    && source_root.path == expected
+            })),
         "expected override generated root to be present, got: {:?}",
         model
             .modules
