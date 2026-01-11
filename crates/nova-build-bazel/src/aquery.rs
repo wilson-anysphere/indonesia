@@ -295,9 +295,13 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
 
                 if other.ends_with(".java") {
                     if let Some(parent) = other.rsplit_once('/') {
-                        self.java_file_roots.insert(parent.0.to_string());
+                        if !self.java_file_roots.contains(parent.0) {
+                            self.java_file_roots.insert(parent.0.to_string());
+                        }
                     } else if let Some(parent) = other.rsplit_once('\\') {
-                        self.java_file_roots.insert(parent.0.to_string());
+                        if !self.java_file_roots.contains(parent.0) {
+                            self.java_file_roots.insert(parent.0.to_string());
+                        }
                     }
                 }
             }
@@ -359,7 +363,18 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
             let trimmed = trimmed_start.trim();
             if self.depth == 1 {
                 if let Some(value) = parse_quoted_field_raw(trimmed, "mnemonic:") {
-                    self.is_javac = Some(value == "Javac");
+                    let is_javac = value == "Javac";
+                    self.is_javac = Some(is_javac);
+                    if !is_javac {
+                        // If we started parsing before the mnemonic was known, drop any partially
+                        // collected data immediately to keep peak allocations bounded for
+                        // non-Javac actions.
+                        self.owner = None;
+                        self.info = JavaCompileInfo::default();
+                        self.sourcepath_roots.clear();
+                        self.java_file_roots.clear();
+                        self.pending = None;
+                    }
                 } else if let Some(value) = parse_quoted_field(trimmed, "owner:") {
                     if self.is_javac != Some(false) {
                         self.owner = Some(value);
@@ -415,6 +430,9 @@ fn parse_quoted_field(line: &str, prefix: &str) -> Option<String> {
         return None;
     }
     let raw = &line[first + 1..last];
+    if !raw.contains('\\') {
+        return Some(raw.to_string());
+    }
     Some(unescape_textproto(raw))
 }
 
@@ -615,9 +633,13 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
 
                 if other.ends_with(".java") {
                     if let Some(parent) = other.rsplit_once('/') {
-                        java_file_roots.insert(parent.0.to_string());
+                        if !java_file_roots.contains(parent.0) {
+                            java_file_roots.insert(parent.0.to_string());
+                        }
                     } else if let Some(parent) = other.rsplit_once('\\') {
-                        java_file_roots.insert(parent.0.to_string());
+                        if !java_file_roots.contains(parent.0) {
+                            java_file_roots.insert(parent.0.to_string());
+                        }
                     }
                 }
             }
