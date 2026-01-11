@@ -7,8 +7,8 @@ It is an MVP of the “distributed queries” direction described in
 [`docs/04-incremental-computation.md`](04-incremental-computation.md), but it also calls out the
 correctness and security guardrails that matter for real usage.
 
-**Protocol note:** the original MVP used a simple lockstep message protocol (legacy `v2` in
-`nova_remote_proto`). New work should target **nova remote RPC v3**, which adds explicit
+**Protocol note:** the original MVP used a simple lockstep, bincode-based protocol
+(`nova_remote_proto::legacy_v2`). New work should target **nova remote RPC v3**, which adds explicit
 `request_id: u64` (**router even**, **worker odd**), multiplexing, chunking (`PacketChunk`), and
 negotiated compression/cancellation. See
 [`docs/17-remote-rpc-protocol.md`](17-remote-rpc-protocol.md).
@@ -40,7 +40,7 @@ parallelization, etc.) should be treated as **future work** and is documented se
   - Calls into the router for shard indexing and workspace symbol search.
 - **Router (`nova-router`)**
   - Owns the *sharding layout* (source roots → shard IDs).
-  - Listens for worker connections over the nova remote RPC transport (legacy v2 today; v3 is the
+  - Listens for worker connections over the nova remote RPC transport (legacy bincode today; v3 is the
     intended long-term protocol).
   - Optionally spawns and supervises local `nova-worker` processes (one per shard).
   - Answers workspace symbol queries by requesting top-k matches from shard workers
