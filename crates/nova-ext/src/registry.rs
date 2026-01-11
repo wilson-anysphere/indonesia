@@ -786,6 +786,7 @@ mod tests {
     use nova_core::{FileId, ProjectId};
     use nova_scheduler::CancellationToken;
     use nova_types::{CompletionItem, Diagnostic, Span};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -804,6 +805,23 @@ mod tests {
 
     fn completion(label: &str) -> CompletionItem {
         CompletionItem::new(label)
+    }
+
+    fn run_with_timeout_pool_size() -> usize {
+        const ENV_KEY: &str = "NOVA_RUN_WITH_TIMEOUT_THREADS";
+
+        let available = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let default_size = available.min(4).max(2);
+
+        match std::env::var(ENV_KEY) {
+            Ok(raw) => match raw.parse::<usize>() {
+                Ok(0) | Err(_) => default_size,
+                Ok(n) => n,
+            },
+            Err(_) => default_size,
+        }
     }
 
     #[test]
@@ -948,6 +966,76 @@ mod tests {
         assert_eq!(fast_stats.panics_total, 0);
         assert!(fast_stats.last_ok_at.is_some());
         assert_eq!(fast_stats.last_error, None);
+    }
+
+    #[test]
+    fn provider_timeouts_do_not_create_unbounded_concurrency() {
+        let pool_size = run_with_timeout_pool_size();
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+
+        struct BlockingProvider {
+            active: Arc<AtomicUsize>,
+            max_active: Arc<AtomicUsize>,
+        }
+
+        impl DiagnosticProvider<()> for BlockingProvider {
+            fn id(&self) -> &str {
+                "blocking"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_active.fetch_max(now, Ordering::SeqCst);
+
+                // Ignore cancellation and keep running briefly to emulate a misbehaving provider.
+                std::thread::sleep(Duration::from_millis(10));
+
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                vec![diag("blocking")]
+            }
+        }
+
+        let mut registry = ExtensionRegistry::default();
+        registry.options_mut().diagnostic_timeout = Duration::from_millis(1);
+        registry
+            .register_diagnostic_provider(Arc::new(BlockingProvider {
+                active: Arc::clone(&active),
+                max_active: Arc::clone(&max_active),
+            }))
+            .unwrap();
+
+        let registry = Arc::new(registry);
+        let params = DiagnosticParams {
+            file: FileId::from_raw(1),
+        };
+        let calls = pool_size.saturating_mul(25).max(10);
+
+        let mut handles = Vec::with_capacity(calls);
+        for _ in 0..calls {
+            let registry = Arc::clone(&registry);
+            handles.push(std::thread::spawn(move || {
+                let _ = registry.diagnostics(ctx(), params);
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Allow any in-flight provider invocations to finish before other tests run.
+        std::thread::sleep(Duration::from_millis(15));
+
+        let observed = max_active.load(Ordering::SeqCst);
+        assert!(
+            observed <= pool_size,
+            "provider concurrency exceeded pool size: observed={observed}, pool_size={pool_size}"
+        );
     }
 
     #[test]
