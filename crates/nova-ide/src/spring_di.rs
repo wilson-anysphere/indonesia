@@ -72,7 +72,7 @@ pub(crate) struct SpringSourceLocation {
     pub(crate) span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SpringDiWorkspaceEntry {
     pub(crate) root: PathBuf,
     /// Java sources included in the analysis, sorted by path (stable).

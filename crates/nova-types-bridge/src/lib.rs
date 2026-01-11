@@ -8,13 +8,13 @@ use nova_classfile::{
     TypeArgument, TypeParameter, TypeSignature,
 };
 use nova_types::{
-    ClassDef, ClassId, ClassKind, ClassType, ConstructorDef, FieldDef, MethodDef, PrimitiveType, Type,
-    TypeEnv, TypeProvider, TypeStore, TypeVarId, WildcardBound,
+    ClassDef, ClassId, ClassKind, ClassType, ConstructorDef, FieldDef, MethodDef, PrimitiveType,
+    Type, TypeEnv, TypeProvider, TypeStore, TypeVarId, WildcardBound,
 };
 
+const ACC_INTERFACE: u16 = 0x0200;
 const ACC_PRIVATE: u16 = 0x0002;
 const ACC_FINAL: u16 = 0x0010;
-const ACC_INTERFACE: u16 = 0x0200;
 const ACC_STATIC: u16 = 0x0008;
 const ACC_VARARGS: u16 = 0x0080;
 const ACC_ABSTRACT: u16 = 0x0400;
