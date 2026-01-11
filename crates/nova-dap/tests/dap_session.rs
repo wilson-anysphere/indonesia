@@ -205,8 +205,10 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
         pause_stopped
             .pointer("/body/allThreadsStopped")
             .and_then(|v| v.as_bool()),
-        Some(true)
+        Some(false)
     );
+    assert_eq!(jdwp.thread_suspend_calls(), 1);
+    assert_eq!(jdwp.vm_suspend_calls(), 0);
 
     // Unknown/unhandled requests should be reported as errors (success: false).
     send_request(&mut writer, 9, "nope", json!({})).await;
@@ -257,11 +259,13 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(jdwp.thread_resume_calls(), 1);
+    assert_eq!(jdwp.vm_resume_calls(), 0);
     assert_eq!(
         cont_resp
             .pointer("/body/allThreadsContinued")
             .and_then(|v| v.as_bool()),
-        Some(true)
+        Some(false)
     );
 
     let continued = continued.expect("expected continued event");
@@ -269,7 +273,7 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
         continued
             .pointer("/body/allThreadsContinued")
             .and_then(|v| v.as_bool()),
-        Some(true)
+        Some(false)
     );
 
     let stopped = stopped.expect("expected stopped event");
@@ -828,6 +832,8 @@ async fn dap_step_stop_uses_event_thread_suspend_policy() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
+    assert_eq!(jdwp.thread_resume_calls(), 1);
+    assert_eq!(jdwp.vm_resume_calls(), 0);
     assert_eq!(jdwp.step_suspend_policy().await, Some(1));
     let stopped = stopped.expect("expected stopped event");
     assert_eq!(

@@ -121,6 +121,22 @@ impl MockJdwpServer {
         *self.state.step_suspend_policy.lock().await
     }
 
+    pub fn vm_suspend_calls(&self) -> u32 {
+        self.state.vm_suspend_calls.load(Ordering::Relaxed)
+    }
+
+    pub fn vm_resume_calls(&self) -> u32 {
+        self.state.vm_resume_calls.load(Ordering::Relaxed)
+    }
+
+    pub fn thread_suspend_calls(&self) -> u32 {
+        self.state.thread_suspend_calls.load(Ordering::Relaxed)
+    }
+
+    pub fn thread_resume_calls(&self) -> u32 {
+        self.state.thread_resume_calls.load(Ordering::Relaxed)
+    }
+
     pub fn sample_string_id(&self) -> u64 {
         SAMPLE_STRING_OBJECT_ID
     }
@@ -148,6 +164,10 @@ struct State {
     next_request_id: AtomicI32,
     next_packet_id: AtomicU32,
     hashmap_bucket_calls: AtomicU32,
+    vm_suspend_calls: AtomicU32,
+    vm_resume_calls: AtomicU32,
+    thread_suspend_calls: AtomicU32,
+    thread_resume_calls: AtomicU32,
     breakpoint_request: tokio::sync::Mutex<Option<i32>>,
     step_request: tokio::sync::Mutex<Option<i32>>,
     method_exit_request: tokio::sync::Mutex<Option<i32>>,
@@ -187,6 +207,10 @@ impl State {
             next_request_id: AtomicI32::new(0),
             next_packet_id: AtomicU32::new(0),
             hashmap_bucket_calls: AtomicU32::new(0),
+            vm_suspend_calls: AtomicU32::new(0),
+            vm_resume_calls: AtomicU32::new(0),
+            thread_suspend_calls: AtomicU32::new(0),
+            thread_resume_calls: AtomicU32::new(0),
             breakpoint_request: tokio::sync::Mutex::new(None),
             step_request: tokio::sync::Mutex::new(None),
             method_exit_request: tokio::sync::Mutex::new(None),
@@ -469,9 +493,15 @@ async fn handle_packet(
             (err, Vec::new())
         }
         // VirtualMachine.Suspend
-        (1, 8) => (0, Vec::new()),
+        (1, 8) => {
+            state.vm_suspend_calls.fetch_add(1, Ordering::Relaxed);
+            (0, Vec::new())
+        }
         // VirtualMachine.Resume
-        (1, 9) => (0, Vec::new()),
+        (1, 9) => {
+            state.vm_resume_calls.fetch_add(1, Ordering::Relaxed);
+            (0, Vec::new())
+        }
         // VirtualMachine.ClassPaths
         (1, 13) => {
             let mut w = JdwpWriter::new();
@@ -492,11 +522,13 @@ async fn handle_packet(
         // ThreadReference.Suspend
         (11, 2) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            state.thread_suspend_calls.fetch_add(1, Ordering::Relaxed);
             (0, Vec::new())
         }
         // ThreadReference.Resume
         (11, 3) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            state.thread_resume_calls.fetch_add(1, Ordering::Relaxed);
             (0, Vec::new())
         }
         // ThreadReference.Frames

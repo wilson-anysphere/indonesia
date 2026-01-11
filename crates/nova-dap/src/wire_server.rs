@@ -1291,19 +1291,23 @@ async fn handle_request_inner(
                 return;
             };
 
-            match dbg.continue_(cancel).await {
+            let all_threads_continued = thread_id.is_none();
+            match dbg.continue_(cancel, thread_id).await {
                 Ok(()) => {
                     send_response(
                         out_tx,
                         seq,
                         request,
                         true,
-                        Some(json!({ "allThreadsContinued": true })),
+                        Some(json!({ "allThreadsContinued": all_threads_continued })),
                         None,
                     );
 
                     let mut body = serde_json::Map::new();
-                    body.insert("allThreadsContinued".to_string(), json!(true));
+                    body.insert(
+                        "allThreadsContinued".to_string(),
+                        json!(all_threads_continued),
+                    );
                     if let Some(thread_id) = thread_id {
                         body.insert("threadId".to_string(), json!(thread_id));
                     }
@@ -1351,12 +1355,13 @@ async fn handle_request_inner(
                 return;
             };
 
-            match dbg.pause(cancel).await {
+            let all_threads_stopped = thread_id.is_none();
+            match dbg.pause(cancel, thread_id).await {
                 Ok(()) => {
                     send_response(out_tx, seq, request, true, None, None);
                     let mut body = serde_json::Map::new();
                     body.insert("reason".to_string(), json!("pause"));
-                    body.insert("allThreadsStopped".to_string(), json!(true));
+                    body.insert("allThreadsStopped".to_string(), json!(all_threads_stopped));
                     if let Some(thread_id) = thread_id {
                         body.insert("threadId".to_string(), json!(thread_id));
                     }

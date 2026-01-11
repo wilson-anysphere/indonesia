@@ -619,15 +619,33 @@ impl Debugger {
         Ok(results)
     }
 
-    pub async fn continue_(&mut self, cancel: &CancellationToken) -> Result<()> {
+    pub async fn continue_(
+        &mut self,
+        cancel: &CancellationToken,
+        dap_thread_id: Option<i64>,
+    ) -> Result<()> {
         self.invalidate_handles();
-        cancellable_jdwp(cancel, self.jdwp.vm_resume()).await?;
+        if let Some(dap_thread_id) = dap_thread_id {
+            let thread: ThreadId = dap_thread_id as ThreadId;
+            cancellable_jdwp(cancel, self.jdwp.thread_resume(thread)).await?;
+        } else {
+            cancellable_jdwp(cancel, self.jdwp.vm_resume()).await?;
+        }
         Ok(())
     }
 
-    pub async fn pause(&mut self, cancel: &CancellationToken) -> Result<()> {
+    pub async fn pause(
+        &mut self,
+        cancel: &CancellationToken,
+        dap_thread_id: Option<i64>,
+    ) -> Result<()> {
         self.invalidate_handles();
-        cancellable_jdwp(cancel, self.jdwp.vm_suspend()).await?;
+        if let Some(dap_thread_id) = dap_thread_id {
+            let thread: ThreadId = dap_thread_id as ThreadId;
+            cancellable_jdwp(cancel, self.jdwp.thread_suspend(thread)).await?;
+        } else {
+            cancellable_jdwp(cancel, self.jdwp.vm_suspend()).await?;
+        }
         Ok(())
     }
 
@@ -708,7 +726,7 @@ impl Debugger {
         )
         .await?;
         self.step_request = Some(req);
-        cancellable_jdwp(cancel, self.jdwp.vm_resume()).await?;
+        cancellable_jdwp(cancel, self.jdwp.thread_resume(thread)).await?;
         Ok(())
     }
 
