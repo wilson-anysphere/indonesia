@@ -1,0 +1,3 @@
+# Keep the checked-in seed corpus small.
+# libFuzzer will generate new corpus entries named like `id:000000,orig:...`.
+id:*
