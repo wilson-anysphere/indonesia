@@ -7,7 +7,6 @@ use serde_json::json;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use std::str::FromStr;
 use tempfile::TempDir;
 
 #[test]
@@ -18,7 +17,7 @@ fn stdio_server_resolves_extract_constant_code_action() {
     let source = "class C {\n    void m() {\n        int x = 1 + 2;\n    }\n}\n";
     fs::write(&file_path, source).expect("write file");
 
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = Uri::from_file_path(&file_path).expect("uri");
 
     let expr_start = source.find("1 + 2").expect("expression start");
     let expr_end = expr_start + "1 + 2".len();
@@ -198,7 +197,7 @@ public final class Point {\n\
 }\n";
     fs::write(&file_path, source).expect("write file");
 
-    let uri = Uri::from_str(&format!("file://{}", file_path.to_string_lossy())).expect("uri");
+    let uri = Uri::from_file_path(&file_path).expect("uri");
 
     let cursor_offset = source.find("class Point").expect("class");
     let index = LineIndex::new(source);
