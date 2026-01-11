@@ -814,6 +814,17 @@ async fn read_loop<R: AsyncRead + Unpin + Send + 'static>(
                                 }).await;
                                 break;
                             }
+                            if let Err(err) = in_flight.try_reserve(1) {
+                                inner
+                                    .close(RpcTransportError::AllocationFailed {
+                                        message: format!(
+                                            "allocate in-flight chunk map ({} entries): {err}",
+                                            in_flight.len().saturating_add(1)
+                                        ),
+                                    })
+                                    .await;
+                                break;
+                            }
                             in_flight.insert(id, Reassembly { compression, next_seq: 0, buf: Vec::new() });
                         }
 
@@ -868,7 +879,15 @@ async fn read_loop<R: AsyncRead + Unpin + Send + 'static>(
                         total_bytes += data.len();
 
                         if last {
-                            let entry = in_flight.remove(&id).expect("entry present");
+                            let Some(entry) = in_flight.remove(&id) else {
+                                inner
+                                    .close(RpcTransportError::ProtocolViolation {
+                                        message: "missing chunk reassembly entry at final chunk"
+                                            .into(),
+                                    })
+                                    .await;
+                                break;
+                            };
                             total_bytes = total_bytes.saturating_sub(entry.buf.len());
                             if let Err(err) = process_packet(&inner, id, entry.compression, entry.buf).await {
                                 inner.close(err).await;
