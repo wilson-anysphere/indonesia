@@ -60,6 +60,7 @@ pub mod micronaut {
     };
 }
 
+mod lombok_intel;
 mod db;
 mod navigation;
 mod parse;

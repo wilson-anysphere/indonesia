@@ -21,6 +21,7 @@ use nova_db::{Database, FileId};
 use nova_fuzzy::FuzzyMatcher;
 use nova_types::{Diagnostic, Severity, Span};
 
+use crate::lombok_intel;
 use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
 
 #[cfg(feature = "ai")]
@@ -380,6 +381,24 @@ fn member_completions(
                 kind: Some(CompletionItemKind::METHOD),
                 detail: Some(detail.to_string()),
                 insert_text: Some(format!("{name}()")),
+                ..Default::default()
+            });
+        }
+    }
+
+    if receiver_type != "String" {
+        for member in lombok_intel::complete_members(db, file, receiver_type) {
+            let (kind, insert_text) = match member.kind {
+                lombok_intel::MemberKind::Field => (CompletionItemKind::FIELD, member.label.clone()),
+                lombok_intel::MemberKind::Method => {
+                    (CompletionItemKind::METHOD, format!("{}()", member.label))
+                }
+                lombok_intel::MemberKind::Class => (CompletionItemKind::CLASS, member.label.clone()),
+            };
+            items.push(CompletionItem {
+                label: member.label,
+                kind: Some(kind),
+                insert_text: Some(insert_text),
                 ..Default::default()
             });
         }

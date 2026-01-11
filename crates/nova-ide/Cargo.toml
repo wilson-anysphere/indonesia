@@ -14,7 +14,11 @@ tokio-util = { version = "0.7", optional = true }
 nova-project = { path = "../nova-project" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-db = { path = "../nova-db" }
+nova-framework = { path = "../nova-framework" }
+nova-framework-lombok = { path = "../nova-framework-lombok" }
 nova-index = { path = "../nova-index" }
+nova-hir = { path = "../nova-hir" }
+nova-resolve = { path = "../nova-resolve" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
 nova-refactor = { path = "../nova-refactor" }
@@ -28,12 +32,11 @@ serde_json = "1"
 thiserror = "1"
 nova-framework-spring = { path = "../nova-framework-spring" }
 nova-framework-micronaut = { path = "../nova-framework-micronaut" }
+tree-sitter = "0.20"
+tree-sitter-java = "0.20"
 
 [features]
 ai = ["dep:nova-ai", "dep:tokio", "dep:tokio-util"]
 
 [lib]
 path = "src/lib.rs"
-
-[dev-dependencies]
-nova-framework = { path = "../nova-framework" }
