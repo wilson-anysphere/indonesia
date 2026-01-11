@@ -42,6 +42,8 @@ pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStats};
 pub use syntax::{NovaSyntax, SyntaxTree};
 
+use std::cell::RefCell;
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -52,6 +54,63 @@ use nova_project::ProjectConfig;
 use crate::{FileId, ProjectId, SourceRootId};
 
 use self::stats::QueryStatsCollector;
+
+thread_local! {
+    static QUERY_NAME_BUFFER: RefCell<String> = RefCell::new(String::with_capacity(64));
+}
+
+/// Writes a `Debug` representation into a string but stops at the first `(`.
+///
+/// Salsa's `DatabaseKeyIndex::debug(db)` format starts with the query name and
+/// then prints arguments in parentheses (`query(key)`); we only need the query
+/// name to attribute events, so we intentionally abort formatting early to keep
+/// overhead low.
+struct QueryNameWriter<'a> {
+    out: &'a mut String,
+    done: bool,
+}
+
+impl fmt::Write for QueryNameWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.done {
+            return Err(fmt::Error);
+        }
+
+        if let Some(idx) = s.find('(') {
+            self.out.push_str(&s[..idx]);
+            self.done = true;
+            return Err(fmt::Error);
+        }
+
+        self.out.push_str(s);
+        Ok(())
+    }
+}
+
+fn with_query_name<R>(
+    db: &RootDatabase,
+    database_key: ra_salsa::DatabaseKeyIndex,
+    f: impl FnOnce(&str) -> R,
+) -> R {
+    QUERY_NAME_BUFFER.with(|buf| {
+        let mut buf = buf.borrow_mut();
+        buf.clear();
+
+        let mut writer = QueryNameWriter {
+            out: &mut buf,
+            done: false,
+        };
+
+        // NOTE: `QueryNameWriter` uses `fmt::Error` as a "stop early" signal
+        // once it sees `(`. The formatting machinery treats this as an error;
+        // we intentionally ignore it and use whatever prefix was collected.
+        let _ = fmt::write(&mut writer, format_args!("{:?}", database_key.debug(db)));
+
+        let raw = buf.trim();
+        let name = raw.rsplit("::").next().unwrap_or(raw);
+        f(name)
+    })
+}
 
 /// Runs `f` and catches any Salsa cancellation.
 ///
@@ -120,12 +179,39 @@ impl RootDatabase {
 
 impl HasQueryStats for RootDatabase {
     fn record_query_stat(&self, query_name: &'static str, duration: Duration) {
-        self.stats.record(query_name.to_string(), duration);
+        self.stats.record_time(query_name, duration);
+    }
+
+    fn record_disk_cache_hit(&self, query_name: &'static str) {
+        self.stats.record_disk_hit(query_name);
+    }
+
+    fn record_disk_cache_miss(&self, query_name: &'static str) {
+        self.stats.record_disk_miss(query_name);
     }
 }
 
 impl ra_salsa::Database for RootDatabase {
     fn salsa_event(&self, event: ra_salsa::Event) {
+        match event.kind {
+            ra_salsa::EventKind::WillExecute { database_key } => {
+                with_query_name(self, database_key, |name| self.stats.record_execution(name));
+            }
+            ra_salsa::EventKind::DidValidateMemoizedValue { database_key } => {
+                with_query_name(self, database_key, |name| {
+                    self.stats.record_validated_memoized(name);
+                });
+            }
+            ra_salsa::EventKind::WillBlockOn { database_key, .. } => {
+                with_query_name(self, database_key, |name| {
+                    self.stats.record_blocked_on_other_runtime(name);
+                });
+            }
+            ra_salsa::EventKind::WillCheckCancellation => {
+                self.stats.record_cancel_check();
+            }
+        }
+
         // Coarse-grained instrumentation hook: the salsa macros already emit
         // `tracing::trace_span!` for memoized queries; this is primarily useful
         // for debugging cache behavior.
@@ -319,12 +405,16 @@ where
 mod tests {
     use super::*;
 
-    fn executions(db: &RootDatabase, query_name: &str) -> u64 {
+    fn stat(db: &RootDatabase, query_name: &str) -> QueryStat {
         db.query_stats()
             .by_query
             .get(query_name)
-            .map(|s| s.executions)
-            .unwrap_or(0)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn executions(db: &RootDatabase, query_name: &str) -> u64 {
+        stat(db, query_name).executions
     }
 
     #[test]
@@ -428,6 +518,77 @@ mod tests {
         assert_query_is_cancelled(db, move |snap| {
             snap.synthetic_semantic_work(file, 5_000_000)
         });
+    }
+
+    #[test]
+    fn memoized_reads_increment_validated_memoized() {
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+
+        db.set_file_exists(file, true);
+        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.clear_query_stats();
+
+        db.parse(file);
+        let first = stat(&db, "parse");
+        assert_eq!(first.executions, 1);
+        assert_eq!(first.validated_memoized, 0);
+
+        // Advance the revision without changing any inputs. The next read should
+        // validate (and reuse) the memoized value.
+        ra_salsa::Database::synthetic_write(&mut db, ra_salsa::Durability::LOW);
+        db.parse(file);
+
+        let second = stat(&db, "parse");
+        assert_eq!(
+            second.executions, 1,
+            "expected memoized value to be reused after synthetic_write"
+        );
+        assert_eq!(second.validated_memoized, 1);
+
+        // Editing an input should invalidate and re-execute the query.
+        db.set_file_content(file, Arc::new("class Foo { int x; }".to_string()));
+        db.parse(file);
+        let third = stat(&db, "parse");
+        assert_eq!(third.executions, 2);
+    }
+
+    #[test]
+    fn concurrent_reads_record_blocking() {
+        use std::sync::mpsc;
+
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+        db.set_file_exists(file, true);
+        db.set_source_root(file, SourceRootId::from_raw(0));
+        db.set_file_content(file, Arc::new("class Foo {}".to_string()));
+        db.clear_query_stats();
+
+        let snap1 = db.snapshot();
+        let snap2 = db.snapshot();
+
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let h1 = std::thread::spawn(move || {
+            let _guard = cancellation::test_support::install_entered_long_running_region_sender(
+                entered_tx,
+            );
+            snap1.interruptible_work(file, 2_000_000)
+        });
+
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("interruptible_work did not reach a cancellation checkpoint");
+
+        let h2 = std::thread::spawn(move || snap2.interruptible_work(file, 2_000_000));
+
+        let _ = h1.join().expect("snapshot 1 panicked");
+        let _ = h2.join().expect("snapshot 2 panicked");
+
+        let interrupt_stat = stat(&db, "interruptible_work");
+        assert!(
+            interrupt_stat.blocked_on_other_runtime > 0,
+            "expected one runtime to block on another while computing the same query"
+        );
     }
 
     #[test]
