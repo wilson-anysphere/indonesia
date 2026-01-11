@@ -2676,6 +2676,11 @@ impl<'a> Parser<'a> {
     fn parse_type(&mut self) {
         self.builder.start_node(SyntaxKind::Type.into());
         self.eat_trivia();
+        // Java 8+: type-use annotations (JSR 308) can appear in most type positions, notably
+        // within type arguments: `List<@A String>`.
+        while self.at_type_annotation_start() {
+            self.parse_annotation();
+        }
         if self.at_primitive_type() {
             self.builder.start_node(SyntaxKind::PrimitiveType.into());
             self.bump();
@@ -2692,11 +2697,29 @@ impl<'a> Parser<'a> {
             }
             self.builder.finish_node();
         }
-        while self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
-            self.bump();
-            self.bump();
+
+        // Array dims: `T @A [] @B []`.
+        loop {
+            self.eat_trivia();
+            while self.at_type_annotation_start() {
+                self.parse_annotation();
+                self.eat_trivia();
+            }
+
+            if self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
+                self.bump();
+                self.bump();
+                continue;
+            }
+
+            break;
         }
-        // Varargs parameters: `String... args`.
+
+        // Varargs parameters: `T @A ... args`.
+        while self.at_type_annotation_start() {
+            self.parse_annotation();
+            self.eat_trivia();
+        }
         if self.at(SyntaxKind::Ellipsis) {
             self.bump();
         }
@@ -3206,6 +3229,9 @@ impl<'a> Parser<'a> {
     fn parse_type_no_dims(&mut self) {
         self.builder.start_node(SyntaxKind::Type.into());
         self.eat_trivia();
+        while self.at_type_annotation_start() {
+            self.parse_annotation();
+        }
         if self.at_primitive_type() {
             self.builder.start_node(SyntaxKind::PrimitiveType.into());
             self.bump();
@@ -3221,6 +3247,14 @@ impl<'a> Parser<'a> {
                 self.parse_type_arguments();
             }
             self.builder.finish_node(); // NamedType
+        }
+        // `new` array creation puts the first `[` outside the `Type` node, but annotations can
+        // still appear immediately after the element type (dimension annotations). Consume them
+        // here so the caller can continue with `[ ... ]` parsing.
+        self.eat_trivia();
+        while self.at_type_annotation_start() {
+            self.parse_annotation();
+            self.eat_trivia();
         }
         self.builder.finish_node(); // Type
     }
@@ -3753,7 +3787,11 @@ impl<'a> Parser<'a> {
     }
 
     fn at_type_start(&mut self) -> bool {
-        self.at_primitive_type() || self.at_ident_like()
+        self.at_primitive_type() || self.at_ident_like() || self.at_type_annotation_start()
+    }
+
+    fn at_type_annotation_start(&mut self) -> bool {
+        self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw)
     }
 
     fn at_primitive_type(&mut self) -> bool {

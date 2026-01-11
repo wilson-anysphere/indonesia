@@ -1,7 +1,7 @@
 use crate::ast::{
-    AstNode, BlockFragment, ClassDeclaration, ClassMember, ClassMemberFragment, CompilationUnit,
-    Expression, ExpressionFragment, ModuleDirectiveKind, Statement, StatementFragment,
-    SwitchRuleBody, TypeDeclaration, UnnamedPattern,
+    AstNode, BlockFragment, CastExpression, ClassDeclaration, ClassMember, ClassMemberFragment,
+    CompilationUnit, Expression, ExpressionFragment, FieldDeclaration, ModuleDirectiveKind,
+    Statement, StatementFragment, SwitchRuleBody, TypeDeclaration, UnnamedPattern,
 };
 use crate::SyntaxKind;
 use crate::{
@@ -939,4 +939,78 @@ fn annotation_element_values_allow_primitive_class_literals() {
         }
         other => panic!("expected class literal expression, got {other:?}"),
     }
+}
+
+#[test]
+fn type_use_annotations_are_attached_to_types() {
+    let src = r#"
+        class Foo {
+          java.util.List<@A String> xs;
+          int @B [] ys;
+
+          Object m(Object x) { return (@C String) x; }
+        }
+    "#;
+
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+
+    let fields: Vec<FieldDeclaration> = class
+        .body()
+        .unwrap()
+        .members()
+        .filter_map(|m| match m {
+            ClassMember::FieldDeclaration(field) => Some(field),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fields.len(), 2);
+
+    let list_arg_type = fields[0]
+        .ty()
+        .unwrap()
+        .named()
+        .unwrap()
+        .type_arguments()
+        .unwrap()
+        .arguments()
+        .next()
+        .unwrap()
+        .ty()
+        .unwrap();
+    let list_arg_annotations: Vec<_> = list_arg_type
+        .annotations()
+        .map(|anno| anno.name().unwrap().text())
+        .collect();
+    assert_eq!(list_arg_annotations, vec!["A".to_string()]);
+
+    let ys_annotations: Vec<_> = fields[1]
+        .ty()
+        .unwrap()
+        .annotations()
+        .map(|anno| anno.name().unwrap().text())
+        .collect();
+    assert_eq!(ys_annotations, vec!["B".to_string()]);
+
+    let cast = parse
+        .syntax()
+        .descendants()
+        .find_map(CastExpression::cast)
+        .unwrap();
+    let cast_annotations: Vec<_> = cast
+        .ty()
+        .unwrap()
+        .annotations()
+        .map(|anno| anno.name().unwrap().text())
+        .collect();
+    assert_eq!(cast_annotations, vec!["C".to_string()]);
 }

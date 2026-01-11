@@ -21,12 +21,12 @@ CompilationUnit
               NamedType
                 Identifier "String"
                 Whitespace " "
-            Annotation
-              At "@"
-              Name
-                Identifier "A"
-                Whitespace " "
-            Ellipsis "..."
+              Annotation
+                At "@"
+                Name
+                  Identifier "A"
+                  Whitespace " "
+              Ellipsis "..."
             Whitespace " "
             Identifier "args"
           RParen ")"

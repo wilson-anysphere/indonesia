@@ -2011,6 +2011,10 @@ impl AstNode for Type {
 }
 
 impl Type {
+    pub fn annotations(&self) -> impl Iterator<Item = Annotation> + '_ {
+        support::children::<Annotation>(&self.syntax)
+    }
+
     pub fn primitive(&self) -> Option<PrimitiveType> {
         support::child::<PrimitiveType>(&self.syntax)
     }

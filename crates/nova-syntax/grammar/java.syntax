@@ -425,6 +425,7 @@ VariableDeclarator {
 }
 
 Type {
+  annotations: Annotation*
   primitive: PrimitiveType?
   named: NamedType?
 }

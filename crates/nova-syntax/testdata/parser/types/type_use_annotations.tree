@@ -1,0 +1,135 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      FieldDeclaration
+        Modifiers
+        Type
+          NamedType
+            Identifier "java"
+            Dot "."
+            Identifier "util"
+            Dot "."
+            Identifier "List"
+            TypeArguments
+              Less "<"
+              TypeArgument
+                Type
+                  Annotation
+                    At "@"
+                    Name
+                      Identifier "A"
+                      Whitespace " "
+                  NamedType
+                    Identifier "String"
+              Greater ">"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "xs"
+        Semicolon ";"
+      Whitespace "\n  "
+      FieldDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+          Annotation
+            At "@"
+            Name
+              Identifier "B"
+              Whitespace " "
+          LBracket "["
+          RBracket "]"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "ys"
+        Semicolon ";"
+      Whitespace "\n\n  "
+      MethodDeclaration
+        Modifiers
+        Type
+          NamedType
+            Identifier "Object"
+            Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              NamedType
+                Identifier "Object"
+                Whitespace " "
+            Identifier "x"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          ReturnStatement
+            ReturnKw "return"
+            Whitespace " "
+            CastExpression
+              LParen "("
+              Type
+                Annotation
+                  At "@"
+                  Name
+                    Identifier "C"
+                    Whitespace " "
+                NamedType
+                  Identifier "String"
+              RParen ")"
+              Whitespace " "
+              NameExpression
+                Identifier "x"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n\n  "
+      MethodDeclaration
+        Modifiers
+        Type
+          NamedType
+            Identifier "Foo"
+            Whitespace " "
+        Identifier "n"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        ThrowsKw "throws"
+        Type
+          Whitespace " "
+          Annotation
+            At "@"
+            Name
+              Identifier "D"
+              Whitespace " "
+          NamedType
+            Identifier "Exception"
+            Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          ReturnStatement
+            ReturnKw "return"
+            Whitespace " "
+            ThisExpression
+              ThisKw "this"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""
