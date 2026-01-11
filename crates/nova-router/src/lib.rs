@@ -473,6 +473,7 @@ struct RouterState {
 struct ShardState {
     root: PathBuf,
     worker: Option<WorkerHandle>,
+    pending_worker: Option<WorkerId>,
 }
 
 #[derive(Clone)]
@@ -533,6 +534,7 @@ impl DistributedRouter {
                 ShardState {
                     root: root.path.clone(),
                     worker: None,
+                    pending_worker: None,
                 },
             );
         }
@@ -1125,42 +1127,51 @@ async fn handle_new_connection(
     }
 
     let worker_id: WorkerId = state.next_worker_id.fetch_add(1, Ordering::SeqCst);
-    let (tx, rx) = mpsc::unbounded_channel::<WorkerRequest>();
-    let handle = WorkerHandle { worker_id, tx };
 
-    // Atomically register this worker for the shard before acknowledging it. This prevents a race
-    // where two concurrent connections could both pass the "no worker" check and the later one
-    // would silently replace the earlier worker.
-    {
-        let mut guard = state.shards.lock().await;
-        let shard = match guard.get_mut(&shard_id) {
-            Some(shard) => shard,
-            None => {
-                let message = format!("unknown shard {shard_id}");
-                timeout(
-                    WORKER_HANDSHAKE_TIMEOUT,
-                    write_message(&mut stream, &RpcMessage::Error { message }),
-                )
-                .await
-                .ok();
-                return Err(anyhow!("worker connected for unknown shard {shard_id}"));
-            }
-        };
-
-        if shard.worker.is_some() {
-            let message = format!("shard {shard_id} already has a connected worker");
-            timeout(
-                WORKER_HANDSHAKE_TIMEOUT,
-                write_message(&mut stream, &RpcMessage::Error { message }),
-            )
-            .await
-            .ok();
-            return Err(anyhow!("worker already connected for shard {shard_id}"));
-        }
-
-        shard.worker = Some(handle.clone());
+    // Reserve the shard for this handshake before sending RouterHello. This prevents a race where
+    // two concurrent connections could both receive RouterHello and fight for shard ownership.
+    #[derive(Debug)]
+    enum ReservationFailure {
+        UnknownShard,
+        AlreadyHasWorker,
     }
 
+    let reservation_failure = {
+        let mut guard = state.shards.lock().await;
+        match guard.get_mut(&shard_id) {
+            None => Some(ReservationFailure::UnknownShard),
+            Some(shard) => {
+                if shard.worker.is_some() || shard.pending_worker.is_some() {
+                    Some(ReservationFailure::AlreadyHasWorker)
+                } else {
+                    shard.pending_worker = Some(worker_id);
+                    None
+                }
+            }
+        }
+    };
+
+    if let Some(failure) = reservation_failure {
+        let (message, err) = match failure {
+            ReservationFailure::UnknownShard => (
+                format!("unknown shard {shard_id}"),
+                anyhow!("worker connected for unknown shard {shard_id}"),
+            ),
+            ReservationFailure::AlreadyHasWorker => (
+                format!("shard {shard_id} already has a connected worker"),
+                anyhow!("worker already connected for shard {shard_id}"),
+            ),
+        };
+        timeout(
+            WORKER_HANDSHAKE_TIMEOUT,
+            write_message(&mut stream, &RpcMessage::Error { message }),
+        )
+        .await
+        .ok();
+        return Err(err);
+    }
+
+    // Send RouterHello while the reservation is held.
     let send_hello = timeout(
         WORKER_HANDSHAKE_TIMEOUT,
         write_message(
@@ -1180,12 +1191,8 @@ async fn handle_new_connection(
         Err(_) => {
             let mut guard = state.shards.lock().await;
             if let Some(shard) = guard.get_mut(&shard_id) {
-                if shard
-                    .worker
-                    .as_ref()
-                    .is_some_and(|w| w.worker_id == worker_id)
-                {
-                    shard.worker = None;
+                if shard.pending_worker == Some(worker_id) {
+                    shard.pending_worker = None;
                 }
             }
             state.notify.notify_waiters();
@@ -1196,16 +1203,33 @@ async fn handle_new_connection(
     if let Err(err) = send_hello {
         let mut guard = state.shards.lock().await;
         if let Some(shard) = guard.get_mut(&shard_id) {
-            if shard
-                .worker
-                .as_ref()
-                .is_some_and(|w| w.worker_id == worker_id)
-            {
-                shard.worker = None;
+            if shard.pending_worker == Some(worker_id) {
+                shard.pending_worker = None;
             }
         }
         state.notify.notify_waiters();
         return Err(err);
+    }
+
+    let (tx, rx) = mpsc::unbounded_channel::<WorkerRequest>();
+    let handle = WorkerHandle { worker_id, tx };
+
+    // Finalize the reservation now that RouterHello is on the wire.
+    {
+        let mut guard = state.shards.lock().await;
+        let Some(shard) = guard.get_mut(&shard_id) else {
+            return Err(anyhow!(
+                "BUG: shard {shard_id} disappeared during handshake"
+            ));
+        };
+
+        if shard.pending_worker != Some(worker_id) {
+            return Err(anyhow!(
+                "BUG: shard {shard_id} pending worker mismatch during handshake"
+            ));
+        }
+        shard.pending_worker = None;
+        shard.worker = Some(handle.clone());
     }
 
     info!(shard_id, worker_id, has_cached_index, "worker connected");
