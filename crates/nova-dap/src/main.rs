@@ -24,7 +24,7 @@ struct Cli {
     config: Option<PathBuf>,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
