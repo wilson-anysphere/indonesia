@@ -7,7 +7,21 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 /// A stable SHA-256 fingerprint stored as a lowercase hex string.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 #[serde(transparent)]
 pub struct Fingerprint(String);
 

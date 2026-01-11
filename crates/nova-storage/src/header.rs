@@ -24,6 +24,8 @@ pub enum ArtifactKind {
     AstArtifacts = 100,
     /// Global dependency (JAR/JMOD) classpath stubs.
     DepsIndexBundle = 101,
+    /// Per-project cache metadata (`metadata.bin`).
+    ProjectMetadata = 102,
 }
 
 impl ArtifactKind {
@@ -35,6 +37,7 @@ impl ArtifactKind {
             4 => Some(Self::AnnotationIndex),
             100 => Some(Self::AstArtifacts),
             101 => Some(Self::DepsIndexBundle),
+            102 => Some(Self::ProjectMetadata),
             _ => None,
         }
     }

@@ -17,6 +17,9 @@ pub enum CacheError {
     #[error("bincode error: {0}")]
     Bincode(#[from] bincode::Error),
 
+    #[error("storage error: {0}")]
+    Storage(#[from] nova_storage::StorageError),
+
     #[error("walkdir error: {0}")]
     WalkDir(#[from] walkdir::Error),
 

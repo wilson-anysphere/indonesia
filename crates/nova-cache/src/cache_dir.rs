@@ -72,7 +72,11 @@ impl CacheDir {
     }
 
     pub fn metadata_path(&self) -> PathBuf {
-        self.root.join("metadata.json")
+        self.root.join(crate::metadata::CACHE_METADATA_JSON_FILENAME)
+    }
+
+    pub fn metadata_bin_path(&self) -> PathBuf {
+        self.root.join(crate::metadata::CACHE_METADATA_BIN_FILENAME)
     }
 }
 

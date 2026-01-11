@@ -7,9 +7,26 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 pub const CACHE_METADATA_SCHEMA_VERSION: u32 = 2;
+pub const CACHE_METADATA_JSON_FILENAME: &str = "metadata.json";
+pub const CACHE_METADATA_BIN_FILENAME: &str = "metadata.bin";
 
-/// Versioned, per-project cache metadata stored on disk as JSON.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Versioned, per-project cache metadata persisted on disk.
+///
+/// We store both:
+/// - `metadata.bin`: `nova-storage` header + `rkyv` archive (fast warm-start path)
+/// - `metadata.json`: human-readable debug artifact
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    rkyv::Archive,
+    rkyv::Serialize,
+    rkyv::Deserialize,
+)]
+#[archive(check_bytes)]
 pub struct CacheMetadata {
     pub schema_version: u32,
     pub nova_version: String,
@@ -121,13 +138,41 @@ impl CacheMetadata {
     }
 
     pub fn load(path: impl AsRef<Path>) -> Result<Self, CacheError> {
-        let bytes = std::fs::read(path)?;
+        let path = path.as_ref();
+        let (bin_path, json_path) = metadata_paths(path);
+
+        // Prefer the binary metadata (mmap + rkyv validation). If anything goes
+        // wrong, fall back to JSON for robustness.
+        if let Ok(Some(archive)) = nova_storage::PersistedArchive::<CacheMetadata>::open_optional(
+            &bin_path,
+            nova_storage::ArtifactKind::ProjectMetadata,
+            CACHE_METADATA_SCHEMA_VERSION,
+        ) {
+            if let Ok(value) = archive.to_owned() {
+                return Ok(value);
+            }
+        }
+
+        let bytes = std::fs::read(json_path)?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), CacheError> {
-        let json = serde_json::to_vec_pretty(self)?;
-        crate::util::atomic_write(path.as_ref(), &json)
+        let path = path.as_ref();
+        let (bin_path, json_path) = metadata_paths(path);
+
+        nova_storage::write_archive_atomic(
+            &bin_path,
+            nova_storage::ArtifactKind::ProjectMetadata,
+            self.schema_version,
+            self,
+            nova_storage::Compression::None,
+        )?;
+
+        // Keep a JSON copy around for debugging / human inspection. Avoid pretty
+        // printing to keep file size down on large workspaces.
+        let json = serde_json::to_vec(self)?;
+        crate::util::atomic_write(&json_path, &json)
     }
 }
 
@@ -140,4 +185,12 @@ fn compute_metadata_fingerprints(snapshot: &ProjectSnapshot) -> BTreeMap<String,
         }
     }
     fingerprints
+}
+
+fn metadata_paths(path: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("bin") | Some("rkyv") => (path.to_path_buf(), path.with_extension("json")),
+        Some("json") => (path.with_extension("bin"), path.to_path_buf()),
+        _ => (path.with_extension("bin"), path.to_path_buf()),
+    }
 }

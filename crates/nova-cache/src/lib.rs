@@ -37,7 +37,12 @@ pub use gc::{
     cache_root, enumerate_project_caches, enumerate_project_caches_from_config, gc_project_caches,
     gc_project_caches_from_config, CacheGcFailure, CacheGcPolicy, CacheGcReport, ProjectCacheInfo,
 };
-pub use metadata::{CacheMetadata, CACHE_METADATA_SCHEMA_VERSION};
+pub use metadata::{
+    CacheMetadata,
+    CACHE_METADATA_BIN_FILENAME,
+    CACHE_METADATA_JSON_FILENAME,
+    CACHE_METADATA_SCHEMA_VERSION,
+};
 pub use pack::{
     fetch_cache_package, install_cache_package, pack_cache_package, CachePackageInstallOutcome,
     CACHE_PACKAGE_MANIFEST_PATH,
