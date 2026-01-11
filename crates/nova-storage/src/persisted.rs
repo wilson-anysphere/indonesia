@@ -242,6 +242,15 @@ where
     }
 
     fn checked_payload_len(header: &StorageHeader) -> Result<usize, StorageError> {
+        let uncompressed_limit = max_uncompressed_len_bytes();
+        if header.uncompressed_len > uncompressed_limit {
+            return Err(StorageError::TooLarge {
+                kind: "uncompressed payload",
+                bytes: header.uncompressed_len,
+                limit: uncompressed_limit,
+            });
+        }
+
         let limit = max_payload_len_bytes();
         if header.payload_len > limit {
             return Err(StorageError::TooLarge {

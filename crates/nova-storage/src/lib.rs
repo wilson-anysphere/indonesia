@@ -340,6 +340,51 @@ mod tests {
     }
 
     #[test]
+    fn oversized_uncompressed_len_is_error_for_uncompressed_artifact() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _payload_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES");
+        let _uncompressed_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sample.bin");
+
+        let value = Sample {
+            a: 42,
+            b: "hello".to_string(),
+            values: vec![1, 2, 3, 4],
+        };
+
+        write_archive_atomic(
+            &path,
+            ArtifactKind::AstArtifacts,
+            1,
+            &value,
+            Compression::None,
+        )
+        .unwrap();
+
+        // Patch the `uncompressed_len` field in the header to exceed the cap. Even though the
+        // artifact isn't compressed, we should still reject absurd sizes early.
+        const UNCOMPRESSED_LEN_OFFSET: u64 = 48;
+        let oversized = MAX_UNCOMPRESSED_LEN_BYTES + 1;
+        let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.seek(SeekFrom::Start(UNCOMPRESSED_LEN_OFFSET)).unwrap();
+        file.write_all(&oversized.to_le_bytes()).unwrap();
+        file.sync_all().unwrap();
+
+        let err =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
+        match err {
+            StorageError::TooLarge { kind, bytes, limit } => {
+                assert_eq!(kind, "uncompressed payload");
+                assert_eq!(bytes, oversized);
+                assert_eq!(limit, MAX_UNCOMPRESSED_LEN_BYTES);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn oversized_mmap_fallback_is_error() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("large.bin");
