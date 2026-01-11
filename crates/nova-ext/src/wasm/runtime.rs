@@ -12,6 +12,7 @@ use std::time::Duration;
 use wasmtime::{Engine, Instance, Linker, Module, Store, StoreLimitsBuilder, TypedFunc};
 
 use nova_ext_abi::v1::capabilities as abi_caps;
+use nova_ext_abi::v1::exports as abi_exports;
 use nova_ext_abi::v1::{
     CodeActionV1, CodeActionsRequestV1, CompletionItemV1, CompletionsRequestV1, DiagnosticV1,
     DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1,
@@ -19,17 +20,17 @@ use nova_ext_abi::v1::{
 };
 use nova_ext_abi::ABI_V1;
 
-const EXPORT_ABI_VERSION: &str = "nova_ext_abi_version";
-const EXPORT_CAPABILITIES: &str = "nova_ext_capabilities";
-const EXPORT_MEMORY: &str = "memory";
-const EXPORT_ALLOC: &str = "nova_ext_alloc";
-const EXPORT_FREE: &str = "nova_ext_free";
+const EXPORT_ABI_VERSION: &str = abi_exports::ABI_VERSION;
+const EXPORT_CAPABILITIES: &str = abi_exports::CAPABILITIES;
+const EXPORT_MEMORY: &str = abi_exports::MEMORY;
+const EXPORT_ALLOC: &str = abi_exports::ALLOC;
+const EXPORT_FREE: &str = abi_exports::FREE;
 
-const EXPORT_DIAGNOSTICS: &str = "nova_ext_diagnostics";
-const EXPORT_COMPLETIONS: &str = "nova_ext_completions";
-const EXPORT_CODE_ACTIONS: &str = "nova_ext_code_actions";
-const EXPORT_NAVIGATION: &str = "nova_ext_navigation";
-const EXPORT_INLAY_HINTS: &str = "nova_ext_inlay_hints";
+const EXPORT_DIAGNOSTICS: &str = abi_exports::DIAGNOSTICS;
+const EXPORT_COMPLETIONS: &str = abi_exports::COMPLETIONS;
+const EXPORT_CODE_ACTIONS: &str = abi_exports::CODE_ACTIONS;
+const EXPORT_NAVIGATION: &str = abi_exports::NAVIGATION;
+const EXPORT_INLAY_HINTS: &str = abi_exports::INLAY_HINTS;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(50);
 const DEFAULT_MAX_MEMORY_BYTES: u64 = 64 * 1024 * 1024; // 64MiB
@@ -401,9 +402,15 @@ impl WasmPlugin {
             .map_err(|_| WasmCallError::MissingExport(export))?;
 
         let req_len_i32 = i32::try_from(req_bytes.len()).unwrap_or(i32::MAX);
-        let req_ptr = alloc
+        let req_ptr_i32 = alloc
             .call(&mut store, req_len_i32)
-            .map_err(classify_call_error)? as u32 as usize;
+            .map_err(classify_call_error)?;
+        if req_ptr_i32 == 0 && req_len_i32 != 0 {
+            return Err(WasmCallError::Trap(
+                "nova_ext_alloc returned a null pointer".to_string(),
+            ));
+        }
+        let req_ptr = req_ptr_i32 as u32 as usize;
 
         memory
             .write(&mut store, req_ptr, &req_bytes)
@@ -414,11 +421,16 @@ impl WasmPlugin {
             .map_err(classify_call_error)?;
 
         // Always attempt to free the request buffer.
-        let _ = free.call(&mut store, (req_ptr as i32, req_len_i32));
+        let _ = free.call(&mut store, (req_ptr_i32, req_len_i32));
 
         let (resp_ptr, resp_len) = unpack_ptr_len(ret as u64);
         if resp_len == 0 {
             return Ok(Vec::new());
+        }
+        if resp_ptr == 0 {
+            return Err(WasmCallError::Trap(
+                "wasm returned a null response pointer with non-zero length".to_string(),
+            ));
         }
 
         let resp_len_usize = usize::try_from(resp_len).unwrap_or(usize::MAX);

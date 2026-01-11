@@ -23,6 +23,30 @@ pub mod capabilities {
     pub const KNOWN_MASK: u32 = (1 << 5) - 1;
 }
 
+/// Canonical export names for the Nova WASM extension ABI v1.
+pub mod exports {
+    /// WebAssembly linear memory export.
+    pub const MEMORY: &str = "memory";
+
+    /// Returns the ABI version implemented by the guest.
+    pub const ABI_VERSION: &str = "nova_ext_abi_version";
+
+    /// Returns a capability bitset describing implemented provider exports.
+    pub const CAPABILITIES: &str = "nova_ext_capabilities";
+
+    /// Allocate `len` bytes in guest memory and return a pointer.
+    pub const ALLOC: &str = "nova_ext_alloc";
+
+    /// Free a buffer previously returned by [`ALLOC`].
+    pub const FREE: &str = "nova_ext_free";
+
+    pub const DIAGNOSTICS: &str = "nova_ext_diagnostics";
+    pub const COMPLETIONS: &str = "nova_ext_completions";
+    pub const CODE_ACTIONS: &str = "nova_ext_code_actions";
+    pub const NAVIGATION: &str = "nova_ext_navigation";
+    pub const INLAY_HINTS: &str = "nova_ext_inlay_hints";
+}
+
 /// Helpers for implementing ABI v1 guest modules in Rust.
 pub mod guest {
     #[cfg(target_pointer_width = "32")]
