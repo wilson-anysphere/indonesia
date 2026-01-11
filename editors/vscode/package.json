@@ -257,6 +257,15 @@
                 "minimum": 1,
                 "maximum": 65535,
                 "description": "JDWP port to attach to."
+              },
+              "projectRoot": {
+                "type": "string",
+                "description": "Workspace root used to infer source roots for stack frame and breakpoint source mapping."
+              },
+              "sourceRoots": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Explicit source roots used for stack frame and breakpoint source mapping."
               }
             }
           },
@@ -277,6 +286,15 @@
                 "minimum": 1,
                 "maximum": 65535,
                 "description": "JDWP port to connect to."
+              },
+              "projectRoot": {
+                "type": "string",
+                "description": "Workspace root used to infer source roots for stack frame and breakpoint source mapping."
+              },
+              "sourceRoots": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Explicit source roots used for stack frame and breakpoint source mapping."
               }
             }
           }
@@ -287,7 +305,8 @@
             "request": "attach",
             "name": "Nova: Attach (5005)",
             "host": "127.0.0.1",
-            "port": 5005
+            "port": 5005,
+            "projectRoot": "${workspaceFolder}"
           }
         ]
       }

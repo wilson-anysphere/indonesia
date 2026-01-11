@@ -61,7 +61,12 @@ The arguments are:
 ```json
 {
   "host": "127.0.0.1",
-  "port": 5005
+  "port": 5005,
+  // Optional (recommended): used to infer source roots so stack frames
+  // contain real absolute `source.path` values.
+  "projectRoot": "/path/to/workspace",
+  // Optional: explicit source roots (absolute or relative to projectRoot).
+  "sourceRoots": ["/path/to/workspace/src/main/java"]
 }
 ```
 

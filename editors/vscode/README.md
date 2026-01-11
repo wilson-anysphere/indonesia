@@ -141,7 +141,9 @@ In `.vscode/launch.json`:
   "request": "attach",
   "name": "Nova: Attach (5005)",
   "host": "127.0.0.1",
-  "port": 5005
+  "port": 5005,
+  // Optional but recommended: helps nova-dap map JDWP stack frames to real files.
+  "projectRoot": "${workspaceFolder}"
 }
 ```
 

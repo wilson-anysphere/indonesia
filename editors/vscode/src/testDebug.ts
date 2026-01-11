@@ -254,6 +254,7 @@ async function debugTestsFromTestExplorer(
       name: `Nova: Debug Test (${testId})`,
       host: desiredHost,
       port: attachPort,
+      projectRoot: target.projectRoot,
       [NOVA_TEST_DEBUG_RUN_ID_KEY]: runId,
     };
 

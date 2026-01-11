@@ -34,12 +34,12 @@ export function registerNovaDebugConfigurations(
 }
 
 class NovaDebugConfigurationProvider implements vscode.DebugConfigurationProvider {
-  provideDebugConfigurations(_folder: vscode.WorkspaceFolder | undefined): vscode.DebugConfiguration[] {
-    return [defaultAttachConfig()];
+  provideDebugConfigurations(folder: vscode.WorkspaceFolder | undefined): vscode.DebugConfiguration[] {
+    return [defaultAttachConfig(folder)];
   }
 
   resolveDebugConfiguration(
-    _folder: vscode.WorkspaceFolder | undefined,
+    folder: vscode.WorkspaceFolder | undefined,
     debugConfiguration: vscode.DebugConfiguration,
     _token?: vscode.CancellationToken,
   ): vscode.DebugConfiguration | undefined {
@@ -48,16 +48,20 @@ class NovaDebugConfigurationProvider implements vscode.DebugConfigurationProvide
       request?: string;
       host?: string;
       port?: number;
+      projectRoot?: string;
+      sourceRoots?: string[];
       [key: string]: unknown;
     };
 
     if (!cfg.type && !cfg.request) {
-      return defaultAttachConfig();
+      return defaultAttachConfig(folder);
     }
 
     if (cfg.type !== NOVA_DEBUG_TYPE) {
       return debugConfiguration;
     }
+
+    cfg.projectRoot ??= folder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
     const defaults = getDebugDefaults();
     cfg.host ??= defaults.host;
@@ -76,7 +80,7 @@ class NovaDebugConfigurationProvider implements vscode.DebugConfigurationProvide
   }
 }
 
-function defaultAttachConfig(): vscode.DebugConfiguration {
+function defaultAttachConfig(folder: vscode.WorkspaceFolder | undefined): vscode.DebugConfiguration {
   const defaults = getDebugDefaults();
   return {
     type: NOVA_DEBUG_TYPE,
@@ -84,6 +88,7 @@ function defaultAttachConfig(): vscode.DebugConfiguration {
     name: `Nova: Attach (${defaults.port})`,
     host: defaults.host,
     port: defaults.port,
+    projectRoot: folder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
   };
 }
 
