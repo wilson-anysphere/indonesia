@@ -69,6 +69,7 @@ struct CompletionSession {
     expires_at: Instant,
     cancel: CancellationToken,
     ai_state: AiState,
+    created_at: Instant,
 }
 
 impl CompletionSession {
@@ -91,6 +92,8 @@ pub struct NovaCompletionService {
     sessions: Mutex<HashMap<CompletionContextId, CompletionSession>>,
 }
 
+const MAX_COMPLETION_SESSIONS: usize = 256;
+
 impl NovaCompletionService {
     pub fn new(engine: CompletionEngine) -> Self {
         Self::with_config(engine, CompletionMoreConfig::default())
@@ -111,10 +114,7 @@ impl NovaCompletionService {
         &self.engine
     }
 
-    fn prune_expired_sessions_locked(
-        &self,
-        sessions: &mut HashMap<CompletionContextId, CompletionSession>,
-    ) {
+    fn prune_sessions_locked(&self, sessions: &mut HashMap<CompletionContextId, CompletionSession>) {
         let now = Instant::now();
         let expired: Vec<_> = sessions
             .iter()
@@ -122,6 +122,23 @@ impl NovaCompletionService {
             .collect();
 
         for id in expired {
+            if let Some(session) = sessions.remove(&id) {
+                session.cancel();
+            }
+        }
+
+        if sessions.len() <= MAX_COMPLETION_SESSIONS {
+            return;
+        }
+
+        let mut by_age: Vec<_> = sessions
+            .iter()
+            .map(|(id, session)| (*id, session.created_at))
+            .collect();
+        by_age.sort_by_key(|(_, created_at)| *created_at);
+
+        let overflow = sessions.len().saturating_sub(MAX_COMPLETION_SESSIONS);
+        for (id, _) in by_age.into_iter().take(overflow) {
             if let Some(session) = sessions.remove(&id) {
                 session.cancel();
             }
@@ -199,13 +216,14 @@ impl NovaCompletionService {
             });
 
             let mut sessions = self.sessions.lock().expect("poisoned mutex");
-            self.prune_expired_sessions_locked(&mut sessions);
+            self.prune_sessions_locked(&mut sessions);
             sessions.insert(
                 context_id,
                 CompletionSession {
                     expires_at: Instant::now() + ttl,
                     cancel,
                     ai_state: AiState::Pending(rx),
+                    created_at: Instant::now(),
                 },
             );
         }
@@ -226,7 +244,7 @@ impl NovaCompletionService {
         };
 
         let mut sessions = self.sessions.lock().expect("poisoned mutex");
-        self.prune_expired_sessions_locked(&mut sessions);
+        self.prune_sessions_locked(&mut sessions);
         let session = match sessions.get_mut(&context_id) {
             Some(session) => session,
             None => {
@@ -265,7 +283,7 @@ impl NovaCompletionService {
 
     pub fn cancel(&self, context_id: CompletionContextId) -> bool {
         let mut sessions = self.sessions.lock().expect("poisoned mutex");
-        self.prune_expired_sessions_locked(&mut sessions);
+        self.prune_sessions_locked(&mut sessions);
         match sessions.remove(&context_id) {
             Some(session) => {
                 session.cancel();

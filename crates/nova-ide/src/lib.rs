@@ -77,6 +77,8 @@ pub use crate::db::{Database, DatabaseSnapshot};
 #[cfg(feature = "ai")]
 mod config;
 #[cfg(feature = "ai")]
+mod ai_completion_context;
+#[cfg(feature = "ai")]
 mod engine;
 #[cfg(feature = "ai")]
 mod merge;
@@ -87,6 +89,8 @@ mod validation;
 
 #[cfg(feature = "ai")]
 pub use config::CompletionConfig;
+#[cfg(feature = "ai")]
+pub use ai_completion_context::multi_token_completion_context;
 #[cfg(feature = "ai")]
 pub use engine::CompletionEngine;
 #[cfg(feature = "ai")]

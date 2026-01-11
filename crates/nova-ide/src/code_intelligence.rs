@@ -372,6 +372,28 @@ pub fn file_diagnostics_lsp(db: &dyn Database, file: FileId) -> Vec<lsp_types::D
 // Completion
 // -----------------------------------------------------------------------------
 
+pub(crate) const STRING_MEMBER_METHODS: &[(&str, &str)] = &[
+    ("length", "int length()"),
+    ("substring", "String substring(int beginIndex, int endIndex)"),
+    ("charAt", "char charAt(int index)"),
+    ("isEmpty", "boolean isEmpty()"),
+];
+
+pub(crate) const STREAM_MEMBER_METHODS: &[(&str, &str)] = &[
+    (
+        "filter",
+        "Stream<T> filter(Predicate<? super T> predicate)",
+    ),
+    (
+        "map",
+        "<R> Stream<R> map(Function<? super T, ? extends R> mapper)",
+    ),
+    (
+        "collect",
+        "<R, A> R collect(Collector<? super T, A, R> collector)",
+    ),
+];
+
 pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<CompletionItem> {
     let text = db.file_content(file);
     let Some(offset) = position_to_offset(text, position) else {
@@ -668,15 +690,18 @@ fn member_completions(
 
     let mut items = Vec::new();
     if receiver_type == "String" {
-        for (name, detail) in [
-            ("length", "int length()"),
-            (
-                "substring",
-                "String substring(int beginIndex, int endIndex)",
-            ),
-            ("charAt", "char charAt(int index)"),
-            ("isEmpty", "boolean isEmpty()"),
-        ] {
+        for (name, detail) in STRING_MEMBER_METHODS {
+            items.push(CompletionItem {
+                label: name.to_string(),
+                kind: Some(CompletionItemKind::METHOD),
+                detail: Some(detail.to_string()),
+                insert_text: Some(format!("{name}()")),
+                ..Default::default()
+            });
+        }
+    }
+    if receiver_type == "Stream" {
+        for (name, detail) in STREAM_MEMBER_METHODS {
             items.push(CompletionItem {
                 label: name.to_string(),
                 kind: Some(CompletionItemKind::METHOD),
@@ -1659,6 +1684,28 @@ struct Analysis {
     tokens: Vec<Token>,
 }
 
+#[cfg(feature = "ai")]
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CompletionContextAnalysis {
+    pub vars: Vec<(String, String)>,
+    pub fields: Vec<(String, String)>,
+    pub methods: Vec<String>,
+}
+
+#[cfg(feature = "ai")]
+pub(crate) fn analyze_for_completion_context(text: &str) -> CompletionContextAnalysis {
+    let analysis = analyze(text);
+    CompletionContextAnalysis {
+        vars: analysis.vars.into_iter().map(|v| (v.name, v.ty)).collect(),
+        fields: analysis
+            .fields
+            .into_iter()
+            .map(|field| (field.name, field.ty))
+            .collect(),
+        methods: analysis.methods.into_iter().map(|m| m.name).collect(),
+    }
+}
+
 fn analyze(text: &str) -> Analysis {
     let tokens = tokenize(text);
     let mut analysis = Analysis {
@@ -2131,62 +2178,7 @@ fn span_contains(span: Span, offset: usize) -> bool {
 fn span_within(inner: Span, outer: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
-
-pub(crate) fn position_to_offset(text: &str, position: Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut offset: usize = 0;
-
-    for ch in text.chars() {
-        if line == position.line && col_utf16 == position.character {
-            return Some(offset);
-        }
-
-        offset += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    if line == position.line && col_utf16 == position.character {
-        Some(offset)
-    } else {
-        None
-    }
-}
-
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut cur: usize = 0;
-
-    for ch in text.chars() {
-        if cur >= offset {
-            break;
-        }
-        cur += ch.len_utf8();
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-
-    Position::new(line, col_utf16)
-}
-
-fn span_to_lsp_range(text: &str, span: Span) -> Range {
-    Range::new(
-        offset_to_position(text, span.start),
-        offset_to_position(text, span.end),
-    )
-}
-
-fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
+pub(crate) fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
     let bytes = text.as_bytes();
     let mut start = offset;
     while start > 0 {
@@ -2200,7 +2192,7 @@ fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
     (start, text[start..offset].to_string())
 }
 
-fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize {
+pub(crate) fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize {
     let bytes = text.as_bytes();
     while offset > 0 && (bytes[offset - 1] as char).is_ascii_whitespace() {
         offset -= 1;
@@ -2208,7 +2200,7 @@ fn skip_whitespace_backwards(text: &str, mut offset: usize) -> usize {
     offset
 }
 
-fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
+pub(crate) fn receiver_before_dot(text: &str, dot_offset: usize) -> String {
     let bytes = text.as_bytes();
     let mut end = dot_offset;
     while end > 0 && (bytes[end - 1] as char).is_ascii_whitespace() {

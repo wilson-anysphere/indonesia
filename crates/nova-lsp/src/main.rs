@@ -8,6 +8,8 @@ use lsp_types::{
 };
 use nova_ai::context::ContextRequest;
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
+#[cfg(feature = "ai")]
+use nova_ai::{CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionProvider};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
@@ -15,6 +17,9 @@ use nova_ide::{
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
 use nova_index::{Index, SymbolKind};
+#[cfg(feature = "ai")]
+use nova_ide::{multi_token_completion_context, CompletionConfig, CompletionEngine};
+use nova_db::{FileId as DbFileId, InMemoryFileStore};
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
@@ -245,6 +250,8 @@ struct ServerState {
     ai: Option<AiService>,
     privacy: nova_ai::PrivacyMode,
     runtime: Option<tokio::runtime::Runtime>,
+    #[cfg(feature = "ai")]
+    completion_service: nova_lsp::NovaCompletionService,
     memory: MemoryManager,
     memory_events: Arc<Mutex<Vec<MemoryEvent>>>,
     documents_memory: nova_memory::MemoryRegistration,
@@ -253,18 +260,18 @@ struct ServerState {
 
 impl ServerState {
     fn new() -> Self {
-        let (ai, privacy, runtime) = match load_ai_from_env() {
-            Ok(Some((ai, privacy))) => {
+        let (ai, privacy, runtime, completion_llm) = match load_ai_from_env() {
+            Ok(Some((ai, privacy, completion_llm))) => {
                 let runtime = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .build()
                     .expect("tokio runtime");
-                (Some(ai), privacy, Some(runtime))
+                (Some(ai), privacy, Some(runtime), Some(completion_llm))
             }
-            Ok(None) => (None, nova_ai::PrivacyMode::default(), None),
+            Ok(None) => (None, nova_ai::PrivacyMode::default(), None, None),
             Err(err) => {
                 eprintln!("failed to configure AI: {err}");
-                (None, nova_ai::PrivacyMode::default(), None)
+                (None, nova_ai::PrivacyMode::default(), None, None)
             }
         };
 
@@ -278,6 +285,22 @@ impl ServerState {
         });
         let documents_memory = memory.register_tracker("open_documents", MemoryCategory::Other);
 
+        #[cfg(feature = "ai")]
+        let completion_service = {
+            let ai_provider = completion_llm.map(|client| {
+                let provider: Arc<dyn MultiTokenCompletionProvider> = Arc::new(
+                    CloudMultiTokenCompletionProvider::new(client).with_privacy_mode(privacy.clone()),
+                );
+                provider
+            });
+            let engine = CompletionEngine::new(
+                CompletionConfig::default(),
+                CompletionContextBuilder::new(10_000),
+                ai_provider,
+            );
+            nova_lsp::NovaCompletionService::new(engine)
+        };
+
         Self {
             shutdown_requested: false,
             documents: HashMap::new(),
@@ -285,6 +308,8 @@ impl ServerState {
             ai,
             privacy,
             runtime,
+            #[cfg(feature = "ai")]
+            completion_service,
             memory,
             memory_events,
             documents_memory,
@@ -401,6 +426,16 @@ fn handle_request(
                 }
             })
         }
+        "textDocument/completion" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_completion(params, state);
+            Ok(match result {
+                Ok(list) => json!({ "jsonrpc": "2.0", "id": id, "result": list }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+            })
+        }
         "textDocument/codeAction" => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
@@ -449,18 +484,6 @@ fn handle_request(
                 }
             })
         }
-        "textDocument/completion" => {
-            if state.shutdown_requested {
-                return Ok(server_shutting_down_error(id));
-            }
-            let result = handle_completion(params, state);
-            Ok(match result {
-                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => {
-                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
-                }
-            })
-        }
         "completionItem/resolve" => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
@@ -483,6 +506,17 @@ fn handle_request(
                 Err((code, message)) => {
                     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
                 }
+            })
+        }
+        #[cfg(feature = "ai")]
+        nova_lsp::NOVA_COMPLETION_MORE_METHOD => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_completion_more(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
             })
         }
         nova_lsp::DOCUMENT_FORMATTING_METHOD
@@ -1160,6 +1194,16 @@ fn handle_java_organize_imports(
     .map_err(|e| (-32603, e.to_string()))
 }
 
+#[cfg(feature = "ai")]
+fn handle_completion_more(
+    params: serde_json::Value,
+    state: &ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: nova_lsp::MoreCompletionsParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    serde_json::to_value(state.completion_service.completion_more(params)).map_err(|e| e.to_string())
+}
+
 fn handle_prepare_rename(
     params: serde_json::Value,
     state: &ServerState,
@@ -1235,9 +1279,30 @@ fn handle_completion(
     };
 
     let path = path_from_uri(uri.as_str()).unwrap_or_else(|| PathBuf::from(uri.as_str()));
-    let mut db = nova_db::InMemoryFileStore::new();
-    let file = db.file_id_for_path(&path);
+    let mut db = InMemoryFileStore::new();
+    let file: DbFileId = db.file_id_for_path(&path);
     db.set_file_text(file, text);
+
+    #[cfg(feature = "ai")]
+    let (completion_context_id, has_more) = {
+        let has_more = state.completion_service.completion_engine().supports_ai();
+        let ctx = multi_token_completion_context(&db, file, position);
+        let response = if has_more {
+            // `NovaCompletionService` is Tokio-driven; enter the runtime so
+            // `tokio::spawn` inside the completion pipeline is available.
+            let runtime = state.runtime.as_ref().ok_or_else(|| {
+                "AI completions are enabled but the Tokio runtime is unavailable".to_string()
+            })?;
+            let _guard = runtime.enter();
+            state.completion_service.completion(ctx)
+        } else {
+            state.completion_service.completion(ctx)
+        };
+        (Some(response.context_id.to_string()), has_more)
+    };
+
+    #[cfg(not(feature = "ai"))]
+    let (completion_context_id, has_more) = (None::<String>, false);
 
     let mut items = nova_lsp::completion(&db, file, position);
     for item in &mut items {
@@ -1252,9 +1317,12 @@ fn handle_completion(
             data["nova"] = json!({});
         }
         data["nova"]["uri"] = json!(uri.as_str());
+        if let Some(id) = completion_context_id.as_deref() {
+            data["nova"]["completion_context_id"] = json!(id);
+        }
     }
     let list = CompletionList {
-        is_incomplete: false,
+        is_incomplete: has_more,
         items,
         ..CompletionList::default()
     };
@@ -1944,7 +2012,7 @@ fn detect_empty_method_signature(selected: &str) -> Option<String> {
     Some(trimmed[..open].trim().to_string())
 }
 
-fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, String> {
+fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode, CloudLlmClient)>, String> {
     let provider = match std::env::var("NOVA_AI_PROVIDER") {
         Ok(p) => p,
         Err(_) => return Ok(None),
@@ -2088,5 +2156,5 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
         ..nova_ai::PrivacyMode::default()
     };
 
-    Ok(Some((AiService::new(client), privacy)))
+    Ok(Some((AiService::new(client.clone()), privacy, client)))
 }

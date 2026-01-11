@@ -454,6 +454,109 @@ fn stdio_server_resolves_completion_item_imports() {
 }
 
 #[test]
+fn stdio_server_handles_completion_and_more_completions_request() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    let uri = "file:///test/Completion.java";
+    let text = "class A {\n  void m() {\n    String s = \"\";\n    s.\n  }\n}\n";
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": { "textDocument": { "uri": uri, "text": text } }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": { "uri": uri },
+                "position": { "line": 3, "character": 6 }
+            }
+        }),
+    );
+
+    let completion_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let result = completion_resp.get("result").cloned().expect("result");
+    let items = result
+        .get("items")
+        .and_then(|v| v.as_array())
+        .expect("completion items array");
+
+    assert!(items.iter().any(|item| item.get("label").and_then(|v| v.as_str()) == Some("length")));
+
+    let context_id = items
+        .iter()
+        .find_map(|item| {
+            item.get("data")
+                .and_then(|d| d.get("nova"))
+                .and_then(|nova| nova.get("completion_context_id"))
+                .and_then(|id| id.as_str())
+        })
+        .expect("completion_context_id");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "nova/completion/more",
+            "params": { "context_id": context_id }
+        }),
+    );
+
+    let more_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let more_result = more_resp.get("result").cloned().expect("result");
+    assert_eq!(
+        more_result.get("items").and_then(|v| v.as_array()).unwrap().len(),
+        0
+    );
+    assert_eq!(
+        more_result
+            .get("is_incomplete")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_discovers_tests_in_simple_project_fixture() {
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-testing/fixtures/simple-junit5");
