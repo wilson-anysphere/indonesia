@@ -4,11 +4,12 @@
 //! (code actions, workspace edits, and resolution).
 
 use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, Uri,
 };
 use nova_refactor::{
-    extract_constant, extract_field, inline_method, ExtractError, ExtractOptions,
-    InlineMethodOptions, TextRange,
+    extract_constant, extract_field, inline_method, workspace_edit_to_lsp, ExtractError,
+    ExtractOptions, FileId, InlineMethodOptions, TextDatabase, TextRange,
+    WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextEdit,
 };
 use serde::{Deserialize, Serialize};
 
@@ -111,24 +112,21 @@ pub fn inline_method_code_actions(
             continue;
         };
 
-        let edits: Vec<TextEdit> = edits
-            .into_iter()
-            .map(|e| TextEdit {
-                range: Range::new(
-                    offset_to_position_utf16(source, e.range.start),
-                    offset_to_position_utf16(source, e.range.end),
-                ),
-                new_text: e.replacement,
-            })
-            .collect();
+        let db = TextDatabase::new([(FileId::new(file.clone()), source.to_string())]);
+        let edit = RefactorWorkspaceEdit::new(
+            edits
+                .into_iter()
+                .map(WorkspaceTextEdit::from)
+                .collect::<Vec<_>>(),
+        );
+        let Ok(lsp_edit) = workspace_edit_to_lsp(&db, &edit) else {
+            continue;
+        };
 
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: title.to_string(),
             kind: Some(CodeActionKind::REFACTOR_INLINE),
-            edit: Some(WorkspaceEdit {
-                changes: Some(std::collections::HashMap::from([(uri.clone(), edits)])),
-                ..WorkspaceEdit::default()
-            }),
+            edit: Some(lsp_edit),
             is_preferred: Some(!inline_all),
             ..CodeAction::default()
         }));
@@ -174,22 +172,17 @@ pub fn resolve_extract_member_code_action(
         ExtractKindDto::Field => extract_field(&file, source, selection, options)?,
     };
 
-    let edits: Vec<TextEdit> = outcome
-        .edits
-        .into_iter()
-        .map(|e| TextEdit {
-            range: Range::new(
-                offset_to_position_utf16(source, e.range.start),
-                offset_to_position_utf16(source, e.range.end),
-            ),
-            new_text: e.replacement,
-        })
-        .collect();
-
-    action.edit = Some(WorkspaceEdit {
-        changes: Some(std::collections::HashMap::from([(uri.clone(), edits)])),
-        ..WorkspaceEdit::default()
-    });
+    let db = TextDatabase::new([(FileId::new(file.clone()), source.to_string())]);
+    let edit = RefactorWorkspaceEdit::new(
+        outcome
+            .edits
+            .into_iter()
+            .map(WorkspaceTextEdit::from)
+            .collect::<Vec<_>>(),
+    );
+    action.edit = Some(
+        workspace_edit_to_lsp(&db, &edit).map_err(|_| ExtractError::InvalidSelection)?,
+    );
 
     Ok(())
 }
@@ -238,19 +231,5 @@ fn position_to_offset_utf16(text: &str, position: Position) -> usize {
     last
 }
 
-fn offset_to_position_utf16(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-    }
-    Position::new(line, col_utf16)
-}
+// Byte-offset -> UTF-16 position conversion lives in `nova-refactor::lsp` so both nova-lsp and
+// nova-ide can share the same implementation.
