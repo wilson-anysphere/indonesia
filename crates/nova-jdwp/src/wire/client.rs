@@ -945,7 +945,10 @@ impl JdwpClient {
     }
 
     /// ClassType.Superclass (3, 1)
-    pub async fn class_type_superclass(&self, class_id: ReferenceTypeId) -> Result<ReferenceTypeId> {
+    pub async fn class_type_superclass(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<ReferenceTypeId> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_reference_type_id(class_id, &sizes);

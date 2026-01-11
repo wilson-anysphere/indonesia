@@ -6,18 +6,30 @@ use super::{fallback, print, JavaPrettyFormatter};
 impl<'a> JavaPrettyFormatter<'a> {
     pub(super) fn print_type_declaration(&mut self, decl: ast::TypeDeclaration) -> Doc<'a> {
         match decl {
-            ast::TypeDeclaration::ClassDeclaration(decl) => {
-                self.print_declaration_with_body(decl.syntax(), decl.body().map(|b| b.syntax().clone()))
-            }
-            ast::TypeDeclaration::InterfaceDeclaration(decl) => self
-                .print_declaration_with_body(decl.syntax(), decl.body().map(|b| b.syntax().clone())),
-            ast::TypeDeclaration::EnumDeclaration(decl) => self
-                .print_declaration_with_body(decl.syntax(), decl.body().map(|b| b.syntax().clone())),
-            ast::TypeDeclaration::RecordDeclaration(decl) => self
-                .print_declaration_with_body(decl.syntax(), decl.body().map(|b| b.syntax().clone())),
+            ast::TypeDeclaration::ClassDeclaration(decl) => self.print_declaration_with_body(
+                decl.syntax(),
+                decl.body().map(|b| b.syntax().clone()),
+            ),
+            ast::TypeDeclaration::InterfaceDeclaration(decl) => self.print_declaration_with_body(
+                decl.syntax(),
+                decl.body().map(|b| b.syntax().clone()),
+            ),
+            ast::TypeDeclaration::EnumDeclaration(decl) => self.print_declaration_with_body(
+                decl.syntax(),
+                decl.body().map(|b| b.syntax().clone()),
+            ),
+            ast::TypeDeclaration::RecordDeclaration(decl) => self.print_declaration_with_body(
+                decl.syntax(),
+                decl.body().map(|b| b.syntax().clone()),
+            ),
             ast::TypeDeclaration::AnnotationTypeDeclaration(decl) => self
-                .print_declaration_with_body(decl.syntax(), decl.body().map(|b| b.syntax().clone())),
-            ast::TypeDeclaration::EmptyDeclaration(decl) => fallback::node(self.source, decl.syntax()),
+                .print_declaration_with_body(
+                    decl.syntax(),
+                    decl.body().map(|b| b.syntax().clone()),
+                ),
+            ast::TypeDeclaration::EmptyDeclaration(decl) => {
+                fallback::node(self.source, decl.syntax())
+            }
             other => fallback::node(self.source, other.syntax()),
         }
     }
@@ -39,8 +51,10 @@ impl<'a> JavaPrettyFormatter<'a> {
         let header_end = u32::from(l_brace.text_range().start());
         // For the header we want to avoid trailing whitespace before `{` so the formatter doesn't
         // preserve awkward `class Foo  {` spacing.
-        let header = header_text_trimmed(self.source, header_start, header_end)
-            .map_or_else(|| fallback::byte_range(self.source, header_start, header_end), Doc::text);
+        let header = header_text_trimmed(self.source, header_start, header_end).map_or_else(
+            || fallback::byte_range(self.source, header_start, header_end),
+            Doc::text,
+        );
 
         let body_doc = self.print_brace_body(&l_brace, &r_brace);
 
@@ -78,11 +92,7 @@ impl<'a> JavaPrettyFormatter<'a> {
     }
 }
 
-fn header_text_trimmed<'a>(
-    source: &'a str,
-    start: u32,
-    end: u32,
-) -> Option<&'a str> {
+fn header_text_trimmed<'a>(source: &'a str, start: u32, end: u32) -> Option<&'a str> {
     let start = start as usize;
     let end = end as usize;
     let start = start.min(source.len());

@@ -88,12 +88,43 @@ impl CodeAnonymizer {
                 '/' if chars.peek() == Some(&'*') => {
                     chars.next();
                     if self.options.strip_or_redact_comments {
-                        out.push_str("/* [REDACTED] */");
+                        // Preserve Nova's synthetic range marker comments used by code-edit prompts.
+                        // These markers are not part of user code and are required for patch-based
+                        // workflows to be reliable when comment stripping is enabled.
+                        //
+                        // We keep the detection very small and self-contained: only comments with
+                        // bodies matching the exact marker strings are preserved.
+                        const RANGE_MARKERS: [&str; 2] =
+                            ["__NOVA_AI_RANGE_START__", "__NOVA_AI_RANGE_END__"];
+                        const MAX_MARKER_LEN: usize = 64;
+
+                        let mut marker_buf = String::new();
+                        let mut marker_possible = true;
+                        let mut closed = false;
+
                         while let Some(c) = chars.next() {
                             if c == '*' && chars.peek() == Some(&'/') {
                                 chars.next();
+                                closed = true;
                                 break;
                             }
+
+                            if marker_possible {
+                                if marker_buf.len() < MAX_MARKER_LEN {
+                                    marker_buf.push(c);
+                                } else {
+                                    marker_possible = false;
+                                }
+                            }
+                        }
+
+                        let marker = marker_buf.trim();
+                        if closed && marker_possible && RANGE_MARKERS.contains(&marker) {
+                            out.push_str("/*");
+                            out.push_str(marker);
+                            out.push_str("*/");
+                        } else {
+                            out.push_str("/* [REDACTED] */");
                         }
                     } else {
                         out.push('/');
@@ -501,5 +532,30 @@ mod tests {
         assert!(out.contains("/* [REDACTED] */"));
         assert!(!out.contains("sk-verysecret"), "{out}");
         assert!(!out.contains("hunter2"), "{out}");
+    }
+
+    #[test]
+    fn preserves_nova_ai_range_markers_when_comment_stripping_enabled() {
+        let code = r#"
+            /*__NOVA_AI_RANGE_START__*/
+            class Foo {
+                /* secret */
+                void m() {}
+            }
+            /*__NOVA_AI_RANGE_END__*/
+        "#;
+
+        let mut anonymizer = CodeAnonymizer::new(CodeAnonymizerOptions {
+            anonymize_identifiers: false,
+            redact_sensitive_strings: false,
+            redact_numeric_literals: false,
+            strip_or_redact_comments: true,
+        });
+
+        let out = anonymizer.anonymize(code);
+        assert!(out.contains("/*__NOVA_AI_RANGE_START__*/"), "{out}");
+        assert!(out.contains("/*__NOVA_AI_RANGE_END__*/"), "{out}");
+        assert!(out.contains("/* [REDACTED] */"), "{out}");
+        assert!(!out.contains("secret"), "{out}");
     }
 }

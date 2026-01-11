@@ -16,7 +16,11 @@ pub(crate) fn byte_range<'a>(source: &'a str, start: u32, end: u32) -> Doc<'a> {
     let end = end as usize;
     let start = start.min(source.len());
     let end = end.min(source.len());
-    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     let slice = source.get(start..end).unwrap_or("");
     Doc::text(slice)
 }

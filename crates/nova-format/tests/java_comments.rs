@@ -107,7 +107,13 @@ fn trailing_line_comment_forces_group_to_break() {
     // would be rendered as a space in flat mode and the suffix would flush at end-of-doc (too
     // late). Emitting a `break_parent` ensures the group breaks and flushes the suffix before the
     // newline.
-    let doc = Doc::concat([Doc::text("int x=1;"), trailing, Doc::line(), Doc::text("int")]).group();
+    let doc = Doc::concat([
+        Doc::text("int x=1;"),
+        trailing,
+        Doc::line(),
+        Doc::text("int"),
+    ])
+    .group();
     assert_eq!(print(doc, PrintConfig::default()), "int x=1; // c\nint");
     comments.assert_drained();
 }
@@ -184,6 +190,9 @@ fn blank_line_after_leading_comment_is_not_pulled_before_it() {
         Doc::text("int"),
     ]);
 
-    assert_eq!(print(doc, PrintConfig::default()), "int x=1; // t\n// leading\n\nint");
+    assert_eq!(
+        print(doc, PrintConfig::default()),
+        "int x=1; // t\n// leading\n\nint"
+    );
     comments.assert_drained();
 }

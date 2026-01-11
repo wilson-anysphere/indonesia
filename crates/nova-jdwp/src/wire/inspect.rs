@@ -422,7 +422,9 @@ async fn instance_fields_with_type(
     object_id: ObjectId,
     type_id: ReferenceTypeId,
 ) -> Result<Vec<(String, JdwpValue, Option<String>)>> {
-    let fields: Vec<FieldInfo> = jdwp.reference_type_all_instance_fields_cached(type_id).await?;
+    let fields: Vec<FieldInfo> = jdwp
+        .reference_type_all_instance_fields_cached(type_id)
+        .await?;
     if fields.is_empty() {
         return Ok(Vec::new());
     }
@@ -937,7 +939,10 @@ mod tests {
             .object_children(mock::FIELD_HIDING_OBJECT_ID)
             .await
             .unwrap();
-        let matches: Vec<_> = children.iter().filter(|child| child.name == "hidden").collect();
+        let matches: Vec<_> = children
+            .iter()
+            .filter(|child| child.name == "hidden")
+            .collect();
         assert_eq!(matches.len(), 1, "expected a single `hidden` field");
 
         assert_eq!(

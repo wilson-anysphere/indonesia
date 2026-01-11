@@ -169,7 +169,12 @@ impl<'a> JavaComments<'a> {
         self.sig_tokens.get(idx + 1).copied()
     }
 
-    fn fmt_trailing_comments(&mut self, ctx: &FmtCtx, token: TokenKey, comments: &[Comment]) -> Doc<'a> {
+    fn fmt_trailing_comments(
+        &mut self,
+        ctx: &FmtCtx,
+        token: TokenKey,
+        comments: &[Comment],
+    ) -> Doc<'a> {
         let mut parts: Vec<Doc<'a>> = Vec::new();
 
         for (idx, comment) in comments.iter().enumerate() {

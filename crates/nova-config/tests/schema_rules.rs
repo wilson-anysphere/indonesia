@@ -36,5 +36,8 @@ fn json_schema_marks_ai_api_key_as_write_only() {
     let api_key = value
         .pointer("/definitions/AiConfig/properties/api_key")
         .expect("api_key schema property exists");
-    assert_eq!(api_key.get("writeOnly").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        api_key.get("writeOnly").and_then(|v| v.as_bool()),
+        Some(true)
+    );
 }
