@@ -78,7 +78,7 @@ Examples:
 export RUST_LOG="nova=debug"
 
 # Verbose logging for the LSP/DAP frontends specifically.
-export RUST_LOG="nova_lsp=trace,nova_dap=debug"
+export RUST_LOG="nova.lsp=trace,nova.dap=debug"
 ```
 
 `RUST_BACKTRACE=1` controls what Rust prints to `stderr` on panic, but Nova’s bug report bundles only
