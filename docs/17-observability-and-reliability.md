@@ -312,7 +312,8 @@ use the `nova-bugreport` library directly to create a bundle from:
 - the in-memory log buffer (`nova_config::global_log_buffer()`)
 - the crash store (`nova_bugreport::global_crash_store()`)
 
-Any additional entry point should produce the same bundle format described below.
+Entry points may also attach additional files (for example, the LSP/DAP `nova/bugReport` handlers
+include a `metrics.json` snapshot from `nova-metrics`).
 
 ### Bundle contents
 
@@ -322,7 +323,7 @@ A bug report bundle is a directory containing:
 - `config.json` – serialized `NovaConfig`, with secrets redacted
 - `logs.txt` – recent log lines (from the in-memory ring buffer)
 - `performance.json` – counters (requests/timeouts/panics/safe-mode entries)
-- `metrics.json` – per-method request metrics (counts + latency summaries)
+- `metrics.json` – per-method request metrics (counts + latency summaries; best-effort)
 - `crashes.json` – recent panic records (message/location/backtrace if enabled)
 - `repro.txt` – reproduction text (only if provided)
 
