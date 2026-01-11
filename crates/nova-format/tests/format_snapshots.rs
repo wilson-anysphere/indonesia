@@ -81,12 +81,52 @@ fn range_formatting_preserves_outside_text() {
     let range = Range::new(start, end);
 
     let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
-    assert_eq!(edits.len(), 1);
+    let byte_range = index.text_range(input, range).unwrap();
+    for edit in &edits {
+        assert!(
+            edit.range.start() >= byte_range.start() && edit.range.end() <= byte_range.end(),
+            "edit {:?} escaped requested range {:?}",
+            edit.range,
+            byte_range
+        );
+    }
     let out = apply_text_edits(input, &edits).unwrap();
 
     assert_eq!(
         out,
         "class Foo {\n    void a() { int x=1; }\n    void b() {\n        int y = 2;\n    }\n}\n"
+    );
+}
+
+#[test]
+fn range_formatting_returns_minimal_edits_within_range() {
+    let input = "class Foo {\n    void a() {\n        foo(1,2,3);\n        bar(4, 5, 6);\n        baz(7,8,9);\n    }\n}\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    // Select the three statements; only the first and third need formatting.
+    let start = Position::new(2, 0);
+    let end_offset = index.line_end(4).unwrap();
+    let end = index.position(input, end_offset);
+    let range = Range::new(start, end);
+
+    let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
+    assert!(edits.len() > 1, "expected multiple edits, got {edits:?}");
+
+    let byte_range = index.text_range(input, range).unwrap();
+    for edit in &edits {
+        assert!(
+            edit.range.start() >= byte_range.start() && edit.range.end() <= byte_range.end(),
+            "edit {:?} escaped requested range {:?}",
+            edit.range,
+            byte_range
+        );
+    }
+
+    let out = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(
+        out,
+        "class Foo {\n    void a() {\n        foo(1, 2, 3);\n        bar(4, 5, 6);\n        baz(7, 8, 9);\n    }\n}\n"
     );
 }
 

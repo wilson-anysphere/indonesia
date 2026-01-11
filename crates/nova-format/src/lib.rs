@@ -130,8 +130,8 @@ impl Default for FormatConfig {
 /// A composable source formatting pipeline.
 ///
 /// Nova's LSP integration often needs to apply multiple text-to-text transformations (e.g.
-/// organize imports + formatting) but still produce a single minimal edit for the editor. This
-/// type provides a small helper for that use case.
+/// organize imports + formatting) but still produce minimal edits for the editor. This type
+/// provides a small helper for that use case.
 ///
 /// Each step receives the current [`SyntaxTree`] and source text and produces a new source text.
 /// The pipeline reparses the updated text between steps to keep subsequent transformations in sync.
@@ -227,7 +227,30 @@ pub fn edits_for_range_formatting(
     if formatted == snippet {
         return Ok(Vec::new());
     }
-    Ok(vec![TextEdit::new(range, formatted)])
+
+    let edits = minimal_text_edits(snippet, &formatted);
+    let mut out = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let start = range.start() + edit.range.start();
+        let end = range.start() + edit.range.end();
+        let edit_range = TextRange::new(start, end);
+
+        if edit_range.start() < range.start() || edit_range.end() > range.end() {
+            // Safety fallback: if the diff algorithm produces an out-of-range edit,
+            // fall back to the original single-edit implementation.
+            return Ok(vec![TextEdit::new(range, formatted)]);
+        }
+
+        out.push(TextEdit::new(edit_range, edit.replacement));
+    }
+
+    if out.is_empty() {
+        // Should be unreachable because `formatted != snippet`, but be defensive and
+        // preserve the previous behavior (an edit limited to `range`).
+        return Ok(vec![TextEdit::new(range, formatted)]);
+    }
+
+    Ok(out)
 }
 
 /// Best-effort on-type formatting.
@@ -346,10 +369,85 @@ fn is_control_keyword(ident: &str) -> bool {
 
 /// Compute minimal edits to transform `original` into `formatted`.
 ///
-/// This helper is intended for LSP integrations; it returns either zero edits (already formatted)
-/// or a single edit that replaces the changed span.
+/// This helper is intended for LSP integrations; it returns non-overlapping edits that are
+/// sufficient to transform `original` into `formatted`.
 pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
-    minimal_text_edit(original, formatted).into_iter().collect()
+    if original == formatted {
+        return Vec::new();
+    }
+
+    let original_lines = split_lines_inclusive(original);
+    let formatted_lines = split_lines_inclusive(formatted);
+
+    let ops = myers_diff_ops(&original_lines, &formatted_lines);
+
+    let mut chunks = Vec::new();
+    let mut a_idx = 0usize;
+    let mut b_idx = 0usize;
+    let mut start_a: Option<usize> = None;
+    let mut start_b: Option<usize> = None;
+
+    for op in ops {
+        match op {
+            DiffOp::Equal => {
+                if let (Some(sa), Some(sb)) = (start_a.take(), start_b.take()) {
+                    chunks.push(DiffChunk {
+                        original_start: sa,
+                        original_end: a_idx,
+                        formatted_start: sb,
+                        formatted_end: b_idx,
+                    });
+                }
+                a_idx += 1;
+                b_idx += 1;
+            }
+            DiffOp::Delete => {
+                if start_a.is_none() {
+                    start_a = Some(a_idx);
+                    start_b = Some(b_idx);
+                }
+                a_idx += 1;
+            }
+            DiffOp::Insert => {
+                if start_a.is_none() {
+                    start_a = Some(a_idx);
+                    start_b = Some(b_idx);
+                }
+                b_idx += 1;
+            }
+        }
+    }
+
+    if let (Some(sa), Some(sb)) = (start_a, start_b) {
+        chunks.push(DiffChunk {
+            original_start: sa,
+            original_end: a_idx,
+            formatted_start: sb,
+            formatted_end: b_idx,
+        });
+    }
+
+    let original_offsets = line_offsets(&original_lines);
+    let formatted_offsets = line_offsets(&formatted_lines);
+
+    let mut edits = Vec::new();
+    for chunk in chunks {
+        let original_start = original_offsets[chunk.original_start];
+        let original_end = original_offsets[chunk.original_end];
+        let formatted_start = formatted_offsets[chunk.formatted_start];
+        let formatted_end = formatted_offsets[chunk.formatted_end];
+
+        let original_block = &original[original_start..original_end];
+        let formatted_block = &formatted[formatted_start..formatted_end];
+        if let Some(edit) = minimal_text_edit(original_block, formatted_block) {
+            let base = TextSize::from(original_start as u32);
+            let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
+            edits.push(TextEdit::new(range, edit.replacement));
+        }
+    }
+
+    edits.sort_by_key(|edit| (edit.range.start(), edit.range.end()));
+    edits
 }
 
 fn minimal_text_edit(original: &str, formatted: &str) -> Option<TextEdit> {
@@ -397,6 +495,162 @@ fn common_suffix_ends(a: &str, b: &str, prefix: usize) -> (usize, usize) {
     }
 
     (a_end, b_end)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiffOp {
+    Equal,
+    Insert,
+    Delete,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DiffChunk {
+    original_start: usize,
+    original_end: usize,
+    formatted_start: usize,
+    formatted_end: usize,
+}
+
+fn split_lines_inclusive(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => {
+                let end = i + 1;
+                lines.push(&text[start..end]);
+                start = end;
+                i = end;
+            }
+            b'\r' => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\n' {
+                    let end = i + 2;
+                    lines.push(&text[start..end]);
+                    start = end;
+                    i = end;
+                } else {
+                    let end = i + 1;
+                    lines.push(&text[start..end]);
+                    start = end;
+                    i = end;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+
+    if start < bytes.len() {
+        lines.push(&text[start..]);
+    }
+
+    lines
+}
+
+fn line_offsets(lines: &[&str]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(lines.len() + 1);
+    let mut offset = 0usize;
+    offsets.push(offset);
+    for line in lines {
+        offset += line.len();
+        offsets.push(offset);
+    }
+    offsets
+}
+
+fn myers_diff_ops<T: Eq>(a: &[T], b: &[T]) -> Vec<DiffOp> {
+    let n = a.len() as isize;
+    let m = b.len() as isize;
+    let max = (n + m) as usize;
+
+    let mut v = vec![0isize; 2 * max + 1];
+    let mut trace: Vec<Vec<isize>> = Vec::new();
+    let mut found_d = 0usize;
+
+    'outer: for d in 0..=max {
+        for k in (-(d as isize)..=d as isize).step_by(2) {
+            let k_idx = (k + max as isize) as usize;
+
+            let x = if k == -(d as isize)
+                || (k != d as isize
+                    && v[(k - 1 + max as isize) as usize] < v[(k + 1 + max as isize) as usize])
+            {
+                v[(k + 1 + max as isize) as usize]
+            } else {
+                v[(k - 1 + max as isize) as usize] + 1
+            };
+
+            let mut x = x;
+            let mut y = x - k;
+            while x < n && y < m && a[x as usize] == b[y as usize] {
+                x += 1;
+                y += 1;
+            }
+            v[k_idx] = x;
+
+            if x >= n && y >= m {
+                found_d = d;
+                trace.push(v.clone());
+                break 'outer;
+            }
+        }
+
+        trace.push(v.clone());
+    }
+
+    let mut x = n;
+    let mut y = m;
+    let mut ops = Vec::new();
+
+    for d in (1..=found_d).rev() {
+        let v = &trace[d - 1];
+        let k = x - y;
+        let prev_k = if k == -(d as isize)
+            || (k != d as isize
+                && v[(k - 1 + max as isize) as usize] < v[(k + 1 + max as isize) as usize])
+        {
+            k + 1
+        } else {
+            k - 1
+        };
+
+        let prev_x = v[(prev_k + max as isize) as usize];
+        let prev_y = prev_x - prev_k;
+
+        while x > prev_x && y > prev_y {
+            ops.push(DiffOp::Equal);
+            x -= 1;
+            y -= 1;
+        }
+
+        if x == prev_x {
+            ops.push(DiffOp::Insert);
+            y -= 1;
+        } else {
+            ops.push(DiffOp::Delete);
+            x -= 1;
+        }
+    }
+
+    while x > 0 && y > 0 {
+        ops.push(DiffOp::Equal);
+        x -= 1;
+        y -= 1;
+    }
+    while x > 0 {
+        ops.push(DiffOp::Delete);
+        x -= 1;
+    }
+    while y > 0 {
+        ops.push(DiffOp::Insert);
+        y -= 1;
+    }
+
+    ops.reverse();
+    ops
 }
 
 fn indent_level_at(tree: &SyntaxTree, source: &str, offset: TextSize) -> usize {
