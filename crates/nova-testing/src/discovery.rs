@@ -3,8 +3,8 @@ use crate::schema::{
 };
 use crate::util::rel_path_string;
 use crate::{NovaTestingError, Result, SCHEMA_VERSION};
+use nova_core::{LineIndex, TextSize};
 use nova_project::SourceRootKind;
-use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Parser};
@@ -87,12 +87,12 @@ fn discover_tests_in_root(project_root: &Path, root: &Path) -> Result<Vec<TestIt
 
 fn discover_tests_in_file(project_root: &Path, file_path: &Path) -> Result<Vec<TestItem>> {
     let content = fs::read_to_string(file_path)?;
-    let package = parse_package(&content)?;
-    let imports = parse_imports(&content)?;
     let relative_path = rel_path_string(project_root, file_path);
 
     let tree = parse_java(&content)?;
     let root = tree.root_node();
+    let line_index = LineIndex::new(&content);
+    let (package, imports) = parse_package_and_imports(root, &content);
 
     let mut out = Vec::new();
     let mut cursor = root.walk();
@@ -104,6 +104,7 @@ fn discover_tests_in_file(project_root: &Path, file_path: &Path) -> Result<Vec<T
         if let Some(item) = parse_test_class(
             child,
             &content,
+            &line_index,
             package.as_deref(),
             &imports,
             &relative_path,
@@ -119,8 +120,9 @@ fn discover_tests_in_file(project_root: &Path, file_path: &Path) -> Result<Vec<T
 fn parse_test_class(
     node: Node<'_>,
     source: &str,
+    line_index: &LineIndex,
     package: Option<&str>,
-    imports: &[String],
+    imports: &Imports,
     relative_path: &str,
     enclosing_class_id: Option<&str>,
 ) -> Result<Option<TestItem>> {
@@ -141,7 +143,7 @@ fn parse_test_class(
     };
 
     let class_framework = infer_framework_from_imports(imports);
-    let class_pos = ts_point_to_position(name_node.start_position());
+    let class_range = range_for_node(line_index, source, name_node);
 
     let body = node
         .child_by_field_name("body")
@@ -151,6 +153,7 @@ fn parse_test_class(
         children.extend(discover_test_methods(
             body,
             source,
+            line_index,
             imports,
             &class_id,
             relative_path,
@@ -158,6 +161,7 @@ fn parse_test_class(
         children.extend(discover_nested_test_classes(
             body,
             source,
+            line_index,
             package,
             imports,
             relative_path,
@@ -183,10 +187,7 @@ fn parse_test_class(
         kind: TestKind::Class,
         framework: class_framework,
         path: relative_path.to_string(),
-        range: Range {
-            start: class_pos,
-            end: class_pos,
-        },
+        range: class_range,
         children,
     }))
 }
@@ -194,8 +195,9 @@ fn parse_test_class(
 fn discover_nested_test_classes(
     class_body: Node<'_>,
     source: &str,
+    line_index: &LineIndex,
     package: Option<&str>,
-    imports: &[String],
+    imports: &Imports,
     relative_path: &str,
     enclosing_class_id: &str,
 ) -> Result<Vec<TestItem>> {
@@ -209,6 +211,7 @@ fn discover_nested_test_classes(
         if let Some(item) = parse_test_class(
             child,
             source,
+            line_index,
             package,
             imports,
             relative_path,
@@ -225,7 +228,8 @@ fn discover_nested_test_classes(
 fn discover_test_methods(
     class_body: Node<'_>,
     source: &str,
-    imports: &[String],
+    line_index: &LineIndex,
+    imports: &Imports,
     class_id: &str,
     relative_path: &str,
 ) -> Result<Vec<TestItem>> {
@@ -255,7 +259,7 @@ fn discover_test_methods(
 
         let method_name = node_text(source, name_node).to_string();
         let id = format!("{class_id}#{method_name}");
-        let pos = ts_point_to_position(name_node.start_position());
+        let range = range_for_node(line_index, source, name_node);
 
         out.push(TestItem {
             id,
@@ -263,10 +267,7 @@ fn discover_test_methods(
             kind: TestKind::Test,
             framework,
             path: relative_path.to_string(),
-            range: Range {
-                start: pos,
-                end: pos,
-            },
+            range,
             children: Vec::new(),
         });
     }
@@ -275,31 +276,121 @@ fn discover_test_methods(
     Ok(out)
 }
 
-fn parse_package(content: &str) -> Result<Option<String>> {
-    let re = Regex::new(r"(?m)^\s*package\s+([A-Za-z0-9_.]+)\s*;")?;
-    Ok(re
-        .captures(content)
-        .and_then(|caps| caps.get(1).map(|m| m.as_str().to_string())))
+#[derive(Clone, Debug, Default)]
+struct Imports {
+    exact: Vec<String>,
+    wildcard: Vec<String>,
+    static_exact: Vec<String>,
+    static_wildcard: Vec<String>,
 }
 
-fn parse_imports(content: &str) -> Result<Vec<String>> {
-    let re = Regex::new(r"(?m)^\s*import\s+([A-Za-z0-9_.]+)\s*;")?;
-    Ok(re
-        .captures_iter(content)
-        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_string()))
-        .collect())
+impl Imports {
+    fn non_static_exact(&self) -> impl Iterator<Item = &str> {
+        self.exact.iter().map(String::as_str)
+    }
+
+    fn non_static_wildcard(&self) -> impl Iterator<Item = &str> {
+        self.wildcard.iter().map(String::as_str)
+    }
+
+    fn all_import_roots(&self) -> impl Iterator<Item = &str> {
+        self.exact
+            .iter()
+            .chain(self.wildcard.iter())
+            .chain(self.static_exact.iter())
+            .chain(self.static_wildcard.iter())
+            .map(String::as_str)
+    }
 }
 
-fn infer_framework_from_imports(imports: &[String]) -> TestFramework {
-    if imports.iter().any(|i| i.starts_with("org.junit.jupiter.")) {
+#[derive(Clone, Debug)]
+struct ImportDecl {
+    path: String,
+    is_static: bool,
+    is_wildcard: bool,
+}
+
+fn parse_package_and_imports(root: Node<'_>, source: &str) -> (Option<String>, Imports) {
+    let mut package = None;
+    let mut imports = Imports::default();
+
+    let mut cursor = root.walk();
+    for child in root.named_children(&mut cursor) {
+        match child.kind() {
+            "package_declaration" => {
+                if package.is_none() {
+                    package = parse_package_declaration(child, source);
+                }
+            }
+            "import_declaration" => {
+                if let Some(import) = parse_import_declaration(child, source) {
+                    match (import.is_static, import.is_wildcard) {
+                        (true, true) => imports.static_wildcard.push(import.path),
+                        (true, false) => imports.static_exact.push(import.path),
+                        (false, true) => imports.wildcard.push(import.path),
+                        (false, false) => imports.exact.push(import.path),
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (package, imports)
+}
+
+fn parse_package_declaration(node: Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    let result = node
+        .named_children(&mut cursor)
+        .find(|child| matches!(child.kind(), "scoped_identifier" | "identifier"))
+        .map(|name| node_text(source, name).to_string());
+    result
+}
+
+fn parse_import_declaration(node: Node<'_>, source: &str) -> Option<ImportDecl> {
+    let is_static = node_contains_child_kind(node, "static")
+        || node_text(source, node)
+            .trim_start()
+            .starts_with("import static");
+
+    let is_wildcard = node_contains_child_kind(node, "*")
+        || node_contains_child_kind(node, "asterisk")
+        || node_text(source, node).trim_end().ends_with("*;");
+
+    let mut cursor = node.walk();
+    let name_node = node
+        .named_children(&mut cursor)
+        .find(|child| matches!(child.kind(), "scoped_identifier" | "identifier"))?;
+
+    Some(ImportDecl {
+        path: node_text(source, name_node).to_string(),
+        is_static,
+        is_wildcard,
+    })
+}
+
+fn node_contains_child_kind(node: Node<'_>, kind: &str) -> bool {
+    let mut cursor = node.walk();
+    let result = node.children(&mut cursor).any(|child| child.kind() == kind);
+    result
+}
+
+fn infer_framework_from_imports(imports: &Imports) -> TestFramework {
+    let any_junit5 = imports.all_import_roots().any(|path| {
+        path == "org.junit.jupiter" || path.starts_with("org.junit.jupiter.")
+    });
+    if any_junit5 {
         return TestFramework::Junit5;
     }
-    if imports
-        .iter()
-        .any(|i| i == "org.junit.Test" || i.starts_with("org.junit."))
-    {
+
+    let any_junit4 = imports
+        .all_import_roots()
+        .any(|path| path == "org.junit" || path.starts_with("org.junit."));
+    if any_junit4 {
         return TestFramework::Junit4;
     }
+
     TestFramework::Unknown
 }
 
@@ -310,50 +401,104 @@ struct Annotation {
 }
 
 fn classify_test_annotations(
-    imports: &[String],
+    imports: &Imports,
     annotations: &[Annotation],
 ) -> Option<TestFramework> {
-    let mut framework = TestFramework::Unknown;
     let mut is_test = false;
+    let mut saw_junit4 = false;
+    let mut saw_junit5 = false;
 
     for ann in annotations {
-        if ann.simple_name == "ParameterizedTest" {
-            return Some(TestFramework::Junit5);
+        if !is_test_annotation(&ann.simple_name) {
+            continue;
         }
 
-        if ann.simple_name == "Test" {
-            is_test = true;
-            framework = infer_framework_for_test_annotation(imports, &ann.name)
-                .unwrap_or_else(|| infer_framework_from_imports(imports));
+        is_test = true;
+        match infer_framework_for_annotation(imports, ann) {
+            TestFramework::Junit4 => saw_junit4 = true,
+            TestFramework::Junit5 => saw_junit5 = true,
+            TestFramework::Unknown => {}
         }
     }
 
     if is_test {
-        Some(framework)
+        Some(match (saw_junit4, saw_junit5) {
+            (true, true) => TestFramework::Unknown,
+            (true, false) => TestFramework::Junit4,
+            (false, true) => TestFramework::Junit5,
+            (false, false) => infer_framework_from_imports(imports),
+        })
     } else {
         None
     }
 }
 
-fn infer_framework_for_test_annotation(
-    imports: &[String],
-    annotation: &str,
-) -> Option<TestFramework> {
-    if annotation.ends_with("org.junit.jupiter.api.Test") {
-        return Some(TestFramework::Junit5);
-    }
-    if annotation.ends_with("org.junit.Test") {
-        return Some(TestFramework::Junit4);
+fn is_test_annotation(simple_name: &str) -> bool {
+    matches!(
+        simple_name,
+        "Test"
+            | "ParameterizedTest"
+            | "RepeatedTest"
+            | "TestFactory"
+            | "TestTemplate"
+            | "Theory"
+    )
+}
+
+fn infer_framework_for_annotation(imports: &Imports, ann: &Annotation) -> TestFramework {
+    let mut saw_junit4 = false;
+    let mut saw_junit5 = false;
+
+    for candidate in resolve_annotation_candidates(imports, &ann.name) {
+        match framework_from_fqn(&candidate) {
+            TestFramework::Junit4 => saw_junit4 = true,
+            TestFramework::Junit5 => saw_junit5 = true,
+            TestFramework::Unknown => {}
+        }
     }
 
-    if imports.iter().any(|i| i == "org.junit.jupiter.api.Test") {
-        return Some(TestFramework::Junit5);
-    }
-    if imports.iter().any(|i| i == "org.junit.Test") {
-        return Some(TestFramework::Junit4);
+    match (saw_junit4, saw_junit5) {
+        (true, true) => return TestFramework::Unknown,
+        (true, false) => return TestFramework::Junit4,
+        (false, true) => return TestFramework::Junit5,
+        (false, false) => {}
     }
 
-    None
+    match ann.simple_name.as_str() {
+        "ParameterizedTest" | "RepeatedTest" | "TestFactory" | "TestTemplate" => TestFramework::Junit5,
+        "Theory" => TestFramework::Junit4,
+        "Test" => infer_framework_from_imports(imports),
+        _ => TestFramework::Unknown,
+    }
+}
+
+fn resolve_annotation_candidates(imports: &Imports, annotation: &str) -> Vec<String> {
+    if annotation.contains('.') {
+        return vec![annotation.to_string()];
+    }
+
+    let mut candidates = Vec::new();
+    for import in imports.non_static_exact() {
+        if import.rsplit('.').next() == Some(annotation) {
+            candidates.push(import.to_string());
+        }
+    }
+
+    for wildcard in imports.non_static_wildcard() {
+        candidates.push(format!("{wildcard}.{annotation}"));
+    }
+
+    candidates
+}
+
+fn framework_from_fqn(fqn: &str) -> TestFramework {
+    if fqn.starts_with("org.junit.jupiter.") {
+        return TestFramework::Junit5;
+    }
+    if fqn.starts_with("org.junit.") || fqn == "org.junit" {
+        return TestFramework::Junit4;
+    }
+    TestFramework::Unknown
 }
 
 fn looks_like_test_class(
@@ -433,9 +578,17 @@ fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
     &source[node.byte_range()]
 }
 
-fn ts_point_to_position(point: tree_sitter::Point) -> Position {
+fn position_for_offset(line_index: &LineIndex, source: &str, offset: usize) -> Position {
+    let pos = line_index.position(source, TextSize::from(offset as u32));
     Position {
-        line: point.row as u32,
-        character: point.column as u32,
+        line: pos.line,
+        character: pos.character,
+    }
+}
+
+fn range_for_node(line_index: &LineIndex, source: &str, node: Node<'_>) -> Range {
+    Range {
+        start: position_for_offset(line_index, source, node.start_byte()),
+        end: position_for_offset(line_index, source, node.end_byte()),
     }
 }

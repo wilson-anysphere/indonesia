@@ -106,3 +106,48 @@ fn discovers_junit5_tests_in_simple_fixture() {
     let child_ids: Vec<_> = simple.children.iter().map(|c| c.id.as_str()).collect();
     assert_eq!(child_ids, vec!["com.example.SimpleTest#itWorks"]);
 }
+
+#[test]
+fn handles_wildcard_imports_and_utf16_ranges() {
+    let root = fixture_root("edgecases-junit5");
+    let resp = discover_tests(&TestDiscoverRequest {
+        project_root: root.to_string_lossy().to_string(),
+    })
+    .unwrap();
+
+    let wildcard = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "com.example.WildcardImportTest")
+        .unwrap();
+    assert_eq!(wildcard.framework, TestFramework::Junit5);
+
+    let child_ids: Vec<_> = wildcard.children.iter().map(|c| c.id.as_str()).collect();
+    assert_eq!(
+        child_ids,
+        vec![
+            "com.example.WildcardImportTest#factory",
+            "com.example.WildcardImportTest#repeats",
+            "com.example.WildcardImportTest#template",
+            "com.example.WildcardImportTest#works",
+        ]
+    );
+
+    let utf16 = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "com.example.Utf16RangeTest")
+        .unwrap();
+    assert_eq!(utf16.framework, TestFramework::Junit5);
+
+    let it_works = utf16
+        .children
+        .iter()
+        .find(|t| t.id == "com.example.Utf16RangeTest#itWorks")
+        .unwrap();
+
+    assert_eq!(it_works.range.start.line, 6);
+    assert_eq!(it_works.range.start.character, 24);
+    assert_eq!(it_works.range.end.line, 6);
+    assert_eq!(it_works.range.end.character, 31);
+}

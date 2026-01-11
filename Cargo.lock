@@ -3957,6 +3957,7 @@ name = "nova-testing"
 version = "0.1.0"
 dependencies = [
  "filetime",
+ "nova-core",
  "nova-project",
  "pretty_assertions",
  "quick-xml",
