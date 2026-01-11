@@ -127,7 +127,32 @@ Unknown variants are still generally **not actionable**; receivers SHOULD treat 
 unsupported-feature condition and close the connection (or return a structured error response if
 possible).
 
-### 3.3 Top-level envelope schema: `WireFrame`
+### 3.3 CBOR decode safety / allocation hardening (MUST)
+
+Implementations MUST treat the peer as potentially untrusted (especially for TCP deployments) and
+MUST defend against allocation bombs during CBOR decoding.
+
+In particular: some CBOR decoders (including `serde_cbor::from_slice`) may allocate `Vec`/`String`
+capacity based on attacker-controlled length prefixes *before* validating that the input contains
+enough bytes. A small frame can therefore trigger very large allocations unless the implementation
+pre-validates length prefixes.
+
+Requirements:
+
+- Receivers MUST enforce a maximum frame length before allocating the frame buffer (§2.2).
+- Receivers MUST ensure CBOR decoding cannot allocate based on invalid or unbounded lengths. This
+  can be done by:
+  - performing a non-allocating “preflight” validation pass over the CBOR bytes before calling into
+    an allocating decoder, and/or
+  - using a streaming/iterative CBOR decoder with explicit limits.
+
+Implementation note (informative): the Rust reference implementation validates CBOR buffers before
+`serde_cbor` decoding and enforces additional hard limits; see
+`crates/nova-remote-proto/src/lib.rs` (`MAX_MESSAGE_BYTES`, `MAX_FILE_TEXT_BYTES`,
+`MAX_FILES_PER_MESSAGE`, `MAX_SYMBOLS_PER_SHARD_INDEX`, `MAX_SMALL_STRING_BYTES`) and
+`crates/nova-remote-proto/src/validate_cbor.rs`.
+
+### 3.4 Top-level envelope schema: `WireFrame`
 
 The payload is encoded as a `WireFrame` tagged enum with the following logical schema:
 
