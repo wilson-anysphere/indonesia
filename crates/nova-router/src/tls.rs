@@ -8,12 +8,19 @@ use sha2::Digest;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct TlsServerConfig {
     pub cert_path: PathBuf,
     pub key_path: PathBuf,
-    /// When set, clients must present a certificate signed by this CA (mTLS).
-    pub client_ca_cert_path: Option<PathBuf>,
+    /// PEM bundle of CA certificates used to validate client certificates.
+    ///
+    /// If `None`, the router does not request or require client certificates (server-auth TLS only).
+    pub client_ca_path: Option<PathBuf>,
+    /// Whether to require a client certificate when `client_ca_path` is set.
+    ///
+    /// When `false`, the router will still request a client certificate, but allow connections
+    /// without one.
+    pub require_client_auth: bool,
 }
 
 impl TlsServerConfig {
@@ -21,12 +28,15 @@ impl TlsServerConfig {
         Self {
             cert_path: cert_path.into(),
             key_path: key_path.into(),
-            client_ca_cert_path: None,
+            client_ca_path: None,
+            require_client_auth: false,
         }
     }
 
-    pub fn with_client_ca_cert(mut self, client_ca_cert_path: impl Into<PathBuf>) -> Self {
-        self.client_ca_cert_path = Some(client_ca_cert_path.into());
+    /// Configure the server for mutual TLS (mTLS) using `client_ca_path` as the trust root.
+    pub fn with_client_ca_cert(mut self, client_ca_path: impl Into<PathBuf>) -> Self {
+        self.client_ca_path = Some(client_ca_path.into());
+        self.require_client_auth = true;
         self
     }
 
@@ -35,20 +45,55 @@ impl TlsServerConfig {
         let key = load_private_key(&self.key_path)?;
 
         let builder = rustls::ServerConfig::builder();
-        let builder = if let Some(ca_cert_path) = &self.client_ca_cert_path {
-            let roots = load_root_store(ca_cert_path)?;
-            let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-                .build()
-                .map_err(|err| anyhow!("invalid TLS client verifier: {err}"))?;
-            builder.with_client_cert_verifier(verifier)
-        } else {
-            builder.with_no_client_auth()
+        let builder = match self.client_ca_path.as_ref() {
+            Some(client_ca_path) => {
+                let roots = load_root_store(client_ca_path)?;
+                let verifier_builder =
+                    rustls::server::WebPkiClientVerifier::builder(Arc::new(roots));
+                let verifier_builder = if self.require_client_auth {
+                    verifier_builder
+                } else {
+                    verifier_builder.allow_unauthenticated()
+                };
+                let verifier = verifier_builder
+                    .build()
+                    .map_err(|err| anyhow!("invalid TLS client verifier: {err}"))?;
+                builder.with_client_cert_verifier(verifier)
+            }
+            None => {
+                if self.require_client_auth {
+                    return Err(anyhow!(
+                        "require_client_auth is true but no client_ca_path was configured"
+                    ));
+                }
+                builder.with_no_client_auth()
+            }
         };
 
         let config = builder
             .with_single_cert(certs, key)
             .map_err(|err| anyhow!("invalid TLS config: {err}"))?;
         Ok(Arc::new(config))
+    }
+}
+
+impl std::fmt::Debug for TlsServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        fn redact(path: &Path) -> String {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| format!("…/{name}"))
+                .unwrap_or_else(|| "…/<non-utf8>".to_string())
+        }
+
+        let client_ca_path = self.client_ca_path.as_deref().map(redact);
+
+        f.debug_struct("TlsServerConfig")
+            .field("cert_path", &redact(&self.cert_path))
+            .field("key_path", &redact(&self.key_path))
+            .field("client_ca_path", &client_ca_path)
+            .field("require_client_auth", &self.require_client_auth)
+            .finish()
     }
 }
 
@@ -95,7 +140,9 @@ fn load_root_store(path: &Path) -> Result<rustls::RootCertStore> {
     let certs = load_certs(path)?;
     let mut roots = rustls::RootCertStore::empty();
     for cert in certs {
-        roots.add(cert).context("add root cert")?;
+        roots
+            .add(cert)
+            .with_context(|| format!("add root cert from {path:?}"))?;
     }
     Ok(roots)
 }

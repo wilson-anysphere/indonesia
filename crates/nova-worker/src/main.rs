@@ -291,7 +291,6 @@ impl Args {
             ));
         }
 
-        #[cfg(feature = "tls")]
         let tls = match (tls_ca_cert, tls_domain) {
             (Some(ca_cert), domain) => {
                 let (client_cert, client_key) = match (tls_client_cert, tls_client_key) {
@@ -584,7 +583,11 @@ impl ShardSymbolSearchIndex {
             }
 
             let scan_limit = FALLBACK_SCAN_LIMIT.min(self.index.symbols.len());
-            self.score_candidates((0..scan_limit).map(|id| id as u32), &mut matcher, &mut scored);
+            self.score_candidates(
+                (0..scan_limit).map(|id| id as u32),
+                &mut matcher,
+                &mut scored,
+            );
             return self.finish(scored, limit);
         }
 
@@ -624,20 +627,17 @@ impl ShardSymbolSearchIndex {
 
     fn finish(&self, mut scored: Vec<ScoredSymbolInternal>, limit: usize) -> Vec<ScoredSymbol> {
         scored.sort_by(|a, b| {
-            b.score
-                .rank_key()
-                .cmp(&a.score.rank_key())
-                .then_with(|| {
-                    let a_sym = &self.index.symbols[a.id as usize];
-                    let b_sym = &self.index.symbols[b.id as usize];
-                    a_sym
-                        .name
-                        .len()
-                        .cmp(&b_sym.name.len())
-                        .then_with(|| a_sym.name.cmp(&b_sym.name))
-                        .then_with(|| a_sym.path.cmp(&b_sym.path))
-                        .then_with(|| a.id.cmp(&b.id))
-                })
+            b.score.rank_key().cmp(&a.score.rank_key()).then_with(|| {
+                let a_sym = &self.index.symbols[a.id as usize];
+                let b_sym = &self.index.symbols[b.id as usize];
+                a_sym
+                    .name
+                    .len()
+                    .cmp(&b_sym.name.len())
+                    .then_with(|| a_sym.name.cmp(&b_sym.name))
+                    .then_with(|| a_sym.path.cmp(&b_sym.path))
+                    .then_with(|| a.id.cmp(&b.id))
+            })
         });
 
         scored

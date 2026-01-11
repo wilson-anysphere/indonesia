@@ -93,6 +93,15 @@ nova-worker \
   --auth-token-file ./shard-0.token
 ```
 
+TLS-related flags:
+
+- `--tls-ca-cert <path>`: PEM bundle of CA certificates used to verify the router's server
+  certificate (**required** for `tcp+tls:`).
+- `--tls-domain <domain>`: override the TLS server name used for certificate verification (defaults
+  to `localhost`).
+- `--tls-client-cert <path>`: PEM client certificate chain to present to the router (mTLS).
+- `--tls-client-key <path>`: PEM private key for `--tls-client-cert` (mTLS).
+
 mTLS is the recommended long-term authentication mechanism for production remote deployments (see
 ADR 0008).
 

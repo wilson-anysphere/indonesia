@@ -238,6 +238,20 @@ nova-worker \
   --auth-token <token>
 ```
 
+Example (mTLS; router must be configured with a client CA bundle):
+
+```bash
+nova-worker \
+  --connect tcp+tls:router.example.com:9000 \
+  --tls-ca-cert ./ca.pem \
+  --tls-domain router.example.com \
+  --tls-client-cert ./worker.pem \
+  --tls-client-key ./worker.key \
+  --shard-id 0 \
+  --cache-dir /tmp/nova-cache \
+  --auth-token <token>
+```
+
 For the intended “secure remote mode” requirements (TLS + authentication + shard-scoped
 authorization + DoS hardening), see
 [ADR 0008 — Distributed mode security](adr/0008-distributed-mode-security.md). The current

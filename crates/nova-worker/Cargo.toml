@@ -29,6 +29,7 @@ rustls-pemfile = { version = "2.2.0", optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 tokio.workspace = true
+rcgen = "0.13.2"
 
 nova-lsp = { path = "../nova-lsp" }
-nova-router = { path = "../nova-router" }
+nova-router = { path = "../nova-router", features = ["tls"] }

@@ -38,15 +38,19 @@ fn build_config(cfg: &TlsArgs) -> Result<rustls::ClientConfig> {
 
     let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
 
-    if let (Some(cert_path), Some(key_path)) = (&cfg.client_cert, &cfg.client_key) {
-        let certs = load_certs(cert_path)?;
-        let key = load_private_key(key_path)?;
-        return builder
-            .with_client_auth_cert(certs, key)
-            .map_err(|err| anyhow!("invalid TLS client config: {err}"));
+    match (&cfg.client_cert, &cfg.client_key) {
+        (None, None) => Ok(builder.with_no_client_auth()),
+        (Some(cert_path), Some(key_path)) => {
+            let certs = load_certs(cert_path)?;
+            let key = load_private_key(key_path)?;
+            builder
+                .with_client_auth_cert(certs, key)
+                .map_err(|err| anyhow!("invalid TLS client config: {err}"))
+        }
+        _ => Err(anyhow!(
+            "BUG: tls client cert/key should have been validated by argument parsing"
+        )),
     }
-
-    Ok(builder.with_no_client_auth())
 }
 
 fn load_certs(path: &Path) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {

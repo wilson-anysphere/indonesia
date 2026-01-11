@@ -26,7 +26,6 @@ mod ipc_security;
 
 #[cfg(feature = "tls")]
 pub mod tls;
-
 mod supervisor;
 
 use supervisor::RestartBackoff;
