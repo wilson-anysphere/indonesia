@@ -77,6 +77,9 @@ git diff --exit-code
 cargo test -p nova-syntax --test javac_corpus
 cargo test -p nova-types --test javac_differential -- --ignored
 
+# Note: the differential harness runs `javac` with `-XDrawDiagnostics` so tests can
+# assert stable diagnostic *keys* instead of brittle human-readable strings.
+
 # perf.yml (benchmark; see below for capture/compare)
 cargo bench -p nova-core --bench critical_paths
 ```
