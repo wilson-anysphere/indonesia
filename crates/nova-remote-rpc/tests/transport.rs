@@ -1,9 +1,10 @@
 use nova_remote_proto::v3::{
-    Capabilities, CompressionAlgo, ProtocolVersion, Request, Response, RpcError as ProtoRpcError,
-    RpcErrorCode, SupportedVersions, WorkerHello,
+    self, Capabilities, CompressionAlgo, ProtocolVersion, Request, Response, RpcError as ProtoRpcError,
+    RpcErrorCode, RpcPayload, SupportedVersions, WireFrame, WorkerHello,
 };
 use nova_remote_proto::{FileText, WorkerStats};
-use nova_remote_rpc::RpcConnection;
+use nova_remote_rpc::{RpcConnection, RpcTransportError, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn hello(auth_token: Option<String>) -> WorkerHello {
     WorkerHello {
@@ -279,4 +280,108 @@ async fn request_id_parity_router_even_worker_odd() {
 
     router.shutdown().await.unwrap();
     worker.shutdown().await.unwrap();
+}
+
+async fn write_wire_frame(stream: &mut (impl tokio::io::AsyncWrite + Unpin), frame: &WireFrame) {
+    let payload = v3::encode_wire_frame(frame).unwrap();
+    let len: u32 = payload.len().try_into().unwrap();
+    stream.write_u32_le(len).await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.flush().await.unwrap();
+}
+
+async fn read_wire_frame(
+    stream: &mut (impl tokio::io::AsyncRead + Unpin),
+    max_frame_len: u32,
+) -> WireFrame {
+    let len = stream.read_u32_le().await.unwrap();
+    assert!(len <= max_frame_len, "frame too large: {len} > {max_frame_len}");
+    let mut buf = vec![0u8; len as usize];
+    stream.read_exact(&mut buf).await.unwrap();
+    v3::decode_wire_frame(&buf).unwrap()
+}
+
+#[tokio::test]
+async fn inbound_parity_violation_closes_connection() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task = tokio::spawn(async move {
+        RpcConnection::handshake_as_router(router_io, None)
+            .await
+            .unwrap()
+            .0
+    });
+
+    // Manual worker handshake.
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(hello(None))).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    assert!(matches!(frame, WireFrame::Welcome(_)));
+
+    let router = router_task.await.unwrap();
+
+    // Worker-initiated requests must be odd; send an even id.
+    let payload = v3::encode_rpc_payload(&RpcPayload::Request(Request::GetWorkerStats)).unwrap();
+    write_wire_frame(
+        &mut worker_io,
+        &WireFrame::Packet {
+            id: 2,
+            compression: CompressionAlgo::None,
+            data: payload,
+        },
+    )
+    .await;
+
+    // Router should close the connection.
+    let err = tokio::time::timeout(std::time::Duration::from_millis(200), worker_io.read_u32_le())
+        .await
+        .expect("timed out waiting for router to close")
+        .expect_err("expected EOF after protocol violation");
+    assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+
+    let err = router
+        .notify(nova_remote_proto::v3::Notification::Unknown)
+        .await
+        .expect_err("expected router to be closed");
+    assert!(matches!(err, RpcTransportError::ProtocolViolation { .. }));
+}
+
+#[tokio::test]
+async fn reserved_request_id_zero_closes_connection() {
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task = tokio::spawn(async move {
+        RpcConnection::handshake_as_router(router_io, None)
+            .await
+            .unwrap()
+            .0
+    });
+
+    // Manual worker handshake.
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(hello(None))).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    assert!(matches!(frame, WireFrame::Welcome(_)));
+
+    let router = router_task.await.unwrap();
+
+    write_wire_frame(
+        &mut worker_io,
+        &WireFrame::Packet {
+            id: 0,
+            compression: CompressionAlgo::None,
+            data: Vec::new(),
+        },
+    )
+    .await;
+
+    let err = tokio::time::timeout(std::time::Duration::from_millis(200), worker_io.read_u32_le())
+        .await
+        .expect("timed out waiting for router to close")
+        .expect_err("expected EOF after protocol violation");
+    assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+
+    let err = router
+        .notify(nova_remote_proto::v3::Notification::Unknown)
+        .await
+        .expect_err("expected router to be closed");
+    assert!(matches!(err, RpcTransportError::ProtocolViolation { .. }));
 }
