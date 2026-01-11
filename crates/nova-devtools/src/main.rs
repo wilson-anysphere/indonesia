@@ -1,27 +1,133 @@
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use anyhow::{anyhow, Context as _};
 
-fn main() -> anyhow::Result<()> {
+use nova_devtools::output::{print_diagnostics, print_human, print_json, JsonReport};
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(code) => code,
+        Err(err) => {
+            eprintln!("{err:#}");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn run() -> anyhow::Result<ExitCode> {
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else {
         print_help();
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     };
 
     match cmd.as_str() {
         "check-deps" => {
-            let (config, manifest_path, metadata_path) = parse_check_deps_args(args)?;
-            nova_devtools::check_deps::run(
-                &config,
-                manifest_path.as_deref(),
-                metadata_path.as_deref(),
+            let opts = parse_common_layer_args(args, "check-deps")?;
+            let report = nova_devtools::check_deps::check(
+                &opts.config,
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
             )
-            .with_context(|| format!("check-deps failed using config {}", config.display()))
+            .with_context(|| format!("check-deps failed using config {}", opts.config.display()))?;
+
+            emit_report("check-deps", opts.json, report.ok, report.diagnostics)?;
+            Ok(if report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        "check-layers" => {
+            let opts = parse_common_layer_args(args, "check-layers")?;
+            let report = nova_devtools::check_layers::check(
+                &opts.config,
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+            )
+            .with_context(|| {
+                format!("check-layers failed using config {}", opts.config.display())
+            })?;
+
+            emit_report("check-layers", opts.json, report.ok, report.diagnostics)?;
+            Ok(if report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        "check-architecture-map" => {
+            let opts = parse_check_arch_map_args(args)?;
+            let report = nova_devtools::check_arch_map::check(
+                &opts.doc,
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+                opts.strict,
+            )
+            .with_context(|| {
+                format!("check-architecture-map failed using {}", opts.doc.display())
+            })?;
+
+            emit_report(
+                "check-architecture-map",
+                opts.json,
+                report.ok,
+                report.diagnostics,
+            )?;
+            Ok(if report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
+        }
+        "graph-deps" => {
+            let opts = parse_graph_deps_args(args)?;
+            let report = nova_devtools::graph::generate(
+                &opts.config,
+                opts.manifest_path.as_deref(),
+                opts.metadata_path.as_deref(),
+            )
+            .with_context(|| format!("graph-deps failed using config {}", opts.config.display()))?;
+
+            if opts.json {
+                let output_path = opts
+                    .output
+                    .unwrap_or_else(nova_devtools::graph::default_output_path);
+                nova_devtools::graph::write_dot(&output_path, &report.dot)?;
+                #[derive(serde::Serialize)]
+                struct GraphJson {
+                    #[serde(flatten)]
+                    base: JsonReport,
+                    output_path: String,
+                }
+
+                let json = GraphJson {
+                    base: JsonReport::new("graph-deps", report.ok, report.diagnostics),
+                    output_path: output_path.display().to_string(),
+                };
+                let json = serde_json::to_string_pretty(&json)
+                    .context("failed to serialize JSON output")?;
+                println!("{json}");
+            } else if let Some(path) = opts.output {
+                nova_devtools::graph::write_dot(&path, &report.dot)?;
+                print_human("graph-deps", report.ok, &report.diagnostics);
+                println!("graph-deps: wrote {}", path.display());
+            } else {
+                // No `--output`: emit DOT to stdout.
+                print_diagnostics(&report.diagnostics);
+                println!("{}", report.dot);
+            }
+
+            Ok(if report.ok {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            })
         }
         "-h" | "--help" => {
             print_help();
-            Ok(())
+            Ok(ExitCode::SUCCESS)
         }
         other => Err(anyhow!(
             "unknown command {other:?}\n\nRun `nova-devtools --help` for usage."
@@ -29,15 +135,36 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn parse_check_deps_args<I>(
-    mut args: I,
-) -> anyhow::Result<(PathBuf, Option<PathBuf>, Option<PathBuf>)>
+fn emit_report(
+    command: &str,
+    json: bool,
+    ok: bool,
+    diagnostics: Vec<nova_devtools::output::Diagnostic>,
+) -> anyhow::Result<()> {
+    if json {
+        print_json(&JsonReport::new(command, ok, diagnostics))
+    } else {
+        print_human(command, ok, &diagnostics);
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct CommonLayerArgs {
+    config: PathBuf,
+    manifest_path: Option<PathBuf>,
+    metadata_path: Option<PathBuf>,
+    json: bool,
+}
+
+fn parse_common_layer_args<I>(mut args: I, cmd: &str) -> anyhow::Result<CommonLayerArgs>
 where
     I: Iterator<Item = String>,
 {
     let mut config = PathBuf::from("crate-layers.toml");
     let mut manifest_path = None;
     let mut metadata_path = None;
+    let mut json = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -59,19 +186,154 @@ where
                     .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
                 metadata_path = Some(PathBuf::from(value));
             }
+            "--json" => json = true,
             "-h" | "--help" => {
-                print_help();
+                print_command_help(cmd);
                 std::process::exit(0);
             }
             other => {
                 return Err(anyhow!(
-                    "unknown argument {other:?}\n\nRun `nova-devtools check-deps --help` for usage."
+                    "unknown argument {other:?}\n\nRun `nova-devtools {cmd} --help` for usage."
                 ));
             }
         }
     }
 
-    Ok((config, manifest_path, metadata_path))
+    Ok(CommonLayerArgs {
+        config,
+        manifest_path,
+        metadata_path,
+        json,
+    })
+}
+
+#[derive(Debug)]
+struct ArchMapArgs {
+    doc: PathBuf,
+    manifest_path: Option<PathBuf>,
+    metadata_path: Option<PathBuf>,
+    strict: bool,
+    json: bool,
+}
+
+fn parse_check_arch_map_args<I>(mut args: I) -> anyhow::Result<ArchMapArgs>
+where
+    I: Iterator<Item = String>,
+{
+    let mut doc = PathBuf::from("docs/architecture-map.md");
+    let mut manifest_path = None;
+    let mut metadata_path = None;
+    let mut strict = false;
+    let mut json = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--doc" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--doc requires a value"))?;
+                doc = PathBuf::from(value);
+            }
+            "--manifest-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--manifest-path requires a value"))?;
+                manifest_path = Some(PathBuf::from(value));
+            }
+            "--metadata-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
+                metadata_path = Some(PathBuf::from(value));
+            }
+            "--strict" => strict = true,
+            "--json" => json = true,
+            "-h" | "--help" => {
+                print_command_help("check-architecture-map");
+                std::process::exit(0);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown argument {other:?}\n\nRun `nova-devtools check-architecture-map --help` for usage."
+                ));
+            }
+        }
+    }
+
+    Ok(ArchMapArgs {
+        doc,
+        manifest_path,
+        metadata_path,
+        strict,
+        json,
+    })
+}
+
+#[derive(Debug)]
+struct GraphArgs {
+    config: PathBuf,
+    manifest_path: Option<PathBuf>,
+    metadata_path: Option<PathBuf>,
+    output: Option<PathBuf>,
+    json: bool,
+}
+
+fn parse_graph_deps_args<I>(mut args: I) -> anyhow::Result<GraphArgs>
+where
+    I: Iterator<Item = String>,
+{
+    let mut config = PathBuf::from("crate-layers.toml");
+    let mut manifest_path = None;
+    let mut metadata_path = None;
+    let mut output = None;
+    let mut json = false;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--config" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--config requires a value"))?;
+                config = PathBuf::from(value);
+            }
+            "--manifest-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--manifest-path requires a value"))?;
+                manifest_path = Some(PathBuf::from(value));
+            }
+            "--metadata-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
+                metadata_path = Some(PathBuf::from(value));
+            }
+            "--output" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--output requires a value"))?;
+                output = Some(PathBuf::from(value));
+            }
+            "--json" => json = true,
+            "-h" | "--help" => {
+                print_command_help("graph-deps");
+                std::process::exit(0);
+            }
+            other => {
+                return Err(anyhow!(
+                    "unknown argument {other:?}\n\nRun `nova-devtools graph-deps --help` for usage."
+                ));
+            }
+        }
+    }
+
+    Ok(GraphArgs {
+        config,
+        manifest_path,
+        metadata_path,
+        output,
+        json,
+    })
 }
 
 fn print_help() {
@@ -80,16 +342,73 @@ fn print_help() {
 nova-devtools
 
 USAGE:
-  nova-devtools check-deps [--config <path>] [--manifest-path <path>] [--metadata-path <path>]
+  nova-devtools <command> [options]
 
 COMMANDS:
-  check-deps    Validate workspace crate dependencies against ADR 0007 layering rules
+  check-deps             Validate workspace crate dependency edges against ADR 0007 layering rules
+  check-layers           Validate crate-layers.toml integrity (workspace coverage, unknown crates, layer refs)
+  check-architecture-map Validate docs/architecture-map.md coverage for the workspace crates
+  graph-deps             Emit a GraphViz/DOT dependency graph annotated by layer (see --help)
+
+OPTIONS:
+  -h, --help  Print help
+
+Run `nova-devtools <command> --help` for command-specific options.
+"
+    );
+}
+
+fn print_command_help(cmd: &str) {
+    match cmd {
+        "check-deps" | "check-layers" => {
+            println!(
+                "\
+USAGE:
+  nova-devtools {cmd} [--config <path>] [--manifest-path <path>] [--metadata-path <path>] [--json]
 
 OPTIONS:
   --config <path>         Path to crate-layers.toml (default: crate-layers.toml)
   --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
   --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --json                  Emit machine-readable JSON output
   -h, --help              Print help
 "
-    );
+            );
+        }
+        "check-architecture-map" => {
+            println!(
+                "\
+USAGE:
+  nova-devtools check-architecture-map [--doc <path>] [--manifest-path <path>] [--metadata-path <path>] [--strict] [--json]
+
+OPTIONS:
+  --doc <path>            Path to docs/architecture-map.md (default: docs/architecture-map.md)
+  --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
+  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --strict                Require Purpose / Key entry points / Maturity / Known gaps bullets for each crate section
+  --json                  Emit machine-readable JSON output
+  -h, --help              Print help
+"
+            );
+        }
+        "graph-deps" => {
+            println!(
+                "\
+USAGE:
+  nova-devtools graph-deps [--config <path>] [--manifest-path <path>] [--metadata-path <path>] [--output <path>] [--json]
+
+By default, emits DOT to stdout. Use `--output` to write to a file.
+
+OPTIONS:
+  --config <path>         Path to crate-layers.toml (default: crate-layers.toml)
+  --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
+  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
+  --output <path>         Write DOT to a file instead of stdout
+  --json                  Write DOT to `--output` (or target/nova-deps.dot) and emit a JSON report
+  -h, --help              Print help
+"
+            );
+        }
+        _ => print_help(),
+    }
 }

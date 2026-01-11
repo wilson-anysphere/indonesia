@@ -22,8 +22,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: fmt
         run: cargo fmt --all -- --check
-      - name: crate boundary check (ADR 0007)
-        run: ./scripts/check-deps.sh
+      - name: repo invariants (nova-devtools)
+        run: |
+          cargo run -p nova-devtools -- check-deps
+          cargo run -p nova-devtools -- check-layers
+          cargo run -p nova-devtools -- check-architecture-map
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 

@@ -1,123 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use anyhow::{anyhow, Context as _};
-use serde::Deserialize;
+use anyhow::Context as _;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum DepKind {
-    Normal,
-    Dev,
-    Build,
-}
-
-impl DepKind {
-    fn from_metadata_kind(kind: Option<&str>) -> DepKind {
-        match kind {
-            None => DepKind::Normal,
-            Some("dev") => DepKind::Dev,
-            Some("build") => DepKind::Build,
-            Some(other) => {
-                // Cargo only emits "dev" and "build" today; treat unknown as normal so we still
-                // validate it via layering rules.
-                eprintln!("warning: unknown cargo dependency kind {other:?}; treating as normal");
-                DepKind::Normal
-            }
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            DepKind::Normal => "normal",
-            DepKind::Dev => "dev",
-            DepKind::Build => "build",
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct CargoMetadata {
-    packages: Vec<CargoPackage>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CargoPackage {
-    name: String,
-    manifest_path: PathBuf,
-    #[serde(default)]
-    dependencies: Vec<CargoDependency>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CargoDependency {
-    name: String,
-    kind: Option<String>,
-}
-
-#[derive(Debug)]
-struct WorkspaceGraph {
-    packages: BTreeMap<String, PathBuf>,
-    edges: Vec<Edge>,
-}
-
-#[derive(Debug, Clone)]
-struct Edge {
-    from: String,
-    to: String,
-    kind: DepKind,
-}
-
-#[derive(Debug, Deserialize)]
-struct LayerMapConfig {
-    #[serde(default)]
-    version: Option<u32>,
-
-    layers: BTreeMap<String, i32>,
-    crates: BTreeMap<String, String>,
-
-    #[serde(default)]
-    policy: PolicyConfig,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct PolicyConfig {
-    #[serde(default = "default_allow_same_layer")]
-    allow_same_layer: bool,
-
-    #[serde(default)]
-    dev: DevPolicyConfig,
-}
-
-fn default_allow_same_layer() -> bool {
-    true
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct DevPolicyConfig {
-    /// Whether dev-dependencies are allowed to point "up" the layer stack (lower → higher).
-    ///
-    /// This is convenient for integration-style tests living in lower-layer crates.
-    #[serde(default)]
-    allow_upward: bool,
-
-    /// Layer names that are forbidden targets for upward dev-dependencies, unless allowlisted.
-    ///
-    /// The default policy in this repo is to avoid dragging protocol/server crates into lower
-    /// layers even in tests.
-    #[serde(default)]
-    forbid_upward_to: Vec<String>,
-
-    #[serde(default)]
-    allowlist: Vec<AllowlistedDevEdge>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AllowlistedDevEdge {
-    from: String,
-    to: String,
-}
+use crate::layer_config::LayerMapConfig;
+use crate::output::Diagnostic;
+use crate::workspace::{DepKind, Edge, WorkspaceGraph};
 
 #[derive(Debug)]
 struct Violation {
@@ -127,6 +15,31 @@ struct Violation {
     from_manifest: PathBuf,
     reason: String,
     remediation: String,
+}
+
+impl Violation {
+    fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::error(
+            "crate-boundary",
+            format!(
+                "forbidden {} dependency edge {} ({}) -> {} ({})",
+                self.edge.kind.label(),
+                self.edge.from,
+                self.from_layer,
+                self.edge.to,
+                self.to_layer
+            ),
+        )
+        .with_file(self.from_manifest.display().to_string())
+        .with_suggestion(format!(
+            "reason: {}\nremediation: {}\nexample path: {} --{}--> {}",
+            self.reason,
+            self.remediation,
+            self.edge.from,
+            self.edge.kind.label(),
+            self.edge.to
+        ))
+    }
 }
 
 impl fmt::Display for Violation {
@@ -154,91 +67,40 @@ impl fmt::Display for Violation {
     }
 }
 
-pub fn run(
+#[derive(Debug)]
+pub struct CheckDepsReport {
+    pub diagnostics: Vec<Diagnostic>,
+    pub ok: bool,
+}
+
+pub fn check(
     config_path: &Path,
     manifest_path: Option<&Path>,
     metadata_path: Option<&Path>,
-) -> anyhow::Result<()> {
-    let config = load_config(config_path)?;
-    let graph = match metadata_path {
-        Some(path) => load_workspace_graph_from_file(path)?,
-        None => load_workspace_graph(manifest_path)?,
-    };
+) -> anyhow::Result<CheckDepsReport> {
+    let config = crate::layer_config::load_config(config_path)
+        .with_context(|| format!("failed to load {}", config_path.display()))?;
+    let graph = crate::workspace::load_workspace_graph(manifest_path, metadata_path)?;
 
-    ensure_workspace_is_mapped(config_path, &graph, &config)?;
+    let mut diagnostics = Vec::new();
+    ensure_workspace_is_mapped(config_path, &graph, &config, &mut diagnostics)?;
 
     let violations = validate(&graph, &config);
-    if !violations.is_empty() {
-        for violation in &violations {
-            eprintln!("{violation}");
-        }
-        eprintln!(
-            "crate boundary check failed: {} violation(s) detected",
-            violations.len()
-        );
-        return Err(anyhow!("crate boundary violations"));
+    for violation in &violations {
+        diagnostics.push(violation.to_diagnostic());
     }
 
-    println!("crate boundary check: ok");
-    Ok(())
-}
-
-fn load_config(path: &Path) -> anyhow::Result<LayerMapConfig> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read config file {}", path.display()))?;
-
-    let config: LayerMapConfig =
-        toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
-
-    if let Some(version) = config.version {
-        if version != 1 {
-            return Err(anyhow!(
-                "unsupported crate-layers.toml version {version}; expected 1"
-            ));
-        }
-    }
-
-    // Validate layer names referenced by crates.
-    for (krate, layer) in &config.crates {
-        if !config.layers.contains_key(layer) {
-            return Err(anyhow!(
-                "crate {krate} references unknown layer {layer} in {}",
-                path.display()
-            ));
-        }
-    }
-
-    for layer in &config.policy.dev.forbid_upward_to {
-        if !config.layers.contains_key(layer) {
-            return Err(anyhow!(
-                "policy.dev.forbid_upward_to references unknown layer {layer} in {}",
-                path.display()
-            ));
-        }
-    }
-
-    for allow in &config.policy.dev.allowlist {
-        if !config.crates.contains_key(&allow.from) {
-            return Err(anyhow!(
-                "policy.dev.allowlist refers to unknown crate {} (from)",
-                allow.from
-            ));
-        }
-        if !config.crates.contains_key(&allow.to) {
-            return Err(anyhow!(
-                "policy.dev.allowlist refers to unknown crate {} (to)",
-                allow.to
-            ));
-        }
-    }
-
-    Ok(config)
+    let ok = !diagnostics
+        .iter()
+        .any(|d| matches!(d.level, crate::output::DiagnosticLevel::Error));
+    Ok(CheckDepsReport { diagnostics, ok })
 }
 
 fn ensure_workspace_is_mapped(
     config_path: &Path,
     graph: &WorkspaceGraph,
     config: &LayerMapConfig,
+    diagnostics: &mut Vec<Diagnostic>,
 ) -> anyhow::Result<()> {
     let mut missing = Vec::new();
     for krate in graph.packages.keys() {
@@ -249,19 +111,33 @@ fn ensure_workspace_is_mapped(
 
     if !missing.is_empty() {
         missing.sort();
-        return Err(anyhow!(
-            "{} is missing layer assignments for: {}.\n\nRemediation: add the new crate(s) under the [crates] section, choosing the lowest layer that can own the responsibility.",
-            config_path.display(),
-            missing.join(", ")
-        ));
+        diagnostics.push(
+            Diagnostic::error(
+                "missing-layer-assignment",
+                format!(
+                    "{} is missing layer assignments for: {}",
+                    config_path.display(),
+                    missing.join(", ")
+                ),
+            )
+            .with_file(config_path.display().to_string())
+            .with_suggestion("Add the new crate(s) under the [crates] section, choosing the lowest layer that can own the responsibility.".to_string()),
+        );
+        return Ok(());
     }
 
     // Warn about config entries that don't exist in the current workspace.
     for krate in config.crates.keys() {
         if !graph.packages.contains_key(krate) {
-            eprintln!(
-                "warning: {} contains crate {krate}, but it is not a workspace member",
-                config_path.display()
+            diagnostics.push(
+                Diagnostic::warning(
+                    "unknown-crate",
+                    format!(
+                        "{} contains crate {krate}, but it is not a workspace member",
+                        config_path.display()
+                    ),
+                )
+                .with_file(config_path.display().to_string()),
             );
         }
     }
@@ -269,106 +145,25 @@ fn ensure_workspace_is_mapped(
     Ok(())
 }
 
-fn load_workspace_graph(manifest_path: Option<&Path>) -> anyhow::Result<WorkspaceGraph> {
-    let mut cmd = Command::new("cargo");
-    cmd.args(["metadata", "--format-version=1", "--no-deps", "--locked"]);
-    if let Some(path) = manifest_path {
-        cmd.arg("--manifest-path").arg(path);
-    }
-
-    // This tool is commonly executed via `cargo run -p nova-devtools -- check-deps`.
-    //
-    // `cargo run` holds an exclusive file lock on the default target directory for the duration of
-    // the run (including while the compiled binary executes). If we were to spawn a nested
-    // `cargo metadata` using the same target dir, it would block forever waiting on that lock.
-    //
-    // Use a dedicated target dir for the metadata subprocess to avoid deadlocking ourselves.
-    cmd.env(
-        "CARGO_TARGET_DIR",
-        metadata_target_dir(manifest_path)?.as_os_str(),
-    );
-
-    let output = cmd.output().context("failed to run `cargo metadata`")?;
-    if !output.status.success() {
-        return Err(anyhow!(
-            "`cargo metadata` failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let metadata: CargoMetadata =
-        serde_json::from_slice(&output.stdout).context("failed to parse cargo metadata JSON")?;
-
-    Ok(workspace_graph_from_metadata(metadata))
-}
-
-fn load_workspace_graph_from_file(path: &Path) -> anyhow::Result<WorkspaceGraph> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("failed to read cargo metadata JSON from {}", path.display()))?;
-    let metadata: CargoMetadata =
-        serde_json::from_slice(&bytes).context("failed to parse cargo metadata JSON")?;
-    Ok(workspace_graph_from_metadata(metadata))
-}
-
-fn workspace_graph_from_metadata(metadata: CargoMetadata) -> WorkspaceGraph {
-    let workspace_crates: BTreeSet<String> =
-        metadata.packages.iter().map(|p| p.name.clone()).collect();
-
-    let mut packages = BTreeMap::new();
-    for pkg in &metadata.packages {
-        packages.insert(pkg.name.clone(), pkg.manifest_path.clone());
-    }
-
-    let mut edges = Vec::new();
-    for pkg in &metadata.packages {
-        for dep in &pkg.dependencies {
-            if !workspace_crates.contains(&dep.name) {
-                continue;
-            }
-
-            edges.push(Edge {
-                from: pkg.name.clone(),
-                to: dep.name.clone(),
-                kind: DepKind::from_metadata_kind(dep.kind.as_deref()),
-            });
-        }
-    }
-
-    WorkspaceGraph { packages, edges }
-}
-
-fn metadata_target_dir(manifest_path: Option<&Path>) -> anyhow::Result<PathBuf> {
-    let workspace_root = match manifest_path {
-        Some(path) => path
-            .parent()
-            .ok_or_else(|| {
-                anyhow!(
-                    "--manifest-path has no parent directory: {}",
-                    path.display()
-                )
-            })?
-            .to_path_buf(),
-        None => std::env::current_dir().context("failed to determine current directory")?,
-    };
-
-    Ok(workspace_root.join("target").join("nova-devtools-metadata"))
-}
-
 fn validate(graph: &WorkspaceGraph, config: &LayerMapConfig) -> Vec<Violation> {
     let mut violations = Vec::new();
 
     for edge in &graph.edges {
-        let from_layer = config.crates.get(&edge.from).expect("checked above");
-        let to_layer = config.crates.get(&edge.to).expect("checked above");
+        let Some(from_layer) = config.crates.get(&edge.from) else {
+            continue;
+        };
+        let Some(to_layer) = config.crates.get(&edge.to) else {
+            continue;
+        };
 
         let from_rank = *config
             .layers
             .get(from_layer)
-            .expect("validated in load_config");
+            .expect("validated in config parser");
         let to_rank = *config
             .layers
             .get(to_layer)
-            .expect("validated in load_config");
+            .expect("validated in config parser");
 
         let allowed = match edge.kind {
             DepKind::Normal | DepKind::Build => {
@@ -487,9 +282,7 @@ fn explain_violation(
             } else {
                 let reason =
                     "dev-dependencies are not allowed to point upward by policy".to_string();
-                let remediation =
-                    "If you need integration-style tests, enable policy.dev.allow_upward or move the test to a higher-layer crate."
-                        .to_string();
+                let remediation = "If you need integration-style tests, enable policy.dev.allow_upward or move the test to a higher-layer crate.".to_string();
                 (reason, remediation)
             }
         }
@@ -498,7 +291,10 @@ fn explain_violation(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+    use crate::layer_config::{AllowlistedDevEdge, DevPolicyConfig, PolicyConfig};
 
     fn test_config() -> LayerMapConfig {
         LayerMapConfig {
@@ -581,42 +377,106 @@ mod tests {
     }
 
     #[test]
-    fn metadata_target_dir_is_scoped_under_workspace_root() {
-        let path = Path::new("/workspace/Cargo.toml");
-        assert_eq!(
-            metadata_target_dir(Some(path)).unwrap(),
-            PathBuf::from("/workspace/target/nova-devtools-metadata")
-        );
+    fn ensure_workspace_is_mapped_emits_actionable_diagnostic() {
+        let config = test_config();
+        let graph = WorkspaceGraph {
+            packages: BTreeMap::from([
+                (
+                    "nova-core".to_string(),
+                    PathBuf::from("crates/nova-core/Cargo.toml"),
+                ),
+                (
+                    "nova-semantic".to_string(),
+                    PathBuf::from("crates/nova-semantic/Cargo.toml"),
+                ),
+                (
+                    "nova-lsp".to_string(),
+                    PathBuf::from("crates/nova-lsp/Cargo.toml"),
+                ),
+                (
+                    "nova-new".to_string(),
+                    PathBuf::from("crates/nova-new/Cargo.toml"),
+                ),
+            ]),
+            edges: Vec::new(),
+        };
+
+        let mut diagnostics = Vec::new();
+        ensure_workspace_is_mapped(
+            Path::new("crate-layers.toml"),
+            &graph,
+            &config,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "missing-layer-assignment");
+        assert!(diagnostics[0].message.contains("nova-new"));
     }
 
     #[test]
-    fn workspace_graph_from_metadata_tracks_workspace_edges_only() {
-        let metadata = CargoMetadata {
-            packages: vec![
-                CargoPackage {
-                    name: "a".to_string(),
-                    manifest_path: PathBuf::from("a/Cargo.toml"),
-                    dependencies: vec![CargoDependency {
-                        name: "b".to_string(),
-                        kind: None,
-                    }],
-                },
-                CargoPackage {
-                    name: "b".to_string(),
-                    manifest_path: PathBuf::from("b/Cargo.toml"),
-                    dependencies: vec![CargoDependency {
-                        name: "serde".to_string(),
-                        kind: None,
-                    }],
-                },
-            ],
+    fn ensure_workspace_warnings_do_not_fail_validation() {
+        let mut config = test_config();
+        config
+            .crates
+            .insert("nova-stale".to_string(), "core".to_string());
+
+        let graph = WorkspaceGraph {
+            packages: BTreeMap::from([
+                (
+                    "nova-core".to_string(),
+                    PathBuf::from("crates/nova-core/Cargo.toml"),
+                ),
+                (
+                    "nova-semantic".to_string(),
+                    PathBuf::from("crates/nova-semantic/Cargo.toml"),
+                ),
+                (
+                    "nova-lsp".to_string(),
+                    PathBuf::from("crates/nova-lsp/Cargo.toml"),
+                ),
+            ]),
+            edges: Vec::new(),
         };
 
-        let graph = workspace_graph_from_metadata(metadata);
-        assert_eq!(graph.packages.len(), 2);
-        assert_eq!(graph.edges.len(), 1);
-        assert_eq!(graph.edges[0].from, "a");
-        assert_eq!(graph.edges[0].to, "b");
-        assert_eq!(graph.edges[0].kind, DepKind::Normal);
+        let mut diagnostics = Vec::new();
+        ensure_workspace_is_mapped(
+            Path::new("crate-layers.toml"),
+            &graph,
+            &config,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "unknown-crate");
+    }
+
+    #[test]
+    fn validate_skips_edges_when_crates_are_unmapped() {
+        let config = test_config();
+        let graph = WorkspaceGraph {
+            packages: BTreeMap::new(),
+            edges: vec![Edge {
+                from: "nova-unmapped".to_string(),
+                to: "nova-core".to_string(),
+                kind: DepKind::Normal,
+            }],
+        };
+
+        let violations = validate(&graph, &config);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn suggest_violation_message_is_stable() {
+        let config = test_config();
+        let graph = graph_with_edge(DepKind::Normal, "nova-core", "nova-semantic");
+
+        let violations = validate(&graph, &config);
+        let diag = violations[0].to_diagnostic();
+        assert_eq!(diag.code, "crate-boundary");
+        assert!(diag.message.contains("nova-core"));
+        assert!(diag.message.contains("nova-semantic"));
+        assert!(diag.suggestion.unwrap().contains("remediation:"));
     }
 }

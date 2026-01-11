@@ -172,15 +172,18 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
   - Cache format is stable, but consumers still mix different indexing/persistence strategies.
 
 ### `nova-devtools`
-- **Purpose:** developer tooling for Nova’s Rust workspace (currently: enforcing ADR 0007 crate layering / dependency boundaries).
+- **Purpose:** developer tooling for Nova’s Rust workspace (repo hygiene + architecture invariants: ADR 0007 layering, docs ↔ code checks, dependency graphing).
 - **Key entry points:**
-  - `crates/nova-devtools/src/check_deps.rs` (`check_deps::run`) — validates `cargo metadata` edges against `crate-layers.toml`.
-  - `crates/nova-devtools/src/main.rs` (`nova-devtools check-deps`) — CLI wrapper used by CI.
+  - `crates/nova-devtools/src/check_deps.rs` (`check_deps::check`) — validates `cargo metadata` edges against `crate-layers.toml`.
+  - `crates/nova-devtools/src/check_layers.rs` (`check_layers::check`) — validates `crate-layers.toml` coverage/consistency against workspace members.
+  - `crates/nova-devtools/src/check_arch_map.rs` (`check_arch_map::check`) — validates `docs/architecture-map.md` coverage + quick-link path freshness.
+  - `crates/nova-devtools/src/graph.rs` (`graph::generate`) — emits a DOT/GraphViz dependency graph annotated by layer.
+  - `crates/nova-devtools/src/main.rs` — CLI wrapper used by CI (`cargo run -p nova-devtools -- <command>`).
   - `crate-layers.toml` — policy + layer mapping configuration.
   - `scripts/check-deps.sh` — convenience wrapper (`cargo run -p nova-devtools -- check-deps`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
-  - Only the `check-deps` command exists today; additional “repo hygiene” tooling still lives in ad-hoc scripts / `xtask`.
+  - Some “repo hygiene” checks still live outside `nova-devtools` (e.g. `scripts/check-docs-consistency.py`); over time we should consolidate invariants here.
 
 ### `nova-ext`
 - **Purpose:** extension/plugin abstractions (code actions, diagnostics, completions) + registry.
