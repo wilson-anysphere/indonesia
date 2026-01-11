@@ -486,6 +486,7 @@ struct ShardState {
 
 #[derive(Clone)]
 struct WorkerHandle {
+    shard_id: ShardId,
     worker_id: WorkerId,
     tx: mpsc::UnboundedSender<WorkerRequest>,
 }
@@ -503,7 +504,13 @@ impl WorkerHandle {
                 message,
                 reply: Some(tx),
             })
-            .map_err(|_| anyhow!("worker {} disconnected", self.worker_id))?;
+            .map_err(|_| {
+                anyhow!(
+                    "worker {} (shard {}) disconnected",
+                    self.worker_id,
+                    self.shard_id
+                )
+            })?;
         rx.await.context("worker response channel closed")?
     }
 
@@ -513,7 +520,13 @@ impl WorkerHandle {
                 message,
                 reply: None,
             })
-            .map_err(|_| anyhow!("worker {} disconnected", self.worker_id))?;
+            .map_err(|_| {
+                anyhow!(
+                    "worker {} (shard {}) disconnected",
+                    self.worker_id,
+                    self.shard_id
+                )
+            })?;
         Ok(())
     }
 }
@@ -616,8 +629,9 @@ impl DistributedRouter {
             match resp {
                 RpcMessage::ShardIndexInfo(info) => {
                     if info.shard_id != shard_id {
+                        self.disconnect_worker(&worker).await;
                         return Err(anyhow!(
-                            "worker returned index info for wrong shard {}",
+                            "worker returned index info for wrong shard {} (expected {shard_id})",
                             info.shard_id
                         ));
                     }
@@ -652,8 +666,9 @@ impl DistributedRouter {
         match resp {
             RpcMessage::ShardIndexInfo(info) => {
                 if info.shard_id != shard_id {
+                    self.disconnect_worker(&worker).await;
                     return Err(anyhow!(
-                        "worker returned index info for wrong shard {}",
+                        "worker returned index info for wrong shard {} (expected {shard_id})",
                         info.shard_id
                     ));
                 }
@@ -672,6 +687,14 @@ impl DistributedRouter {
             let resp = worker.request(RpcMessage::GetWorkerStats).await?;
             match resp {
                 RpcMessage::WorkerStats(ws) => {
+                    if ws.shard_id != worker.shard_id {
+                        self.disconnect_worker(&worker).await;
+                        return Err(anyhow!(
+                            "worker {} returned stats for wrong shard {} (expected {shard_id})",
+                            worker.worker_id,
+                            ws.shard_id
+                        ));
+                    }
                     stats.insert(shard_id, ws);
                 }
                 other => return Err(anyhow!("unexpected worker response: {other:?}")),
@@ -790,6 +813,28 @@ impl DistributedRouter {
 
         Ok(())
     }
+
+    async fn disconnect_worker(&self, worker: &WorkerHandle) {
+        // Treat shard mismatches as a protocol violation and sever the connection so it cannot
+        // keep returning poisoned cross-shard responses.
+        let _ = worker.notify(RpcMessage::Shutdown);
+
+        let mut guard = self.state.shards.lock().await;
+        if let Some(shard) = guard.get_mut(&worker.shard_id) {
+            if shard
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.worker_id == worker.worker_id)
+            {
+                shard.worker = None;
+            }
+            if shard.pending_worker == Some(worker.worker_id) {
+                shard.pending_worker = None;
+            }
+        }
+        drop(guard);
+        self.state.notify.notify_waiters();
+    }
 }
 
 fn scored_symbol_cmp(a: &ScoredSymbol, b: &ScoredSymbol) -> std::cmp::Ordering {
@@ -808,6 +853,12 @@ async fn wait_for_worker(state: Arc<RouterState>, shard_id: ShardId) -> Result<W
                 let guard = state.shards.lock().await;
                 guard.get(&shard_id).and_then(|s| s.worker.clone())
             } {
+                if worker.shard_id != shard_id {
+                    return Err(anyhow!(
+                        "internal error: shard {shard_id} mapped to worker for shard {}",
+                        worker.shard_id
+                    ));
+                }
                 return Ok(worker);
             }
             state.notify.notified().await;
@@ -1134,6 +1185,21 @@ async fn handle_new_connection(
         }
     }
 
+    {
+        let guard = state.shards.lock().await;
+        if !guard.contains_key(&shard_id) {
+            write_message(
+                &mut stream,
+                &RpcMessage::Error {
+                    message: format!("unknown shard {shard_id}"),
+                },
+            )
+            .await
+            .ok();
+            return Err(anyhow!("worker connected for unknown shard {shard_id}"));
+        }
+    }
+
     let worker_id: WorkerId = state.next_worker_id.fetch_add(1, Ordering::SeqCst);
 
     // Reserve the shard for this handshake before sending RouterHello. This prevents a race where
@@ -1220,25 +1286,29 @@ async fn handle_new_connection(
     }
 
     let (tx, rx) = mpsc::unbounded_channel::<WorkerRequest>();
-    let handle = WorkerHandle { worker_id, tx };
+    let handle = WorkerHandle {
+        shard_id,
+        worker_id,
+        tx,
+    };
 
-    // Finalize the reservation now that RouterHello is on the wire.
-    {
-        let mut guard = state.shards.lock().await;
-        let Some(shard) = guard.get_mut(&shard_id) else {
-            return Err(anyhow!(
-                "BUG: shard {shard_id} disappeared during handshake"
-            ));
-        };
+        // Finalize the reservation now that RouterHello is on the wire.
+        {
+            let mut guard = state.shards.lock().await;
+            let Some(shard) = guard.get_mut(&shard_id) else {
+                return Err(anyhow!(
+                    "BUG: shard {shard_id} disappeared during handshake"
+                ));
+            };
 
-        if shard.pending_worker != Some(worker_id) {
-            return Err(anyhow!(
-                "BUG: shard {shard_id} pending worker mismatch during handshake"
-            ));
+            if shard.pending_worker != Some(worker_id) {
+                return Err(anyhow!(
+                    "BUG: shard {shard_id} pending worker mismatch during handshake"
+                ));
+            }
+            shard.pending_worker = None;
+            shard.worker = Some(handle.clone());
         }
-        shard.pending_worker = None;
-        shard.worker = Some(handle.clone());
-    }
 
     info!(shard_id, worker_id, has_cached_index, "worker connected");
 
