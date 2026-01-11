@@ -260,6 +260,9 @@ openssl x509 -in worker.pem -noout -fingerprint -sha256 \
   | tr '[:upper:]' '[:lower:]'
 ```
 
+The router normalizes allowlist entries by stripping whitespace and `:` separators (and it will
+accept the raw `SHA256 Fingerprint=…` OpenSSL output as well).
+
 #### Worker flags
 
 Workers connecting via `tcp+tls:` can optionally present a client certificate:

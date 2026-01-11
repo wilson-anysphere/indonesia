@@ -166,6 +166,99 @@ pub struct TlsClientCertFingerprintAllowlist {
     pub shards: HashMap<ShardId, Vec<String>>,
 }
 
+#[cfg(feature = "tls")]
+fn normalize_tls_client_cert_fingerprint(value: &str) -> Result<String> {
+    const OPENSSL_PREFIX: &str = "SHA256 Fingerprint=";
+
+    let mut s = value.trim();
+    if let Some(prefix) = s.get(..OPENSSL_PREFIX.len()) {
+        if prefix.eq_ignore_ascii_case(OPENSSL_PREFIX) {
+            s = &s[OPENSSL_PREFIX.len()..];
+        }
+    }
+
+    let mut out = String::with_capacity(64);
+    for ch in s.chars() {
+        if ch == ':' || ch.is_ascii_whitespace() {
+            continue;
+        }
+        if !ch.is_ascii_hexdigit() {
+            return Err(anyhow!(
+                "invalid TLS client certificate fingerprint {value:?}: expected 64 hex characters"
+            ));
+        }
+        out.push(ch.to_ascii_lowercase());
+    }
+
+    if out.len() != 64 {
+        return Err(anyhow!(
+            "invalid TLS client certificate fingerprint {value:?}: expected 64 hex characters, got {}",
+            out.len()
+        ));
+    }
+
+    Ok(out)
+}
+
+#[cfg(feature = "tls")]
+impl TlsClientCertFingerprintAllowlist {
+    fn normalize_in_place(&mut self) -> Result<()> {
+        for fp in &mut self.global {
+            let original = fp.clone();
+            *fp = normalize_tls_client_cert_fingerprint(&original).with_context(|| {
+                format!("normalize global TLS client certificate fingerprint {original:?}")
+            })?;
+        }
+
+        for (shard_id, fingerprints) in &mut self.shards {
+            for fp in fingerprints {
+                let original = fp.clone();
+                *fp = normalize_tls_client_cert_fingerprint(&original).with_context(|| {
+                    format!("normalize TLS client certificate fingerprint for shard {shard_id}: {original:?}")
+                })?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "tls"))]
+mod tls_allowlist_tests {
+    use super::*;
+
+    #[test]
+    fn tls_client_cert_fingerprint_normalization_accepts_openssl_format() {
+        let expected = "ab".repeat(32);
+        let mut openssl = String::from("SHA256 Fingerprint=");
+        for i in 0..32 {
+            if i > 0 {
+                openssl.push(':');
+            }
+            // Uppercase to ensure case-insensitive parsing/canonicalization.
+            openssl.push_str("AB");
+        }
+
+        let mut allowlist = TlsClientCertFingerprintAllowlist {
+            global: vec![openssl],
+            shards: HashMap::new(),
+        };
+
+        allowlist.normalize_in_place().unwrap();
+        assert_eq!(allowlist.global, vec![expected]);
+    }
+
+    #[test]
+    fn tls_client_cert_fingerprint_normalization_rejects_invalid_values() {
+        let mut allowlist = TlsClientCertFingerprintAllowlist {
+            global: vec!["not-a-fingerprint".to_string()],
+            shards: HashMap::new(),
+        };
+
+        assert!(allowlist.normalize_in_place().is_err());
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum WorkerIdentity {
     /// No authenticated identity is available (Unix socket, plain TCP, or TLS without client auth).
@@ -571,6 +664,10 @@ impl DistributedRouter {
         }
 
         config.validate()?;
+        #[cfg(feature = "tls")]
+        config
+            .tls_client_cert_fingerprint_allowlist
+            .normalize_in_place()?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         info!(
