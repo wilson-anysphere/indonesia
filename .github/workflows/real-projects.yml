@@ -61,6 +61,7 @@ jobs:
 
       - name: Save test projects cache
         if: always() && steps.test-projects-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
         uses: actions/cache/save@v4
         with:
           path: test-projects
