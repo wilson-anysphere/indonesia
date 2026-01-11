@@ -71,16 +71,31 @@ fn atomic_write(dest: &Path, header: &[u8], payload: &[u8]) -> Result<(), Storag
     }
     drop(file);
 
-    match fs::rename(&tmp_path, dest) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::AlreadyExists || dest.exists() => {
-            // On Windows, rename doesn't overwrite. Try remove + rename.
-            let _ = fs::remove_file(dest);
-            fs::rename(&tmp_path, dest).map_err(|err| {
-                let _ = fs::remove_file(&tmp_path);
-                StorageError::from(err)
-            })
+    const MAX_RENAME_ATTEMPTS: usize = 1024;
+    let rename_result = (|| -> io::Result<()> {
+        let mut attempts = 0usize;
+        loop {
+            match fs::rename(&tmp_path, dest) {
+                Ok(()) => return Ok(()),
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists || dest.exists() => {
+                    // On Windows, `rename` doesn't overwrite. Under concurrent writers,
+                    // multiple `remove + rename` sequences can race; retry until we win.
+                    let _ = fs::remove_file(dest);
+
+                    attempts += 1;
+                    if attempts >= MAX_RENAME_ATTEMPTS {
+                        return Err(err);
+                    }
+
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
         }
+    })();
+
+    match rename_result {
+        Ok(()) => Ok(()),
         Err(err) => {
             let _ = fs::remove_file(&tmp_path);
             Err(StorageError::from(err))

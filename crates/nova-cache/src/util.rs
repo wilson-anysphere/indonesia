@@ -79,19 +79,37 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
     }
     drop(file);
 
-    match fs::rename(&tmp_path, path) {
-        Ok(()) => Ok(()),
-        Err(_err) if path.exists() => {
-            // On Windows, rename doesn't overwrite. Try remove + rename.
-            if let Err(err) = fs::remove_file(path) {
-                let _ = fs::remove_file(&tmp_path);
-                return Err(CacheError::from(err));
+    const MAX_RENAME_ATTEMPTS: usize = 1024;
+    let rename_result = (|| -> io::Result<()> {
+        let mut attempts = 0usize;
+        loop {
+            match fs::rename(&tmp_path, path) {
+                Ok(()) => return Ok(()),
+                Err(err)
+                    if err.kind() == io::ErrorKind::AlreadyExists || path.exists() =>
+                {
+                    // On Windows, `rename` doesn't overwrite. Under concurrent writers,
+                    // multiple `remove + rename` sequences can race; retry until we win.
+                    match fs::remove_file(path) {
+                        Ok(()) => {}
+                        Err(remove_err) if remove_err.kind() == io::ErrorKind::NotFound => {}
+                        Err(remove_err) => return Err(remove_err),
+                    }
+
+                    attempts += 1;
+                    if attempts >= MAX_RENAME_ATTEMPTS {
+                        return Err(err);
+                    }
+
+                    continue;
+                }
+                Err(err) => return Err(err),
             }
-            fs::rename(&tmp_path, path).map_err(|err| {
-                let _ = fs::remove_file(&tmp_path);
-                CacheError::from(err)
-            })
         }
+    })();
+
+    match rename_result {
+        Ok(()) => Ok(()),
         Err(err) => {
             let _ = fs::remove_file(&tmp_path);
             Err(CacheError::from(err))
