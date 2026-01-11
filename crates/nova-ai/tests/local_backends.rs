@@ -489,9 +489,11 @@ async fn cancellation_while_waiting_for_client_semaphore() {
     let gate = Arc::new(Notify::new());
     let (started_tx, mut started_rx) = mpsc::channel::<()>(1);
 
+    let request_count_for_handler = request_count.clone();
+    let gate_for_handler = gate.clone();
     let handler = move |req: Request<Body>| {
-        let request_count = request_count.clone();
-        let gate = gate.clone();
+        let request_count = request_count_for_handler.clone();
+        let gate = gate_for_handler.clone();
         let started_tx = started_tx.clone();
 
         async move {

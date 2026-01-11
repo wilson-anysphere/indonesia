@@ -880,8 +880,7 @@ mod tests {
         let privacy_cfg = AiPrivacyConfig {
             local_only: false,
             anonymize: Some(true),
-            excluded_paths: Vec::new(),
-            redact_patterns: Vec::new(),
+            ..AiPrivacyConfig::default()
         };
         let privacy = PrivacyFilter::new(&privacy_cfg).expect("privacy filter");
 
