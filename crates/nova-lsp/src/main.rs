@@ -2558,28 +2558,6 @@ fn handle_execute_command(
             let edit = nova_lsp::extract_method::execute(&source, args).map_err(|e| (-32603, e))?;
             serde_json::to_value(edit).map_err(|e| (-32603, e.to_string()))
         }
-        nova_lsp::SAFE_DELETE_COMMAND => {
-            let args: nova_lsp::SafeDeleteParams = parse_first_arg(params.arguments)?;
-
-            // Best-effort: build an in-memory index from open documents.
-            let files: BTreeMap<String, String> = state
-                .documents
-                .iter()
-                .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
-                .collect();
-            let index = Index::new(files);
-
-            match nova_lsp::handle_safe_delete(&index, args) {
-                Ok(result) => serde_json::to_value(result).map_err(|e| (-32603, e.to_string())),
-                Err(err) => {
-                    let (code, message) = match err {
-                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                    };
-                    Err((code, message))
-                }
-            }
-        }
         COMMAND_EXPLAIN_ERROR => {
             let args: ExplainErrorArgs = parse_first_arg(params.arguments)?;
             run_ai_explain_error(args, params.work_done_token, state, writer)
