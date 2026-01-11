@@ -262,13 +262,13 @@ fn handle_custom_request_inner_cancelable(
             cancel,
             extensions::java::handle_resolve_main_class,
         ),
-        JAVA_GENERATED_SOURCES_METHOD => hardening::run_with_watchdog_cancelable(
+        JAVA_GENERATED_SOURCES_METHOD => hardening::run_with_watchdog_cancelable_with_token(
             method,
             params,
             cancel,
             extensions::apt::handle_generated_sources,
         ),
-        RUN_ANNOTATION_PROCESSING_METHOD => hardening::run_with_watchdog_cancelable(
+        RUN_ANNOTATION_PROCESSING_METHOD => hardening::run_with_watchdog_cancelable_with_token(
             method,
             params,
             cancel,
@@ -623,27 +623,29 @@ fn looks_like_project_root(root: &Path) -> bool {
     // is safe to recursively scan the filesystem. Returning `false` falls back to single-file
     // refactoring behavior (focus file + overlays), which is preferable to accidentally scanning
     // something like `/` or a user's home directory.
-    [
+    const MARKERS: &[&str] = &[
         // VCS
         ".git",
         ".hg",
         // Maven / Gradle
         "pom.xml",
         "mvnw",
+        "mvnw.cmd",
         "build.gradle",
         "build.gradle.kts",
         "settings.gradle",
         "settings.gradle.kts",
         "gradlew",
+        "gradlew.bat",
         // Bazel
         "WORKSPACE",
         "WORKSPACE.bazel",
         "MODULE.bazel",
         // Nova workspace config
         ".nova",
-    ]
-    .iter()
-    .any(|marker| root.join(marker).exists())
+    ];
+
+    MARKERS.iter().any(|marker| root.join(marker).exists())
         // Some users open ad-hoc folders without build files, but still with a conventional Java
         // source layout. Allow those roots to be treated as safe for scanning without accepting a
         // broad `src/` marker that may match too many non-project directories.

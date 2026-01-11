@@ -404,12 +404,12 @@ fn parse_receiver_expression(text: &str, ident_start: usize) -> Receiver {
         return Receiver::This;
     }
 
-    // Check if receiver is `new <Type>()` by looking further left for `new`.
-    // This is simplistic but good enough for tests.
-    let prefix = &text[..start];
-    let trimmed = prefix.trim_end();
-    if trimmed.ends_with("new") {
-        return Receiver::New(token.to_string());
+    let prefix = text[..start].trim_end();
+    let prefix_bytes = prefix.as_bytes();
+    if prefix_bytes.ends_with(b"new") {
+        if prefix_bytes.len() == 3 || !is_ident_continue(prefix_bytes[prefix_bytes.len() - 4]) {
+            return Receiver::New(token.to_string());
+        }
     }
 
     // Heuristic: capitalized identifier => type name, otherwise variable.

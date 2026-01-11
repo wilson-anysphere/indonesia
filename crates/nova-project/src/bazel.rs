@@ -102,6 +102,7 @@ pub(crate) fn load_bazel_workspace_model(
     crate::generated::append_generated_source_roots(
         &mut source_roots,
         root,
+        root,
         BuildSystem::Bazel,
         &options.nova_config,
     );
@@ -208,6 +209,7 @@ fn load_bazel_project_heuristic(
 
     crate::generated::append_generated_source_roots(
         &mut source_roots,
+        root,
         root,
         BuildSystem::Bazel,
         &options.nova_config,
@@ -371,6 +373,7 @@ fn project_config_from_workspace_model(
     }
     crate::generated::append_generated_source_roots(
         &mut source_roots,
+        root,
         root,
         BuildSystem::Bazel,
         &options.nova_config,
@@ -542,6 +545,7 @@ fn workspace_module_config_from_module_config(
     let mut source_roots = module.source_roots.clone();
     crate::generated::append_generated_source_roots(
         &mut source_roots,
+        workspace_root,
         &root,
         BuildSystem::Bazel,
         &options.nova_config,

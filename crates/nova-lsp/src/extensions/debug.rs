@@ -133,10 +133,10 @@ impl ProjectHotSwapBuild {
                     };
                 }
 
-                match self.compiled_class_for_source(file) {
-                    Ok(class) => CompileOutput {
+                match self.compiled_classes_for_source(file) {
+                    Ok(classes) => CompileOutput {
                         file: file.clone(),
-                        result: Ok(vec![class]),
+                        result: Ok(classes),
                     },
                     Err(msg) => CompileOutput {
                         file: file.clone(),
@@ -183,6 +183,59 @@ impl ProjectHotSwapBuild {
             class_name: class.qualified_name,
             bytecode,
         })
+    }
+
+    fn compiled_classes_for_source(
+        &self,
+        source_file: &Path,
+    ) -> std::result::Result<Vec<CompiledClass>, String> {
+        let primary = self.compiled_class_for_source(source_file)?;
+
+        let output_dir = self
+            .output_dir_for_source(source_file)
+            .ok_or_else(|| "unable to determine output directory for source file".to_string())?;
+
+        let (package, base_stem) = match primary.class_name.rsplit_once('.') {
+            Some((pkg, base)) => (Some(pkg), base),
+            None => (None, primary.class_name.as_str()),
+        };
+
+        let class_dir = match package {
+            Some(pkg) => output_dir.join(pkg.replace('.', "/")),
+            None => output_dir.clone(),
+        };
+
+        // Best-effort: include nested/inner classes (e.g. `Foo$Inner.class`) so edits inside a
+        // file apply correctly during hot swap.
+        let mut classes = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&class_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("class") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if stem == base_stem
+                    || (stem.starts_with(&base_stem)
+                        && stem.as_bytes().get(base_stem.len()) == Some(&b'$'))
+                {
+                    let suffix = &stem[base_stem.len()..];
+                    let class_name = format!("{}{}", primary.class_name, suffix);
+                    if let Ok(bytecode) = std::fs::read(&path) {
+                        classes.push(CompiledClass { class_name, bytecode });
+                    }
+                }
+            }
+        }
+
+        if classes.is_empty() {
+            classes.push(primary);
+        }
+
+        classes.sort_by(|a, b| a.class_name.cmp(&b.class_name));
+        Ok(classes)
     }
 
     fn source_root_for_file(&self, file: &Path) -> Option<&nova_project::SourceRoot> {

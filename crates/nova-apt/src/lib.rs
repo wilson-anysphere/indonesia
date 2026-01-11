@@ -1,17 +1,21 @@
 use nova_build::{
-    BuildError, BuildManager, BuildResult, CommandRunner, GradleBuildTask, MavenBuildGoal,
+    collect_gradle_build_files, collect_maven_build_files, BuildError, BuildFileFingerprint,
+    BuildManager, BuildResult, CommandRunner, GradleBuildTask, MavenBuildGoal,
 };
 use nova_config::NovaConfig;
 use nova_core::fs as core_fs;
 use nova_project::{
-    BuildSystem, Module, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
+    load_project_with_options, BuildSystem, LoadOptions, Module, ProjectConfig, SourceRoot,
+    SourceRootKind, SourceRootOrigin,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio_util::sync::CancellationToken;
 
 /// Discover generated Java source roots produced by common annotation processor setups.
 ///
@@ -20,21 +24,77 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// [`ProjectConfig`] is available, prefer using its generated [`SourceRoot`]s
 /// (origin = `Generated`).
 pub fn discover_generated_source_roots(project_root: &Path) -> Vec<PathBuf> {
-    let candidates = [
-        // Maven
-        "target/generated-sources/annotations",
-        "target/generated-test-sources/test-annotations",
-        // Gradle
-        "build/generated/sources/annotationProcessor/java/main",
-        "build/generated/sources/annotationProcessor/java/test",
-        "build/generated/sources/annotationProcessor/java/integrationTest",
-    ];
+    let Ok(status) = discover_generated_sources_status(project_root) else {
+        return Vec::new();
+    };
 
-    candidates
+    let mut roots: Vec<PathBuf> = status
+        .modules
         .into_iter()
-        .map(|rel| project_root.join(rel))
+        .flat_map(|module| module.roots.into_iter().map(|root| root.root.path))
         .filter(|path| path.is_dir())
-        .collect()
+        .collect();
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Best-effort generated sources discovery + freshness calculation for a workspace root.
+///
+/// This is a convenience wrapper used by framework analyzers that operate on
+/// a workspace folder without a full IDE project model.
+///
+/// The result respects `nova_config.generated_sources` (enabled/additional/override) and
+/// reports stale/missing outputs based on simple mtime comparisons between source roots
+/// and generated roots.
+pub fn discover_generated_sources_status(project_root: &Path) -> io::Result<GeneratedSourcesStatus> {
+    let workspace_root = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let (config, config_path) = nova_config::load_for_workspace(&workspace_root)
+        .unwrap_or_else(|_| (NovaConfig::default(), None));
+
+    let mut options = LoadOptions::default();
+    options.nova_config = config.clone();
+    options.nova_config_path = config_path;
+
+    let project = match load_project_with_options(&workspace_root, &options) {
+        Ok(project) => project,
+        Err(_) => {
+            // If project discovery fails, fall back to a minimal "simple" project
+            // rooted at `workspace_root` so we can still surface conventional generated paths.
+            //
+            // Freshness will be best-effort (missing directories show up as Missing).
+            ProjectConfig {
+                workspace_root: workspace_root.clone(),
+                build_system: BuildSystem::Simple,
+                java: nova_project::JavaConfig::default(),
+                modules: vec![Module {
+                    name: workspace_root
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("root")
+                        .to_string(),
+                    root: workspace_root.clone(),
+                    annotation_processing: Default::default(),
+                }],
+                jpms_modules: Vec::new(),
+                jpms_workspace: None,
+                source_roots: vec![SourceRoot {
+                    kind: SourceRootKind::Main,
+                    origin: SourceRootOrigin::Source,
+                    path: workspace_root.join("src"),
+                }],
+                module_path: Vec::new(),
+                classpath: Vec::new(),
+                output_dirs: Vec::new(),
+                dependencies: Vec::new(),
+                workspace_model: None,
+            }
+        }
+    };
+
+    AptManager::new(project, config).status()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -141,12 +201,37 @@ pub struct AptManager {
     config: NovaConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AptRunTarget {
     Workspace,
     MavenModule(PathBuf),
     GradleProject(String),
     BazelTarget(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AptRunStatus {
+    /// No modules required (re-)processing; outputs appear fresh.
+    UpToDate,
+    /// Annotation processing was executed (one or more build tool invocations ran).
+    Ran,
+    /// The operation was cancelled (best-effort).
+    Cancelled,
+    /// The operation failed (build tool error, IO error, etc).
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct AptRunResult {
+    pub status: AptRunStatus,
+    /// Diagnostics emitted by the build tool (javac output parsing).
+    pub diagnostics: Vec<nova_core::Diagnostic>,
+    /// Freshness status + generated roots after the run.
+    pub generated_sources: GeneratedSourcesStatus,
+    /// Whether the result was served from Nova's APT run cache.
+    pub cache_hit: bool,
+    /// Best-effort error message when `status == Failed`.
+    pub error: Option<String>,
 }
 
 pub trait AptBuildExecutor {
@@ -220,7 +305,7 @@ struct MtimeCacheFile {
     entries: Vec<MtimeCacheEntry>,
 }
 
-static MTIME_CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static CACHE_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Persistent cache for `max_java_mtime` computations.
 ///
@@ -334,6 +419,448 @@ impl AptMtimeCache {
     }
 }
 
+const APT_RUN_CACHE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CachedDiagnosticSeverity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+}
+
+impl From<nova_core::DiagnosticSeverity> for CachedDiagnosticSeverity {
+    fn from(value: nova_core::DiagnosticSeverity) -> Self {
+        match value {
+            nova_core::DiagnosticSeverity::Error => Self::Error,
+            nova_core::DiagnosticSeverity::Warning => Self::Warning,
+            nova_core::DiagnosticSeverity::Information => Self::Information,
+            nova_core::DiagnosticSeverity::Hint => Self::Hint,
+        }
+    }
+}
+
+impl From<CachedDiagnosticSeverity> for nova_core::DiagnosticSeverity {
+    fn from(value: CachedDiagnosticSeverity) -> Self {
+        match value {
+            CachedDiagnosticSeverity::Error => nova_core::DiagnosticSeverity::Error,
+            CachedDiagnosticSeverity::Warning => nova_core::DiagnosticSeverity::Warning,
+            CachedDiagnosticSeverity::Information => nova_core::DiagnosticSeverity::Information,
+            CachedDiagnosticSeverity::Hint => nova_core::DiagnosticSeverity::Hint,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct CachedPosition {
+    line: u32,
+    character: u32,
+}
+
+impl From<nova_core::Position> for CachedPosition {
+    fn from(value: nova_core::Position) -> Self {
+        Self {
+            line: value.line,
+            character: value.character,
+        }
+    }
+}
+
+impl From<CachedPosition> for nova_core::Position {
+    fn from(value: CachedPosition) -> Self {
+        nova_core::Position::new(value.line, value.character)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct CachedRange {
+    start: CachedPosition,
+    end: CachedPosition,
+}
+
+impl From<nova_core::Range> for CachedRange {
+    fn from(value: nova_core::Range) -> Self {
+        Self {
+            start: value.start.into(),
+            end: value.end.into(),
+        }
+    }
+}
+
+impl From<CachedRange> for nova_core::Range {
+    fn from(value: CachedRange) -> Self {
+        nova_core::Range::new(value.start.into(), value.end.into())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CachedDiagnostic {
+    file: PathBuf,
+    range: CachedRange,
+    severity: CachedDiagnosticSeverity,
+    message: String,
+    source: Option<String>,
+}
+
+impl From<nova_core::Diagnostic> for CachedDiagnostic {
+    fn from(value: nova_core::Diagnostic) -> Self {
+        Self {
+            file: value.file,
+            range: value.range.into(),
+            severity: value.severity.into(),
+            message: value.message,
+            source: value.source,
+        }
+    }
+}
+
+impl From<CachedDiagnostic> for nova_core::Diagnostic {
+    fn from(value: CachedDiagnostic) -> Self {
+        nova_core::Diagnostic {
+            file: value.file,
+            range: value.range.into(),
+            severity: value.severity.into(),
+            message: value.message,
+            source: value.source,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CachedSourceRootKind {
+    Main,
+    Test,
+}
+
+impl From<SourceRootKind> for CachedSourceRootKind {
+    fn from(value: SourceRootKind) -> Self {
+        match value {
+            SourceRootKind::Main => Self::Main,
+            SourceRootKind::Test => Self::Test,
+        }
+    }
+}
+
+impl From<CachedSourceRootKind> for SourceRootKind {
+    fn from(value: CachedSourceRootKind) -> Self {
+        match value {
+            CachedSourceRootKind::Main => SourceRootKind::Main,
+            CachedSourceRootKind::Test => SourceRootKind::Test,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CachedFreshness {
+    Missing,
+    Stale,
+    Fresh,
+}
+
+impl From<GeneratedSourcesFreshness> for CachedFreshness {
+    fn from(value: GeneratedSourcesFreshness) -> Self {
+        match value {
+            GeneratedSourcesFreshness::Missing => Self::Missing,
+            GeneratedSourcesFreshness::Stale => Self::Stale,
+            GeneratedSourcesFreshness::Fresh => Self::Fresh,
+        }
+    }
+}
+
+impl From<CachedFreshness> for GeneratedSourcesFreshness {
+    fn from(value: CachedFreshness) -> Self {
+        match value {
+            CachedFreshness::Missing => GeneratedSourcesFreshness::Missing,
+            CachedFreshness::Stale => GeneratedSourcesFreshness::Stale,
+            CachedFreshness::Fresh => GeneratedSourcesFreshness::Fresh,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CachedGeneratedRoot {
+    kind: CachedSourceRootKind,
+    path: PathBuf,
+    freshness: CachedFreshness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CachedGeneratedModule {
+    module_name: String,
+    module_root: PathBuf,
+    roots: Vec<CachedGeneratedRoot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CachedGeneratedSourcesStatus {
+    enabled: bool,
+    modules: Vec<CachedGeneratedModule>,
+}
+
+impl From<GeneratedSourcesStatus> for CachedGeneratedSourcesStatus {
+    fn from(value: GeneratedSourcesStatus) -> Self {
+        Self {
+            enabled: value.enabled,
+            modules: value
+                .modules
+                .into_iter()
+                .map(|module| CachedGeneratedModule {
+                    module_name: module.module_name,
+                    module_root: module.module_root,
+                    roots: module
+                        .roots
+                        .into_iter()
+                        .map(|root| CachedGeneratedRoot {
+                            kind: root.root.kind.into(),
+                            path: root.root.path,
+                            freshness: root.freshness.into(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl From<CachedGeneratedSourcesStatus> for GeneratedSourcesStatus {
+    fn from(value: CachedGeneratedSourcesStatus) -> Self {
+        Self {
+            enabled: value.enabled,
+            modules: value
+                .modules
+                .into_iter()
+                .map(|module| ModuleGeneratedSourcesStatus {
+                    module_name: module.module_name,
+                    module_root: module.module_root.clone(),
+                    roots: module
+                        .roots
+                        .into_iter()
+                        .map(|root| GeneratedSourceRootStatus {
+                            root: SourceRoot {
+                                kind: root.kind.into(),
+                                origin: SourceRootOrigin::Generated,
+                                path: root.path,
+                            },
+                            freshness: root.freshness.into(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedAptRunResult {
+    status: AptRunStatus,
+    diagnostics: Vec<CachedDiagnostic>,
+    generated_sources: CachedGeneratedSourcesStatus,
+    error: Option<String>,
+}
+
+impl From<AptRunResult> for CachedAptRunResult {
+    fn from(value: AptRunResult) -> Self {
+        Self {
+            status: value.status,
+            diagnostics: value
+                .diagnostics
+                .into_iter()
+                .map(CachedDiagnostic::from)
+                .collect(),
+            generated_sources: value.generated_sources.into(),
+            error: value.error,
+        }
+    }
+}
+
+impl From<CachedAptRunResult> for AptRunResult {
+    fn from(value: CachedAptRunResult) -> Self {
+        Self {
+            status: value.status,
+            diagnostics: value
+                .diagnostics
+                .into_iter()
+                .map(nova_core::Diagnostic::from)
+                .collect(),
+            generated_sources: value.generated_sources.into(),
+            cache_hit: true,
+            error: value.error,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AptRunCacheEntry {
+    key: String,
+    updated_at_nanos: u64,
+    result: CachedAptRunResult,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct AptRunCacheFile {
+    schema_version: u32,
+    entries: Vec<AptRunCacheEntry>,
+}
+
+/// Persistent cache for APT runs.
+///
+/// This cache is keyed by a stable fingerprint of the build inputs (build files,
+/// Nova generated-sources config, and source mtimes). It is best-effort: failures
+/// to load or save the cache should not block annotation processing.
+#[derive(Debug)]
+struct AptRunCache {
+    cache_path: PathBuf,
+    entries: Vec<AptRunCacheEntry>,
+    dirty: bool,
+}
+
+impl AptRunCache {
+    fn load(workspace_root: &Path) -> io::Result<Self> {
+        let cache_path = workspace_root
+            .join(".nova")
+            .join("apt-cache")
+            .join("runs.json");
+        let file = match std::fs::read_to_string(&cache_path) {
+            Ok(text) => serde_json::from_str::<AptRunCacheFile>(&text)
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => AptRunCacheFile {
+                schema_version: APT_RUN_CACHE_SCHEMA_VERSION,
+                entries: Vec::new(),
+            },
+            Err(err) => return Err(err),
+        };
+
+        let entries = if file.schema_version == APT_RUN_CACHE_SCHEMA_VERSION {
+            file.entries
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self {
+            cache_path,
+            entries,
+            dirty: false,
+        })
+    }
+
+    fn get(&mut self, key: &str) -> Option<CachedAptRunResult> {
+        let now = SystemTime::now();
+        let now_nanos = time_to_epoch_nanos(Some(now)).unwrap_or(0);
+        let mut found = None;
+
+        for entry in &mut self.entries {
+            if entry.key == key {
+                entry.updated_at_nanos = now_nanos;
+                found = Some(entry.result.clone());
+                self.dirty = true;
+                break;
+            }
+        }
+
+        found
+    }
+
+    fn insert(&mut self, key: String, result: CachedAptRunResult) {
+        let now = SystemTime::now();
+        let now_nanos = time_to_epoch_nanos(Some(now)).unwrap_or(0);
+
+        if let Some(existing) = self.entries.iter_mut().find(|e| e.key == key) {
+            existing.updated_at_nanos = now_nanos;
+            existing.result = result;
+        } else {
+            self.entries.push(AptRunCacheEntry {
+                key,
+                updated_at_nanos: now_nanos,
+                result,
+            });
+        }
+        self.dirty = true;
+        self.prune();
+    }
+
+    fn prune(&mut self) {
+        const MAX_ENTRIES: usize = 32;
+        if self.entries.len() <= MAX_ENTRIES {
+            return;
+        }
+        self.entries.sort_by(|a, b| b.updated_at_nanos.cmp(&a.updated_at_nanos));
+        self.entries.truncate(MAX_ENTRIES);
+        // Keep output stable for deterministic diffs.
+        self.entries.sort_by(|a, b| a.key.cmp(&b.key));
+    }
+
+    fn save(&mut self) -> io::Result<()> {
+        if !self.dirty {
+            return Ok(());
+        }
+        let Some(parent) = self.cache_path.parent() else {
+            return Ok(());
+        };
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        std::fs::create_dir_all(parent)?;
+
+        let file = AptRunCacheFile {
+            schema_version: APT_RUN_CACHE_SCHEMA_VERSION,
+            entries: self.entries.clone(),
+        };
+        let json = serde_json::to_string_pretty(&file)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+
+        let (tmp_path, mut file) = open_unique_tmp_file(&self.cache_path, parent)?;
+        let write_result = (|| -> io::Result<()> {
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(err) = write_result {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+        drop(file);
+
+        if let Err(err) = rename_overwrite(&tmp_path, &self.cache_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+
+        #[cfg(unix)]
+        {
+            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+        }
+
+        self.dirty = false;
+        Ok(())
+    }
+}
+
+const GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeneratedRootsSnapshotRoot {
+    kind: CachedSourceRootKind,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeneratedRootsSnapshotModule {
+    module_root: PathBuf,
+    roots: Vec<GeneratedRootsSnapshotRoot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GeneratedRootsSnapshotFile {
+    schema_version: u32,
+    modules: Vec<GeneratedRootsSnapshotModule>,
+}
+
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, std::fs::File)> {
     let file_name = dest
         .file_name()
@@ -341,7 +868,7 @@ fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, std:
     let pid = std::process::id();
 
     loop {
-        let counter = MTIME_CACHE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let counter = CACHE_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let mut tmp_name = file_name.to_os_string();
         tmp_name.push(format!(".tmp.{pid}.{counter}"));
         let tmp_path = parent.join(tmp_name);
@@ -591,7 +1118,440 @@ impl AptManager {
         build: &BuildManager,
     ) -> io::Result<GeneratedSourcesStatus> {
         let _ = self.apply_build_annotation_processing(build);
+        let _ = self.write_generated_roots_snapshot();
         self.status()
+    }
+
+    fn write_generated_roots_snapshot(&self) -> io::Result<()> {
+        let snapshot_path = self
+            .project
+            .workspace_root
+            .join(".nova")
+            .join("apt-cache")
+            .join("generated-roots.json");
+        let Some(parent) = snapshot_path.parent() else {
+            return Ok(());
+        };
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        std::fs::create_dir_all(parent)?;
+
+        let mut modules = Vec::new();
+        for module in &self.project.modules {
+            let mut roots: Vec<GeneratedRootsSnapshotRoot> = self
+                .generated_roots_for_module(module)
+                .into_iter()
+                .map(|root| GeneratedRootsSnapshotRoot {
+                    kind: root.kind.into(),
+                    path: root.path,
+                })
+                .collect();
+            roots.sort_by(|a, b| a.kind.cmp(&b.kind).then(a.path.cmp(&b.path)));
+
+            modules.push(GeneratedRootsSnapshotModule {
+                module_root: module.root.clone(),
+                roots,
+            });
+        }
+        modules.sort_by(|a, b| a.module_root.cmp(&b.module_root));
+
+        let file = GeneratedRootsSnapshotFile {
+            schema_version: GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION,
+            modules,
+        };
+        let json = serde_json::to_string_pretty(&file)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+
+        let (tmp_path, mut file) = open_unique_tmp_file(&snapshot_path, parent)?;
+        let write_result = (|| -> io::Result<()> {
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+            Ok(())
+        })();
+        if let Err(err) = write_result {
+            drop(file);
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+        drop(file);
+
+        if let Err(err) = rename_overwrite(&tmp_path, &snapshot_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+
+        #[cfg(unix)]
+        {
+            let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+        }
+
+        Ok(())
+    }
+
+    fn run_cache_key(
+        &self,
+        target: &AptRunTarget,
+        modules: &[&Module],
+        freshness: &mut FreshnessCalculator<'_>,
+    ) -> String {
+        let mut hasher = Sha256::new();
+
+        hasher.update(b"nova-apt-run-cache");
+        hasher.update([0]);
+        hasher.update(APT_RUN_CACHE_SCHEMA_VERSION.to_le_bytes());
+        hasher.update([0]);
+        hasher.update(nova_core::NOVA_VERSION.as_bytes());
+        hasher.update([0]);
+
+        let build_system = match self.project.build_system {
+            BuildSystem::Maven => "maven",
+            BuildSystem::Gradle => "gradle",
+            BuildSystem::Bazel => "bazel",
+            BuildSystem::Simple => "simple",
+        };
+        hasher.update(build_system.as_bytes());
+        hasher.update([0]);
+
+        if let Ok(target_json) = serde_json::to_vec(target) {
+            hasher.update(&target_json);
+        } else {
+            hasher.update(b"<target-serde-error>");
+        }
+        hasher.update([0]);
+
+        if let Ok(config_json) = serde_json::to_vec(&self.config.generated_sources) {
+            hasher.update(&config_json);
+        } else {
+            hasher.update(b"<config-serde-error>");
+        }
+        hasher.update([0]);
+
+        let build_files_fingerprint = match self.project.build_system {
+            BuildSystem::Maven => collect_maven_build_files(&self.project.workspace_root)
+                .and_then(|files| BuildFileFingerprint::from_files(&self.project.workspace_root, files))
+                .map(|fp| fp.digest)
+                .unwrap_or_else(|_| "<maven-fingerprint-error>".to_string()),
+            BuildSystem::Gradle => collect_gradle_build_files(&self.project.workspace_root)
+                .and_then(|files| BuildFileFingerprint::from_files(&self.project.workspace_root, files))
+                .map(|fp| fp.digest)
+                .unwrap_or_else(|_| "<gradle-fingerprint-error>".to_string()),
+            _ => "<no-build-fingerprint>".to_string(),
+        };
+        hasher.update(build_files_fingerprint.as_bytes());
+        hasher.update([0]);
+
+        let mut module_roots: Vec<_> = modules.iter().map(|m| m.root.clone()).collect();
+        module_roots.sort();
+        module_roots.dedup();
+
+        for module_root in module_roots {
+            let rel = module_root
+                .strip_prefix(&self.project.workspace_root)
+                .ok()
+                .filter(|p| !p.as_os_str().is_empty());
+            match rel {
+                Some(rel) => hasher.update(rel.to_string_lossy().as_bytes()),
+                None => hasher.update(module_root.to_string_lossy().as_bytes()),
+            }
+            hasher.update([0]);
+
+            for kind in [SourceRootKind::Main, SourceRootKind::Test] {
+                let marker: u8;
+                let mtime_nanos: u64;
+                match freshness.max_input_mtime(&module_root, kind) {
+                    Ok(Some(time)) => {
+                        marker = 0;
+                        mtime_nanos = time_to_epoch_nanos(Some(time)).unwrap_or(0);
+                    }
+                    Ok(None) => {
+                        marker = 1;
+                        mtime_nanos = 0;
+                    }
+                    Err(_) => {
+                        marker = 2;
+                        mtime_nanos = 0;
+                    }
+                }
+                hasher.update([marker]);
+                hasher.update(mtime_nanos.to_le_bytes());
+            }
+        }
+
+        hex::encode(hasher.finalize())
+    }
+
+    /// Run annotation processing for the given target and return a structured result.
+    ///
+    /// Unlike [`AptManager::run_annotation_processing_for_target`], this method:
+    /// - returns a structured outcome instead of erroring on build failures
+    /// - uses a persistent mtime cache to avoid rescanning unchanged source roots
+    /// - stores successful results in a persistent run cache keyed by a fingerprint of inputs
+    /// - is cancellation-aware (best-effort) via [`CancellationToken`]
+    pub fn run(
+        &mut self,
+        build: &BuildManager,
+        target: AptRunTarget,
+        cancel: Option<CancellationToken>,
+        progress: &mut dyn ProgressReporter,
+    ) -> io::Result<AptRunResult> {
+        progress.event(AptProgressEvent::begin("Running annotation processing"));
+
+        if cancel.as_ref().is_some_and(|token| token.is_cancelled()) {
+            progress.event(AptProgressEvent::end());
+            return Ok(AptRunResult {
+                status: AptRunStatus::Cancelled,
+                diagnostics: Vec::new(),
+                generated_sources: self.status()?,
+                cache_hit: false,
+                error: None,
+            });
+        }
+
+        // If generated sources are globally disabled, short-circuit without invoking build tools.
+        if !self.config.generated_sources.enabled {
+            progress.event(AptProgressEvent::report(
+                "Generated sources are disabled via nova config",
+            ));
+            progress.event(AptProgressEvent::end());
+            return Ok(AptRunResult {
+                status: AptRunStatus::UpToDate,
+                diagnostics: Vec::new(),
+                generated_sources: self.status()?,
+                cache_hit: false,
+                error: None,
+            });
+        }
+
+        // Best-effort build metadata extraction: improves generated root discovery and
+        // allows us to persist build-tool-specific generated directories for nova-project.
+        let _ = self.apply_build_annotation_processing(build);
+        let _ = self.write_generated_roots_snapshot();
+
+        // Bazel: require explicit target, but keep the request stable and non-fatal.
+        if self.project.build_system == BuildSystem::Bazel {
+            let mut diagnostics = Vec::new();
+            let mut error = None;
+            let status = match target {
+                AptRunTarget::BazelTarget(target) => {
+                    progress.event(AptProgressEvent::report(format!(
+                        "Building Bazel target {target}"
+                    )));
+                    match build.build_bazel(&self.project.workspace_root, &target) {
+                        Ok(result) => {
+                            diagnostics.extend(result.diagnostics);
+                            AptRunStatus::Ran
+                        }
+                        Err(err) => {
+                            error = Some(err.to_string());
+                            AptRunStatus::Failed
+                        }
+                    }
+                }
+                AptRunTarget::Workspace => {
+                    progress.event(AptProgressEvent::report(
+                        "Bazel annotation processing requires an explicit target",
+                    ));
+                    AptRunStatus::UpToDate
+                }
+                _ => {
+                    progress.event(AptProgressEvent::report(
+                        "non-bazel target provided for Bazel project",
+                    ));
+                    AptRunStatus::Failed
+                }
+            };
+
+            progress.event(AptProgressEvent::end());
+            return Ok(AptRunResult {
+                status,
+                diagnostics,
+                generated_sources: self.status()?,
+                cache_hit: false,
+                error,
+            });
+        }
+
+        let mut run_cache = AptRunCache::load(&self.project.workspace_root).ok();
+        let mut mtime_cache = AptMtimeCache::load(&self.project.workspace_root).ok();
+
+        let modules = match self.resolve_modules(&target) {
+            Ok(modules) => modules,
+            Err(err) => {
+                progress.event(AptProgressEvent::report(err.clone()));
+                progress.event(AptProgressEvent::end());
+                return Ok(AptRunResult {
+                    status: AptRunStatus::Failed,
+                    diagnostics: Vec::new(),
+                    generated_sources: self.status()?,
+                    cache_hit: false,
+                    error: Some(err),
+                });
+            }
+        };
+
+        let (planned, cache_key) = {
+            let mut mtimes: Box<dyn MtimeProvider> = match mtime_cache.as_mut() {
+                Some(cache) => Box::new(CachedMtimeProvider { cache }),
+                None => Box::new(FsMtimeProvider),
+            };
+            let mut freshness = FreshnessCalculator::new(&self.project, mtimes.as_mut());
+
+            let mut planned = Vec::new();
+            for module in &modules {
+                if cancel.as_ref().is_some_and(|token| token.is_cancelled()) {
+                    progress.event(AptProgressEvent::end());
+                    return Ok(AptRunResult {
+                        status: AptRunStatus::Cancelled,
+                        diagnostics: Vec::new(),
+                        generated_sources: self.status()?,
+                        cache_hit: false,
+                        error: None,
+                    });
+                }
+
+                if let Some(plan) = self.plan_module_annotation_processing(module, &mut freshness)? {
+                    planned.push(plan);
+                }
+            }
+
+            let cache_key = self.run_cache_key(&target, &modules, &mut freshness);
+            (planned, cache_key)
+        };
+
+        if planned.is_empty() {
+            if let Some(cache) = run_cache.as_mut() {
+                if let Some(hit) = cache.get(&cache_key) {
+                    let result: AptRunResult = hit.into();
+                    progress.event(AptProgressEvent::report("Generated sources are up to date"));
+                    progress.event(AptProgressEvent::end());
+                    let _ = cache.save();
+                    if let Some(cache) = mtime_cache.as_mut() {
+                        let _ = cache.save();
+                    }
+                    return Ok(result);
+                }
+            }
+
+            progress.event(AptProgressEvent::report("Generated sources are up to date"));
+            let generated_sources = if let Some(cache) = mtime_cache.as_mut() {
+                self.status_cached(cache)?
+            } else {
+                self.status()?
+            };
+            progress.event(AptProgressEvent::end());
+
+            let result = AptRunResult {
+                status: AptRunStatus::UpToDate,
+                diagnostics: Vec::new(),
+                generated_sources,
+                cache_hit: false,
+                error: None,
+            };
+            if let Some(cache) = run_cache.as_mut() {
+                cache.insert(cache_key, result.clone().into());
+                let _ = cache.save();
+            }
+            if let Some(cache) = mtime_cache.as_mut() {
+                let _ = cache.save();
+            }
+            return Ok(result);
+        }
+
+        let mut diagnostics = Vec::new();
+        let mut error = None;
+        let mut cancelled = false;
+
+        for plan in &planned {
+            if cancel.as_ref().is_some_and(|token| token.is_cancelled()) {
+                cancelled = true;
+                break;
+            }
+
+            let event =
+                AptProgressEvent::report(plan.description()).for_module(&plan.module, plan.kind);
+            progress.event(event);
+
+            let result = match (&self.project.build_system, &plan.action) {
+                (BuildSystem::Maven, ModuleBuildAction::Maven { module, goal }) => build
+                    .build_maven_goal(&self.project.workspace_root, module.as_deref(), *goal)
+                    .map_err(|err| err),
+                (BuildSystem::Gradle, ModuleBuildAction::Gradle { project_path, task }) => build
+                    .build_gradle_task(&self.project.workspace_root, project_path.as_deref(), *task)
+                    .map_err(|err| err),
+                _ => Ok(BuildResult {
+                    diagnostics: Vec::new(),
+                }),
+            };
+
+            match result {
+                Ok(result) => {
+                    diagnostics.extend(result.diagnostics);
+                }
+                Err(err) => {
+                    // Treat IO interruption as cancellation (best-effort).
+                    if matches!(&err, BuildError::Io(io_err) if io_err.kind() == io::ErrorKind::Interrupted)
+                    {
+                        cancelled = true;
+                        break;
+                    }
+                    error = Some(err.to_string());
+                    break;
+                }
+            }
+        }
+
+        // Generated roots may have been modified; invalidate cached mtimes under those roots so
+        // the post-run status is accurate.
+        if let Some(cache) = mtime_cache.as_mut() {
+            for module in &modules {
+                for root in self.generated_roots_for_module(module) {
+                    cache.invalidate_path(&root.path);
+                }
+            }
+        }
+
+        let generated_sources = if let Some(cache) = mtime_cache.as_mut() {
+            self.status_cached(cache)?
+        } else {
+            self.status()?
+        };
+
+        let status = if cancelled {
+            AptRunStatus::Cancelled
+        } else if error.is_some() {
+            AptRunStatus::Failed
+        } else {
+            AptRunStatus::Ran
+        };
+
+        progress.event(AptProgressEvent::end());
+
+        let result = AptRunResult {
+            status,
+            diagnostics,
+            generated_sources,
+            cache_hit: false,
+            error,
+        };
+
+        if matches!(result.status, AptRunStatus::Ran | AptRunStatus::UpToDate) {
+            if let Some(cache) = run_cache.as_mut() {
+                cache.insert(cache_key, result.clone().into());
+                let _ = cache.save();
+            }
+        } else if let Some(cache) = run_cache.as_mut() {
+            // Best-effort: still persist access timestamps.
+            let _ = cache.save();
+        }
+
+        if let Some(cache) = mtime_cache.as_mut() {
+            let _ = cache.save();
+        }
+
+        Ok(result)
     }
 
     /// Like [`AptManager::run_annotation_processing_for_target`] but first attempts to populate
@@ -606,6 +1566,7 @@ impl AptManager {
         progress: &mut dyn ProgressReporter,
     ) -> nova_build::Result<BuildResult> {
         let _ = self.apply_build_annotation_processing(build);
+        let _ = self.write_generated_roots_snapshot();
         self.run_annotation_processing_for_target(build, target, progress)
     }
 

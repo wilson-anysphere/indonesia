@@ -36,6 +36,7 @@ pub(crate) fn load_simple_project(
     crate::generated::append_generated_source_roots(
         &mut source_roots,
         root,
+        root,
         BuildSystem::Simple,
         &options.nova_config,
     );
@@ -123,6 +124,7 @@ pub(crate) fn load_simple_workspace_model(
 
     crate::generated::append_generated_source_roots(
         &mut source_roots,
+        root,
         root,
         BuildSystem::Simple,
         &options.nova_config,

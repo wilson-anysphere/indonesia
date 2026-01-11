@@ -1,11 +1,14 @@
 use filetime::{set_file_mtime, FileTime};
 use nova_apt::{AptBuildExecutor, AptManager, AptRunTarget, NoopProgressReporter};
-use nova_build::{BuildResult, GradleBuildTask, MavenBuildGoal};
+use nova_build::{BuildManager, BuildResult, DefaultCommandRunner, GradleBuildTask, MavenBuildGoal};
 use nova_config::NovaConfig;
+use nova_index::ClassIndex;
 use nova_project::{
     BuildSystem, JavaConfig, Module, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
 };
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 use std::sync::Mutex;
 use tempfile::TempDir;
 
@@ -351,4 +354,101 @@ fn no_stale_generated_roots_does_not_invoke_build() {
         .unwrap();
 
     assert!(executor.calls().is_empty());
+}
+
+#[test]
+fn run_writes_generated_roots_snapshot_used_by_project_loader() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+
+    // Create a simple workspace with a generated output directory that is *not* one of the
+    // conventional `target/generated-sources/annotations` defaults.
+    let src_root = root.join("src/main/java");
+    std::fs::create_dir_all(&src_root).unwrap();
+    std::fs::create_dir_all(src_root.join("com/example/app")).unwrap();
+    std::fs::write(
+        src_root.join("com/example/app/App.java"),
+        r#"
+ package com.example.app;
+ import com.example.generated.GeneratedHello;
+class App {}
+"#,
+    )
+    .unwrap();
+
+    let custom_generated_root = root.join("custom-generated");
+    std::fs::create_dir_all(custom_generated_root.join("com/example/generated")).unwrap();
+    std::fs::write(
+        custom_generated_root.join("com/example/generated/GeneratedHello.java"),
+        r#"
+package com.example.generated;
+public class GeneratedHello {
+  public static String hello() { return "hi"; }
+}
+"#,
+    )
+    .unwrap();
+
+    let project = ProjectConfig {
+        workspace_root: root.to_path_buf(),
+        build_system: BuildSystem::Simple,
+        java: JavaConfig::default(),
+        modules: vec![Module {
+            name: "root".to_string(),
+            root: root.to_path_buf(),
+            annotation_processing: nova_project::AnnotationProcessing {
+                main: Some(nova_project::AnnotationProcessingConfig {
+                    enabled: true,
+                    generated_sources_dir: Some(custom_generated_root.clone()),
+                    ..Default::default()
+                }),
+                test: None,
+            },
+        }],
+        jpms_modules: Vec::new(),
+        jpms_workspace: None,
+        source_roots: vec![SourceRoot {
+            kind: SourceRootKind::Main,
+            origin: SourceRootOrigin::Source,
+            path: src_root,
+        }],
+        module_path: Vec::new(),
+        classpath: Vec::new(),
+        output_dirs: Vec::new(),
+        dependencies: Vec::new(),
+        workspace_model: None,
+    };
+
+    // Before running APT, the Nova project model should not pick up the custom root.
+    let mut options = nova_project::LoadOptions::default();
+    options.nova_config = NovaConfig::default();
+    let loaded_before = nova_project::load_project_with_options(root, &options).unwrap();
+    let index_before = ClassIndex::build(&loaded_before.source_roots).unwrap();
+    assert!(
+        !index_before.contains("com.example.generated.GeneratedHello"),
+        "expected generated class to be absent before snapshot is written"
+    );
+
+    let mut apt = AptManager::new(project, NovaConfig::default());
+    let build = BuildManager::with_runner(
+        root.join(".nova").join("build-cache"),
+        Arc::new(DefaultCommandRunner {
+            timeout: Some(Duration::from_secs(5)),
+            ..Default::default()
+        }),
+    );
+    let mut progress = NoopProgressReporter;
+    let result = apt
+        .run(&build, AptRunTarget::Workspace, None, &mut progress)
+        .unwrap();
+    assert!(
+        matches!(result.status, nova_apt::AptRunStatus::UpToDate),
+        "expected no build tool invocations for simple project"
+    );
+
+    // After writing the snapshot, reloading the project should include the custom root and make
+    // generated classes discoverable.
+    let loaded_after = nova_project::load_project_with_options(root, &options).unwrap();
+    let index_after = ClassIndex::build(&loaded_after.source_roots).unwrap();
+    assert!(index_after.contains("com.example.generated.GeneratedHello"));
 }

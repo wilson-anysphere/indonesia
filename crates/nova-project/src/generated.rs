@@ -2,11 +2,13 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use nova_config::NovaConfig;
+use serde::Deserialize;
 
 use crate::{BuildSystem, SourceRoot, SourceRootKind, SourceRootOrigin};
 
 pub(crate) fn append_generated_source_roots(
     roots: &mut Vec<SourceRoot>,
+    workspace_root: &Path,
     module_root: &Path,
     build_system: BuildSystem,
     config: &NovaConfig,
@@ -27,6 +29,8 @@ pub(crate) fn append_generated_source_roots(
             candidates.push((SourceRootKind::Main, path));
         }
     } else {
+        candidates.extend(read_snapshot_roots(workspace_root, module_root));
+
         match build_system {
             BuildSystem::Maven => {
                 candidates.push((
@@ -91,5 +95,138 @@ pub(crate) fn append_generated_source_roots(
             origin: SourceRootOrigin::Generated,
             path,
         });
+    }
+}
+
+const GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SnapshotSourceRootKind {
+    Main,
+    Test,
+}
+
+impl From<SnapshotSourceRootKind> for SourceRootKind {
+    fn from(value: SnapshotSourceRootKind) -> Self {
+        match value {
+            SnapshotSourceRootKind::Main => SourceRootKind::Main,
+            SnapshotSourceRootKind::Test => SourceRootKind::Test,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeneratedRootsSnapshotRoot {
+    kind: SnapshotSourceRootKind,
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeneratedRootsSnapshotModule {
+    module_root: PathBuf,
+    roots: Vec<GeneratedRootsSnapshotRoot>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GeneratedRootsSnapshotFile {
+    schema_version: u32,
+    modules: Vec<GeneratedRootsSnapshotModule>,
+}
+
+fn read_snapshot_roots(workspace_root: &Path, module_root: &Path) -> Vec<(SourceRootKind, PathBuf)> {
+    let snapshot_path = workspace_root
+        .join(".nova")
+        .join("apt-cache")
+        .join("generated-roots.json");
+    let text = match std::fs::read_to_string(snapshot_path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => return Vec::new(),
+    };
+
+    let file: GeneratedRootsSnapshotFile = match serde_json::from_str(&text) {
+        Ok(file) => file,
+        Err(_) => return Vec::new(),
+    };
+
+    if file.schema_version != GENERATED_ROOTS_SNAPSHOT_SCHEMA_VERSION {
+        return Vec::new();
+    }
+
+    for module in file.modules {
+        let module_root_candidate = if module.module_root.is_absolute() {
+            module.module_root
+        } else {
+            workspace_root.join(module.module_root)
+        };
+        if module_root_candidate != module_root {
+            continue;
+        }
+
+        return module
+            .roots
+            .into_iter()
+            .map(|root| {
+                let kind: SourceRootKind = root.kind.into();
+                let path = if root.path.is_absolute() {
+                    root.path
+                } else {
+                    module_root_candidate.join(root.path)
+                };
+                (kind, path)
+            })
+            .collect();
+    }
+
+    Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn snapshot_generated_roots_are_appended() {
+        let temp = TempDir::new().expect("tempdir");
+        let workspace_root = temp.path();
+        let module_root = workspace_root.join("module");
+        std::fs::create_dir_all(&module_root).expect("create module");
+
+        let snapshot_dir = workspace_root.join(".nova").join("apt-cache");
+        std::fs::create_dir_all(&snapshot_dir).expect("create snapshot dir");
+
+        let custom_root = module_root.join("custom-generated");
+        let snapshot = serde_json::json!({
+            "schema_version": 1,
+            "modules": [{
+                "module_root": module_root.to_string_lossy(),
+                "roots": [{
+                    "kind": "main",
+                    "path": custom_root.to_string_lossy(),
+                }]
+            }]
+        });
+        std::fs::write(
+            snapshot_dir.join("generated-roots.json"),
+            serde_json::to_string_pretty(&snapshot).expect("serialize snapshot"),
+        )
+        .expect("write snapshot");
+
+        let config = NovaConfig::default();
+        let mut roots = Vec::new();
+        append_generated_source_roots(
+            &mut roots,
+            workspace_root,
+            &module_root,
+            BuildSystem::Simple,
+            &config,
+        );
+
+        assert!(
+            roots.iter().any(|root| root.path == custom_root),
+            "expected custom root to be appended; got: {roots:?}"
+        );
     }
 }

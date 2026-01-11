@@ -3325,6 +3325,7 @@ name = "nova-apt"
 version = "0.1.0"
 dependencies = [
  "filetime",
+ "hex",
  "nova-build",
  "nova-config",
  "nova-core",
@@ -3335,7 +3336,9 @@ dependencies = [
  "nova-resolve",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4052,6 +4055,7 @@ dependencies = [
  "regex",
  "roxmltree",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "walkdir",

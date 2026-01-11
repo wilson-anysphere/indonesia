@@ -9,6 +9,7 @@ pub mod test;
 pub mod web;
 
 use nova_build::{BuildManager, CommandRunner, DefaultCommandRunner};
+use nova_scheduler::CancellationToken;
 use std::{
     io,
     path::Path,
@@ -19,6 +20,7 @@ use std::{
 #[derive(Debug)]
 struct DeadlineCommandRunner {
     deadline: Instant,
+    cancellation: Option<CancellationToken>,
 }
 
 impl CommandRunner for DeadlineCommandRunner {
@@ -39,16 +41,27 @@ impl CommandRunner for DeadlineCommandRunner {
 
         let runner = DefaultCommandRunner {
             timeout: Some(remaining),
-            ..Default::default()
+            cancellation: self.cancellation.clone(),
         };
         runner.run(cwd, program, args)
     }
 }
 
 fn build_manager_for_root(project_root: &Path, timeout: Duration) -> BuildManager {
+    build_manager_for_root_with_cancel(project_root, timeout, None)
+}
+
+fn build_manager_for_root_with_cancel(
+    project_root: &Path,
+    timeout: Duration,
+    cancellation: Option<CancellationToken>,
+) -> BuildManager {
     let cache_dir = project_root.join(".nova").join("build-cache");
     let deadline = Instant::now() + timeout;
-    let runner: Arc<dyn CommandRunner> = Arc::new(DeadlineCommandRunner { deadline });
+    let runner: Arc<dyn CommandRunner> = Arc::new(DeadlineCommandRunner {
+        deadline,
+        cancellation,
+    });
     BuildManager::with_runner(cache_dir, runner)
 }
 

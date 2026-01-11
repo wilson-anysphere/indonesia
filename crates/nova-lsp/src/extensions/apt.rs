@@ -1,9 +1,11 @@
 use crate::{NovaLspError, Result};
 use nova_apt::{
-    AptManager, AptProgressEvent, AptRunTarget, GeneratedSourcesFreshness, ProgressReporter,
+    AptManager, AptProgressEvent, AptRunStatus, AptRunTarget, GeneratedSourcesFreshness,
+    ProgressReporter,
 };
 use nova_config::NovaConfig;
 use nova_project::{load_project_with_options, BuildSystem, LoadOptions, SourceRootKind};
+use nova_scheduler::CancellationToken;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -85,6 +87,11 @@ pub struct RunAnnotationProcessingResponse {
     #[serde(default)]
     pub module_diagnostics: Vec<ModuleBuildDiagnostics>,
     pub generated_sources: GeneratedSourcesResponse,
+    pub status: String,
+    #[serde(default)]
+    pub cache_hit: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,11 +123,15 @@ pub struct ModuleBuildDiagnostics {
     pub diagnostics: Vec<NovaDiagnostic>,
 }
 
-pub fn handle_generated_sources(params: serde_json::Value) -> Result<serde_json::Value> {
+pub fn handle_generated_sources(
+    params: serde_json::Value,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value> {
     let params = parse_params(params)?;
     let root = PathBuf::from(&params.project_root);
 
-    let build = super::build_manager_for_root(&root, Duration::from_secs(60));
+    let build =
+        super::build_manager_for_root_with_cancel(&root, Duration::from_secs(60), Some(cancel));
     let (project, config) = load_project_with_workspace_config(&root)?;
     let mut apt = AptManager::new(project, config);
     let mut status = apt.status_with_build(&build).map_err(map_io_error)?;
@@ -135,39 +146,45 @@ pub fn handle_generated_sources(params: serde_json::Value) -> Result<serde_json:
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 
-pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<serde_json::Value> {
+pub fn handle_run_annotation_processing(
+    params: serde_json::Value,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value> {
     let params: NovaRunAnnotationProcessingParams = serde_json::from_value(params)
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
     let root = PathBuf::from(&params.project_root);
 
-    let build = super::build_manager_for_root(&root, Duration::from_secs(300));
+    let build = super::build_manager_for_root_with_cancel(
+        &root,
+        Duration::from_secs(300),
+        Some(cancel.clone()),
+    );
 
     let (project, config) = load_project_with_workspace_config(&root)?;
     let mut apt = AptManager::new(project, config);
     let target = resolve_target(&apt, &params)?;
 
     let mut reporter = VecProgress::default();
-    let build_result = apt
-        .run_annotation_processing_for_target_with_build(&build, target, &mut reporter)
-        .map_err(map_build_error)?;
+    let run_result = apt
+        .run(&build, target, Some(cancel), &mut reporter)
+        .map_err(map_io_error)?;
 
-    // Reload project + generated roots after the build.
-    let (project, config) = load_project_with_workspace_config(&root)?;
-    let mut apt = AptManager::new(project, config);
-    let status = apt.status_with_build(&build).map_err(map_io_error)?;
-
-    let module_diagnostics = group_diagnostics_by_module(&build_result.diagnostics, apt.project());
+    let module_diagnostics = group_diagnostics_by_module(&run_result.diagnostics, apt.project());
 
     let resp = RunAnnotationProcessingResponse {
         progress: reporter.events,
         progress_events: reporter.structured_events,
-        diagnostics: build_result
+        diagnostics: run_result
             .diagnostics
-            .into_iter()
+            .iter()
+            .cloned()
             .map(NovaDiagnostic::from)
             .collect(),
         module_diagnostics,
-        generated_sources: convert_status(status),
+        generated_sources: convert_status(run_result.generated_sources),
+        status: status_string(run_result.status),
+        cache_hit: run_result.cache_hit,
+        error: run_result.error,
     };
 
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
@@ -269,8 +286,13 @@ fn freshness_string(freshness: GeneratedSourcesFreshness) -> String {
     }
 }
 
-fn map_build_error(err: nova_build::BuildError) -> NovaLspError {
-    NovaLspError::Internal(err.to_string())
+fn status_string(status: AptRunStatus) -> String {
+    match status {
+        AptRunStatus::UpToDate => "up_to_date".to_string(),
+        AptRunStatus::Ran => "ran".to_string(),
+        AptRunStatus::Cancelled => "cancelled".to_string(),
+        AptRunStatus::Failed => "failed".to_string(),
+    }
 }
 
 fn map_io_error(err: std::io::Error) -> NovaLspError {
@@ -412,6 +434,9 @@ mod tests {
                 enabled: true,
                 modules: Vec::new(),
             },
+            status: "up_to_date".to_string(),
+            cache_hit: false,
+            error: None,
         };
 
         let value = serde_json::to_value(resp).unwrap();

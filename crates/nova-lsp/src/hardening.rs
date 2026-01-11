@@ -219,6 +219,49 @@ pub fn run_with_watchdog_cancelable(
     }
 }
 
+pub fn run_with_watchdog_cancelable_with_token(
+    method: &str,
+    params: serde_json::Value,
+    cancel: CancellationToken,
+    handler: fn(serde_json::Value, CancellationToken) -> Result<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    let deadline = deadline_for_method(method);
+    let watchdog = watchdog();
+    let cancel = cancel.child_token();
+
+    match watchdog.run_with_deadline(deadline, cancel, move |token| handler(params, token)) {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(err)) => Err(err),
+        Err(WatchdogError::DeadlineExceeded(duration)) => {
+            perf().record_timeout();
+            nova_metrics::MetricsRegistry::global().record_timeout(method);
+            if timeout_enters_safe_mode(method) {
+                enter_safe_mode(SafeModeReason::WatchdogTimeout);
+            }
+            Err(NovaLspError::Internal(format!(
+                "{method} exceeded its time budget of {duration:?}"
+            )))
+        }
+        Err(WatchdogError::Panicked) => {
+            perf().record_panic();
+            nova_metrics::MetricsRegistry::global().record_panic(method);
+            enter_safe_mode(SafeModeReason::Panic);
+            Err(NovaLspError::Internal(format!(
+                "{method} panicked; entering safe-mode"
+            )))
+        }
+        Err(WatchdogError::Cancelled) => Err(NovaLspError::Internal(format!("{method} was cancelled"))),
+    }
+}
+
+pub fn run_with_watchdog_cancel(
+    method: &str,
+    params: serde_json::Value,
+    handler: fn(serde_json::Value, CancellationToken) -> Result<serde_json::Value>,
+) -> Result<serde_json::Value> {
+    run_with_watchdog_cancelable_with_token(method, params, CancellationToken::new(), handler)
+}
+
 fn deadline_for_method(method: &str) -> Duration {
     match method {
         TEST_DISCOVER_METHOD => Duration::from_secs(30),
