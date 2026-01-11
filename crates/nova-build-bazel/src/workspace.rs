@@ -15,7 +15,7 @@ use std::{
 #[derive(Debug)]
 enum BspConnection {
     NotTried,
-    Connected(crate::bsp::BspWorkspace),
+    Connected(Box<crate::bsp::BspWorkspace>),
     Failed,
 }
 
@@ -145,7 +145,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
     #[cfg(feature = "bsp")]
     pub fn with_bsp_workspace(mut self, workspace: crate::bsp::BspWorkspace) -> Self {
-        self.bsp = BspConnection::Connected(workspace);
+        self.bsp = BspConnection::Connected(Box::new(workspace));
         self
     }
 
@@ -163,7 +163,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         #[cfg(feature = "bsp")]
         {
             let prefer_bsp = std::env::var("NOVA_BAZEL_USE_BSP")
-                .map(|v| v != "0" && v.to_ascii_lowercase() != "false")
+                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
                 .unwrap_or(true);
 
             if prefer_bsp {
@@ -321,13 +321,13 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         if matches!(self.bsp, BspConnection::NotTried) {
             let config = self.bsp_config_from_env();
             self.bsp = match crate::bsp::BspWorkspace::connect(self.root.clone(), config) {
-                Ok(workspace) => BspConnection::Connected(workspace),
+                Ok(workspace) => BspConnection::Connected(Box::new(workspace)),
                 Err(_) => BspConnection::Failed,
             };
         }
 
         match &mut self.bsp {
-            BspConnection::Connected(workspace) => Ok(Some(workspace)),
+            BspConnection::Connected(workspace) => Ok(Some(workspace.as_mut())),
             BspConnection::Failed | BspConnection::NotTried => Ok(None),
         }
     }
