@@ -153,3 +153,31 @@ fn cancellation_kills_process_tree() {
         start.elapsed()
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn runs_cmd_scripts_via_comspec() {
+    use std::time::SystemTime;
+
+    let mut dir = std::env::temp_dir();
+    let token = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    dir.push(format!("nova_process_test_{token}"));
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let script = dir.join("hello.cmd");
+    std::fs::write(&script, "@echo off\r\necho hello\r\n").unwrap();
+
+    let opts = RunOptions {
+        timeout: Some(Duration::from_secs(2)),
+        max_bytes: 1024,
+        ..RunOptions::default()
+    };
+    let result = run_command(&dir, &script, &[], opts).unwrap();
+    assert!(result.status.success());
+    assert!(result.output.stdout.to_ascii_lowercase().contains("hello"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

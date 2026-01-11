@@ -500,15 +500,19 @@ impl MavenBuild {
 
     fn mvn_executable(&self, project_root: &Path) -> PathBuf {
         if self.config.prefer_wrapper {
-            let wrapper_candidates = if cfg!(windows) {
-                ["mvnw.cmd", "mvnw"]
-            } else {
-                ["mvnw", "mvnw.cmd"]
-            };
-            for name in wrapper_candidates {
-                let path = project_root.join(name);
-                if path.exists() {
-                    return path;
+            #[cfg(windows)]
+            {
+                let wrapper = project_root.join("mvnw.cmd");
+                if wrapper.exists() {
+                    return wrapper;
+                }
+            }
+
+            #[cfg(not(windows))]
+            {
+                let wrapper = project_root.join("mvnw");
+                if wrapper.exists() {
+                    return wrapper;
                 }
             }
         }

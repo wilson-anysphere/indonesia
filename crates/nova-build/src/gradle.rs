@@ -483,13 +483,17 @@ impl GradleBuild {
 
     fn gradle_executable(&self, project_root: &Path) -> PathBuf {
         if self.config.prefer_wrapper {
-            let wrapper_candidates = if cfg!(windows) {
-                ["gradlew.bat", "gradlew"]
-            } else {
-                ["gradlew", "gradlew.bat"]
-            };
-            for name in wrapper_candidates {
-                let wrapper = project_root.join(name);
+            #[cfg(windows)]
+            {
+                let wrapper = project_root.join("gradlew.bat");
+                if wrapper.exists() {
+                    return wrapper;
+                }
+            }
+
+            #[cfg(not(windows))]
+            {
+                let wrapper = project_root.join("gradlew");
                 if wrapper.exists() {
                     return wrapper;
                 }

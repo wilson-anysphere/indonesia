@@ -244,9 +244,8 @@ pub fn run_command_checked(
 }
 
 fn run_command_spec(command: &CommandSpec, opts: RunOptions) -> io::Result<CommandResult> {
-    let mut cmd = Command::new(&command.program);
-    cmd.args(&command.args)
-        .current_dir(&command.cwd)
+    let mut cmd = command_to_spawn(command);
+    cmd.current_dir(&command.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -330,6 +329,33 @@ fn run_command_spec(command: &CommandSpec, opts: RunOptions) -> io::Result<Comma
         timed_out,
         cancelled,
     })
+}
+
+fn command_to_spawn(command: &CommandSpec) -> Command {
+    #[cfg(windows)]
+    {
+        if is_windows_shell_script(&command.program) {
+            // Windows batch files need to be launched via `cmd.exe /C` (CreateProcess cannot
+            // execute `.bat`/`.cmd` directly). This also keeps wrapper scripts like `mvnw.cmd`
+            // and `gradlew.bat` working out of the box.
+            let comspec = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+            let mut cmd = Command::new(comspec);
+            cmd.arg("/C").arg(&command.program).args(&command.args);
+            return cmd;
+        }
+    }
+
+    let mut cmd = Command::new(&command.program);
+    cmd.args(&command.args);
+    cmd
+}
+
+#[cfg(windows)]
+fn is_windows_shell_script(path: &Path) -> bool {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) => ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"),
+        None => false,
+    }
 }
 
 fn terminate_process_tree(
