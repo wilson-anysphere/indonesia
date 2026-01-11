@@ -335,12 +335,18 @@ fn command_to_spawn(command: &CommandSpec) -> Command {
     #[cfg(windows)]
     {
         if is_windows_shell_script(&command.program) {
-            // Windows batch files need to be launched via `cmd.exe /C` (CreateProcess cannot
-            // execute `.bat`/`.cmd` directly). This also keeps wrapper scripts like `mvnw.cmd`
-            // and `gradlew.bat` working out of the box.
+            // Windows batch files need to be launched via `cmd.exe` (CreateProcess cannot
+            // execute `.bat`/`.cmd` directly). This keeps wrapper scripts like `mvnw.cmd` and
+            // `gradlew.bat` working out of the box.
+            //
+            // We also need to be careful with quoting: wrapper scripts frequently live under
+            // paths containing spaces (e.g. `C:\Users\Jane Doe\...`). `cmd.exe /S /C ""script"
+            // args"` is the most robust way to invoke a quoted command with arguments.
             let comspec = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
             let mut cmd = Command::new(comspec);
-            cmd.arg("/C").arg(&command.program).args(&command.args);
+            cmd.arg("/S")
+                .arg("/C")
+                .arg(windows_cmd_command_string(&command.program, &command.args));
             return cmd;
         }
     }
@@ -356,6 +362,33 @@ fn is_windows_shell_script(path: &Path) -> bool {
         Some(ext) => ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat"),
         None => false,
     }
+}
+
+#[cfg(windows)]
+fn windows_cmd_command_string(program: &Path, args: &[String]) -> String {
+    // Build an *inner* command string that begins with a quoted program path.
+    // Then wrap it in an *outer* pair of quotes so cmd.exe sees:
+    //   ""C:\path with spaces\script.cmd" arg1 arg2"
+    let mut inner = windows_cmd_quote_always(&program.to_string_lossy());
+    for arg in args {
+        inner.push(' ');
+        inner.push_str(&windows_cmd_quote(arg));
+    }
+    format!("\"{inner}\"")
+}
+
+#[cfg(windows)]
+fn windows_cmd_quote(arg: &str) -> String {
+    if arg.is_empty() || arg.contains([' ', '\t', '"']) {
+        windows_cmd_quote_always(arg)
+    } else {
+        arg.to_string()
+    }
+}
+
+#[cfg(windows)]
+fn windows_cmd_quote_always(arg: &str) -> String {
+    format!("\"{}\"", arg.replace('"', "\\\""))
 }
 
 fn terminate_process_tree(

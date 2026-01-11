@@ -164,20 +164,25 @@ fn runs_cmd_scripts_via_comspec() {
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    dir.push(format!("nova_process_test_{token}"));
+    // Include spaces to ensure the cmd.exe invocation handles quoted paths.
+    dir.push(format!("nova process test {token}"));
     std::fs::create_dir_all(&dir).unwrap();
 
     let script = dir.join("hello.cmd");
-    std::fs::write(&script, "@echo off\r\necho hello\r\n").unwrap();
+    std::fs::write(&script, "@echo off\r\necho arg=%1\r\n").unwrap();
 
     let opts = RunOptions {
         timeout: Some(Duration::from_secs(2)),
         max_bytes: 1024,
         ..RunOptions::default()
     };
-    let result = run_command(&dir, &script, &[], opts).unwrap();
+    let result = run_command(&dir, &script, &["foo bar".into()], opts).unwrap();
     assert!(result.status.success());
-    assert!(result.output.stdout.to_ascii_lowercase().contains("hello"));
+    assert!(result
+        .output
+        .stdout
+        .to_ascii_lowercase()
+        .contains("arg=foo bar"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
