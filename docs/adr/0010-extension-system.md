@@ -105,31 +105,16 @@ apply (e.g., framework analyzers that check classpath dependencies).
 WASM modules are runtime-loaded and must support **capability discovery** so the host can register the
 correct provider wrappers without out-of-band configuration.
 
-WASM modules MUST export a manifest function for v1 (see §4) that declares:
+WASM modules MUST export two discovery functions for ABI v1 (see §4):
 
-- extension id (`id`)
-- ABI major version (`abi`)
-- the list of implemented capabilities (e.g. `diagnostics`, `completions`, …)
-
-Manifest JSON (v1) is intentionally small and must be treated as forwards-compatible:
-
-```json
-{
-  "id": "com.mycorp.rules",
-  "abi": 1,
-  "name": "MyCorp Rules",
-  "version": "0.1.0",
-  "capabilities": ["diagnostics", "completions", "code_actions"]
-}
-```
-
-Only `id`, `abi`, and `capabilities` are required. Unknown fields must be ignored.
+- `nova_ext_abi_version() -> i32` — returns the ABI major version implemented by the guest (currently `1`)
+- `nova_ext_capabilities() -> i32` — returns a bitset describing which provider kinds are implemented
 
 The host:
 
 1. loads the module from disk (subject to config allow/deny),
-2. reads and validates the manifest,
-3. rejects the module if ABI major is unsupported,
+2. reads and validates the ABI version + capability bitset,
+3. rejects the module if the ABI major is unsupported,
 4. registers a provider wrapper per declared capability into `ExtensionRegistry`,
 5. and applies per-capability timeouts/quotas/circuit breaker rules uniformly.
 
@@ -150,37 +135,37 @@ Rationale:
 **Required exports (v1):**
 
 - `memory` — linear memory
-- `nova_ext_v1_abi_version() -> i32` — returns `1`
-- `nova_ext_v1_alloc(len: i32) -> i32` — allocate a guest buffer in linear memory
-- `nova_ext_v1_free(ptr: i32, len: i32)` — free a guest buffer previously allocated/returned
-- `nova_ext_v1_manifest() -> i64` — returns `(ptr << 32) | len` for a UTF-8 JSON manifest
+- `nova_ext_abi_version() -> i32` — returns `1`
+- `nova_ext_capabilities() -> i32` — returns a capability bitset
+- `nova_ext_alloc(len: i32) -> i32` — allocate a guest buffer in linear memory
+- `nova_ext_free(ptr: i32, len: i32)` — free a guest buffer previously allocated/returned
 
 **Capability exports (v1):**
 
 For each implemented capability, the module exports a function:
 
-- `nova_ext_v1_<capability>(req_ptr: i32, req_len: i32) -> i64`
+- `nova_ext_<capability>(req_ptr: i32, req_len: i32) -> i64`
 
-where the return value is `(ptr << 32) | len` for the UTF-8 JSON response.
+where the return value is `(len << 32) | ptr` for the UTF-8 JSON response.
 
-Example: `nova_ext_v1_diagnostics`, `nova_ext_v1_completions`, …
+Example: `nova_ext_diagnostics`, `nova_ext_completions`, …
 
-The manifest `capabilities` strings map directly to export names by suffix:
+The capability bitset maps directly to export names:
 
-- `"diagnostics"` → `nova_ext_v1_diagnostics`
-- `"code_actions"` → `nova_ext_v1_code_actions`
+- `diagnostics` → `nova_ext_diagnostics`
+- `code_actions` → `nova_ext_code_actions`
 
 Packing/unpacking rule:
 
-- `ptr = (ret >> 32) as u32`
-- `len = (ret & 0xFFFF_FFFF) as u32`
+- `ptr = (ret & 0xFFFF_FFFF) as u32`
+- `len = (ret >> 32) as u32`
 
 **Memory ownership rules (v1):**
 
-- The host allocates request buffers via `nova_ext_v1_alloc`, writes request bytes into guest memory,
+- The host allocates request buffers via `nova_ext_alloc`, writes request bytes into guest memory,
   then calls the capability export.
 - The capability export returns a pointer/len to a guest-allocated response buffer.
-- The host MUST call `nova_ext_v1_free` on the response buffer after copying it out.
+- The host MUST call `nova_ext_free` on the response buffer after copying it out.
 
 **Message shapes (v1):**
 
@@ -191,15 +176,12 @@ The v1 ABI uses simple, capability-specific JSON payloads. Fields MAY be added o
 
 At minimum, v1 defines:
 
-- common request envelope fields (all capabilities):
-  - `fileUri` (optional string): canonical URI for the current file (for logging / context)
-  - `text` (string): UTF-8 source text for the current file
-  - `settings` (optional object): per-extension settings from `NovaConfig.extensions`
-  - `projectRoot` (optional string): workspace root (best-effort; may be absent in single-file mode)
+- per-capability request/response structs defined in `crates/nova-ext/src/wasm/abi.rs`:
+  - requests include `projectId` (u32), `fileId` (u32), and/or `symbol` depending on the capability
   - any offset/span values are **byte offsets** into `text` (matching Nova’s internal `Span` model)
 
 - `diagnostics` response: JSON array of `{ message, severity?, span? }` (matching the existing prototype in
-  `crates/nova-ext/examples/hello_diagnostics.wat`)
+  `crates/nova-ext/examples/abi_v1_todo_diagnostics.wat`)
   - `severity`: `"error" | "warning" | "info"` (default: `"warning"`)
   - `span`: `{ "start": <usize>, "end": <usize> }` byte offsets in the provided source text
 
@@ -207,9 +189,10 @@ Example `diagnostics` request:
 
 ```json
 {
-  "fileUri": "file:///workspace/src/main/java/com/example/Foo.java",
-  "text": "class Foo {}",
-  "settings": { "severity": "warning" }
+  "projectId": 0,
+  "fileId": 1,
+  "filePath": "/workspace/src/main/java/com/example/Foo.java",
+  "text": "class Foo {}"
 }
 ```
 
@@ -217,9 +200,10 @@ Example `completions` request/response (v1):
 
 ```json
 {
+  "projectId": 0,
+  "fileId": 1,
   "text": "class Foo { void m() { \"\". } }",
-  "offset": 27,
-  "settings": {}
+  "offset": 27
 }
 ```
 
@@ -256,7 +240,7 @@ must be kept stable within ABI v1.
 - The `abi` major version increments only for **breaking** changes (export names, message semantics,
   required fields, memory rules).
 - Within a major version (v1):
-  - adding a new capability is allowed (it is opt-in via manifest),
+  - adding a new capability is allowed (it is opt-in via `nova_ext_capabilities`),
   - adding optional JSON fields is allowed,
   - tightening sandbox limits is allowed (it may be a behavior change; document in release notes).
 - Nova SHOULD support at least one prior ABI major version once v2 exists (exact support window is a
@@ -455,7 +439,7 @@ This ADR is the binding architecture those tasks should converge on.
 Concrete follow-ups:
 
 - Add `NovaConfig.extensions` + TOML schema + config reload plumbing. (256)
-- Implement WASM manifest parsing + capability registration wrappers in `nova-ext`. (296)
+- Implement WASM ABI v1 probing (ABI version + capability discovery) and capability registration wrappers in `nova-ext`. (296)
 - Implement Wasmtime sandbox defaults: no WASI, memory limits, epoch-based timeouts. (295)
 - Wire an `ExtensionManager` into `nova-ide`/`nova-lsp` to load configured extensions and populate
   `ExtensionRegistry`. (254, 309)
