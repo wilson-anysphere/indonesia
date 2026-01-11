@@ -595,6 +595,19 @@ fn handle_request(
                 return Ok(server_shutting_down_error(id));
             }
 
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::SAFE_DELETE_METHOD) {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Ok(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message }
+                }));
+            }
+
             let params: nova_lsp::SafeDeleteParams = match serde_json::from_value(params) {
                 Ok(params) => params,
                 Err(err) => {
@@ -1460,6 +1473,15 @@ fn handle_execute_command(
             run_ai_generate_tests(args, params.work_done_token, state, writer)
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
+            nova_lsp::hardening::record_request();
+            if let Err(err) = nova_lsp::hardening::guard_method(nova_lsp::SAFE_DELETE_METHOD) {
+                let (code, message) = match err {
+                    nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                    nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                };
+                return Err((code, message));
+            }
+
             let args: nova_lsp::SafeDeleteParams = parse_first_arg(params.arguments)?;
             let files: BTreeMap<String, String> = state
                 .documents

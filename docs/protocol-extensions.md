@@ -59,8 +59,7 @@ When in safe-mode, **all methods dispatched through** `nova_lsp::handle_custom_r
 Note: safe-mode enforcement is currently implemented by `nova_lsp::hardening::guard_method()` and
 therefore only applies to methods dispatched via `nova_lsp::handle_custom_request()`. Some
 endpoints handled directly by the stdio server (e.g. `nova/memoryStatus`, `nova/java/organizeImports`,
-`nova/refactor/safeDelete`, `nova/refactor/changeSignature`) currently bypass that guard and may
-still succeed during safe-mode.
+`nova/refactor/changeSignature`) currently bypass that guard and may still succeed during safe-mode.
 
 Safe-mode windows:
 
@@ -1352,6 +1351,8 @@ Notes:
 
 - Today, the stdio server builds a best-effort `nova-index::Index` from **open documents** only, so
   clients should ensure relevant files are opened/synchronized before calling this endpoint.
+- `nova_refactor::SafeDeleteReport` stores ranges as `nova_index::TextRange` values:
+  `start`/`end` are **byte offsets** into the UTF-8 source file (not LSP UTF-16 positions).
 
 #### Errors
 
