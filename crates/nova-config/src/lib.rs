@@ -489,6 +489,7 @@ impl NovaConfig {
 /// Load Nova configuration for a workspace.
 ///
 /// Discovery order (first match wins):
+///
 /// 1) `NOVA_CONFIG_PATH` env var (if set)
 /// 2) Walk up from `root` (or `root.parent()` when `root` is a file) and look for:
 ///    - `.nova/config.toml`

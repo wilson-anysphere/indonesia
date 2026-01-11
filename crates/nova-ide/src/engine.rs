@@ -66,7 +66,7 @@ impl CompletionEngine {
 
         let prompt = self
             .context_builder
-            .build_completion_prompt(ctx, self.config.ai_max_items);
+        .build_completion_prompt(ctx, self.config.ai_max_items);
 
         let timeout = std::time::Duration::from_millis(self.config.ai_timeout_ms.max(1));
         let request = provider.complete_multi_token(prompt, self.config.ai_max_items, cancel.clone());
@@ -89,7 +89,7 @@ impl CompletionEngine {
                     Ok(res) => res,
                     Err(_) => Err(nova_ai::AiProviderError::Cancelled),
                 }
-            }
+            },
         } {
             Ok(suggestions) => suggestions,
             Err(_err) => return Vec::new(),

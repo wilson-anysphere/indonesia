@@ -59,7 +59,14 @@ fn stdio_server_resolves_extract_constant_code_action() {
         &json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "text": source } }
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
         }),
     );
 
@@ -217,7 +224,14 @@ public final class Point {\n\
         &json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "text": source } }
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
         }),
     );
 
