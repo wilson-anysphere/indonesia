@@ -712,6 +712,10 @@ pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
         &repo_root.join("crates/nova-syntax/testdata/javac/err"),
         &mut java_files,
     )?;
+    collect_java_files(
+        &repo_root.join("crates/nova-syntax/testdata/recovery"),
+        &mut java_files,
+    )?;
 
     let mut sources: Vec<SyntaxLintSource> = java_files
         .into_iter()
@@ -900,11 +904,19 @@ fn syntax_kind_node_kinds_from_variants(
     .into_iter()
     .collect();
 
-    Ok(variants[start..end]
+    let mut nodes: std::collections::BTreeSet<String> = variants[start..end]
         .iter()
         .filter(|name| !deny.contains(name.as_str()))
         .cloned()
-        .collect())
+        .collect();
+
+    // `SyntaxKind::Error` lives in the token section but is also used as a node kind for
+    // error-recovery. The grammar includes an `Error {}` wrapper, so treat it as a valid node.
+    if variants.iter().any(|v| v == "Error") {
+        nodes.insert("Error".to_string());
+    }
+
+    Ok(nodes)
 }
 
 fn parse_rust_ident(line: &str) -> Option<String> {
