@@ -143,6 +143,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         self
     }
 
+    #[cfg(feature = "bsp")]
+    pub fn with_bsp_workspace(mut self, workspace: crate::bsp::BspWorkspace) -> Self {
+        self.bsp = BspConnection::Connected(workspace);
+        self
+    }
+
     pub fn with_cache_path(mut self, path: PathBuf) -> Result<Self> {
         self.cache = BazelCache::load(&path)?;
         self.cache_path = Some(path);
