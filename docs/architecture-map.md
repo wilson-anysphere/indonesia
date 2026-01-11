@@ -160,6 +160,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Known gaps vs intended docs:**
   - Cache format is stable, but consumers still mix different indexing/persistence strategies.
 
+### `nova-devtools`
+- **Purpose:** developer tooling for Nova’s Rust workspace (currently: enforcing ADR 0007 crate layering / dependency boundaries).
+- **Key entry points:** `crates/nova-devtools/src/check_deps.rs` (`check_deps::run`), `crates/nova-devtools/src/main.rs` (`nova-devtools check-deps`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Only the `check-deps` command exists today; additional “repo hygiene” tooling still lives in ad-hoc scripts / `xtask`.
+
 ### `nova-ext`
 - **Purpose:** extension/plugin abstractions (code actions, diagnostics, completions) + registry.
 - **Key entry points:** `crates/nova-ext/src/lib.rs` (`ExtensionRegistry`, provider traits).
