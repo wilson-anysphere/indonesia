@@ -263,8 +263,12 @@ impl CloudLlmClient {
         mut req: GenerateRequest,
         cancel: CancellationToken,
     ) -> Result<String, CloudLlmError> {
-        let request_id = audit::next_request_id();
         let provider = provider_label(&self.cfg.provider);
+        let request_id = if self.cfg.audit_logging {
+            audit::next_request_id()
+        } else {
+            0
+        };
 
         if cancel.is_cancelled() {
             if self.cfg.audit_logging {

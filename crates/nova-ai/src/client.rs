@@ -125,7 +125,11 @@ impl AiClient {
         } else {
             None
         };
-        let request_id = audit::next_request_id();
+        let request_id = if self.audit_enabled {
+            audit::next_request_id()
+        } else {
+            0
+        };
 
         let cache_key = self.cache.as_ref().map(|_| {
             let mut builder = CacheKeyBuilder::new("ai_chat_v1");
@@ -272,7 +276,11 @@ impl AiClient {
         } else {
             None
         };
-        let request_id = audit::next_request_id();
+        let request_id = if self.audit_enabled {
+            audit::next_request_id()
+        } else {
+            0
+        };
         let started_at = Instant::now();
         if let Some(prompt) = prompt_for_log.as_deref() {
             audit::log_llm_request(
