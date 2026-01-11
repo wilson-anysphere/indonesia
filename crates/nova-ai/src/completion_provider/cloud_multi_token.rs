@@ -72,7 +72,7 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
  
             let sanitized_prompt = sanitize_prompt(&prompt, &self.privacy);
             let full_prompt = format!("{sanitized_prompt}\n\n{}", json_instructions(max_items));
- 
+  
             let response = self
                 .llm
                 .generate(

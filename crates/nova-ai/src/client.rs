@@ -1,5 +1,6 @@
 use crate::{
     audit,
+    cache::{shared_cache, CacheKeyBuilder, CacheSettings, LlmResponseCache},
     llm_privacy::PrivacyFilter,
     providers::{ollama::OllamaProvider, openai_compatible::OpenAiCompatibleProvider, AiProvider},
     types::{AiStream, ChatRequest, CodeSnippet},
@@ -22,6 +23,8 @@ pub struct AiClient {
     audit_enabled: bool,
     provider_label: &'static str,
     model: String,
+    endpoint: url::Url,
+    cache: Option<Arc<LlmResponseCache>>,
 }
 
 impl AiClient {
@@ -50,6 +53,26 @@ impl AiClient {
             )?),
         };
 
+        let cache = if config.cache_enabled {
+            if config.cache_max_entries == 0 {
+                return Err(AiError::InvalidConfig(
+                    "ai.cache_max_entries must be >= 1".into(),
+                ));
+            }
+            if config.cache_ttl_secs == 0 {
+                return Err(AiError::InvalidConfig(
+                    "ai.cache_ttl_secs must be > 0".into(),
+                ));
+            }
+
+            Some(shared_cache(CacheSettings {
+                max_entries: config.cache_max_entries,
+                ttl: std::time::Duration::from_secs(config.cache_ttl_secs),
+            }))
+        } else {
+            None
+        };
+
         Ok(Self {
             provider,
             semaphore: Arc::new(Semaphore::new(config.provider.concurrency)),
@@ -58,6 +81,8 @@ impl AiClient {
             audit_enabled: config.enabled && config.audit_log.enabled,
             provider_label: provider_label(&config.provider.kind),
             model: config.provider.model.clone(),
+            endpoint: config.provider.url.clone(),
+            cache,
         })
     }
 
@@ -75,6 +100,10 @@ impl AiClient {
         mut request: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<String, AiError> {
+        if cancel.is_cancelled() {
+            return Err(AiError::Cancelled);
+        }
+
         if request.max_tokens.is_none() {
             request.max_tokens = Some(self.default_max_tokens);
         }
@@ -91,18 +120,72 @@ impl AiClient {
             };
         }
 
+        let prompt_for_log = if self.audit_enabled {
+            Some(audit::format_chat_prompt(&request.messages))
+        } else {
+            None
+        };
+
+        let cache_key = self.cache.as_ref().map(|_| {
+            let mut builder = CacheKeyBuilder::new("ai_chat_v1");
+            builder.push_str(self.provider_label);
+            builder.push_str(self.endpoint.as_str());
+            builder.push_str(&self.model);
+            builder.push_u32(request.max_tokens.unwrap_or(self.default_max_tokens));
+            // ChatRequest doesn't currently expose temperature; keep the key
+            // future-proof by reserving the slot.
+            builder.push_u32(0);
+            builder.push_u64(
+                request
+                    .messages
+                    .len()
+                    .try_into()
+                    .expect("message count should fit u64"),
+            );
+            for message in &request.messages {
+                let role = match message.role {
+                    crate::types::ChatRole::System => "system",
+                    crate::types::ChatRole::User => "user",
+                    crate::types::ChatRole::Assistant => "assistant",
+                };
+                builder.push_str(role);
+                builder.push_str(&message.content);
+            }
+            builder.finish()
+        });
+
+        if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+            if let Some(hit) = cache.get(key).await {
+                if let Some(prompt) = prompt_for_log.as_deref() {
+                    let started_at = Instant::now();
+                    audit::log_llm_request(
+                        self.provider_label,
+                        &self.model,
+                        prompt,
+                        /*endpoint=*/ None,
+                        /*attempt=*/ 0,
+                        /*stream=*/ false,
+                    );
+                    audit::log_llm_response(
+                        self.provider_label,
+                        &self.model,
+                        &hit,
+                        started_at.elapsed(),
+                        /*retry_count=*/ 0,
+                        /*stream=*/ false,
+                        /*chunk_count=*/ None,
+                    );
+                }
+                return Ok(hit);
+            }
+        }
+
         let _permit = self
             .semaphore
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| AiError::UnexpectedResponse("ai client shutting down".into()))?;
-
-        let prompt_for_log = if self.audit_enabled {
-            Some(audit::format_chat_prompt(&request.messages))
-        } else {
-            None
-        };
 
         let started_at = Instant::now();
         if let Some(prompt) = prompt_for_log.as_deref() {
@@ -118,6 +201,9 @@ impl AiClient {
 
         match self.provider.chat(request, cancel).await {
             Ok(completion) => {
+                if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+                    cache.insert(key, completion.clone()).await;
+                }
                 if self.audit_enabled {
                     audit::log_llm_response(
                         self.provider_label,
@@ -421,6 +507,8 @@ mod tests {
             audit_enabled: true,
             provider_label: "dummy",
             model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            cache: None,
         }
     }
 
@@ -600,6 +688,8 @@ mod tests {
             audit_enabled: false,
             provider_label: "dummy",
             model: "dummy-model".to_string(),
+            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            cache: None,
         };
 
         let request = ChatRequest {

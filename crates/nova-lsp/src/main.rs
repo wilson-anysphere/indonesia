@@ -1506,6 +1506,20 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
         Ok("1") | Ok("true") | Ok("TRUE")
     );
 
+    let cache_enabled = matches!(
+        std::env::var("NOVA_AI_CACHE_ENABLED").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    let cache_max_entries = std::env::var("NOVA_AI_CACHE_MAX_ENTRIES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(256);
+    let cache_ttl = std::env::var("NOVA_AI_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(300));
+
     let timeout = std::env::var("NOVA_AI_TIMEOUT_SECS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -1524,6 +1538,9 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
                 timeout,
                 retry: RetryConfig::default(),
                 audit_logging,
+                cache_enabled,
+                cache_max_entries,
+                cache_ttl,
             }
         }
         "openai" => CloudLlmConfig {
@@ -1538,6 +1555,9 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
             timeout,
             retry: RetryConfig::default(),
             audit_logging,
+            cache_enabled,
+            cache_max_entries,
+            cache_ttl,
         },
         "anthropic" => CloudLlmConfig {
             provider: ProviderKind::Anthropic,
@@ -1551,6 +1571,9 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
             timeout,
             retry: RetryConfig::default(),
             audit_logging,
+            cache_enabled,
+            cache_max_entries,
+            cache_ttl,
         },
         "gemini" => CloudLlmConfig {
             provider: ProviderKind::Gemini,
@@ -1564,6 +1587,9 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
             timeout,
             retry: RetryConfig::default(),
             audit_logging,
+            cache_enabled,
+            cache_max_entries,
+            cache_ttl,
         },
         "azure" => {
             let endpoint = std::env::var("NOVA_AI_ENDPOINT")
@@ -1584,6 +1610,9 @@ fn load_ai_from_env() -> Result<Option<(AiService, nova_ai::PrivacyMode)>, Strin
                 timeout,
                 retry: RetryConfig::default(),
                 audit_logging,
+                cache_enabled,
+                cache_max_entries,
+                cache_ttl,
             }
         }
         other => return Err(format!("unknown NOVA_AI_PROVIDER: {other}")),

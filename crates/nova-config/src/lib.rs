@@ -220,6 +220,20 @@ pub struct AiConfig {
     /// Timeouts for latency-sensitive AI operations.
     #[serde(default)]
     pub timeouts: AiTimeoutsConfig,
+    /// Enable in-memory response caching for LLM calls made via `nova-ai`.
+    ///
+    /// Defaults to `false` (conservative): caching may retain model output in
+    /// memory, so consumers must explicitly opt in.
+    #[serde(default)]
+    pub cache_enabled: bool,
+
+    /// Maximum number of cached responses to keep in memory.
+    #[serde(default = "default_ai_cache_max_entries")]
+    pub cache_max_entries: usize,
+
+    /// Cache TTL in seconds.
+    #[serde(default = "default_ai_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
 }
 
 impl Default for AiConfig {
@@ -232,8 +246,19 @@ impl Default for AiConfig {
             audit_log: AuditLogConfig::default(),
             features: AiFeaturesConfig::default(),
             timeouts: AiTimeoutsConfig::default(),
+            cache_enabled: false,
+            cache_max_entries: default_ai_cache_max_entries(),
+            cache_ttl_secs: default_ai_cache_ttl_secs(),
         }
     }
+}
+
+fn default_ai_cache_max_entries() -> usize {
+    256
+}
+
+fn default_ai_cache_ttl_secs() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,7 +438,8 @@ impl NovaConfig {
 /// 2) `<workspace>/.nova/config.toml`
 /// 3) `<workspace>/nova.toml`
 /// 4) fallback `NovaConfig::default()`
-pub fn load_for_workspace(root: &Path) -> Result<NovaConfig, ConfigError> {
+pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigError> {
+    let root = root.as_ref();
     if let Some(path) = std::env::var_os("NOVA_CONFIG_PATH") {
         return NovaConfig::load_from_path(PathBuf::from(path));
     }
@@ -426,36 +452,6 @@ pub fn load_for_workspace(root: &Path) -> Result<NovaConfig, ConfigError> {
     for path in candidates {
         if path.is_file() {
             return NovaConfig::load_from_path(path);
-        }
-    }
-
-    Ok(NovaConfig::default())
-}
-
-/// Load Nova configuration for a workspace.
-///
-/// The configuration file is discovered by walking up from `root` (or
-/// `root.parent()` when `root` is a file) and looking for `.nova/config.toml`.
-///
-/// - If no config file is found, this returns [`NovaConfig::default`].
-/// - If a config file is found but cannot be read or parsed, an error is
-///   returned so callers can decide how to surface the failure.
-pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigError> {
-    let root = root.as_ref();
-    let start = if root.is_file() {
-        root.parent().unwrap_or(root)
-    } else {
-        root
-    };
-
-    for dir in start.ancestors() {
-        let candidate = dir.join(".nova").join("config.toml");
-        match NovaConfig::load_from_path(&candidate) {
-            Ok(config) => return Ok(config),
-            Err(ConfigError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                continue
-            }
-            Err(err) => return Err(err),
         }
     }
 

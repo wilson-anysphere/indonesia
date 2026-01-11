@@ -8,6 +8,7 @@
 
 mod anonymizer;
 mod audit;
+mod cache;
 mod client;
 mod completion;
 mod completion_provider;
@@ -44,7 +45,6 @@ pub use completion_ranking::{
 };
 pub use error::AiError;
 pub use features::NovaAi;
-pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedSymbol};
 pub use privacy::{PrivacyMode, RedactionConfig};
 pub use provider::MultiTokenCompletionProvider;
 pub use semantic_search::{SearchResult, SemanticSearch, TrigramSemanticSearch};

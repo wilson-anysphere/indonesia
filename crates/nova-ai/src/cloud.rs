@@ -10,6 +10,7 @@ use tracing::{debug, warn};
 use url::Url;
 
 use crate::audit;
+use crate::cache::{shared_cache, CacheKey, CacheKeyBuilder, CacheSettings, LlmResponseCache};
 
 #[derive(Debug, Error)]
 pub enum CloudLlmError {
@@ -51,7 +52,10 @@ pub enum ProviderKind {
     OpenAi,
     Anthropic,
     Gemini,
-    AzureOpenAi { deployment: String, api_version: String },
+    AzureOpenAi {
+        deployment: String,
+        api_version: String,
+    },
     /// A simple JSON-over-HTTP API (useful for proxies and tests).
     ///
     /// Request body:
@@ -71,6 +75,9 @@ pub struct CloudLlmConfig {
     pub timeout: Duration,
     pub retry: RetryConfig,
     pub audit_logging: bool,
+    pub cache_enabled: bool,
+    pub cache_max_entries: usize,
+    pub cache_ttl: Duration,
 }
 
 impl CloudLlmConfig {
@@ -83,6 +90,9 @@ impl CloudLlmConfig {
             timeout: Duration::from_secs(30),
             retry: RetryConfig::default(),
             audit_logging: false,
+            cache_enabled: false,
+            cache_max_entries: 256,
+            cache_ttl: Duration::from_secs(300),
         }
     }
 }
@@ -105,15 +115,34 @@ pub struct ProviderRequestParts {
 pub struct CloudLlmClient {
     cfg: CloudLlmConfig,
     http: reqwest::Client,
+    cache: Option<std::sync::Arc<LlmResponseCache>>,
 }
 
 impl CloudLlmClient {
     pub fn new(cfg: CloudLlmConfig) -> Result<Self, CloudLlmError> {
+        let cache = if cfg.cache_enabled {
+            if cfg.cache_max_entries == 0 {
+                return Err(CloudLlmError::InvalidConfig(
+                    "cache_max_entries must be >= 1".into(),
+                ));
+            }
+            if cfg.cache_ttl == Duration::ZERO {
+                return Err(CloudLlmError::InvalidConfig("cache_ttl must be > 0".into()));
+            }
+
+            Some(shared_cache(CacheSettings {
+                max_entries: cfg.cache_max_entries,
+                ttl: cfg.cache_ttl,
+            }))
+        } else {
+            None
+        };
+
         let http = reqwest::Client::builder()
             .timeout(cfg.timeout)
             .user_agent("nova-ai/0.1.0")
             .build()?;
-        Ok(Self { cfg, http })
+        Ok(Self { cfg, http, cache })
     }
 
     pub fn config(&self) -> &CloudLlmConfig {
@@ -128,11 +157,9 @@ impl CloudLlmClient {
             ProviderKind::OpenAi => {
                 let url = join_url(&self.cfg.endpoint, "v1/chat/completions")?;
                 let mut headers = HeaderMap::new();
-                let key = self
-                    .cfg
-                    .api_key
-                    .as_deref()
-                    .ok_or_else(|| CloudLlmError::InvalidConfig("OpenAI requires api_key".into()))?;
+                let key = self.cfg.api_key.as_deref().ok_or_else(|| {
+                    CloudLlmError::InvalidConfig("OpenAI requires api_key".into())
+                })?;
                 headers.insert(
                     AUTHORIZATION,
                     HeaderValue::from_str(&format!("Bearer {key}"))
@@ -157,10 +184,7 @@ impl CloudLlmClient {
                     HeaderValue::from_str(key)
                         .map_err(|e| CloudLlmError::InvalidConfig(e.to_string()))?,
                 );
-                headers.insert(
-                    "anthropic-version",
-                    HeaderValue::from_static("2023-06-01"),
-                );
+                headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
                 let body = json!({
                     "model": self.cfg.model,
                     "max_tokens": req.max_tokens,
@@ -239,8 +263,49 @@ impl CloudLlmClient {
         mut req: GenerateRequest,
         cancel: CancellationToken,
     ) -> Result<String, CloudLlmError> {
+        if cancel.is_cancelled() {
+            return Err(CloudLlmError::Cancelled);
+        }
+
         if self.cfg.audit_logging {
             req.prompt = audit::sanitize_prompt_for_audit(&req.prompt);
+        }
+
+        let cache_key = self
+            .cache
+            .as_ref()
+            .map(|_| build_cache_key(&self.cfg, &req));
+        if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+            if let Some(hit) = cache.get(key).await {
+                if self.cfg.audit_logging {
+                    let provider = provider_label(&self.cfg.provider);
+                    let safe_url = audit::sanitize_url_for_log(&self.cfg.endpoint);
+                    audit::log_llm_request(
+                        provider,
+                        &self.cfg.model,
+                        &req.prompt,
+                        Some(&safe_url),
+                        /*attempt=*/ 0,
+                        /*stream=*/ false,
+                    );
+                    audit::log_llm_response(
+                        provider,
+                        &self.cfg.model,
+                        &hit,
+                        Duration::ZERO,
+                        /*retry_count=*/ 0,
+                        /*stream=*/ false,
+                        /*chunk_count=*/ None,
+                    );
+                } else {
+                    debug!(
+                        provider = provider_label(&self.cfg.provider),
+                        model = %self.cfg.model,
+                        "llm cache hit"
+                    );
+                }
+                return Ok(hit);
+            }
         }
 
         let mut attempt = 0usize;
@@ -268,7 +333,11 @@ impl CloudLlmClient {
                 debug!(provider = provider, url = %safe_url, "llm request");
             }
 
-            let request_builder = self.http.post(parts.url).headers(parts.headers).json(&parts.body);
+            let request_builder = self
+                .http
+                .post(parts.url)
+                .headers(parts.headers)
+                .json(&parts.body);
 
             let response = tokio::select! {
                 _ = cancel.cancelled() => return Err(CloudLlmError::Cancelled),
@@ -311,6 +380,10 @@ impl CloudLlmClient {
             } else {
                 debug!(provider = provider, "llm response");
             }
+
+            if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+                cache.insert(key, completion.clone()).await;
+            }
             return Ok(completion);
         }
     }
@@ -324,6 +397,30 @@ fn provider_label(provider: &ProviderKind) -> &'static str {
         ProviderKind::AzureOpenAi { .. } => "azure_openai",
         ProviderKind::Http => "http",
     }
+}
+
+fn build_cache_key(cfg: &CloudLlmConfig, req: &GenerateRequest) -> CacheKey {
+    let mut builder = CacheKeyBuilder::new("cloud_generate_v1");
+    match &cfg.provider {
+        ProviderKind::OpenAi => builder.push_str("openai"),
+        ProviderKind::Anthropic => builder.push_str("anthropic"),
+        ProviderKind::Gemini => builder.push_str("gemini"),
+        ProviderKind::AzureOpenAi {
+            deployment,
+            api_version,
+        } => {
+            builder.push_str("azure_openai");
+            builder.push_str(deployment);
+            builder.push_str(api_version);
+        }
+        ProviderKind::Http => builder.push_str("http"),
+    }
+    builder.push_str(cfg.endpoint.as_str());
+    builder.push_str(&cfg.model);
+    builder.push_u32(req.max_tokens);
+    builder.push_u32(req.temperature.to_bits());
+    builder.push_str(&req.prompt);
+    builder.finish()
 }
 
 fn should_retry(status: StatusCode) -> bool {
@@ -425,7 +522,11 @@ fn parse_completion(provider: &ProviderKind, bytes: &[u8]) -> Result<String, Clo
                 .and_then(|c| c.content.parts.into_iter().next())
                 .map(|p| p.text)
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| CloudLlmError::InvalidResponse("missing candidates[0].content.parts[0].text".into()))
+                .ok_or_else(|| {
+                    CloudLlmError::InvalidResponse(
+                        "missing candidates[0].content.parts[0].text".into(),
+                    )
+                })
         }
         ProviderKind::Http => {
             #[derive(Deserialize)]
@@ -460,6 +561,9 @@ mod tests {
             timeout: Duration::from_secs(1),
             retry: RetryConfig::default(),
             audit_logging: false,
+            cache_enabled: false,
+            cache_max_entries: 256,
+            cache_ttl: Duration::from_secs(300),
         };
 
         let client = CloudLlmClient::new(cfg).unwrap();
@@ -472,10 +576,7 @@ mod tests {
             .unwrap();
 
         assert!(parts.url.as_str().ends_with("/v1/chat/completions"));
-        assert_eq!(
-            parts.headers.get(AUTHORIZATION).unwrap(),
-            "Bearer test-key"
-        );
+        assert_eq!(parts.headers.get(AUTHORIZATION).unwrap(), "Bearer test-key");
         assert_eq!(parts.body["model"], "gpt-4o-mini");
         assert_eq!(parts.body["messages"][0]["content"], "Hello");
     }
@@ -490,6 +591,9 @@ mod tests {
             timeout: Duration::from_secs(1),
             retry: RetryConfig::default(),
             audit_logging: false,
+            cache_enabled: false,
+            cache_max_entries: 256,
+            cache_ttl: Duration::from_secs(300),
         };
 
         let client = CloudLlmClient::new(cfg).unwrap();
@@ -521,6 +625,9 @@ mod tests {
             timeout: Duration::from_secs(1),
             retry: RetryConfig::default(),
             audit_logging: false,
+            cache_enabled: false,
+            cache_max_entries: 256,
+            cache_ttl: Duration::from_secs(300),
         };
 
         let client = CloudLlmClient::new(cfg).unwrap();
@@ -553,6 +660,9 @@ mod tests {
             timeout: Duration::from_secs(1),
             retry: RetryConfig::default(),
             audit_logging: false,
+            cache_enabled: false,
+            cache_max_entries: 256,
+            cache_ttl: Duration::from_secs(300),
         };
 
         let client = CloudLlmClient::new(cfg).unwrap();
@@ -564,9 +674,10 @@ mod tests {
             })
             .unwrap();
 
-        assert!(parts.url.as_str().contains(
-            "/openai/deployments/my-deployment/chat/completions?api-version=2024-02-01"
-        ));
+        assert!(parts
+            .url
+            .as_str()
+            .contains("/openai/deployments/my-deployment/chat/completions?api-version=2024-02-01"));
         assert_eq!(parts.headers.get("api-key").unwrap(), "test-key");
         assert_eq!(parts.body["messages"][0]["content"], "Hello");
     }
@@ -576,8 +687,7 @@ mod tests {
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
             when.method(POST).path("/complete");
-            then.status(200)
-                .json_body(json!({ "completion": "Pong" }));
+            then.status(200).json_body(json!({ "completion": "Pong" }));
         });
 
         let cfg = CloudLlmConfig {
@@ -591,6 +701,9 @@ mod tests {
                 ..RetryConfig::default()
             },
             audit_logging: false,
+            cache_enabled: false,
+            cache_max_entries: 256,
+            cache_ttl: Duration::from_secs(300),
         };
 
         let client = CloudLlmClient::new(cfg).unwrap();

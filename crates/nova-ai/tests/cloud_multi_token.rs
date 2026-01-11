@@ -31,6 +31,9 @@ fn provider_for_server(server: &MockServer) -> CloudMultiTokenCompletionProvider
             ..RetryConfig::default()
         },
         audit_logging: false,
+        cache_enabled: false,
+        cache_max_entries: 256,
+        cache_ttl: Duration::from_secs(300),
     };
     let client = CloudLlmClient::new(cfg).unwrap();
     CloudMultiTokenCompletionProvider::new(client)
