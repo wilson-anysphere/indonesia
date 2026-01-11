@@ -66,7 +66,8 @@ actionlint
 git diff --exit-code
 (cd editors/vscode && npm ci && npm run package)
 
-# javac.yml (requires `javac` on PATH)
+# javac.yml (requires `javac` on PATH; JDK 17+ recommended)
+cargo test -p nova-syntax --test javac_corpus
 cargo test -p nova-types --test javac_differential -- --ignored
 
 # perf.yml (benchmark; see below for capture/compare)
