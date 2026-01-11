@@ -70,9 +70,8 @@ pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagn
             severity: match d.severity {
                 nova_core::DiagnosticSeverity::Error => Severity::Error,
                 nova_core::DiagnosticSeverity::Warning => Severity::Warning,
-                nova_core::DiagnosticSeverity::Information | nova_core::DiagnosticSeverity::Hint => {
-                    Severity::Info
-                }
+                nova_core::DiagnosticSeverity::Information
+                | nova_core::DiagnosticSeverity::Hint => Severity::Info,
             },
             code: dagger_code(d.source.as_deref()).into(),
             message: d.message.clone(),
@@ -266,7 +265,11 @@ fn collect_java_sources(db: &dyn Database, root: &Path) -> (Vec<JavaSourceFile>,
         }
     }
 
-    let mut files = if under_root.is_empty() { all } else { under_root };
+    let mut files = if under_root.is_empty() {
+        all
+    } else {
+        under_root
+    };
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -299,37 +302,7 @@ fn project_root_for_path(path: &Path) -> PathBuf {
         path.parent().unwrap_or(path)
     };
 
-    if let Some(root) = nova_project::bazel_workspace_root(start) {
-        return root;
-    }
-
-    let mut current = start;
-    loop {
-        if looks_like_project_root(current) {
-            return current.to_path_buf();
-        }
-        let Some(parent) = current.parent() else {
-            return start.to_path_buf();
-        };
-        if parent == current {
-            return start.to_path_buf();
-        }
-        current = parent;
-    }
-}
-
-fn looks_like_project_root(dir: &Path) -> bool {
-    if dir.join("pom.xml").is_file() {
-        return true;
-    }
-    if dir.join("build.gradle").is_file()
-        || dir.join("build.gradle.kts").is_file()
-        || dir.join("settings.gradle").is_file()
-        || dir.join("settings.gradle.kts").is_file()
-    {
-        return true;
-    }
-    dir.join("src").is_dir()
+    nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
 }
 
 fn span_contains_offset(span: Span, offset: usize) -> bool {
@@ -353,7 +326,11 @@ fn core_range_to_span(text: &str, range: CoreRange) -> Option<Span> {
     // offset within the line and clamp to valid boundaries.
     let start = fallback_offset_utf8(text, &index, range.start)?;
     let end = fallback_offset_utf8(text, &index, range.end)?;
-    let (start, end) = if start <= end { (start, end) } else { (end, start) };
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     Some(Span::new(start, end))
 }
 
