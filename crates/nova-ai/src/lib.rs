@@ -49,7 +49,10 @@ pub use completion_ranking::{
     CompletionRanker,
 };
 pub use completion_validation::validate_multi_token_completion;
-pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedCode, RelatedSymbol};
+pub use context::{
+    BuiltContext, ContextBuilder, ContextRequest, RelatedCode, RelatedSymbol,
+    SemanticContextBuilder,
+};
 pub use error::AiError;
 pub use features::NovaAi;
 pub use privacy::{PrivacyMode, RedactionConfig};

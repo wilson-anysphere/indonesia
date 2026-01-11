@@ -1,5 +1,6 @@
 use crate::anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
 use crate::privacy::PrivacyMode;
+use nova_core::ProjectDatabase;
 use std::ops::Range;
 use std::path::PathBuf;
 
@@ -159,6 +160,38 @@ impl ContextBuilder {
             token_count,
             truncated,
         }
+    }
+}
+
+/// A context builder that can populate `related_code` automatically using a configured
+/// [`crate::SemanticSearch`] implementation.
+///
+/// This is a convenience wrapper for callers that want \"semantic aware\" context building
+/// without wiring up the search index manually on each request.
+pub struct SemanticContextBuilder {
+    builder: ContextBuilder,
+    search: Box<dyn crate::SemanticSearch>,
+}
+
+impl SemanticContextBuilder {
+    /// Construct a semantic context builder from the global AI configuration.
+    ///
+    /// The underlying search implementation is chosen by
+    /// [`crate::semantic_search_from_config`].
+    pub fn new(config: &nova_config::AiConfig) -> Self {
+        Self {
+            builder: ContextBuilder::new(),
+            search: crate::semantic_search_from_config(config),
+        }
+    }
+
+    pub fn index_project(&mut self, db: &dyn ProjectDatabase) {
+        self.search.index_project(db);
+    }
+
+    pub fn build(&self, req: ContextRequest, max_related: usize) -> BuiltContext {
+        self.builder
+            .build_with_semantic_search(req, self.search.as_ref(), max_related)
     }
 }
 

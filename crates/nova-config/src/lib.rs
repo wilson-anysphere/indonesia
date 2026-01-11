@@ -124,6 +124,7 @@ pub struct NovaConfig {
     pub ai: AiConfig,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for NovaConfig {
     fn default() -> Self {
         Self {
@@ -262,6 +263,7 @@ pub struct AiFeaturesConfig {
     pub multi_token_completion: bool,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for AiFeaturesConfig {
     fn default() -> Self {
         Self {
@@ -434,6 +436,7 @@ pub struct AuditLogConfig {
     pub path: Option<PathBuf>,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for AuditLogConfig {
     fn default() -> Self {
         Self {
@@ -454,6 +457,7 @@ pub enum AiProviderKind {
     InProcessLlama,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for AiProviderKind {
     fn default() -> Self {
         Self::Ollama
