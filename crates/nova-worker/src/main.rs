@@ -11,10 +11,10 @@ use nova_db::salsa::{Database as SalsaDatabase, NovaSyntax};
 use nova_db::{FileId, SourceRootId};
 use nova_fuzzy::{FuzzyMatcher, MatchKind, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
-    FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo, SymbolRankKey,
-    WorkerStats,
+    transport, FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo,
+    SymbolRankKey, WorkerStats,
 };
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tracing::{error, info, warn};
 
@@ -133,7 +133,7 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     };
 
     let has_cached_index = cached_index.is_some();
-    write_message(
+    transport::write_message(
         &mut stream,
         &RpcMessage::WorkerHello {
             shard_id: args.shard_id,
@@ -143,7 +143,7 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     )
     .await?;
 
-    let ack = read_message(&mut stream)
+    let ack = transport::read_message(&mut stream)
         .await
         .with_context(|| format!("read RouterHello for shard {}", args.shard_id))?;
     let (worker_id, shard_id, revision, protocol_version) = match ack {
@@ -480,7 +480,7 @@ impl WorkerState {
 
     async fn run(&mut self, stream: &mut BoxedStream) -> Result<()> {
         loop {
-            let msg = read_message(stream)
+            let msg = transport::read_message(stream)
                 .await
                 .with_context(|| format!("read message from router (shard {})", self.shard_id))?;
 
@@ -489,18 +489,18 @@ impl WorkerState {
                     self.revision = revision;
                     self.apply_file_snapshot(files);
                     let info = self.build_index().await?;
-                    write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
+                    transport::write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
                 }
                 RpcMessage::LoadFiles { revision, files } => {
                     self.revision = revision;
                     self.apply_file_snapshot(files);
-                    write_message(stream, &RpcMessage::Ack).await?;
+                    transport::write_message(stream, &RpcMessage::Ack).await?;
                 }
                 RpcMessage::UpdateFile { revision, file } => {
                     self.revision = revision;
                     self.apply_file_update(file);
                     let info = self.build_index().await?;
-                    write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
+                    transport::write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
                 }
                 RpcMessage::GetWorkerStats => {
                     let stats = WorkerStats {
@@ -509,7 +509,7 @@ impl WorkerState {
                         index_generation: self.index_generation,
                         file_count: self.files.len().try_into().unwrap_or(u32::MAX),
                     };
-                    write_message(stream, &RpcMessage::WorkerStats(stats)).await?;
+                    transport::write_message(stream, &RpcMessage::WorkerStats(stats)).await?;
                 }
                 RpcMessage::SearchSymbols { query, limit } => {
                     let limit = usize::try_from(limit).unwrap_or(usize::MAX);
@@ -518,11 +518,11 @@ impl WorkerState {
                         .as_ref()
                         .map(|index| index.search(&query, limit))
                         .unwrap_or_default();
-                    write_message(stream, &RpcMessage::SearchSymbolsResult { items }).await?;
+                    transport::write_message(stream, &RpcMessage::SearchSymbolsResult { items }).await?;
                 }
                 RpcMessage::Shutdown => return Ok(()),
                 other => {
-                    write_message(
+                    transport::write_message(
                         stream,
                         &RpcMessage::Error {
                             message: format!("unexpected message: {other:?}"),
@@ -799,48 +799,6 @@ type BoxedStream = Box<dyn AsyncReadWrite>;
 
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
-
-async fn write_message(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMessage) -> Result<()> {
-    let payload = nova_remote_proto::encode_message(message)?;
-    let len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("message too large"))?;
-
-    stream
-        .write_u32_le(len)
-        .await
-        .context("write message len")?;
-    stream
-        .write_all(&payload)
-        .await
-        .context("write message payload")?;
-    stream.flush().await.context("flush message")?;
-    Ok(())
-}
-
-async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
-    let len = stream.read_u32_le().await.context("read message len")?;
-    let len_usize = len as usize;
-    if len_usize > nova_remote_proto::MAX_MESSAGE_BYTES {
-        return Err(anyhow!(
-            "rpc payload too large: {len_usize} bytes (max {})",
-            nova_remote_proto::MAX_MESSAGE_BYTES
-        ));
-    }
-    // Use fallible reservation so allocation failure surfaces as an error rather than aborting the
-    // process.
-    let mut buf = Vec::new();
-    buf.try_reserve_exact(len_usize)
-        .context("allocate message buffer")?;
-    buf.resize(len_usize, 0);
-    stream
-        .read_exact(&mut buf)
-        .await
-        .context("read message payload")?;
-    nova_remote_proto::decode_message(&buf).context("decode message")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

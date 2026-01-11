@@ -4016,6 +4016,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_cbor",
+ "tokio",
 ]
 
 [[package]]

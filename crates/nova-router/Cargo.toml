@@ -24,7 +24,7 @@ nova-bugreport = { path = "../nova-bugreport" }
 nova-config = { path = "../nova-config" }
 nova-db = { path = "../nova-db" }
 nova-fuzzy = { path = "../nova-fuzzy" }
-nova-remote-proto = { path = "../nova-remote-proto" }
+nova-remote-proto = { path = "../nova-remote-proto", features = ["tokio"] }
 nova-scheduler = { path = "../nova-scheduler" }
 
 tokio-rustls = { version = "0.26.0", optional = true }

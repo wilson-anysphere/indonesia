@@ -10,7 +10,8 @@ use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
-    FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats,
+    transport, FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, Symbol, WorkerId,
+    WorkerStats,
 };
 use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig, TaskError};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -1092,7 +1093,7 @@ async fn handle_new_connection(
     #[cfg(not(feature = "tls"))]
     let _ = &identity;
 
-    let payload = timeout(WORKER_HANDSHAKE_TIMEOUT, read_payload(&mut stream))
+    let payload = timeout(WORKER_HANDSHAKE_TIMEOUT, transport::read_payload(&mut stream))
         .await
         .context("timed out waiting for WorkerHello")??;
     let hello = match nova_remote_proto::decode_message(&payload) {
@@ -1107,9 +1108,11 @@ async fn handle_new_connection(
                         },
                     );
                     if let Ok(bytes) = nova_remote_proto::v3::encode_wire_frame(&reject) {
-                        let _ =
-                            timeout(WORKER_HANDSHAKE_TIMEOUT, write_payload(&mut stream, &bytes))
-                                .await;
+                        let _ = timeout(
+                            WORKER_HANDSHAKE_TIMEOUT,
+                            transport::write_payload(&mut stream, &bytes),
+                        )
+                        .await;
                     }
                     return Err(anyhow!(
                         "received v3 worker hello; this router only supports legacy_v2"
@@ -1133,7 +1136,7 @@ async fn handle_new_connection(
             warn!(shard_id, "worker authentication failed");
             timeout(
                 WORKER_HANDSHAKE_TIMEOUT,
-                write_message(
+                transport::write_message(
                     &mut stream,
                     &RpcMessage::Error {
                         message: "authentication failed".into(),
@@ -1156,7 +1159,7 @@ async fn handle_new_connection(
             let Some(fingerprint) = identity.tls_client_cert_fingerprint() else {
                 timeout(
                     WORKER_HANDSHAKE_TIMEOUT,
-                    write_message(
+                    transport::write_message(
                         &mut stream,
                         &RpcMessage::Error {
                             message: "mTLS client certificate required".into(),
@@ -1181,7 +1184,7 @@ async fn handle_new_connection(
             if !is_allowed {
                 timeout(
                     WORKER_HANDSHAKE_TIMEOUT,
-                    write_message(
+                    transport::write_message(
                         &mut stream,
                         &RpcMessage::Error {
                             message: "shard authorization failed".into(),
@@ -1198,13 +1201,19 @@ async fn handle_new_connection(
     }
 
     {
-        let guard = state.shards.lock().await;
-        if !guard.contains_key(&shard_id) {
-            write_message(
-                &mut stream,
-                &RpcMessage::Error {
-                    message: format!("unknown shard {shard_id}"),
-                },
+        let known_shard = {
+            let guard = state.shards.lock().await;
+            guard.contains_key(&shard_id)
+        };
+        if !known_shard {
+            timeout(
+                WORKER_HANDSHAKE_TIMEOUT,
+                transport::write_message(
+                    &mut stream,
+                    &RpcMessage::Error {
+                        message: format!("unknown shard {shard_id}"),
+                    },
+                ),
             )
             .await
             .ok();
@@ -1250,7 +1259,7 @@ async fn handle_new_connection(
         };
         timeout(
             WORKER_HANDSHAKE_TIMEOUT,
-            write_message(&mut stream, &RpcMessage::Error { message }),
+            transport::write_message(&mut stream, &RpcMessage::Error { message }),
         )
         .await
         .ok();
@@ -1260,7 +1269,7 @@ async fn handle_new_connection(
     // Send RouterHello while the reservation is held.
     let send_hello = timeout(
         WORKER_HANDSHAKE_TIMEOUT,
-        write_message(
+        transport::write_message(
             &mut stream,
             &RpcMessage::RouterHello {
                 worker_id,
@@ -1422,7 +1431,7 @@ async fn worker_connection_loop(
 
         let write_res = match timeout(
             WORKER_RPC_WRITE_TIMEOUT,
-            write_message(&mut stream, &message),
+            transport::write_message(&mut stream, &message),
         )
         .await
         {
@@ -1446,7 +1455,7 @@ async fn worker_connection_loop(
             break;
         }
 
-        let read_res = match timeout(WORKER_RPC_READ_TIMEOUT, read_message(&mut stream)).await {
+        let read_res = match timeout(WORKER_RPC_READ_TIMEOUT, transport::read_message(&mut stream)).await {
             Ok(res) => res.with_context(|| {
                 format!("read response from worker {worker_id} (shard {shard_id})")
             }),
@@ -2054,55 +2063,6 @@ async fn collect_java_files(root: &Path) -> Result<Vec<FileText>> {
     }
 
     Ok(out)
-}
-
-async fn write_payload(stream: &mut (impl AsyncWrite + Unpin), payload: &[u8]) -> Result<()> {
-    let len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("message too large"))?;
-    stream
-        .write_u32_le(len)
-        .await
-        .context("write message len")?;
-    stream
-        .write_all(payload)
-        .await
-        .context("write message payload")?;
-    stream.flush().await.context("flush message")?;
-    Ok(())
-}
-
-async fn read_payload(stream: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>> {
-    let len = stream.read_u32_le().await.context("read message len")?;
-    let len_usize = len as usize;
-    if len_usize > nova_remote_proto::MAX_MESSAGE_BYTES {
-        return Err(anyhow!(
-            "rpc payload too large: {len_usize} bytes (max {})",
-            nova_remote_proto::MAX_MESSAGE_BYTES
-        ));
-    }
-    // Use fallible reservation so allocation failure surfaces as an error rather than aborting the
-    // process.
-    let mut buf = Vec::new();
-    buf.try_reserve_exact(len_usize)
-        .context("allocate message buffer")?;
-    buf.resize(len_usize, 0);
-    stream
-        .read_exact(&mut buf)
-        .await
-        .context("read message payload")?;
-    Ok(buf)
-}
-
-async fn write_message(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMessage) -> Result<()> {
-    let payload = nova_remote_proto::encode_message(message)?;
-    write_payload(stream, &payload).await
-}
-
-async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
-    let buf = read_payload(stream).await?;
-    nova_remote_proto::decode_message(&buf).context("decode message")
 }
 
 #[cfg(test)]

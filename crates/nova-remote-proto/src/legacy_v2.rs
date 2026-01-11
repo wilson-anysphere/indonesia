@@ -14,6 +14,7 @@ pub enum RpcMessage {
     /// First message sent by the worker on connect.
     WorkerHello {
         shard_id: ShardId,
+        #[serde(deserialize_with = "crate::bounded_de::opt_small_string")]
         auth_token: Option<String>,
         /// Whether the worker was able to load a cached shard index on startup.
         ///
@@ -36,12 +37,14 @@ pub enum RpcMessage {
     /// subsequent `UpdateFile` messages can rebuild a complete shard index.
     LoadFiles {
         revision: Revision,
+        #[serde(deserialize_with = "crate::bounded_de::files_vec")]
         files: Vec<FileText>,
     },
 
     /// Build (or rebuild) the shard index from a full file snapshot.
     IndexShard {
         revision: Revision,
+        #[serde(deserialize_with = "crate::bounded_de::files_vec")]
         files: Vec<FileText>,
     },
     /// Update a single file in the shard and rebuild affected indexes (MVP: rebuild shard).
@@ -60,12 +63,14 @@ pub enum RpcMessage {
 
     /// Query a shard's symbol index and return the top-k results.
     SearchSymbols {
+        #[serde(deserialize_with = "crate::bounded_de::small_string")]
         query: String,
         limit: u32,
     },
 
     /// Response to `SearchSymbols`.
     SearchSymbolsResult {
+        #[serde(deserialize_with = "crate::bounded_de::search_results_vec")]
         items: Vec<ScoredSymbol>,
     },
 
@@ -76,6 +81,7 @@ pub enum RpcMessage {
     Shutdown,
 
     Error {
+        #[serde(deserialize_with = "crate::bounded_de::small_string")]
         message: String,
     },
 }

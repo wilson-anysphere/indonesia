@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 /// Maximum size of a single RPC payload (not including the outer 4-byte length prefix).
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 
+/// Alias for the maximum payload length of the legacy `u32` length-prefixed transport.
+pub const MAX_FRAME_BYTES: usize = MAX_MESSAGE_BYTES;
+
 /// Maximum number of files allowed in a single `LoadFiles`/`IndexShard` request.
 pub const MAX_FILES_PER_MESSAGE: usize = 100_000;
 
@@ -29,15 +32,177 @@ pub type Revision = u64;
 pub type ShardId = u32;
 pub type WorkerId = u32;
 
+mod bounded_de {
+    use std::fmt;
+    use std::marker::PhantomData;
+
+    use serde::de::{Deserialize, Deserializer, Error, SeqAccess, Visitor};
+
+    use crate::{
+        MAX_FILES_PER_MESSAGE, MAX_FILE_TEXT_BYTES, MAX_SEARCH_RESULTS_PER_MESSAGE,
+        MAX_SMALL_STRING_BYTES, MAX_SYMBOLS_PER_SHARD_INDEX,
+    };
+
+    const MAX_VEC_PREALLOC: usize = 1024;
+
+    fn string_with_limit<'de, D>(
+        deserializer: D,
+        max_len: usize,
+        what: &'static str,
+    ) -> Result<String, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        // Deserialize as `&str` first to avoid allocating based solely on an attacker-controlled
+        // length prefix. This keeps decoding bounded by the input buffer size.
+        let s: &'de str = Deserialize::deserialize(deserializer)?;
+        if s.len() > max_len {
+            return Err(D::Error::custom(format!(
+                "{what} too large ({} bytes > {max_len})",
+                s.len()
+            )));
+        }
+        Ok(s.to_owned())
+    }
+
+    pub fn small_string<'de, D>(deserializer: D) -> Result<String, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        string_with_limit(deserializer, MAX_SMALL_STRING_BYTES, "string")
+    }
+
+    pub fn file_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        string_with_limit(deserializer, MAX_FILE_TEXT_BYTES, "file text")
+    }
+
+    pub fn opt_small_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: Option<&'de str> = Option::deserialize(deserializer)?;
+        match s {
+            Some(s) => {
+                if s.len() > MAX_SMALL_STRING_BYTES {
+                    return Err(D::Error::custom(format!(
+                        "string too large ({} bytes > {MAX_SMALL_STRING_BYTES})",
+                        s.len()
+                    )));
+                }
+                Ok(Some(s.to_owned()))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn vec_with_limit<'de, D, T>(
+        deserializer: D,
+        max_len: usize,
+        what: &'static str,
+    ) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        struct LimitedVecVisitor<T> {
+            max_len: usize,
+            what: &'static str,
+            _marker: PhantomData<T>,
+        }
+
+        impl<'de, T> Visitor<'de> for LimitedVecVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = Vec<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                write!(formatter, "a sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                if let Some(hint) = seq.size_hint() {
+                    if hint > self.max_len {
+                        return Err(A::Error::custom(format!(
+                            "{what} too long ({hint} items > {})",
+                            self.max_len,
+                            what = self.what
+                        )));
+                    }
+                }
+
+                let mut out = Vec::new();
+                if let Some(hint) = seq.size_hint() {
+                    // Prevent OOM from a hostile length prefix by capping preallocation.
+                    out.reserve(hint.min(MAX_VEC_PREALLOC));
+                }
+
+                while let Some(value) = seq.next_element()? {
+                    if out.len() == self.max_len {
+                        return Err(A::Error::custom(format!(
+                            "{what} too long (>{} items)",
+                            self.max_len,
+                            what = self.what
+                        )));
+                    }
+                    out.push(value);
+                }
+
+                Ok(out)
+            }
+        }
+
+        deserializer.deserialize_seq(LimitedVecVisitor {
+            max_len,
+            what,
+            _marker: PhantomData,
+        })
+    }
+
+    pub fn files_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        vec_with_limit(deserializer, MAX_FILES_PER_MESSAGE, "files")
+    }
+
+    pub fn search_results_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        vec_with_limit(deserializer, MAX_SEARCH_RESULTS_PER_MESSAGE, "search results")
+    }
+
+    pub fn symbols_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        vec_with_limit(deserializer, MAX_SYMBOLS_PER_SHARD_INDEX, "symbols")
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileText {
+    #[serde(deserialize_with = "bounded_de::small_string")]
     pub path: String,
+    #[serde(deserialize_with = "bounded_de::file_text")]
     pub text: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Symbol {
+    #[serde(deserialize_with = "bounded_de::small_string")]
     pub name: String,
+    #[serde(deserialize_with = "bounded_de::small_string")]
     pub path: String,
 }
 
@@ -53,7 +218,9 @@ pub struct SymbolRankKey {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScoredSymbol {
+    #[serde(deserialize_with = "bounded_de::small_string")]
     pub name: String,
+    #[serde(deserialize_with = "bounded_de::small_string")]
     pub path: String,
     pub rank_key: SymbolRankKey,
 }
@@ -64,6 +231,7 @@ pub struct ShardIndex {
     pub revision: Revision,
     /// Monotonically increasing generation counter, local to the worker.
     pub index_generation: u64,
+    #[serde(deserialize_with = "bounded_de::symbols_vec")]
     pub symbols: Vec<Symbol>,
 }
 
@@ -92,3 +260,152 @@ pub mod v3;
 mod validate_cbor;
 
 pub use legacy_v2::{decode_message, encode_message, RpcMessage, PROTOCOL_VERSION};
+
+pub mod transport {
+    use anyhow::anyhow;
+
+    #[cfg(feature = "tokio")]
+    use anyhow::Context;
+
+    use crate::{decode_message, encode_message, RpcMessage, MAX_FRAME_BYTES};
+
+    pub const LEN_PREFIX_BYTES: usize = 4;
+
+    pub fn encode_frame(payload: &[u8]) -> anyhow::Result<Vec<u8>> {
+        if payload.len() > MAX_FRAME_BYTES {
+            return Err(anyhow!(
+                "frame payload too large ({} bytes > MAX_FRAME_BYTES={MAX_FRAME_BYTES})",
+                payload.len()
+            ));
+        }
+
+        let len: u32 = payload
+            .len()
+            .try_into()
+            .map_err(|_| anyhow!("frame payload too large"))?;
+
+        let mut out = Vec::with_capacity(LEN_PREFIX_BYTES + payload.len());
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(payload);
+        Ok(out)
+    }
+
+    pub fn decode_frame(bytes: &[u8]) -> anyhow::Result<&[u8]> {
+        if bytes.len() < LEN_PREFIX_BYTES {
+            return Err(anyhow!(
+                "truncated frame: need {LEN_PREFIX_BYTES} byte length prefix, got {} bytes",
+                bytes.len()
+            ));
+        }
+
+        let len = u32::from_le_bytes(bytes[0..LEN_PREFIX_BYTES].try_into().unwrap()) as usize;
+        if len > MAX_FRAME_BYTES {
+            return Err(anyhow!(
+                "frame payload too large ({len} bytes > MAX_FRAME_BYTES={MAX_FRAME_BYTES})"
+            ));
+        }
+
+        let expected_len = LEN_PREFIX_BYTES
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("frame length overflow"))?;
+
+        match bytes.len().cmp(&expected_len) {
+            std::cmp::Ordering::Less => Err(anyhow!(
+                "truncated frame payload: expected {expected_len} bytes, got {} bytes",
+                bytes.len()
+            )),
+            std::cmp::Ordering::Greater => Err(anyhow!(
+                "trailing bytes after frame: expected {expected_len} bytes, got {} bytes",
+                bytes.len()
+            )),
+            std::cmp::Ordering::Equal => Ok(&bytes[LEN_PREFIX_BYTES..expected_len]),
+        }
+    }
+
+    pub fn encode_framed_message(msg: &RpcMessage) -> anyhow::Result<Vec<u8>> {
+        let payload = encode_message(msg)?;
+        encode_frame(&payload)
+    }
+
+    pub fn decode_framed_message(bytes: &[u8]) -> anyhow::Result<RpcMessage> {
+        let payload = decode_frame(bytes)?;
+        decode_message(payload)
+    }
+
+    #[cfg(feature = "tokio")]
+    pub async fn write_payload(
+        stream: &mut (impl tokio::io::AsyncWrite + Unpin),
+        payload: &[u8],
+    ) -> anyhow::Result<()> {
+        use tokio::io::AsyncWriteExt;
+
+        if payload.len() > MAX_FRAME_BYTES {
+            return Err(anyhow!(
+                "frame payload too large ({} bytes > MAX_FRAME_BYTES={MAX_FRAME_BYTES})",
+                payload.len()
+            ));
+        }
+        let len: u32 = payload
+            .len()
+            .try_into()
+            .map_err(|_| anyhow!("frame payload too large"))?;
+
+        stream
+            .write_all(&len.to_le_bytes())
+            .await
+            .context("write message len")?;
+        stream
+            .write_all(payload)
+            .await
+            .context("write message payload")?;
+        stream.flush().await.context("flush message")?;
+        Ok(())
+    }
+
+    #[cfg(feature = "tokio")]
+    pub async fn read_payload(
+        stream: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) -> anyhow::Result<Vec<u8>> {
+        use tokio::io::AsyncReadExt;
+
+        let mut prefix = [0u8; LEN_PREFIX_BYTES];
+        stream
+            .read_exact(&mut prefix)
+            .await
+            .context("read message len")?;
+        let len = u32::from_le_bytes(prefix) as usize;
+        if len > MAX_FRAME_BYTES {
+            return Err(anyhow!(
+                "frame payload too large ({len} bytes > MAX_FRAME_BYTES={MAX_FRAME_BYTES})"
+            ));
+        }
+
+        // Use fallible reservation so allocation failure surfaces as an error rather than
+        // aborting the process.
+        let mut buf = Vec::new();
+        buf.try_reserve_exact(len).context("allocate message buffer")?;
+        buf.resize(len, 0);
+        stream
+            .read_exact(&mut buf)
+            .await
+            .context("read message payload")?;
+        Ok(buf)
+    }
+
+    #[cfg(feature = "tokio")]
+    pub async fn write_message(
+        stream: &mut (impl tokio::io::AsyncWrite + Unpin),
+        message: &RpcMessage,
+    ) -> anyhow::Result<()> {
+        let payload = encode_message(message)?;
+        write_payload(stream, &payload).await
+    }
+
+    #[cfg(feature = "tokio")]
+    pub async fn read_message(
+        stream: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) -> anyhow::Result<RpcMessage> {
+        let payload = read_payload(stream).await?;
+        decode_message(&payload)
+    }
+}
