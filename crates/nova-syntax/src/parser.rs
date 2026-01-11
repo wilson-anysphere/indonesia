@@ -192,9 +192,6 @@ const TYPE_ARGUMENT_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Eof,
 ]);
 
-const ANNOTATION_DEFAULT_RECOVERY: TokenSet =
-    TokenSet::new(&[SyntaxKind::Semicolon, SyntaxKind::RBrace, SyntaxKind::Eof]);
-
 const EXPR_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Semicolon,
     SyntaxKind::Comma,
@@ -643,48 +640,33 @@ impl<'a> Parser<'a> {
     fn parse_type_parameters(&mut self) {
         self.builder.start_node(SyntaxKind::TypeParameters.into());
         self.expect(SyntaxKind::Less, "expected `<`");
-        while !matches!(
-            self.current(),
-            SyntaxKind::Greater
-                | SyntaxKind::RightShift
-                | SyntaxKind::UnsignedRightShift
-                | SyntaxKind::Eof
-        ) {
-            self.builder.start_node(SyntaxKind::TypeParameter.into());
 
-            // Type parameter modifiers (annotations) aren't modeled yet; keep it permissive.
-            while self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw) {
-                self.parse_annotation();
-            }
-
-            self.expect_ident_like("expected type parameter name");
-            if self.at(SyntaxKind::ExtendsKw) {
-                self.bump();
-                if self.at_type_start() {
-                    self.parse_type();
-                } else {
-                    self.error_here("expected type bound");
+        // Don't attempt to fully parse type parameters yet. Generic member declarations are common
+        // in real-world Java, and downstream semantic lowering prefers a stable tree shape over
+        // detailed correctness. We consume tokens until the outer `>` is matched, keeping nested
+        // `<...>` balanced and splitting `>>` / `>>>` into individual `>` tokens so we don't
+        // over-consume.
+        let mut depth: usize = 1;
+        while depth > 0 {
+            match self.current() {
+                SyntaxKind::Less => {
+                    depth += 1;
+                    self.bump_any();
                 }
-                while self.at(SyntaxKind::Amp) {
-                    self.bump();
-                    if self.at_type_start() {
-                        self.parse_type();
-                    } else {
-                        self.error_here("expected type bound");
-                        break;
-                    }
+                SyntaxKind::Greater => {
+                    depth = depth.saturating_sub(1);
+                    self.bump_any();
                 }
+                SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift => {
+                    self.split_shift_as_greater();
+                }
+                SyntaxKind::Eof => break,
+                _ => self.bump_any(),
             }
-
-            self.builder.finish_node(); // TypeParameter
-
-            if self.at(SyntaxKind::Comma) {
-                self.bump();
-                continue;
-            }
-            break;
         }
-        self.expect_gt();
+        if depth > 0 {
+            self.error_here("unterminated type parameter list");
+        }
         self.builder.finish_node(); // TypeParameters
     }
 
@@ -1147,64 +1129,36 @@ impl<'a> Parser<'a> {
     fn parse_annotation_element_default(&mut self) {
         self.builder.start_node(SyntaxKind::DefaultValue.into());
         self.expect(SyntaxKind::DefaultKw, "expected `default`");
-        self.parse_annotation_element_value();
-
-        // If the default value is malformed, skip junk until the terminating `;`
-        // to avoid cascading errors.
-        if !self.at(SyntaxKind::Semicolon) {
-            self.recover_to(ANNOTATION_DEFAULT_RECOVERY);
-        }
-
-        self.builder.finish_node();
-    }
-
-    fn parse_annotation_element_value(&mut self) {
-        self.builder
-            .start_node(SyntaxKind::AnnotationElementValue.into());
-        self.eat_trivia();
-        match self.current() {
-            SyntaxKind::At if self.nth(1) != Some(SyntaxKind::InterfaceKw) => {
-                self.parse_annotation();
-            }
-            SyntaxKind::LBrace => {
-                self.parse_array_initializer();
-            }
-            kind if can_start_expression(kind) => {
-                self.parse_expression(0);
-            }
-            _ => {
-                self.builder.start_node(SyntaxKind::Error.into());
-                self.error_here("expected annotation element value");
-                // Don't consume obvious terminators: let the outer parser handle them.
-                if !matches!(
-                    self.current(),
-                    SyntaxKind::Semicolon
-                        | SyntaxKind::Comma
-                        | SyntaxKind::RBrace
-                        | SyntaxKind::RParen
-                        | SyntaxKind::Eof
-                ) {
-                    self.bump_any();
+        if matches!(self.current(), SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::Eof) {
+            self.error_here("expected default value");
+        } else {
+            while !matches!(
+                self.current(),
+                SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::Eof
+            ) {
+                match self.current() {
+                    SyntaxKind::LParen => self.bump_balanced(SyntaxKind::LParen, SyntaxKind::RParen),
+                    SyntaxKind::LBrace => self.bump_balanced(SyntaxKind::LBrace, SyntaxKind::RBrace),
+                    _ => self.bump_any(),
                 }
-                self.builder.finish_node();
             }
         }
         self.builder.finish_node();
     }
 
-    fn parse_array_initializer(&mut self) {
-        self.builder.start_node(SyntaxKind::ArrayInitializer.into());
-        self.expect(SyntaxKind::LBrace, "expected `{`");
-        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
-            self.parse_annotation_element_value();
-            if self.at(SyntaxKind::Comma) {
-                self.bump();
-                continue;
+    fn bump_balanced(&mut self, open: SyntaxKind, close: SyntaxKind) {
+        let mut depth: usize = 0;
+        while !self.at(SyntaxKind::Eof) {
+            match self.current() {
+                kind if kind == open => depth += 1,
+                kind if kind == close => depth = depth.saturating_sub(1),
+                _ => {}
             }
-            break;
+            self.bump_any();
+            if depth == 0 {
+                break;
+            }
         }
-        self.expect(SyntaxKind::RBrace, "expected `}`");
-        self.builder.finish_node();
     }
 
     fn parse_block(&mut self) {

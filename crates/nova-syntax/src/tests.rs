@@ -396,7 +396,7 @@ fn parser_recovers_after_interface_implements_header() {
 
 #[test]
 fn parse_generic_method_type_parameters() {
-    let input = "class Foo { <T> T id(T t) { return t; } <T> Foo(T t) { } }";
+    let input = "class Foo { <T extends @A java.util.List<java.util.List<String>>> T id(T t) { return t; } <U> Foo(U u) { } }";
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
 
@@ -427,9 +427,9 @@ fn parse_annotation_element_default_value() {
 @interface A {
   int value() default 1;
   String[] names() default {"a", "b"};
-  B ann() default @B(x = 1);
+  B ann() default @B(xs = {1, 2});
   int other();
-}
+ }
 "#;
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
