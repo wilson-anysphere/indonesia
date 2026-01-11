@@ -27,6 +27,7 @@ nova-core = { path = "../nova-core" }
 nova-db = { path = "../nova-db" }
 nova-ide = { path = "../nova-ide" }
 nova-project = { path = "../nova-project" }
+nova-build = { path = "../nova-build" }
 nova-jdwp = { path = "../nova-jdwp" }
 nova-stream-debug = { path = "../nova-stream-debug" }
 nova-metrics = { path = "../nova-metrics" }

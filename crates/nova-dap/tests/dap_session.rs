@@ -1,12 +1,25 @@
 mod harness;
 
-use std::time::Duration;
+use std::{
+    path::PathBuf,
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use base64::{engine::general_purpose, Engine as _};
 use harness::spawn_wire_server;
 use nova_dap::object_registry::{OBJECT_HANDLE_BASE, PINNED_SCOPE_REF};
 use nova_jdwp::wire::mock::MockJdwpServer;
 use serde_json::json;
+
+fn tool_available(name: &str) -> bool {
+    Command::new(name)
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok()
+}
 
 #[tokio::test]
 async fn dap_can_attach_set_breakpoints_and_stop() {
@@ -134,6 +147,65 @@ async fn dap_can_hot_swap_a_class() {
     assert_eq!(calls[0].class_count, 1);
     assert_eq!(calls[0].classes.len(), 1);
     assert_eq!(calls[0].classes[0].1, bytecode);
+
+    client.disconnect().await;
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_hot_swap_can_compile_changed_files_with_javac() {
+    if !tool_available("javac") {
+        // CI images may not include a JDK; skip rather than failing.
+        return;
+    }
+
+    let mut caps = vec![false; 32];
+    caps[7] = true; // canRedefineClasses
+    let jdwp = MockJdwpServer::spawn_with_capabilities(caps).await.unwrap();
+
+    let (client, server_task) = spawn_wire_server();
+
+    client.initialize_handshake().await;
+    client.attach("127.0.0.1", jdwp.addr().port()).await;
+
+    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join("java")
+        .join("Main.java");
+    assert!(fixture_path.is_file());
+
+    let hot_swap_resp = client
+        .request(
+            "nova/hotSwap",
+            json!({
+                "changedFiles": [fixture_path],
+            }),
+        )
+        .await;
+
+    assert_eq!(
+        hot_swap_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true),
+        "expected hot swap to succeed: {hot_swap_resp}"
+    );
+    assert_eq!(
+        hot_swap_resp
+            .pointer("/body/results/0/status")
+            .and_then(|v| v.as_str()),
+        Some("success"),
+        "unexpected hot swap result: {hot_swap_resp}"
+    );
+
+    let calls = jdwp.redefine_classes_calls().await;
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].class_count, 1);
+    assert_eq!(calls[0].classes.len(), 1);
+    let bytes = &calls[0].classes[0].1;
+    assert!(
+        bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE]),
+        "expected classfile magic, got {:?}",
+        bytes.get(0..4)
+    );
 
     client.disconnect().await;
     server_task.await.unwrap().unwrap();

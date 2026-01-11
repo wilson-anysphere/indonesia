@@ -40,7 +40,7 @@ pub struct CompiledClass {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompileOutput {
     pub file: PathBuf,
-    pub result: Result<CompiledClass, CompileError>,
+    pub result: Result<Vec<CompiledClass>, CompileError>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -174,26 +174,36 @@ impl<B: BuildSystem, J: JdwpRedefiner> HotSwapEngine<B, J> {
                         status: HotSwapStatus::CompileError,
                         message: Some(err.to_string()),
                     }),
-                    Ok(compiled) => match self
-                        .jdwp
-                        .redefine_class(&compiled.class_name, &compiled.bytecode)
-                    {
-                        Ok(()) => results.push(HotSwapFileResult {
-                            file: file.clone(),
-                            status: HotSwapStatus::Success,
-                            message: None,
-                        }),
-                        Err(JdwpError::SchemaChange(msg)) => results.push(HotSwapFileResult {
-                            file: file.clone(),
-                            status: HotSwapStatus::SchemaChange,
-                            message: Some(msg),
-                        }),
-                        Err(err) => results.push(HotSwapFileResult {
-                            file: file.clone(),
-                            status: HotSwapStatus::RedefinitionError,
-                            message: Some(err.to_string()),
-                        }),
-                    },
+                    Ok(compiled) => {
+                        let mut outcome = Ok(());
+                        for class in compiled {
+                            match self.jdwp.redefine_class(&class.class_name, &class.bytecode) {
+                                Ok(()) => {}
+                                Err(err) => {
+                                    outcome = Err(err);
+                                    break;
+                                }
+                            }
+                        }
+
+                        match outcome {
+                            Ok(()) => results.push(HotSwapFileResult {
+                                file: file.clone(),
+                                status: HotSwapStatus::Success,
+                                message: None,
+                            }),
+                            Err(JdwpError::SchemaChange(msg)) => results.push(HotSwapFileResult {
+                                file: file.clone(),
+                                status: HotSwapStatus::SchemaChange,
+                                message: Some(msg),
+                            }),
+                            Err(err) => results.push(HotSwapFileResult {
+                                file: file.clone(),
+                                status: HotSwapStatus::RedefinitionError,
+                                message: Some(err.to_string()),
+                            }),
+                        }
+                    }
                 },
             }
         }
@@ -228,27 +238,40 @@ impl<B: BuildSystem, J: AsyncJdwpRedefiner> HotSwapEngine<B, J> {
                         status: HotSwapStatus::CompileError,
                         message: Some(err.to_string()),
                     }),
-                    Ok(compiled) => match self
-                        .jdwp
-                        .redefine_class(&compiled.class_name, &compiled.bytecode)
-                        .await
-                    {
-                        Ok(()) => results.push(HotSwapFileResult {
-                            file: file.clone(),
-                            status: HotSwapStatus::Success,
-                            message: None,
-                        }),
-                        Err(JdwpError::SchemaChange(msg)) => results.push(HotSwapFileResult {
-                            file: file.clone(),
-                            status: HotSwapStatus::SchemaChange,
-                            message: Some(msg),
-                        }),
-                        Err(err) => results.push(HotSwapFileResult {
-                            file: file.clone(),
-                            status: HotSwapStatus::RedefinitionError,
-                            message: Some(err.to_string()),
-                        }),
-                    },
+                    Ok(compiled) => {
+                        let mut outcome = Ok(());
+                        for class in compiled {
+                            match self
+                                .jdwp
+                                .redefine_class(&class.class_name, &class.bytecode)
+                                .await
+                            {
+                                Ok(()) => {}
+                                Err(err) => {
+                                    outcome = Err(err);
+                                    break;
+                                }
+                            }
+                        }
+
+                        match outcome {
+                            Ok(()) => results.push(HotSwapFileResult {
+                                file: file.clone(),
+                                status: HotSwapStatus::Success,
+                                message: None,
+                            }),
+                            Err(JdwpError::SchemaChange(msg)) => results.push(HotSwapFileResult {
+                                file: file.clone(),
+                                status: HotSwapStatus::SchemaChange,
+                                message: Some(msg),
+                            }),
+                            Err(err) => results.push(HotSwapFileResult {
+                                file: file.clone(),
+                                status: HotSwapStatus::RedefinitionError,
+                                message: Some(err.to_string()),
+                            }),
+                        }
+                    }
                 },
             }
         }
@@ -313,10 +336,10 @@ mod tests {
             a.clone(),
             CompileOutput {
                 file: a.clone(),
-                result: Ok(CompiledClass {
+                result: Ok(vec![CompiledClass {
                     class_name: "com.example.A".into(),
                     bytecode: vec![0xCA, 0xFE],
-                }),
+                }]),
             },
         );
         build.outputs.insert(
@@ -330,10 +353,10 @@ mod tests {
             c.clone(),
             CompileOutput {
                 file: c.clone(),
-                result: Ok(CompiledClass {
+                result: Ok(vec![CompiledClass {
                     class_name: "com.example.C".into(),
                     bytecode: vec![0xBE, 0xEF],
-                }),
+                }]),
             },
         );
 
