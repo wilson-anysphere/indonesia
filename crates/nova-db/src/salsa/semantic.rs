@@ -9,6 +9,7 @@ use crate::FileId;
 use super::cancellation as cancel;
 use super::stats::HasQueryStats;
 use super::syntax::NovaSyntax;
+use super::TrackedSalsaMemo;
 
 #[ra_salsa::query_group(NovaSemanticStorage)]
 pub trait NovaSemantic: NovaSyntax + HasQueryStats {
@@ -47,6 +48,7 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<ItemTree> {
     } else {
         Arc::new(String::new())
     };
+    let approx_bytes = text.len() as u64;
 
     let file_path = db.file_path(file).filter(|p| !p.is_empty());
     let mode = db.persistence().mode();
@@ -64,6 +66,7 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<ItemTree> {
             Some(artifacts) => {
                 db.record_disk_cache_hit("item_tree");
                 let result = Arc::new(artifacts.item_tree);
+                db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
                 db.record_query_stat("item_tree", start.elapsed());
                 return result;
             }
@@ -76,6 +79,7 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<ItemTree> {
     let parse = db.parse(file);
     let it = build_item_tree(&parse, text.as_str());
     let result = Arc::new(it);
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ItemTree, approx_bytes);
 
     if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {
         let artifacts = FileAstArtifacts {

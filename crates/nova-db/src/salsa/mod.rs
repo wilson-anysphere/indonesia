@@ -48,11 +48,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use parking_lot::Mutex as ParkingMutex;
 use parking_lot::RwLock;
 
+use nova_memory::{
+    EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager, MemoryPressure,
+};
 use nova_project::{BuildSystem, JavaConfig, JavaVersion, ProjectConfig};
 
 use crate::persistence::{HasPersistence, Persistence, PersistenceConfig};
@@ -125,6 +129,129 @@ pub trait HasFilePaths {
     fn file_path(&self, file: FileId) -> Option<Arc<String>>;
 }
 
+/// File-keyed memoized query results tracked for memory accounting.
+///
+/// This is intentionally coarse: it is used to approximate the footprint of
+/// Salsa memo tables which can otherwise grow without bound in large workspaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TrackedSalsaMemo {
+    Parse,
+    ParseJava,
+    ItemTree,
+}
+
+/// Database functionality needed by query implementations to record memo sizes.
+///
+/// Implementations should treat the values as best-effort hints and must not
+/// panic if accounting fails.
+pub trait HasSalsaMemoStats {
+    fn record_salsa_memo_bytes(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64);
+}
+
+#[derive(Debug, Default)]
+struct SalsaMemoFootprint {
+    inner: Mutex<SalsaMemoFootprintInner>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+}
+
+#[derive(Debug, Default)]
+struct SalsaMemoFootprintInner {
+    by_file: HashMap<FileId, FileMemoBytes>,
+    total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FileMemoBytes {
+    parse: u64,
+    parse_java: u64,
+    item_tree: u64,
+}
+
+impl FileMemoBytes {
+    fn total(self) -> u64 {
+        self.parse + self.parse_java + self.item_tree
+    }
+}
+
+impl SalsaMemoFootprint {
+    fn lock_inner(&self) -> std::sync::MutexGuard<'_, SalsaMemoFootprintInner> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn bind_tracker(&self, tracker: nova_memory::MemoryTracker) {
+        let _ = self.tracker.set(tracker);
+        self.refresh_tracker();
+    }
+
+    fn refresh_tracker(&self) {
+        let Some(tracker) = self.tracker.get() else {
+            return;
+        };
+        let bytes = self.lock_inner().total_bytes;
+        tracker.set_bytes(bytes);
+    }
+
+    fn bytes(&self) -> u64 {
+        self.lock_inner().total_bytes
+    }
+
+    fn clear(&self) {
+        let mut inner = self.lock_inner();
+        inner.by_file.clear();
+        inner.total_bytes = 0;
+        drop(inner);
+        self.refresh_tracker();
+    }
+
+    fn record(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64) {
+        let mut inner = self.lock_inner();
+        let entry = inner.by_file.entry(file).or_default();
+        let prev_total = entry.total();
+
+        match memo {
+            TrackedSalsaMemo::Parse => entry.parse = bytes,
+            TrackedSalsaMemo::ParseJava => entry.parse_java = bytes,
+            TrackedSalsaMemo::ItemTree => entry.item_tree = bytes,
+        }
+
+        let next_total = entry.total();
+        inner.total_bytes = inner
+            .total_bytes
+            .saturating_sub(prev_total)
+            .saturating_add(next_total);
+        drop(inner);
+        self.refresh_tracker();
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct SalsaInputs {
+    file_exists: HashMap<FileId, bool>,
+    file_content: HashMap<FileId, Arc<String>>,
+    source_root: HashMap<FileId, SourceRootId>,
+    project_config: HashMap<ProjectId, Arc<ProjectConfig>>,
+}
+
+impl SalsaInputs {
+    fn apply_to(&self, db: &mut RootDatabase) {
+        for (&file, &exists) in &self.file_exists {
+            db.set_file_exists(file, exists);
+        }
+        for (&file, &root) in &self.source_root {
+            db.set_source_root(file, root);
+        }
+        for (&file, content) in &self.file_content {
+            db.set_file_content(file, content.clone());
+        }
+        for (&project, config) in &self.project_config {
+            db.set_project_config(project, config.clone());
+        }
+    }
+}
+
 /// Runs `f` and catches any Salsa cancellation.
 ///
 /// This is a convenience wrapper around `ra_salsa::Cancelled::catch`.
@@ -157,6 +284,7 @@ pub struct RootDatabase {
     stats: QueryStatsCollector,
     persistence: Persistence,
     file_paths: Arc<RwLock<HashMap<FileId, Arc<String>>>>,
+    memo_footprint: Arc<SalsaMemoFootprint>,
 }
 
 impl Default for RootDatabase {
@@ -177,6 +305,7 @@ impl RootDatabase {
             stats: QueryStatsCollector::default(),
             persistence: Persistence::new(&project_root, persistence),
             file_paths: Arc::new(RwLock::new(HashMap::new())),
+            memo_footprint: Arc::new(SalsaMemoFootprint::default()),
         };
 
         // Provide a sensible default `ProjectConfig` so callers can start
@@ -256,6 +385,12 @@ impl HasQueryStats for RootDatabase {
     }
 }
 
+impl HasSalsaMemoStats for RootDatabase {
+    fn record_salsa_memo_bytes(&self, file: FileId, memo: TrackedSalsaMemo, bytes: u64) {
+        self.memo_footprint.record(file, memo, bytes);
+    }
+}
+
 impl HasPersistence for RootDatabase {
     fn persistence(&self) -> &Persistence {
         &self.persistence
@@ -329,18 +464,130 @@ impl ra_salsa::ParallelDatabase for RootDatabase {
             stats: self.stats.clone(),
             persistence: self.persistence.clone(),
             file_paths: self.file_paths.clone(),
+            memo_footprint: self.memo_footprint.clone(),
         })
+    }
+}
+
+/// Memory manager evictor for Salsa memoized query results.
+pub struct SalsaMemoEvictor {
+    name: String,
+    db: Arc<ParkingMutex<RootDatabase>>,
+    inputs: Arc<ParkingMutex<SalsaInputs>>,
+    footprint: Arc<SalsaMemoFootprint>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+}
+
+impl SalsaMemoEvictor {
+    fn new(
+        db: Arc<ParkingMutex<RootDatabase>>,
+        inputs: Arc<ParkingMutex<SalsaInputs>>,
+        footprint: Arc<SalsaMemoFootprint>,
+    ) -> Self {
+        Self {
+            name: "salsa_memos".to_string(),
+            db,
+            inputs,
+            footprint,
+            registration: OnceLock::new(),
+        }
+    }
+
+    fn register(self: &Arc<Self>, manager: &MemoryManager) {
+        if self.registration.get().is_some() {
+            return;
+        }
+
+        let registration = manager.register_evictor(
+            self.name.clone(),
+            MemoryCategory::QueryCache,
+            self.clone(),
+        );
+        self.footprint.bind_tracker(registration.tracker());
+        let _ = self.registration.set(registration);
+    }
+}
+
+impl MemoryEvictor for SalsaMemoEvictor {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn category(&self) -> MemoryCategory {
+        MemoryCategory::QueryCache
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        let before = self.footprint.bytes();
+        if before <= request.target_bytes {
+            return EvictionResult {
+                before_bytes: before,
+                after_bytes: before,
+            };
+        }
+
+        // Eviction must be best-effort and non-panicking. `ra_ap_salsa` does not
+        // currently expose a stable per-query sweep API, so we rebuild the
+        // database from inputs and swap it behind the mutex. Outstanding
+        // snapshots remain valid because they own their storage snapshots.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let inputs = self.inputs.lock().clone();
+            let mut db = self.db.lock();
+            let stats = db.stats.clone();
+            let persistence = db.persistence.clone();
+            let file_paths = db.file_paths.clone();
+            let mut fresh = RootDatabase {
+                storage: ra_salsa::Storage::default(),
+                stats,
+                persistence,
+                file_paths,
+                memo_footprint: self.footprint.clone(),
+            };
+            inputs.apply_to(&mut fresh);
+            *db = fresh;
+        }));
+
+        // Clear tracked footprint unconditionally; memos will be re-recorded as
+        // queries re-execute.
+        self.footprint.clear();
+        let after = self.footprint.bytes();
+
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
+        }
     }
 }
 
 /// Thread-safe handle around [`RootDatabase`].
 ///
-/// - Writes are serialized through an internal `RwLock`.
+/// - Writes are serialized through an internal mutex.
 /// - Reads are expected to happen through snapshots (`Database::snapshot`),
 ///   which can then be freely sent to worker threads.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct Database {
-    inner: Arc<RwLock<RootDatabase>>,
+    inner: Arc<ParkingMutex<RootDatabase>>,
+    inputs: Arc<ParkingMutex<SalsaInputs>>,
+    memo_evictor: Arc<OnceLock<Arc<SalsaMemoEvictor>>>,
+    memo_footprint: Arc<SalsaMemoFootprint>,
+}
+
+impl Default for Database {
+    fn default() -> Self {
+        let db = RootDatabase::default();
+        let memo_footprint = db.memo_footprint.clone();
+        let mut inputs = SalsaInputs::default();
+        let default_project = ProjectId::from_raw(0);
+        inputs
+            .project_config
+            .insert(default_project, db.project_config(default_project));
+        Self {
+            inner: Arc::new(ParkingMutex::new(db)),
+            inputs: Arc::new(ParkingMutex::new(inputs)),
+            memo_evictor: Arc::new(OnceLock::new()),
+            memo_footprint,
+        }
+    }
 }
 
 impl Database {
@@ -348,20 +595,33 @@ impl Database {
         Self::default()
     }
 
+    pub fn new_with_memory_manager(manager: &MemoryManager) -> Self {
+        let db = Self::new();
+        db.register_salsa_memo_evictor(manager);
+        db
+    }
+
     pub fn new_with_persistence(
         project_root: impl AsRef<Path>,
         persistence: PersistenceConfig,
     ) -> Self {
+        let db = RootDatabase::new_with_persistence(project_root, persistence);
+        let memo_footprint = db.memo_footprint.clone();
+        let mut inputs = SalsaInputs::default();
+        let default_project = ProjectId::from_raw(0);
+        inputs
+            .project_config
+            .insert(default_project, db.project_config(default_project));
         Self {
-            inner: Arc::new(RwLock::new(RootDatabase::new_with_persistence(
-                project_root,
-                persistence,
-            ))),
+            inner: Arc::new(ParkingMutex::new(db)),
+            inputs: Arc::new(ParkingMutex::new(inputs)),
+            memo_evictor: Arc::new(OnceLock::new()),
+            memo_footprint,
         }
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        self.inner.read().snapshot()
+        self.inner.lock().snapshot()
     }
 
     pub fn with_snapshot<T>(&self, f: impl FnOnce(&Snapshot) -> T) -> T {
@@ -378,52 +638,115 @@ impl Database {
     }
 
     pub fn query_stats(&self) -> QueryStats {
-        self.inner.read().query_stats()
+        self.inner.lock().query_stats()
     }
 
     pub fn clear_query_stats(&self) {
-        self.inner.read().clear_query_stats();
+        self.inner.lock().clear_query_stats();
     }
 
     pub fn persistence_stats(&self) -> crate::PersistenceStats {
-        self.inner.read().persistence_stats()
+        self.inner.lock().persistence_stats()
     }
 
     pub fn with_write<T>(&self, f: impl FnOnce(&mut RootDatabase) -> T) -> T {
-        let mut db = self.inner.write();
+        let mut db = self.inner.lock();
         f(&mut db)
     }
 
     pub fn request_cancellation(&self) {
-        self.inner.write().request_cancellation();
+        self.inner.lock().request_cancellation();
     }
 
     pub fn set_file_exists(&self, file: FileId, exists: bool) {
-        self.inner.write().set_file_exists(file, exists);
+        self.inputs.lock().file_exists.insert(file, exists);
+        self.inner.lock().set_file_exists(file, exists);
     }
 
     pub fn set_file_content(&self, file: FileId, content: Arc<String>) {
-        self.inner.write().set_file_content(file, content);
+        self.inputs
+            .lock()
+            .file_content
+            .insert(file, content.clone());
+        self.inner.lock().set_file_content(file, content);
     }
 
     pub fn set_file_text(&self, file: FileId, text: impl Into<String>) {
         let text = Arc::new(text.into());
-        let mut db = self.inner.write();
+        {
+            let mut inputs = self.inputs.lock();
+            inputs.file_exists.insert(file, true);
+            inputs.source_root.insert(file, SourceRootId::from_raw(0));
+            inputs.file_content.insert(file, text.clone());
+        }
+        let mut db = self.inner.lock();
         db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
         db.set_file_content(file, text);
     }
 
     pub fn set_file_path(&self, file: FileId, path: impl Into<String>) {
-        self.inner.write().set_file_path(file, path);
+        self.inner.lock().set_file_path(file, path);
     }
 
     pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
-        self.inner.write().set_project_config(project, config);
+        self.inputs
+            .lock()
+            .project_config
+            .insert(project, config.clone());
+        self.inner.lock().set_project_config(project, config);
     }
 
     pub fn set_source_root(&self, file: FileId, root: SourceRootId) {
-        self.inner.write().set_source_root(file, root);
+        self.inputs.lock().source_root.insert(file, root);
+        self.inner.lock().set_source_root(file, root);
+    }
+
+    /// Best-effort drop of memoized Salsa query results.
+    ///
+    /// Input queries are preserved; any outstanding snapshots remain valid.
+    pub fn evict_salsa_memos(&self, pressure: MemoryPressure) {
+        // Under low pressure, avoid disrupting cache locality.
+        if matches!(pressure, MemoryPressure::Low) {
+            return;
+        }
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let inputs = self.inputs.lock().clone();
+            let mut db = self.inner.lock();
+            let stats = db.stats.clone();
+            let persistence = db.persistence.clone();
+            let file_paths = db.file_paths.clone();
+            let mut fresh = RootDatabase {
+                storage: ra_salsa::Storage::default(),
+                stats,
+                persistence,
+                file_paths,
+                memo_footprint: self.memo_footprint.clone(),
+            };
+            inputs.apply_to(&mut fresh);
+            *db = fresh;
+        }));
+        self.memo_footprint.clear();
+    }
+
+    pub fn salsa_memo_bytes(&self) -> u64 {
+        self.memo_footprint.bytes()
+    }
+
+    pub fn register_salsa_memo_evictor(&self, manager: &MemoryManager) -> Arc<SalsaMemoEvictor> {
+        if let Some(existing) = self.memo_evictor.get() {
+            existing.clone()
+        } else {
+            let evictor = Arc::new(SalsaMemoEvictor::new(
+                self.inner.clone(),
+                self.inputs.clone(),
+                self.memo_footprint.clone(),
+            ));
+            evictor.register(manager);
+            let _ = self.memo_evictor.set(evictor.clone());
+            evictor
+        }
     }
 }
 
@@ -504,6 +827,7 @@ where
 mod tests {
     use super::*;
     use nova_cache::CacheConfig;
+    use nova_memory::{MemoryBudget, MemoryPressure};
     use tempfile::TempDir;
 
     fn stat(db: &RootDatabase, query_name: &str) -> QueryStat {
@@ -859,6 +1183,95 @@ mod tests {
             assert!(snap.file_exists(file));
             assert_eq!(snap.source_root(file), SourceRootId::from_raw(0));
         });
+    }
+
+    #[test]
+    fn salsa_memos_evict_under_memory_pressure_and_recompute() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new_with_memory_manager(&manager);
+
+        let files: Vec<FileId> = (0..128).map(FileId::from_raw).collect();
+        for (idx, file) in files.iter().copied().enumerate() {
+            db.set_file_text(
+                file,
+                format!("class C{idx} {{ int x = {idx}; int y = {idx}; }}"),
+            );
+        }
+
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.parse(*file);
+                let _ = snap.item_tree(*file);
+            }
+        });
+
+        let bytes_before = db.salsa_memo_bytes();
+        assert!(bytes_before > 0, "expected memo tracker to grow after queries");
+        assert_eq!(
+            manager.report().usage.query_cache,
+            bytes_before,
+            "memory manager should see tracked salsa memo usage"
+        );
+
+        let parse_exec_before = executions(&db.inner.lock(), "parse");
+        let item_tree_exec_before = executions(&db.inner.lock(), "item_tree");
+
+        // Validate that memoization is working prior to eviction.
+        db.with_snapshot(|snap| {
+            for file in &files {
+                let _ = snap.parse(*file);
+                let _ = snap.item_tree(*file);
+            }
+        });
+        assert_eq!(
+            executions(&db.inner.lock(), "parse"),
+            parse_exec_before,
+            "expected cached parse results prior to eviction"
+        );
+        assert_eq!(
+            executions(&db.inner.lock(), "item_tree"),
+            item_tree_exec_before,
+            "expected cached item_tree results prior to eviction"
+        );
+
+        // Trigger an enforcement pass; the evictor should rebuild the database and
+        // drop memoized results.
+        manager.enforce();
+
+        assert_eq!(
+            db.salsa_memo_bytes(),
+            0,
+            "expected memo tracker to clear after eviction"
+        );
+
+        // Subsequent queries should recompute after eviction.
+        let parse_exec_after_evict = executions(&db.inner.lock(), "parse");
+        db.with_snapshot(|snap| {
+            let _ = snap.parse(files[0]);
+            let _ = snap.item_tree(files[0]);
+        });
+        assert!(
+            executions(&db.inner.lock(), "parse") > parse_exec_after_evict,
+            "expected parse to re-execute after memo eviction"
+        );
+    }
+
+    #[test]
+    fn salsa_memo_eviction_preserves_snapshot_results() {
+        let manager = MemoryManager::new(MemoryBudget::from_total(1_000));
+        let db = Database::new_with_memory_manager(&manager);
+        let file = FileId::from_raw(1);
+        db.set_file_text(file, "class Foo { int x; }");
+
+        let snap = db.snapshot();
+        let parse_from_snapshot = snap.parse(file);
+        assert!(parse_from_snapshot.errors.is_empty());
+
+        // Evict memoized values from the main database while the snapshot is alive.
+        db.evict_salsa_memos(MemoryPressure::Critical);
+
+        // Previously returned results remain valid and the snapshot stays usable.
+        assert_eq!(&*parse_from_snapshot, &*snap.parse(file));
     }
 
     #[test]

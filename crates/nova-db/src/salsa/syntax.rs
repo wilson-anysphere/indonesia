@@ -12,12 +12,13 @@ use super::cancellation as cancel;
 use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
 use super::HasFilePaths;
+use super::{HasSalsaMemoStats, TrackedSalsaMemo};
 
 /// The parsed syntax tree type exposed by the database.
 pub type SyntaxTree = GreenNode;
 
 #[ra_salsa::query_group(NovaSyntaxStorage)]
-pub trait NovaSyntax: NovaInputs + HasQueryStats + HasPersistence + HasFilePaths {
+pub trait NovaSyntax: NovaInputs + HasQueryStats + HasPersistence + HasFilePaths + HasSalsaMemoStats {
     /// Parse a file into a syntax tree (memoized and dependency-tracked).
     fn parse(&self, file: FileId) -> Arc<ParseResult>;
 
@@ -52,6 +53,7 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
     } else {
         Arc::new(String::new())
     };
+    let approx_bytes = text.len() as u64;
 
     if db.persistence().mode().allows_read() {
         if let Some(file_path) = db.file_path(file).filter(|p| !p.is_empty()) {
@@ -63,6 +65,7 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
                 Some(artifacts) => {
                     db.record_disk_cache_hit("parse");
                     let result = Arc::new(artifacts.parse);
+                    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, approx_bytes);
                     db.record_query_stat("parse", start.elapsed());
                     return result;
                 }
@@ -75,6 +78,7 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
 
     let parsed = nova_syntax::parse(text.as_str());
     let result = Arc::new(parsed);
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::Parse, approx_bytes);
     db.record_query_stat("parse", start.elapsed());
     result
 }
@@ -95,6 +99,7 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
 
     let parsed = nova_syntax::parse_java(text.as_str());
     let result = Arc::new(parsed);
+    db.record_salsa_memo_bytes(file, TrackedSalsaMemo::ParseJava, text.len() as u64);
     db.record_query_stat("parse_java", start.elapsed());
     result
 }
