@@ -294,6 +294,8 @@ Look for messages like:
 - `timed out waiting for WorkerHello`
 - `tls accept timed out`
 - `dropping incoming … connection: too many pending handshakes`
+- `timed out writing request to worker …`
+- `timed out waiting for response from worker …`
 
 If you accidentally run a v3-capable worker against a legacy router, the router may reply with a
 v3 `Reject(unsupported_version, \"router only supports legacy_v2 protocol\")`.
@@ -302,6 +304,8 @@ Notes:
 
 - The handshake timeout is currently **5s**.
 - The router limits concurrent pending handshakes (currently **128**) to avoid accept-loop stalls.
+- The router enforces per-RPC timeouts: **30s** to write a request to a worker, and **10min** waiting
+  for a response.
 
 For the intended “secure remote mode” requirements (TLS + authentication + shard-scoped
 authorization + DoS hardening), see

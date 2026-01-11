@@ -59,8 +59,8 @@ The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
 - Keepalive: there is no application-level heartbeat yet; idle connections rely on TCP / deployment
   infrastructure.
 
-Transport-level timeouts (handshake/TLS accept) are enforced by the router/worker and are not
-currently user-configurable knobs.
+Transport-level timeouts (handshake/TLS accept, plus per-RPC read/write timeouts) are enforced by
+the router/worker and are not currently user-configurable knobs.
 
 The current legacy protocol also enforces fixed hard limits to prevent OOM on untrusted inputs (for
 example: ~64MiB max RPC payload, ~8MiB max file text). If indexing fails with a “too large” style
@@ -69,6 +69,14 @@ error, split large source roots into smaller shards.
 On the router, the initial handshake is subject to a short timeout (currently **5s**) and the
 listener caps the number of concurrent pending handshakes (currently **128**). If the worker’s
 connection is dropped immediately, check the router logs for handshake timeout / overload warnings.
+
+During normal operation, the router also enforces per-RPC timeouts:
+
+- **Write timeout:** currently **30s** to write a request to the worker.
+- **Read timeout:** currently **10min** waiting for the worker’s response (e.g. a slow `IndexShard`).
+
+If you see `timed out waiting for response from worker …`, consider splitting the shard into smaller
+source roots to reduce per-shard indexing work.
 
 ## Usage
 
