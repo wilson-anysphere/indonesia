@@ -19,7 +19,7 @@ fn assert_idempotent(src: &str, expected: &str) {
     let (after2, edit2) = apply_organize_imports(&after);
     assert_eq!(after2, after);
     assert!(
-        edit2.text_edits.is_empty() && edit2.file_ops.is_empty(),
+        edit2.is_empty(),
         "second pass should be a no-op, got edit: {edit2:?} (first pass was: {edit:?})"
     );
 }

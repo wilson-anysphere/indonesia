@@ -1073,7 +1073,7 @@ fn organize_imports_code_action(uri: &LspUri, source: &str) -> Option<CodeAction
     let file = FileId::new(uri.to_string());
     let db = InMemoryJavaDatabase::new([(file.clone(), source.to_string())]);
     let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() }).ok()?;
-    if edit.text_edits.is_empty() && edit.file_ops.is_empty() {
+    if edit.is_empty() {
         return None;
     }
     let lsp_edit = workspace_edit_to_lsp(&db, &edit).ok()?;
@@ -1121,7 +1121,7 @@ fn handle_java_organize_imports(
     let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
         .map_err(|e| (-32603, e.to_string()))?;
 
-    if edit.text_edits.is_empty() && edit.file_ops.is_empty() {
+    if edit.is_empty() {
         return serde_json::to_value(JavaOrganizeImportsResponse {
             applied: false,
             edit: None,
