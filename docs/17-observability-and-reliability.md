@@ -106,6 +106,12 @@ Diagnostics include:
 - deprecation warnings (for legacy aliases)
 - semantic validation warnings/errors (for example invalid `logging.level` directive strings)
 
+For editor/CI tooling, `nova-config` also exposes a JSON Schema (`nova_config::json_schema()`).
+The schema encodes a subset of Nova’s semantic rules (for example: cloud AI providers require
+`ai.api_key`, Azure requires `ai.provider.azure_deployment`, and `in_process_llama` requires
+`ai.provider.in_process_llama`), but runtime validation should still be treated as the source of
+truth.
+
 ### Environment variables
 
 Nova uses `tracing_subscriber::EnvFilter`, so the standard `RUST_LOG` environment variable can be

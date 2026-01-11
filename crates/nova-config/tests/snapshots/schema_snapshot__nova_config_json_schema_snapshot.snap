@@ -8,6 +8,170 @@ expression: schema
   "title": "NovaConfig",
   "description": "Top-level Nova configuration loaded from TOML.\n\nExtensions can be configured via the `[extensions]` table: ```toml [extensions] enabled = true wasm_paths = [\"./extensions\"] allow = [\"example.my_extension\"] deny = [\"example.bad_extension\"] wasm_memory_limit_bytes = 268435456 wasm_timeout_ms = 5000 ```",
   "type": "object",
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "enabled",
+              "provider"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "open_ai",
+                      "anthropic",
+                      "gemini",
+                      "azure_open_ai"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "api_key"
+            ],
+            "properties": {
+              "api_key": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "enabled",
+              "provider"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "azure_open_ai"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "provider"
+            ],
+            "properties": {
+              "provider": {
+                "required": [
+                  "azure_deployment"
+                ],
+                "properties": {
+                  "azure_deployment": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "enabled",
+              "provider"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "provider": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "const": "in_process_llama"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "provider"
+            ],
+            "properties": {
+              "provider": {
+                "required": [
+                  "in_process_llama"
+                ],
+                "properties": {
+                  "in_process_llama": {
+                    "$ref": "#/definitions/InProcessLlamaConfig"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "ai": {
       "description": "Offline / local LLM configuration (Ollama, vLLM, etc).",
