@@ -195,6 +195,7 @@ Nova has criterion benchmarks (used by the performance regression guard in `.git
 To run the same suite locally:
 
 ```bash
+rm -rf target/criterion
 cargo bench -p nova-core --bench critical_paths
 cargo bench -p nova-syntax --bench parse_java
 cargo bench -p nova-format --bench format

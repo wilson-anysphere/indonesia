@@ -34,7 +34,7 @@ For the **operational** guide (what tests exist today, where fixtures live, how 
 │     • Fuzz testing for robustness                               │
 │                                                                  │
 │  4. PERFORMANCE TESTING                                          │
-│     • Benchmark suite for critical paths                        │
+│     • Benchmark suites for editor-critical paths                 │
 │     • Continuous performance monitoring                         │
 │     • No performance regression allowed                         │
 │                                                                  │

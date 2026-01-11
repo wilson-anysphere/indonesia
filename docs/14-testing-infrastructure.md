@@ -81,6 +81,7 @@ cargo test -p nova-types --test javac_differential -- --ignored
 # assert stable diagnostic *keys* instead of brittle human-readable strings.
 
 # perf.yml (criterion benchmarks; see below for capture/compare)
+rm -rf target/criterion
 cargo bench -p nova-core --bench critical_paths
 cargo bench -p nova-syntax --bench parse_java
 cargo bench -p nova-format --bench format
