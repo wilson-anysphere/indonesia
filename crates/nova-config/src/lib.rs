@@ -486,14 +486,14 @@ impl NovaConfig {
     }
 }
 
-/// Load Nova configuration for a workspace root.
+/// Load Nova configuration for a workspace.
 ///
 /// Discovery order (first match wins):
 /// 1) `NOVA_CONFIG_PATH` env var (if set)
-/// 2) Walk up from `root` (or `root.parent()` when `root` is a file) looking for:
+/// 2) Walk up from `root` (or `root.parent()` when `root` is a file) and look for:
 ///    - `.nova/config.toml`
-///    - `nova.toml`
-/// 3) fallback `NovaConfig::default()`
+///    - `nova.toml` (legacy fallback)
+/// 3) fallback [`NovaConfig::default`]
 pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigError> {
     if let Some(path) = std::env::var_os("NOVA_CONFIG_PATH") {
         return NovaConfig::load_from_path(PathBuf::from(path));
