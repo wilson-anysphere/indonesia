@@ -443,6 +443,11 @@ mod lsp_tests {
 
 ### Performance Tests
 
+**Implementation note (current repo):** Nova’s performance regression guard is implemented in:
+`crates/nova-core/benches/critical_paths.rs` + `perf/thresholds.toml` and enforced in CI by
+`.github/workflows/perf.yml`. For operational details, see:
+[`perf/README.md`](../perf/README.md) and [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
+
 ```rust
 #[cfg(test)]
 mod benchmarks {
@@ -503,6 +508,10 @@ mod benchmarks {
 
 ### Fuzz Testing
 
+**Implementation note (current repo):** Nova ships a `cargo-fuzz` harness under `fuzz/` with targets and
+seed corpora checked in. See [`docs/fuzzing.md`](fuzzing.md) and the “Fuzzing” section of
+[`14-testing-infrastructure.md`](14-testing-infrastructure.md) for exact commands and layout.
+
 ```rust
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
@@ -536,6 +545,15 @@ fuzz_target!(|edits: Vec<FuzzEdit>| {
 ```
 
 ### Real Project Tests
+
+**Implementation note (current repo):** Real-project validation is implemented as ignored tests using
+local-only clones under `test-projects/`:
+
+- `crates/nova-project/tests/real_projects.rs`
+- `crates/nova-cli/tests/real_projects.rs`
+
+Run them with `./scripts/run-real-project-tests.sh` (see [`test-projects/README.md`](../test-projects/README.md))
+or the “Real-project validation” section of [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ```rust
 #[cfg(test)]
