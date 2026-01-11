@@ -157,6 +157,15 @@ pub struct Server {
     pub peer_auth_present: bool,
 }
 
+/// Cloneable handle for issuing calls / sending responses on a connection.
+///
+/// This is intentionally separate from the request receiver so callers can dedicate a single task
+/// to draining inbound requests while still issuing outbound calls from other tasks.
+#[derive(Clone)]
+pub struct Handle {
+    inner: Arc<Inner>,
+}
+
 struct Inner {
     writer: Mutex<WriteHalf<BoxedStream>>,
     pending: Mutex<HashMap<RequestId, oneshot::Sender<RpcResult<Response>>>>,
@@ -218,6 +227,12 @@ impl Client {
         &self.inner.negotiated
     }
 
+    pub fn handle(&self) -> Handle {
+        Handle {
+            inner: self.inner.clone(),
+        }
+    }
+
     pub async fn recv_request(&mut self) -> Option<IncomingRequest> {
         self.incoming.recv().await
     }
@@ -227,81 +242,19 @@ impl Client {
         request_id: RequestId,
         response: RpcResult<Response>,
     ) -> Result<()> {
-        self.inner
-            .send_packet(request_id, RpcPayload::Response(response))
-            .await
+        self.handle().respond(request_id, response).await
     }
 
     pub async fn respond_ok(&self, request_id: RequestId, value: Response) -> Result<()> {
-        self.respond(request_id, RpcResult::Ok { value }).await
+        self.handle().respond_ok(request_id, value).await
     }
 
     pub async fn respond_err(&self, request_id: RequestId, error: RpcError) -> Result<()> {
-        self.respond(request_id, RpcResult::Err { error }).await
+        self.handle().respond_err(request_id, error).await
     }
 
     pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
-        let request_id = self
-            .inner
-            .next_request_id
-            .fetch_add(self.inner.request_id_step, Ordering::Relaxed);
-
-        let request_type = request_type(&request);
-
-        let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG)
-            .then(Instant::now);
-
-        let span = tracing::debug_span!(
-            target: TRACE_TARGET,
-            "call",
-            worker_id = self.inner.worker_id,
-            shard_id = self.inner.shard_id,
-            request_id,
-            request_type
-        );
-        let parent_span = span.clone();
-        let inner = self.inner.clone();
-        let response = async move {
-            let (tx, rx) = oneshot::channel();
-            {
-                let mut pending = inner.pending.lock().await;
-                pending.insert(request_id, tx);
-            }
-
-            if let Err(err) = inner
-                .send_packet(request_id, RpcPayload::Request(request))
-                .await
-            {
-                let mut pending = inner.pending.lock().await;
-                pending.remove(&request_id);
-                return Err(err);
-            }
-
-            rx.await
-                .map_err(|_| anyhow!("connection closed while waiting for response"))
-        }
-        .instrument(span)
-        .await?;
-
-        if let Some(start) = start {
-            let elapsed = start.elapsed();
-            let status = rpc_result_status(&response);
-            let error_code = rpc_result_error_code_str(&response);
-            tracing::debug!(
-                target: TRACE_TARGET,
-                parent: &parent_span,
-                event = "call_complete",
-                worker_id = self.inner.worker_id,
-                shard_id = self.inner.shard_id,
-                request_id,
-                request_type,
-                status,
-                error_code = ?error_code,
-                latency_ms = elapsed.as_secs_f64() * 1000.0
-            );
-        }
-
-        Ok(response)
+        self.handle().call(request).await
     }
 }
 
@@ -350,6 +303,50 @@ impl Server {
         &self.inner.negotiated
     }
 
+    pub fn handle(&self) -> Handle {
+        Handle {
+            inner: self.inner.clone(),
+        }
+    }
+
+    pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
+        self.handle().call(request).await
+    }
+
+    pub async fn recv_request(&mut self) -> Option<IncomingRequest> {
+        self.incoming.recv().await
+    }
+
+    pub async fn respond(
+        &self,
+        request_id: RequestId,
+        response: RpcResult<Response>,
+    ) -> Result<()> {
+        self.handle().respond(request_id, response).await
+    }
+
+    pub async fn respond_ok(&self, request_id: RequestId, value: Response) -> Result<()> {
+        self.handle().respond_ok(request_id, value).await
+    }
+
+    pub async fn respond_err(&self, request_id: RequestId, error: RpcError) -> Result<()> {
+        self.handle().respond_err(request_id, error).await
+    }
+}
+
+impl Handle {
+    pub fn negotiated(&self) -> &Negotiated {
+        &self.inner.negotiated
+    }
+
+    pub fn worker_id(&self) -> WorkerId {
+        self.inner.worker_id
+    }
+
+    pub fn shard_id(&self) -> ShardId {
+        self.inner.shard_id
+    }
+
     pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
         let request_id = self
             .inner
@@ -358,8 +355,8 @@ impl Server {
 
         let request_type = request_type(&request);
 
-        let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG)
-            .then(Instant::now);
+        let start =
+            tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
 
         let span = tracing::debug_span!(
             target: TRACE_TARGET,
@@ -412,10 +409,6 @@ impl Server {
         }
 
         Ok(response)
-    }
-
-    pub async fn recv_request(&mut self) -> Option<IncomingRequest> {
-        self.incoming.recv().await
     }
 
     pub async fn respond(
@@ -488,7 +481,12 @@ impl Inner {
                 compression,
                 data: wire_bytes,
             };
-            write_wire_frame(&mut *writer, self.negotiated.capabilities.max_frame_len, &frame).await
+            write_wire_frame(
+                &mut *writer,
+                self.negotiated.capabilities.max_frame_len,
+                &frame,
+            )
+            .await
         }
     }
 }
@@ -1006,7 +1004,8 @@ fn decompress_zstd_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>> {
                 limit
             ));
         }
-        out.try_reserve(n).context("allocate decompression buffer")?;
+        out.try_reserve(n)
+            .context("allocate decompression buffer")?;
         out.extend_from_slice(&buf[..n]);
     }
     Ok(out)
