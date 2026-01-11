@@ -241,7 +241,7 @@ fn stdio_server_handles_document_formatting_request() {
 
     assert_eq!(
         formatted,
-        "class Foo {\n    void m() {\n        int x=1;\n    }\n}\n"
+        "class Foo {\n    void m() {\n        int x = 1;\n    }\n}\n"
     );
 
     write_jsonrpc_message(
@@ -278,7 +278,7 @@ fn stdio_server_applies_incremental_did_change_utf16_correctly() {
             "params": { "capabilities": {} }
         }),
     );
-    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
 
     let uri = "file:///test/Foo.java";
     let text = "class Foo{void m(){String s=\"😀\";int x=1;}}\n";
@@ -341,23 +341,111 @@ fn stdio_server_applies_incremental_did_change_utf16_correctly() {
         }),
     );
 
-    let formatting_resp = read_jsonrpc_message(&mut stdout);
+    let formatting_resp = read_response_with_id(&mut stdout, 2);
     let result = formatting_resp.get("result").cloned().expect("result");
     let edits: Vec<LspTextEdit> = serde_json::from_value(result).expect("decode text edits");
     let formatted = apply_lsp_text_edits(&updated_text, &edits);
 
     assert!(
-        formatted.contains("int x=2;"),
+        formatted.contains("int x = 2;"),
         "formatted output did not reflect incremental edit:\n{formatted}"
     );
-    assert!(!formatted.contains("int x=1;"));
+    assert!(!formatted.contains("int x = 1;"));
     assert!(formatted.contains("😀"), "emoji should be preserved");
 
     write_jsonrpc_message(
         &mut stdin,
         &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_resolves_completion_item_imports() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+
+    let uri = "file:///test/Foo.java";
+    let text = "package com.example;\n\nclass Foo {}\n";
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    // Directly resolve an item with import requests stashed in `data.nova.imports`.
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "completionItem/resolve",
+            "params": {
+                "label": "collect",
+                "insertText": "collect(Collectors.toList())",
+                "data": {
+                    "nova": {
+                        "imports": ["java.util.stream.Collectors"],
+                        "uri": uri
+                    }
+                }
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    let edits_value = result
+        .get("additionalTextEdits")
+        .cloned()
+        .expect("additionalTextEdits");
+    let edits: Vec<LspTextEdit> = serde_json::from_value(edits_value).expect("decode text edits");
+
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].range.start.line, 1);
+    assert_eq!(edits[0].range.start.character, 0);
+    assert_eq!(edits[0].new_text, "import java.util.stream.Collectors;\n");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
@@ -861,7 +949,10 @@ fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
         }),
     );
     let cached_resp = read_response_with_id(&mut stdout, 3);
-    let result = cached_resp.get("result").cloned().expect("result");
+    let result = match cached_resp.get("result").cloned() {
+        Some(result) => result,
+        None => panic!("expected result, got: {cached_resp:?}"),
+    };
     let classpath = result
         .get("classpath")
         .and_then(|v| v.as_array())
@@ -1106,7 +1197,10 @@ esac
         }),
     );
     let cached_resp = read_response_with_id(&mut stdout, 3);
-    let result = cached_resp.get("result").cloned().expect("result");
+    let result = match cached_resp.get("result").cloned() {
+        Some(result) => result,
+        None => panic!("expected result, got: {cached_resp:?}"),
+    };
     let classpath = result
         .get("classpath")
         .and_then(|v| v.as_array())
@@ -1151,7 +1245,7 @@ fn stdio_server_handles_build_project_request_with_fake_gradle_diagnostics() {
 last=""
 for arg in "$@"; do last="$arg"; done
 case "$last" in
-  *compileJava)
+  *compileJava|*novaCompileAllJava)
     printf '%s\n' '{}:10: error: cannot find symbol'
     printf '%s\n' '        foo.bar();'
     printf '%s\n' '            ^'

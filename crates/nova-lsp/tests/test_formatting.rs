@@ -57,7 +57,7 @@ fn lsp_document_formatting_returns_valid_edits() {
 
     assert_eq!(
         formatted,
-        "class Foo {\n    void m() {\n        int x=1;\n    }\n}\n"
+        "class Foo {\n    void m() {\n        int x = 1;\n    }\n}\n"
     );
 }
 
@@ -86,7 +86,7 @@ fn lsp_range_formatting_replaces_only_selected_range() {
 
     assert_eq!(
         formatted,
-        "class Foo {\n    void a() { int x=1; }\n    void b() {\n        int y=2;\n    }\n}\n"
+        "class Foo {\n    void a() { int x=1; }\n    void b() {\n        int y = 2;\n    }\n}\n"
     );
 }
 

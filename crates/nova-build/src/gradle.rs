@@ -712,8 +712,7 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             | "settings.gradle"
             | "settings.gradle.kts"
             | "gradle.properties"
-            | "gradlew"
-            | "gradlew.bat" => {
+            => {
                 out.push(path);
             }
             "gradle-wrapper.properties" => {

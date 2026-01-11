@@ -69,16 +69,25 @@ impl CompletionEngine {
             .build_completion_prompt(ctx, self.config.ai_max_items);
 
         let timeout = std::time::Duration::from_millis(self.config.ai_timeout_ms.max(1));
-        let request =
-            provider.complete_multi_token(prompt, self.config.ai_max_items, cancel.clone());
+        let request = provider.complete_multi_token(prompt, self.config.ai_max_items, cancel.clone());
+        tokio::pin!(request);
 
         let suggestions = match tokio::select! {
-            _ = cancel.cancelled() => Err(nova_ai::AiProviderError::Cancelled),
-            res = time::timeout(timeout, request) => match res {
+            // Wait for completion, but enforce an overall timeout. If we time out,
+            // cancel the request to give providers a chance to abort work.
+            res = time::timeout(timeout, &mut request) => match res {
                 Ok(res) => res,
                 Err(_) => {
                     cancel.cancel();
                     Err(nova_ai::AiProviderError::Timeout)
+                }
+            },
+            // If cancelled, give the provider a short grace period to observe the
+            // token and return a cancellation error before we drop the future.
+            _ = cancel.cancelled() => {
+                match time::timeout(std::time::Duration::from_millis(250), &mut request).await {
+                    Ok(res) => res,
+                    Err(_) => Err(nova_ai::AiProviderError::Cancelled),
                 }
             }
         } {

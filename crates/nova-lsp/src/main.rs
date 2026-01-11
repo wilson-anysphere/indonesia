@@ -192,6 +192,7 @@ fn handle_request(
             let result = json!({
                 "capabilities": {
                     "textDocumentSync": { "openClose": true, "change": 2 },
+                    "completionProvider": { "resolveProvider": true },
                     "documentFormattingProvider": true,
                     "documentRangeFormattingProvider": true,
                     "documentOnTypeFormattingProvider": {
@@ -342,6 +343,38 @@ fn handle_request(
                 },
             )
         }
+        "textDocument/completion" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            // This server's focus today is code actions/formatting/etc. We still
+            // provide a stub completion endpoint so clients that notice
+            // `completionProvider` don't receive "method not found" errors.
+            Ok(json!({ "jsonrpc": "2.0", "id": id, "result": [] }))
+        }
+        "completionItem/resolve" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+
+            let item: lsp_types::CompletionItem = match serde_json::from_value(params) {
+                Ok(item) => item,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": format!("invalid CompletionItem params: {err}") }
+                    }));
+                }
+            };
+
+            let resolved = resolve_completion_item_with_state(item, state);
+            Ok(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": serde_json::to_value(resolved).unwrap_or(serde_json::Value::Null)
+            }))
+        }
         _ => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
@@ -378,6 +411,42 @@ fn handle_request(
             }
         }
     }
+}
+
+fn resolve_completion_item_with_state(item: lsp_types::CompletionItem, state: &ServerState) -> lsp_types::CompletionItem {
+    let uri = completion_item_uri(&item);
+    let text = uri
+        .and_then(|uri| load_document_text(state, uri))
+        .or_else(|| {
+            // Best-effort fallback: resolve against the only open document when the completion
+            // item doesn't carry a URI.
+            if state.documents.len() == 1 {
+                state
+                    .documents
+                    .values()
+                    .next()
+                    .map(|doc| doc.text().to_owned())
+            } else {
+                None
+            }
+        });
+
+    match text {
+        Some(text) => nova_lsp::resolve_completion_item(item, &text),
+        None => item,
+    }
+}
+
+fn completion_item_uri(item: &lsp_types::CompletionItem) -> Option<&str> {
+    item.data
+        .as_ref()
+        .and_then(|data| data.get("nova"))
+        .and_then(|nova| {
+            nova.get("uri")
+                .or_else(|| nova.get("document_uri"))
+                .or_else(|| nova.get("documentUri"))
+        })
+        .and_then(|uri| uri.as_str())
 }
 
 fn server_shutting_down_error(id: serde_json::Value) -> serde_json::Value {
@@ -952,17 +1021,12 @@ mod tests {
             then.status(200).json_body(json!({ "completion": long }));
         });
 
-        let cfg = CloudLlmConfig {
-            provider: ProviderKind::Http,
-            endpoint: url::Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
-            api_key: None,
-            model: "default".to_string(),
-            timeout: Duration::from_secs(2),
-            retry: RetryConfig {
-                max_retries: 0,
-                ..RetryConfig::default()
-            },
-            audit_logging: false,
+        let mut cfg =
+            CloudLlmConfig::http(url::Url::parse(&format!("{}/complete", server.base_url())).unwrap());
+        cfg.timeout = Duration::from_secs(2);
+        cfg.retry = RetryConfig {
+            max_retries: 0,
+            ..RetryConfig::default()
         };
         let client = CloudLlmClient::new(cfg).unwrap();
         let ai = AiService::new(client);

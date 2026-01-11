@@ -73,9 +73,11 @@ impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
             let sanitized_prompt = sanitize_prompt(&prompt, &self.privacy);
             let full_prompt = format!("{sanitized_prompt}\n\n{}", json_instructions(max_items));
 
-            // Use a child token so dropping this request doesn't cancel the parent session token.
+            // Use a child token so dropping this request cancels only this request (and not the
+            // parent token if it's shared).
             let cancel = cancel.child_token();
             let _guard = cancel.clone().drop_guard();
+
             let response = self
                 .llm
                 .generate(
