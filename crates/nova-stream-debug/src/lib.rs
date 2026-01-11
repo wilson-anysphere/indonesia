@@ -2,10 +2,11 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use nova_jdwp::{FrameId, JdwpClient, JdwpError, JdwpValue, ObjectKindPreview};
-use nova_types::{PrimitiveType, Type};
+use nova_types::{format_type, PrimitiveType, Type, TypeStore};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -357,25 +358,9 @@ fn stream_receiver_type(kind: StreamValueKind) -> Type {
 }
 
 fn type_to_string(ty: &Type) -> String {
-    match ty {
-        Type::Void => "void".to_string(),
-        Type::Primitive(p) => match p {
-            PrimitiveType::Boolean => "boolean",
-            PrimitiveType::Byte => "byte",
-            PrimitiveType::Short => "short",
-            PrimitiveType::Char => "char",
-            PrimitiveType::Int => "int",
-            PrimitiveType::Long => "long",
-            PrimitiveType::Float => "float",
-            PrimitiveType::Double => "double",
-        }
-        .to_string(),
-        Type::Named(name) => name.clone(),
-        Type::Null => "null".to_string(),
-        Type::Unknown => "<unknown>".to_string(),
-        Type::Error => "<error>".to_string(),
-        other => format!("{other:?}"),
-    }
+    static ENV: OnceLock<TypeStore> = OnceLock::new();
+    let env = ENV.get_or_init(TypeStore::with_minimal_jdk);
+    format_type(env, ty)
 }
 
 #[derive(Debug, Clone, Default)]

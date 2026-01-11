@@ -16,6 +16,13 @@ use std::fmt;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+pub mod java;
+
+pub use java::format::{
+    format_method_signature, format_resolved_method, format_type, MethodSignatureDisplay, ResolvedMethodDisplay,
+    TypeDisplay,
+};
+
 // === Generic shared types ====================================================
 
 /// A byte-span into a source string.
