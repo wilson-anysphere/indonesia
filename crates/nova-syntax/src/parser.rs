@@ -928,14 +928,18 @@ impl<'a> Parser<'a> {
         let is_case = self.at(SyntaxKind::CaseKw);
         self.bump(); // case/default
         if is_case {
-            if !self.at(SyntaxKind::Colon) && !self.at(SyntaxKind::Arrow) {
-                self.parse_expression(0);
+            if self.at(SyntaxKind::Colon) || self.at(SyntaxKind::Arrow) {
+                self.error_here("expected case label");
+            } else {
+                self.parse_case_label_element();
                 while self.at(SyntaxKind::Comma) {
                     self.bump();
-                    self.parse_expression(0);
+                    if self.at(SyntaxKind::Colon) || self.at(SyntaxKind::Arrow) {
+                        self.error_here("expected case label after `,`");
+                        break;
+                    }
+                    self.parse_case_label_element();
                 }
-            } else {
-                self.error_here("expected case label expression");
             }
         }
 
@@ -949,6 +953,270 @@ impl<'a> Parser<'a> {
 
         self.builder.finish_node();
         is_arrow
+    }
+
+    fn parse_case_label_element(&mut self) {
+        self.builder.start_node(SyntaxKind::CaseLabelElement.into());
+        self.eat_trivia();
+
+        let mut is_pattern = false;
+        match self.current() {
+            // Java 21+: `case null, default -> ...`
+            SyntaxKind::DefaultKw => {
+                self.bump();
+            }
+            _ => {
+                if self.at_pattern_start() {
+                    is_pattern = true;
+                    self.parse_pattern();
+                } else {
+                    self.parse_expression(0);
+                }
+            }
+        }
+
+        if is_pattern && self.at(SyntaxKind::WhenKw) {
+            self.parse_guard();
+        }
+
+        self.builder.finish_node(); // CaseLabelElement
+    }
+
+    fn parse_guard(&mut self) {
+        self.builder.start_node(SyntaxKind::Guard.into());
+        self.expect(SyntaxKind::WhenKw, "expected `when`");
+        // Avoid consuming the label terminator on malformed guards.
+        if matches!(
+            self.current(),
+            SyntaxKind::Arrow
+                | SyntaxKind::Colon
+                | SyntaxKind::Comma
+                | SyntaxKind::RParen
+                | SyntaxKind::RBrace
+                | SyntaxKind::Eof
+        ) {
+            self.error_here("expected guard expression");
+        } else {
+            self.parse_expression(0);
+        }
+        self.builder.finish_node(); // Guard
+    }
+
+    fn at_pattern_start(&mut self) -> bool {
+        self.at_record_pattern_start()
+            || self.at_type_pattern_start()
+            || self.at(SyntaxKind::FinalKw)
+            || (self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw))
+    }
+
+    fn at_type_pattern_start(&mut self) -> bool {
+        // Type patterns share the same prefix shape as local variable declarations:
+        // `[final|@Anno]* Type Identifier`.
+        self.at_local_var_decl_start()
+    }
+
+    fn at_record_pattern_start(&mut self) -> bool {
+        let mut i = skip_trivia(&self.tokens, 0);
+
+        // Record patterns can be preceded by annotations (type annotations). Be permissive and
+        // treat `final` the same way for recovery.
+        loop {
+            match self.tokens.get(i).map(|t| t.kind) {
+                Some(SyntaxKind::FinalKw) => {
+                    i = skip_trivia(&self.tokens, i + 1);
+                }
+                Some(SyntaxKind::At) => {
+                    // Skip `@Name(...)` loosely (same strategy as `at_local_var_decl_start`).
+                    i = skip_trivia(&self.tokens, i + 1);
+                    if self.tokens.get(i).map_or(false, |t| t.kind.is_identifier_like()) {
+                        i += 1;
+                        loop {
+                            let dot = skip_trivia(&self.tokens, i);
+                            if self.tokens.get(dot).map(|t| t.kind) != Some(SyntaxKind::Dot) {
+                                i = dot;
+                                break;
+                            }
+                            let seg = skip_trivia(&self.tokens, dot + 1);
+                            if !self
+                                .tokens
+                                .get(seg)
+                                .map_or(false, |t| t.kind.is_identifier_like())
+                            {
+                                i = dot;
+                                break;
+                            }
+                            i = seg + 1;
+                        }
+                    }
+
+                    i = skip_trivia(&self.tokens, i);
+                    if self.tokens.get(i).map(|t| t.kind) == Some(SyntaxKind::LParen) {
+                        i = skip_balanced_parens(&self.tokens, i);
+                    }
+                    i = skip_trivia(&self.tokens, i);
+                }
+                _ => break,
+            }
+        }
+
+        let Some(first) = self.tokens.get(i).map(|t| t.kind) else {
+            return false;
+        };
+        if !first.is_identifier_like() {
+            return false;
+        }
+
+        // Qualified name + optional type arguments.
+        i += 1;
+        loop {
+            let dot = skip_trivia(&self.tokens, i);
+            if self.tokens.get(dot).map(|t| t.kind) != Some(SyntaxKind::Dot) {
+                i = dot;
+                break;
+            }
+            let seg = skip_trivia(&self.tokens, dot + 1);
+            if !self
+                .tokens
+                .get(seg)
+                .map_or(false, |t| t.kind.is_identifier_like())
+            {
+                i = dot;
+                break;
+            }
+            i = seg + 1;
+        }
+
+        i = skip_trivia(&self.tokens, i);
+        if self.tokens.get(i).map(|t| t.kind) == Some(SyntaxKind::Less) {
+            i = skip_type_arguments(&self.tokens, i);
+        }
+
+        // Array dims: `[]`*
+        loop {
+            let j = skip_trivia(&self.tokens, i);
+            if self.tokens.get(j).map(|t| t.kind) != Some(SyntaxKind::LBracket) {
+                i = j;
+                break;
+            }
+            let after_l = skip_trivia(&self.tokens, j + 1);
+            if self.tokens.get(after_l).map(|t| t.kind) != Some(SyntaxKind::RBracket) {
+                i = j;
+                break;
+            }
+            i = after_l + 1;
+        }
+
+        i = skip_trivia(&self.tokens, i);
+        self.tokens.get(i).map(|t| t.kind) == Some(SyntaxKind::LParen)
+    }
+
+    fn parse_pattern(&mut self) {
+        self.builder.start_node(SyntaxKind::Pattern.into());
+        if self.at_record_pattern_start() {
+            self.parse_record_pattern();
+        } else {
+            self.parse_type_pattern();
+        }
+        self.builder.finish_node(); // Pattern
+    }
+
+    fn parse_type_pattern(&mut self) {
+        self.builder.start_node(SyntaxKind::TypePattern.into());
+        self.parse_pattern_modifiers();
+
+        if self.at_type_start() {
+            self.parse_type();
+        } else {
+            self.error_here("expected pattern type");
+            // Ensure progress on malformed patterns without consuming the label terminator.
+            if !matches!(
+                self.current(),
+                SyntaxKind::Arrow | SyntaxKind::Colon | SyntaxKind::Comma | SyntaxKind::RParen | SyntaxKind::Eof
+            ) {
+                self.bump_any();
+            }
+        }
+
+        // Avoid swallowing the label terminator on incomplete patterns.
+        if matches!(
+            self.current(),
+            SyntaxKind::Arrow
+                | SyntaxKind::Colon
+                | SyntaxKind::Comma
+                | SyntaxKind::RParen
+                | SyntaxKind::WhenKw
+                | SyntaxKind::Eof
+        ) {
+            self.error_here("expected binding identifier");
+        } else {
+            self.expect_ident_like("expected binding identifier");
+        }
+
+        self.builder.finish_node(); // TypePattern
+    }
+
+    fn parse_record_pattern(&mut self) {
+        self.builder.start_node(SyntaxKind::RecordPattern.into());
+        self.parse_pattern_modifiers();
+
+        if self.at_type_start() {
+            self.parse_type();
+        } else {
+            self.error_here("expected record pattern type");
+        }
+
+        self.expect(SyntaxKind::LParen, "expected `(` in record pattern");
+        while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
+            if self.at(SyntaxKind::Comma) {
+                self.error_here("expected record pattern component");
+                self.bump();
+                continue;
+            }
+
+            if self.at_pattern_start() {
+                self.parse_pattern();
+            } else {
+                self.builder.start_node(SyntaxKind::Error.into());
+                self.error_here("expected record pattern component");
+                // Ensure progress without consuming the list terminator.
+                if !matches!(
+                    self.current(),
+                    SyntaxKind::Comma | SyntaxKind::RParen | SyntaxKind::Eof
+                ) {
+                    self.bump_any();
+                }
+                self.builder.finish_node();
+            }
+
+            if self.at(SyntaxKind::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect(SyntaxKind::RParen, "expected `)` in record pattern");
+        self.builder.finish_node(); // RecordPattern
+    }
+
+    fn parse_pattern_modifiers(&mut self) {
+        self.builder.start_node(SyntaxKind::Modifiers.into());
+        loop {
+            self.eat_trivia();
+            if self.at(SyntaxKind::At) {
+                // `@interface` is not a pattern modifier.
+                if self.nth(1) == Some(SyntaxKind::InterfaceKw) {
+                    break;
+                }
+                self.parse_annotation();
+                continue;
+            }
+            if self.at(SyntaxKind::FinalKw) {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.builder.finish_node(); // Modifiers
     }
 
     fn parse_try_statement(&mut self, checkpoint: rowan::Checkpoint) {
@@ -1409,7 +1677,11 @@ impl<'a> Parser<'a> {
                 }
                 self.builder.start_node_at(checkpoint, expr_kind.into());
                 self.bump();
-                self.parse_expression(r_bp);
+                if op == SyntaxKind::InstanceofKw {
+                    self.parse_instanceof_type_or_pattern();
+                } else {
+                    self.parse_expression(r_bp);
+                }
                 self.builder.finish_node();
                 continue;
             }
@@ -1431,6 +1703,35 @@ impl<'a> Parser<'a> {
             }
 
             break;
+        }
+    }
+
+    fn parse_instanceof_type_or_pattern(&mut self) {
+        self.eat_trivia();
+
+        // Java 16+: pattern matching for instanceof.
+        if self.at_record_pattern_start() || self.at_type_pattern_start() {
+            self.parse_pattern();
+            return;
+        }
+
+        // Classic type-test (`x instanceof String`). Allow annotations/final for recovery and for
+        // type-use annotations, even though we don't model them precisely.
+        if self.at(SyntaxKind::FinalKw) || self.at(SyntaxKind::At) {
+            self.parse_pattern_modifiers();
+        }
+
+        if self.at_type_start() {
+            self.parse_type();
+        } else {
+            self.error_here("expected type or pattern after `instanceof`");
+            // Ensure progress without swallowing expression terminators.
+            if !matches!(
+                self.current(),
+                SyntaxKind::RParen | SyntaxKind::Semicolon | SyntaxKind::Comma | SyntaxKind::Eof
+            ) {
+                self.bump_any();
+            }
         }
     }
 

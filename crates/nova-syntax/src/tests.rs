@@ -643,3 +643,96 @@ fn feature_gate_switch_expressions_version_matrix() {
     assert_eq!(java14.result.errors, Vec::new());
     assert!(java14.diagnostics.is_empty());
 }
+
+#[test]
+fn parse_instanceof_type_patterns() {
+    let input = r#"
+class Foo {
+  void m(Object x) {
+    if (x instanceof String s) {}
+    if (x instanceof final String t) {}
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::Pattern));
+    assert!(kinds.contains(&SyntaxKind::TypePattern));
+}
+
+#[test]
+fn parse_switch_patterns_with_guards_and_default_elements() {
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case String s -> {}
+      case null, default -> {}
+      case Integer i when i > 0 -> {}
+      default -> {}
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::CaseLabelElement));
+    assert!(kinds.contains(&SyntaxKind::Pattern));
+    assert!(kinds.contains(&SyntaxKind::TypePattern));
+    assert!(kinds.contains(&SyntaxKind::Guard));
+}
+
+#[test]
+fn parse_record_patterns() {
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case Point(int x, int y) -> {}
+      case Box(Point(int x, int y)) -> {}
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::RecordPattern));
+    assert!(kinds.contains(&SyntaxKind::TypePattern));
+}
+
+#[test]
+fn parser_recovers_after_malformed_guarded_pattern() {
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case Integer i when -> {}
+    }
+  }
+}
+class Bar {}
+"#;
+
+    let result = parse_java(input);
+    assert!(
+        !result.errors.is_empty(),
+        "expected at least one error for malformed guard"
+    );
+
+    let class_count = result
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::ClassDeclaration)
+        .count();
+
+    assert_eq!(class_count, 2);
+}

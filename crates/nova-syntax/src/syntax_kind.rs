@@ -268,6 +268,13 @@ pub enum SyntaxKind {
     AnnotationElementValue,
     ArrayInitializer,
 
+    // Patterns (Java 16+ instanceof; Java 21+ switch)
+    Pattern,
+    TypePattern,
+    RecordPattern,
+    Guard,
+    CaseLabelElement,
+
     __Last,
 }
 
