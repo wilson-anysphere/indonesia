@@ -9,9 +9,31 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+nova-classfile = { path = "../crates/nova-classfile" }
 nova-format = { path = "../crates/nova-format" }
 nova-refactor = { path = "../crates/nova-refactor" }
 nova-syntax = { path = "../crates/nova-syntax" }
+
+[[bin]]
+name = "fuzz_classfile"
+path = "fuzz_targets/fuzz_classfile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_format"
+path = "fuzz_targets/fuzz_format.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_syntax_parse"
+path = "fuzz_targets/fuzz_syntax_parse.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "parse_java"
@@ -35,3 +57,4 @@ doc = false
 bench = false
 
 [workspace]
+members = ["."]

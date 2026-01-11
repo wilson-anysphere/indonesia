@@ -24,28 +24,45 @@ cargo +nightly install cargo-fuzz --locked
 
 All commands below are run from the repository root.
 
-### Parse Java
+### Parse Java (syntax)
+
+```bash
+cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60
+```
+
+This target runs both `nova_syntax::parse` and `nova_syntax::parse_java` on the input.
+
+### Format Java
+
+```bash
+cargo +nightly fuzz run fuzz_format -- -max_total_time=60
+```
+
+This target exercises `nova_format::format_java` and edit generation (`edits_for_formatting`).
+
+### Parse JVM classfiles
+
+```bash
+cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60
+```
+
+This target feeds arbitrary bytes into `nova_classfile::ClassFile::parse`.
+
+### Optional targets
+
+Nova also has additional fuzz targets for deeper invariants / higher-level smoke tests:
 
 ```bash
 cargo +nightly fuzz run parse_java -- -max_total_time=60
-```
-
-### Format Java (idempotence)
-
-```bash
 cargo +nightly fuzz run format_java -- -max_total_time=60
-```
-
-This target asserts that `format(format(x)) == format(x)` on the formatter's own output.
-
-### Refactor smoke tests
-
-```bash
 cargo +nightly fuzz run refactor_smoke -- -max_total_time=60
 ```
 
-Refactoring errors are expected and ignored; the target only enforces that Nova never panics or
-hangs while attempting a small set of best-effort refactorings.
+- `format_java` asserts formatter idempotence (`format(format(x)) == format(x)`).
+- `refactor_smoke` treats refactoring errors as expected and ignored; the target only enforces that
+  Nova never panics or hangs while attempting a small set of best-effort refactorings.
+
+Seed corpora live under `fuzz/corpus/<target>/`.
 
 ## Hangs, timeouts, and input size caps
 
@@ -79,4 +96,3 @@ If you have a large local corpus under `fuzz/corpus/<target>/`, you can shrink i
 ```bash
 cargo +nightly fuzz cmin <target>
 ```
-

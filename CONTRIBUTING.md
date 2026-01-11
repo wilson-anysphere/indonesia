@@ -106,8 +106,22 @@ cargo bench
 
 ## Fuzzing
 
-Nova ships `cargo-fuzz` targets under `fuzz/` (parser / formatter / refactoring smoke tests).
-See [`docs/fuzzing.md`](docs/fuzzing.md) for prerequisites and usage.
+Nova ships [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) targets under `fuzz/` to
+continuously test core parsing and formatting surfaces against panics, hangs, and other robustness
+issues. For more details (timeouts, minimization), see [`docs/fuzzing.md`](docs/fuzzing.md).
+
+```bash
+rustup toolchain install nightly --component llvm-tools-preview
+cargo +nightly install cargo-fuzz --locked
+
+# Run from the repository root.
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile
+```
+
+Seed corpora live under `fuzz/corpus/<target>/`. Crash artifacts (if any) are written under
+`fuzz/artifacts/<target>/`.
 
 ## VS Code extension development
 
