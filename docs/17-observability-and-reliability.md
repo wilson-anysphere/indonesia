@@ -148,8 +148,9 @@ Safe mode can be entered by Nova’s hardened request wrapper (`nova-lsp` custom
   enforced by `nova_scheduler::Watchdog`)
   - some endpoints may also trigger a **short safe-mode cooldown** (30s) when a timeout is treated
     as a “this code path is unhealthy” signal
-  - in this repository snapshot, the built-in `nova/*` endpoints are configured to **not** enter
-    safe mode on timeouts (because build/test/debug integration can legitimately be slow)
+  - in this repository snapshot, long-running build/test/debug endpoints are configured to **not**
+    enter safe mode on timeouts (because they can legitimately be slow), but other endpoints may
+    still enter safe mode if they exceed their time budget (for example `nova/web/endpoints`)
 
 Separately, Nova may **degrade** behavior under memory pressure (reduced indexing, capped
 completions, etc). This is Nova’s “overload” response and is distinct from safe mode (see
