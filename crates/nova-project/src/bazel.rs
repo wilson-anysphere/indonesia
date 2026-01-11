@@ -123,6 +123,7 @@ pub(crate) fn load_bazel_workspace_model(
     let jpms_modules = crate::jpms::discover_jpms_modules(&[Module {
         name: module_config.name.clone(),
         root: module_config.root.clone(),
+        annotation_processing: Default::default(),
     }]);
 
     Ok(WorkspaceProjectModel::new(

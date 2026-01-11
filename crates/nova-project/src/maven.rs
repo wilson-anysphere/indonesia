@@ -378,6 +378,7 @@ pub(crate) fn load_maven_workspace_model(
         .map(|module| Module {
             name: module.name.clone(),
             root: module.root.clone(),
+            annotation_processing: Default::default(),
         })
         .collect::<Vec<_>>();
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);

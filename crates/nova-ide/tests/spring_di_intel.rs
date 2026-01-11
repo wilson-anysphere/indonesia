@@ -267,7 +267,7 @@ class FooService {}
         "expected definition URI to point at FooService; got {:?}",
         loc.uri
     );
-    assert_eq!(loc.range.start.line, 3);
+    assert_eq!(loc.range.start.line, 2);
     assert_eq!(loc.range.start.character, 6);
 }
 
