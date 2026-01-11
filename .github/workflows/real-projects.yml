@@ -172,8 +172,29 @@ jobs:
           fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"
 
+      - name: Check Maven cache contents
+        id: m2-cache
+        if: always()
+        run: |
+          set -euo pipefail
+          nonempty=false
+
+          if [[ -d ~/.m2/repository ]]; then
+            if find ~/.m2/repository -type f -print -quit 2>/dev/null | grep -q .; then
+              nonempty=true
+            fi
+          fi
+
+          if [[ "${nonempty}" != "true" && -d ~/.m2/wrapper ]]; then
+            if find ~/.m2/wrapper -type f -print -quit 2>/dev/null | grep -q .; then
+              nonempty=true
+            fi
+          fi
+
+          echo "nonempty=${nonempty}" >> "$GITHUB_OUTPUT"
+
       - name: Save Maven cache (best-effort)
-        if: always() && steps.maven-cache.outputs.cache-hit != 'true' && env.NOVA_TEST_PROJECTS == ''
+        if: always() && steps.maven-cache.outputs.cache-hit != 'true' && steps.m2-cache.outputs.nonempty == 'true' && env.NOVA_TEST_PROJECTS == ''
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
