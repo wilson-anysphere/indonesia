@@ -171,6 +171,16 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
     let client_b_key_pem = client_b.serialize_private_key_pem();
     let client_b_fp = sha256_fingerprint_hex(&client_b_cert_der);
 
+    let client_c = rcgen::Certificate::from_params({
+        let mut params = rcgen::CertificateParams::default();
+        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
+        params
+    })?;
+    let client_c_cert_der = client_c.serialize_der_with_signer(&ca)?;
+    let client_c_cert_pem = client_c.serialize_pem_with_signer(&ca)?;
+    let client_c_key_pem = client_c.serialize_private_key_pem();
+    let client_c_fp = sha256_fingerprint_hex(&client_c_cert_der);
+
     let ca_path = dir.join("ca.pem");
     let server_cert_path = dir.join("router.pem");
     let server_key_path = dir.join("router.key");
@@ -194,7 +204,7 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
         auth_token: None,
         allow_insecure_tcp: false,
         tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist {
-            global: Vec::new(),
+            global: vec![client_c_fp.clone()],
             shards,
         },
         spawn_workers: false,
@@ -208,10 +218,14 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
             SourceRoot {
                 path: dir.join("shard1"),
             },
+            SourceRoot {
+                path: dir.join("shard2"),
+            },
         ],
     };
     tokio::fs::create_dir_all(&layout.source_roots[0].path).await?;
     tokio::fs::create_dir_all(&layout.source_roots[1].path).await?;
+    tokio::fs::create_dir_all(&layout.source_roots[2].path).await?;
 
     let router = QueryRouter::new_distributed(config, layout).await?;
 
@@ -306,6 +320,69 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
     let resp = read_message(&mut stream_b1).await?;
     match resp {
         RpcMessage::RouterHello { shard_id, .. } => assert_eq!(shard_id, 1),
+        other => return Err(anyhow!("expected RouterHello, got {other:?}")),
+    }
+
+    // With a non-empty global allowlist, shards without an explicit per-shard allowlist entry are
+    // also protected. Client A should be rejected for shard 2 because it is not in the global
+    // allowlist.
+    let mut stream_a2 = connect_with_retry(|| {
+        let ca_pem = ca_pem.clone();
+        let cert_pem = client_a_cert_pem.clone();
+        let key_pem = client_a_key_pem.clone();
+        async move {
+            connect_mtls(
+                addr,
+                "localhost",
+                ca_pem.as_bytes(),
+                cert_pem.as_bytes(),
+                key_pem.as_bytes(),
+            )
+            .await
+        }
+    })
+    .await?;
+    write_message(
+        &mut stream_a2,
+        &RpcMessage::WorkerHello {
+            shard_id: 2,
+            auth_token: None,
+            has_cached_index: false,
+        },
+    )
+    .await?;
+    let resp = read_message(&mut stream_a2).await?;
+    assert!(matches!(resp, RpcMessage::Error { .. }));
+
+    // Client C is in the global allowlist and can connect to shard 2.
+    let mut stream_c2 = connect_with_retry(|| {
+        let ca_pem = ca_pem.clone();
+        let cert_pem = client_c_cert_pem.clone();
+        let key_pem = client_c_key_pem.clone();
+        async move {
+            connect_mtls(
+                addr,
+                "localhost",
+                ca_pem.as_bytes(),
+                cert_pem.as_bytes(),
+                key_pem.as_bytes(),
+            )
+            .await
+        }
+    })
+    .await?;
+    write_message(
+        &mut stream_c2,
+        &RpcMessage::WorkerHello {
+            shard_id: 2,
+            auth_token: None,
+            has_cached_index: false,
+        },
+    )
+    .await?;
+    let resp = read_message(&mut stream_c2).await?;
+    match resp {
+        RpcMessage::RouterHello { shard_id, .. } => assert_eq!(shard_id, 2),
         other => return Err(anyhow!("expected RouterHello, got {other:?}")),
     }
 
