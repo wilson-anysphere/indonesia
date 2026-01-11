@@ -502,9 +502,10 @@ mod disk_cache_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bincode::Options;
     use nova_cache::CacheConfig;
     use nova_memory::{MemoryBudget, MemoryEvictor};
-    use serde::{Deserialize, Serialize};
+    use serde::{de::DeserializeOwned, Deserialize, Serialize};
     use tempfile::TempDir;
 
     #[derive(Debug, Serialize, Deserialize)]
@@ -515,6 +516,21 @@ mod tests {
         query_name: String,
         key_fingerprint: Fingerprint,
         value: T,
+    }
+
+    fn bincode_options() -> impl bincode::Options {
+        // Must match nova-cache's bincode settings (see `nova_cache::util::bincode_options`).
+        bincode::DefaultOptions::new()
+            .with_fixint_encoding()
+            .with_little_endian()
+    }
+
+    fn bincode_deserialize<T: DeserializeOwned>(bytes: &[u8]) -> T {
+        bincode_options().deserialize(bytes).unwrap()
+    }
+
+    fn bincode_serialize<T: Serialize>(value: &T) -> Vec<u8> {
+        bincode_options().serialize(value).unwrap()
     }
 
     fn make_cache_dir(tmp: &TempDir) -> CacheDir {
@@ -623,10 +639,9 @@ mod tests {
             .path();
 
         let bytes = std::fs::read(&entry_path).unwrap();
-        let mut persisted: PersistedDerivedValueOwned<Vec<u8>> =
-            bincode::deserialize(&bytes).unwrap();
+        let mut persisted: PersistedDerivedValueOwned<Vec<u8>> = bincode_deserialize(&bytes);
         persisted.schema_version = persisted.schema_version.saturating_add(1);
-        let mutated = bincode::serialize(&persisted).unwrap();
+        let mutated = bincode_serialize(&persisted);
         std::fs::write(&entry_path, mutated).unwrap();
 
         let cache2 = PersistentQueryCache::new(&make_manager(), Some(&cache_dir));
@@ -664,10 +679,9 @@ mod tests {
             .path();
 
         let bytes = std::fs::read(&entry_path).unwrap();
-        let mut persisted: PersistedDerivedValueOwned<Vec<u8>> =
-            bincode::deserialize(&bytes).unwrap();
+        let mut persisted: PersistedDerivedValueOwned<Vec<u8>> = bincode_deserialize(&bytes);
         persisted.nova_version = "0.0.0-test".to_string();
-        let mutated = bincode::serialize(&persisted).unwrap();
+        let mutated = bincode_serialize(&persisted);
         std::fs::write(&entry_path, mutated).unwrap();
 
         let cache2 = PersistentQueryCache::new(&make_manager(), Some(&cache_dir));
