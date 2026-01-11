@@ -22,9 +22,9 @@ use super::{
     inspect::InspectCache,
     types::{
         ClassInfo, FieldId, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError,
-        JdwpEvent, JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId,
-        MethodInfo, MonitorInfo, ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo,
-        VmClassPaths,
+        JdwpEvent, JdwpEventEnvelope, JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location,
+        MethodId, MethodInfo, MonitorInfo, ObjectId, ReferenceTypeId, Result, ThreadId,
+        VariableInfo, VmClassPaths,
     },
 };
 
@@ -96,6 +96,7 @@ struct Inner {
     id_sizes: Mutex<JdwpIdSizes>,
     capabilities: Mutex<JdwpCapabilitiesNew>,
     events: broadcast::Sender<JdwpEvent>,
+    event_envelopes: broadcast::Sender<JdwpEventEnvelope>,
     shutdown: CancellationToken,
     config: JdwpClientConfig,
     inspect_cache: Mutex<InspectCache>,
@@ -133,6 +134,7 @@ impl JdwpClient {
 
         let (reader, writer) = stream.into_split();
         let (events, _) = broadcast::channel(config.event_channel_size);
+        let (event_envelopes, _) = broadcast::channel(config.event_channel_size);
 
         let inner = Arc::new(Inner {
             writer: Mutex::new(writer),
@@ -141,6 +143,7 @@ impl JdwpClient {
             id_sizes: Mutex::new(JdwpIdSizes::default()),
             capabilities: Mutex::new(JdwpCapabilitiesNew::default()),
             events,
+            event_envelopes,
             shutdown: CancellationToken::new(),
             config,
             inspect_cache: Mutex::new(InspectCache::default()),
@@ -192,6 +195,10 @@ impl JdwpClient {
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<JdwpEvent> {
         self.inner.events.subscribe()
+    }
+
+    pub fn subscribe_event_envelopes(&self) -> broadcast::Receiver<JdwpEventEnvelope> {
+        self.inner.event_envelopes.subscribe()
     }
 
     async fn send_command_raw(
@@ -1180,10 +1187,10 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
 async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
     let sizes = *inner.id_sizes.lock().await;
     let mut r = JdwpReader::new(payload);
-    let _suspend_policy = r.read_u8()?;
+    let suspend_policy = r.read_u8()?;
     let event_count = r.read_u32()? as usize;
 
-    // Composite packets can include both stop events (SingleStep/Breakpoint) and
+    // Composite packets can include both stop events (SingleStep/Breakpoint/Exception) and
     // `MethodExitWithReturnValue`. The legacy TCP client parses the whole composite and
     // attaches method-exit values to the stop that follows. To preserve that behavior
     // for async consumers, we must emit `MethodExitWithReturnValue` (and all other
@@ -1191,6 +1198,15 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
     // order.
     let mut stop_events = Vec::new();
     let mut non_stop_events = Vec::new();
+
+    fn is_stop_event(event: &JdwpEvent) -> bool {
+        matches!(
+            event,
+            JdwpEvent::SingleStep { .. }
+                | JdwpEvent::Breakpoint { .. }
+                | JdwpEvent::Exception { .. }
+        )
+    }
 
     for _ in 0..event_count {
         let kind = r.read_u8()?;
@@ -1292,10 +1308,7 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
             break;
         };
 
-        if matches!(
-            event,
-            JdwpEvent::SingleStep { .. } | JdwpEvent::Breakpoint { .. }
-        ) {
+        if is_stop_event(&event) {
             stop_events.push(event);
         } else {
             non_stop_events.push(event);
@@ -1303,10 +1316,16 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
     }
 
     for event in non_stop_events {
-        let _ = inner.events.send(event);
+        let _ = inner.events.send(event.clone());
+        let _ = inner
+            .event_envelopes
+            .send(JdwpEventEnvelope { suspend_policy, event });
     }
     for event in stop_events {
-        let _ = inner.events.send(event);
+        let _ = inner.events.send(event.clone());
+        let _ = inner
+            .event_envelopes
+            .send(JdwpEventEnvelope { suspend_policy, event });
     }
 
     Ok(())
@@ -1316,9 +1335,13 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
 mod tests {
     use std::time::Duration;
 
-    use super::{JdwpClient, JdwpClientConfig};
+    use super::{EventModifier, JdwpClient, JdwpClientConfig};
     use crate::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
-    use crate::wire::types::{JdwpCapabilitiesNew, JdwpError, JdwpIdSizes};
+    use crate::wire::types::{
+        EVENT_KIND_BREAKPOINT, EVENT_KIND_EXCEPTION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
+        JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpIdSizes, Location, SUSPEND_POLICY_ALL,
+        SUSPEND_POLICY_EVENT_THREAD, SUSPEND_POLICY_NONE,
+    };
 
     fn monitor_capabilities() -> Vec<bool> {
         let mut caps = vec![false; 32];
@@ -1491,10 +1514,7 @@ mod tests {
             .unwrap();
         assert_eq!(owned_depth, vec![(0x5201, 0), (0x5202, 2)]);
 
-        let contended = client
-            .thread_current_contended_monitor(thread)
-            .await
-            .unwrap();
+        let contended = client.thread_current_contended_monitor(thread).await.unwrap();
         assert_eq!(contended, 0x5203);
 
         let info = client.object_reference_monitor_info(contended).await.unwrap();
@@ -1546,5 +1566,129 @@ mod tests {
         let info = client.object_reference_monitor_info(contended).await.unwrap();
         assert_eq!(info.owner, 0x1002);
         assert_eq!(info.waiters, vec![thread]);
+    }
+
+    #[tokio::test]
+    async fn event_envelopes_preserve_suspend_policy() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            breakpoint_events: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let mut envelopes = client.subscribe_event_envelopes();
+
+        let request_id = client
+            .event_request_set(
+                EVENT_KIND_BREAKPOINT,
+                SUSPEND_POLICY_ALL,
+                vec![EventModifier::LocationOnly {
+                    location: Location {
+                        type_tag: 1,
+                        class_id: 0,
+                        method_id: 0,
+                        index: 0,
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+
+        client.vm_resume().await.unwrap();
+
+        let envelope = tokio::time::timeout(Duration::from_secs(5), envelopes.recv())
+            .await
+            .expect("timed out waiting for breakpoint event envelope")
+            .expect("failed to receive breakpoint event envelope");
+
+        assert_eq!(envelope.suspend_policy, SUSPEND_POLICY_ALL);
+        match envelope.event {
+            JdwpEvent::Breakpoint { request_id: rid, .. } => assert_eq!(rid, request_id),
+            other => panic!("expected breakpoint event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn method_exit_is_emitted_before_stop_events_in_same_composite_packet() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            breakpoint_events: 1,
+            emit_exception_breakpoint_method_exit_composite: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let mut events = client.subscribe_events();
+
+        let exception_request_id = client
+            .event_request_set(
+                EVENT_KIND_EXCEPTION,
+                SUSPEND_POLICY_EVENT_THREAD,
+                vec![EventModifier::ExceptionOnly {
+                    exception_or_null: 0,
+                    caught: false,
+                    uncaught: true,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let breakpoint_request_id = client
+            .event_request_set(
+                EVENT_KIND_BREAKPOINT,
+                SUSPEND_POLICY_EVENT_THREAD,
+                vec![EventModifier::LocationOnly {
+                    location: Location {
+                        type_tag: 1,
+                        class_id: 0,
+                        method_id: 0,
+                        index: 0,
+                    },
+                }],
+            )
+            .await
+            .unwrap();
+
+        let method_exit_request_id = client
+            .event_request_set(
+                EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
+                SUSPEND_POLICY_NONE,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        client.vm_resume().await.unwrap();
+
+        let first = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("timed out waiting for composite events (first)")
+            .expect("failed to receive composite event (first)");
+        let second = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("timed out waiting for composite events (second)")
+            .expect("failed to receive composite event (second)");
+        let third = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("timed out waiting for composite events (third)")
+            .expect("failed to receive composite event (third)");
+
+        match first {
+            JdwpEvent::MethodExitWithReturnValue { request_id, .. } => {
+                assert_eq!(request_id, method_exit_request_id)
+            }
+            other => panic!("expected MethodExitWithReturnValue first, got {other:?}"),
+        }
+        match second {
+            JdwpEvent::Exception { request_id, .. } => assert_eq!(request_id, exception_request_id),
+            other => panic!("expected Exception second, got {other:?}"),
+        }
+        match third {
+            JdwpEvent::Breakpoint { request_id, .. } => assert_eq!(request_id, breakpoint_request_id),
+            other => panic!("expected Breakpoint third, got {other:?}"),
+        }
     }
 }

@@ -389,6 +389,8 @@ pub const EVENT_KIND_VM_DEATH: u8 = 99;
 pub const SUSPEND_POLICY_NONE: u8 = 0;
 /// SuspendPolicy: EVENT_THREAD (1)
 pub const SUSPEND_POLICY_EVENT_THREAD: u8 = 1;
+/// SuspendPolicy: ALL (2)
+pub const SUSPEND_POLICY_ALL: u8 = 2;
 
 impl fmt::Display for JdwpValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -453,6 +455,13 @@ pub enum JdwpEvent {
         status: u32,
     },
     VmDeath,
+}
+
+/// Wrapper that preserves the composite event packet's suspend policy alongside the parsed event.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JdwpEventEnvelope {
+    pub suspend_policy: u8,
+    pub event: JdwpEvent,
 }
 
 #[derive(Debug, Error)]

@@ -69,6 +69,14 @@ pub struct MockJdwpServerConfig {
     pub breakpoint_events: usize,
     /// Maximum number of single-step events to emit after a `VirtualMachine.Resume`.
     pub step_events: usize,
+    /// When enabled, the mock will emit a composite event packet containing an
+    /// `Exception`, `Breakpoint`, and `MethodExitWithReturnValue` (in that order, with the
+    /// method-exit last) after a `VirtualMachine.Resume`, provided all three event requests
+    /// are configured.
+    ///
+    /// This is useful for testing stop-event ordering semantics in the client without
+    /// introducing unbounded resume/stop loops.
+    pub emit_exception_breakpoint_method_exit_composite: bool,
 }
 
 impl Default for MockJdwpServerConfig {
@@ -85,6 +93,7 @@ impl Default for MockJdwpServerConfig {
             // unless tests opt into a finite budget via `spawn_with_config`.
             breakpoint_events: usize::MAX,
             step_events: usize::MAX,
+            emit_exception_breakpoint_method_exit_composite: false,
         }
     }
 }
@@ -1549,6 +1558,58 @@ fn make_stop_event_packet(
         let payload = w.into_vec();
         let packet_id = state.alloc_packet_id();
         return Some(encode_command(packet_id, 64, 100, &payload));
+    }
+
+    if state.config.emit_exception_breakpoint_method_exit_composite {
+        if let (Some(exception_request), Some(breakpoint_request), Some(method_exit_request)) =
+            (exception_request, breakpoint_request, method_exit_request)
+        {
+            if !state.take_breakpoint_event() {
+                return None;
+            }
+
+            let suspend_policy = breakpoint_suspend_policy.unwrap_or(1);
+            let mut w = JdwpWriter::new();
+            w.write_u8(suspend_policy); // suspend policy
+            w.write_u32(3); // event count
+
+            // Exception event first.
+            w.write_u8(4);
+            w.write_i32(exception_request.request_id);
+            w.write_object_id(THREAD_ID, id_sizes);
+            w.write_location(&default_location(), id_sizes);
+            w.write_object_id(EXCEPTION_ID, id_sizes);
+            let catch_location = if exception_request.caught {
+                default_location()
+            } else {
+                Location {
+                    type_tag: 0,
+                    class_id: 0,
+                    method_id: 0,
+                    index: 0,
+                }
+            };
+            w.write_location(&catch_location, id_sizes);
+
+            // Breakpoint stop event second.
+            w.write_u8(2);
+            w.write_i32(breakpoint_request);
+            w.write_object_id(THREAD_ID, id_sizes);
+            w.write_location(&default_location(), id_sizes);
+
+            // MethodExitWithReturnValue event last to validate that the client reorders
+            // events before broadcasting.
+            w.write_u8(42);
+            w.write_i32(method_exit_request);
+            w.write_object_id(THREAD_ID, id_sizes);
+            w.write_location(&default_location(), id_sizes);
+            w.write_u8(b'I');
+            w.write_i32(123);
+
+            let payload = w.into_vec();
+            let packet_id = state.alloc_packet_id();
+            return Some(encode_command(packet_id, 64, 100, &payload));
+        }
     }
 
     let mut kind = None;
