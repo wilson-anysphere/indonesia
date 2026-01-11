@@ -30,9 +30,10 @@ impl CommandRunner for DeadlineCommandRunner {
     ) -> io::Result<nova_build::CommandOutput> {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
+            let command = format_command(program, args);
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "build tool invocation skipped because request time budget was exhausted",
+                format!("command `{command}` skipped because request time budget was exhausted"),
             ));
         }
 
@@ -48,4 +49,13 @@ fn build_manager_for_root(project_root: &Path, timeout: Duration) -> BuildManage
     let deadline = Instant::now() + timeout;
     let runner: Arc<dyn CommandRunner> = Arc::new(DeadlineCommandRunner { deadline });
     BuildManager::with_runner(cache_dir, runner)
+}
+
+fn format_command(program: &Path, args: &[String]) -> String {
+    let mut out = program.to_string_lossy().to_string();
+    for arg in args {
+        out.push(' ');
+        out.push_str(arg);
+    }
+    out
 }

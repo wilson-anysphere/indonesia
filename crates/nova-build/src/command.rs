@@ -1,10 +1,5 @@
 use nova_process::{run_command, RunOptions};
-use std::{
-    io,
-    path::Path,
-    process::ExitStatus,
-    time::Duration,
-};
+use std::{io, path::Path, process::ExitStatus, time::Duration};
 
 /// Captured output from a command invocation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,10 +33,10 @@ pub struct DefaultCommandRunner {
     /// Optional timeout for command execution.
     ///
     /// Best-effort semantics:
-    /// - The timeout is enforced by polling the child process and calling
-    ///   [`std::process::Child::kill`] when exceeded.
-    /// - This does **not** guarantee that subprocesses spawned by the build tool
-    ///   are terminated (process trees are platform-dependent).
+    /// - Output is captured with a fixed per-stream limit to avoid OOM when build tools
+    ///   are extremely chatty.
+    /// - When the timeout elapses, Nova makes a best-effort attempt to terminate the
+    ///   full process tree (Unix process groups; `taskkill /T` on Windows).
     pub timeout: Option<Duration>,
 }
 
@@ -62,8 +57,9 @@ impl CommandRunner for DefaultCommandRunner {
             max_bytes: MAX_BYTES,
         };
 
-        let result = run_command(cwd, program, args, opts)
-            .map_err(|err| io::Error::new(err.kind(), format!("failed to run `{command}`: {err}")))?;
+        let result = run_command(cwd, program, args, opts).map_err(|err| {
+            io::Error::new(err.kind(), format!("failed to run `{command}`: {err}"))
+        })?;
 
         let stdout = result.output.stdout;
         let stderr = result.output.stderr;
