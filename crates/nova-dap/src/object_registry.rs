@@ -64,6 +64,35 @@ impl ObjectRegistry {
         Self::default()
     }
 
+    /// Drop all tracked objects that are not currently pinned.
+    ///
+    /// This is intended for "stop-scoped" object handles: it bounds memory usage
+    /// in long-lived debug sessions and makes it explicit that *unpinned* object
+    /// handles are not guaranteed to survive a resume/next stop.
+    pub fn clear_unpinned(&mut self) {
+        if self.pinned.is_empty() {
+            self.object_to_handle.clear();
+            self.handle_to_entry.clear();
+            return;
+        }
+
+        let mut object_to_handle = HashMap::with_capacity(self.pinned.len());
+        let mut handle_to_entry = HashMap::with_capacity(self.pinned.len());
+
+        for handle in self.pinned.iter().copied() {
+            let Some(entry) = self.handle_to_entry.get(&handle).cloned() else {
+                continue;
+            };
+            object_to_handle.insert(entry.object_id, handle);
+            handle_to_entry.insert(handle, entry);
+        }
+
+        self.pinned
+            .retain(|handle| handle_to_entry.contains_key(handle));
+        self.object_to_handle = object_to_handle;
+        self.handle_to_entry = handle_to_entry;
+    }
+
     pub fn track_object(&mut self, object_id: ObjectId, runtime_type: &str) -> ObjectHandle {
         if let Some(handle) = self.object_to_handle.get(&object_id).copied() {
             if let Some(entry) = self.handle_to_entry.get_mut(&handle) {

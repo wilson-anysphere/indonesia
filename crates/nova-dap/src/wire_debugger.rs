@@ -267,6 +267,7 @@ impl Debugger {
     fn invalidate_handles(&mut self) {
         self.frame_handles.clear();
         self.var_handles.clear();
+        self.objects.clear_unpinned();
     }
 
     pub async fn disconnect(&mut self) {

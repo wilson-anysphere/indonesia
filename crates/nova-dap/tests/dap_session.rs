@@ -40,6 +40,37 @@ async fn read_response(
     panic!("did not receive response for seq {request_seq}");
 }
 
+async fn read_response_and_event(
+    reader: &mut DapReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    request_seq: i64,
+    event: &str,
+) -> (Value, Value) {
+    let mut response = None;
+    let mut event_msg = None;
+
+    for _ in 0..200 {
+        let msg = read_next(reader).await;
+
+        match msg.get("type").and_then(|v| v.as_str()) {
+            Some("response")
+                if msg.get("request_seq").and_then(|v| v.as_i64()) == Some(request_seq) =>
+            {
+                response = Some(msg);
+            }
+            Some("event") if msg.get("event").and_then(|v| v.as_str()) == Some(event) => {
+                event_msg = Some(msg);
+            }
+            _ => {}
+        }
+
+        if let (Some(resp), Some(evt)) = (response.clone(), event_msg.clone()) {
+            return (resp, evt);
+        }
+    }
+
+    panic!("did not receive response+event for seq {request_seq} ({event})");
+}
+
 #[tokio::test]
 async fn dap_can_attach_set_breakpoints_and_stop() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
@@ -490,6 +521,236 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
 
     send_request(&mut writer, 15, "disconnect", json!({})).await;
     let _disc_resp = read_response(&mut reader, 15).await;
+
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_object_handles_are_invalidated_on_resume_unless_pinned() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let init_resp = read_response(&mut reader, 1).await;
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    let initialized = read_next(&mut reader).await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    send_request(
+        &mut writer,
+        3,
+        "setBreakpoints",
+        json!({
+            "source": { "path": "Main.java" },
+            "breakpoints": [ { "line": 3 } ]
+        }),
+    )
+    .await;
+    let bp_resp = read_response(&mut reader, 3).await;
+    assert!(bp_resp
+        .pointer("/body/breakpoints/0/verified")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    send_request(&mut writer, 4, "threads", json!({})).await;
+    let threads_resp = read_response(&mut reader, 4).await;
+    let thread_id = threads_resp
+        .pointer("/body/threads/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    // First stop.
+    send_request(&mut writer, 5, "continue", json!({ "threadId": thread_id })).await;
+    let (_continue_resp, _stopped) = read_response_and_event(&mut reader, 5, "stopped").await;
+
+    send_request(
+        &mut writer,
+        6,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+    let stack_resp = read_response(&mut reader, 6).await;
+    let frame_id = stack_resp
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    send_request(&mut writer, 7, "scopes", json!({ "frameId": frame_id })).await;
+    let scopes_resp = read_response(&mut reader, 7).await;
+    let locals_ref = scopes_resp
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    send_request(
+        &mut writer,
+        8,
+        "variables",
+        json!({ "variablesReference": locals_ref }),
+    )
+    .await;
+    let vars_resp = read_response(&mut reader, 8).await;
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let obj_ref = locals
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("obj"))
+        .and_then(|v| v.get("variablesReference"))
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert!(obj_ref > OBJECT_HANDLE_BASE);
+
+    // Not pinned: after resume and the next stop, the old object handle should be invalid.
+    send_request(&mut writer, 9, "continue", json!({ "threadId": thread_id })).await;
+    let (_continue_resp, _stopped) = read_response_and_event(&mut reader, 9, "stopped").await;
+
+    send_request(
+        &mut writer,
+        10,
+        "variables",
+        json!({ "variablesReference": obj_ref }),
+    )
+    .await;
+    let stale_obj_vars = read_response(&mut reader, 10).await;
+    let stale = stale_obj_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    assert!(stale.is_empty());
+
+    // Pin a fresh object handle.
+    send_request(
+        &mut writer,
+        11,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+    let stack_resp = read_response(&mut reader, 11).await;
+    let frame_id = stack_resp
+        .pointer("/body/stackFrames/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    send_request(&mut writer, 12, "scopes", json!({ "frameId": frame_id })).await;
+    let scopes_resp = read_response(&mut reader, 12).await;
+    let locals_ref = scopes_resp
+        .pointer("/body/scopes/0/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    let pinned_ref = scopes_resp
+        .pointer("/body/scopes/1/variablesReference")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+    assert_eq!(pinned_ref, PINNED_SCOPE_REF);
+
+    send_request(
+        &mut writer,
+        13,
+        "variables",
+        json!({ "variablesReference": locals_ref }),
+    )
+    .await;
+    let vars_resp = read_response(&mut reader, 13).await;
+    let locals = vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let obj_ref = locals
+        .iter()
+        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("obj"))
+        .and_then(|v| v.get("variablesReference"))
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    send_request(
+        &mut writer,
+        14,
+        "nova/pinObject",
+        json!({ "variablesReference": obj_ref, "pinned": true }),
+    )
+    .await;
+    let pin_resp = read_response(&mut reader, 14).await;
+    assert_eq!(
+        pin_resp.pointer("/body/pinned").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    // Resume again; pinned handle must survive.
+    send_request(
+        &mut writer,
+        15,
+        "continue",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+    let (_continue_resp, _stopped) = read_response_and_event(&mut reader, 15, "stopped").await;
+
+    send_request(
+        &mut writer,
+        16,
+        "variables",
+        json!({ "variablesReference": PINNED_SCOPE_REF }),
+    )
+    .await;
+    let pinned_vars_resp = read_response(&mut reader, 16).await;
+    let pinned_vars = pinned_vars_resp
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    assert!(pinned_vars
+        .iter()
+        .any(|v| v.get("variablesReference").and_then(|v| v.as_i64()) == Some(obj_ref)));
+
+    send_request(
+        &mut writer,
+        17,
+        "variables",
+        json!({ "variablesReference": obj_ref }),
+    )
+    .await;
+    let obj_vars = read_response(&mut reader, 17).await;
+    let fields = obj_vars
+        .pointer("/body/variables")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    assert!(!fields.is_empty());
+
+    send_request(&mut writer, 18, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 18).await;
 
     server_task.await.unwrap().unwrap();
 }
