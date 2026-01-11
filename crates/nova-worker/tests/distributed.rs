@@ -160,6 +160,8 @@ async fn distributed_workspace_symbols_merges_across_shards_deterministically() 
         worker_command: worker_bin,
         cache_dir,
         auth_token: None,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
 
@@ -208,6 +210,8 @@ async fn distributed_workspace_symbols_prefers_prefix_matches_across_shards() ->
         worker_command: worker_bin,
         cache_dir,
         auth_token: None,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
 
@@ -247,6 +251,8 @@ async fn distributed_workspace_symbols_supports_acronym_queries_across_shards() 
         worker_command: worker_bin,
         cache_dir,
         auth_token: None,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
 
