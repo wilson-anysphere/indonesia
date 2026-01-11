@@ -229,12 +229,17 @@ fn anchor_node(old: &JavaParseResult, edit: &TextEdit) -> crate::SyntaxNode {
         TokenAtOffset::None => old.syntax(),
         TokenAtOffset::Single(tok) => tok.parent().unwrap_or_else(|| old.syntax()),
         TokenAtOffset::Between(left, right) => {
-            let chosen = if !left.kind().is_trivia() {
-                left
-            } else if !right.kind().is_trivia() {
+            // Prefer the token to the *right* of the insertion point. Insertions occur before
+            // `right`, and the smallest syntactic context that contains `right` is more likely to
+            // also contain the inserted text. This avoids selecting a node that ends exactly at the
+            // insertion offset (which would cause us to slice extra trailing text into the
+            // reparsed fragment and potentially drop it during parsing).
+            let chosen = if !right.kind().is_trivia() {
                 right
-            } else {
+            } else if !left.kind().is_trivia() {
                 left
+            } else {
+                right
             };
             chosen.parent().unwrap_or_else(|| old.syntax())
         }
@@ -245,9 +250,35 @@ fn select_reparse_node(
     anchor: crate::SyntaxNode,
     edit: &TextEdit,
 ) -> Option<(crate::SyntaxNode, ReparseTarget)> {
+    let insertion_offset = if edit.range.len() == 0 {
+        Some(edit.range.start)
+    } else {
+        None
+    };
+
     let mut node = Some(anchor);
     while let Some(cur) = node {
         let kind = cur.kind();
+
+        if let Some(offset) = insertion_offset {
+            // For insertions we intentionally avoid reparsing a node when the insertion point is
+            // at the node boundary. Many parse functions stop once the node's closing delimiter is
+            // reached; if we were to include inserted text after the delimiter in the fragment
+            // slice, it would be silently dropped from the rebuilt subtree.
+            //
+            // By requiring the insertion offset to be *strictly* inside the node, we ensure the
+            // inserted text is part of the reparsed region.
+            let range = cur.text_range();
+            let start = u32::from(range.start());
+            let end = u32::from(range.end());
+            if offset <= start || offset >= end {
+                if kind == SyntaxKind::CompilationUnit {
+                    break;
+                }
+                node = cur.parent();
+                continue;
+            }
+        }
 
         if let Some(target) = classify_list_or_block(kind) {
             if !edit_overlaps_list_delimiters(&cur, edit) {

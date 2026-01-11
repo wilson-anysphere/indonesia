@@ -1742,3 +1742,20 @@ fn incremental_edit_inside_string_literal_falls_back_to_full_reparse() {
         "expected full reparse to allocate a fresh `Bar` subtree"
     );
 }
+
+#[test]
+fn incremental_insertion_at_block_end_does_not_drop_text() {
+    let old_text = "class Foo { void m() { { int a; } int b; } }\n";
+    let old = parse_java(old_text);
+
+    // Insert a comment right after the inner `}`. If we incorrectly try to reparse only the inner
+    // block, the inserted comment would fall outside the reparsed fragment and get dropped.
+    let insert_offset = old_text.find("} int b").unwrap() as u32 + 1;
+    let edit = TextEdit::insert(insert_offset, "/*x*/");
+
+    let mut new_text = old_text.to_string();
+    new_text.insert_str(insert_offset as usize, "/*x*/");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+}
