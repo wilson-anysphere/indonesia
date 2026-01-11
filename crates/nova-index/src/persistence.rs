@@ -5,7 +5,7 @@ use crate::indexes::{
 };
 use crate::segments::{build_file_to_newest_segment_map, build_segment_files, segment_file_name};
 use fs2::FileExt as _;
-use nova_cache::{CacheDir, CacheMetadata, CacheMetadataArchive, ProjectSnapshot};
+use nova_cache::{CacheDir, CacheMetadata, CacheMetadataArchive, Fingerprint, ProjectSnapshot};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -799,6 +799,73 @@ pub fn compact_index_segments(cache_dir: &CacheDir) -> Result<(), IndexPersisten
     Ok(())
 }
 
+pub fn save_indexes_with_fingerprints(
+    cache_dir: &CacheDir,
+    file_fingerprints: &BTreeMap<String, Fingerprint>,
+    indexes: &mut ProjectIndexes,
+) -> Result<(), IndexPersistenceError> {
+    let indexes_dir = cache_dir.indexes_dir();
+    std::fs::create_dir_all(&indexes_dir)?;
+
+    let _lock = acquire_index_write_lock(&indexes_dir)?;
+
+    let metadata_path = cache_dir.metadata_path();
+    let (mut metadata, previous_generation) = match CacheMetadata::load(&metadata_path) {
+        Ok(existing)
+            if existing.is_compatible() && &existing.project_hash == cache_dir.project_hash() =>
+        {
+            let previous = existing.last_updated_millis;
+            (existing, previous)
+        }
+        _ => {
+            let now = nova_cache::now_millis();
+            (
+                CacheMetadata {
+                    schema_version: nova_cache::CACHE_METADATA_SCHEMA_VERSION,
+                    nova_version: nova_core::NOVA_VERSION.to_string(),
+                    created_at_millis: now,
+                    last_updated_millis: now,
+                    project_hash: cache_dir.project_hash().clone(),
+                    file_fingerprints: file_fingerprints.clone(),
+                    file_metadata_fingerprints: compute_metadata_fingerprints(cache_dir, file_fingerprints),
+                },
+                0,
+            )
+        }
+    };
+
+    let generation = next_generation(previous_generation);
+    indexes.set_generation(generation);
+
+    write_index_file(
+        indexes_dir.join("symbols.idx"),
+        nova_storage::ArtifactKind::SymbolIndex,
+        &indexes.symbols,
+    )?;
+    write_index_file(
+        indexes_dir.join("references.idx"),
+        nova_storage::ArtifactKind::ReferenceIndex,
+        &indexes.references,
+    )?;
+    write_index_file(
+        indexes_dir.join("inheritance.idx"),
+        nova_storage::ArtifactKind::InheritanceIndex,
+        &indexes.inheritance,
+    )?;
+    write_index_file(
+        indexes_dir.join("annotations.idx"),
+        nova_storage::ArtifactKind::AnnotationIndex,
+        &indexes.annotations,
+    )?;
+
+    metadata.last_updated_millis = generation;
+    metadata.project_hash = cache_dir.project_hash().clone();
+    metadata.file_fingerprints = file_fingerprints.clone();
+    metadata.file_metadata_fingerprints = compute_metadata_fingerprints(cache_dir, file_fingerprints);
+    metadata.save(metadata_path)?;
+    Ok(())
+}
+
 /// Loads indexes as validated `rkyv` archives backed by an mmap when possible.
 ///
 /// Callers that require an owned, mutable `ProjectIndexes` should use
@@ -1149,6 +1216,103 @@ pub fn load_indexes(
     }))
 }
 
+pub fn load_indexes_with_fingerprints(
+    cache_dir: &CacheDir,
+    current_file_fingerprints: &BTreeMap<String, Fingerprint>,
+) -> Result<Option<LoadedIndexes>, IndexPersistenceError> {
+    let metadata_path = cache_dir.metadata_path();
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let metadata = match CacheMetadata::load(metadata_path) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(None),
+    };
+    if !metadata.is_compatible() {
+        return Ok(None);
+    }
+    if &metadata.project_hash != cache_dir.project_hash() {
+        return Ok(None);
+    }
+
+    let indexes_dir = cache_dir.indexes_dir();
+
+    let symbols = match open_index_file::<SymbolIndex>(
+        indexes_dir.join("symbols.idx"),
+        nova_storage::ArtifactKind::SymbolIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let references = match open_index_file::<ReferenceIndex>(
+        indexes_dir.join("references.idx"),
+        nova_storage::ArtifactKind::ReferenceIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let inheritance = match open_index_file::<InheritanceIndex>(
+        indexes_dir.join("inheritance.idx"),
+        nova_storage::ArtifactKind::InheritanceIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let annotations = match open_index_file::<AnnotationIndex>(
+        indexes_dir.join("annotations.idx"),
+        nova_storage::ArtifactKind::AnnotationIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+
+    let generation = symbols.generation;
+    if references.generation != generation
+        || inheritance.generation != generation
+        || annotations.generation != generation
+    {
+        return Ok(None);
+    }
+    if metadata.last_updated_millis != generation {
+        return Ok(None);
+    }
+
+    let invalidated_files = metadata.diff_file_fingerprints(current_file_fingerprints);
+
+    let symbols = match symbols.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let references = match references.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let inheritance = match inheritance.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let annotations = match annotations.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+
+    let mut indexes = ProjectIndexes {
+        symbols,
+        references,
+        inheritance,
+        annotations,
+    };
+
+    for file in &invalidated_files {
+        indexes.invalidate_file(file);
+    }
+
+    Ok(Some(LoadedIndexes {
+        indexes,
+        invalidated_files,
+    }))
+}
+
 /// Loads indexes as a zero-copy view backed by validated `rkyv` archives.
 ///
 /// This is similar to [`load_indexes`], but avoids deserializing the full
@@ -1379,6 +1543,20 @@ where
     }
 
     out
+}
+
+fn compute_metadata_fingerprints(
+    cache_dir: &CacheDir,
+    file_fingerprints: &BTreeMap<String, Fingerprint>,
+) -> BTreeMap<String, Fingerprint> {
+    let mut fingerprints = BTreeMap::new();
+    for path in file_fingerprints.keys() {
+        let full_path = cache_dir.project_root().join(path);
+        if let Ok(fp) = Fingerprint::from_file_metadata(full_path) {
+            fingerprints.insert(path.clone(), fp);
+        }
+    }
+    fingerprints
 }
 
 // ---------------------------------------------------------------------

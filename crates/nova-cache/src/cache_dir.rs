@@ -17,7 +17,7 @@ impl CacheConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CacheDir {
     project_root: PathBuf,
     project_hash: Fingerprint,

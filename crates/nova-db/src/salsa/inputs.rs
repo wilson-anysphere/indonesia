@@ -26,6 +26,18 @@ pub trait NovaInputs: ra_salsa::Database {
     #[ra_salsa::input]
     fn file_project(&self, file: FileId) -> ProjectId;
 
+    /// Stable list of files belonging to `project`.
+    ///
+    /// Callers should provide the file IDs in stable, project-relative order
+    /// (typically sorted by `file_rel_path`) to keep downstream results
+    /// deterministic.
+    #[ra_salsa::input]
+    fn project_files(&self, project: ProjectId) -> Arc<Vec<FileId>>;
+
+    /// Stable, project-relative file path used for persistence keys.
+    #[ra_salsa::input]
+    fn file_rel_path(&self, file: FileId) -> Arc<String>;
+
     /// Source root identifier for a file.
     ///
     /// This is typically assigned by the workspace/project loader after mapping

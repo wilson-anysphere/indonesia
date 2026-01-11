@@ -32,6 +32,7 @@
 mod cancellation;
 mod hir;
 mod ide;
+mod indexing;
 mod inputs;
 mod resolve;
 mod semantic;
@@ -40,6 +41,7 @@ mod syntax;
 
 pub use hir::NovaHir;
 pub use ide::NovaIde;
+pub use indexing::NovaIndexing;
 pub use inputs::NovaInputs;
 pub use resolve::NovaResolve;
 pub use semantic::NovaSemantic;
@@ -327,7 +329,8 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
     semantic::NovaSemanticStorage,
     hir::NovaHirStorage,
     resolve::NovaResolveStorage,
-    ide::NovaIdeStorage
+    ide::NovaIdeStorage,
+    indexing::NovaIndexingStorage,
 )]
 pub struct RootDatabase {
     storage: ra_salsa::Storage<RootDatabase>,
@@ -743,6 +746,18 @@ impl Database {
         self.inner.lock().set_file_path(file, path);
     }
 
+    pub fn set_project_files(&self, project: ProjectId, files: Arc<Vec<FileId>>) {
+        self.inner.write().set_project_files(project, files);
+    }
+
+    pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
+        let mut db = self.inner.write();
+        db.set_file_rel_path(file, Arc::clone(&rel_path));
+        // Keep the non-tracked file path map in sync so existing persistence
+        // caches (AST artifacts, derived caches) can reuse the same keys.
+        db.set_file_path(file, rel_path.as_ref().clone());
+    }
+
     pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
         self.inputs
             .lock()
@@ -820,13 +835,40 @@ impl Database {
             evictor
         }
     }
+
+    pub fn persist_project_indexes(
+        &self,
+        project: ProjectId,
+    ) -> Result<(), nova_index::IndexPersistenceError> {
+        let snap = self.snapshot();
+        if !snap.persistence().mode().allows_write() {
+            return Ok(());
+        }
+
+        let Some(cache_dir) = snap.persistence().cache_dir() else {
+            return Ok(());
+        };
+
+        let file_fingerprints = snap.project_file_fingerprints(project);
+        let indexes = snap.project_indexes(project);
+        let mut indexes = (*indexes).clone();
+
+        nova_index::save_indexes_with_fingerprints(
+            cache_dir,
+            file_fingerprints.as_ref(),
+            &mut indexes,
+        )
+    }
 }
 
 /// Convenience trait alias that composes Nova's query groups.
-pub trait NovaDatabase: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve {}
+pub trait NovaDatabase:
+    NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve + NovaIndexing
+{
+}
 
 impl<T> NovaDatabase for T where
-    T: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve
+    T: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve + NovaIndexing
 {
 }
 

@@ -3517,6 +3517,7 @@ dependencies = [
  "nova-core",
  "nova-hir",
  "nova-jdk",
+ "nova-index",
  "nova-memory",
  "nova-project",
  "nova-resolve",

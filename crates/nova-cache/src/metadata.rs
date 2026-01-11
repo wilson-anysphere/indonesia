@@ -67,9 +67,21 @@ impl CacheMetadata {
     /// - is modified (fingerprint differs)
     /// - is deleted (present in `self.file_fingerprints` but absent from `snapshot`)
     pub fn diff_files(&self, snapshot: &ProjectSnapshot) -> Vec<String> {
+        self.diff_file_fingerprints(snapshot.file_fingerprints())
+    }
+
+    /// Compute the set of invalidated files given a map of current file fingerprints.
+    ///
+    /// This is equivalent to [`Self::diff_files`] but allows callers to supply
+    /// fingerprints computed outside `nova-cache` (e.g. Salsa-derived fingerprints
+    /// from a VFS).
+    pub fn diff_file_fingerprints(
+        &self,
+        current: &BTreeMap<String, Fingerprint>,
+    ) -> Vec<String> {
         let mut invalidated = BTreeSet::new();
 
-        for (path, current_fp) in snapshot.file_fingerprints() {
+        for (path, current_fp) in current {
             match self.file_fingerprints.get(path) {
                 Some(previous_fp) if previous_fp == current_fp => {}
                 _ => {
@@ -79,7 +91,7 @@ impl CacheMetadata {
         }
 
         for path in self.file_fingerprints.keys() {
-            if !snapshot.file_fingerprints().contains_key(path) {
+            if !current.contains_key(path) {
                 invalidated.insert(path.clone());
             }
         }
@@ -177,7 +189,6 @@ impl CacheMetadata {
         })
     }
 }
-
 fn compute_metadata_fingerprints(snapshot: &ProjectSnapshot) -> BTreeMap<String, Fingerprint> {
     let mut fingerprints = BTreeMap::new();
     for path in snapshot.file_fingerprints().keys() {
