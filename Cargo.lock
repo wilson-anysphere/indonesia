@@ -3429,11 +3429,9 @@ dependencies = [
  "predicates",
  "serde",
  "serde_json",
- "tar",
  "tokio",
  "tokio-util",
  "tracing",
- "zstd 0.13.3",
 ]
 
 [[package]]
@@ -4006,6 +4004,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "nova-remote-proto",
+ "proptest",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -12,3 +12,4 @@ zstd = "0.13"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
+proptest = "1"

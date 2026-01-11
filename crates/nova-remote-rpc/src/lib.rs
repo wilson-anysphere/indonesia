@@ -548,8 +548,7 @@ async fn client_handshake(
     stream: &mut BoxedStream,
     config: &ClientConfig,
 ) -> Result<RouterWelcome> {
-    let start =
-        tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
+    let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
 
     tracing::debug!(
         target: TRACE_TARGET,
@@ -659,8 +658,7 @@ async fn server_handshake(
     stream: &mut BoxedStream,
     config: &ServerConfig,
 ) -> Result<(RouterWelcome, ShardId, bool)> {
-    let start =
-        tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
+    let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
 
     tracing::debug!(
         target: TRACE_TARGET,
@@ -1341,6 +1339,8 @@ mod tests {
     use std::io;
     use std::sync::Mutex as StdMutex;
 
+    use proptest::prelude::*;
+    use proptest::test_runner::TestRunner;
     use tracing_subscriber::fmt::MakeWriter;
     use tracing_subscriber::EnvFilter;
 
@@ -1522,7 +1522,118 @@ mod tests {
         let output = String::from_utf8(buf.lock().unwrap().clone()).context("decode output")?;
         assert!(
             output.contains("compressed=true"),
-            "expected at least one compressed packet to be logged"
+            "expected at least one compressed packet to be logged; output was:\n{output}"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn read_wire_frame_rejects_oversize_len_prefix_without_allocating() {
+        // A regression test for the length-prefixed framing: `read_wire_frame` must reject
+        // lengths larger than `max_frame_len` *before* allocating the buffer.
+        //
+        // If the check happens after allocation, this test would try to allocate ~4GiB and likely
+        // OOM the process.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        rt.block_on(async {
+            let max_frame_len = 1024u32;
+            let len = u32::MAX;
+
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&len.to_le_bytes());
+
+            let (mut tx, mut rx) = tokio::io::duplex(bytes.len());
+            tx.write_all(&bytes).await.expect("write prefix");
+            drop(tx);
+
+            let err = read_wire_frame(&mut rx, max_frame_len)
+                .await
+                .expect_err("expected oversize frame error");
+            assert!(
+                err.to_string().contains("frame too large"),
+                "unexpected error: {err:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn read_wire_frame_never_panics_on_random_bytes() {
+        const MAX_FUZZ_INPUT_LEN: usize = 64 * 1024;
+        const MAX_FRAME_LEN: u32 = 64 * 1024;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime");
+
+        let mut runner = TestRunner::new(ProptestConfig { cases: 64, ..ProptestConfig::default() });
+        runner
+            .run(
+                &proptest::collection::vec(any::<u8>(), 0..=MAX_FUZZ_INPUT_LEN),
+                |bytes| {
+                    rt.block_on(async {
+                        let cap = bytes.len().max(1);
+                        let (mut tx, mut rx) = tokio::io::duplex(cap);
+                        tx.write_all(&bytes)
+                            .await
+                            .expect("write fuzz input to duplex");
+                        drop(tx);
+
+                        let _ = read_wire_frame(&mut rx, MAX_FRAME_LEN).await;
+                    });
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn maybe_decompress_never_panics_on_random_bytes() {
+        const MAX_FUZZ_INPUT_LEN: usize = 16 * 1024;
+
+        let compression = prop_oneof![
+            Just(CompressionAlgo::None),
+            Just(CompressionAlgo::Zstd),
+            Just(CompressionAlgo::Unknown),
+        ];
+
+        let mut runner = TestRunner::new(ProptestConfig { cases: 64, ..ProptestConfig::default() });
+        runner
+            .run(
+                &(
+                    proptest::collection::vec(any::<u8>(), 0..=MAX_FUZZ_INPUT_LEN),
+                    0u32..=8192u32,
+                    compression,
+                ),
+                |(data, max_packet_len, compression)| {
+                    let mut caps = Capabilities::default();
+                    caps.max_packet_len = max_packet_len;
+
+                    let _ = maybe_decompress(&caps, compression, &data);
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn maybe_decompress_zstd_respects_max_packet_len() -> Result<()> {
+        let uncompressed = vec![b'x'; 1025];
+        let compressed = zstd::bulk::compress(&uncompressed, 3).context("compress zstd")?;
+
+        let mut caps = Capabilities::default();
+        caps.max_packet_len = 1024;
+
+        let err =
+            maybe_decompress(&caps, CompressionAlgo::Zstd, &compressed).expect_err("expected error");
+        assert!(
+            err.to_string().contains("decompressed payload too large"),
+            "unexpected error: {err:?}"
         );
 
         Ok(())
