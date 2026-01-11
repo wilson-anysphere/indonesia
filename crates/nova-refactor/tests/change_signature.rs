@@ -1,41 +1,19 @@
 use nova_index::{Index, SymbolKind};
 use nova_refactor::{
-    apply_text_edits, change_signature, workspace_edit_to_lsp, ChangeSignature,
-    ChangeSignatureConflict, FileOp, HierarchyPropagation, ParameterOperation, WorkspaceEdit,
-    WorkspaceTextEdit,
+    change_signature, workspace_edit_to_lsp, ChangeSignature, ChangeSignatureConflict, FileId,
+    HierarchyPropagation, ParameterOperation, WorkspaceEdit,
 };
 use nova_types::MethodId;
 use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 
 fn apply_workspace_edit(files: &mut BTreeMap<String, String>, mut edit: WorkspaceEdit) {
-    edit.normalize().expect("normalize edit");
-
-    for op in edit.file_ops.drain(..) {
-        match op {
-            FileOp::Rename { from, to } => {
-                let contents = files.remove(&from.0).expect("file exists");
-                files.insert(to.0, contents);
-            }
-            FileOp::Create { file, contents } => {
-                files.insert(file.0, contents);
-            }
-            FileOp::Delete { file } => {
-                files.remove(&file.0);
-            }
-        }
-    }
-
-    let mut by_file: BTreeMap<String, Vec<WorkspaceTextEdit>> = BTreeMap::new();
-    for e in edit.text_edits {
-        by_file.entry(e.file.0.clone()).or_default().push(e);
-    }
-
-    for (file, edits) in by_file {
-        let old = files.get(&file).expect("file exists").clone();
-        let new = apply_text_edits(&old, &edits).expect("apply edits");
-        files.insert(file, new);
-    }
+    let input: BTreeMap<FileId, String> = files
+        .iter()
+        .map(|(file, text)| (FileId::new(file.clone()), text.clone()))
+        .collect();
+    let out = nova_refactor::apply_workspace_edit(&input, &edit).expect("apply workspace edit");
+    *files = out.into_iter().map(|(file, text)| (file.0, text)).collect();
 }
 
 fn build_index(files: Vec<(&str, &str)>) -> (Index, BTreeMap<String, String>) {
