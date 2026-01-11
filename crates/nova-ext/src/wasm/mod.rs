@@ -4,6 +4,8 @@
 //! execute extension providers (diagnostics, completions, code actions, navigation, inlay hints)
 //! inside a sandboxed WebAssembly module.
 //!
+//! For the full ABI contract and JSON payload shapes, see `docs/extensions/wasm-abi-v1.md`.
+//!
 //! # ABI stability
 //!
 //! The ABI is versioned. Modules **must** export:

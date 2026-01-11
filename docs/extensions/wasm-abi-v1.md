@@ -77,6 +77,11 @@ Response: `Vec<nova_ext_abi::v1::DiagnosticV1>`
 ]
 ```
 
+Notes:
+
+- `severity` is optional; if omitted, the host currently treats it as `"warning"`.
+- `code` is optional; if omitted, the host currently uses `"WASM_EXT"`.
+
 ### Completions
 
 Export:

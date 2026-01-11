@@ -122,6 +122,9 @@ The host:
 
 Nova standardizes on a **Nova Extension ABI** (`nova_ext_abi`) with explicit major versions.
 
+For the concrete ABI v1 contract and JSON payload shapes, see
+[`docs/extensions/wasm-abi-v1.md`](../extensions/wasm-abi-v1.md).
+
 #### ABI v1 (initial)
 
 **Transport:** “core Wasm module” + shared linear memory + JSON messages (UTF-8).
