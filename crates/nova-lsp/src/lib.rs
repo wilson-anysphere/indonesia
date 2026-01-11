@@ -36,7 +36,6 @@
 //! - Resilience endpoints
 //!   - `nova/bugReport`
 
-mod ai_codegen;
 pub mod code_action;
 mod completion_resolve;
 pub mod decompile;

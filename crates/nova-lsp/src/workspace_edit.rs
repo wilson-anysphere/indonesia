@@ -209,7 +209,7 @@ pub fn workspace_edit_from_refactor(
     }
 }
 
-fn join_uri(root: &Uri, path: &Path) -> Uri {
+pub(crate) fn join_uri(root: &Uri, path: &Path) -> Uri {
     let mut uri = root.as_str().to_string();
     if !uri.ends_with('/') {
         uri.push('/');
@@ -253,7 +253,7 @@ fn hex_digit(n: u8) -> char {
     }
 }
 
-fn full_document_range(contents: &str) -> lsp_types::Range {
+pub(crate) fn full_document_range(contents: &str) -> lsp_types::Range {
     let end = end_position(contents);
     lsp_types::Range {
         start: lsp_types::Position {

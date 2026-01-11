@@ -3292,6 +3292,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nova-ai-codegen"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "nova-ai",
+ "nova-config",
+ "nova-core",
+ "nova-ide",
+ "thiserror 1.0.69",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "nova-apt"
 version = "0.1.0"
 dependencies = [
@@ -3871,10 +3885,12 @@ name = "nova-lsp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "futures",
  "httpmock",
  "lsp-types",
  "nova-ai",
+ "nova-ai-codegen",
  "nova-apt",
  "nova-bugreport",
  "nova-build",

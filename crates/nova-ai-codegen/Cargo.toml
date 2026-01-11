@@ -1,0 +1,20 @@
+[package]
+name = "nova-ai-codegen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Safe AI code generation service (structured patch + safety + validation + repair)."
+
+[dependencies]
+async-trait = "0.1"
+thiserror = { workspace = true }
+tokio-util = "0.7"
+tracing = { workspace = true }
+
+nova-ai = { path = "../nova-ai" }
+nova-config = { path = "../nova-config" }
+nova-core = { path = "../nova-core" }
+nova-ide = { path = "../nova-ide" }

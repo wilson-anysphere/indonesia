@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use async_trait::async_trait;
 use nova_ai::patch::{parse_structured_patch, Patch, PatchParseError};
-use nova_ai::provider::{AiProvider, AiProviderError};
 use nova_ai::safety::{
     enforce_no_new_imports, enforce_patch_safety, PatchSafetyConfig, SafetyError,
 };
@@ -13,6 +13,7 @@ use nova_core::{LineIndex, TextRange};
 use nova_ide::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
 use nova_ide::format::Formatter;
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct ValidationConfig {
@@ -106,6 +107,94 @@ impl ErrorReport {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum CodegenProgressStage {
+    /// Building the full prompt (base context + safety constraints + error feedback).
+    BuildingPrompt,
+    /// Calling the model to get the next candidate patch.
+    ModelCall,
+    ParsingPatch,
+    ApplyingPatch,
+    Formatting,
+    Validating,
+    /// Reported at the start of each attempt (0 = initial attempt).
+    RepairAttempt,
+}
+
+#[derive(Debug, Clone)]
+pub struct CodegenProgressEvent {
+    pub stage: CodegenProgressStage,
+    /// 0-indexed attempt counter (0 = initial attempt).
+    pub attempt: usize,
+    pub message: String,
+}
+
+pub trait CodegenProgressReporter: Send + Sync {
+    fn report(&self, event: CodegenProgressEvent);
+}
+
+#[derive(Debug, Error, Clone)]
+pub enum PromptCompletionError {
+    #[error("request cancelled")]
+    Cancelled,
+    #[error("provider error: {0}")]
+    Provider(String),
+}
+
+#[async_trait]
+pub trait PromptCompletionProvider: Send + Sync {
+    async fn complete(
+        &self,
+        prompt: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PromptCompletionError>;
+}
+
+#[async_trait]
+impl PromptCompletionProvider for nova_ai::AiClient {
+    async fn complete(
+        &self,
+        prompt: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PromptCompletionError> {
+        let request = nova_ai::ChatRequest {
+            messages: vec![nova_ai::ChatMessage::user(prompt.to_string())],
+            max_tokens: None,
+        };
+        self.chat(request, cancel.clone())
+            .await
+            .map_err(|err| match err {
+                nova_ai::AiError::Cancelled => PromptCompletionError::Cancelled,
+                other => PromptCompletionError::Provider(other.to_string()),
+            })
+    }
+}
+
+#[async_trait]
+impl PromptCompletionProvider for nova_ai::CloudLlmClient {
+    async fn complete(
+        &self,
+        prompt: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, PromptCompletionError> {
+        const DEFAULT_MAX_TOKENS: u32 = 1024;
+        const DEFAULT_TEMPERATURE: f32 = 0.2;
+
+        let request = nova_ai::cloud::GenerateRequest {
+            prompt: prompt.to_string(),
+            max_tokens: DEFAULT_MAX_TOKENS,
+            temperature: DEFAULT_TEMPERATURE,
+        };
+
+        self.generate(request, cancel.clone())
+            .await
+            .map_err(|err| match err {
+                nova_ai::cloud::CloudLlmError::Cancelled => PromptCompletionError::Cancelled,
+                other => PromptCompletionError::Provider(other.to_string()),
+            })
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum CodeGenerationError {
     #[error("operation cancelled")]
@@ -113,7 +202,7 @@ pub enum CodeGenerationError {
     #[error(transparent)]
     Policy(#[from] CodeEditPolicyError),
     #[error(transparent)]
-    Provider(#[from] AiProviderError),
+    Provider(#[from] PromptCompletionError),
     #[error(transparent)]
     PatchParse(#[from] PatchParseError),
     #[error(transparent)]
@@ -124,13 +213,14 @@ pub enum CodeGenerationError {
     ValidationFailed { report: ErrorReport },
 }
 
-pub fn run_code_generation(
-    provider: &dyn AiProvider,
+pub async fn generate_patch(
+    provider: &dyn PromptCompletionProvider,
     workspace: &VirtualWorkspace,
     base_prompt: &str,
     config: &CodeGenerationConfig,
     privacy: &AiPrivacyConfig,
     cancel: &CancellationToken,
+    progress: Option<&dyn CodegenProgressReporter>,
 ) -> Result<CodeGenerationResult, CodeGenerationError> {
     enforce_code_edit_policy(privacy)?;
 
@@ -145,14 +235,49 @@ pub fn run_code_generation(
             return Err(CodeGenerationError::Cancelled);
         }
 
+        if let Some(progress) = progress {
+            progress.report(CodegenProgressEvent {
+                stage: CodegenProgressStage::RepairAttempt,
+                attempt,
+                message: format!("Attempt {}", attempt + 1),
+            });
+        }
+        if cancel.is_cancelled() {
+            return Err(CodeGenerationError::Cancelled);
+        }
+
         let prompt = build_prompt(base_prompt, config, feedback.as_ref());
-        let response = match provider.complete(&prompt, cancel) {
+        if let Some(progress) = progress {
+            progress.report(CodegenProgressEvent {
+                stage: CodegenProgressStage::BuildingPrompt,
+                attempt,
+                message: "Built prompt".to_string(),
+            });
+            progress.report(CodegenProgressEvent {
+                stage: CodegenProgressStage::ModelCall,
+                attempt,
+                message: "Calling model".to_string(),
+            });
+        }
+        if cancel.is_cancelled() {
+            return Err(CodeGenerationError::Cancelled);
+        }
+
+        let response = match provider.complete(&prompt, cancel).await {
             Ok(response) => response,
-            Err(AiProviderError::Cancelled) => return Err(CodeGenerationError::Cancelled),
+            Err(PromptCompletionError::Cancelled) => return Err(CodeGenerationError::Cancelled),
             Err(err) => return Err(err.into()),
         };
         if cancel.is_cancelled() {
             return Err(CodeGenerationError::Cancelled);
+        }
+
+        if let Some(progress) = progress {
+            progress.report(CodegenProgressEvent {
+                stage: CodegenProgressStage::ParsingPatch,
+                attempt,
+                message: "Parsing structured patch".to_string(),
+            });
         }
 
         let patch = match parse_structured_patch(&response) {
@@ -168,6 +293,18 @@ pub fn run_code_generation(
         };
 
         enforce_patch_safety(&patch, workspace, &config.safety)?;
+
+        if let Some(progress) = progress {
+            progress.report(CodegenProgressEvent {
+                stage: CodegenProgressStage::ApplyingPatch,
+                attempt,
+                message: "Applying patch".to_string(),
+            });
+        }
+
+        if cancel.is_cancelled() {
+            return Err(CodeGenerationError::Cancelled);
+        }
 
         let applied = match workspace.apply_patch_with_config(
             &patch,
@@ -186,10 +323,26 @@ pub fn run_code_generation(
             }
         };
 
+        if let Some(progress) = progress {
+            progress.report(CodegenProgressEvent {
+                stage: CodegenProgressStage::Formatting,
+                attempt,
+                message: "Formatting touched files".to_string(),
+            });
+        }
+
         let formatted_workspace = format_workspace(&formatter, &applied, config);
 
         if config.safety.no_new_imports {
             enforce_no_new_imports(workspace, &formatted_workspace, &applied)?;
+        }
+
+        if let Some(progress) = progress {
+            progress.report(CodegenProgressEvent {
+                stage: CodegenProgressStage::Validating,
+                attempt,
+                message: "Validating diagnostics".to_string(),
+            });
         }
 
         match validate_patch(
@@ -218,11 +371,7 @@ pub fn run_code_generation(
     }
 }
 
-fn build_prompt(
-    base: &str,
-    config: &CodeGenerationConfig,
-    feedback: Option<&ErrorFeedback>,
-) -> String {
+fn build_prompt(base: &str, config: &CodeGenerationConfig, feedback: Option<&ErrorFeedback>) -> String {
     let mut out = String::new();
     out.push_str(base);
     out.push_str("\n\nReturn ONLY a structured patch.\n");
@@ -232,10 +381,12 @@ fn build_prompt(
     out.push_str("Paths must be workspace-relative and use forward slashes (/).\n");
 
     out.push_str(&format!(
-        "\nSafety limits: max_files={}, max_total_inserted_chars={}, max_total_deleted_chars={}.\n",
+        "\nSafety limits: max_files={}, max_total_inserted_chars={}, max_total_deleted_chars={}, max_hunks_per_file={}, max_edit_span_chars={}.\n",
         config.safety.max_files,
         config.safety.max_total_inserted_chars,
-        config.safety.max_total_deleted_chars
+        config.safety.max_total_deleted_chars,
+        config.safety.max_hunks_per_file,
+        config.safety.max_edit_span_chars,
     ));
     if !config.safety.allowed_path_prefixes.is_empty() {
         out.push_str("Allowed path prefixes:\n");
@@ -243,10 +394,29 @@ fn build_prompt(
             out.push_str(&format!("- {prefix}\n"));
         }
     }
+
+    if !config.safety.allowed_file_extensions.is_empty() {
+        out.push_str("Allowed file extensions:\n");
+        for ext in &config.safety.allowed_file_extensions {
+            out.push_str(&format!("- {ext}\n"));
+        }
+    }
+    if !config.safety.denied_file_extensions.is_empty() {
+        out.push_str("Denied file extensions:\n");
+        for ext in &config.safety.denied_file_extensions {
+            out.push_str(&format!("- {ext}\n"));
+        }
+    }
     if !config.safety.excluded_path_prefixes.is_empty() {
         out.push_str("Excluded path prefixes:\n");
         for prefix in &config.safety.excluded_path_prefixes {
             out.push_str(&format!("- {prefix}\n"));
+        }
+    }
+    if !config.safety.excluded_path_globs.is_empty() {
+        out.push_str("Excluded path globs:\n");
+        for pattern in &config.safety.excluded_path_globs {
+            out.push_str(&format!("- {pattern}\n"));
         }
     }
     if !config.safety.allow_new_files {
@@ -337,10 +507,7 @@ fn validate_patch(
                     });
                 }
                 DiagnosticKind::Type => {
-                    if touched
-                        .iter()
-                        .any(|range| ranges_intersect(*range, diag.range))
-                    {
+                    if touched.iter().any(|range| ranges_intersect(*range, diag.range)) {
                         new_type_errors += 1;
                         let position =
                             LineIndex::new(after_text).position(after_text, diag.range.start());
@@ -356,8 +523,24 @@ fn validate_patch(
         }
     }
 
-    if new_syntax_errors > config.max_new_syntax_errors
-        || new_type_errors > config.max_new_type_errors
+    new_diagnostics.sort_by(|a, b| {
+        (
+            a.file.as_str(),
+            u32::from(a.diagnostic.range.start()),
+            u32::from(a.diagnostic.range.end()),
+            a.diagnostic.kind as u8,
+            a.diagnostic.message.as_str(),
+        )
+            .cmp(&(
+                b.file.as_str(),
+                u32::from(b.diagnostic.range.start()),
+                u32::from(b.diagnostic.range.end()),
+                b.diagnostic.kind as u8,
+                b.diagnostic.message.as_str(),
+            ))
+    });
+
+    if new_syntax_errors > config.max_new_syntax_errors || new_type_errors > config.max_new_type_errors
     {
         return Err(ErrorReport {
             summary: format!(
@@ -370,9 +553,9 @@ fn validate_patch(
     Ok(())
 }
 
-fn resolve_before_path(path: &str, renames: &std::collections::BTreeMap<String, String>) -> String {
+fn resolve_before_path(path: &str, renames: &BTreeMap<String, String>) -> String {
     let mut current = path;
-    let mut visited = std::collections::BTreeSet::new();
+    let mut visited = BTreeSet::new();
     while let Some(prev) = renames.get(current) {
         if !visited.insert(current.to_string()) {
             break;

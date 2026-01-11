@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/nova-ai",
+    "crates/nova-ai-codegen",
     "crates/nova-apt",
     "crates/nova-archive",
     "crates/nova-build",
