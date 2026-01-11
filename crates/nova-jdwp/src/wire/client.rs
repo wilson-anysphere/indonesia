@@ -3,7 +3,7 @@ use std::{
     net::SocketAddr,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc,
+        Arc, Mutex as StdMutex,
     },
     time::Duration,
 };
@@ -53,9 +53,44 @@ struct Reply {
 }
 
 #[derive(Debug)]
+struct PendingGuard {
+    inner: Arc<Inner>,
+    id: u32,
+    disarmed: bool,
+}
+
+impl PendingGuard {
+    fn new(inner: Arc<Inner>, id: u32) -> Self {
+        Self {
+            inner,
+            id,
+            disarmed: false,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if self.disarmed {
+            return;
+        }
+
+        let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
+        pending.remove(&self.id);
+    }
+}
+
+#[derive(Debug)]
 struct Inner {
     writer: Mutex<tokio::net::tcp::OwnedWriteHalf>,
-    pending: Mutex<HashMap<u32, oneshot::Sender<std::result::Result<Reply, JdwpError>>>>,
+    // `pending` uses a std mutex so we can eagerly clean up entries when a request future
+    // is dropped (e.g. higher-level cancellation). The critical sections are tiny and we never
+    // hold the lock across `.await`, so blocking the runtime thread is not a concern.
+    pending: StdMutex<HashMap<u32, oneshot::Sender<std::result::Result<Reply, JdwpError>>>>,
     next_id: AtomicU32,
     id_sizes: Mutex<JdwpIdSizes>,
     capabilities: Mutex<JdwpCapabilitiesNew>,
@@ -100,7 +135,7 @@ impl JdwpClient {
 
         let inner = Arc::new(Inner {
             writer: Mutex::new(writer),
-            pending: Mutex::new(HashMap::with_capacity(config.pending_channel_size)),
+            pending: StdMutex::new(HashMap::with_capacity(config.pending_channel_size)),
             next_id: AtomicU32::new(1),
             id_sizes: Mutex::new(JdwpIdSizes::default()),
             capabilities: Mutex::new(JdwpCapabilitiesNew::default()),
@@ -147,9 +182,10 @@ impl JdwpClient {
     ) -> Result<Vec<u8>> {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
+        let mut pending_guard = PendingGuard::new(self.inner.clone(), id);
 
         {
-            let mut pending = self.inner.pending.lock().await;
+            let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending.insert(id, tx);
         }
 
@@ -161,7 +197,8 @@ impl JdwpClient {
 
         let reply = tokio::select! {
             _ = self.inner.shutdown.cancelled() => {
-                self.remove_pending(id).await;
+                self.remove_pending(id);
+                pending_guard.disarm();
                 return Err(JdwpError::Cancelled);
             }
             res = tokio::time::timeout(self.inner.config.reply_timeout, rx) => {
@@ -169,12 +206,15 @@ impl JdwpClient {
                     Ok(Ok(r)) => r,
                     Ok(Err(_closed)) => return Err(JdwpError::ConnectionClosed),
                     Err(_elapsed) => {
-                        self.remove_pending(id).await;
+                        self.remove_pending(id);
+                        pending_guard.disarm();
                         return Err(JdwpError::Timeout);
                     }
                 }
             }
         }?;
+
+        pending_guard.disarm();
 
         if reply.error_code != 0 {
             return Err(JdwpError::VmError(reply.error_code));
@@ -183,8 +223,8 @@ impl JdwpClient {
         Ok(reply.payload)
     }
 
-    async fn remove_pending(&self, id: u32) {
-        let mut pending = self.inner.pending.lock().await;
+    fn remove_pending(&self, id: u32) {
+        let mut pending = self.inner.pending.lock().unwrap_or_else(|e| e.into_inner());
         pending.remove(&id);
     }
 
@@ -774,7 +814,7 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
         if (flags & FLAG_REPLY) != 0 {
             let error_code = u16::from_be_bytes([header[9], header[10]]);
             let tx = {
-                let mut pending = inner.pending.lock().await;
+                let mut pending = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
                 pending.remove(&id)
             };
 
@@ -804,7 +844,7 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
 
     if terminated_with_error {
         let pending = {
-            let mut pending = inner.pending.lock().await;
+            let mut pending = inner.pending.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *pending)
         };
         for (_id, tx) in pending {
