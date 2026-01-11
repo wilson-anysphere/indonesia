@@ -113,6 +113,32 @@ enabled = true
 path = "/tmp/nova-ai-audit.log"
 ```
 
+#### Audit event schema
+
+Audit logs are emitted as structured `tracing` events on the `nova.ai.audit` target. Each log line is
+a JSON object with a stable set of fields intended for machine parsing:
+
+- `event`: `"llm_request" | "llm_response" | "llm_error"`
+- `request_id`: monotonic `u64` used to correlate request/response/error
+- `provider`: backend label (e.g. `"ollama"`, `"openai_compatible"`, `"openai"`, `"anthropic"`, ...)
+- `model`: model name
+- `endpoint`: sanitized URL (no query/userinfo), when available
+- `attempt`: request attempt index (cloud retry loop)
+- `retry_count`: number of retries performed (same as `attempt` for current implementations)
+- `latency_ms`: end-to-end latency in milliseconds (responses/errors)
+- `stream`: `true` for streaming requests
+- `chunk_count`: number of streamed chunks observed (streaming responses)
+- `prompt`: sanitized prompt text (`llm_request`)
+- `completion`: sanitized completion text (`llm_response`)
+- `error`: sanitized error string (`llm_error`)
+
+Example (redacted):
+
+```json
+{"event":"llm_request","request_id":42,"provider":"openai_compatible","model":"gpt-4o-mini","endpoint":"http://localhost:8000/","attempt":0,"stream":false,"prompt":"user: hello [REDACTED]\n"}
+{"event":"llm_response","request_id":42,"provider":"openai_compatible","model":"gpt-4o-mini","latency_ms":123,"retry_count":0,"stream":false,"completion":"..."}
+```
+
 Privacy implications:
 
 - Audit logs may contain **source code**, **file paths**, and **model output**.
