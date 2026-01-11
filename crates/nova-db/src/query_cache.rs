@@ -68,6 +68,15 @@ impl QueryCache {
         Self::new_with_disk(manager, None)
     }
 
+    /// Create a query cache optionally backed by an on-disk [`QueryDiskCache`].
+    ///
+    /// `cache_dir` should be **project-scoped** (for example
+    /// [`nova_cache::CacheDir::queries_dir`]). If a shared directory is used for
+    /// multiple projects, identical keys will collide and can lead to incorrect
+    /// cache reuse across projects.
+    ///
+    /// Disk persistence is best-effort: any I/O error, schema/version mismatch,
+    /// or corruption is treated as a cache miss.
     pub fn new_with_disk(manager: &MemoryManager, cache_dir: Option<PathBuf>) -> Arc<Self> {
         // Use a dedicated subdirectory so our GC policy can't impact other
         // persistent query caches.
