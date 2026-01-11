@@ -465,6 +465,13 @@ impl<'a> BodyLower<'a> {
                     range: binary.range,
                 })
             }
+            syntax::Expr::MethodReference(expr) => {
+                self.alloc_expr(Expr::Missing { range: expr.range })
+            }
+            syntax::Expr::ConstructorReference(expr) => {
+                self.alloc_expr(Expr::Missing { range: expr.range })
+            }
+            syntax::Expr::ClassLiteral(expr) => self.alloc_expr(Expr::Missing { range: expr.range }),
             syntax::Expr::Missing(range) => self.alloc_expr(Expr::Missing { range: *range }),
         }
     }

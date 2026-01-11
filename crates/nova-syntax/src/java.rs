@@ -220,6 +220,9 @@ pub mod ast {
         Call(CallExpr),
         FieldAccess(FieldAccessExpr),
         Binary(BinaryExpr),
+        MethodReference(MethodReferenceExpr),
+        ConstructorReference(ConstructorReferenceExpr),
+        ClassLiteral(ClassLiteralExpr),
         Missing(Span),
     }
 
@@ -232,6 +235,9 @@ pub mod ast {
                 Expr::Call(expr) => expr.range,
                 Expr::FieldAccess(expr) => expr.range,
                 Expr::Binary(expr) => expr.range,
+                Expr::MethodReference(expr) => expr.range,
+                Expr::ConstructorReference(expr) => expr.range,
+                Expr::ClassLiteral(expr) => expr.range,
                 Expr::Missing(range) => *range,
             }
         }
@@ -261,6 +267,26 @@ pub mod ast {
         pub receiver: Box<Expr>,
         pub name: String,
         pub name_range: Span,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MethodReferenceExpr {
+        pub receiver: Box<Expr>,
+        pub name: String,
+        pub name_range: Span,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ConstructorReferenceExpr {
+        pub receiver: Box<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ClassLiteralExpr {
+        pub ty: Box<Expr>,
         pub range: Span,
     }
 
@@ -890,6 +916,9 @@ impl Lowerer {
             SyntaxKind::LiteralExpression => self.lower_literal_expr(node),
             SyntaxKind::MethodCallExpression => self.lower_call_expr(node),
             SyntaxKind::FieldAccessExpression => self.lower_field_access_expr(node),
+            SyntaxKind::MethodReferenceExpression => self.lower_method_reference_expr(node),
+            SyntaxKind::ConstructorReferenceExpression => self.lower_constructor_reference_expr(node),
+            SyntaxKind::ClassLiteralExpression => self.lower_class_literal_expr(node),
             SyntaxKind::BinaryExpression => self.lower_binary_expr(node),
             SyntaxKind::ParenthesizedExpression => node
                 .children()
@@ -907,7 +936,7 @@ impl Lowerer {
             .descendants_with_tokens()
             .filter_map(|el| el.into_token())
         {
-            if tok.kind().is_identifier_like() {
+            if tok.kind().is_identifier_like() || is_type_name_token(tok.kind()) {
                 segments.push((tok.text().to_string(), self.spans.map_token(&tok)));
             }
         }
@@ -932,6 +961,61 @@ impl Lowerer {
         }
 
         expr
+    }
+
+    fn lower_method_reference_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let receiver_node = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()));
+        let receiver = receiver_node
+            .as_ref()
+            .map(|expr| self.lower_expr(expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        let name_token = node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| tok.kind().is_identifier_like())
+            .last();
+        let Some(name_token) = name_token else {
+            return ast::Expr::Missing(self.spans.map_node(node));
+        };
+
+        let name_range = self.spans.map_token(&name_token);
+        ast::Expr::MethodReference(ast::MethodReferenceExpr {
+            receiver: Box::new(receiver),
+            name: name_token.text().to_string(),
+            name_range,
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_constructor_reference_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let receiver_node = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()));
+        let receiver = receiver_node
+            .as_ref()
+            .map(|expr| self.lower_expr(expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        ast::Expr::ConstructorReference(ast::ConstructorReferenceExpr {
+            receiver: Box::new(receiver),
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_class_literal_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let ty_node = node.children().find(|child| is_expression_kind(child.kind()));
+        let ty = ty_node
+            .as_ref()
+            .map(|expr| self.lower_expr(expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        ast::Expr::ClassLiteral(ast::ClassLiteralExpr {
+            ty: Box::new(ty),
+            range: self.spans.map_node(node),
+        })
     }
 
     fn lower_literal_expr(&self, node: &SyntaxNode) -> ast::Expr {
@@ -1147,6 +1231,9 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::MethodCallExpression
             | SyntaxKind::FieldAccessExpression
             | SyntaxKind::ArrayAccessExpression
+            | SyntaxKind::ClassLiteralExpression
+            | SyntaxKind::MethodReferenceExpression
+            | SyntaxKind::ConstructorReferenceExpression
             | SyntaxKind::UnaryExpression
             | SyntaxKind::BinaryExpression
             | SyntaxKind::AssignmentExpression
@@ -1154,6 +1241,21 @@ fn is_expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::LambdaExpression
             | SyntaxKind::CastExpression
             | SyntaxKind::Error
+    )
+}
+
+fn is_type_name_token(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::BooleanKw
+            | SyntaxKind::ByteKw
+            | SyntaxKind::ShortKw
+            | SyntaxKind::IntKw
+            | SyntaxKind::LongKw
+            | SyntaxKind::CharKw
+            | SyntaxKind::FloatKw
+            | SyntaxKind::DoubleKw
+            | SyntaxKind::VoidKw
     )
 }
 
@@ -1205,5 +1307,51 @@ mod tests {
         };
         assert_eq!(arg.name, "x");
         assert_eq!(arg.range, Span::new(offset + 13, offset + 14));
+    }
+
+    #[test]
+    fn parse_block_lowers_class_literals_and_method_references() {
+        let text = "{var c = Foo.class; var r = Foo::bar; var n = Foo::new; var p = int.class;}";
+        let block = parse_block(text, 0);
+
+        assert_eq!(block.statements.len(), 4);
+
+        let ast::Stmt::LocalVar(c_decl) = &block.statements[0] else {
+            panic!("expected local var statement");
+        };
+        let Some(ast::Expr::ClassLiteral(class_lit)) = &c_decl.initializer else {
+            panic!("expected class literal initializer");
+        };
+        let ast::Expr::Name(ty_name) = class_lit.ty.as_ref() else {
+            panic!("expected class literal type name");
+        };
+        assert_eq!(ty_name.name, "Foo");
+
+        let ast::Stmt::LocalVar(r_decl) = &block.statements[1] else {
+            panic!("expected local var statement");
+        };
+        let Some(ast::Expr::MethodReference(method_ref)) = &r_decl.initializer else {
+            panic!("expected method reference initializer");
+        };
+        assert_eq!(method_ref.name, "bar");
+
+        let ast::Stmt::LocalVar(n_decl) = &block.statements[2] else {
+            panic!("expected local var statement");
+        };
+        assert!(
+            matches!(n_decl.initializer, Some(ast::Expr::ConstructorReference(_))),
+            "expected constructor reference initializer"
+        );
+
+        let ast::Stmt::LocalVar(p_decl) = &block.statements[3] else {
+            panic!("expected local var statement");
+        };
+        let Some(ast::Expr::ClassLiteral(class_lit)) = &p_decl.initializer else {
+            panic!("expected class literal initializer");
+        };
+        let ast::Expr::Name(ty_name) = class_lit.ty.as_ref() else {
+            panic!("expected primitive class literal type name");
+        };
+        assert_eq!(ty_name.name, "int");
     }
 }
