@@ -242,7 +242,7 @@ impl JavaParseResult {
     }
 
     /// Returns the top-level expression when this parse result was produced by
-    /// [`parse_java_expression`].
+    /// [`parse_expression`].
     pub fn expression(&self) -> Option<SyntaxNode> {
         let root = self.syntax();
         if root.kind() != SyntaxKind::ExpressionRoot {
