@@ -1,4 +1,9 @@
 use nova_core::Line;
+use nova_core::{LineIndex, TextSize};
+use nova_syntax::{
+    AstNode, ClassDeclaration, ClassMember, CompilationUnit, FieldDeclaration, LambdaBody,
+    LambdaExpression, Modifiers, SyntaxKind, SyntaxNode,
+};
 
 /// A valid location for a line breakpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,216 +16,252 @@ pub struct BreakpointSite {
 /// Collect a conservative set of executable line breakpoint sites from a Java
 /// source file.
 ///
-/// This is *not* a full Java parser; it is a lightweight heuristic suitable for
-/// unit tests and for exercising the DAP breakpoint mapping path.
+/// This uses Nova's Java syntax tree to find conservative breakpoint sites. The
+/// returned sites are stable and sorted in source order.
 pub fn collect_breakpoint_sites(java_source: &str) -> Vec<BreakpointSite> {
-    let mut sites = Vec::new();
+    let line_index = LineIndex::new(java_source);
+    let parse = nova_syntax::parse_java(java_source);
+    let root = parse.syntax();
+    let Some(unit) = CompilationUnit::cast(root) else {
+        return Vec::new();
+    };
 
-    let mut in_block_comment = false;
-    let mut brace_depth: usize = 0;
+    let package = unit
+        .package()
+        .and_then(|pkg| pkg.name())
+        .and_then(|name| slice_node_text(java_source, name.syntax()).map(str::to_string));
 
-    let mut current_package: Option<String> = None;
-    let mut current_class: Option<String> = None;
-    let mut current_method: Option<String> = None;
-    let mut method_body_depth: Option<usize> = None;
+    let mut acc = Vec::new();
+    let mut class_stack: Vec<String> = Vec::new();
 
-    for (idx, raw_line) in java_source.lines().enumerate() {
-        let line_no: Line = (idx + 1) as Line;
-        let mut line = raw_line.trim();
-
-        // Handle block comments in a minimal way.
-        if in_block_comment {
-            if let Some(end) = line.find("*/") {
-                line = line[end + 2..].trim();
-                in_block_comment = false;
-            } else {
-                continue;
+    for decl in unit.type_declarations() {
+        match decl {
+            nova_syntax::TypeDeclaration::ClassDeclaration(class) => {
+                collect_class_sites(&class, package.as_deref(), &mut class_stack, &mut acc)
             }
+            _ => {}
         }
+    }
 
-        if line.starts_with("/*") {
-            in_block_comment = true;
-            if let Some(end) = line.find("*/") {
-                line = line[end + 2..].trim();
-                in_block_comment = false;
-            } else {
-                continue;
+    acc.sort_by_key(|site| site.offset);
+    acc.into_iter()
+        .map(|site| BreakpointSite {
+            line: dap_line(&line_index, site.offset),
+            enclosing_class: site.enclosing_class,
+            enclosing_method: site.enclosing_method,
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+struct Site {
+    offset: TextSize,
+    enclosing_class: Option<String>,
+    enclosing_method: Option<String>,
+}
+
+fn collect_class_sites(
+    class: &ClassDeclaration,
+    package: Option<&str>,
+    class_stack: &mut Vec<String>,
+    out: &mut Vec<Site>,
+) {
+    let Some(name) = class.name_token().map(|tok| tok.text().to_string()) else {
+        return;
+    };
+
+    class_stack.push(name);
+    let enclosing_class = Some(qualify_class_name(package, class_stack));
+
+    let Some(body) = class.body() else {
+        class_stack.pop();
+        return;
+    };
+
+    for member in body.members() {
+        match member {
+            ClassMember::FieldDeclaration(field) => {
+                collect_field_sites(&field, enclosing_class.as_ref(), out);
             }
+            ClassMember::MethodDeclaration(method) => collect_method_like_sites(
+                enclosing_class.as_ref(),
+                method.name_token().map(|tok| tok.text().to_string()),
+                method.body().map(|b| b.syntax().clone()),
+                out,
+            ),
+            ClassMember::ConstructorDeclaration(ctor) => collect_method_like_sites(
+                enclosing_class.as_ref(),
+                Some("<init>".to_string()),
+                ctor.body().map(|b| b.syntax().clone()),
+                out,
+            ),
+            ClassMember::InitializerBlock(init) => collect_method_like_sites(
+                enclosing_class.as_ref(),
+                Some(if is_static(init.modifiers()) {
+                    "<clinit>".to_string()
+                } else {
+                    "<init>".to_string()
+                }),
+                init.body().map(|b| b.syntax().clone()),
+                out,
+            ),
+            ClassMember::ClassDeclaration(inner) => {
+                collect_class_sites(&inner, package, class_stack, out);
+            }
+            _ => {}
         }
+    }
 
-        if line.starts_with("//") || line.is_empty() {
-            // Still need to update brace depth for lines like `// }`.
-            brace_depth = update_brace_depth(brace_depth, raw_line);
-            // Might have closed a method.
-            if let Some(body_depth) = method_body_depth {
-                if brace_depth < body_depth {
-                    current_method = None;
-                    method_body_depth = None;
-                }
-            }
+    class_stack.pop();
+}
+
+fn collect_field_sites(
+    field: &FieldDeclaration,
+    enclosing_class: Option<&String>,
+    out: &mut Vec<Site>,
+) {
+    let Some(enclosing_class) = enclosing_class else {
+        return;
+    };
+
+    let method = if is_static(field.modifiers()) {
+        Some("<clinit>".to_string())
+    } else {
+        Some("<init>".to_string())
+    };
+
+    let Some(decls) = field.declarators() else {
+        return;
+    };
+
+    for decl in decls.declarators() {
+        let Some(init) = decl.initializer() else {
             continue;
-        }
-
-        if current_package.is_none() && line.starts_with("package ") {
-            if let Some(pkg) = line
-                .strip_prefix("package ")
-                .and_then(|rest| rest.strip_suffix(';'))
-                .map(str::trim)
-            {
-                if !pkg.is_empty() {
-                    current_package = Some(pkg.to_string());
-                }
-            }
-            brace_depth = update_brace_depth(brace_depth, raw_line);
-            continue;
-        }
-
-        // Track enclosing class name.
-        if current_class.is_none() {
-            if let Some(name) = extract_decl_name(line, "class") {
-                current_class = Some(name);
-            }
-        } else if line.contains("class ") {
-            // Nested class - update current_class conservatively.
-            if let Some(name) = extract_decl_name(line, "class") {
-                current_class = Some(name);
-            }
-        }
-
-        // Detect method declarations when we're not already inside a method.
-        if current_method.is_none() && looks_like_method_decl(line) {
-            if let Some(name) = extract_method_name(line) {
-                current_method = Some(name);
-                // We will update `brace_depth` at the end of the loop; however
-                // method bodies are considered active starting on the next line
-                // after the opening `{`.
-                let next_depth = brace_depth
-                    .saturating_add(count_char(raw_line, '{'))
-                    .saturating_sub(count_char(raw_line, '}'));
-                method_body_depth = Some(next_depth);
-            }
-        } else if current_method.is_none()
-            && current_class.is_some()
-            && looks_like_constructor_decl(line, current_class.as_deref().unwrap())
-        {
-            if let Some(name) = extract_method_name(line) {
-                current_method = Some(name);
-                let next_depth = brace_depth
-                    .saturating_add(count_char(raw_line, '{'))
-                    .saturating_sub(count_char(raw_line, '}'));
-                method_body_depth = Some(next_depth);
-            }
-        }
-
-        // Consider lines inside a method body as potential breakpoint sites.
-        let inside_method = match method_body_depth {
-            Some(body_depth) => brace_depth >= body_depth,
-            None => false,
         };
 
-        if inside_method && is_executable_line(line) {
-            let enclosing_class = current_class.as_ref().map(|class| {
-                if let Some(pkg) = &current_package {
-                    format!("{pkg}.{class}")
-                } else {
-                    class.clone()
+        // Field initializers execute as part of <clinit> / <init>.
+        out.push(Site {
+            offset: init.syntax().text_range().start(),
+            enclosing_class: Some(enclosing_class.clone()),
+            enclosing_method: method.clone(),
+        });
+
+        // If the initializer contains a lambda, statements inside the lambda body
+        // should not be attributed to the enclosing method.
+        collect_executable_sites_in_node(init.syntax(), enclosing_class, method.as_deref(), out);
+    }
+}
+
+fn collect_method_like_sites(
+    enclosing_class: Option<&String>,
+    enclosing_method: Option<String>,
+    body: Option<SyntaxNode>,
+    out: &mut Vec<Site>,
+) {
+    let (Some(enclosing_class), Some(body)) = (enclosing_class, body) else {
+        return;
+    };
+
+    collect_executable_sites_in_node(&body, enclosing_class, enclosing_method.as_deref(), out);
+}
+
+fn collect_executable_sites_in_node(
+    node: &SyntaxNode,
+    enclosing_class: &str,
+    enclosing_method: Option<&str>,
+    out: &mut Vec<Site>,
+) {
+    for child in node.children() {
+        match child.kind() {
+            SyntaxKind::LambdaExpression => {
+                if let Some(lambda) = LambdaExpression::cast(child.clone()) {
+                    if let Some(body) = lambda.body() {
+                        collect_lambda_body_sites(&body, enclosing_class, out);
+                    }
                 }
-            });
-            sites.push(BreakpointSite {
-                line: line_no,
-                enclosing_class,
-                enclosing_method: current_method.clone(),
-            });
-        }
-
-        brace_depth = update_brace_depth(brace_depth, raw_line);
-
-        // If we just closed the method, clear the current method.
-        if let Some(body_depth) = method_body_depth {
-            if brace_depth < body_depth {
-                current_method = None;
-                method_body_depth = None;
+                continue;
             }
+            SyntaxKind::ClassDeclaration
+            | SyntaxKind::InterfaceDeclaration
+            | SyntaxKind::EnumDeclaration
+            | SyntaxKind::RecordDeclaration
+            | SyntaxKind::AnnotationTypeDeclaration => {
+                // Nested type declarations are their own JVM classes.
+                continue;
+            }
+            kind if is_executable_statement_kind(kind) => out.push(Site {
+                offset: child.text_range().start(),
+                enclosing_class: Some(enclosing_class.to_string()),
+                enclosing_method: enclosing_method.map(|s| s.to_string()),
+            }),
+            _ => {}
+        }
+
+        collect_executable_sites_in_node(&child, enclosing_class, enclosing_method, out);
+    }
+}
+
+fn collect_lambda_body_sites(body: &LambdaBody, enclosing_class: &str, out: &mut Vec<Site>) {
+    match body {
+        LambdaBody::Block(block) => {
+            collect_executable_sites_in_node(block.syntax(), enclosing_class, None, out)
+        }
+        LambdaBody::Expression(expr) => {
+            out.push(Site {
+                offset: expr.syntax().text_range().start(),
+                enclosing_class: Some(enclosing_class.to_string()),
+                enclosing_method: None,
+            });
+            collect_executable_sites_in_node(expr.syntax(), enclosing_class, None, out);
         }
     }
-
-    sites
 }
 
-fn update_brace_depth(current: usize, line: &str) -> usize {
-    let opens = count_char(line, '{');
-    let closes = count_char(line, '}');
-    current.saturating_add(opens).saturating_sub(closes)
+fn is_static(modifiers: Option<Modifiers>) -> bool {
+    modifiers.is_some_and(|mods| {
+        mods.syntax()
+            .children_with_tokens()
+            .filter_map(|it| it.into_token())
+            .any(|tok| tok.kind() == SyntaxKind::StaticKw)
+    })
 }
 
-fn count_char(line: &str, c: char) -> usize {
-    line.chars().filter(|ch| *ch == c).count()
-}
-
-fn extract_decl_name(line: &str, keyword: &str) -> Option<String> {
-    let mut iter = line.split_whitespace().peekable();
-    while let Some(tok) = iter.next() {
-        if tok == keyword {
-            return iter
-                .peek()
-                .map(|s| s.trim_matches('{').trim_matches(';').to_string());
-        }
-    }
-    None
-}
-
-fn looks_like_method_decl(line: &str) -> bool {
-    if !line.contains('(') || !line.contains(')') || !line.contains('{') {
-        return false;
-    }
-
-    let trimmed = line.trim_start();
-    // Skip common control statements.
+fn is_executable_statement_kind(kind: SyntaxKind) -> bool {
     matches!(
-        trimmed.split_whitespace().next(),
-        Some("if" | "for" | "while" | "switch" | "catch" | "do" | "try" | "synchronized")
+        kind,
+        SyntaxKind::LabeledStatement
+            | SyntaxKind::IfStatement
+            | SyntaxKind::SwitchStatement
+            | SyntaxKind::ForStatement
+            | SyntaxKind::WhileStatement
+            | SyntaxKind::DoWhileStatement
+            | SyntaxKind::SynchronizedStatement
+            | SyntaxKind::TryStatement
+            | SyntaxKind::AssertStatement
+            | SyntaxKind::ReturnStatement
+            | SyntaxKind::ThrowStatement
+            | SyntaxKind::BreakStatement
+            | SyntaxKind::ContinueStatement
+            | SyntaxKind::LocalVariableDeclarationStatement
+            | SyntaxKind::ExpressionStatement
     )
-    .not()
 }
 
-fn looks_like_constructor_decl(line: &str, class_name: &str) -> bool {
-    let needle = format!("{class_name}(");
-    line.contains(&needle) && line.contains('{')
-}
-
-fn extract_method_name(line: &str) -> Option<String> {
-    let paren = line.find('(')?;
-    let before = &line[..paren];
-    let name = before
-        .split_whitespace()
-        .last()
-        .map(|s| s.trim_end_matches('<').trim_end_matches('>'))?;
-
-    // Drop generic / return type artifacts; keep identifier-ish.
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
+fn qualify_class_name(package: Option<&str>, class_stack: &[String]) -> String {
+    let nested = class_stack.join("$");
+    match package {
+        Some(pkg) if !pkg.is_empty() => format!("{pkg}.{nested}"),
+        _ => nested,
     }
 }
 
-fn is_executable_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-    if trimmed.starts_with("//") {
-        return false;
-    }
-    matches!(trimmed, "{" | "}" | "};").not()
+fn slice_node_text<'a>(source: &'a str, node: &SyntaxNode) -> Option<&'a str> {
+    let range = node.text_range();
+    let start: usize = u32::from(range.start()) as usize;
+    let end: usize = u32::from(range.end()) as usize;
+    source.get(start..end)
 }
 
-trait BoolExt {
-    fn not(self) -> bool;
-}
-
-impl BoolExt for bool {
-    fn not(self) -> bool {
-        !self
-    }
+fn dap_line(line_index: &LineIndex, offset: TextSize) -> Line {
+    line_index.line_col(offset).line.saturating_add(1)
 }

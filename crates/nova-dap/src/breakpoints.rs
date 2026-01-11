@@ -33,7 +33,11 @@ pub fn map_line_breakpoints(
             .collect();
     };
 
-    let sites = collect_breakpoint_sites(text);
+    let mut sites = collect_breakpoint_sites(text);
+    // `collect_breakpoint_sites` is expected to return sites in source order, but
+    // we defensively sort by line to keep `map_line_breakpoints` deterministic
+    // even if collection changes (e.g. syntax-tree traversal order).
+    sites.sort_by_key(|site| site.line);
     requested_lines
         .iter()
         .map(|&requested_line| resolve_one(&sites, requested_line))
@@ -53,7 +57,16 @@ fn resolve_one(sites: &[BreakpointSite], requested_line: Line) -> ResolvedBreakp
 
     let idx = sites.partition_point(|site| site.line < requested_line);
 
-    let prev = idx.checked_sub(1).and_then(|i| sites.get(i));
+    // `idx - 1` is the *last* site before `requested_line`, but if multiple sites
+    // share that line we want the earliest one to keep breakpoint mapping stable.
+    let prev = idx
+        .checked_sub(1)
+        .and_then(|i| sites.get(i))
+        .map(|site| site.line)
+        .and_then(|prev_line| {
+            let first_on_line = sites.partition_point(|site| site.line < prev_line);
+            sites.get(first_on_line)
+        });
     let next = sites.get(idx);
 
     let chosen = match (prev, next) {
@@ -135,5 +148,184 @@ public class Foo {
         let resolved = map_line_breakpoints(&db, file_id, &[5]);
         assert_eq!(resolved[0].resolved_line, 4);
         assert!(resolved[0].verified);
+    }
+
+    #[test]
+    fn maps_constructor_body_to_init_method() {
+        let java = r#"package pkg;
+public class C {
+  C() {
+    int x = 0;
+  }
+}
+"#;
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("C.java");
+        db.set_file_text(file_id, java.to_string());
+
+        let resolved = map_line_breakpoints(&db, file_id, &[4]);
+        assert_eq!(
+            resolved,
+            vec![ResolvedBreakpoint {
+                requested_line: 4,
+                resolved_line: 4,
+                verified: true,
+                enclosing_class: Some("pkg.C".to_string()),
+                enclosing_method: Some("<init>".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn maps_static_initializer_block_to_clinit_method() {
+        let java = r#"package pkg;
+class C {
+  static {
+    int x = 0;
+  }
+}
+"#;
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("C.java");
+        db.set_file_text(file_id, java.to_string());
+
+        let resolved = map_line_breakpoints(&db, file_id, &[4]);
+        assert_eq!(
+            resolved,
+            vec![ResolvedBreakpoint {
+                requested_line: 4,
+                resolved_line: 4,
+                verified: true,
+                enclosing_class: Some("pkg.C".to_string()),
+                enclosing_method: Some("<clinit>".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn maps_nested_member_class_method_to_dollar_class_name() {
+        let java = r#"package pkg;
+class Outer {
+  class Inner {
+    void m() {
+      int x = 0;
+    }
+  }
+}
+"#;
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("Outer.java");
+        db.set_file_text(file_id, java.to_string());
+
+        let resolved = map_line_breakpoints(&db, file_id, &[5]);
+        assert_eq!(
+            resolved,
+            vec![ResolvedBreakpoint {
+                requested_line: 5,
+                resolved_line: 5,
+                verified: true,
+                enclosing_class: Some("pkg.Outer$Inner".to_string()),
+                enclosing_method: Some("m".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn lambda_breakpoints_do_not_filter_by_enclosing_method() {
+        let java = r#"package pkg;
+class C {
+  void f() {
+    Runnable r = () -> {
+      int x = 0;
+    };
+  }
+}
+"#;
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("C.java");
+        db.set_file_text(file_id, java.to_string());
+
+        let resolved = map_line_breakpoints(&db, file_id, &[5]);
+        assert_eq!(
+            resolved,
+            vec![ResolvedBreakpoint {
+                requested_line: 5,
+                resolved_line: 5,
+                verified: true,
+                enclosing_class: Some("pkg.C".to_string()),
+                enclosing_method: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn maps_field_initializers_to_init_and_clinit() {
+        let java = r#"package pkg;
+class C {
+  static int X = 1;
+  int y = 2;
+}
+"#;
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("C.java");
+        db.set_file_text(file_id, java.to_string());
+
+        let resolved = map_line_breakpoints(&db, file_id, &[3, 4]);
+        assert_eq!(
+            resolved,
+            vec![
+                ResolvedBreakpoint {
+                    requested_line: 3,
+                    resolved_line: 3,
+                    verified: true,
+                    enclosing_class: Some("pkg.C".to_string()),
+                    enclosing_method: Some("<clinit>".to_string()),
+                },
+                ResolvedBreakpoint {
+                    requested_line: 4,
+                    resolved_line: 4,
+                    verified: true,
+                    enclosing_class: Some("pkg.C".to_string()),
+                    enclosing_method: Some("<init>".to_string()),
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn chooses_earliest_site_on_a_line_when_mapping_to_prev_line() {
+        let java = r#"package pkg;
+class C {
+  static int X = 1; int y = 2;
+
+  void f() {
+    int z = 3;
+  }
+}
+"#;
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("C.java");
+        db.set_file_text(file_id, java.to_string());
+
+        // Line 4 is blank; mapping should pick the nearest executable line (line 3).
+        // When multiple breakpoint sites exist on that line, the mapping must
+        // consistently pick the earliest one.
+        let resolved = map_line_breakpoints(&db, file_id, &[4]);
+        assert_eq!(
+            resolved,
+            vec![ResolvedBreakpoint {
+                requested_line: 4,
+                resolved_line: 3,
+                verified: true,
+                enclosing_class: Some("pkg.C".to_string()),
+                enclosing_method: Some("<clinit>".to_string()),
+            }]
+        );
     }
 }
