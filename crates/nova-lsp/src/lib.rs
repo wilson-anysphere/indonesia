@@ -47,6 +47,7 @@ pub mod hardening;
 pub mod ide_state;
 pub mod imports;
 pub mod refactor;
+pub mod refactor_workspace;
 pub mod text_pos;
 
 mod cancellation;

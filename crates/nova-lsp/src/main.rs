@@ -30,9 +30,10 @@ use nova_index::{Index, SymbolKind};
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
-    FileId as RefactorFileId, InMemoryJavaDatabase, OrganizeImportsParams,
-    RenameParams as RefactorRenameParams, SafeDeleteTarget, SemanticRefactorError,
+    FileId as RefactorFileId, OrganizeImportsParams, RenameParams as RefactorRenameParams,
+    SafeDeleteTarget, SemanticRefactorError,
 };
+use nova_lsp::refactor_workspace::RefactorWorkspaceSnapshot;
 use nova_vfs::{ContentChange, Document, FileIdRegistry, VfsPath};
 use serde::Deserialize;
 use serde_json::json;
@@ -395,6 +396,8 @@ struct ServerState {
     shutdown_requested: bool,
     project_root: Option<PathBuf>,
     documents: HashMap<String, Document>,
+    refactor_overlay_generation: u64,
+    refactor_snapshot_cache: Option<CachedRefactorWorkspaceSnapshot>,
     cancelled_requests: HashSet<String>,
     analysis: AnalysisState,
     ai: Option<NovaAi>,
@@ -407,6 +410,12 @@ struct ServerState {
     memory_events: Arc<Mutex<Vec<MemoryEvent>>>,
     documents_memory: nova_memory::MemoryRegistration,
     next_outgoing_request_id: u64,
+}
+
+struct CachedRefactorWorkspaceSnapshot {
+    project_root: PathBuf,
+    overlay_generation: u64,
+    snapshot: Arc<RefactorWorkspaceSnapshot>,
 }
 
 impl ServerState {
@@ -479,6 +488,8 @@ impl ServerState {
             shutdown_requested: false,
             project_root: None,
             documents: HashMap::new(),
+            refactor_overlay_generation: 0,
+            refactor_snapshot_cache: None,
             cancelled_requests: HashSet::new(),
             analysis: AnalysisState::default(),
             ai,
@@ -502,6 +513,53 @@ impl ServerState {
             .sum();
         self.documents_memory.tracker().set_bytes(total);
         self.memory.enforce();
+    }
+
+    fn note_refactor_overlay_change(&mut self, uri: &str) {
+        self.refactor_overlay_generation = self.refactor_overlay_generation.wrapping_add(1);
+
+        let Some(cache) = &self.refactor_snapshot_cache else {
+            return;
+        };
+
+        let Some(path) = path_from_uri(uri) else {
+            self.refactor_snapshot_cache = None;
+            return;
+        };
+
+        if path.starts_with(&cache.project_root) {
+            self.refactor_snapshot_cache = None;
+        }
+    }
+
+    fn refactor_snapshot(&mut self, uri: &LspUri) -> Result<Arc<RefactorWorkspaceSnapshot>, String> {
+        let project_root =
+            RefactorWorkspaceSnapshot::project_root_for_uri(uri).map_err(|e| e.to_string())?;
+
+        if let Some(cache) = &self.refactor_snapshot_cache {
+            if cache.project_root == project_root
+                && cache.overlay_generation == self.refactor_overlay_generation
+                && cache.snapshot.is_disk_uptodate()
+            {
+                return Ok(cache.snapshot.clone());
+            }
+        }
+
+        let overlays: HashMap<String, Arc<str>> = self
+            .documents
+            .iter()
+            .map(|(uri, doc)| (uri.clone(), Arc::<str>::from(doc.text().to_owned())))
+            .collect();
+        let snapshot =
+            RefactorWorkspaceSnapshot::build(uri, &overlays).map_err(|e| e.to_string())?;
+        let project_root = snapshot.project_root().to_path_buf();
+        let snapshot = Arc::new(snapshot);
+        self.refactor_snapshot_cache = Some(CachedRefactorWorkspaceSnapshot {
+            project_root,
+            overlay_generation: self.refactor_overlay_generation,
+            snapshot: snapshot.clone(),
+        });
+        Ok(snapshot)
     }
 
     fn next_outgoing_id(&mut self) -> String {
@@ -1119,9 +1177,10 @@ fn handle_notification(
                 .analysis
                 .set_overlay_text(&params.text_document.uri, params.text_document.text.clone());
             state.documents.insert(
-                uri,
+                uri.clone(),
                 Document::new(params.text_document.text, params.text_document.version),
             );
+            state.note_refactor_overlay_change(&uri);
             state.refresh_document_memory();
         }
         "textDocument/didChange" => {
@@ -1152,6 +1211,7 @@ fn handle_notification(
             state
                 .analysis
                 .set_overlay_text(&params.text_document.uri, doc.text().to_owned());
+            state.note_refactor_overlay_change(&uri);
             state.refresh_document_memory();
         }
         "textDocument/didClose" => {
@@ -1160,7 +1220,9 @@ fn handle_notification(
             ) else {
                 return Ok(());
             };
-            state.documents.remove(params.text_document.uri.as_str());
+            let uri = params.text_document.uri.to_string();
+            state.documents.remove(uri.as_str());
+            state.note_refactor_overlay_change(&uri);
             state.refresh_document_memory();
             state.analysis.refresh_from_disk(&params.text_document.uri);
         }
@@ -1297,7 +1359,7 @@ fn to_ide_range(range: &Range) -> nova_ide::LspRange {
 
 fn handle_code_action(
     params: serde_json::Value,
-    state: &ServerState,
+    state: &mut ServerState,
 ) -> Result<serde_json::Value, String> {
     let params: CodeActionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let text = load_document_text(state, &params.text_document.uri);
@@ -1409,7 +1471,7 @@ fn handle_code_action(
 
     if let Some(text) = text {
         if let Ok(uri) = params.text_document.uri.parse::<LspUri>() {
-            if let Some(action) = organize_imports_code_action(&uri, text) {
+            if let Some(action) = organize_imports_code_action(state, &uri, text) {
                 actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
             }
         }
@@ -1512,14 +1574,24 @@ fn handle_code_action_resolve(
     serde_json::to_value(action).map_err(|e| e.to_string())
 }
 
-fn organize_imports_code_action(uri: &LspUri, source: &str) -> Option<CodeAction> {
+fn organize_imports_code_action(
+    state: &mut ServerState,
+    uri: &LspUri,
+    source: &str,
+) -> Option<CodeAction> {
+    if !source.contains("import") {
+        return None;
+    }
+
+    let snapshot = state.refactor_snapshot(uri).ok()?;
     let file = RefactorFileId::new(uri.to_string());
-    let db = InMemoryJavaDatabase::new([(file.clone(), source.to_string())]);
-    let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() }).ok()?;
+    let edit =
+        organize_imports(snapshot.refactor_db(), OrganizeImportsParams { file: file.clone() })
+            .ok()?;
     if edit.is_empty() {
         return None;
     }
-    let lsp_edit = workspace_edit_to_lsp(&db, &edit).ok()?;
+    let lsp_edit = workspace_edit_to_lsp(snapshot.refactor_db(), &edit).ok()?;
     Some(code_action_for_edit(
         "Organize imports",
         CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
@@ -1559,9 +1631,19 @@ fn handle_java_organize_imports(
         return Err((-32602, format!("unknown document: {}", uri.as_str())));
     };
 
+    if !source.contains("import") {
+        return serde_json::to_value(JavaOrganizeImportsResponse {
+            applied: false,
+            edit: None,
+        })
+        .map_err(|e| (-32603, e.to_string()));
+    }
+
+    let snapshot = state
+        .refactor_snapshot(&uri)
+        .map_err(|e| (-32603, e.to_string()))?;
     let file = RefactorFileId::new(uri.to_string());
-    let db = InMemoryJavaDatabase::new([(file.clone(), source)]);
-    let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
+    let edit = organize_imports(snapshot.refactor_db(), OrganizeImportsParams { file: file.clone() })
         .map_err(|e| (-32603, e.to_string()))?;
 
     if edit.is_empty() {
@@ -1572,7 +1654,8 @@ fn handle_java_organize_imports(
         .map_err(|e| (-32603, e.to_string()));
     }
 
-    let lsp_edit = workspace_edit_to_lsp(&db, &edit).map_err(|e| (-32603, e.to_string()))?;
+    let lsp_edit =
+        workspace_edit_to_lsp(snapshot.refactor_db(), &edit).map_err(|e| (-32603, e.to_string()))?;
     write_json_message(
         writer,
         &json!({
@@ -1633,7 +1716,7 @@ fn handle_prepare_rename(
 
 fn handle_rename(
     params: serde_json::Value,
-    state: &ServerState,
+    state: &mut ServerState,
 ) -> Result<LspWorkspaceEdit, String> {
     let params: LspRenameParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document_position.text_document.uri;
@@ -1646,14 +1729,15 @@ fn handle_rename(
         return Err("position out of bounds".to_string());
     };
 
+    let snapshot = state.refactor_snapshot(&uri)?;
     let file = RefactorFileId::new(uri.to_string());
-    let db = InMemoryJavaDatabase::new([(file.clone(), source)]);
-    let symbol = db
+    let symbol = snapshot
+        .db()
         .symbol_at(&file, offset)
         .ok_or_else(|| "no symbol at cursor".to_string())?;
 
     let edit = semantic_rename(
-        &db,
+        snapshot.refactor_db(),
         RefactorRenameParams {
             symbol,
             new_name: params.new_name,
@@ -1664,7 +1748,7 @@ fn handle_rename(
         other => other.to_string(),
     })?;
 
-    workspace_edit_to_lsp(&db, &edit).map_err(|e| e.to_string())
+    workspace_edit_to_lsp(snapshot.refactor_db(), &edit).map_err(|e| e.to_string())
 }
 
 fn handle_definition(

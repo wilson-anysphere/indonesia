@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 
 use crate::edit::{FileId, TextRange};
 use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
@@ -77,7 +78,7 @@ enum PendingScope {
 /// [`RefactorDatabase`]. The production Nova implementation is expected to
 /// replace this with a real semantic model.
 pub struct InMemoryJavaDatabase {
-    files: BTreeMap<FileId, String>,
+    files: BTreeMap<FileId, Arc<str>>,
     scopes: Vec<ScopeData>,
     symbols: Vec<SymbolData>,
     references: Vec<Vec<Reference>>,
@@ -86,6 +87,10 @@ pub struct InMemoryJavaDatabase {
 
 impl InMemoryJavaDatabase {
     pub fn new(files: impl IntoIterator<Item = (FileId, String)>) -> Self {
+        Self::new_shared(files.into_iter().map(|(file, text)| (file, Arc::<str>::from(text))))
+    }
+
+    pub fn new_shared(files: impl IntoIterator<Item = (FileId, Arc<str>)>) -> Self {
         let mut db = Self {
             files: BTreeMap::new(),
             scopes: Vec::new(),
@@ -407,7 +412,7 @@ impl InMemoryJavaDatabase {
 
 impl RefactorDatabase for InMemoryJavaDatabase {
     fn file_text(&self, file: &FileId) -> Option<&str> {
-        self.files.get(file).map(|s| s.as_str())
+        self.files.get(file).map(|s| s.as_ref())
     }
 
     fn symbol_definition(&self, symbol: SymbolId) -> Option<SymbolDefinition> {
