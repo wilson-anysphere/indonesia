@@ -25,6 +25,7 @@ pub mod capabilities {
 
 /// Helpers for implementing ABI v1 guest modules in Rust.
 pub mod guest {
+    #[cfg(target_pointer_width = "32")]
     use alloc::vec::Vec;
 
     /// Packs `(ptr,len)` into the ABI return type (`i64`).
@@ -50,8 +51,19 @@ pub mod guest {
     ///
     /// This is a simple `Vec<u8>`-backed allocator that matches the Nova ABI contract:
     /// the host will later call `nova_ext_free(ptr, len)` with the exact same `len`.
+    ///
+    /// Note: this helper is only meaningful on 32-bit targets (i.e. `wasm32`), where pointers fit
+    /// in the `i32` ABI types. On 64-bit targets it will panic to avoid truncating pointers.
     #[inline]
     pub fn alloc(len: i32) -> i32 {
+        #[cfg(not(target_pointer_width = "32"))]
+        {
+            let _ = len;
+            panic!("nova_ext_abi::v1::guest::alloc is only supported on 32-bit targets (wasm32)");
+        }
+
+        #[cfg(target_pointer_width = "32")]
+        {
         if len <= 0 {
             return 0;
         }
@@ -64,6 +76,7 @@ pub mod guest {
         let ptr = buf.as_mut_ptr();
         core::mem::forget(buf);
         ptr as i32
+        }
     }
 
     /// Free a buffer previously returned by [`alloc`].
@@ -78,12 +91,21 @@ pub mod guest {
             return;
         }
 
+        #[cfg(not(target_pointer_width = "32"))]
+        {
+            let _ = (ptr, len);
+            panic!("nova_ext_abi::v1::guest::free is only supported on 32-bit targets (wasm32)");
+        }
+
+        #[cfg(target_pointer_width = "32")]
+        {
         let cap = match usize::try_from(len) {
             Ok(cap) => cap,
             Err(_) => return,
         };
         // Safety: caller must uphold the contract described above.
         drop(Vec::<u8>::from_raw_parts(ptr as *mut u8, 0, cap));
+        }
     }
 
     /// Read a request/response byte slice from `(ptr,len)` provided by the host.
@@ -96,12 +118,24 @@ pub mod guest {
         if ptr == 0 || len <= 0 {
             return &[];
         }
+
+        #[cfg(not(target_pointer_width = "32"))]
+        {
+            let _ = (ptr, len);
+            panic!(
+                "nova_ext_abi::v1::guest::read_bytes is only supported on 32-bit targets (wasm32)"
+            );
+        }
+
+        #[cfg(target_pointer_width = "32")]
+        {
         let len = match usize::try_from(len) {
             Ok(len) => len,
             Err(_) => return &[],
         };
         // Safety: caller must uphold pointer validity.
         core::slice::from_raw_parts(ptr as *const u8, len)
+        }
     }
 
     /// Allocate a buffer of exactly `bytes.len()` bytes and copy `bytes` into it.
@@ -114,6 +148,16 @@ pub mod guest {
             return (0, 0);
         }
 
+        #[cfg(not(target_pointer_width = "32"))]
+        {
+            let _ = bytes;
+            panic!(
+                "nova_ext_abi::v1::guest::write_bytes is only supported on 32-bit targets (wasm32)"
+            );
+        }
+
+        #[cfg(target_pointer_width = "32")]
+        {
         let len_i32 = match i32::try_from(bytes.len()) {
             Ok(len) => len,
             Err(_) => return (0, 0),
@@ -128,6 +172,7 @@ pub mod guest {
             core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
         }
         (ptr, len_i32)
+        }
     }
 
     /// Convenience helper to allocate+copy a response and return the packed ABI value.
@@ -297,5 +342,40 @@ mod tests {
         let sev = SeverityV1::Warning;
         let value = serde_json::to_value(sev).unwrap();
         assert_eq!(value, json!("warning"));
+    }
+
+    #[test]
+    fn deserializes_with_missing_optional_fields() {
+        let req = serde_json::from_value::<DiagnosticsRequestV1>(json!({
+            "projectId": 1,
+            "fileId": 2,
+            "text": "hello",
+        }))
+        .unwrap();
+        assert_eq!(req.file_path, None);
+
+        let diag = serde_json::from_value::<DiagnosticV1>(json!({
+            "message": "x",
+        }))
+        .unwrap();
+        assert_eq!(diag.code, None);
+        assert_eq!(diag.severity, None);
+        assert_eq!(diag.span, None);
+    }
+
+    #[test]
+    fn ptr_len_pack_unpack_roundtrip() {
+        let packed = guest::pack_ptr_len(0xDEAD_BEEF, 0x0123_4567);
+        assert_eq!(
+            guest::unpack_ptr_len(packed),
+            (0xDEAD_BEEF, 0x0123_4567)
+        );
+    }
+
+    #[cfg(not(target_pointer_width = "32"))]
+    #[test]
+    #[should_panic(expected = "only supported on 32-bit")]
+    fn guest_alloc_panics_on_non_32_bit_targets() {
+        let _ = guest::alloc(1);
     }
 }
