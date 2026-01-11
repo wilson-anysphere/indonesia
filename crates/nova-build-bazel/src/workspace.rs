@@ -108,11 +108,15 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         }
 
         let direct_expr = format!(r#"mnemonic("Javac", {target})"#);
-        let mut info = self.aquery_compile_info(target, &direct_expr)?;
+        let mut info = self.aquery_compile_info(Some(target), &direct_expr)?;
 
         if info.is_none() {
             let deps_expr = format!(r#"mnemonic("Javac", deps({target}))"#);
-            info = self.aquery_compile_info(target, &deps_expr)?;
+            // The direct query returned no `Javac` actions, so the `deps(...)` fallback is only
+            // used to find a *similar* `Javac` invocation from a dependency. In that case we can
+            // stop after the first `Javac` action, avoiding a full scan of the (potentially huge)
+            // deps query output.
+            info = self.aquery_compile_info(None, &deps_expr)?;
         }
 
         let info = info.with_context(|| format!("no Javac actions found for {target}"))?;
@@ -173,27 +177,33 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         Ok(hash)
     }
 
-    fn aquery_compile_info(&self, target: &str, expr: &str) -> Result<Option<JavaCompileInfo>> {
+    fn aquery_compile_info(
+        &self,
+        prefer_owner: Option<&str>,
+        expr: &str,
+    ) -> Result<Option<JavaCompileInfo>> {
         self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["aquery", "--output=textproto", expr],
             |stdout| {
                 let mut first_info: Option<JavaCompileInfo> = None;
-                let mut selected: Option<JavaCompileInfo> = None;
-
                 for action in parse_aquery_textproto_streaming(stdout) {
-                    if action.owner.as_deref() == Some(target) {
-                        selected = Some(extract_java_compile_info(&action));
-                        break;
+                    if let Some(owner) = prefer_owner {
+                        if action.owner.as_deref() == Some(owner) {
+                            return Ok(Some(extract_java_compile_info(&action)));
+                        }
                     }
 
                     if first_info.is_none() {
                         first_info = Some(extract_java_compile_info(&action));
+                        if prefer_owner.is_none() {
+                            break;
+                        }
                     }
                 }
 
-                Ok(selected.or(first_info))
+                Ok(first_info)
             },
         )
     }
