@@ -30,20 +30,15 @@ use once_cell::sync::Lazy;
 use nova_config_metadata::MetadataIndex;
 use nova_db::{Database, FileId};
 
-const ROOT_DISCOVERY_MAX_DEPTH: usize = 64;
 const MAX_CACHED_ROOTS: usize = 32;
 
 static WORKSPACE_CACHE: Lazy<FrameworkWorkspaceCache> = Lazy::new(FrameworkWorkspaceCache::new);
 
 /// Walk upwards from `path` and attempt to locate the workspace/project root.
 ///
-/// Discovery order:
-/// 1. Prefer Bazel workspace roots via [`nova_project::bazel_workspace_root`].
-/// 2. Otherwise walk parents (bounded) for Maven/Gradle build markers.
-/// 3. Fall back to a folder containing a `src/` directory.
-///
-/// If no marker is found within the bound, returns the starting directory (the
-/// parent directory when `path` points at a file).
+/// This uses [`nova_project::workspace_root`] for the shared Maven/Gradle/Bazel/Simple
+/// workspace discovery logic. If no marker is found, returns the starting directory
+/// (the parent directory when `path` points at a file).
 #[must_use]
 pub fn project_root_for_path(path: &Path) -> PathBuf {
     let start = if path.is_dir() {
@@ -52,32 +47,7 @@ pub fn project_root_for_path(path: &Path) -> PathBuf {
         path.parent().unwrap_or(path)
     };
 
-    if let Some(root) = nova_project::bazel_workspace_root(start) {
-        return root;
-    }
-
-    const BUILD_MARKERS: &[&str] = &[
-        "pom.xml",
-        "build.gradle",
-        "build.gradle.kts",
-        "settings.gradle",
-        "settings.gradle.kts",
-    ];
-
-    let mut dir = start;
-    for _ in 0..ROOT_DISCOVERY_MAX_DEPTH {
-        if BUILD_MARKERS.iter().any(|marker| dir.join(marker).is_file()) || dir.join("src").is_dir()
-        {
-            return dir.to_path_buf();
-        }
-
-        let Some(parent) = dir.parent() else {
-            break;
-        };
-        dir = parent;
-    }
-
-    start.to_path_buf()
+    nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
 }
 
 /// Convenience helper for `FileId`-based queries.
