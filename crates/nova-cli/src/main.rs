@@ -176,6 +176,11 @@ enum CacheCommand {
     /// This never touches `deps/` (the shared dependency cache).
     Gc(CacheGcArgs),
 
+    /// List global per-project caches under `~/.nova/cache` (or `NOVA_CACHE_DIR`).
+    ///
+    /// This excludes `deps/` (the shared dependency cache).
+    List(CacheListArgs),
+
     /// Package a project's persistent cache directory into a single tar.zst archive.
     Pack(CachePackArgs),
     /// Install a packaged cache archive for a project.
@@ -198,6 +203,13 @@ struct CacheGcArgs {
     #[arg(long, default_value_t = 1)]
     keep_latest_n: usize,
 
+    /// Emit JSON suitable for CI
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args)]
+struct CacheListArgs {
     /// Emit JSON suitable for CI
     #[arg(long)]
     json: bool,
@@ -608,6 +620,42 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                             for failure in &report.failed {
                                 println!("    {}: {}", failure.cache.path.display(), failure.error);
                             }
+                        }
+                    }
+                }
+                CacheCommand::List(args) => {
+                    let config = CacheConfig::from_env();
+                    let root = nova_cache::cache_root(&config)?;
+                    let caches = nova_cache::enumerate_project_caches(&root)?;
+
+                    if args.json {
+                        print_output(
+                            &serde_json::json!({ "cache_root": root, "caches": caches }),
+                            true,
+                        )?;
+                    } else {
+                        println!("cache root: {}", root.display());
+                        for cache in caches {
+                            let last_updated = cache
+                                .last_updated_millis
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "(unknown)".to_string());
+                            let nova_version = cache
+                                .nova_version
+                                .as_deref()
+                                .unwrap_or("(unknown)");
+                            let schema_version = cache
+                                .schema_version
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "(unknown)".to_string());
+                            println!(
+                                "{}  bytes={}  last_updated_millis={}  nova_version={}  schema_version={}",
+                                cache.name,
+                                cache.size_bytes,
+                                last_updated,
+                                nova_version,
+                                schema_version
+                            );
                         }
                     }
                 }
