@@ -33,6 +33,7 @@ mod cancellation;
 mod hir;
 mod ide;
 mod inputs;
+mod resolve;
 mod semantic;
 mod stats;
 mod syntax;
@@ -40,6 +41,7 @@ mod syntax;
 pub use hir::NovaHir;
 pub use ide::NovaIde;
 pub use inputs::NovaInputs;
+pub use resolve::NovaResolve;
 pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStatsReport};
 pub use syntax::{NovaSyntax, SyntaxTree};
@@ -63,6 +65,53 @@ use crate::persistence::{HasPersistence, Persistence, PersistenceConfig};
 use crate::{FileId, ProjectId, SourceRootId};
 
 use self::stats::QueryStatsCollector;
+
+/// `Arc` wrapper that compares by pointer identity.
+///
+/// This is used for Salsa inputs that are expensive to compare structurally
+/// (e.g. classpath/JDK indexes). The host is responsible for replacing the
+/// `Arc` whenever the underlying data changes.
+pub struct ArcEq<T: ?Sized>(pub Arc<T>);
+
+impl<T: ?Sized> Clone for ArcEq<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T: ?Sized> ArcEq<T> {
+    pub fn new(value: Arc<T>) -> Self {
+        Self(value)
+    }
+}
+
+impl<T: ?Sized> std::ops::Deref for ArcEq<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+impl<T: ?Sized> PartialEq for ArcEq<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<T: ?Sized> Eq for ArcEq<T> {}
+
+impl<T: ?Sized> fmt::Debug for ArcEq<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ArcEq").field(&Arc::as_ptr(&self.0)).finish()
+    }
+}
+
+impl<T: ?Sized> From<Arc<T>> for ArcEq<T> {
+    fn from(value: Arc<T>) -> Self {
+        Self(value)
+    }
+}
 
 thread_local! {
     static QUERY_NAME_BUFFER: RefCell<String> = RefCell::new(String::with_capacity(64));
@@ -277,6 +326,7 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
     syntax::NovaSyntaxStorage,
     semantic::NovaSemanticStorage,
     hir::NovaHirStorage,
+    resolve::NovaResolveStorage,
     ide::NovaIdeStorage
 )]
 pub struct RootDatabase {
@@ -683,6 +733,7 @@ impl Database {
         }
         let mut db = self.inner.lock();
         db.set_file_exists(file, true);
+        db.set_file_project(file, ProjectId::from_raw(0));
         db.set_source_root(file, SourceRootId::from_raw(0));
         db.set_file_content(file, text);
     }
@@ -697,6 +748,24 @@ impl Database {
             .project_config
             .insert(project, config.clone());
         self.inner.lock().set_project_config(project, config);
+    }
+
+    pub fn set_file_project(&self, file: FileId, project: ProjectId) {
+        self.inner.lock().set_file_project(file, project);
+    }
+
+    pub fn set_jdk_index(&self, project: ProjectId, index: Arc<nova_jdk::JdkIndex>) {
+        self.inner.lock().set_jdk_index(project, ArcEq::new(index));
+    }
+
+    pub fn set_classpath_index(
+        &self,
+        project: ProjectId,
+        index: Option<Arc<nova_classpath::ClasspathIndex>>,
+    ) {
+        self.inner
+            .lock()
+            .set_classpath_index(project, index.map(ArcEq::new));
     }
 
     pub fn set_source_root(&self, file: FileId, root: SourceRootId) {
@@ -753,9 +822,12 @@ impl Database {
 }
 
 /// Convenience trait alias that composes Nova's query groups.
-pub trait NovaDatabase: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir {}
+pub trait NovaDatabase: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve {}
 
-impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir {}
+impl<T> NovaDatabase for T where
+    T: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve
+{
+}
 
 #[cfg(test)]
 fn assert_query_is_cancelled<T, F>(mut db: RootDatabase, run_query: F)
@@ -947,6 +1019,9 @@ mod tests {
 
     #[test]
     fn hir_body_edit_early_cutoff_preserves_structural_name_queries() {
+        use nova_hir::ast_id::AstIdMap;
+        use nova_hir::item_tree::{Item as HirItem, Member as HirMember};
+
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
@@ -962,12 +1037,31 @@ mod tests {
             &["Foo".to_string(), "x".to_string(), "bar".to_string()]
         );
 
-        let method = nova_hir::ids::MethodId::new(file, 0);
-        let range_before = db
-            .hir_item_tree(file)
+        let tree_before = db.hir_item_tree(file);
+        let class_id = match tree_before.items[0] {
+            HirItem::Class(id) => id,
+            other => panic!("expected top-level class, got {other:?}"),
+        };
+        let class_before = tree_before.class(class_id);
+        let method = class_before
+            .members
+            .iter()
+            .find_map(|member| match member {
+                HirMember::Method(id) => Some(*id),
+                _ => None,
+            })
+            .expect("expected to find method `bar` in class members");
+
+        let body_id_before = tree_before
             .method(method)
-            .body_range
+            .body
             .expect("method has a body");
+        let parse_before = db.parse_java(file);
+        let syntax_before = parse_before.syntax();
+        let ast_id_map_before = AstIdMap::new(&syntax_before);
+        let range_before = ast_id_map_before
+            .span(body_id_before)
+            .expect("method body range is present");
 
         assert_eq!(executions(&db, "java_parse"), 1);
         assert_eq!(executions(&db, "hir_item_tree"), 1);
@@ -983,11 +1077,17 @@ mod tests {
         assert_eq!(executions(&db, "java_parse"), 2);
         assert_eq!(executions(&db, "hir_item_tree"), 2);
 
-        let range_after = db
-            .hir_item_tree(file)
+        let tree_after = db.hir_item_tree(file);
+        let body_id_after = tree_after
             .method(method)
-            .body_range
+            .body
             .expect("method still has a body");
+        let parse_after = db.parse_java(file);
+        let syntax_after = parse_after.syntax();
+        let ast_id_map_after = AstIdMap::new(&syntax_after);
+        let range_after = ast_id_map_after
+            .span(body_id_after)
+            .expect("method body range is present after edit");
         assert_eq!(range_after.start, range_before.start);
         assert!(
             range_after.end > range_before.end,
@@ -1003,6 +1103,9 @@ mod tests {
 
     #[test]
     fn hir_whitespace_edit_early_cutoff_preserves_structural_name_queries() {
+        use nova_hir::ast_id::AstIdMap;
+        use nova_hir::item_tree::{Item as HirItem, Member as HirMember};
+
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
@@ -1018,12 +1121,31 @@ mod tests {
             &["Foo".to_string(), "x".to_string(), "bar".to_string()]
         );
 
-        let method = nova_hir::ids::MethodId::new(file, 0);
-        let range_before = db
-            .hir_item_tree(file)
+        let tree_before = db.hir_item_tree(file);
+        let class_id = match tree_before.items[0] {
+            HirItem::Class(id) => id,
+            other => panic!("expected top-level class, got {other:?}"),
+        };
+        let class_before = tree_before.class(class_id);
+        let method = class_before
+            .members
+            .iter()
+            .find_map(|member| match member {
+                HirMember::Method(id) => Some(*id),
+                _ => None,
+            })
+            .expect("expected to find method `bar` in class members");
+
+        let body_id_before = tree_before
             .method(method)
-            .body_range
+            .body
             .expect("method has a body");
+        let parse_before = db.parse_java(file);
+        let syntax_before = parse_before.syntax();
+        let ast_id_map_before = AstIdMap::new(&syntax_before);
+        let range_before = ast_id_map_before
+            .span(body_id_before)
+            .expect("method body range is present");
 
         assert_eq!(executions(&db, "java_parse"), 1);
         assert_eq!(executions(&db, "hir_item_tree"), 1);
@@ -1041,11 +1163,17 @@ mod tests {
         assert_eq!(executions(&db, "java_parse"), 2);
         assert_eq!(executions(&db, "hir_item_tree"), 2);
 
-        let range_after = db
-            .hir_item_tree(file)
+        let tree_after = db.hir_item_tree(file);
+        let body_id_after = tree_after
             .method(method)
-            .body_range
+            .body
             .expect("method still has a body");
+        let parse_after = db.parse_java(file);
+        let syntax_after = parse_after.syntax();
+        let ast_id_map_after = AstIdMap::new(&syntax_after);
+        let range_after = ast_id_map_after
+            .span(body_id_after)
+            .expect("method body range is present after edit");
         assert_eq!(
             range_after.start,
             range_before.start + 2,

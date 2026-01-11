@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nova_hir::{
+    ast_id::AstIdMap,
     hir::Body as HirBody,
     ids::{ConstructorId, InitializerId, MethodId},
     item_tree::{Item as HirItem, ItemTree as HirItemTree, Member as HirMember},
@@ -11,11 +12,11 @@ use nova_hir::{
 use crate::FileId;
 
 use super::cancellation as cancel;
-use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
+use super::syntax::NovaSyntax;
 
 #[ra_salsa::query_group(NovaHirStorage)]
-pub trait NovaHir: NovaInputs + HasQueryStats {
+pub trait NovaHir: NovaSyntax + HasQueryStats {
     /// Parse a file using the lightweight syntax layer used by semantic lowering.
     fn java_parse(&self, file: FileId) -> Arc<nova_syntax::java::Parse>;
 
@@ -64,12 +65,21 @@ fn hir_item_tree(db: &dyn NovaHir, file: FileId) -> Arc<HirItemTree> {
     cancel::check_cancelled(db);
 
     let parse = db.java_parse(file);
+    let parse_java = db.parse_java(file);
+    let syntax = parse_java.syntax();
+    let ast_id_map = AstIdMap::new(&syntax);
     let mut steps: u32 = 0;
     let mut check_cancelled = || {
         cancel::checkpoint_cancelled(db, steps);
         steps = steps.wrapping_add(1);
     };
-    let tree = lower_item_tree_with(file, parse.compilation_unit(), &mut check_cancelled);
+    let tree = lower_item_tree_with(
+        file,
+        parse.compilation_unit(),
+        parse_java.as_ref(),
+        &ast_id_map,
+        &mut check_cancelled,
+    );
 
     let result = Arc::new(tree);
     db.record_query_stat("hir_item_tree", start.elapsed());
@@ -86,7 +96,16 @@ fn hir_body(db: &dyn NovaHir, method: MethodId) -> Arc<HirBody> {
 
     let tree = db.hir_item_tree(method.file);
     let method_data = tree.method(method);
-    let Some(body_range) = method_data.body_range else {
+    let Some(body_id) = method_data.body else {
+        let result = Arc::new(HirBody::empty(method_data.range));
+        db.record_query_stat("hir_body", start.elapsed());
+        return result;
+    };
+
+    let parse_java = db.parse_java(method.file);
+    let syntax = parse_java.syntax();
+    let ast_id_map = AstIdMap::new(&syntax);
+    let Some(body_range) = ast_id_map.span(body_id) else {
         let result = Arc::new(HirBody::empty(method_data.range));
         db.record_query_stat("hir_body", start.elapsed());
         return result;
@@ -128,7 +147,14 @@ fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<Hir
 
     let tree = db.hir_item_tree(constructor.file);
     let data = tree.constructor(constructor);
-    let body_range = data.body_range;
+    let parse_java = db.parse_java(constructor.file);
+    let syntax = parse_java.syntax();
+    let ast_id_map = AstIdMap::new(&syntax);
+    let Some(body_range) = ast_id_map.span(data.body) else {
+        let result = Arc::new(HirBody::empty(data.range));
+        db.record_query_stat("hir_constructor_body", start.elapsed());
+        return result;
+    };
 
     let text = if db.file_exists(constructor.file) {
         db.file_content(constructor.file)
@@ -166,7 +192,14 @@ fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<Hir
 
     let tree = db.hir_item_tree(initializer.file);
     let data = tree.initializer(initializer);
-    let body_range = data.body_range;
+    let parse_java = db.parse_java(initializer.file);
+    let syntax = parse_java.syntax();
+    let ast_id_map = AstIdMap::new(&syntax);
+    let Some(body_range) = ast_id_map.span(data.body) else {
+        let result = Arc::new(HirBody::empty(data.range));
+        db.record_query_stat("hir_initializer_body", start.elapsed());
+        return result;
+    };
 
     let text = if db.file_exists(initializer.file) {
         db.file_content(initializer.file)

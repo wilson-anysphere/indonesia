@@ -5,7 +5,7 @@
 
 use nova_core::{Name, PackageName, QualifiedName};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompilationUnit {
     pub package: Option<PackageName>,
     pub imports: Vec<ImportDecl>,
@@ -22,7 +22,7 @@ impl CompilationUnit {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImportDecl {
     TypeSingle {
         ty: QualifiedName,
@@ -41,7 +41,7 @@ pub enum ImportDecl {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDecl {
     pub name: Name,
     pub fields: Vec<FieldDecl>,
@@ -60,7 +60,7 @@ impl TypeDecl {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDecl {
     pub name: Name,
     pub is_static: bool,
@@ -75,7 +75,7 @@ impl FieldDecl {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodDecl {
     pub name: Name,
     pub is_static: bool,
@@ -94,7 +94,7 @@ impl MethodDecl {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamDecl {
     pub name: Name,
 }
@@ -105,18 +105,18 @@ impl ParamDecl {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Block {
     pub stmts: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
     Local(LocalVarDecl),
     Block(Block),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalVarDecl {
     pub name: Name,
 }

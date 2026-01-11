@@ -18,7 +18,7 @@ pub enum Resolution {
     StaticMember(StaticMemberId),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeGraph {
     scopes: Vec<ScopeData>,
 }
@@ -29,7 +29,7 @@ impl ScopeGraph {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeData {
     parent: Option<ScopeId>,
     kind: ScopeKind,
@@ -55,7 +55,7 @@ impl ScopeData {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeKind {
     Universe,
     Package {
@@ -117,7 +117,11 @@ impl<'a> Resolver<'a> {
             || self.jdk.package_exists(package)
     }
 
-    fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
+    pub(crate) fn resolve_static_member(
+        &self,
+        owner: &TypeName,
+        name: &Name,
+    ) -> Option<StaticMemberId> {
         self.classpath
             .and_then(|cp| cp.resolve_static_member(owner, name))
             .or_else(|| self.jdk.resolve_static_member(owner, name))
@@ -358,7 +362,7 @@ fn resolve_nested_type(index: &dyn TypeIndex, name: &QualifiedName) -> Option<Ty
     None
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeBuildResult {
     pub scopes: ScopeGraph,
     pub file_scope: ScopeId,
@@ -370,21 +374,42 @@ pub struct ScopeBuildResult {
 /// Build a scope graph for a compilation unit.
 pub fn build_scopes(jdk: &dyn TypeIndex, file: &CompilationUnit) -> ScopeBuildResult {
     let resolver = Resolver::new(jdk);
-    ScopeBuilder::new(&resolver).build(file)
+    build_scopes_with_resolver(&resolver, file)
 }
 
-struct ScopeBuilder<'a> {
-    resolver: &'a Resolver<'a>,
+/// Build a scope graph using an already-configured [`Resolver`].
+pub fn build_scopes_with_resolver(resolver: &Resolver<'_>, file: &CompilationUnit) -> ScopeBuildResult {
+    build_scopes_with_resolver_and_cancel(resolver, file, || {})
+}
+
+/// Like [`build_scopes_with_resolver`], but cooperatively checks for cancellation.
+///
+/// Callers should provide a cheap closure that panics/unwinds when cancellation is requested.
+pub fn build_scopes_with_resolver_and_cancel(
+    resolver: &Resolver<'_>,
+    file: &CompilationUnit,
+    check_cancelled: impl FnMut(),
+) -> ScopeBuildResult {
+    ScopeBuilder::new(resolver, check_cancelled).build(file)
+}
+
+struct ScopeBuilder<'r, 'idx, F> {
+    resolver: &'r Resolver<'idx>,
+    check_cancelled: F,
     scopes: Vec<ScopeData>,
     class_scopes: HashMap<String, ScopeId>,
     method_scopes: HashMap<String, ScopeId>,
     block_scopes: Vec<ScopeId>,
 }
 
-impl<'a> ScopeBuilder<'a> {
-    fn new(resolver: &'a Resolver<'a>) -> Self {
+impl<'r, 'idx, F> ScopeBuilder<'r, 'idx, F>
+where
+    F: FnMut(),
+{
+    fn new(resolver: &'r Resolver<'idx>, check_cancelled: F) -> Self {
         Self {
             resolver,
+            check_cancelled,
             scopes: Vec::new(),
             class_scopes: HashMap::new(),
             method_scopes: HashMap::new(),
@@ -392,7 +417,13 @@ impl<'a> ScopeBuilder<'a> {
         }
     }
 
+    #[inline]
+    fn check_cancelled(&mut self) {
+        (self.check_cancelled)();
+    }
+
     fn build(mut self, file: &CompilationUnit) -> ScopeBuildResult {
+        self.check_cancelled();
         let universe = self.alloc_scope(None, ScopeKind::Universe);
         self.populate_universe(universe);
 
@@ -411,14 +442,21 @@ impl<'a> ScopeBuilder<'a> {
         );
         let file_scope = self.alloc_scope(Some(import), ScopeKind::File);
 
-        for ty in &file.types {
+        for (idx, ty) in file.types.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             self.declare_top_level_type(file_scope, file.package.as_ref(), ty);
         }
 
-        for ty in &file.types {
+        for (idx, ty) in file.types.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             self.build_type_scopes(file_scope, file.package.as_ref(), ty);
         }
 
+        self.check_cancelled();
         ScopeBuildResult {
             scopes: ScopeGraph {
                 scopes: self.scopes,
@@ -434,16 +472,22 @@ impl<'a> ScopeBuilder<'a> {
         let primitives = [
             "boolean", "byte", "short", "int", "long", "char", "float", "double", "void",
         ];
-        for prim in primitives {
+        for (idx, prim) in primitives.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             self.scopes[universe]
                 .types
-                .insert(Name::from(prim), TypeName::from(prim));
+                .insert(Name::from(*prim), TypeName::from(*prim));
         }
 
         // Populate common java.lang types from the JDK index.
         // We don't have a way to enumerate, so we hardcode the usual suspects used in tests.
-        for ty in ["Object", "String", "Integer", "System", "Math"] {
-            let name = Name::from(ty);
+        for (idx, ty) in ["Object", "String", "Integer", "System", "Math"].iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
+            let name = Name::from(*ty);
             if let Some(id) = self
                 .resolver
                 .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), &name)
@@ -459,6 +503,7 @@ impl<'a> ScopeBuilder<'a> {
         package: Option<&PackageName>,
         ty: &TypeDecl,
     ) -> TypeName {
+        self.check_cancelled();
         let fq = match package {
             Some(pkg) if !pkg.segments().is_empty() => {
                 format!("{}.{}", pkg.to_dotted(), ty.name.as_str())
@@ -478,6 +523,7 @@ impl<'a> ScopeBuilder<'a> {
         package: Option<&PackageName>,
         ty: &TypeDecl,
     ) -> ScopeId {
+        self.check_cancelled();
         // Ensure the type is declared in the file scope before building the class scope.
         // This avoids order-dependence when multiple top-level types reference each other.
         let type_id = self.scopes[parent]
@@ -494,19 +540,28 @@ impl<'a> ScopeBuilder<'a> {
         self.class_scopes
             .insert(type_id.as_str().to_string(), class_scope);
 
-        for field in &ty.fields {
+        for (idx, field) in ty.fields.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             self.scopes[class_scope]
                 .values
                 .insert(field.name.clone(), Resolution::Field);
         }
 
-        for method in &ty.methods {
+        for (idx, method) in ty.methods.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             self.scopes[class_scope]
                 .values
                 .insert(method.name.clone(), Resolution::Method);
         }
 
-        for nested in &ty.nested_types {
+        for (idx, nested) in ty.nested_types.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             // Nested types are in the class' type namespace.
             let nested_fq = format!("{}${}", type_id.as_str(), nested.name.as_str());
             self.scopes[class_scope]
@@ -514,7 +569,10 @@ impl<'a> ScopeBuilder<'a> {
                 .insert(nested.name.clone(), TypeName::new(nested_fq));
         }
 
-        for method in &ty.methods {
+        for (idx, method) in ty.methods.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             self.build_method_scopes(class_scope, &type_id, method);
         }
 
@@ -527,11 +585,15 @@ impl<'a> ScopeBuilder<'a> {
         owner: &TypeName,
         method: &MethodDecl,
     ) -> ScopeId {
+        self.check_cancelled();
         let method_scope = self.alloc_scope(Some(parent), ScopeKind::Method);
         let key = format!("{}#{}", owner.as_str(), method.name.as_str());
         self.method_scopes.insert(key, method_scope);
 
-        for param in &method.params {
+        for (idx, param) in method.params.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             self.scopes[method_scope]
                 .values
                 .insert(param.name.clone(), Resolution::Parameter);
@@ -542,10 +604,14 @@ impl<'a> ScopeBuilder<'a> {
     }
 
     fn build_block_scopes(&mut self, parent: ScopeId, block: &Block) -> ScopeId {
+        self.check_cancelled();
         let block_scope = self.alloc_scope(Some(parent), ScopeKind::Block);
         self.block_scopes.push(block_scope);
 
-        for stmt in &block.stmts {
+        for (idx, stmt) in block.stmts.iter().enumerate() {
+            if idx % 64 == 0 {
+                self.check_cancelled();
+            }
             match stmt {
                 Stmt::Local(local) => {
                     self.scopes[block_scope]

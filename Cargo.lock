@@ -3509,10 +3509,13 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "nova-cache",
+ "nova-classpath",
  "nova-core",
  "nova-hir",
+ "nova-jdk",
  "nova-memory",
  "nova-project",
+ "nova-resolve",
  "nova-syntax",
  "nova-types",
  "parking_lot",

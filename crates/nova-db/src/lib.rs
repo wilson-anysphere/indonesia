@@ -347,8 +347,8 @@ mod tests {
 pub mod salsa;
 
 pub use salsa::{
-    catch_cancelled, Database as SalsaDatabase, NovaDatabase, NovaHir, NovaIde, NovaInputs,
-    NovaSemantic, NovaSyntax, QueryStat, QueryStatReport, QueryStats, QueryStatsReport,
+    catch_cancelled, ArcEq, Database as SalsaDatabase, NovaDatabase, NovaHir, NovaIde, NovaInputs,
+    NovaResolve, NovaSemantic, NovaSyntax, QueryStat, QueryStatReport, QueryStats, QueryStatsReport,
     RootDatabase as SalsaRootDatabase, Snapshot, SyntaxTree,
 };
 

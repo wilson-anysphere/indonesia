@@ -100,12 +100,12 @@ class Foo {
 
     let snap = db.snapshot();
     let tree = snap.hir_item_tree(file);
-    let bar_index = tree
+    let (&bar_ast_id, _) = tree
         .methods
         .iter()
-        .position(|method| method.name == "bar")
+        .find(|(_, method)| method.name == "bar")
         .expect("bar method");
-    let bar_id = nova_hir::ids::MethodId::new(file, bar_index as u32);
+    let bar_id = nova_hir::ids::MethodId::new(file, bar_ast_id);
     let body = snap.hir_body(bar_id);
 
     let local_names: Vec<_> = body

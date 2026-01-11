@@ -12,6 +12,7 @@ pub mod type_ref;
 
 pub use members::{complete_member_names, resolve_method_call, CallKind};
 pub use scopes::{
-    build_scopes, Resolution, Resolver, ScopeBuildResult, ScopeData, ScopeGraph, ScopeId, ScopeKind,
+    build_scopes, build_scopes_with_resolver, build_scopes_with_resolver_and_cancel, Resolution,
+    Resolver, ScopeBuildResult, ScopeData, ScopeGraph, ScopeId, ScopeKind,
 };
 

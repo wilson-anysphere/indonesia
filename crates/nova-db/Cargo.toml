@@ -9,9 +9,12 @@ tracing = []
 
 [dependencies]
 nova-cache = { path = "../nova-cache" }
+nova-classpath = { path = "../nova-classpath" }
 nova-core = { path = "../nova-core" }
 nova-hir = { path = "../nova-hir" }
+nova-jdk = { path = "../nova-jdk" }
 nova-project = { path = "../nova-project" }
+nova-resolve = { path = "../nova-resolve" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
 parking_lot = "0.12"

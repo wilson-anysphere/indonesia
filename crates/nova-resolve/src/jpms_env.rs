@@ -19,10 +19,18 @@ pub struct JpmsEnvironment {
     pub unnamed: ModuleName,
 }
 
-#[derive(Debug)]
 pub struct JpmsCompilationEnvironment {
     pub env: JpmsEnvironment,
     pub classpath: nova_classpath::ModuleAwareClasspathIndex,
+}
+
+impl std::fmt::Debug for JpmsCompilationEnvironment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JpmsCompilationEnvironment")
+            .field("env", &self.env)
+            .field("classpath", &"<module-aware classpath index>")
+            .finish()
+    }
 }
 
 pub fn build_jpms_environment(
