@@ -188,8 +188,9 @@ At minimum, v1 defines:
   - requests include `projectId` (u32), `fileId` (u32), and/or `symbol` depending on the capability
   - any offset/span values are **byte offsets** into `text` (matching Nova’s internal `Span` model)
 
-- `diagnostics` response: JSON array of `{ message, severity?, span? }` (matching the existing prototype in
+- `diagnostics` response: JSON array of `{ message, code?, severity?, span? }` (matching the existing prototype in
   `crates/nova-ext/examples/abi_v1_todo_diagnostics.wat`)
+  - `code`: optional stable identifier for the diagnostic (string)
   - `severity`: `"error" | "warning" | "info"` (default: `"warning"`)
   - `span`: `{ "start": <usize>, "end": <usize> }` byte offsets in the provided source text
 
