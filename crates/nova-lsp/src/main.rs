@@ -565,6 +565,9 @@ fn handle_request(
                         "moreTriggerCharacter": [";"]
                     },
                     "definitionProvider": true,
+                    "implementationProvider": true,
+                    "declarationProvider": true,
+                    "typeDefinitionProvider": true,
                     "diagnosticProvider": {
                         "identifier": "nova",
                         "interFileDependencies": false,
@@ -713,6 +716,42 @@ fn handle_request(
                 return Ok(server_shutting_down_error(id));
             }
             let result = handle_definition(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/implementation" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_implementation(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/declaration" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_declaration(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
+            })
+        }
+        "textDocument/typeDefinition" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_type_definition(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err(err) => {
@@ -1642,6 +1681,67 @@ fn handle_definition(
     }
 
     let location = nova_lsp::goto_definition(&state.analysis, file_id, params.position);
+    match location {
+        Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+fn handle_implementation(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: TextDocumentPositionParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let locations = nova_lsp::implementation(&state.analysis, file_id, params.position);
+    if locations.is_empty() {
+        Ok(serde_json::Value::Null)
+    } else {
+        serde_json::to_value(locations).map_err(|e| e.to_string())
+    }
+}
+
+fn handle_declaration(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: TextDocumentPositionParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let location = nova_lsp::declaration(&state.analysis, file_id, params.position);
+    match location {
+        Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+fn handle_type_definition(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: TextDocumentPositionParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document.uri;
+
+    let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
+    if !state.analysis.exists(file_id) {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let location = nova_lsp::type_definition(&state.analysis, file_id, params.position);
     match location {
         Some(loc) => serde_json::to_value(loc).map_err(|e| e.to_string()),
         None => Ok(serde_json::Value::Null),

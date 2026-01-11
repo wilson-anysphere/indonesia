@@ -6,8 +6,10 @@ use lsp_types::{Position, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{FileId, InMemoryFileStore};
 use nova_ide::{declaration, implementation, type_definition};
+use tempfile::TempDir;
 
 struct FileIdFixture {
+    _temp_dir: TempDir,
     db: InMemoryFileStore,
     files: HashMap<FileId, String>,
     paths: HashMap<FileId, PathBuf>,
@@ -16,6 +18,9 @@ struct FileIdFixture {
 
 impl FileIdFixture {
     fn parse(fixture: &str) -> Self {
+        let temp_dir = TempDir::new().expect("tempdir");
+        let root = temp_dir.path();
+
         let mut current_path: Option<PathBuf> = None;
         let mut current_text = String::new();
         let mut files: Vec<(PathBuf, String)> = Vec::new();
@@ -27,7 +32,8 @@ impl FileIdFixture {
                     current_text = String::new();
                 }
 
-                current_path = Some(PathBuf::from(rest.trim()));
+                let rel = rest.trim().trim_start_matches('/');
+                current_path = Some(root.join(rel));
                 continue;
             }
 
@@ -59,6 +65,7 @@ impl FileIdFixture {
         }
 
         Self {
+            _temp_dir: temp_dir,
             db,
             files: file_texts,
             paths: file_paths,
