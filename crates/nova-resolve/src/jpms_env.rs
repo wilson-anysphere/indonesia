@@ -7,6 +7,7 @@
 //! - a sentinel unnamed module representing the classpath
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use anyhow::{anyhow, Context, Result};
 use nova_classpath::ClasspathEntry;
@@ -16,6 +17,12 @@ use nova_modules::{ModuleGraph, ModuleInfo, ModuleKind, ModuleName, JAVA_BASE};
 pub struct JpmsEnvironment {
     pub graph: ModuleGraph,
     pub unnamed: ModuleName,
+}
+
+#[derive(Debug)]
+pub struct JpmsCompilationEnvironment {
+    pub env: JpmsEnvironment,
+    pub classpath: nova_classpath::ModuleAwareClasspathIndex,
 }
 
 pub fn build_jpms_environment(
@@ -110,6 +117,49 @@ pub fn build_jpms_environment(
     Ok(JpmsEnvironment { graph, unnamed })
 }
 
+pub fn build_jpms_compilation_environment(
+    jdk: &nova_jdk::JdkIndex,
+    workspace: Option<&nova_project::ProjectConfig>,
+    module_path_entries: &[ClasspathEntry],
+    classpath_entries: &[ClasspathEntry],
+    cache_dir: Option<&Path>,
+) -> Result<JpmsCompilationEnvironment> {
+    let env = build_jpms_environment(jdk, workspace, module_path_entries)?;
+    let classpath = nova_classpath::ModuleAwareClasspathIndex::build_mixed(
+        module_path_entries,
+        classpath_entries,
+        cache_dir,
+    )
+    .context("failed to index classpath/module-path entries")?;
+
+    Ok(JpmsCompilationEnvironment { env, classpath })
+}
+
+pub fn build_jpms_compilation_environment_for_project(
+    jdk: &nova_jdk::JdkIndex,
+    project: &nova_project::ProjectConfig,
+    cache_dir: Option<&Path>,
+) -> Result<JpmsCompilationEnvironment> {
+    let module_path_entries: Vec<ClasspathEntry> = project
+        .module_path
+        .iter()
+        .map(ClasspathEntry::from)
+        .collect();
+    let classpath_entries: Vec<ClasspathEntry> = project
+        .classpath
+        .iter()
+        .map(ClasspathEntry::from)
+        .collect();
+
+    build_jpms_compilation_environment(
+        jdk,
+        Some(project),
+        &module_path_entries,
+        &classpath_entries,
+        cache_dir,
+    )
+}
+
 fn empty_module(kind: ModuleKind, name: ModuleName) -> ModuleInfo {
     ModuleInfo {
         name,
@@ -129,6 +179,7 @@ mod tests {
 
     use std::path::PathBuf;
 
+    use nova_classpath::ModuleNameKind;
     use nova_hir::module_info::lower_module_info_source_strict;
     use nova_jdk::JdkIndex;
     use nova_project::{BuildSystem, JavaConfig, ProjectConfig};
@@ -293,5 +344,57 @@ mod tests {
         let info = env.graph.get(&module).expect("workspace module should exist");
         assert_eq!(info.kind, ModuleKind::Explicit);
         assert!(info.exports.iter().any(|e| e.package == "workspace.pkg"));
+    }
+
+    #[test]
+    fn compilation_environment_treats_classpath_jars_as_unnamed() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let ws = ProjectConfig {
+            workspace_root: root.clone(),
+            build_system: BuildSystem::Simple,
+            java: JavaConfig::default(),
+            modules: vec![Module {
+                name: "dummy".to_string(),
+                root: root.clone(),
+            }],
+            jpms_modules: Vec::new(),
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+        };
+
+        let module_path = [ClasspathEntry::Jar(test_named_module_jar())];
+        let classpath = [ClasspathEntry::Jar(test_dep_jar())];
+
+        let jdk = JdkIndex::new();
+        let env = build_jpms_compilation_environment(
+            &jdk,
+            Some(&ws),
+            &module_path,
+            &classpath,
+            None,
+        )
+        .unwrap();
+
+        // Module-path jar should have module metadata.
+        let module = env
+            .classpath
+            .module_of("com.example.api.Api")
+            .expect("expected module-path module metadata");
+        assert_eq!(module.as_str(), "example.mod");
+        assert_eq!(
+            env.classpath.module_kind_of("com.example.api.Api"),
+            ModuleNameKind::Explicit
+        );
+
+        // Classpath jar should be treated as unnamed (no module metadata).
+        assert!(env.classpath.module_of("com.example.dep.Foo").is_none());
+        assert_eq!(
+            env.classpath.module_kind_of("com.example.dep.Foo"),
+            ModuleNameKind::None
+        );
     }
 }
