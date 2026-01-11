@@ -77,4 +77,3 @@ impl Database for SalsaDbView {
         self.path_to_file.get(path).copied()
     }
 }
-

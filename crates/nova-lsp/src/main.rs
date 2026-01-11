@@ -225,7 +225,11 @@ fn main() -> std::io::Result<()> {
                     }
                     Err(_) => {
                         did_panic = true;
-                        tracing::error!(target = "nova.lsp", method, "panic while handling request");
+                        tracing::error!(
+                            target = "nova.lsp",
+                            method,
+                            "panic while handling request"
+                        );
                         response_error(request_id, -32603, "Internal error (panic)")
                     }
                 };
@@ -921,7 +925,11 @@ fn jsonrpc_response_to_response(id: RequestId, response: serde_json::Value) -> R
         return Response {
             id,
             result: None,
-            error: Some(ResponseError { code, message, data }),
+            error: Some(ResponseError {
+                code,
+                message,
+                data,
+            }),
         };
     }
     response_error(id, -32603, "Internal error (malformed response)")
@@ -1330,16 +1338,19 @@ fn handle_request_json(
                     }
                 })
             } else if method.starts_with("nova/") {
-                Ok(match nova_lsp::handle_custom_request_cancelable(method, params, cancel.clone()) {
-                    Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
-                    Err(err) => {
-                        let (code, message) = match err {
-                            nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
-                            nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
-                        };
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-                    }
-                })
+                Ok(
+                    match nova_lsp::handle_custom_request_cancelable(method, params, cancel.clone())
+                    {
+                        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+                        Err(err) => {
+                            let (code, message) = match err {
+                                nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                                nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                            };
+                            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                        }
+                    },
+                )
             } else {
                 Ok(json!({
                     "jsonrpc": "2.0",
@@ -1470,9 +1481,7 @@ fn handle_notification(
             let text = params.text_document.text;
             let version = params.text_document.version.unwrap_or(0);
 
-            state
-                .analysis
-                .set_overlay_text(&uri, text.clone());
+            state.analysis.set_overlay_text(&uri, text.clone());
             state
                 .documents
                 .insert(uri_string.clone(), Document::new(text, version));
@@ -2618,9 +2627,11 @@ fn handle_completion(
                 "AI completions are enabled but the Tokio runtime is unavailable".to_string()
             })?;
             let _guard = runtime.enter();
-            let response = state
-                .completion_service
-                .completion_with_document_uri(ctx, cancel.clone(), document_uri);
+            let response = state.completion_service.completion_with_document_uri(
+                ctx,
+                cancel.clone(),
+                document_uri,
+            );
             response.context_id.to_string()
         } else {
             // Even when AI completions are disabled, the client can still issue
@@ -2778,7 +2789,7 @@ fn handle_execute_command(
                 payload,
                 cancel.clone(),
             )
-                .map_err(map_nova_lsp_error)?;
+            .map_err(map_nova_lsp_error)?;
             Ok(json!({ "ok": true, "kind": "testRun", "result": result }))
         }
         "nova.debugTest" => {
@@ -2868,13 +2879,7 @@ fn handle_execute_command(
         }
         COMMAND_GENERATE_METHOD_BODY => {
             let args: GenerateMethodBodyArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_method_body(
-                args,
-                params.work_done_token,
-                state,
-                client,
-                cancel.clone(),
-            )
+            run_ai_generate_method_body(args, params.work_done_token, state, client, cancel.clone())
         }
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
@@ -2900,9 +2905,8 @@ fn handle_execute_command(
             match nova_lsp::handle_safe_delete(&index, args) {
                 Ok(result) => {
                     if let nova_lsp::SafeDeleteResult::WorkspaceEdit(edit) = &result {
-                        let id: RequestId =
-                            serde_json::from_value(json!(state.next_outgoing_id()))
-                                .map_err(|e| (-32603, e.to_string()))?;
+                        let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
+                            .map_err(|e| (-32603, e.to_string()))?;
                         client
                             .request(
                                 id,
@@ -2967,13 +2971,13 @@ fn path_from_uri(uri: &str) -> Option<PathBuf> {
         .map(|path| path.into_path_buf())
 }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use httpmock::prelude::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httpmock::prelude::*;
 
-        #[test]
-        fn path_from_uri_decodes_percent_encoding() {
+    #[test]
+    fn path_from_uri_decodes_percent_encoding() {
         #[cfg(not(windows))]
         {
             let uri = "file:///tmp/My%20File.java";
@@ -3186,12 +3190,7 @@ fn run_ai_explain_error(
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
     send_progress_begin(client, work_done_token.as_ref(), "AI: Explain this error")?;
-    send_progress_report(
-        client,
-        work_done_token.as_ref(),
-        "Building context…",
-        None,
-    )?;
+    send_progress_report(client, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(client, "AI: explaining error…")?;
     let mut ctx = build_context_request_from_args(
         state,
@@ -3219,11 +3218,7 @@ fn run_ai_explain_error(
     });
     send_progress_report(client, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
-        .block_on(ai.explain_error(
-            &args.diagnostic_message,
-            ctx,
-            cancel.clone(),
-        ))
+        .block_on(ai.explain_error(&args.diagnostic_message, ctx, cancel.clone()))
         .map_err(|e| {
             let _ = send_progress_end(client, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
@@ -3251,12 +3246,7 @@ fn run_ai_generate_method_body(
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
     send_progress_begin(client, work_done_token.as_ref(), "AI: Generate method body")?;
-    send_progress_report(
-        client,
-        work_done_token.as_ref(),
-        "Building context…",
-        None,
-    )?;
+    send_progress_report(client, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(client, "AI: generating method body…")?;
     let ctx = build_context_request_from_args(
         state,
@@ -3268,11 +3258,7 @@ fn run_ai_generate_method_body(
     );
     send_progress_report(client, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
-        .block_on(ai.generate_method_body(
-            &args.method_signature,
-            ctx,
-            cancel.clone(),
-        ))
+        .block_on(ai.generate_method_body(&args.method_signature, ctx, cancel.clone()))
         .map_err(|e| {
             let _ = send_progress_end(client, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
@@ -3300,12 +3286,7 @@ fn run_ai_generate_tests(
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
     send_progress_begin(client, work_done_token.as_ref(), "AI: Generate tests")?;
-    send_progress_report(
-        client,
-        work_done_token.as_ref(),
-        "Building context…",
-        None,
-    )?;
+    send_progress_report(client, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(client, "AI: generating tests…")?;
     let ctx = build_context_request_from_args(
         state,

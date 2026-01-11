@@ -662,7 +662,10 @@ fn add_file_id(current: &Arc<Vec<FileId>>, file: FileId) -> Arc<Vec<FileId>> {
     Arc::new(next)
 }
 
-fn merge_file_ids(current: &Arc<Vec<FileId>>, files: impl IntoIterator<Item = FileId>) -> Arc<Vec<FileId>> {
+fn merge_file_ids(
+    current: &Arc<Vec<FileId>>,
+    files: impl IntoIterator<Item = FileId>,
+) -> Arc<Vec<FileId>> {
     let mut next = current.as_ref().clone();
     let mut changed = false;
 
@@ -863,9 +866,7 @@ impl Database {
     pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
         let all_file_ids = {
             let mut inputs = self.inputs.lock();
-            inputs
-                .file_rel_path
-                .insert(file, Arc::clone(&rel_path));
+            inputs.file_rel_path.insert(file, Arc::clone(&rel_path));
             let all = add_file_id(&inputs.all_file_ids, file);
             inputs.all_file_ids = all.clone();
             all

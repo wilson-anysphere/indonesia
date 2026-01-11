@@ -138,12 +138,18 @@ impl ExtensionsConfig {
             return false;
         }
 
-        if self.deny.iter().any(|pattern| matches_simple_glob(pattern, id)) {
+        if self
+            .deny
+            .iter()
+            .any(|pattern| matches_simple_glob(pattern, id))
+        {
             return false;
         }
 
         match &self.allow {
-            Some(patterns) => patterns.iter().any(|pattern| matches_simple_glob(pattern, id)),
+            Some(patterns) => patterns
+                .iter()
+                .any(|pattern| matches_simple_glob(pattern, id)),
             None => true,
         }
     }

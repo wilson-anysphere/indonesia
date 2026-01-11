@@ -81,5 +81,8 @@ fn salsa_db_view_file_path_none_is_consistent() {
         view_with_path.file_path(file).unwrap().to_str().unwrap(),
         "src/A.java"
     );
-    assert_eq!(view_with_path.file_id(std::path::Path::new("src/A.java")), Some(file));
+    assert_eq!(
+        view_with_path.file_id(std::path::Path::new("src/A.java")),
+        Some(file)
+    );
 }

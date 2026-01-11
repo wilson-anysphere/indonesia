@@ -208,84 +208,126 @@ fn handle_custom_request_inner_cancelable(
             nova_metrics::MetricsRegistry::global().reset();
             Ok(serde_json::json!({ "ok": true }))
         }
-        TEST_DISCOVER_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::test::handle_discover)
-        }
-        TEST_RUN_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::test::handle_run)
-        }
-        WEB_ENDPOINTS_METHOD | QUARKUS_ENDPOINTS_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::web::handle_endpoints)
-        }
+        TEST_DISCOVER_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::test::handle_discover,
+        ),
+        TEST_RUN_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::test::handle_run,
+        ),
+        WEB_ENDPOINTS_METHOD | QUARKUS_ENDPOINTS_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::web::handle_endpoints,
+        ),
         TEST_DEBUG_CONFIGURATION_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
             cancel,
             extensions::test::handle_debug_configuration,
         ),
-        BUILD_PROJECT_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_build_project)
-        }
-        JAVA_CLASSPATH_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_java_classpath)
-        }
+        BUILD_PROJECT_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::build::handle_build_project,
+        ),
+        JAVA_CLASSPATH_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::build::handle_java_classpath,
+        ),
         PROJECT_CONFIGURATION_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
             cancel,
             extensions::project::handle_project_configuration,
         ),
-        JAVA_SOURCE_PATHS_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::java::handle_source_paths)
-        }
+        JAVA_SOURCE_PATHS_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::java::handle_source_paths,
+        ),
         JAVA_RESOLVE_MAIN_CLASS_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
             cancel,
             extensions::java::handle_resolve_main_class,
         ),
-        JAVA_GENERATED_SOURCES_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::apt::handle_generated_sources)
-        }
+        JAVA_GENERATED_SOURCES_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::apt::handle_generated_sources,
+        ),
         RUN_ANNOTATION_PROCESSING_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
             cancel,
             extensions::apt::handle_run_annotation_processing,
         ),
-        RELOAD_PROJECT_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_reload_project)
-        }
+        RELOAD_PROJECT_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::build::handle_reload_project,
+        ),
         DEBUG_CONFIGURATIONS_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
             cancel,
             extensions::debug::handle_debug_configurations,
         ),
-        DEBUG_HOT_SWAP_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::debug::handle_hot_swap)
-        }
-        BUILD_TARGET_CLASSPATH_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_target_classpath)
-        }
-        BUILD_STATUS_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_build_status)
-        }
+        DEBUG_HOT_SWAP_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::debug::handle_hot_swap,
+        ),
+        BUILD_TARGET_CLASSPATH_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::build::handle_target_classpath,
+        ),
+        BUILD_STATUS_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::build::handle_build_status,
+        ),
         BUILD_DIAGNOSTICS_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
             cancel,
             extensions::build::handle_build_diagnostics,
         ),
-        PROJECT_MODEL_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_project_model)
-        }
-        MICRONAUT_ENDPOINTS_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::micronaut::handle_endpoints)
-        }
-        MICRONAUT_BEANS_METHOD => {
-            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::micronaut::handle_beans)
-        }
+        PROJECT_MODEL_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::build::handle_project_model,
+        ),
+        MICRONAUT_ENDPOINTS_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::micronaut::handle_endpoints,
+        ),
+        MICRONAUT_BEANS_METHOD => hardening::run_with_watchdog_cancelable(
+            method,
+            params,
+            cancel,
+            extensions::micronaut::handle_beans,
+        ),
         _ => Err(NovaLspError::InvalidParams(format!(
             "unknown (stateless) method: {method}"
         ))),

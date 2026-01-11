@@ -48,9 +48,9 @@ fn build_io_runtime(threads: usize) -> Runtime {
                 desired = desired / 2;
                 continue;
             }
-            Err(err) => panic!(
-                "failed to build IO runtime (requested {requested} thread(s)): {err}"
-            ),
+            Err(err) => {
+                panic!("failed to build IO runtime (requested {requested} thread(s)): {err}")
+            }
         }
     }
 }

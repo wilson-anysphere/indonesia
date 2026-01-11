@@ -37,4 +37,3 @@ pub trait SourceDatabase {
         None
     }
 }
-
