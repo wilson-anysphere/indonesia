@@ -8,20 +8,22 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum CodeEditPolicyError {
     #[error(
-        "AI code edits are disabled in cloud mode unless nova.ai.privacy.allow_cloud_code_edits=true"
+        "AI code edits are disabled in cloud mode unless nova.ai.privacy.allow_cloud_code_edits=true \
+(ai.privacy.allow_cloud_code_edits=true in nova.toml)"
     )]
     CloudEditsDisabled,
 
     #[error(
         "AI code edits are disabled when anonymization is enabled in cloud mode (patches cannot be applied reliably). \
-To enable cloud code edits, set nova.ai.privacy.anonymize=false, \
+To enable cloud code edits, set nova.ai.privacy.anonymize=false (ai.privacy.anonymize=false in nova.toml), \
 nova.ai.privacy.allow_cloud_code_edits=true, and \
 nova.ai.privacy.allow_code_edits_without_anonymization=true (or use nova.ai.privacy.local_only=true)."
     )]
     CloudEditsWithAnonymizationEnabled,
 
     #[error(
-        "AI code edits are disabled in cloud mode unless nova.ai.privacy.allow_code_edits_without_anonymization=true"
+        "AI code edits are disabled in cloud mode unless nova.ai.privacy.allow_code_edits_without_anonymization=true \
+(ai.privacy.allow_code_edits_without_anonymization=true in nova.toml)"
     )]
     CloudEditsWithoutAnonymizationDisabled,
 }
