@@ -1227,7 +1227,7 @@ pub fn load_indexes_with_fingerprints(
     current_file_fingerprints: &BTreeMap<String, Fingerprint>,
 ) -> Result<Option<LoadedIndexes>, IndexPersistenceError> {
     let metadata_path = cache_dir.metadata_path();
-    if !metadata_path.exists() {
+    if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
     let metadata = match CacheMetadata::load(metadata_path) {

@@ -429,3 +429,44 @@ fn load_indexes_fast_schema_mismatch_is_cache_miss() {
         load_indexes_fast(&cache_dir, &project_root, vec![PathBuf::from("A.java")]).unwrap();
     assert!(loaded.is_none());
 }
+
+#[test]
+fn load_indexes_with_fingerprints_works_with_metadata_bin_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    std::fs::write(&a, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut indexes = ProjectIndexes::default();
+    indexes.symbols.insert(
+        "A",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+
+    save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
+
+    // Simulate an interruption between writing `metadata.bin` and `metadata.json`.
+    std::fs::remove_file(cache_dir.metadata_path()).unwrap();
+    assert!(cache_dir.metadata_bin_path().exists());
+
+    let loaded = load_indexes_with_fingerprints(&cache_dir, snapshot.file_fingerprints())
+        .unwrap()
+        .unwrap();
+    assert!(loaded.invalidated_files.is_empty());
+}
