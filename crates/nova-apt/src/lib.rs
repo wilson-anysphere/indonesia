@@ -1,4 +1,4 @@
-use nova_build::{BuildError, BuildManager, BuildResult, GradleBuildTask, MavenBuildGoal};
+use nova_build::{BuildError, BuildManager, BuildResult, CommandRunner, GradleBuildTask, MavenBuildGoal};
 use nova_config::NovaConfig;
 use nova_core::fs as core_fs;
 use nova_project::{
@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -186,10 +185,9 @@ impl AptBuildExecutor for BuildManager {
     }
 
     fn build_bazel(&self, project_root: &Path, target: &str) -> nova_build::Result<BuildResult> {
-        let mut cmd = Command::new("bazel");
-        cmd.current_dir(project_root);
-        cmd.arg("build").arg(target);
-        let output = cmd.output()?;
+        let runner = nova_build::DefaultCommandRunner::default();
+        let args = vec!["build".to_string(), target.to_string()];
+        let output = runner.run(project_root, Path::new("bazel"), &args)?;
         if output.status.success() {
             return Ok(BuildResult {
                 diagnostics: Vec::new(),
@@ -200,8 +198,8 @@ impl AptBuildExecutor for BuildManager {
             tool: "bazel",
             command: format!("bazel build {target}"),
             code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            stdout: output.stdout,
+            stderr: output.stderr,
         })
     }
 }
