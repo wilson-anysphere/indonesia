@@ -130,3 +130,67 @@ fn method_resolution_applies_capture_conversion_for_super_wildcard() {
         MethodResolution::NotFound | MethodResolution::Ambiguous(_)
     ));
 }
+
+#[test]
+fn wildcard_type_argument_containment_extends() {
+    let env = TypeStore::with_minimal_jdk();
+    let list = env.class_id("java.util.List").unwrap();
+    let string = env.well_known().string;
+    let object = env.well_known().object;
+
+    let list_extends_string = Type::class(
+        list,
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
+            string,
+            vec![],
+        ))))],
+    );
+    let list_extends_object = Type::class(
+        list,
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
+            object,
+            vec![],
+        ))))],
+    );
+
+    assert!(is_subtype(&env, &list_extends_string, &list_extends_object));
+}
+
+#[test]
+fn wildcard_type_argument_containment_super() {
+    let env = TypeStore::with_minimal_jdk();
+    let list = env.class_id("java.util.List").unwrap();
+    let string = env.well_known().string;
+    let object = env.well_known().object;
+
+    let list_super_object = Type::class(
+        list,
+        vec![Type::Wildcard(WildcardBound::Super(Box::new(Type::class(
+            object,
+            vec![],
+        ))))],
+    );
+    let list_super_string = Type::class(
+        list,
+        vec![Type::Wildcard(WildcardBound::Super(Box::new(Type::class(
+            string,
+            vec![],
+        ))))],
+    );
+
+    assert!(is_subtype(&env, &list_super_object, &list_super_string));
+    assert!(!is_subtype(&env, &list_super_string, &list_super_object));
+}
+
+#[test]
+fn generic_subtyping_remains_invariant_without_wildcards() {
+    let env = TypeStore::with_minimal_jdk();
+    let list = env.class_id("java.util.List").unwrap();
+    let string = env.well_known().string;
+    let object = env.well_known().object;
+
+    let list_string = Type::class(list, vec![Type::class(string, vec![])]);
+    let list_object = Type::class(list, vec![Type::class(object, vec![])]);
+
+    assert!(!is_subtype(&env, &list_string, &list_object));
+}

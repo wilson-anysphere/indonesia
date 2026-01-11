@@ -981,27 +981,49 @@ fn type_args_compatible(env: &dyn TypeEnv, def: ClassId, sub: &[Type], super_: &
     if sub.len() != super_.len() {
         return false;
     }
-    for (s, t) in sub.iter().zip(super_) {
-        match t {
-            Type::Wildcard(WildcardBound::Unbounded) => continue,
-            Type::Wildcard(WildcardBound::Extends(upper)) => {
-                if !is_subtype(env, s, upper) {
-                    return false;
-                }
-            }
-            Type::Wildcard(WildcardBound::Super(lower)) => {
-                if !is_subtype(env, lower, s) {
-                    return false;
-                }
-            }
-            _ => {
-                if s != t {
-                    return false;
-                }
-            }
+    for (actual, formal) in sub.iter().zip(super_) {
+        if !type_arg_contained_by(env, actual, formal) {
+            return false;
         }
     }
     true
+}
+
+/// Type argument containment (JLS 4.5.1 / 4.10.2).
+///
+/// This is the relation used when comparing two parameterized types with the same
+/// generic class/interface, e.g. `List<? extends String> <: List<? extends Object>`.
+fn type_arg_contained_by(env: &dyn TypeEnv, actual: &Type, formal: &Type) -> bool {
+    match formal {
+        // `?` contains any type argument.
+        Type::Wildcard(WildcardBound::Unbounded) => true,
+
+        // `? extends U` contains:
+        // * `A` if `A <: U`
+        // * `? extends S` if `S <: U`
+        // * `?` as shorthand for `? extends Object` (so only if `Object <: U`)
+        Type::Wildcard(WildcardBound::Extends(upper)) => match actual {
+            Type::Wildcard(WildcardBound::Unbounded) => {
+                let object = Type::class(env.well_known().object, vec![]);
+                is_subtype(env, &object, upper)
+            }
+            Type::Wildcard(WildcardBound::Extends(actual_upper)) => is_subtype(env, actual_upper, upper),
+            Type::Wildcard(WildcardBound::Super(_)) => false,
+            other => is_subtype(env, other, upper),
+        },
+
+        // `? super L` contains:
+        // * `A` if `L <: A`
+        // * `? super S` if `L <: S` (contravariant containment)
+        Type::Wildcard(WildcardBound::Super(lower)) => match actual {
+            Type::Wildcard(WildcardBound::Super(actual_lower)) => is_subtype(env, lower, actual_lower),
+            Type::Wildcard(_) => false,
+            other => is_subtype(env, lower, other),
+        },
+
+        // Non-wildcard type arguments are invariant.
+        _ => actual == formal,
+    }
 }
 
 fn substitute(ty: &Type, subst: &HashMap<TypeVarId, Type>) -> Type {
