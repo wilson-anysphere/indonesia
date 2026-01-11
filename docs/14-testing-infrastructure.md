@@ -1,6 +1,6 @@
 # 14 - Testing Infrastructure
 
-[← Back to Main Document](../AGENTS.md) | [Testing Strategy](14-testing-strategy.md) | [Next: Work Breakdown →](15-work-breakdown.md)
+[← Back to Main Document](../AGENTS.md) | [Previous: AI Augmentation](13-ai-augmentation.md) | [Testing Strategy](14-testing-strategy.md) | [Next: Work Breakdown →](15-work-breakdown.md)
 
 ## Overview
 
@@ -546,3 +546,7 @@ BLESS=1 cargo test -p nova-refactor <your_test_name>
 ```bash
 INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
 ```
+
+---
+
+[← Previous: AI Augmentation](13-ai-augmentation.md) | [Testing Strategy](14-testing-strategy.md) | [Next: Work Breakdown →](15-work-breakdown.md)

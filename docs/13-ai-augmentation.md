@@ -664,8 +664,9 @@ impl NovaServer {
 
 ## Next Steps
 
-1. → [Testing Strategy](14-testing-strategy.md): Quality assurance
-2. → [Work Breakdown](15-work-breakdown.md): Project organization
+1. → [Testing Infrastructure](14-testing-infrastructure.md): How to run tests/CI and update fixtures
+2. → [Testing Strategy](14-testing-strategy.md): Quality assurance
+3. → [Work Breakdown](15-work-breakdown.md): Project organization
 
 ---
 
