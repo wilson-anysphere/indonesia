@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
     install_panic_hook(
         PanicHookConfig {
             include_backtrace: config.logging.include_backtrace,
+            ..Default::default()
         },
         Arc::new(|message| {
             let _ = writeln!(std::io::stderr(), "{message}");

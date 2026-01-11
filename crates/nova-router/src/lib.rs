@@ -48,6 +48,7 @@ pub fn init_observability(
     install_panic_hook(
         PanicHookConfig {
             include_backtrace: config.logging.include_backtrace,
+            ..Default::default()
         },
         notifier,
     );
