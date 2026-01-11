@@ -28,7 +28,7 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
         }
 
         if let Some(imported) = parse_import_path(line) {
-            if imported == path {
+            if imported == path || wildcard_import_covers(imported, path) {
                 return None;
             }
             last_import_line = Some(idx);
@@ -59,6 +59,20 @@ fn is_package_declaration(line: &str) -> bool {
         return false;
     }
     trimmed.contains(';')
+}
+
+fn wildcard_import_covers(imported: &str, path: &str) -> bool {
+    let Some(prefix) = imported.strip_suffix(".*") else {
+        return false;
+    };
+    let Some(rest) = path.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix('.') else {
+        return false;
+    };
+    // `import foo.*;` brings in symbols in package `foo`, not subpackages.
+    !rest.contains('.')
 }
 
 fn parse_import_path(line: &str) -> Option<&str> {
@@ -127,6 +141,21 @@ mod tests {
             java_import_text_edit(text, "java.util.stream.Collectors.toList"),
             None
         );
+    }
+
+    #[test]
+    fn returns_none_when_wildcard_import_covers_symbol() {
+        let text = "package com.example;\n\nimport java.util.*;\n\nclass Foo {}\n";
+        assert_eq!(java_import_text_edit(text, "java.util.List"), None);
+    }
+
+    #[test]
+    fn wildcard_import_does_not_cover_subpackages() {
+        let text = "package com.example;\n\nimport java.util.*;\n\nclass Foo {}\n";
+        let edit =
+            java_import_text_edit(text, "java.util.concurrent.Future").expect("expected edit");
+        assert_eq!(edit.range.start, Position::new(3, 0));
+        assert_eq!(edit.new_text, "import java.util.concurrent.Future;\n");
     }
 
     #[test]
