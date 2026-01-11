@@ -117,7 +117,10 @@ pub(crate) fn project_for_file(
 
     let fingerprint = fingerprint_sources(db, &java_files);
 
-    let root_key = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    let root_key = config
+        .as_ref()
+        .map(|cfg| cfg.workspace_root.clone())
+        .unwrap_or_else(|| std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone()));
 
     if let Some(hit) = JPA_ANALYSIS_CACHE
         .lock()
