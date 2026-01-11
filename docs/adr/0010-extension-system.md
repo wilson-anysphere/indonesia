@@ -282,36 +282,41 @@ Nova’s configuration gains a new top-level section:
 
 Configuration goals:
 
-- default-safe: third-party WASM extensions are **off unless explicitly configured**,
+- default-safe: third-party WASM extensions are **off unless explicitly configured** (no search paths, no loads),
 - support allow/deny lists by extension id,
-- support per-extension settings passed to the extension,
 - allow tightening resource limits in locked-down environments.
 
-Proposed TOML shape (illustrative):
+Current TOML shape (implemented in `nova-config`) is intentionally small and workspace-scoped:
 
 ```toml
 [extensions]
 enabled = true
 
-# If non-empty, only extensions whose id matches one of these patterns are allowed.
-allow = ["nova.*", "com.mycorp.*"]
-# Always-denied patterns (applied after allow).
+# Directories searched for extension bundles.
+wasm_paths = ["./extensions"]
+
+# Optional allow/deny lists by extension id.
+allow = ["com.mycorp.*"]
 deny = ["com.evil.*"]
 
-# Default sandbox settings for WASM extensions (can be overridden per extension).
-[extensions.wasm_defaults]
-memory_mb = 64
-timeout_ms = 50
-max_response_kb = 1024
+# Optional sandbox upper bounds (the runtime clamps to the minimum of the per-plugin defaults and these values).
+wasm_memory_limit_bytes = 67108864 # 64MiB
+wasm_timeout_ms = 50
+```
 
-[[extensions.wasm]]
+WASM extensions are distributed as **extension bundles**. A bundle is a directory containing:
+
+- `nova-ext.toml` — bundle manifest (id, version, entry, capabilities)
+- the `.wasm` entry module referenced by `entry`
+
+Example `nova-ext.toml`:
+
+```toml
 id = "com.mycorp.rules"
-path = "./extensions/rules.wasm"
-enabled = true
-
-# Arbitrary per-extension settings (passed to the module by the host).
-[extensions.wasm.settings]
-severity = "warning"
+version = "0.1.0"
+entry = "plugin.wasm"
+abi_version = 1
+capabilities = ["diagnostics", "completion"]
 ```
 
 Pattern semantics for `allow`/`deny`:
