@@ -609,8 +609,11 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
                 } else if let Some(perf) = perf {
                     println!("perf:");
                     println!("  files_total: {}", perf.files_total);
+                    println!("  files_invalidated: {}", perf.files_invalidated);
                     println!("  files_indexed: {}", perf.files_indexed);
                     println!("  bytes_indexed: {}", perf.bytes_indexed);
+                    println!("  snapshot_ms: {}", perf.snapshot_ms);
+                    println!("  index_ms: {}", perf.index_ms);
                     println!("  symbols_indexed: {}", perf.symbols_indexed);
                     println!("  elapsed_ms: {}", perf.elapsed_ms);
                     if let Some(rss) = perf.rss_bytes {
@@ -1416,8 +1419,11 @@ fn print_output<T: Serialize + 'static>(value: &T, json: bool) -> Result<()> {
             println!("  project_hash: {}", report.project_hash);
             println!("  cache_root: {}", report.cache_root.display());
             println!("  files_total: {}", report.metrics.files_total);
+            println!("  files_invalidated: {}", report.metrics.files_invalidated);
             println!("  files_indexed: {}", report.metrics.files_indexed);
             println!("  bytes_indexed: {}", report.metrics.bytes_indexed);
+            println!("  snapshot_ms: {}", report.metrics.snapshot_ms);
+            println!("  index_ms: {}", report.metrics.index_ms);
             println!("  symbols_indexed: {}", report.metrics.symbols_indexed);
             println!("  elapsed_ms: {}", report.metrics.elapsed_ms);
             if let Some(rss) = report.metrics.rss_bytes {
@@ -1502,8 +1508,11 @@ fn print_cache_status(status: &CacheStatus, json: bool) -> Result<()> {
     }
     if let Some(perf) = &status.last_perf {
         println!("    files_total: {}", perf.files_total);
+        println!("    files_invalidated: {}", perf.files_invalidated);
         println!("    files_indexed: {}", perf.files_indexed);
         println!("    bytes_indexed: {}", perf.bytes_indexed);
+        println!("    snapshot_ms: {}", perf.snapshot_ms);
+        println!("    index_ms: {}", perf.index_ms);
         println!("    symbols_indexed: {}", perf.symbols_indexed);
         println!("    elapsed_ms: {}", perf.elapsed_ms);
         if let Some(rss) = perf.rss_bytes {
