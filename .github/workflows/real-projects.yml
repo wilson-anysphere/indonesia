@@ -58,9 +58,20 @@ jobs:
           restore-keys: |
             test-projects-v2-${{ runner.os }}-
 
+      - name: Restore Maven cache (best-effort)
+        id: maven-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: m2-${{ runner.os }}-java17-${{ hashFiles('test-projects/pins.toml') }}
+          restore-keys: |
+            m2-${{ runner.os }}-java17-
+
       - name: Run real project tests
         env:
-          NOVA_TEST_PROJECTS: ${{ github.event.inputs.only }}
+          NOVA_TEST_PROJECTS: ${{ github.event.inputs.only || '' }}
         run: |
           set -euxo pipefail
           mkdir -p real-project-logs
@@ -84,6 +95,16 @@ jobs:
               -path '*/.git' -prune -o \
               -type d -name target -prune -exec rm -rf {} +
           fi
+
+      - name: Save Maven cache (best-effort)
+        if: always() && steps.maven-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.m2/repository
+            ~/.m2/wrapper
+          key: m2-${{ runner.os }}-java17-${{ hashFiles('test-projects/pins.toml') }}
 
       - name: Save test projects cache
         if: always() && steps.test-projects-cache.outputs.cache-hit != 'true'
