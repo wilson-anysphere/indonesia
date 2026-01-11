@@ -111,6 +111,25 @@ fn class_directories_are_treated_as_unnamed_modules() {
 }
 
 #[test]
+fn classpath_jars_are_treated_as_unnamed_modules() {
+    let tmp = TempDir::new().unwrap();
+    let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+    let index = ModuleAwareClasspathIndex::build_classpath_with_deps_store(
+        &[ClasspathEntry::Jar(test_dep_jar())],
+        None,
+        Some(&deps_store),
+        None,
+    )
+    .unwrap();
+
+    assert!(index.module_of("com.example.dep.Foo").is_none());
+    assert_eq!(
+        index.module_kind_of("com.example.dep.Foo"),
+        ModuleNameKind::None
+    );
+}
+
+#[test]
 fn module_path_class_directories_with_module_info_are_named_modules() {
     let tmp = TempDir::new().unwrap();
     let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
@@ -157,5 +176,30 @@ fn module_path_class_directories_without_module_info_become_automatic_modules() 
     assert_eq!(
         index.module_kind_of("com.example.dep.Bar"),
         ModuleNameKind::Automatic
+    );
+}
+
+#[test]
+fn mixed_index_assigns_modules_based_on_entry_kind() {
+    let tmp = TempDir::new().unwrap();
+    let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+
+    let index = ModuleAwareClasspathIndex::build_mixed_with_deps_store(
+        &[ClasspathEntry::Jar(test_named_module_jar())],
+        &[ClasspathEntry::Jar(test_dep_jar())],
+        None,
+        Some(&deps_store),
+        None,
+    )
+    .unwrap();
+
+    let module = index.module_of("com.example.api.Api").unwrap();
+    assert_eq!(module.as_str(), "example.mod");
+    assert_eq!(index.module_kind_of("com.example.api.Api"), ModuleNameKind::Explicit);
+
+    assert!(index.module_of("com.example.dep.Foo").is_none());
+    assert_eq!(
+        index.module_kind_of("com.example.dep.Foo"),
+        ModuleNameKind::None
     );
 }

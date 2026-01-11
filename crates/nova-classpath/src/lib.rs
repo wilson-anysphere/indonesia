@@ -535,61 +535,24 @@ impl ModuleAwareClasspathIndex {
         let mut type_to_module = HashMap::new();
         let mut modules = Vec::with_capacity(entries.len());
 
-        for entry in entries {
-            let entry = entry.normalize()?;
-            let module_meta = entry.module_meta()?;
-            modules.push((module_meta.name.clone(), module_meta.kind));
+        Self::extend_index_with_meta(
+            &mut stubs_by_binary,
+            &mut internal_to_binary,
+            &mut type_to_module,
+            &mut modules,
+            entries,
+            cache_dir,
+            deps_store,
+            stats,
+            |entry| entry.module_meta(),
+        )?;
 
-            let stubs = match &entry {
-                ClasspathEntry::ClassDir(_) => {
-                    let fingerprint = entry.fingerprint()?;
-                    if let Some(cache_dir) = cache_dir {
-                        persist::load_or_build_entry(cache_dir, &entry, fingerprint, || {
-                            index_entry(&entry, deps_store, stats)
-                        })?
-                    } else {
-                        index_entry(&entry, deps_store, stats)?
-                    }
-                }
-                ClasspathEntry::Jar(_) | ClasspathEntry::Jmod(_) => {
-                    index_entry(&entry, deps_store, stats)?
-                }
-            };
-
-            for stub in stubs {
-                if stubs_by_binary.contains_key(&stub.binary_name) {
-                    continue;
-                }
-
-                let binary_name = stub.binary_name.clone();
-                internal_to_binary.insert(stub.internal_name.clone(), binary_name.clone());
-                stubs_by_binary.insert(binary_name.clone(), stub);
-                type_to_module.insert(binary_name, module_meta.name.clone());
-            }
-        }
-
-        let mut binary_names_sorted: Vec<String> = stubs_by_binary.keys().cloned().collect();
-        binary_names_sorted.sort();
-
-        let mut packages: BTreeSet<String> = BTreeSet::new();
-        for name in &binary_names_sorted {
-            if let Some((pkg, _)) = name.rsplit_once('.') {
-                packages.insert(pkg.to_owned());
-            }
-        }
-
-        let types = ClasspathIndex {
+        Ok(Self::finish_index(
             stubs_by_binary,
-            binary_names_sorted,
-            packages_sorted: packages.into_iter().collect(),
             internal_to_binary,
-        };
-
-        Ok(Self {
-            types,
             type_to_module,
             modules,
-        })
+        ))
     }
 
     /// Build a module-aware index for entries that are treated as `--module-path`.
@@ -617,9 +580,192 @@ impl ModuleAwareClasspathIndex {
         let mut type_to_module = HashMap::new();
         let mut modules = Vec::with_capacity(entries.len());
 
+        Self::extend_index_with_meta(
+            &mut stubs_by_binary,
+            &mut internal_to_binary,
+            &mut type_to_module,
+            &mut modules,
+            entries,
+            cache_dir,
+            deps_store,
+            stats,
+            |entry| entry.module_meta_for_module_path(),
+        )?;
+
+        Ok(Self::finish_index(
+            stubs_by_binary,
+            internal_to_binary,
+            type_to_module,
+            modules,
+        ))
+    }
+
+    /// Build a module-aware index for entries that are treated as classpath items.
+    ///
+    /// All entries (including JARs with `module-info.class`) are treated as
+    /// belonging to the unnamed module. This matches traditional Java classpath
+    /// semantics.
+    pub fn build_classpath(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, ClasspathError> {
+        let deps_store = DependencyIndexStore::from_env().ok();
+        Self::build_classpath_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
+    }
+
+    pub fn build_classpath_with_deps_store(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        let mut stubs_by_binary = HashMap::new();
+        let mut internal_to_binary = HashMap::new();
+        let mut type_to_module = HashMap::new();
+        let mut modules = Vec::with_capacity(entries.len());
+
+        Self::extend_index_with_meta(
+            &mut stubs_by_binary,
+            &mut internal_to_binary,
+            &mut type_to_module,
+            &mut modules,
+            entries,
+            cache_dir,
+            deps_store,
+            stats,
+            |_| {
+                Ok(EntryModuleMeta {
+                    name: None,
+                    kind: ModuleNameKind::None,
+                })
+            },
+        )?;
+
+        Ok(Self::finish_index(
+            stubs_by_binary,
+            internal_to_binary,
+            type_to_module,
+            modules,
+        ))
+    }
+
+    /// Build a module-aware index from a JPMS module-path and an additional classpath.
+    ///
+    /// - `module_path_entries` are treated as named modules (explicit or automatic)
+    /// - `classpath_entries` are treated as belonging to the unnamed module
+    ///
+    /// When a type is present in both, the module-path entry wins (first match).
+    pub fn build_mixed(
+        module_path_entries: &[ClasspathEntry],
+        classpath_entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, ClasspathError> {
+        let deps_store = DependencyIndexStore::from_env().ok();
+        Self::build_mixed_with_deps_store(
+            module_path_entries,
+            classpath_entries,
+            cache_dir,
+            deps_store.as_ref(),
+            None,
+        )
+    }
+
+    pub fn build_mixed_with_deps_store(
+        module_path_entries: &[ClasspathEntry],
+        classpath_entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, ClasspathError> {
+        let mut stubs_by_binary = HashMap::new();
+        let mut internal_to_binary = HashMap::new();
+        let mut type_to_module = HashMap::new();
+        let mut modules = Vec::with_capacity(module_path_entries.len() + classpath_entries.len());
+
+        Self::extend_index_with_meta(
+            &mut stubs_by_binary,
+            &mut internal_to_binary,
+            &mut type_to_module,
+            &mut modules,
+            module_path_entries,
+            cache_dir,
+            deps_store,
+            stats,
+            |entry| entry.module_meta_for_module_path(),
+        )?;
+
+        Self::extend_index_with_meta(
+            &mut stubs_by_binary,
+            &mut internal_to_binary,
+            &mut type_to_module,
+            &mut modules,
+            classpath_entries,
+            cache_dir,
+            deps_store,
+            stats,
+            |_| {
+                Ok(EntryModuleMeta {
+                    name: None,
+                    kind: ModuleNameKind::None,
+                })
+            },
+        )?;
+
+        Ok(Self::finish_index(
+            stubs_by_binary,
+            internal_to_binary,
+            type_to_module,
+            modules,
+        ))
+    }
+
+    fn finish_index(
+        stubs_by_binary: HashMap<String, ClasspathClassStub>,
+        internal_to_binary: HashMap<String, String>,
+        type_to_module: HashMap<String, Option<ModuleName>>,
+        modules: Vec<(Option<ModuleName>, ModuleNameKind)>,
+    ) -> Self {
+        let mut binary_names_sorted: Vec<String> = stubs_by_binary.keys().cloned().collect();
+        binary_names_sorted.sort();
+
+        let mut packages: BTreeSet<String> = BTreeSet::new();
+        for name in &binary_names_sorted {
+            if let Some((pkg, _)) = name.rsplit_once('.') {
+                packages.insert(pkg.to_owned());
+            }
+        }
+
+        let types = ClasspathIndex {
+            stubs_by_binary,
+            binary_names_sorted,
+            packages_sorted: packages.into_iter().collect(),
+            internal_to_binary,
+        };
+
+        Self {
+            types,
+            type_to_module,
+            modules,
+        }
+    }
+
+    fn extend_index_with_meta<F>(
+        stubs_by_binary: &mut HashMap<String, ClasspathClassStub>,
+        internal_to_binary: &mut HashMap<String, String>,
+        type_to_module: &mut HashMap<String, Option<ModuleName>>,
+        modules: &mut Vec<(Option<ModuleName>, ModuleNameKind)>,
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+        deps_store: Option<&DependencyIndexStore>,
+        stats: Option<&IndexingStats>,
+        mut meta_fn: F,
+    ) -> Result<(), ClasspathError>
+    where
+        F: FnMut(&ClasspathEntry) -> Result<EntryModuleMeta, ClasspathError>,
+    {
         for entry in entries {
             let entry = entry.normalize()?;
-            let module_meta = entry.module_meta_for_module_path()?;
+            let module_meta = meta_fn(&entry)?;
             modules.push((module_meta.name.clone(), module_meta.kind));
 
             let stubs = match &entry {
@@ -650,28 +796,7 @@ impl ModuleAwareClasspathIndex {
             }
         }
 
-        let mut binary_names_sorted: Vec<String> = stubs_by_binary.keys().cloned().collect();
-        binary_names_sorted.sort();
-
-        let mut packages: BTreeSet<String> = BTreeSet::new();
-        for name in &binary_names_sorted {
-            if let Some((pkg, _)) = name.rsplit_once('.') {
-                packages.insert(pkg.to_owned());
-            }
-        }
-
-        let types = ClasspathIndex {
-            stubs_by_binary,
-            binary_names_sorted,
-            packages_sorted: packages.into_iter().collect(),
-            internal_to_binary,
-        };
-
-        Ok(Self {
-            types,
-            type_to_module,
-            modules,
-        })
+        Ok(())
     }
 
     /// Construct an in-memory index from existing class stubs.
