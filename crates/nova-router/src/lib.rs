@@ -167,6 +167,17 @@ impl WorkerIdentity {
 impl DistributedRouterConfig {
     fn validate(&self) -> Result<()> {
         #[cfg(feature = "tls")]
+        if self.spawn_workers
+            && matches!(self.listen_addr, ListenAddr::Tcp(TcpListenAddr::Tls { .. }))
+        {
+            return Err(anyhow!(
+                "`spawn_workers = true` is not supported with a `tcp+tls:` listen address. \
+The router does not yet have a way to pass TLS client configuration (CA cert, SNI domain, optional client cert/key) to locally spawned workers. \
+Use a local IPC transport (Unix socket / named pipe) or set `spawn_workers = false` and start remote workers with the appropriate TLS flags."
+            ));
+        }
+
+        #[cfg(feature = "tls")]
         {
             let allowlist = &self.tls_client_cert_fingerprint_allowlist;
             let allowlist_configured = !allowlist.global.is_empty() || !allowlist.shards.is_empty();
