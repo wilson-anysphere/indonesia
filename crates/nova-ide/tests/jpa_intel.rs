@@ -75,6 +75,36 @@ class Post {
 }
 
 #[test]
+fn jpa_missing_id_diagnostic_spans_entity_name() {
+    let entity_path = PathBuf::from("/workspace/src/main/java/com/example/NoId.java");
+
+    let src = r#"package com.example;
+import jakarta.persistence.Entity;
+
+@Entity
+class NoId {
+  String name;
+}
+"#;
+
+    let mut db = InMemoryFileStore::new();
+    let file = db.file_id_for_path(&entity_path);
+    db.set_file_text(file, src.to_string());
+
+    let diags = file_diagnostics(&db, file);
+    let missing_id = diags
+        .iter()
+        .find(|d| d.code == "JPA_MISSING_ID")
+        .expect("expected JPA_MISSING_ID diagnostic");
+    let span = missing_id.span.expect("expected diagnostic span");
+    assert_eq!(
+        &src[span.start..span.end],
+        "NoId",
+        "expected diagnostic span to cover entity name; got {span:?}"
+    );
+}
+
+#[test]
 fn jpql_completions_include_entity_fields() {
     let user_path = PathBuf::from("/workspace/src/main/java/com/example/User.java");
     let post_path = PathBuf::from("/workspace/src/main/java/com/example/Post.java");
