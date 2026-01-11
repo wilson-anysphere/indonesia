@@ -30,6 +30,7 @@ pub use write::write_archive_atomic;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
 
     #[derive(Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
     #[archive(check_bytes)]
@@ -213,5 +214,88 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn write_archive_atomic_is_safe_under_concurrent_writers() {
+        fn render_bytes(value: &Sample) -> Vec<u8> {
+            let dir = tempfile::TempDir::new().unwrap();
+            let path = dir.path().join("expected.bin");
+            write_archive_atomic(
+                &path,
+                ArtifactKind::AstArtifacts,
+                1,
+                value,
+                Compression::None,
+            )
+            .unwrap();
+            std::fs::read(&path).unwrap()
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = Arc::new(dir.path().join("concurrent.bin"));
+
+        let value_a = Arc::new(Sample {
+            a: 1,
+            b: "value-a".to_string(),
+            values: vec![0xA5; 4096],
+        });
+        let value_b = Arc::new(Sample {
+            a: 2,
+            b: "value-b".to_string(),
+            values: vec![0x5A; 4096],
+        });
+
+        let expected_a = render_bytes(&value_a);
+        let expected_b = render_bytes(&value_b);
+
+        let threads = 8;
+        let iterations = 32;
+        let barrier = Arc::new(Barrier::new(threads));
+
+        let mut handles = Vec::with_capacity(threads);
+        for idx in 0..threads {
+            let path = path.clone();
+            let value = if idx % 2 == 0 {
+                value_a.clone()
+            } else {
+                value_b.clone()
+            };
+            let barrier = barrier.clone();
+
+            handles.push(std::thread::spawn(move || -> Result<(), StorageError> {
+                let mut error: Option<StorageError> = None;
+                for _ in 0..iterations {
+                    barrier.wait();
+                    if error.is_none() {
+                        if let Err(err) = write_archive_atomic(
+                            path.as_path(),
+                            ArtifactKind::AstArtifacts,
+                            1,
+                            &*value,
+                            Compression::None,
+                        ) {
+                            error = Some(err);
+                        }
+                    }
+                }
+                if let Some(err) = error {
+                    Err(err)
+                } else {
+                    Ok(())
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        let bytes = std::fs::read(path.as_path()).unwrap();
+        assert!(
+            bytes == expected_a || bytes == expected_b,
+            "final file payload corrupted (len={})",
+            bytes.len()
+        );
     }
 }

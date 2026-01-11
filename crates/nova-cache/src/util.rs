@@ -1,8 +1,11 @@
 use crate::error::CacheError;
 use bincode::Options;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::io;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Hard upper bound for any bincode-encoded cache payload we will attempt to
@@ -55,27 +58,67 @@ pub(crate) fn read_file_limited(path: &Path) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
     let Some(parent) = path.parent() else {
         return Err(std::io::Error::new(std::io::ErrorKind::Other, "path has no parent").into());
     };
 
-    std::fs::create_dir_all(parent)?;
+    fs::create_dir_all(parent)?;
 
-    let tmp_path = path.with_extension("tmp");
+    let (tmp_path, mut file) = open_unique_tmp_file(path, parent)?;
+    if let Err(err) = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| Ok(()))
     {
-        let mut file = std::fs::File::create(&tmp_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
+        drop(file);
+        let _ = fs::remove_file(&tmp_path);
+        return Err(CacheError::from(err));
     }
+    drop(file);
 
-    match std::fs::rename(&tmp_path, path) {
+    match fs::rename(&tmp_path, path) {
         Ok(()) => Ok(()),
         Err(_err) if path.exists() => {
             // On Windows, rename doesn't overwrite. Try remove + rename.
-            std::fs::remove_file(path)?;
-            std::fs::rename(&tmp_path, path).map_err(CacheError::from)
+            if let Err(err) = fs::remove_file(path) {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(CacheError::from(err));
+            }
+            fs::rename(&tmp_path, path).map_err(|err| {
+                let _ = fs::remove_file(&tmp_path);
+                CacheError::from(err)
+            })
         }
-        Err(err) => Err(CacheError::from(err)),
+        Err(err) => {
+            let _ = fs::remove_file(&tmp_path);
+            Err(CacheError::from(err))
+        }
+    }
+}
+
+fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
+    let file_name = dest.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
+    })?;
+    let pid = std::process::id();
+
+    loop {
+        let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(format!(".tmp.{pid}.{counter}"));
+        let tmp_path = parent.join(tmp_name);
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
     }
 }

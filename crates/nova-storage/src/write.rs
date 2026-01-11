@@ -1,9 +1,13 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::header::{ArtifactKind, Compression, StorageHeader};
 use crate::persisted::StorageError;
+
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn write_archive_atomic<T>(
     path: &Path,
@@ -50,21 +54,60 @@ where
 }
 
 fn atomic_write(dest: &Path, header: &[u8], payload: &[u8]) -> Result<(), StorageError> {
-    let tmp_path = dest.with_extension("tmp");
+    let parent = dest
+        .parent()
+        .ok_or(StorageError::InvalidHeader("missing parent directory"))?;
+    let (tmp_path, mut file) = open_unique_tmp_file(dest, parent)?;
+
+    if let Err(err) = file
+        .write_all(header)
+        .and_then(|()| file.write_all(payload))
+        .and_then(|()| file.sync_all())
+        .and_then(|()| Ok(()))
     {
-        let mut file = fs::File::create(&tmp_path)?;
-        file.write_all(header)?;
-        file.write_all(payload)?;
-        file.sync_all()?;
+        drop(file);
+        let _ = fs::remove_file(&tmp_path);
+        return Err(StorageError::from(err));
     }
+    drop(file);
 
     match fs::rename(&tmp_path, dest) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists || dest.exists() => {
             // On Windows, rename doesn't overwrite. Try remove + rename.
             let _ = fs::remove_file(dest);
-            fs::rename(&tmp_path, dest).map_err(StorageError::from)
+            fs::rename(&tmp_path, dest).map_err(|err| {
+                let _ = fs::remove_file(&tmp_path);
+                StorageError::from(err)
+            })
         }
-        Err(err) => Err(StorageError::from(err)),
+        Err(err) => {
+            let _ = fs::remove_file(&tmp_path);
+            Err(StorageError::from(err))
+        }
+    }
+}
+
+fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
+    let file_name = dest.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
+    })?;
+    let pid = std::process::id();
+
+    loop {
+        let counter = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let mut tmp_name = file_name.to_os_string();
+        tmp_name.push(format!(".tmp.{pid}.{counter}"));
+        let tmp_path = parent.join(tmp_name);
+
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(file) => return Ok((tmp_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
+        }
     }
 }
