@@ -153,7 +153,7 @@ fn discover_tests_in_file(project_root: &Path, file_path: &Path) -> Result<Vec<T
     let mut out = Vec::new();
     let mut cursor = root.walk();
     for child in root.named_children(&mut cursor) {
-        if child.kind() != "class_declaration" {
+        if !is_type_declaration_kind(child.kind()) {
             continue;
         }
 
@@ -201,9 +201,7 @@ fn parse_test_class(
     let class_framework = infer_framework_from_imports(imports);
     let class_range = range_for_node(line_index, source, name_node);
 
-    let body = node
-        .child_by_field_name("body")
-        .or_else(|| find_named_child(node, "class_body"));
+    let body = type_declaration_body(node);
     let mut children = Vec::new();
     if let Some(body) = body {
         children.extend(discover_test_methods(
@@ -249,7 +247,7 @@ fn parse_test_class(
 }
 
 fn discover_nested_test_classes(
-    class_body: Node<'_>,
+    type_body: Node<'_>,
     source: &str,
     line_index: &LineIndex,
     package: Option<&str>,
@@ -258,9 +256,8 @@ fn discover_nested_test_classes(
     enclosing_class_id: &str,
 ) -> Result<Vec<TestItem>> {
     let mut out = Vec::new();
-    let mut cursor = class_body.walk();
-    for child in class_body.named_children(&mut cursor) {
-        if child.kind() != "class_declaration" {
+    for child in type_body_member_nodes(type_body) {
+        if !is_type_declaration_kind(child.kind()) {
             continue;
         }
 
@@ -282,7 +279,7 @@ fn discover_nested_test_classes(
 }
 
 fn discover_test_methods(
-    class_body: Node<'_>,
+    type_body: Node<'_>,
     source: &str,
     line_index: &LineIndex,
     imports: &Imports,
@@ -290,8 +287,7 @@ fn discover_test_methods(
     relative_path: &str,
 ) -> Result<Vec<TestItem>> {
     let mut out = Vec::new();
-    let mut cursor = class_body.walk();
-    for child in class_body.named_children(&mut cursor) {
+    for child in type_body_member_nodes(type_body) {
         if child.kind() != "method_declaration" {
             continue;
         }
@@ -330,6 +326,31 @@ fn discover_test_methods(
 
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+fn is_type_declaration_kind(kind: &str) -> bool {
+    matches!(kind, "class_declaration" | "record_declaration" | "enum_declaration")
+}
+
+fn type_declaration_body(node: Node<'_>) -> Option<Node<'_>> {
+    node.child_by_field_name("body")
+        .or_else(|| find_named_child(node, "class_body"))
+        .or_else(|| find_named_child(node, "enum_body"))
+}
+
+fn type_body_member_nodes<'a>(type_body: Node<'a>) -> Vec<Node<'a>> {
+    let mut out = Vec::new();
+    let mut cursor = type_body.walk();
+    for child in type_body.named_children(&mut cursor) {
+        if child.kind() == "enum_body_declarations" {
+            let mut inner_cursor = child.walk();
+            out.extend(child.named_children(&mut inner_cursor));
+            continue;
+        }
+
+        out.push(child);
+    }
+    out
 }
 
 #[derive(Clone, Debug, Default)]

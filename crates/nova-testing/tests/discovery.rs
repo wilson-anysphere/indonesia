@@ -155,6 +155,102 @@ fn handles_wildcard_imports_and_utf16_ranges() {
 }
 
 #[test]
+fn discovers_tests_in_record_and_enum_declarations() {
+    let root = fixture_root("edgecases-junit5");
+    let resp = discover_tests(&TestDiscoverRequest {
+        project_root: root.to_string_lossy().to_string(),
+    })
+    .unwrap();
+
+    let record = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "com.example.RecordContainerTest")
+        .unwrap();
+    assert_eq!(record.kind, TestKind::Class);
+    assert_eq!(record.framework, TestFramework::Junit5);
+    assert_eq!(
+        record.path,
+        "src/test/java/com/example/RecordContainerTest.java"
+    );
+    assert_eq!(
+        record
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["com.example.RecordContainerTest#worksInRecord"]
+    );
+
+    let enum_test = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "com.example.EnumContainerTest")
+        .unwrap();
+    assert_eq!(enum_test.kind, TestKind::Class);
+    assert_eq!(enum_test.framework, TestFramework::Junit5);
+    assert_eq!(enum_test.path, "src/test/java/com/example/EnumContainerTest.java");
+    assert_eq!(
+        enum_test
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["com.example.EnumContainerTest#worksInEnum"]
+    );
+
+    let nested = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "com.example.TypeDeclarationContainer")
+        .unwrap();
+    assert_eq!(
+        nested.path,
+        "src/test/java/com/example/TypeDeclarationContainer.java"
+    );
+
+    let nested_enum = nested
+        .children
+        .iter()
+        .find(|t| t.id == "com.example.TypeDeclarationContainer$NestedEnum")
+        .unwrap();
+    assert_eq!(nested_enum.kind, TestKind::Class);
+    assert_eq!(nested_enum.framework, TestFramework::Junit5);
+    assert_eq!(
+        nested_enum.path,
+        "src/test/java/com/example/TypeDeclarationContainer.java"
+    );
+    assert_eq!(
+        nested_enum
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["com.example.TypeDeclarationContainer$NestedEnum#worksInNestedEnum"]
+    );
+
+    let nested_record = nested
+        .children
+        .iter()
+        .find(|t| t.id == "com.example.TypeDeclarationContainer$NestedRecord")
+        .unwrap();
+    assert_eq!(nested_record.kind, TestKind::Class);
+    assert_eq!(nested_record.framework, TestFramework::Junit5);
+    assert_eq!(
+        nested_record.path,
+        "src/test/java/com/example/TypeDeclarationContainer.java"
+    );
+    assert_eq!(
+        nested_record
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["com.example.TypeDeclarationContainer$NestedRecord#worksInNestedRecord"]
+    );
+}
+
+#[test]
 fn incremental_discovery_reflects_changed_and_deleted_files() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
