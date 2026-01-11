@@ -62,6 +62,7 @@ Nova has resilience features to keep the language server responsive even if a re
 - **Memory pressure**
   - The extension shows a **“Nova Mem: …”** status bar item with the current memory pressure level (Low/Medium/High/Critical).
   - When pressure becomes High/Critical, the extension shows a one-time warning with an action to create a bug report.
+  - When pressure is High/Critical, the status bar item becomes highlighted and can be clicked to create a bug report.
 
 ## Test Explorer
 

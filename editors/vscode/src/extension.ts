@@ -713,13 +713,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
   context.subscriptions.push(
     vscode.commands.registerCommand(BUG_REPORT_COMMAND, async () => {
-      const reproduction = await promptForBugReportReproduction();
-      if (reproduction === undefined) {
-        return;
-      }
-
       try {
         const c = await requireClient();
+
+        const reproduction = await promptForBugReportReproduction();
+        if (reproduction === undefined) {
+          return;
+        }
+
         const params: { reproduction?: string } = {};
         if (reproduction.trim().length > 0) {
           params.reproduction = reproduction;
