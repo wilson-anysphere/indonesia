@@ -96,6 +96,7 @@ def extract_vscode_methods() -> set[str]:
     # We exclude a small allowlist of known non-method strings used for error matching.
     ignore = {
         "nova/bugreport",  # substring match for the safe-mode error message
+        "nova/refactor/preview",  # response `type` tag for safe delete previews
     }
 
     methods: set[str] = set()
