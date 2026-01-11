@@ -7,6 +7,7 @@ edition = "2021"
 nova-core = { path = "../nova-core" }
 nova-classfile = { path = "../nova-classfile" }
 nova-modules = { path = "../nova-modules" }
+nova-process = { path = "../nova-process" }
 nova-types = { path = "../nova-types" }
 bincode = "1.3.3"
 serde = { version = "1.0", features = ["derive"] }

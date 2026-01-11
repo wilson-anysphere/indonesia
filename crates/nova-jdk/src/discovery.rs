@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 use nova_core::JdkConfig;
+use nova_process::{run_command, RunOptions};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,15 +73,23 @@ fn discover_from_java_on_path() -> Option<PathBuf> {
 }
 
 fn discover_from_java_command() -> Option<PathBuf> {
-    let output = Command::new("java")
-        .args(["-XshowSettings:properties", "-version"])
-        .output()
-        .ok()?;
+    let args: Vec<String> = vec![
+        "-XshowSettings:properties".to_string(),
+        "-version".to_string(),
+    ];
+    let opts = RunOptions {
+        // JDK discovery should not hang the language server. `java -version` should return nearly
+        // immediately on a healthy install; if it doesn't, skip this probe.
+        timeout: Some(Duration::from_secs(5)),
+        // HotSpot prints a modest amount of config data; keep a conservative cap anyway.
+        max_bytes: 1024 * 1024,
+    };
+    let output = run_command(Path::new("."), Path::new("java"), &args, opts).ok()?;
+    if output.timed_out {
+        return None;
+    }
 
-    // HotSpot prints settings to stderr, but we accept both.
-    let mut combined = String::new();
-    combined.push_str(&String::from_utf8_lossy(&output.stdout));
-    combined.push_str(&String::from_utf8_lossy(&output.stderr));
+    let combined = output.output.combined();
 
     let java_home = combined.lines().find_map(|line| {
         let line = line.trim();

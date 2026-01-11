@@ -3825,6 +3825,7 @@ dependencies = [
  "nova-config",
  "nova-core",
  "nova-modules",
+ "nova-process",
  "nova-types",
  "once_cell",
  "serde",
