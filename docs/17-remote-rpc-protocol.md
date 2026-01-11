@@ -82,8 +82,14 @@ There are two distinct guards:
 2. **Post-handshake guard**:
    - After a successful handshake, the negotiated limit is
      `chosen_capabilities.max_frame_len` (see §4.4).
-   - If `length > chosen_capabilities.max_frame_len`, the receiver MUST treat this as a protocol
-     violation and close the connection.
+    - If `length > chosen_capabilities.max_frame_len`, the receiver MUST treat this as a protocol
+      violation and close the connection.
+
+Suggested defaults (informative):
+
+- Pre-handshake max frame length: **64 KiB**.
+- Post-handshake max frame length: `chosen_capabilities.max_frame_len` (default offer is **64 MiB**
+  in `nova_remote_proto::v3`).
 
 ### 2.3 Frame parsing requirements
 
