@@ -41,17 +41,12 @@ impl ArtifactKind {
 }
 
 /// Payload compression.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum Compression {
+    #[default]
     None = 0,
     Zstd = 1,
-}
-
-impl Default for Compression {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 impl Compression {

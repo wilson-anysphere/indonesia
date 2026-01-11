@@ -248,7 +248,7 @@ where
 
         let required = std::mem::align_of::<rkyv::Archived<T>>();
         let got = payload.as_ptr() as usize;
-        if got % required != 0 {
+        if !got.is_multiple_of(required) {
             return Err(StorageError::Misaligned { required, got });
         }
 
