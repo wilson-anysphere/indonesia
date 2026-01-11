@@ -119,6 +119,7 @@ jobs:
           PY
 
       - name: Upload coverage artifacts
+        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: coverage
@@ -128,3 +129,12 @@ jobs:
             lcov.info
             coverage-report.txt
             target/llvm-cov/html
+
+      - name: Artifact link
+        run: |
+          {
+            echo
+            echo "### Artifacts"
+            echo
+            echo "- [coverage](${{ steps.upload.outputs.artifact-url }})"
+          } >> "$GITHUB_STEP_SUMMARY"
