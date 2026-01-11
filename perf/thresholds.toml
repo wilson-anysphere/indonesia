@@ -3,7 +3,7 @@
 allow_regressions = []
 
 [default]
-# Performance is a feature: fail CI when critical paths regress.
+# Performance is a feature: fail CI when editor-critical benchmarks regress.
 #
 # Thresholds are expressed as fractional regression (e.g. 0.10 = +10% slower).
 p50_regression = 0.10
