@@ -157,6 +157,9 @@ fn location_from_path_and_span(
 }
 
 fn cursor_inside_jpql_string(java_source: &str, cursor: usize) -> bool {
+    if !(java_source.contains("@Query") || java_source.contains("@NamedQuery")) {
+        return false;
+    }
     nova_framework_jpa::extract_jpql_strings(java_source)
         .into_iter()
         .any(|(_, lit_span)| {
