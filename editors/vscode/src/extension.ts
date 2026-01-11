@@ -275,6 +275,29 @@ export async function activate(context: vscode.ExtensionContext) {
     await vscode.workspace.getConfiguration('nova').update('dap.path', value, vscode.ConfigurationTarget.Global);
   };
 
+  const clearSettingAtAllTargets = async (key: string): Promise<void> => {
+    const config = vscode.workspace.getConfiguration('nova');
+    const inspected = config.inspect(key);
+    if (inspected) {
+      if (typeof inspected.workspaceValue !== 'undefined') {
+        await config.update(key, undefined, vscode.ConfigurationTarget.Workspace);
+      }
+      if (typeof inspected.globalValue !== 'undefined') {
+        await config.update(key, undefined, vscode.ConfigurationTarget.Global);
+      }
+    } else {
+      await config.update(key, undefined, vscode.ConfigurationTarget.Global);
+    }
+
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      const folderConfig = vscode.workspace.getConfiguration('nova', folder.uri);
+      const folderInspected = folderConfig.inspect(key);
+      if (folderInspected && typeof folderInspected.workspaceFolderValue !== 'undefined') {
+        await folderConfig.update(key, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+      }
+    }
+  };
+
   const extensionVersion = getExtensionVersion(context);
 
   const readDownloadMode = (): DownloadMode => {
@@ -569,7 +592,7 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
       if (choice === 'Clear and Install') {
-        await setServerPath(null);
+        await clearSettingAtAllTargets('server.path');
         settings = { ...settings, path: null };
       }
     }
@@ -833,12 +856,10 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
       if (choice === 'Clear and Install') {
-        await setDapPath(null);
+        await clearSettingAtAllTargets('dap.path');
         // Clear the legacy `nova.debug.adapterPath` setting as well if present, otherwise it can
         // keep overriding the managed download.
-        await vscode.workspace
-          .getConfiguration('nova')
-          .update('debug.adapterPath', undefined, vscode.ConfigurationTarget.Global);
+        await clearSettingAtAllTargets('debug.adapterPath');
         settings = { ...settings, path: null };
       }
     }
@@ -978,7 +999,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     await setDapPath(dapPath);
     // Clear legacy config key so the new setting is the single source of truth.
-    await vscode.workspace.getConfiguration('nova').update('debug.adapterPath', undefined, vscode.ConfigurationTarget.Global);
+    await clearSettingAtAllTargets('debug.adapterPath');
     vscode.window.showInformationMessage(`Nova: Using nova-dap from ${dapPath}`);
   }
 
@@ -1086,7 +1107,7 @@ export async function activate(context: vscode.ExtensionContext) {
         } else if (choice === 'Use Local Server Binary...') {
           await useLocalServerBinary();
         } else if (choice === 'Clear Setting') {
-          await setServerPath(null);
+          await clearSettingAtAllTargets('server.path');
           continue;
         }
         return;
