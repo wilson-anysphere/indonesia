@@ -443,7 +443,9 @@ fn parse_local_type_declaration_statement() {
         .find(|n| n.kind() == SyntaxKind::LocalTypeDeclarationStatement)
         .expect("expected LocalTypeDeclarationStatement");
     assert!(
-        local_stmt.children().any(|n| n.kind() == SyntaxKind::ClassDeclaration),
+        local_stmt
+            .children()
+            .any(|n| n.kind() == SyntaxKind::ClassDeclaration),
         "expected local type declaration to contain a class declaration"
     );
 }

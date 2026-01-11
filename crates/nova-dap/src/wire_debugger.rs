@@ -625,11 +625,7 @@ impl Debugger {
                         }
                         match cancellable_jdwp(
                             cancel,
-                            self.jdwp.event_request_set(
-                                2,
-                                suspend_policy,
-                                modifiers,
-                            ),
+                            self.jdwp.event_request_set(2, suspend_policy, modifiers),
                         )
                         .await
                         {

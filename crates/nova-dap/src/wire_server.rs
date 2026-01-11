@@ -2373,9 +2373,7 @@ fn spawn_event_task(
                             Some(BreakpointDisposition::Continue)
                         ) && !is_logpoint
                         {
-                            let _ = dbg
-                                .continue_(&server_shutdown, Some(*thread as i64))
-                                .await;
+                            let _ = dbg.continue_(&server_shutdown, Some(*thread as i64)).await;
                         }
                     }
                 }

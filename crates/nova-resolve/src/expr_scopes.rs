@@ -165,9 +165,7 @@ impl Builder {
                 scope
             }
             Stmt::Let {
-                local,
-                initializer,
-                ..
+                local, initializer, ..
             } => {
                 // Java: local is in scope within its initializer.
                 let let_scope = self.alloc_scope(Some(scope));

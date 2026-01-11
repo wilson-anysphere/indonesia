@@ -1514,7 +1514,10 @@ impl<'a> Parser<'a> {
         self.expect(SyntaxKind::LParen, "expected `(` after switch");
         self.parse_expression(0);
         self.expect(SyntaxKind::RParen, "expected `)` after switch selector");
-        self.parse_switch_block(StatementContext::SwitchExpression, SwitchContext::Expression);
+        self.parse_switch_block(
+            StatementContext::SwitchExpression,
+            SwitchContext::Expression,
+        );
         self.builder.finish_node(); // SwitchExpression
     }
 

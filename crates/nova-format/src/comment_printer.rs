@@ -239,4 +239,3 @@ fn trim_indent<'a>(line: &'a str, indent: usize) -> &'a str {
 
     &line[byte_idx..]
 }
-

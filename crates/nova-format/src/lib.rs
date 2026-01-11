@@ -6,8 +6,8 @@
 //!
 //! Formatting is deterministic and should never panic on malformed input.
 
-pub mod comments;
 pub mod comment_printer;
+pub mod comments;
 
 use nova_core::{Position, Range, TextEdit, TextRange, TextSize};
 use nova_syntax::{SyntaxKind, SyntaxTree};
