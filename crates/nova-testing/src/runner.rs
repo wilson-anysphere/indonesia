@@ -655,6 +655,7 @@ fn capture_stream(mut reader: impl std::io::Read) -> std::io::Result<Vec<u8>> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
 
     fn fixture_root(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -731,33 +732,13 @@ mod tests {
         assert!(dirs.contains(&root.join("build/test-results/test")));
     }
 
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(prefix: &str) -> Self {
-            let mut path = std::env::temp_dir();
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            path.push(format!("nova-testing-{prefix}-{unique}"));
-            std::fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
-
     #[test]
     fn falls_back_to_cached_reports_when_reports_are_not_modified_since_cutoff() {
-        let tmp = TempDir::new("cached-reports");
-        let report_dir = tmp.path.join("target/surefire-reports");
+        let tmp: TempDir = tempfile::Builder::new()
+            .prefix("nova-testing-cached-reports")
+            .tempdir()
+            .unwrap();
+        let report_dir = tmp.path().join("target/surefire-reports");
         std::fs::create_dir_all(&report_dir).unwrap();
 
         let report_path = report_dir.join("TEST-com.example.CalculatorTest.xml");
@@ -773,7 +754,7 @@ mod tests {
             .checked_add(Duration::from_secs(60))
             .unwrap();
         let modules = vec![ModuleRoot {
-            root: tmp.path.clone(),
+            root: tmp.path().to_path_buf(),
             rel_path: ".".to_string(),
         }];
         let cases = collect_and_parse_reports_in_dirs(
@@ -874,10 +855,64 @@ mod tests {
 
     #[test]
     fn prefixes_junit_report_results_with_module_paths() {
-        let root = fixture_root("maven-multi-module");
+        let tmp: TempDir = tempfile::Builder::new()
+            .prefix("nova-testing-maven-multi-module")
+            .tempdir()
+            .unwrap();
 
-        let mut cases =
-            collect_and_parse_reports(&root, BuildTool::Maven, None, false, &[]).unwrap();
+        let service_a_root = tmp.path().join("service-a");
+        let service_b_root = tmp.path().join("service-b");
+        let service_a_reports = service_a_root.join("target/surefire-reports");
+        let service_b_reports = service_b_root.join("target/surefire-reports");
+        std::fs::create_dir_all(&service_a_reports).unwrap();
+        std::fs::create_dir_all(&service_b_reports).unwrap();
+
+        let xml = r#"<testsuite name="suite" tests="1" failures="0" errors="0" skipped="0">
+  <testcase classname="com.example.DuplicateTest" name="ok" time="0.001" />
+</testsuite>"#;
+        std::fs::write(
+            service_a_reports.join("TEST-com.example.DuplicateTest.xml"),
+            xml,
+        )
+        .unwrap();
+        std::fs::write(
+            service_b_reports.join("TEST-com.example.DuplicateTest.xml"),
+            xml,
+        )
+        .unwrap();
+
+        let mut modules = vec![
+            ModuleRoot {
+                root: tmp.path().to_path_buf(),
+                rel_path: ".".to_string(),
+            },
+            ModuleRoot {
+                root: service_a_root,
+                rel_path: "service-a".to_string(),
+            },
+            ModuleRoot {
+                root: service_b_root,
+                rel_path: "service-b".to_string(),
+            },
+        ];
+        modules.sort_by(|a, b| {
+            b.root
+                .components()
+                .count()
+                .cmp(&a.root.components().count())
+                .then(a.root.cmp(&b.root))
+        });
+        modules.dedup_by(|a, b| a.root == b.root);
+
+        let mut cases = collect_and_parse_reports_in_dirs(
+            &[service_a_reports, service_b_reports],
+            None,
+            false,
+            &[],
+            &modules,
+            true,
+        )
+        .unwrap();
         cases.sort_by(|a, b| a.id.cmp(&b.id));
 
         assert_eq!(cases.len(), 2);
