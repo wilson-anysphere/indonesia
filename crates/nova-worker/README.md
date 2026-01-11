@@ -148,7 +148,7 @@ Common failures:
   - `unknown shard <id>`
   - `shard <id> already has a connected worker`
 - **Version mismatch**: if the worker and router are built from incompatible versions, the worker
-  may fail with an `unexpected router hello` message (protocol version mismatch).
+  may fail with a `router hello protocol version mismatch` error.
 
 ### Handshake rejected (v3)
 
