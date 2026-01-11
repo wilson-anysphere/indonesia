@@ -204,7 +204,7 @@ Field semantics:
 
 - `shard_id`: the shard this worker wants to own/serve. The router is authoritative for shard
   assignment/authorization (see ADR 0008).
-- `auth_token`: optional bearer token (see §4.6).
+- `auth_token`: optional bearer token (see §4.7).
 - `supported_versions`: inclusive `[min, max]` range of protocol versions the worker can speak.
 - `cached_index_info`: optional metadata describing a locally cached index, without sending the full
   index in the handshake.
