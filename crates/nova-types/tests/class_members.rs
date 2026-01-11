@@ -142,14 +142,14 @@ fn resolves_constructor_overloads_from_loaded_stub_class() {
         .load_from_provider(&provider, "com.example.Ctors")
         .expect("Ctors stub should load");
 
-    let MethodResolution::Found(res) = resolve_constructor_call(&mut env, class, &[], None) else {
+    let MethodResolution::Found(res) = resolve_constructor_call(&env, class, &[], None) else {
         panic!("expected constructor resolution");
     };
     assert_eq!(res.params, vec![]);
     assert!(!res.is_varargs);
 
     let MethodResolution::Found(res) =
-        resolve_constructor_call(&mut env, class, &[Type::int()], None)
+        resolve_constructor_call(&env, class, &[Type::int()], None)
     else {
         panic!("expected constructor resolution");
     };
@@ -157,7 +157,7 @@ fn resolves_constructor_overloads_from_loaded_stub_class() {
     assert!(!res.is_varargs);
 
     let MethodResolution::Found(res) =
-        resolve_constructor_call(&mut env, class, &[Type::int(), Type::int()], None)
+        resolve_constructor_call(&env, class, &[Type::int(), Type::int()], None)
     else {
         panic!("expected constructor resolution");
     };

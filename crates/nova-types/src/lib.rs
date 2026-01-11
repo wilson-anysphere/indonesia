@@ -2728,7 +2728,7 @@ fn resolve_method_call_impl(
 }
 
 pub fn resolve_constructor_call(
-    env: &mut TypeStore,
+    env: &dyn TypeEnv,
     class: ClassId,
     args: &[Type],
     expected: Option<&Type>,
@@ -2754,8 +2754,7 @@ pub fn resolve_constructor_call(
         explicit_type_args: vec![],
     };
 
-    let env_ro: &TypeStore = &*env;
-    let Some(class_def) = env_ro.class(class) else {
+    let Some(class_def) = env.class(class) else {
         return MethodResolution::NotFound(MethodNotFound {
             receiver: call.receiver.clone(),
             name: call.name.to_string(),
@@ -2832,7 +2831,7 @@ pub fn resolve_constructor_call(
         let mut applicable: Vec<ResolvedMethod> = Vec::new();
 
         for (idx, cand) in candidates.iter().enumerate() {
-            match check_applicability(env_ro, cand, &call, phase) {
+            match check_applicability(env, cand, &call, phase) {
                 Ok(resolved) => applicable.push(resolved),
                 Err(reason) => diagnostics[idx]
                     .failures
@@ -2845,8 +2844,8 @@ pub fn resolve_constructor_call(
         }
 
         let mut ranked = applicable;
-        rank_resolved_methods(env_ro, &call, &mut ranked);
-        return match pick_best_method(env_ro, &call, &ranked, call.args.len()) {
+        rank_resolved_methods(env, &call, &mut ranked);
+        return match pick_best_method(env, &call, &ranked, call.args.len()) {
             Some(best_idx) => MethodResolution::Found(ranked.swap_remove(best_idx)),
             None => MethodResolution::Ambiguous(MethodAmbiguity {
                 phase,
