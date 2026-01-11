@@ -36,7 +36,7 @@ pub trait SemanticSearch: Send + Sync {
 /// When embeddings are enabled in config but the crate is built without the
 /// `embeddings` feature, this falls back to [`TrigramSemanticSearch`].
 pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn SemanticSearch> {
-    if !config.features.semantic_search {
+    if !(config.enabled && config.features.semantic_search) {
         return Box::new(NoopSemanticSearch);
     }
 

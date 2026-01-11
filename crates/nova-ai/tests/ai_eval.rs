@@ -206,7 +206,6 @@ fn patch_safety_rejects_new_imports_when_configured() {
 
 #[test]
 fn patch_safety_enforces_file_and_size_limits() {
-    let ws = VirtualWorkspace::default();
     let raw_patch = r#"
 {
   "edits": [
@@ -225,6 +224,8 @@ fn patch_safety_enforces_file_and_size_limits() {
 "#;
     let patch = parse_structured_patch(raw_patch).expect("parse patch");
 
+    let ws = VirtualWorkspace::default();
+
     let mut cfg = PatchSafetyConfig::default();
     cfg.max_files = 1;
     let err = enforce_patch_safety(&patch, &ws, &cfg).expect_err("should reject too many files");
@@ -232,8 +233,8 @@ fn patch_safety_enforces_file_and_size_limits() {
 
     let mut cfg = PatchSafetyConfig::default();
     cfg.max_total_inserted_chars = 4;
-    let err =
-        enforce_patch_safety(&patch, &ws, &cfg).expect_err("should reject patch that inserts too much");
+    let err = enforce_patch_safety(&patch, &ws, &cfg)
+        .expect_err("should reject patch that inserts too much");
     assert!(matches!(err, SafetyError::TooManyInsertedChars { .. }));
 }
 

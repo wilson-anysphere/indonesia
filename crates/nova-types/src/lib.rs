@@ -1256,7 +1256,9 @@ pub fn is_subtype(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
         }
 
         // Every class/interface type is a subtype of `Object` (JLS 4.10.2).
-        (Type::Class(_), Type::Class(ClassType { def, .. })) if *def == env.well_known().object => true,
+        (Type::Class(_), Type::Class(ClassType { def, .. })) if *def == env.well_known().object => {
+            true
+        }
 
         (Type::Intersection(types), other) => types.iter().any(|t| is_subtype(env, t, other)),
 
@@ -1928,8 +1930,12 @@ fn type_sort_key(env: &dyn TypeEnv, ty: &Type) -> String {
         Type::VirtualInner { owner, name } => format!("virtual:{}:{name}", owner.0),
         Type::Array(elem) => format!("{}[]", type_sort_key(env, elem)),
         Type::Wildcard(WildcardBound::Unbounded) => "?".to_string(),
-        Type::Wildcard(WildcardBound::Extends(upper)) => format!("? extends {}", type_sort_key(env, upper)),
-        Type::Wildcard(WildcardBound::Super(lower)) => format!("? super {}", type_sort_key(env, lower)),
+        Type::Wildcard(WildcardBound::Extends(upper)) => {
+            format!("? extends {}", type_sort_key(env, upper))
+        }
+        Type::Wildcard(WildcardBound::Super(lower)) => {
+            format!("? super {}", type_sort_key(env, lower))
+        }
         Type::Class(ClassType { def, args }) => {
             let mut out = env
                 .class(*def)
@@ -1976,11 +1982,16 @@ fn make_intersection(env: &dyn TypeEnv, types: Vec<Type>) -> Type {
         return uniq.into_iter().next().unwrap();
     }
 
-    uniq.sort_by(|a, b| type_sort_key(env, a).cmp(&type_sort_key(env, b)));
+    uniq.sort_by_cached_key(|a| type_sort_key(env, a));
     Type::Intersection(uniq)
 }
 
-fn lub_same_generic_class(env: &dyn TypeEnv, def: ClassId, a_args: &[Type], b_args: &[Type]) -> Type {
+fn lub_same_generic_class(
+    env: &dyn TypeEnv,
+    def: ClassId,
+    a_args: &[Type],
+    b_args: &[Type],
+) -> Type {
     // Raw types behave like erasure: any instantiation is a subtype of the raw form,
     // and the raw form is the most useful LUB for IDE recovery.
     if is_raw_class(env, def, a_args) || is_raw_class(env, def, b_args) {
@@ -2011,7 +2022,11 @@ fn lub_same_generic_class(env: &dyn TypeEnv, def: ClassId, a_args: &[Type], b_ar
     Type::class(def, out_args)
 }
 
-fn collect_class_supertypes(env: &dyn TypeEnv, start_def: ClassId, start_args: Vec<Type>) -> HashMap<ClassId, Type> {
+fn collect_class_supertypes(
+    env: &dyn TypeEnv,
+    start_def: ClassId,
+    start_args: Vec<Type>,
+) -> HashMap<ClassId, Type> {
     let mut bucket: HashMap<ClassId, Vec<Type>> = HashMap::new();
     let mut queue = VecDeque::new();
     let mut seen = HashSet::new();
@@ -2025,7 +2040,10 @@ fn collect_class_supertypes(env: &dyn TypeEnv, start_def: ClassId, start_args: V
             continue;
         }
 
-        bucket.entry(def).or_default().push(Type::class(def, args.clone()));
+        bucket
+            .entry(def)
+            .or_default()
+            .push(Type::class(def, args.clone()));
 
         let Some(class_def) = env.class(def) else {
             continue;
@@ -2053,10 +2071,21 @@ fn collect_class_supertypes(env: &dyn TypeEnv, start_def: ClassId, start_args: V
     // (This is rare in practice but can happen in incomplete/erroneous environments.)
     let mut out = HashMap::new();
     for (def, insts) in bucket {
-        let mut rep = insts.first().cloned().unwrap_or_else(|| Type::class(def, vec![]));
+        let mut rep = insts
+            .first()
+            .cloned()
+            .unwrap_or_else(|| Type::class(def, vec![]));
         for t in insts.iter().skip(1) {
-            let (Type::Class(ClassType { def: a_def, args: a_args }), Type::Class(ClassType { def: b_def, args: b_args })) =
-                (&rep, t)
+            let (
+                Type::Class(ClassType {
+                    def: a_def,
+                    args: a_args,
+                }),
+                Type::Class(ClassType {
+                    def: b_def,
+                    args: b_args,
+                }),
+            ) = (&rep, t)
             else {
                 continue;
             };
@@ -2172,7 +2201,7 @@ fn lub_via_supertypes(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
         return minimals.pop().unwrap();
     }
 
-    minimals.sort_by(|a, b| type_sort_key(env, a).cmp(&type_sort_key(env, b)));
+    minimals.sort_by_cached_key(|a| type_sort_key(env, a));
     make_intersection(env, minimals)
 }
 
@@ -2219,11 +2248,16 @@ pub fn lub(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
                 make_intersection(env, vec![cloneable, serializable])
             }
         }
-        (Type::Class(ClassType { def: a_def, args: a_args }), Type::Class(ClassType { def: b_def, args: b_args }))
-            if a_def == b_def =>
-        {
-            lub_same_generic_class(env, *a_def, a_args, b_args)
-        }
+        (
+            Type::Class(ClassType {
+                def: a_def,
+                args: a_args,
+            }),
+            Type::Class(ClassType {
+                def: b_def,
+                args: b_args,
+            }),
+        ) if a_def == b_def => lub_same_generic_class(env, *a_def, a_args, b_args),
         _ => lub_via_supertypes(env, &a, &b),
     }
 }
@@ -2427,7 +2461,7 @@ pub fn resolve_constructor_call(
         .type_params
         .iter()
         .copied()
-        .zip(receiver_args.into_iter())
+        .zip(receiver_args)
         .collect::<HashMap<_, _>>();
 
     let candidates: Vec<CandidateMethod> = class_def

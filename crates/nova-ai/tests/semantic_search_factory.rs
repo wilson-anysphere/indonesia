@@ -35,6 +35,7 @@ fn semantic_search_from_config_respects_feature_flag() {
     )]);
 
     let cfg = AiConfig {
+        enabled: true,
         embeddings: AiEmbeddingsConfig {
             enabled: true,
             ..AiEmbeddingsConfig::default()
