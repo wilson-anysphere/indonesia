@@ -39,6 +39,7 @@ pub mod extract_method;
 
 mod edit;
 mod java_semantic;
+mod java_tree_sitter_db;
 mod lsp;
 mod materialize;
 mod preview;
@@ -76,7 +77,7 @@ pub use edit::{
     apply_text_edits, apply_workspace_edit, FileId, FileOp, RefactorFileId,
     TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange, WorkspaceEdit,
 };
-pub use java::{InMemoryJavaDatabase, JavaSymbolKind, SymbolId};
+pub use java::{InMemoryJavaDatabase, JavaSymbolKind, SymbolId, TreeSitterJavaDatabase};
 pub use lsp::{
     code_action_for_edit, workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes,
     workspace_edit_to_lsp_document_changes_with_uri_mapper, workspace_edit_to_lsp_with_uri_mapper,

@@ -276,6 +276,7 @@ pub fn list_methods(text: &str, class: &ClassBlock) -> Vec<MethodSig> {
 
 // Semantic refactoring test database / helpers.
 pub use crate::java_semantic::{InMemoryJavaDatabase, JavaSymbolKind, SymbolId};
+pub use crate::java_tree_sitter_db::TreeSitterJavaDatabase;
 use std::ops::Range;
 
 /// Describes a slice of text along with its starting offset.

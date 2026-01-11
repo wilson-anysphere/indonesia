@@ -1,4 +1,6 @@
 **/target/
+target-local/
+.cargo-home/
 .idea/
 .vscode/
 .nova/

@@ -50,7 +50,7 @@ fn converts_messy_class_and_formats_record_members() {
         concat!(
             "public record Point(int x, int y) {\n",
             "    public int sum() {\n",
-            "        return x+y;\n",
+            "        return x + y;\n",
             "    }\n",
             "}\n",
         )

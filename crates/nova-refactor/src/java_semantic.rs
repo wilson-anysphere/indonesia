@@ -8,7 +8,11 @@ use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
 pub struct SymbolId(u32);
 
 impl SymbolId {
-    fn as_usize(self) -> usize {
+    pub(crate) fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    pub(crate) fn as_usize(self) -> usize {
         self.0 as usize
     }
 }
