@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nova_classpath::ModuleAwareClasspathIndex;
-use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeName};
+use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_hir::module_info::{lower_module_info_source_strict, ModuleInfoLowerError};
 use nova_hir::{CompilationUnit, ImportDecl};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
