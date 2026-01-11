@@ -57,6 +57,15 @@ BLESS=1 cargo test -p nova-syntax parse_class_snapshot
 BLESS=1 cargo test -p nova-refactor
 ```
 
+#### Formatter snapshots (`INSTA_UPDATE=always`)
+
+Nova’s formatter tests use `insta` snapshots. To update snapshots:
+
+```bash
+INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
+INSTA_UPDATE=always cargo test -p nova-format --test format_snapshots
+```
+
 #### `javac` differential tests (ignored)
 
 Requires a JDK (`javac` on `PATH`):
