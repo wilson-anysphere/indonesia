@@ -1,5 +1,6 @@
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::path::{Component, Path, PathBuf};
 
 use nova_core::{file_uri_to_path, path_to_file_uri, AbsPathBuf};
 
@@ -49,7 +50,7 @@ impl VfsPath {
         // map to the same `VfsPath`/`FileId`.
         if uri.starts_with("file:") {
             if let Ok(path) = file_uri_to_path(&uri) {
-                return Self::Local(path.into_path_buf());
+                return Self::Local(normalize_local_path(path.as_path()));
             }
         }
         Self::Uri(uri)
@@ -146,6 +147,55 @@ fn normalize_archive_entry(entry: String) -> String {
     }
 }
 
+fn archive_entry_is_safe(entry: &str) -> bool {
+    if entry.contains('\\') || entry.contains("//") {
+        return false;
+    }
+    entry.split('/').all(|segment| segment != "..")
+}
+
+fn normalize_local_path(path: &Path) -> PathBuf {
+    let mut prefix: Option<OsString> = None;
+    let mut has_root = false;
+    let mut stack: Vec<OsString> = Vec::new();
+
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix_component) => {
+                prefix = Some(prefix_component.as_os_str().to_owned());
+            }
+            Component::RootDir => has_root = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(last) = stack.last() {
+                    if last != ".." {
+                        stack.pop();
+                        continue;
+                    }
+                }
+
+                if !has_root {
+                    stack.push(OsString::from(".."));
+                }
+            }
+            Component::Normal(segment) => stack.push(segment.to_owned()),
+        }
+    }
+
+    let mut out = PathBuf::new();
+    match (prefix, has_root) {
+        (Some(mut prefix), true) => {
+            prefix.push(std::path::MAIN_SEPARATOR.to_string());
+            out.push(prefix);
+        }
+        (Some(prefix), false) => out.push(prefix),
+        (None, true) => out.push(std::path::MAIN_SEPARATOR.to_string()),
+        (None, false) => {}
+    }
+    out.extend(stack);
+    out
+}
+
 fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
     let (kind, rest) = if let Some(rest) = uri.strip_prefix("jar:") {
         (ArchiveKind::Jar, rest)
@@ -156,8 +206,12 @@ fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
     };
 
     let (archive_uri, entry) = rest.split_once('!')?;
-    let archive = file_uri_to_path(archive_uri).ok()?.into_path_buf();
+    let archive = file_uri_to_path(archive_uri).ok()?;
+    let archive = normalize_local_path(archive.as_path());
     let entry = normalize_archive_entry(entry.to_string());
+    if !archive_entry_is_safe(&entry) {
+        return None;
+    }
     Some(ArchivePath::new(kind, archive, entry))
 }
 
@@ -194,6 +248,31 @@ mod tests {
         let a = VfsPath::jar(archive_path.clone(), "com\\example\\A.java");
         let b = VfsPath::jar(archive_path, "com/example/A.java");
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn file_uri_paths_are_logically_normalized() {
+        #[cfg(not(windows))]
+        let (uri, expected) = ("file:///a/b/../c.java", PathBuf::from("/a/c.java"));
+
+        #[cfg(windows)]
+        let (uri, expected) = ("file:///C:/a/b/../c.java", PathBuf::from(r"C:\a\c.java"));
+
+        assert_eq!(VfsPath::uri(uri), VfsPath::Local(expected));
+    }
+
+    #[test]
+    fn jar_uris_reject_entry_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("lib.jar");
+        let abs = AbsPathBuf::new(archive_path).unwrap();
+        let archive_uri = path_to_file_uri(&abs).unwrap();
+
+        let uri = format!("jar:{archive_uri}!/../evil.class");
+        assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
+
+        let uri = format!("jar:{archive_uri}!/a/../evil.class");
+        assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
     }
 
     #[cfg(feature = "lsp")]
