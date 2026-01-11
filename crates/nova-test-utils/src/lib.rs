@@ -10,7 +10,7 @@
 //!
 //! ```bash
 //! # Run ignored tests (requires `javac` on PATH)
-//! cargo test -p nova-types -- --ignored
+//! cargo test -p nova-types --test javac_differential -- --ignored
 //! ```
 
 use std::collections::{BTreeMap, HashMap};

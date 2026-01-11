@@ -2,7 +2,8 @@ use nova_test_utils::javac::{javac_available, run_javac_snippet};
 
 /// Differential test harness smoke check.
 ///
-/// These tests are `#[ignore]` by default so CI can run without a JDK.
+/// These tests are `#[ignore]` by default so the default `cargo test` suite (and `.github/workflows/ci.yml`)
+/// can run without a JDK. CI runs them separately in `.github/workflows/javac.yml`.
 #[test]
 #[ignore]
 fn javac_smoke_success() {
