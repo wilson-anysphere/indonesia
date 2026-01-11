@@ -171,6 +171,12 @@ cargo test -p nova-format --test format_fixtures
 cargo test -p nova-format --test format_snapshots
 ```
 
+There is also an ignored large-file regression/stress test:
+
+```bash
+cargo test -p nova-format formats_large_file_regression -- --ignored
+```
+
 ---
 
 ### 3) Protocol E2E tests
