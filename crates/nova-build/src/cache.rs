@@ -196,13 +196,18 @@ impl BuildCache {
                 path: path.clone(),
                 source: io::Error::new(io::ErrorKind::Other, "path has no parent"),
             })?;
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
         let (tmp_path, mut file) =
             open_unique_tmp_file(&path, parent).map_err(|source| CacheError::Write {
                 path: path.clone(),
                 source,
             })?;
 
-        if let Err(source) = file.write_all(&bytes) {
+        if let Err(source) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
             drop(file);
             let _ = fs::remove_file(&tmp_path);
             return Err(CacheError::Write {
@@ -219,7 +224,10 @@ impl BuildCache {
             loop {
                 match fs::rename(&tmp_path, &path) {
                     Ok(()) => return Ok(()),
-                    Err(err) if err.kind() == io::ErrorKind::AlreadyExists || path.exists() => {
+                    Err(err)
+                        if cfg!(windows)
+                            && (err.kind() == io::ErrorKind::AlreadyExists || path.exists()) =>
+                    {
                         // On Windows, `rename` doesn't overwrite. Under concurrent writers,
                         // multiple `remove + rename` sequences can race; retry until we win.
                         match fs::remove_file(&path) {
@@ -247,6 +255,11 @@ impl BuildCache {
                 source,
             }
             .into());
+        }
+
+        #[cfg(unix)]
+        {
+            let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
         }
 
         Ok(())

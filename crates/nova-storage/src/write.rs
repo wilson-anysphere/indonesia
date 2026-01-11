@@ -143,7 +143,12 @@ where
                     validate_written_file(&tmp_path, &header)?;
                 }
 
-                rename_overwrite(&tmp_path, path).map_err(StorageError::from)
+                rename_overwrite(&tmp_path, path).map_err(StorageError::from)?;
+                #[cfg(unix)]
+                {
+                    let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
+                }
+                Ok(())
             }
             SelectedCompression::Zstd { level } => {
                 drop(file);
@@ -151,13 +156,12 @@ where
                 let (compressed_path, compressed_file) = open_unique_tmp_file(path, parent)?;
 
                 let compressed_result = (|| -> Result<(), StorageError> {
-                    let (mut compressed_file, payload_len, content_hash) =
-                        compress_uncompressed_tmp(
-                            &tmp_path,
-                            compressed_file,
-                            uncompressed_len,
-                            level,
-                        )?;
+                    let (mut compressed_file, payload_len, content_hash) = compress_uncompressed_tmp(
+                        &tmp_path,
+                        compressed_file,
+                        uncompressed_len,
+                        level,
+                    )?;
 
                     let header = StorageHeader::new(
                         kind,
@@ -188,6 +192,10 @@ where
                     return Err(err);
                 }
 
+                #[cfg(unix)]
+                {
+                    let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
+                }
                 Ok(())
             }
         }
@@ -407,7 +415,11 @@ fn rename_overwrite(tmp_path: &Path, dest: &Path) -> io::Result<()> {
             {
                 // On Windows, `rename` doesn't overwrite. Under concurrent writers,
                 // multiple `remove + rename` sequences can race; retry until we win.
-                let _ = fs::remove_file(dest);
+                match fs::remove_file(dest) {
+                    Ok(()) => {}
+                    Err(remove_err) if remove_err.kind() == io::ErrorKind::NotFound => {}
+                    Err(remove_err) => return Err(remove_err),
+                }
 
                 attempts += 1;
                 if attempts >= MAX_RENAME_ATTEMPTS {

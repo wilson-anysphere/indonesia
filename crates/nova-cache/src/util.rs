@@ -115,7 +115,13 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
     })();
 
     match rename_result {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            #[cfg(unix)]
+            {
+                let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
+            }
+            Ok(())
+        }
         Err(err) => {
             let _ = fs::remove_file(&tmp_path);
             Err(CacheError::from(err))

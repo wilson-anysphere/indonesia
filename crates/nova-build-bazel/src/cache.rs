@@ -143,9 +143,14 @@ impl BazelCache {
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "path has no parent"))?;
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
 
         let (tmp_path, mut file) = open_unique_tmp_file(path, parent)?;
-        if let Err(err) = file.write_all(data.as_bytes()) {
+        if let Err(err) = file.write_all(data.as_bytes()).and_then(|()| file.sync_all()) {
             drop(file);
             let _ = fs::remove_file(&tmp_path);
             return Err(err.into());
@@ -160,8 +165,15 @@ impl BazelCache {
             loop {
                 match fs::rename(&tmp_path, path) {
                     Ok(()) => return Ok(()),
-                    Err(err) if err.kind() == io::ErrorKind::AlreadyExists || path.exists() => {
-                        let _ = fs::remove_file(path);
+                    Err(err)
+                        if cfg!(windows)
+                            && (err.kind() == io::ErrorKind::AlreadyExists || path.exists()) =>
+                    {
+                        match fs::remove_file(path) {
+                            Ok(()) => {}
+                            Err(remove_err) if remove_err.kind() == io::ErrorKind::NotFound => {}
+                            Err(remove_err) => return Err(remove_err),
+                        }
 
                         attempts += 1;
                         if attempts >= MAX_RENAME_ATTEMPTS {
@@ -178,6 +190,11 @@ impl BazelCache {
         if let Err(err) = rename_result {
             let _ = fs::remove_file(&tmp_path);
             return Err(err.into());
+        }
+
+        #[cfg(unix)]
+        {
+            let _ = fs::File::open(parent).and_then(|dir| dir.sync_all());
         }
 
         Ok(())
