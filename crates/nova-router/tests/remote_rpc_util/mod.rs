@@ -79,7 +79,10 @@ where
 fn should_fallback_to_legacy_v2(err: &RpcTransportError) -> bool {
     match err {
         RpcTransportError::HandshakeFailed { message } => {
-            message.contains("UnsupportedVersion") || message.contains("legacy_v2")
+            // Legacy v2 routers may still send a v3 Reject frame for forward compatibility.
+            // Only fall back when the diagnostic clearly indicates the router is `legacy_v2`;
+            // an UnsupportedVersion from a real v3 router should remain a hard failure.
+            message.contains("legacy_v2")
         }
         // Old routers may simply close or send non-v3 bytes.
         RpcTransportError::DecodeError { .. } | RpcTransportError::Io { .. } => true,
