@@ -2553,7 +2553,16 @@ pub struct MethodCall<'a> {
 pub struct ResolvedMethod {
     pub owner: ClassId,
     pub name: String,
+    /// Effective parameter types for the selected invocation (one per argument).
+    ///
+    /// For varargs methods invoked in variable-arity form, this list is expanded so it
+    /// matches the call-site arity.
     pub params: Vec<Type>,
+    /// Parameter types as they appear in the declared signature.
+    ///
+    /// For varargs methods this preserves the trailing array type so pretty-printers can render
+    /// `T...` rather than showing an expanded argument pattern.
+    pub signature_params: Vec<Type>,
     pub return_type: Type,
     pub is_varargs: bool,
     pub is_static: bool,
@@ -3103,6 +3112,11 @@ fn try_method_invocation(
         .zip(inferred_type_args.iter().cloned())
         .collect();
 
+    let signature_params: Vec<Type> = base_params
+        .iter()
+        .map(|t| substitute(t, &method_subst))
+        .collect();
+
     // Validate inferred/explicit type arguments against the declared bounds.
     let object = Type::class(env.well_known().object, vec![]);
     for (tv, ty_arg) in method
@@ -3173,6 +3187,7 @@ fn try_method_invocation(
         owner,
         name: method.name.clone(),
         params: effective_params,
+        signature_params,
         return_type,
         is_varargs: method.is_varargs,
         is_static: method.is_static,

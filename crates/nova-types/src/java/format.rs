@@ -215,7 +215,7 @@ fn fmt_resolved_method(
         f.write_char(' ')?;
         f.write_str(&method.name)?;
     }
-    fmt_param_list(env, &method.params, method.is_varargs, f)
+    fmt_param_list(env, &method.signature_params, method.is_varargs, f)
 }
 
 fn fmt_type_param_list(

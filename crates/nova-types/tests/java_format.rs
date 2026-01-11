@@ -1,6 +1,7 @@
 use nova_types::{
-    format_method_signature, format_resolved_method, format_type, ClassDef, ClassKind, MethodDef,
-    MethodSearchPhase, ResolvedMethod, Type, TypeEnv, TypeStore, WildcardBound,
+    format_method_signature, format_resolved_method, format_type, resolve_method_call, CallKind,
+    ClassDef, ClassKind, MethodCall, MethodDef, MethodResolution, MethodSearchPhase,
+    ResolvedMethod, Type, TypeEnv, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -132,6 +133,7 @@ fn formats_varargs_and_generic_methods() {
         owner: test_owner,
         name: "max".to_string(),
         params: vec![Type::class(string, vec![]), Type::class(string, vec![])],
+        signature_params: vec![Type::class(string, vec![]), Type::class(string, vec![])],
         return_type: Type::class(string, vec![]),
         is_varargs: false,
         is_static: true,
@@ -145,5 +147,54 @@ fn formats_varargs_and_generic_methods() {
     assert_eq!(
         format_resolved_method(&env, &resolved_generic),
         "String max(String, String)"
+    );
+}
+
+#[test]
+fn resolved_method_collapses_varargs_patterns_for_display() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let string = env.well_known().string;
+
+    let test_owner = env.add_class(ClassDef {
+        name: "com.example.Varargs".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
+        methods: vec![MethodDef {
+            name: "join".to_string(),
+            type_params: vec![],
+            params: vec![Type::Array(Box::new(Type::class(string, vec![])))],
+            return_type: Type::class(string, vec![]),
+            is_static: true,
+            is_varargs: true,
+            is_abstract: false,
+        }],
+    });
+
+    let call = MethodCall {
+        receiver: Type::class(test_owner, vec![]),
+        call_kind: CallKind::Static,
+        name: "join",
+        args: vec![Type::class(string, vec![]), Type::class(string, vec![])],
+        expected_return: None,
+        explicit_type_args: vec![],
+    };
+
+    let MethodResolution::Found(resolved) = resolve_method_call(&mut env, &call) else {
+        panic!("expected method resolution success");
+    };
+    assert!(
+        resolved.used_varargs,
+        "expected variable-arity varargs invocation"
+    );
+    assert_eq!(resolved.params.len(), 2);
+
+    assert_eq!(
+        format_resolved_method(&env, &resolved),
+        "String join(String...)"
     );
 }
