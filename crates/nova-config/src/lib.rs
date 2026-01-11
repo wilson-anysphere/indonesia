@@ -454,8 +454,14 @@ pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigEr
     for dir in start.ancestors() {
         let candidates = [dir.join(".nova").join("config.toml"), dir.join("nova.toml")];
         for candidate in candidates {
-            if candidate.is_file() {
-                return NovaConfig::load_from_path(candidate);
+            match NovaConfig::load_from_path(&candidate) {
+                Ok(config) => return Ok(config),
+                Err(ConfigError::Io { source, .. })
+                    if source.kind() == io::ErrorKind::NotFound =>
+                {
+                    continue
+                }
+                Err(err) => return Err(err),
             }
         }
     }

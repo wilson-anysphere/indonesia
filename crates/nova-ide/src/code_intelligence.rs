@@ -806,9 +806,11 @@ pub fn signature_help(
 
 pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHint> {
     let text = db.file_content(file);
+    // Some clients use `(u32::MAX, u32::MAX)` as a sentinel for "end of file".
+    // Treat invalid positions as best-effort whole-file ranges.
     let start = position_to_offset(text, range.start).unwrap_or(0);
     let end = position_to_offset(text, range.end).unwrap_or(text.len());
-    if end < start {
+    if start > end {
         return Vec::new();
     }
     let analysis = analyze(text);
