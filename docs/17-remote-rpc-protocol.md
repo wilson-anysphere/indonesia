@@ -511,6 +511,10 @@ To prevent collisions when both peers can initiate requests:
 Each side SHOULD generate request IDs monotonically within its parity class (e.g. start at `2` or
 `1` and increment by `2`).
 
+The parity rule applies only to **requests**. Responses, cancels, and chunk streams use the
+`request_id` of the original request, so their parity matches the requester (not necessarily the
+sender).
+
 Enforcement:
 
 - When receiving a `RpcPayload::Request`, the receiver MUST validate that the `request_id` parity
