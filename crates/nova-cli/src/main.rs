@@ -376,9 +376,10 @@ fn main() {
 fn load_config_from_cli(cli: &Cli) -> NovaConfig {
     // Prefer explicit `--config` (and propagate it to nested loaders).
     if let Some(path) = cli.config.as_ref() {
-        env::set_var(NOVA_CONFIG_ENV_VAR, path);
-        match NovaConfig::load_from_path(path)
-            .with_context(|| format!("load config from {}", path.display()))
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        env::set_var(NOVA_CONFIG_ENV_VAR, &resolved);
+        match NovaConfig::load_from_path(&resolved)
+            .with_context(|| format!("load config from {}", resolved.display()))
         {
             Ok(config) => return config,
             Err(err) => {
@@ -413,7 +414,7 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
 fn config_root_from_command(command: &Command) -> Option<PathBuf> {
     match command {
         Command::Index(args) => Some(args.path.clone()),
-        Command::Diagnostics(args) => Some(args.path.clone()),
+        Command::Diagnostics(args) => args.path.is_dir().then(|| args.path.clone()),
         Command::Symbols(args) => Some(args.path.clone()),
         Command::Cache(args) => match &args.command {
             CacheCommand::Clean(args) | CacheCommand::Status(args) | CacheCommand::Warm(args) => {
@@ -423,12 +424,12 @@ fn config_root_from_command(command: &Command) -> Option<PathBuf> {
             CacheCommand::Install(args) => Some(args.path.clone()),
             CacheCommand::Fetch(args) => Some(args.path.clone()),
         },
-        Command::Parse(args) => Some(args.file.clone()),
-        Command::Format(args) => Some(args.file.clone()),
-        Command::OrganizeImports(args) => Some(args.file.clone()),
-        Command::Refactor(args) => match &args.command {
-            RefactorCommand::Rename(args) => Some(args.file.clone()),
-        },
+        // File-centric commands assume the current working directory is the workspace root unless
+        // `--config` / `NOVA_CONFIG_PATH` is provided.
+        Command::Parse(_)
+        | Command::Format(_)
+        | Command::OrganizeImports(_)
+        | Command::Refactor(_) => None,
         // Other commands are not tied to a workspace (deps cache, perf tooling, etc).
         Command::Deps(_) | Command::Perf(_) | Command::BugReport(_) | Command::Ai(_) => None,
     }
