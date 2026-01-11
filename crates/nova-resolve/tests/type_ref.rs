@@ -235,6 +235,58 @@ fn resolves_generics_wildcards_arrays_and_nested_closing_angles() {
         ty.ty,
         Type::class(list_id, vec![Type::class(list_id, vec![string.clone()])])
     );
+
+    // `>>>` should be treated as three `>` tokens in type contexts.
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<List<List<String>>>",
+        None,
+    );
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(
+        ty.ty,
+        Type::class(
+            list_id,
+            vec![Type::class(
+                list_id,
+                vec![Type::class(list_id, vec![string.clone()])]
+            )]
+        )
+    );
+
+    // Wildcard keywords should still parse when whitespace is stripped.
+    let ty =
+        resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "List<?extendsString>", None);
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(
+        ty.ty,
+        Type::class(
+            list_id,
+            vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+                string.clone()
+            )))]
+        )
+    );
+
+    // Varargs is parsed as one additional array dimension.
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "List<String>...",
+        None,
+    );
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(
+        ty.ty,
+        Type::Array(Box::new(Type::class(list_id, vec![string.clone()])))
+    );
 }
 
 #[test]
@@ -251,6 +303,26 @@ fn resolves_nested_type_via_imported_outer() {
         &env,
         &type_vars,
         "Map.Entry",
+        None,
+    );
+    assert_eq!(ty.diagnostics, Vec::new());
+    assert_eq!(ty.ty, Type::Named("java.util.Map$Entry".to_string()));
+}
+
+#[test]
+fn resolves_fully_qualified_nested_type_via_index() {
+    let (jdk, index, scopes, scope) = setup(&[]);
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+    let env = TypeStore::with_minimal_jdk();
+    let type_vars = HashMap::new();
+
+    let ty = resolve_type_ref_text(
+        &resolver,
+        &scopes,
+        scope,
+        &env,
+        &type_vars,
+        "java.util.Map.Entry",
         None,
     );
     assert_eq!(ty.diagnostics, Vec::new());
