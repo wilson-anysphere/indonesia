@@ -456,7 +456,6 @@ fn main() {
 }
 
 fn load_config_from_cli(cli: &Cli) -> NovaConfig {
-    // Prefer explicit `--config` (and propagate it to nested loaders).
     if let Some(path) = cli.config.as_ref() {
         let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
         env::set_var(NOVA_CONFIG_ENV_VAR, &resolved);
@@ -470,51 +469,7 @@ fn load_config_from_cli(cli: &Cli) -> NovaConfig {
             }
         }
     }
-
-    let root = config_root_from_command(&cli.command)
-        .or_else(|| env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    let root = if root.is_file() {
-        root.parent().map(Path::to_path_buf).unwrap_or(root)
-    } else {
-        root
-    };
-
-    match nova_config::load_for_workspace(&root) {
-        Ok((config, _path)) => config,
-        Err(err) => {
-            eprintln!(
-                "nova-cli: failed to load workspace config from {}: {err}",
-                root.display()
-            );
-            NovaConfig::default()
-        }
-    }
-}
-
-fn config_root_from_command(command: &Command) -> Option<PathBuf> {
-    match command {
-        Command::Index(args) => Some(args.path.clone()),
-        Command::Diagnostics(args) => args.path.is_dir().then(|| args.path.clone()),
-        Command::Symbols(args) => Some(args.path.clone()),
-        Command::Cache(args) => match &args.command {
-            CacheCommand::Clean(args) | CacheCommand::Status(args) | CacheCommand::Warm(args) => {
-                Some(args.path.clone())
-            }
-            CacheCommand::Pack(args) => Some(args.path.clone()),
-            CacheCommand::Install(args) => Some(args.path.clone()),
-            CacheCommand::Fetch(args) => Some(args.path.clone()),
-        },
-        // File-centric commands assume the current working directory is the workspace root unless
-        // `--config` / `NOVA_CONFIG_PATH` is provided.
-        Command::Parse(_)
-        | Command::Format(_)
-        | Command::OrganizeImports(_)
-        | Command::Refactor(_) => None,
-        // Other commands are not tied to a workspace (deps cache, perf tooling, etc).
-        Command::Deps(_) | Command::Perf(_) | Command::BugReport(_) | Command::Ai(_) => None,
-    }
+    NovaConfig::default()
 }
 
 fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
