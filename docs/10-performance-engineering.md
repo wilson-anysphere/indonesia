@@ -191,7 +191,7 @@ fingerprints, Nova uses `nova-cache::DerivedArtifactCache` (see
 │  L2: WARM CACHE (in-memory, larger)                             │
 │  • Queries for open files and dependencies                      │
 │  • Size: ~100K entries                                          │
-│  • Eviction: frequency-based                                    │
+│  • Eviction: clock / second-chance                              │
 │  • Lookup: O(1) hash table                                      │
 │                                                                  │
 │  L3: COLD CACHE (best-effort on disk)                           │
@@ -367,44 +367,16 @@ impl MemoryBudget {
 ### Memory Pressure Handling
 
 ```rust
-impl MemoryManager {
-    /// Called when memory usage exceeds threshold
-    pub fn handle_memory_pressure(&mut self, pressure: MemoryPressure) {
-        match pressure {
-            MemoryPressure::Low => {
-                // Start proactive eviction
-                self.query_cache.evict_cold();
-            }
-            
-            MemoryPressure::Medium => {
-                // Aggressive cache eviction
-                self.query_cache.evict_to_target(self.budget.total * 70 / 100);
-                
-                // Release syntax trees for closed files
-                self.syntax_trees.release_closed_files();
-            }
-            
-            MemoryPressure::High => {
-                // Emergency measures
-                self.query_cache.clear_cold();
-                self.syntax_trees.release_all_closed();
-                
-                // Force GC of weak references
-                self.force_gc();
-                
-                // Consider persisting to disk
-                self.flush_to_disk();
-            }
-            
-            MemoryPressure::Critical => {
-                // Extreme measures
-                self.query_cache.clear_all();
-                self.syntax_trees.clear_all();
-                
-                // Signal degraded mode
-                self.enter_degraded_mode();
-            }
-        }
+/// The real implementation lives in `nova-memory` and is best-effort:
+/// it computes current pressure and asks registered components to evict.
+fn tick(manager: &MemoryManager) {
+    // Under high/critical pressure, `enforce()` first calls `flush_to_disk()` on
+    // evictors (best-effort), then applies proportional eviction targets.
+    let report = manager.enforce();
+
+    // Callers can use `report.pressure` / `report.degraded` to gate expensive work.
+    if report.degraded.skip_expensive_diagnostics {
+        // enter degraded mode
     }
 }
 ```
@@ -428,10 +400,14 @@ impl MemoryManager {
 │  │   ├── inheritance.idx      # Type hierarchy                  │
 │  │   └── annotations.idx      # Annotation index                │
 │  ├── queries/                                                   │
-│  │   ├── types.cache          # Type resolution cache           │
-│  │   └── signatures.cache     # Method signatures               │
+│  │   ├── <query-name>/                                         │
+│  │   │   ├── index.json        # GC metadata (best-effort)       │
+│  │   │   └── <fingerprint>.bin # DerivedArtifactCache entries    │
+│  │   └── query_cache/         # QueryDiskCache (optional)        │
+│  │       └── <fingerprint>.bin # QueryCache disk spill           │
 │  ├── ast/                                                       │
-│  │   └── *.ast               # Serialized syntax trees          │
+│  │   ├── metadata.bin         # AST cache metadata (versioned)   │
+│  │   └── <file-key>.ast       # Serialized syntax trees          │
 │  └── metadata.json           # Cache metadata and versions      │
 │                                                                  │
 │  BENEFITS                                                       │
