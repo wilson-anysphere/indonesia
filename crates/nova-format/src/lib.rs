@@ -437,17 +437,38 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
 
     let mut edits = Vec::new();
     for chunk in chunks {
-        let original_start = original_offsets[chunk.original_start];
-        let original_end = original_offsets[chunk.original_end];
-        let formatted_start = formatted_offsets[chunk.formatted_start];
-        let formatted_end = formatted_offsets[chunk.formatted_end];
+        let original_line_count = chunk.original_end.saturating_sub(chunk.original_start);
+        let formatted_line_count = chunk.formatted_end.saturating_sub(chunk.formatted_start);
 
-        let original_block = &original[original_start..original_end];
-        let formatted_block = &formatted[formatted_start..formatted_end];
-        if let Some(edit) = minimal_text_edit(original_block, formatted_block) {
-            let base = TextSize::from(original_start as u32);
-            let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
-            edits.push(TextEdit::new(range, edit.replacement));
+        if original_line_count == formatted_line_count
+            && chunk.original_end <= original_lines.len()
+            && chunk.formatted_end <= formatted_lines.len()
+        {
+            for idx in 0..original_line_count {
+                let original_line_idx = chunk.original_start + idx;
+                let formatted_line_idx = chunk.formatted_start + idx;
+                let original_line = original_lines[original_line_idx];
+                let formatted_line = formatted_lines[formatted_line_idx];
+
+                if let Some(edit) = minimal_text_edit(original_line, formatted_line) {
+                    let base = TextSize::from(original_offsets[original_line_idx] as u32);
+                    let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
+                    edits.push(TextEdit::new(range, edit.replacement));
+                }
+            }
+        } else {
+            let original_start = original_offsets[chunk.original_start];
+            let original_end = original_offsets[chunk.original_end];
+            let formatted_start = formatted_offsets[chunk.formatted_start];
+            let formatted_end = formatted_offsets[chunk.formatted_end];
+
+            let original_block = &original[original_start..original_end];
+            let formatted_block = &formatted[formatted_start..formatted_end];
+            if let Some(edit) = minimal_text_edit(original_block, formatted_block) {
+                let base = TextSize::from(original_start as u32);
+                let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
+                edits.push(TextEdit::new(range, edit.replacement));
+            }
         }
     }
 
