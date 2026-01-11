@@ -130,8 +130,11 @@ pub fn enumerate_project_caches(
                     .ok()
                     .is_some_and(|meta| meta.is_file())
                 {
-                    if let Ok(bytes) = std::fs::read(&metadata_path) {
-                        if let Ok(metadata) = serde_json::from_slice::<CacheMetadataSummary>(&bytes) {
+                    if let Ok(file) = std::fs::File::open(&metadata_path) {
+                        let reader = std::io::BufReader::new(file);
+                        if let Ok(metadata) =
+                            serde_json::from_reader::<_, CacheMetadataSummary>(reader)
+                        {
                             last_updated_millis = metadata.last_updated_millis;
                             nova_version = metadata.nova_version;
                             schema_version = metadata.schema_version;
