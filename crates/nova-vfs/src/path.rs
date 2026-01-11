@@ -26,19 +26,21 @@ impl VfsPath {
     }
 
     pub fn jar(archive: impl Into<PathBuf>, entry: impl Into<String>) -> Self {
-        Self::Archive(ArchivePath::new(
-            ArchiveKind::Jar,
-            archive.into(),
-            normalize_archive_entry(entry.into()),
-        ))
+        let archive = archive.into();
+        let entry = entry.into();
+        match normalize_archive_entry(&entry) {
+            Some(entry) => Self::Archive(ArchivePath::new(ArchiveKind::Jar, archive, entry)),
+            None => Self::Uri(format_archive_uri_fallback(ArchiveKind::Jar, &archive, &entry)),
+        }
     }
 
     pub fn jmod(archive: impl Into<PathBuf>, entry: impl Into<String>) -> Self {
-        Self::Archive(ArchivePath::new(
-            ArchiveKind::Jmod,
-            archive.into(),
-            normalize_archive_entry(entry.into()),
-        ))
+        let archive = archive.into();
+        let entry = entry.into();
+        match normalize_archive_entry(&entry) {
+            Some(entry) => Self::Archive(ArchivePath::new(ArchiveKind::Jmod, archive, entry)),
+            None => Self::Uri(format_archive_uri_fallback(ArchiveKind::Jmod, &archive, &entry)),
+        }
     }
 
     pub fn uri(uri: impl Into<String>) -> Self {
@@ -138,20 +140,33 @@ impl From<lsp_types::Uri> for VfsPath {
     }
 }
 
-fn normalize_archive_entry(entry: String) -> String {
+fn normalize_archive_entry(entry: &str) -> Option<String> {
     let entry = entry.trim_start_matches(['/', '\\']);
-    if entry.contains('\\') {
+    let entry = if entry.contains('\\') {
         entry.replace('\\', "/")
     } else {
         entry.to_string()
+    };
+    if entry.contains("//") {
+        return None;
     }
+    if entry.split('/').any(|segment| segment == "..") {
+        return None;
+    }
+    Some(entry)
 }
 
-fn archive_entry_is_safe(entry: &str) -> bool {
-    if entry.contains('\\') || entry.contains("//") {
-        return false;
+fn format_archive_uri_fallback(kind: ArchiveKind, archive: &Path, entry: &str) -> String {
+    let scheme = match kind {
+        ArchiveKind::Jar => "jar",
+        ArchiveKind::Jmod => "jmod",
+    };
+    if let Ok(abs) = AbsPathBuf::new(archive.to_path_buf()) {
+        if let Ok(archive_uri) = path_to_file_uri(&abs) {
+            return format!("{scheme}:{archive_uri}!/{entry}");
+        }
     }
-    entry.split('/').all(|segment| segment != "..")
+    format!("{scheme}:{}!/{entry}", archive.display())
 }
 
 fn normalize_local_path(path: &Path) -> PathBuf {
@@ -208,10 +223,7 @@ fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
     let (archive_uri, entry) = rest.split_once('!')?;
     let archive = file_uri_to_path(archive_uri).ok()?;
     let archive = normalize_local_path(archive.as_path());
-    let entry = normalize_archive_entry(entry.to_string());
-    if !archive_entry_is_safe(&entry) {
-        return None;
-    }
+    let entry = normalize_archive_entry(entry)?;
     Some(ArchivePath::new(kind, archive, entry))
 }
 
