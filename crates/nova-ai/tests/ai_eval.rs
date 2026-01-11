@@ -35,6 +35,7 @@ fn privacy_excluded_paths_omit_snippet() {
         anonymize: Some(true),
         excluded_paths: vec!["src/secrets/**".to_string()],
         redact_patterns: vec![],
+        ..AiPrivacyConfig::default()
     }))
     .expect("client");
 
