@@ -1,5 +1,8 @@
+use crate::indexes::SymbolIndex;
 use nova_core::SymbolId;
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
+use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone)]
 pub struct Symbol {
@@ -73,6 +76,28 @@ impl SymbolSearchIndex {
             trigram,
             prefix1,
         }
+    }
+
+    /// Approximate heap memory usage of this index in bytes.
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let mut bytes = 0u64;
+
+        bytes = bytes.saturating_add((self.symbols.capacity() * size_of::<SymbolEntry>()) as u64);
+        for entry in &self.symbols {
+            bytes = bytes.saturating_add(entry.symbol.name.capacity() as u64);
+            bytes = bytes.saturating_add(entry.symbol.qualified_name.capacity() as u64);
+        }
+
+        bytes = bytes.saturating_add(self.trigram.estimated_bytes());
+
+        bytes = bytes.saturating_add((self.prefix1.capacity() * size_of::<Vec<SymbolId>>()) as u64);
+        for bucket in &self.prefix1 {
+            bytes = bytes.saturating_add((bucket.capacity() * size_of::<SymbolId>()) as u64);
+        }
+
+        bytes
     }
 
     pub fn search_with_stats(&self, query: &str, limit: usize) -> (Vec<SearchResult>, SearchStats) {
@@ -191,6 +216,225 @@ impl SymbolSearchIndex {
             symbol: entry.symbol.clone(),
             score,
         });
+    }
+}
+
+/// Cached symbol searcher for workspace-wide fuzzy queries.
+///
+/// `workspace/symbol` queries can be triggered on every keystroke, so we avoid
+/// rebuilding trigram/prefix structures per request. Callers should pass
+/// `indexes_changed = true` when the underlying symbol index snapshot is
+/// updated; rebuilding is otherwise lazy.
+#[derive(Debug)]
+pub struct WorkspaceSymbolSearcher {
+    name: String,
+    inner: Mutex<WorkspaceSymbolSearcherInner>,
+    registration: OnceLock<nova_memory::MemoryRegistration>,
+    tracker: OnceLock<nova_memory::MemoryTracker>,
+}
+
+#[derive(Debug, Default)]
+struct WorkspaceSymbolSearcherInner {
+    index: Option<Arc<SymbolSearchIndex>>,
+    symbol_count: usize,
+    build_count: u64,
+}
+
+impl WorkspaceSymbolSearcher {
+    pub fn new(manager: &MemoryManager) -> Arc<Self> {
+        let searcher = Arc::new(Self {
+            name: "symbol_search_index".to_string(),
+            inner: Mutex::new(WorkspaceSymbolSearcherInner::default()),
+            registration: OnceLock::new(),
+            tracker: OnceLock::new(),
+        });
+
+        let registration = manager.register_evictor(
+            searcher.name.clone(),
+            MemoryCategory::Indexes,
+            searcher.clone(),
+        );
+        searcher
+            .tracker
+            .set(registration.tracker())
+            .expect("tracker only set once");
+        searcher
+            .registration
+            .set(registration)
+            .expect("registration only set once");
+
+        searcher
+    }
+
+    /// Number of times the underlying [`SymbolSearchIndex`] has been rebuilt.
+    ///
+    /// Intended for regression tests and diagnostics.
+    pub fn build_count(&self) -> u64 {
+        self.inner.lock().unwrap().build_count
+    }
+
+    pub fn has_index(&self) -> bool {
+        self.inner.lock().unwrap().index.is_some()
+    }
+
+    /// Force a rebuild of the underlying [`SymbolSearchIndex`] from a list of symbols.
+    pub fn rebuild(&self, symbols: Vec<Symbol>) {
+        let symbol_count = symbols.len();
+        let index = Arc::new(SymbolSearchIndex::build(symbols));
+        let bytes = index.estimated_bytes();
+
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.symbol_count = symbol_count;
+            inner.build_count = inner.build_count.saturating_add(1);
+            inner.index = Some(index);
+        }
+
+        if let Some(tracker) = self.tracker.get() {
+            tracker.set_bytes(bytes);
+        }
+    }
+
+    /// Search using the currently cached index (if any).
+    ///
+    /// If no index is available (e.g. after eviction), returns an empty result set.
+    pub fn search_with_stats_cached(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> (Vec<SearchResult>, SearchStats) {
+        if query.is_empty() {
+            return (
+                Vec::new(),
+                SearchStats {
+                    strategy: CandidateStrategy::FullScan,
+                    candidates_considered: 0,
+                },
+            );
+        }
+
+        let index = self.inner.lock().unwrap().index.clone();
+        let Some(index) = index else {
+            return (
+                Vec::new(),
+                SearchStats {
+                    strategy: CandidateStrategy::FullScan,
+                    candidates_considered: 0,
+                },
+            );
+        };
+
+        index.search_with_stats(query, limit)
+    }
+
+    pub fn search_with_stats(
+        &self,
+        symbols: &SymbolIndex,
+        query: &str,
+        limit: usize,
+        indexes_changed: bool,
+    ) -> (Vec<SearchResult>, SearchStats) {
+        if query.is_empty() {
+            return (
+                Vec::new(),
+                SearchStats {
+                    strategy: CandidateStrategy::FullScan,
+                    candidates_considered: 0,
+                },
+            );
+        }
+
+        let index = self.ensure_index(symbols, indexes_changed);
+        index.search_with_stats(query, limit)
+    }
+
+    fn ensure_index(&self, symbols: &SymbolIndex, force_rebuild: bool) -> Arc<SymbolSearchIndex> {
+        let symbol_count = symbols.symbols.len();
+
+        let (index, bytes) = {
+            let mut inner = self.inner.lock().unwrap();
+
+            let needs_rebuild =
+                force_rebuild || inner.index.is_none() || inner.symbol_count != symbol_count;
+            if !needs_rebuild {
+                let index = inner
+                    .index
+                    .as_ref()
+                    .expect("index present when needs_rebuild is false")
+                    .clone();
+                (index, None)
+            } else {
+                let search_symbols: Vec<Symbol> = symbols
+                    .symbols
+                    .keys()
+                    .map(|name| Symbol {
+                        name: name.clone(),
+                        qualified_name: name.clone(),
+                    })
+                    .collect();
+
+                let index = Arc::new(SymbolSearchIndex::build(search_symbols));
+                inner.symbol_count = symbol_count;
+                inner.build_count = inner.build_count.saturating_add(1);
+                inner.index = Some(index.clone());
+                let bytes = index.estimated_bytes();
+                (index, Some(bytes))
+            }
+        };
+
+        if let Some(bytes) = bytes {
+            if let Some(tracker) = self.tracker.get() {
+                tracker.set_bytes(bytes);
+            }
+        }
+
+        index
+    }
+}
+
+impl MemoryEvictor for WorkspaceSymbolSearcher {
+    fn name(&self) -> &str {
+        self.registration
+            .get()
+            .map(|registration| registration.name())
+            .unwrap_or(&self.name)
+    }
+
+    fn category(&self) -> MemoryCategory {
+        self.registration
+            .get()
+            .map(|registration| registration.category())
+            .unwrap_or(MemoryCategory::Indexes)
+    }
+
+    fn evict(&self, request: EvictionRequest) -> EvictionResult {
+        let before = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
+
+        if before == 0 {
+            return EvictionResult {
+                before_bytes: 0,
+                after_bytes: 0,
+            };
+        }
+
+        let should_drop = request.target_bytes == 0
+            || request.target_bytes < before
+            || matches!(request.pressure, nova_memory::MemoryPressure::Critical);
+
+        if should_drop {
+            let mut inner = self.inner.lock().unwrap();
+            inner.index = None;
+            inner.symbol_count = 0;
+            if let Some(tracker) = self.tracker.get() {
+                tracker.set_bytes(0);
+            }
+        }
+
+        let after = self.tracker.get().map(|t| t.bytes()).unwrap_or(0);
+        EvictionResult {
+            before_bytes: before,
+            after_bytes: after,
+        }
     }
 }
 

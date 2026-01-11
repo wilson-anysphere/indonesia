@@ -3,8 +3,9 @@ use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnaps
 use nova_index::{
     load_sharded_index_archives_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
     CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
-    SymbolSearchIndex, DEFAULT_SHARD_COUNT,
+    WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
+use nova_memory::{MemoryBudget, MemoryManager};
 use nova_project::ProjectError;
 use nova_syntax::SyntaxNode;
 use regex::Regex;
@@ -29,6 +30,8 @@ pub use engine::{IndexProgress, WorkspaceEvent, WorkspaceStatus};
 pub struct Workspace {
     root: PathBuf,
     engine: Arc<engine::WorkspaceEngine>,
+    memory: MemoryManager,
+    symbol_searcher: Arc<WorkspaceSymbolSearcher>,
 }
 
 impl fmt::Debug for Workspace {
@@ -45,9 +48,13 @@ impl Workspace {
     /// This is primarily intended for integration tests exercising the workspace
     /// event stream and overlay handling.
     pub fn new_in_memory() -> Self {
+        let memory = MemoryManager::new(MemoryBudget::default_for_system());
+        let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
         Self {
             root: PathBuf::new(),
             engine: Arc::new(engine::WorkspaceEngine::new()),
+            memory,
+            symbol_searcher,
         }
     }
 
@@ -68,9 +75,13 @@ impl Workspace {
         let root = fs::canonicalize(&root)
             .with_context(|| format!("failed to canonicalize {}", root.display()))?;
         let root = find_project_root(&root);
+        let memory = MemoryManager::new(MemoryBudget::default_for_system());
+        let symbol_searcher = WorkspaceSymbolSearcher::new(&memory);
         Ok(Self {
             root,
             engine: Arc::new(engine::WorkspaceEngine::new()),
+            memory,
+            symbol_searcher,
         })
     }
 
@@ -695,8 +706,15 @@ impl Workspace {
         self.write_cache_perf(&cache_dir, &metrics)?;
 
         const WORKSPACE_SYMBOL_LIMIT: usize = 200;
-        let (results, _stats) =
-            fuzzy_rank_workspace_symbols_sharded(&shards, query, WORKSPACE_SYMBOL_LIMIT);
+        let indexes_changed = metrics.files_invalidated > 0;
+        let (results, _stats) = fuzzy_rank_workspace_symbols_sharded(
+            self.symbol_searcher.as_ref(),
+            &shards,
+            query,
+            WORKSPACE_SYMBOL_LIMIT,
+            indexes_changed,
+        );
+        self.memory.enforce();
         Ok(results)
     }
 
@@ -837,9 +855,11 @@ impl Workspace {
 }
 
 fn fuzzy_rank_workspace_symbols(
+    searcher: &WorkspaceSymbolSearcher,
     symbols: &nova_index::SymbolIndex,
     query: &str,
     limit: usize,
+    indexes_changed: bool,
 ) -> (Vec<WorkspaceSymbol>, SearchStats) {
     if query.is_empty() {
         return (
@@ -851,17 +871,7 @@ fn fuzzy_rank_workspace_symbols(
         );
     }
 
-    let search_symbols: Vec<SearchSymbol> = symbols
-        .symbols
-        .keys()
-        .map(|name| SearchSymbol {
-            name: name.clone(),
-            qualified_name: name.clone(),
-        })
-        .collect();
-
-    let search_index = SymbolSearchIndex::build(search_symbols);
-    let (results, stats) = search_index.search_with_stats(query, limit);
+    let (results, stats) = searcher.search_with_stats(symbols, query, limit, indexes_changed);
 
     let mut ranked = Vec::with_capacity(results.len());
     for res in results {
@@ -878,9 +888,11 @@ fn fuzzy_rank_workspace_symbols(
 }
 
 fn fuzzy_rank_workspace_symbols_sharded(
+    searcher: &WorkspaceSymbolSearcher,
     shards: &[ProjectIndexes],
     query: &str,
     limit: usize,
+    indexes_changed: bool,
 ) -> (Vec<WorkspaceSymbol>, SearchStats) {
     if query.is_empty() {
         return (
@@ -892,21 +904,24 @@ fn fuzzy_rank_workspace_symbols_sharded(
         );
     }
 
-    let mut symbol_names = std::collections::BTreeSet::new();
-    for shard in shards {
-        symbol_names.extend(shard.symbols.symbols.keys().cloned());
+    if indexes_changed || !searcher.has_index() {
+        let mut symbol_names = std::collections::BTreeSet::new();
+        for shard in shards {
+            symbol_names.extend(shard.symbols.symbols.keys().cloned());
+        }
+
+        let search_symbols: Vec<SearchSymbol> = symbol_names
+            .into_iter()
+            .map(|name| SearchSymbol {
+                qualified_name: name.clone(),
+                name,
+            })
+            .collect();
+
+        searcher.rebuild(search_symbols);
     }
 
-    let search_symbols: Vec<SearchSymbol> = symbol_names
-        .into_iter()
-        .map(|name| SearchSymbol {
-            qualified_name: name.clone(),
-            name,
-        })
-        .collect();
-
-    let search_index = SymbolSearchIndex::build(search_symbols);
-    let (results, stats) = search_index.search_with_stats(query, limit);
+    let (results, stats) = searcher.search_with_stats_cached(query, limit);
 
     let mut ranked = Vec::with_capacity(results.len());
     for res in results {
@@ -931,6 +946,8 @@ mod fuzzy_symbol_tests {
 
     #[test]
     fn workspace_symbol_search_uses_trigram_candidate_filtering() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
+        let searcher = WorkspaceSymbolSearcher::new(&memory);
         let mut symbols = nova_index::SymbolIndex::default();
         symbols.insert(
             "HashMap",
@@ -957,13 +974,16 @@ mod fuzzy_symbol_tests {
             },
         );
 
-        let (_results, stats) = fuzzy_rank_workspace_symbols(&symbols, "Hash", 10);
+        let (_results, stats) =
+            fuzzy_rank_workspace_symbols(searcher.as_ref(), &symbols, "Hash", 10, true);
         assert_eq!(stats.strategy, CandidateStrategy::Trigram);
         assert!(stats.candidates_considered < symbols.symbols.len());
     }
 
     #[test]
     fn workspace_symbol_search_supports_acronym_queries() {
+        let memory = MemoryManager::new(MemoryBudget::from_total(256 * nova_memory::MB));
+        let searcher = WorkspaceSymbolSearcher::new(&memory);
         let mut symbols = nova_index::SymbolIndex::default();
         symbols.insert(
             "FooBar",
@@ -974,8 +994,39 @@ mod fuzzy_symbol_tests {
             },
         );
 
-        let (results, _stats) = fuzzy_rank_workspace_symbols(&symbols, "fb", 10);
+        let (results, _stats) =
+            fuzzy_rank_workspace_symbols(searcher.as_ref(), &symbols, "fb", 10, true);
         assert_eq!(results[0].name, "FooBar");
+    }
+
+    #[test]
+    fn workspace_symbol_search_index_is_reused_between_queries() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let java_dir = root.join("src/main/java/com/example");
+        fs::create_dir_all(&java_dir).expect("mkdir");
+        fs::write(
+            java_dir.join("Main.java"),
+            r#"
+                package com.example;
+
+                public class Main {
+                    public void methodName() {}
+                }
+            "#,
+        )
+        .expect("write");
+
+        let ws = Workspace::open(root).expect("workspace open");
+
+        let _ = ws.workspace_symbols("Main").expect("workspace symbols");
+        let builds_after_first = ws.symbol_searcher.build_count();
+        assert_eq!(builds_after_first, 1);
+
+        let _ = ws.workspace_symbols("met").expect("workspace symbols");
+        assert_eq!(ws.symbol_searcher.build_count(), 1);
     }
 }
 

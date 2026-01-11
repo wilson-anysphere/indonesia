@@ -102,6 +102,18 @@ impl TrigramIndex {
         }
         out
     }
+
+    /// Approximate heap memory usage of this index in bytes.
+    ///
+    /// This is intended for best-effort integration with `nova-memory`.
+    pub fn estimated_bytes(&self) -> u64 {
+        use std::mem::size_of;
+
+        let keys = self.keys.capacity() * size_of::<Trigram>();
+        let offsets = self.offsets.capacity() * size_of::<u32>();
+        let values = self.values.capacity() * size_of::<SymbolId>();
+        (keys + offsets + values) as u64
+    }
 }
 
 #[derive(Debug, Default)]

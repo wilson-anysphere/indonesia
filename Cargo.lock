@@ -4271,6 +4271,7 @@ dependencies = [
  "nova-fuzzy",
  "nova-ide",
  "nova-index",
+ "nova-memory",
  "nova-project",
  "nova-scheduler",
  "nova-syntax",

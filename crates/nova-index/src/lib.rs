@@ -15,4 +15,5 @@ pub use persistence::*;
 pub use sketch::*;
 pub use symbol_search::{
     CandidateStrategy, SearchResult, SearchStats, Symbol as SearchSymbol, SymbolSearchIndex,
+    WorkspaceSymbolSearcher,
 };
