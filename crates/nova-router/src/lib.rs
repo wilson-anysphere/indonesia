@@ -163,6 +163,9 @@ impl std::fmt::Debug for DistributedRouterConfig {
             .field("cache_dir", &self.cache_dir)
             .field("auth_present", &self.auth_token.is_some())
             .field("allow_insecure_tcp", &self.allow_insecure_tcp)
+            .field("max_rpc_bytes", &self.max_rpc_bytes)
+            .field("max_inflight_handshakes", &self.max_inflight_handshakes)
+            .field("max_worker_connections", &self.max_worker_connections)
             .field("spawn_workers", &self.spawn_workers);
         #[cfg(feature = "tls")]
         s.field(
