@@ -783,6 +783,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const pressure = normalizeMemoryPressure(report.pressure);
     const label = pressure ? memoryPressureLabel(pressure) : 'Unknown';
+    memoryStatusItem.backgroundColor =
+      pressure === 'high'
+        ? new vscode.ThemeColor('statusBarItem.warningBackground')
+        : pressure === 'critical'
+          ? new vscode.ThemeColor('statusBarItem.errorBackground')
+          : undefined;
 
     const usedBytes = totalMemoryBytes(report.usage);
     const budgetBytes = typeof report.budget?.total === 'number' ? report.budget.total : undefined;
@@ -818,6 +824,7 @@ export async function activate(context: vscode.ExtensionContext) {
     updateSafeModeStatus(false);
     memoryStatusItem.text = '$(pulse) Nova Mem: —';
     memoryStatusItem.tooltip = 'Nova memory status';
+    memoryStatusItem.backgroundColor = undefined;
   };
 
   const detachObservability = () => {
