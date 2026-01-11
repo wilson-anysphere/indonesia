@@ -486,14 +486,21 @@ impl DerivedArtifactCache {
         }
 
         let (mut index, mut dirty) = self.load_or_rebuild_query_index(query_dir)?;
-        index.entries.insert(
-            file_name.to_string(),
-            DerivedQueryIndexEntry {
-                saved_at_millis,
-                size,
-            },
-        );
-        dirty = true;
+        let needs_update = match index.entries.get(file_name) {
+            Some(existing) => existing.saved_at_millis != saved_at_millis || existing.size != size,
+            None => true,
+        };
+
+        if needs_update {
+            index.entries.insert(
+                file_name.to_string(),
+                DerivedQueryIndexEntry {
+                    saved_at_millis,
+                    size,
+                },
+            );
+            dirty = true;
+        }
         if dirty {
             let _ = self.write_query_index(query_dir, &index);
         }

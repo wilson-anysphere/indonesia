@@ -52,7 +52,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn lex(mut self) -> Vec<Token> {
+    pub fn lex(self) -> Vec<Token> {
         self.lex_with_errors().0
     }
 
@@ -798,7 +798,7 @@ impl<'a> Lexer<'a> {
     ) -> DigitsScan {
         let mut digits = 0usize;
         let mut leading_underscore = false;
-        let mut trailing_underscore = false;
+        // Computed after the scan loop based on the final token observed.
         let mut prev_underscore = false;
         let mut invalid_underscore = false;
         let mut invalid_digit = None;
@@ -833,7 +833,7 @@ impl<'a> Lexer<'a> {
             break;
         }
 
-        trailing_underscore = prev_underscore;
+        let trailing_underscore = prev_underscore;
 
         DigitsScan {
             digits,

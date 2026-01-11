@@ -764,14 +764,12 @@ fn binary_to_ieee_bits(nibbles: &[u8], bit_len: usize, exp2: i64, params: FloatP
     if e >= min_exp {
         // Normal.
         let mut q: u64;
-        let mut guard = 0u8;
-        let mut sticky = false;
 
         if bit_len > precision {
             let shift = bit_len - precision;
             q = extract_msb_bits(nibbles, bit_len, precision) as u64;
-            guard = get_bit(nibbles, shift - 1);
-            sticky = low_bits_nonzero(nibbles, shift - 1);
+            let guard = get_bit(nibbles, shift - 1);
+            let sticky = low_bits_nonzero(nibbles, shift - 1);
 
             if guard == 1 && (sticky || (q & 1 == 1)) {
                 q += 1;
@@ -803,18 +801,17 @@ fn binary_to_ieee_bits(nibbles: &[u8], bit_len: usize, exp2: i64, params: FloatP
     let scale = (frac_bits as i64).saturating_sub(min_exp);
     let k = exp2.saturating_add(scale);
 
-    let mut fraction: u64;
-    if k >= 0 {
+    let fraction: u64 = if k >= 0 {
         let shift_left = k as usize;
         let mut m_val: u64 = 0;
         for &n in nibbles {
             m_val = (m_val << 4) | n as u64;
         }
-        fraction = if shift_left >= 64 {
+        if shift_left >= 64 {
             u64::MAX
         } else {
             m_val << shift_left
-        };
+        }
     } else {
         let shift_right = (-k) as usize;
         let q_bit_len = bit_len.saturating_sub(shift_right);
@@ -842,8 +839,8 @@ fn binary_to_ieee_bits(nibbles: &[u8], bit_len: usize, exp2: i64, params: FloatP
         if guard == 1 && (sticky || (q & 1 == 1)) {
             q = q.saturating_add(1);
         }
-        fraction = q;
-    }
+        q
+    };
 
     if fraction == 0 {
         return 0;
