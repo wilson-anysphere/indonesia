@@ -95,3 +95,8 @@ cargo run -p nova-devtools -- check-layers --metadata-path "$tmp"
 cargo run -p nova-devtools -- check-architecture-map --metadata-path "$tmp" --strict
 ```
 
+For convenience, you can also run:
+
+```bash
+./scripts/check-repo-invariants.sh
+```

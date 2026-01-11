@@ -199,6 +199,14 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Known gaps vs intended docs:**
   - ABI surface is still small and versioned only for v1; future v2 will require explicit evolution + compatibility policy.
 
+### `nova-ext-wasm-example-todos`
+- **Purpose:** minimal example Nova WASM extension that implements the diagnostics capability by flagging `TODO` occurrences.
+- **Key entry points:** `examples/nova-ext-wasm-example-todos/src/lib.rs`, `examples/nova-ext-wasm-example-todos/bundle/nova-ext.toml`.
+- **Maturity:** scaffolding
+- **Known gaps vs intended docs:**
+  - Example-only; not wired into `nova-lsp` by default (intended as a reference for external plugin authors).
+  - Error reporting is intentionally minimal (best-effort JSON parsing + empty result on failure).
+
 ### `nova-flow`
 - **Purpose:** flow analysis (CFG, definite assignment, null tracking) for Java method bodies.
 - **Key entry points:** `crates/nova-flow/src/lib.rs` (`analyze`, `ControlFlowGraph`).
