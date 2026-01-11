@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use lsp_types::Position;
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use nova_ide::{completions, file_diagnostics, goto_definition};
 
 fn offset_to_position(text: &str, offset: usize) -> Position {
@@ -25,7 +25,7 @@ fn fixture_multi(
     primary_path: PathBuf,
     primary_text_with_caret: &str,
     extra_files: Vec<(PathBuf, String)>,
-) -> (RootDatabase, nova_db::FileId, Position, String) {
+) -> (InMemoryFileStore, nova_db::FileId, Position, String) {
     let caret = "<|>";
     let caret_offset = primary_text_with_caret
         .find(caret)
@@ -33,7 +33,7 @@ fn fixture_multi(
     let primary_text = primary_text_with_caret.replace(caret, "");
     let pos = offset_to_position(&primary_text, caret_offset);
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let primary_file = db.file_id_for_path(&primary_path);
     db.set_file_text(primary_file, primary_text.clone());
     for (path, text) in extra_files {
