@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -11,10 +11,61 @@ use nova_types::{CompletionItem, Diagnostic, Span};
 
 use crate::framework_cache;
 
+const MAX_CACHED_ROOTS: usize = 32;
+
 #[derive(Debug, Clone)]
 struct CacheEntry<V> {
     fingerprint: u64,
     value: Arc<V>,
+}
+
+#[derive(Debug)]
+struct LruCache<K, V> {
+    capacity: usize,
+    map: HashMap<K, V>,
+    order: VecDeque<K>,
+}
+
+impl<K, V> LruCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get_cloned(&mut self, key: &K) -> Option<V> {
+        let value = self.map.get(key)?.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        self.map.insert(key.clone(), value);
+        self.touch(&key);
+        self.evict_if_needed();
+    }
+
+    fn touch(&mut self, key: &K) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.map.len() > self.capacity {
+            let Some(key) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&key);
+        }
+    }
 }
 
 /// Workspace-scoped cache for framework-level analysis results keyed by project root.
@@ -23,13 +74,13 @@ struct CacheEntry<V> {
 /// relevant source set and reuse the cached value when the fingerprint matches.
 #[derive(Debug)]
 pub(crate) struct SpringWorkspaceCache<V> {
-    entries: Mutex<HashMap<PathBuf, CacheEntry<V>>>,
+    entries: Mutex<LruCache<PathBuf, CacheEntry<V>>>,
 }
 
 impl<V> Default for SpringWorkspaceCache<V> {
     fn default() -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: Mutex::new(LruCache::new(MAX_CACHED_ROOTS)),
         }
     }
 }
@@ -40,18 +91,18 @@ impl<V> SpringWorkspaceCache<V> {
         F: FnOnce() -> V,
     {
         {
-            let entries = self.entries.lock().expect("workspace cache lock poisoned");
-            if let Some(entry) = entries.get(&root) {
+            let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
+            if let Some(entry) = entries.get_cloned(&root) {
                 if entry.fingerprint == fingerprint {
-                    return Arc::clone(&entry.value);
+                    return entry.value;
                 }
             }
         }
 
         let value = Arc::new(build());
         let mut entries = self.entries.lock().expect("workspace cache lock poisoned");
-        match entries.get(&root) {
-            Some(entry) if entry.fingerprint == fingerprint => Arc::clone(&entry.value),
+        match entries.get_cloned(&root) {
+            Some(entry) if entry.fingerprint == fingerprint => entry.value,
             _ => {
                 entries.insert(
                     root,
