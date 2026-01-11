@@ -118,6 +118,8 @@ pub struct BazelWorkspace<R: CommandRunner> {
     compile_info_expr_version_hex: String,
     #[cfg(feature = "bsp")]
     bsp: BspConnection,
+    #[cfg(feature = "bsp")]
+    bsp_config: crate::bsp::BspServerConfig,
 }
 
 impl<R: CommandRunner> BazelWorkspace<R> {
@@ -130,7 +132,15 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             compile_info_expr_version_hex: compile_info_expr_version_hex(),
             #[cfg(feature = "bsp")]
             bsp: BspConnection::NotTried,
+            #[cfg(feature = "bsp")]
+            bsp_config: crate::bsp::BspServerConfig::default(),
         })
+    }
+
+    #[cfg(feature = "bsp")]
+    pub fn with_bsp_config(mut self, config: crate::bsp::BspServerConfig) -> Self {
+        self.bsp_config = config;
+        self
     }
 
     pub fn with_cache_path(mut self, path: PathBuf) -> Result<Self> {
@@ -293,23 +303,31 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
     #[cfg(feature = "bsp")]
     fn bsp_config_from_env(&self) -> crate::bsp::BspServerConfig {
-        let program = std::env::var("NOVA_BSP_PROGRAM").unwrap_or_else(|_| "bsp4bazel".to_string());
-        let args_raw = std::env::var("NOVA_BSP_ARGS").unwrap_or_default();
-        let args_raw = args_raw.trim();
-        let args: Vec<String> = if args_raw.is_empty() {
-            Vec::new()
-        } else if args_raw.starts_with('[') {
-            serde_json::from_str::<Vec<String>>(args_raw).unwrap_or_else(|_| {
-                args_raw
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect()
-            })
-        } else {
-            args_raw.split_whitespace().map(|s| s.to_string()).collect()
-        };
+        let mut config = self.bsp_config.clone();
 
-        crate::bsp::BspServerConfig { program, args }
+        if let Ok(program) = std::env::var("NOVA_BSP_PROGRAM") {
+            if !program.trim().is_empty() {
+                config.program = program;
+            }
+        }
+
+        if let Ok(args_raw) = std::env::var("NOVA_BSP_ARGS") {
+            let args_raw = args_raw.trim();
+            if !args_raw.is_empty() {
+                config.args = if args_raw.starts_with('[') {
+                    serde_json::from_str::<Vec<String>>(args_raw).unwrap_or_else(|_| {
+                        args_raw
+                            .split_whitespace()
+                            .map(|s| s.to_string())
+                            .collect()
+                    })
+                } else {
+                    args_raw.split_whitespace().map(|s| s.to_string()).collect()
+                };
+            }
+        }
+
+        config
     }
 
     pub fn invalidate_changed_files(&mut self, changed: &[PathBuf]) -> Result<()> {
