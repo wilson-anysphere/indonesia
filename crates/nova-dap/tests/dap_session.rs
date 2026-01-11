@@ -914,6 +914,12 @@ async fn dap_exception_info_includes_type_name() {
         exc_info.pointer("/body/breakMode").and_then(|v| v.as_str()),
         Some("unhandled")
     );
+    assert_eq!(
+        exc_info
+            .pointer("/body/description")
+            .and_then(|v| v.as_str()),
+        Some("mock string")
+    );
 
     send_request(&mut writer, 7, "disconnect", json!({})).await;
     let _disc_resp = read_response(&mut reader, 7).await;

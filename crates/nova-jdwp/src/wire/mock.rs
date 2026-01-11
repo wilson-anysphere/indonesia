@@ -220,7 +220,9 @@ const OBJECT_CLASS_ID: u64 = 0x6001;
 const STRING_CLASS_ID: u64 = 0x6002;
 const ARRAY_CLASS_ID: u64 = 0x6003;
 const EXCEPTION_CLASS_ID: u64 = 0x6004;
+const THROWABLE_CLASS_ID: u64 = 0x6005;
 const FIELD_ID: u64 = 0x7001;
+const DETAIL_MESSAGE_FIELD_ID: u64 = 0x7002;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MockExceptionRequest {
@@ -372,6 +374,12 @@ async fn handle_packet(
                     w.write_reference_type_id(FOO_CLASS_ID, sizes);
                     w.write_u32(1);
                 }
+                "Ljava/lang/Throwable;" => {
+                    w.write_u32(1);
+                    w.write_u8(1); // class
+                    w.write_reference_type_id(THROWABLE_CLASS_ID, sizes);
+                    w.write_u32(1);
+                }
                 _ => {
                     w.write_u32(0);
                 }
@@ -451,6 +459,7 @@ async fn handle_packet(
                 STRING_CLASS_ID => "Ljava/lang/String;",
                 ARRAY_CLASS_ID => "[I",
                 EXCEPTION_CLASS_ID => "Ljava/lang/RuntimeException;",
+                THROWABLE_CLASS_ID => "Ljava/lang/Throwable;",
                 _ => "LObject;",
             };
             w.write_string(sig);
@@ -477,6 +486,12 @@ async fn handle_packet(
                 w.write_string("field");
                 w.write_string("I");
                 w.write_u32(1);
+            } else if class_id == THROWABLE_CLASS_ID {
+                w.write_u32(1);
+                w.write_id(DETAIL_MESSAGE_FIELD_ID, sizes.field_id);
+                w.write_string("detailMessage");
+                w.write_string("Ljava/lang/String;");
+                w.write_u32(0);
             } else {
                 w.write_u32(0);
             }
@@ -602,16 +617,22 @@ async fn handle_packet(
         }
         // ObjectReference.GetValues
         (9, 2) => {
-            let _object_id = r.read_object_id(sizes).unwrap_or(0);
+            let object_id = r.read_object_id(sizes).unwrap_or(0);
             let count = r.read_u32().unwrap_or(0) as usize;
+            let mut field_ids = Vec::with_capacity(count);
             for _ in 0..count {
-                let _field_id = r.read_id(sizes.field_id).unwrap_or(0);
+                field_ids.push(r.read_id(sizes.field_id).unwrap_or(0));
             }
             let mut w = JdwpWriter::new();
             w.write_u32(count as u32);
-            for _ in 0..count {
-                w.write_u8(b'I');
-                w.write_i32(7);
+            for field_id in field_ids {
+                if object_id == EXCEPTION_ID && field_id == DETAIL_MESSAGE_FIELD_ID {
+                    w.write_u8(b's');
+                    w.write_object_id(STRING_OBJECT_ID, sizes);
+                } else {
+                    w.write_u8(b'I');
+                    w.write_i32(7);
+                }
             }
             (0, w.into_vec())
         }

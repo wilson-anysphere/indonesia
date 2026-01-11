@@ -147,6 +147,7 @@ pub struct Debugger {
     exception_requests: Vec<i32>,
     last_stop_reason: HashMap<ThreadId, StopReason>,
     exception_stop_context: HashMap<ThreadId, ExceptionStopContext>,
+    throwable_detail_message_field: Option<Option<u64>>,
 
     /// Mapping from JDWP `ReferenceType.SourceFile` (usually just `Main.java`) to the
     /// best-effort full path provided by the DAP client.
@@ -208,6 +209,7 @@ impl Debugger {
             exception_requests: Vec::new(),
             last_stop_reason: HashMap::new(),
             exception_stop_context: HashMap::new(),
+            throwable_detail_message_field: None,
             source_paths: HashMap::new(),
             source_cache: HashMap::new(),
             methods_cache: HashMap::new(),
@@ -529,9 +531,15 @@ impl Debugger {
             "unhandled".to_string()
         };
 
+        let description = match self.exception_message(cancel, ctx.exception).await {
+            Ok(message) => message,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+            Err(_) => None,
+        };
+
         Ok(Some(ExceptionInfo {
             exception_id,
-            description: None,
+            description,
             break_mode,
         }))
     }
@@ -910,6 +918,62 @@ impl Debugger {
             cancellable_jdwp(cancel, self.jdwp.object_reference_reference_type(object_id)).await?;
         let sig = cancellable_jdwp(cancel, self.jdwp.reference_type_signature(class_id)).await?;
         Ok(signature_to_object_type_name(&sig))
+    }
+
+    async fn exception_message(
+        &mut self,
+        cancel: &CancellationToken,
+        exception_id: ObjectId,
+    ) -> std::result::Result<Option<String>, JdwpError> {
+        let Some(field_id) = self.throwable_detail_message_field(cancel).await? else {
+            return Ok(None);
+        };
+
+        let values = cancellable_jdwp(
+            cancel,
+            self.jdwp.object_reference_get_values(exception_id, &[field_id]),
+        )
+        .await?;
+        let Some(value) = values.into_iter().next() else {
+            return Ok(None);
+        };
+
+        let JdwpValue::Object { id, .. } = value else {
+            return Ok(None);
+        };
+        if id == 0 {
+            return Ok(None);
+        }
+
+        match cancellable_jdwp(cancel, self.jdwp.string_reference_value(id)).await {
+            Ok(s) if s.is_empty() => Ok(None),
+            Ok(s) => Ok(Some(s)),
+            Err(JdwpError::Cancelled) => Err(JdwpError::Cancelled),
+            Err(_) => Ok(None),
+        }
+    }
+
+    async fn throwable_detail_message_field(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<Option<u64>, JdwpError> {
+        if let Some(cached) = self.throwable_detail_message_field {
+            return Ok(cached);
+        }
+
+        let classes = cancellable_jdwp(cancel, self.jdwp.classes_by_signature("Ljava/lang/Throwable;")).await?;
+        let Some(throwable) = classes.first() else {
+            self.throwable_detail_message_field = Some(None);
+            return Ok(None);
+        };
+
+        let fields = cancellable_jdwp(cancel, self.jdwp.reference_type_fields(throwable.type_id)).await?;
+        let field_id = fields
+            .into_iter()
+            .find(|field| field.name == "detailMessage")
+            .map(|field| field.field_id);
+        self.throwable_detail_message_field = Some(field_id);
+        Ok(field_id)
     }
 
     async fn location_for_line(
