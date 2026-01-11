@@ -192,11 +192,17 @@ NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/javac-validate.sh
 ## Benchmarks
 
 Nova has criterion benchmarks (used by the performance regression guard in `.github/workflows/perf.yml`).
-Run them with:
+To run the same suite locally:
 
 ```bash
 cargo bench -p nova-core --bench critical_paths
+cargo bench -p nova-syntax --bench parse_java
+cargo bench -p nova-format --bench format
+cargo bench -p nova-refactor --bench refactor
+cargo bench -p nova-classpath --bench index
 ```
+
+For capture/compare tooling and threshold configuration, see [`perf/README.md`](perf/README.md).
 
 ## Fuzzing
 
