@@ -194,6 +194,11 @@ impl JavaLanguageLevel {
     pub fn supports_pattern_matching_switch(self) -> bool {
         self.is_enabled(JavaFeature::PatternMatchingSwitch)
     }
+
+    #[inline]
+    pub fn supports_unnamed_variables(self) -> bool {
+        self.is_enabled(JavaFeature::UnnamedVariables)
+    }
 }
 
 impl Default for JavaLanguageLevel {
