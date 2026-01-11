@@ -232,6 +232,13 @@ export function parseGitHubRepo(input: string): GitHubRepo | undefined {
     return undefined;
   }
 
+  const scpMatch = /^(?<user>[^@]+)@(?<host>[^:]+):(?<owner>[^/]+)\/(?<repo>.+)$/.exec(trimmed);
+  if (scpMatch?.groups?.host === 'github.com' && scpMatch.groups.owner && scpMatch.groups.repo) {
+    const owner = scpMatch.groups.owner;
+    const repo = stripDotGit(scpMatch.groups.repo);
+    return { owner, repo, apiBaseUrl: `https://api.github.com/repos/${owner}/${repo}` };
+  }
+
   const repoMatch = /^(?<owner>[^/]+)\/(?<repo>[^/]+)$/.exec(trimmed);
   if (repoMatch?.groups?.owner && repoMatch.groups.repo) {
     const owner = repoMatch.groups.owner;

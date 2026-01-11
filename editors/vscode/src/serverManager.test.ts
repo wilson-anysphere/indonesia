@@ -21,6 +21,12 @@ describe('serverManager helpers', () => {
       apiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
     });
 
+    expect(parseGitHubRepo('git@github.com:wilson-anysphere/indonesia.git')).toEqual({
+      owner: 'wilson-anysphere',
+      repo: 'indonesia',
+      apiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
+    });
+
     expect(parseGitHubRepo('https://github.com/wilson-anysphere/indonesia')).toEqual({
       owner: 'wilson-anysphere',
       repo: 'indonesia',
