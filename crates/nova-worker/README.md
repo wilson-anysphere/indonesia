@@ -169,8 +169,9 @@ Until the v3 transport is wired end-to-end, `nova-worker` uses the legacy lockst
 
 Common failures:
 
-- **Authentication failed**: if the router expects an auth token and the worker’s `--auth-token`
-  does not match, the router will send an `Error` and close the connection.
+- **Authentication failed**: if the router expects an auth token and the worker’s token (provided via
+  `--auth-token`, `--auth-token-file`, or `--auth-token-env`) does not match, the router will send an
+  `Error` and close the connection.
 - **mTLS required / shard authorization failed** (remote TLS deployments): if the router is
   configured to require a client certificate identity and/or uses a shard-scoped certificate
   allowlist, it may reject the worker with an `Error` message like:
@@ -191,8 +192,8 @@ In v3, the router may reject the initial handshake with `Reject { code, message 
   Upgrade/downgrade one side so their supported version ranges overlap.
   - If the router is still on the legacy protocol, you may see a message like:
     `router only supports legacy_v2 protocol`.
-- `unauthorized`: authentication failed (missing/invalid `--auth-token`, or worker is not authorized
-  for the claimed `--shard-id`).
+- `unauthorized`: authentication failed (missing/invalid auth token via `--auth-token*`, or worker is
+  not authorized for the claimed `--shard-id`).
 - `invalid_request`: protocol mismatch (e.g. trying to connect a legacy lockstep worker to a v3 router,
   or vice versa), malformed frames, or invalid capability values.
 
