@@ -2568,6 +2568,7 @@ fn spawn_event_task(
     tokio::spawn(async move {
         let mut events: Option<broadcast::Receiver<nova_jdwp::wire::JdwpEvent>> = None;
         let mut jdwp_shutdown: Option<CancellationToken> = None;
+        let mut throwable_detail_message_field_cache: Option<Option<u64>> = None;
 
         {
             let guard = debugger.lock().await;
@@ -2654,7 +2655,7 @@ fn spawn_event_task(
                 // available via the dedicated `exceptionInfo` request.
                 match tokio::time::timeout(
                     Duration::from_millis(200),
-                    exception_stopped_text(&jdwp, exception),
+                    exception_stopped_text(&jdwp, exception, &mut throwable_detail_message_field_cache),
                 )
                 .await
                 {
@@ -2737,7 +2738,11 @@ fn spawn_event_task(
     });
 }
 
-async fn exception_stopped_text(jdwp: &JdwpClient, exception: ObjectId) -> Option<String> {
+async fn exception_stopped_text(
+    jdwp: &JdwpClient,
+    exception: ObjectId,
+    throwable_detail_message_field_cache: &mut Option<Option<u64>>,
+) -> Option<String> {
     if exception == 0 {
         return None;
     }
@@ -2750,21 +2755,19 @@ async fn exception_stopped_text(jdwp: &JdwpClient, exception: ObjectId) -> Optio
         .next()
         .unwrap_or(full_type_name.as_str());
 
-    let message = exception_message(jdwp, exception).await;
+    let message = exception_message(jdwp, exception, throwable_detail_message_field_cache).await;
     match message.as_deref() {
         Some(message) if !message.is_empty() => Some(format!("{type_name}: {message}")),
         _ => Some(type_name.to_string()),
     }
 }
 
-async fn exception_message(jdwp: &JdwpClient, exception: ObjectId) -> Option<String> {
-    let classes = jdwp.classes_by_signature("Ljava/lang/Throwable;").await.ok()?;
-    let throwable = classes.first()?.type_id;
-    let fields = jdwp.reference_type_fields(throwable).await.ok()?;
-    let field_id = fields
-        .iter()
-        .find(|field| field.name == "detailMessage")
-        .map(|field| field.field_id)?;
+async fn exception_message(
+    jdwp: &JdwpClient,
+    exception: ObjectId,
+    throwable_detail_message_field_cache: &mut Option<Option<u64>>,
+) -> Option<String> {
+    let field_id = throwable_detail_message_field_id(jdwp, throwable_detail_message_field_cache).await?;
 
     let values = jdwp
         .object_reference_get_values(exception, &[field_id])
@@ -2779,6 +2782,25 @@ async fn exception_message(jdwp: &JdwpClient, exception: ObjectId) -> Option<Str
     }
     let message = jdwp.string_reference_value(id).await.ok()?;
     if message.is_empty() { None } else { Some(message) }
+}
+
+async fn throwable_detail_message_field_id(
+    jdwp: &JdwpClient,
+    cache: &mut Option<Option<u64>>,
+) -> Option<u64> {
+    if let Some(cached) = *cache {
+        return cached;
+    }
+
+    let classes = jdwp.classes_by_signature("Ljava/lang/Throwable;").await.ok()?;
+    let throwable = classes.first()?.type_id;
+    let fields = jdwp.reference_type_fields(throwable).await.ok()?;
+    let field_id = fields
+        .iter()
+        .find(|field| field.name == "detailMessage")
+        .map(|field| field.field_id);
+    *cache = Some(field_id);
+    field_id
 }
 
 fn signature_to_object_type_name(sig: &str) -> Option<String> {
