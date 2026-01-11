@@ -289,7 +289,7 @@ fn apply_javac_argument(
 
     match arg {
         "-classpath" | "--class-path" | "-cp" => *pending = Some(PendingJavacArg::Classpath),
-        "--module-path" => *pending = Some(PendingJavacArg::ModulePath),
+        "--module-path" | "-p" => *pending = Some(PendingJavacArg::ModulePath),
         "--release" => *pending = Some(PendingJavacArg::Release),
         "--source" | "-source" => *pending = Some(PendingJavacArg::Source),
         "--target" | "-target" => *pending = Some(PendingJavacArg::Target),
@@ -308,7 +308,10 @@ fn apply_javac_argument(
                 return;
             }
 
-            if let Some(module_path) = other.strip_prefix("--module-path=") {
+            if let Some(module_path) = other
+                .strip_prefix("--module-path=")
+                .or_else(|| other.strip_prefix("-p="))
+            {
                 info.module_path = split_path_list(module_path);
                 return;
             }
@@ -662,7 +665,7 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
                     info.classpath = split_path_list(cp);
                 }
             }
-            "--module-path" => {
+            "--module-path" | "-p" => {
                 if let Some(mp) = it.next() {
                     info.module_path = split_path_list(mp);
                 }
@@ -719,7 +722,10 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
                     continue;
                 }
 
-                if let Some(module_path) = other.strip_prefix("--module-path=") {
+                if let Some(module_path) = other
+                    .strip_prefix("--module-path=")
+                    .or_else(|| other.strip_prefix("-p="))
+                {
                     info.module_path = split_path_list(module_path);
                     continue;
                 }

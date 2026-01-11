@@ -161,6 +161,28 @@ action {
 }
 
 #[test]
+fn parses_module_path_short_form_p() {
+    let output = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:mp"
+  arguments: "javac"
+  arguments: "-p"
+  arguments: "mods:moremods"
+  arguments: "src/main/java/com/example/Hello.java"
+}
+"#;
+
+    let actions = parse_aquery_textproto(output);
+    assert_eq!(actions.len(), 1);
+    let info = extract_java_compile_info(&actions[0]);
+    assert_eq!(
+        info.module_path,
+        vec!["mods".to_string(), "moremods".to_string()]
+    );
+}
+
+#[test]
 fn windows_path_lists_split_on_semicolon() {
     let output = r#"
 action {
