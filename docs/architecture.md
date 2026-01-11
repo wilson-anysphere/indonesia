@@ -66,6 +66,7 @@ The ADRs are normative; these pointers are only meant to make it easy to find th
 - **ADR 0009 (remote RPC protocol)**:
   - `crates/nova-router/src/lib.rs` and `crates/nova-worker/src/main.rs` — router/worker transport (legacy bincode protocol today; will be migrated to v3)
   - `crates/nova-remote-proto/src/lib.rs` — RPC message model + codec (legacy bincode protocol today; v3 CBOR codec/types exist in `crates/nova-remote-proto/src/v3.rs`)
+  - `crates/nova-remote-rpc/` — v3 negotiated transport (handshake, framing, optional compression) intended to supersede the legacy bincode transport
 - **ADR 0010 (extension system)**:
   - `crates/nova-ext/` — extension traits, registry, WASM ABI scaffolding
   - `crates/nova-ide/src/extensions.rs` — IDE integration and aggregation
