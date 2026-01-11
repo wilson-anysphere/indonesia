@@ -216,6 +216,11 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-classpath/testdata/dep.jar")
     }
 
+    fn test_named_module_jar() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../nova-classpath/testdata/named-module.jar")
+    }
+
     #[test]
     fn builds_environment_from_jdk_workspace_and_module_path() {
         let tmp = TempDir::new().unwrap();
@@ -274,9 +279,19 @@ mod tests {
             dependencies: Vec::new(),
         };
 
+        let extra_dir = tmp.path().join("extra-dep-1.2.3");
+        std::fs::create_dir_all(&extra_dir).unwrap();
+
         let jdk = JdkIndex::new();
-        let env = build_jpms_environment(&jdk, Some(&ws), &[ClasspathEntry::Jar(test_dep_jar())])
-            .unwrap();
+        let env = build_jpms_environment(
+            &jdk,
+            Some(&ws),
+            &[
+                ClasspathEntry::Jar(test_dep_jar()),
+                ClasspathEntry::ClassDir(extra_dir),
+            ],
+        )
+        .unwrap();
 
         let java_base = ModuleName::new("java.base");
         assert!(env.graph.get(&java_base).is_some());
@@ -295,8 +310,61 @@ mod tests {
         // Requiring an automatic module makes everything readable (best-effort JPMS semantics).
         assert!(env.graph.can_read(&c, &b));
 
+        // Directory module-path entries without module descriptors become automatic modules.
+        let extra = ModuleName::new("extra.dep");
+        assert!(env
+            .graph
+            .get(&extra)
+            .is_some_and(|info| info.kind == ModuleKind::Automatic));
+
         // The unnamed module reads everything; named modules do not read it.
         assert!(env.graph.can_read(&env.unnamed, &a));
         assert!(!env.graph.can_read(&a, &env.unnamed));
+    }
+
+    #[test]
+    fn workspace_modules_shadow_module_path_modules() {
+        let tmp = TempDir::new().unwrap();
+
+        let mod_root = tmp.path().join("example-mod");
+        std::fs::create_dir_all(&mod_root).unwrap();
+
+        let src = "module example.mod { exports workspace.pkg; }";
+        std::fs::write(mod_root.join("module-info.java"), src).unwrap();
+        let info = lower_module_info_source_strict(src).unwrap();
+
+        let ws = ProjectConfig {
+            workspace_root: tmp.path().to_path_buf(),
+            build_system: BuildSystem::Simple,
+            java: JavaConfig::default(),
+            modules: vec![Module {
+                name: "dummy".to_string(),
+                root: tmp.path().to_path_buf(),
+            }],
+            jpms_modules: vec![JpmsModuleRoot {
+                name: ModuleName::new("example.mod"),
+                root: mod_root.clone(),
+                module_info: mod_root.join("module-info.java"),
+                info,
+            }],
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+        };
+
+        let jdk = JdkIndex::new();
+        let env = build_jpms_environment(
+            &jdk,
+            Some(&ws),
+            &[ClasspathEntry::Jar(test_named_module_jar())],
+        )
+        .unwrap();
+
+        let module = ModuleName::new("example.mod");
+        let info = env.graph.get(&module).expect("workspace module should exist");
+        assert_eq!(info.kind, ModuleKind::Explicit);
+        assert!(info.exports.iter().any(|e| e.package == "workspace.pkg"));
     }
 }
