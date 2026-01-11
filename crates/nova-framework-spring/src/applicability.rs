@@ -10,7 +10,7 @@ use zip::ZipArchive;
 ///
 /// Preference order:
 /// 1) Build-tool dependencies (`ProjectConfig.dependencies`)
-/// 2) Classpath scan fallback (`ProjectConfig.classpath`)
+/// 2) Classpath/module-path scan fallback (`ProjectConfig.classpath`, `ProjectConfig.module_path`)
 pub fn is_spring_applicable(config: &ProjectConfig) -> bool {
     if config
         .dependencies
@@ -24,6 +24,7 @@ pub fn is_spring_applicable(config: &ProjectConfig) -> bool {
     config
         .classpath
         .iter()
+        .chain(config.module_path.iter())
         .any(|entry| classpath_has_spring(entry))
 }
 

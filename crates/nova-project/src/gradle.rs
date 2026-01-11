@@ -34,7 +34,7 @@ pub(crate) fn load_gradle_project(
     let mut output_dirs = Vec::new();
     let mut dependencies = Vec::new();
     let mut classpath = Vec::new();
-    let mut module_path = Vec::new();
+    let mut dependency_entries = Vec::new();
 
     // Best-effort: parse Java level and deps from build scripts.
     let root_java = parse_gradle_java_config(root).unwrap_or_default();
@@ -106,7 +106,7 @@ pub(crate) fn load_gradle_project(
 
     // Add user-provided classpath entries for unresolved dependencies (Gradle).
     for entry in &options.classpath_overrides {
-        classpath.push(ClasspathEntry {
+        dependency_entries.push(ClasspathEntry {
             kind: if entry.extension().is_some_and(|ext| ext == "jar") {
                 ClasspathEntryKind::Jar
             } else {
@@ -118,11 +118,17 @@ pub(crate) fn load_gradle_project(
 
     sort_dedup_source_roots(&mut source_roots);
     sort_dedup_output_dirs(&mut output_dirs);
-    sort_dedup_classpath(&mut module_path);
+    sort_dedup_classpath(&mut dependency_entries);
     sort_dedup_classpath(&mut classpath);
     sort_dedup_dependencies(&mut dependencies);
 
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
+    let (mut module_path, classpath_deps) =
+        crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+    classpath.extend(classpath_deps);
+    sort_dedup_classpath(&mut module_path);
+    sort_dedup_classpath(&mut classpath);
+    let jpms_workspace = crate::jpms::build_jpms_workspace(&jpms_modules, &module_path);
 
     Ok(ProjectConfig {
         workspace_root: root.to_path_buf(),
@@ -130,6 +136,7 @@ pub(crate) fn load_gradle_project(
         java: root_java,
         modules,
         jpms_modules,
+        jpms_workspace,
         source_roots,
         module_path,
         classpath,

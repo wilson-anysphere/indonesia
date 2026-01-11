@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 
@@ -155,6 +156,23 @@ pub struct JpmsModuleRoot {
     pub info: ModuleInfo,
 }
 
+/// JPMS model information for the workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JpmsWorkspace {
+    pub graph: ModuleGraph,
+    /// Root path for each module in the graph.
+    ///
+    /// Workspace modules map to their build-tool module root, while dependency
+    /// modules map to their module-path entry (jar or directory).
+    pub module_roots: BTreeMap<ModuleName, PathBuf>,
+}
+
+impl JpmsWorkspace {
+    pub fn module_root(&self, module: &ModuleName) -> Option<&Path> {
+        self.module_roots.get(module).map(PathBuf::as_path)
+    }
+}
+
 /// An aggregated view of the workspace's build configuration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectConfig {
@@ -165,6 +183,8 @@ pub struct ProjectConfig {
     pub modules: Vec<Module>,
     /// JPMS module roots within this workspace.
     pub jpms_modules: Vec<JpmsModuleRoot>,
+    /// Workspace-level JPMS module graph and module-path metadata.
+    pub jpms_workspace: Option<JpmsWorkspace>,
 
     pub source_roots: Vec<SourceRoot>,
     /// JPMS module-path entries (Java 9+). Dependencies here may be resolved as named modules.
@@ -188,5 +208,23 @@ impl ProjectConfig {
             graph.insert(module.info.clone());
         }
         graph
+    }
+}
+
+impl ProjectConfig {
+    pub fn module_graph(&self) -> Option<&ModuleGraph> {
+        self.jpms_workspace.as_ref().map(|jpms| &jpms.graph)
+    }
+
+    pub fn module_roots(&self) -> Option<&BTreeMap<ModuleName, PathBuf>> {
+        self.jpms_workspace.as_ref().map(|jpms| &jpms.module_roots)
+    }
+
+    pub fn module_root(&self, module: &ModuleName) -> Option<&Path> {
+        self.jpms_workspace.as_ref()?.module_root(module)
+    }
+
+    pub fn readable_modules(&self, module: &ModuleName) -> Option<BTreeSet<ModuleName>> {
+        Some(self.module_graph()?.readable_modules(module))
     }
 }

@@ -113,7 +113,7 @@ pub struct Provides {
 }
 
 /// Workspace-level representation of modules.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ModuleGraph {
     modules: HashMap<ModuleName, ModuleInfo>,
 }

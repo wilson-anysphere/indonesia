@@ -21,7 +21,7 @@ pub(crate) fn load_maven_project(
     let mut output_dirs = Vec::new();
     let mut dependencies = Vec::new();
     let mut classpath = Vec::new();
-    let mut module_path = Vec::new();
+    let mut dependency_entries = Vec::new();
 
     let root_effective = Arc::new(EffectivePom::from_raw(&root_pom, None));
     let mut discovered_modules =
@@ -120,7 +120,7 @@ pub(crate) fn load_maven_project(
             dependencies.push(dep.clone());
 
             if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, &dep) {
-                classpath.push(ClasspathEntry {
+                dependency_entries.push(ClasspathEntry {
                     kind: ClasspathEntryKind::Jar,
                     path: jar_path,
                 });
@@ -138,11 +138,17 @@ pub(crate) fn load_maven_project(
     sort_dedup_modules(&mut modules);
     sort_dedup_source_roots(&mut source_roots);
     sort_dedup_output_dirs(&mut output_dirs);
-    sort_dedup_classpath(&mut module_path);
+    sort_dedup_classpath(&mut dependency_entries);
     sort_dedup_classpath(&mut classpath);
     sort_dedup_dependencies(&mut dependencies);
 
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
+    let (mut module_path, classpath_deps) =
+        crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+    classpath.extend(classpath_deps);
+    sort_dedup_classpath(&mut module_path);
+    sort_dedup_classpath(&mut classpath);
+    let jpms_workspace = crate::jpms::build_jpms_workspace(&jpms_modules, &module_path);
 
     Ok(ProjectConfig {
         workspace_root: root.to_path_buf(),
@@ -150,6 +156,7 @@ pub(crate) fn load_maven_project(
         java,
         modules,
         jpms_modules,
+        jpms_workspace,
         source_roots,
         module_path,
         classpath,

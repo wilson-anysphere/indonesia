@@ -521,7 +521,12 @@ impl Workspace {
             .map(|d| format!("{}:{}", d.group_id, d.artifact_id))
             .collect();
         let dep_refs: Vec<&str> = dep_strings.iter().map(String::as_str).collect();
-        let classpath: Vec<&Path> = config.classpath.iter().map(|e| e.path.as_path()).collect();
+        let classpath: Vec<&Path> = config
+            .classpath
+            .iter()
+            .chain(config.module_path.iter())
+            .map(|e| e.path.as_path())
+            .collect();
         let texts: Vec<&str> = sources.iter().map(|(_, text)| text.as_str()).collect();
 
         if !nova_framework_jpa::is_jpa_applicable_with_classpath(&dep_refs, &classpath, &texts) {

@@ -33,9 +33,9 @@ pub(crate) fn load_simple_project(
 
     crate::generated::append_generated_source_roots(&mut source_roots, root, &options.nova_config);
 
-    let mut classpath = Vec::new();
+    let mut dependency_entries = Vec::new();
     for entry in &options.classpath_overrides {
-        classpath.push(ClasspathEntry {
+        dependency_entries.push(ClasspathEntry {
             kind: if entry.extension().is_some_and(|ext| ext == "jar") {
                 ClasspathEntryKind::Jar
             } else {
@@ -52,8 +52,8 @@ pub(crate) fn load_simple_project(
             .then(a.origin.cmp(&b.origin))
     });
     source_roots.dedup_by(|a, b| a.kind == b.kind && a.origin == b.origin && a.path == b.path);
-    classpath.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
-    classpath.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+    dependency_entries.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
+    dependency_entries.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
 
     let modules = vec![Module {
         name: root
@@ -64,6 +64,13 @@ pub(crate) fn load_simple_project(
         root: root.to_path_buf(),
     }];
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
+    let (mut module_path, mut classpath) =
+        crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+    classpath.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
+    classpath.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+    module_path.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
+    module_path.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+    let jpms_workspace = crate::jpms::build_jpms_workspace(&jpms_modules, &module_path);
 
     Ok(ProjectConfig {
         workspace_root: root.to_path_buf(),
@@ -71,8 +78,9 @@ pub(crate) fn load_simple_project(
         java: JavaConfig::default(),
         modules,
         jpms_modules,
+        jpms_workspace,
         source_roots,
-        module_path: Vec::new(),
+        module_path,
         classpath,
         output_dirs: Vec::new(),
         dependencies: Vec::new(),

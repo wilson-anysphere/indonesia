@@ -4002,10 +4002,13 @@ name = "nova-project"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "nova-archive",
  "nova-build-bazel",
+ "nova-classfile",
  "nova-config",
  "nova-hir",
  "nova-modules",
+ "nova-syntax",
  "regex",
  "roxmltree",
  "serde",

@@ -81,9 +81,9 @@ fn load_bazel_project_heuristic(
 
     crate::generated::append_generated_source_roots(&mut source_roots, root, &options.nova_config);
 
-    let mut classpath = Vec::new();
+    let mut dependency_entries = Vec::new();
     for entry in &options.classpath_overrides {
-        classpath.push(ClasspathEntry {
+        dependency_entries.push(ClasspathEntry {
             kind: if entry.extension().is_some_and(|ext| ext == "jar") {
                 ClasspathEntryKind::Jar
             } else {
@@ -94,7 +94,7 @@ fn load_bazel_project_heuristic(
     }
 
     sort_dedup_source_roots(&mut source_roots);
-    sort_dedup_classpath(&mut classpath);
+    sort_dedup_classpath(&mut dependency_entries);
 
     let modules = vec![Module {
         name: root
@@ -105,6 +105,13 @@ fn load_bazel_project_heuristic(
         root: root.to_path_buf(),
     }];
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
+    let (mut module_path, mut classpath) =
+        crate::jpms::classify_dependency_entries(&jpms_modules, dependency_entries);
+    classpath.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
+    classpath.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+    module_path.sort_by(|a, b| a.path.cmp(&b.path).then(a.kind.cmp(&b.kind)));
+    module_path.dedup_by(|a, b| a.kind == b.kind && a.path == b.path);
+    let jpms_workspace = crate::jpms::build_jpms_workspace(&jpms_modules, &module_path);
 
     Ok(ProjectConfig {
         workspace_root: root.to_path_buf(),
@@ -112,8 +119,9 @@ fn load_bazel_project_heuristic(
         java: JavaConfig::default(),
         modules,
         jpms_modules,
+        jpms_workspace,
         source_roots,
-        module_path: Vec::new(),
+        module_path,
         classpath,
         output_dirs: Vec::new(),
         dependencies: Vec::new(),
@@ -246,6 +254,7 @@ fn project_config_from_workspace_model(
         root: root.to_path_buf(),
     }];
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules);
+    let jpms_workspace = crate::jpms::build_jpms_workspace(&jpms_modules, &module_path);
 
     ProjectConfig {
         workspace_root: root.to_path_buf(),
@@ -253,6 +262,7 @@ fn project_config_from_workspace_model(
         java: JavaConfig::default(),
         modules,
         jpms_modules,
+        jpms_workspace,
         source_roots,
         module_path,
         classpath,
@@ -293,10 +303,19 @@ fn module_config_from_compile_info(
     sort_dedup_classpath(&mut classpath);
     sort_dedup_classpath(&mut module_path);
 
+    let release = info.release.as_deref().and_then(JavaVersion::parse);
+    let (source, target_level) = if release.is_some() {
+        (None, None)
+    } else {
+        (
+            info.source.as_deref().and_then(JavaVersion::parse),
+            info.target.as_deref().and_then(JavaVersion::parse),
+        )
+    };
     let language_level = JavaLanguageLevel {
-        release: info.release.as_deref().and_then(JavaVersion::parse),
-        source: info.source.as_deref().and_then(JavaVersion::parse),
-        target: info.target.as_deref().and_then(JavaVersion::parse),
+        release,
+        source,
+        target: target_level,
         preview: info.preview,
     };
 

@@ -133,6 +133,7 @@ fn applicability_detects_spring_via_classpath_marker() {
         java: JavaConfig::default(),
         modules: vec![],
         jpms_modules: vec![],
+        jpms_workspace: None,
         source_roots: vec![],
         module_path: vec![],
         classpath: vec![ClasspathEntry {
