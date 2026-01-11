@@ -207,6 +207,15 @@ def check_perf_docs() -> list[str]:
 
     errors: list[str] = []
 
+    # Perf config files that are part of the workflow/tooling contract.
+    threshold_paths = [
+        "perf/thresholds.toml",
+        "perf/runtime-thresholds.toml",
+    ]
+    for rel in threshold_paths:
+        if not (REPO_ROOT / rel).exists():
+            errors.append(f"expected {rel} to exist")
+
     for crate, bench in suites:
         bench_path = f"crates/{crate}/benches/{bench}.rs"
         bench_file = REPO_ROOT / bench_path
@@ -234,6 +243,11 @@ def check_perf_docs() -> list[str]:
                 f"{doc_path.relative_to(REPO_ROOT)} mentions bench paths not gated by `.github/workflows/perf.yml`: "
                 + ", ".join(extra)
             )
+        for rel in threshold_paths:
+            if rel not in doc:
+                errors.append(
+                    f"{doc_path.relative_to(REPO_ROOT)} does not mention {rel} (perf tooling config)"
+                )
 
     if not perf_readme.exists():
         errors.append("expected perf/README.md to exist")
@@ -256,6 +270,9 @@ def check_perf_docs() -> list[str]:
                 "perf/README.md includes bench commands not gated by `.github/workflows/perf.yml`: "
                 + ", ".join(f"{crate}::{bench}" for crate, bench in extra_suites)
             )
+        for rel in threshold_paths:
+            if rel not in perf_doc:
+                errors.append(f"perf/README.md does not mention {rel} (perf tooling config)")
 
     return errors
 
