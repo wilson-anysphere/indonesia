@@ -221,6 +221,7 @@ enum WordKind {
     Default,
     Modifier,
     New,
+    ExprStart,
     Other,
 }
 
@@ -239,6 +240,7 @@ fn word_info(text: &str) -> WordInfo {
         "case" => WordKind::Case,
         "default" => WordKind::Default,
         "new" => WordKind::New,
+        "return" | "yield" | "throw" | "assert" => WordKind::ExprStart,
         "public" | "protected" | "private" | "static" | "final" | "abstract" | "native"
         | "strictfp" | "transient" | "volatile" | "sealed" | "non" | "record" => WordKind::Modifier,
         _ => WordKind::Other,
@@ -573,7 +575,7 @@ impl<'a> FormatState<'a> {
                 WordKind::Other | WordKind::Switch | WordKind::For | WordKind::Try => {
                     info.type_like
                 }
-                WordKind::Case | WordKind::Default | WordKind::Control => false,
+                WordKind::Case | WordKind::Default | WordKind::Control | WordKind::ExprStart => false,
             },
             Some(SigToken::Punct(p)) => matches!(
                 p,
@@ -645,11 +647,41 @@ impl<'a> FormatState<'a> {
                     | Punct::Colon
                     | Punct::Question
                     | Punct::Arrow
+                    | Punct::Plus
+                    | Punct::Minus
+                    | Punct::Star
+                    | Punct::Slash
+                    | Punct::Percent
+                    | Punct::Amp
+                    | Punct::Pipe
+                    | Punct::Caret
+                    | Punct::EqEq
+                    | Punct::BangEq
+                    | Punct::Less
+                    | Punct::LessEq
+                    | Punct::Greater
+                    | Punct::GreaterEq
+                    | Punct::AmpAmp
+                    | Punct::PipePipe
+                    | Punct::PlusEq
+                    | Punct::MinusEq
+                    | Punct::StarEq
+                    | Punct::SlashEq
+                    | Punct::PercentEq
+                    | Punct::AmpEq
+                    | Punct::PipeEq
+                    | Punct::CaretEq
+                    | Punct::LeftShift
+                    | Punct::RightShift
+                    | Punct::UnsignedRightShift
+                    | Punct::LeftShiftEq
+                    | Punct::RightShiftEq
+                    | Punct::UnsignedRightShiftEq
             ),
             Some(SigToken::Word(info)) => {
                 matches!(
                     info.kind,
-                    WordKind::Control | WordKind::For | WordKind::Switch
+                    WordKind::Control | WordKind::For | WordKind::Switch | WordKind::ExprStart
                 )
             }
             Some(SigToken::Comment) => true,
@@ -1870,6 +1902,37 @@ fn write_token(
                 state.last_sig = Some(sig);
                 state.pending_case_label = false;
             }
+            Punct::Plus | Punct::Minus => {
+                let prev = state.last_sig;
+                let unary = FormatState::is_unary_context(prev);
+                state.write_indent();
+
+                if unary {
+                    if should_space_before_unary(prev) {
+                        state.ensure_space();
+                    }
+                    punct.push_to(&mut state.out);
+                    state.line_len += punct.len();
+                    state.last_sig = Some(SigToken::Punct(*punct));
+                } else {
+                    // Binary +/-
+                    state.ensure_space();
+                    let next_len = next.map(|t| t.display_len()).unwrap_or(0);
+                    state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
+                    punct.push_to(&mut state.out);
+                    state.line_len += punct.len();
+                    if next.is_some()
+                        && !matches!(
+                            next,
+                            Some(Token::Punct(p)) if p.is_closing_delim() || p.is_chain_separator()
+                        )
+                    {
+                        state.ensure_space();
+                    }
+                    state.last_sig = Some(SigToken::Punct(*punct));
+                }
+                state.pending_new = false;
+            }
             Punct::PlusPlus | Punct::MinusMinus | Punct::Bang | Punct::Tilde => {
                 state.write_indent();
                 let sig = SigToken::Punct(*punct);
@@ -1955,6 +2018,16 @@ fn is_inline_brace_open(state: &FormatState<'_>, prev: Option<SigToken>) -> bool
         Some(SigToken::Punct(Punct::Comma)) => inside_inline,
         Some(SigToken::Punct(Punct::LBrace)) => inside_inline,
         _ => false,
+    }
+}
+
+fn should_space_before_unary(prev: Option<SigToken>) -> bool {
+    match prev {
+        None => false,
+        Some(SigToken::Punct(p)) => {
+            !(p.is_opening_delim() || p.is_chain_separator() || p == Punct::At)
+        }
+        Some(SigToken::Word(_) | SigToken::Literal | SigToken::GenericClose { .. } | SigToken::Comment) => true,
     }
 }
 

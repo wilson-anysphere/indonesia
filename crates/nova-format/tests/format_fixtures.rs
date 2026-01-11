@@ -233,6 +233,15 @@ fn snapshot_for_each_loops() {
 }
 
 #[test]
+fn snapshot_unary_operators() {
+    let input = include_str!("fixtures/unary_operators.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("unary_operators", formatted);
+    assert_idempotent("unary_operators", input, &config);
+}
+
+#[test]
 fn on_type_formatting_triggers_inside_argument_lists() {
     let input = "class A {\n    void m() {\nfoo(1,2);\n    }\n}\n";
     let tree = parse(input);
