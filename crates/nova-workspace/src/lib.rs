@@ -202,6 +202,10 @@ impl Workspace {
 
     /// Index a project and persist the resulting artifacts into Nova's persistent cache.
     pub fn index_and_write_cache(&self) -> Result<IndexReport> {
+        if let Some(report) = self.try_index_and_write_cache_fast()? {
+            return Ok(report);
+        }
+
         let shard_count = DEFAULT_SHARD_COUNT;
         let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes()?;
         if metrics.files_invalidated > 0 {
@@ -215,6 +219,71 @@ impl Workspace {
             cache_root: cache_dir.root().to_path_buf(),
             metrics,
         })
+    }
+
+    fn try_index_and_write_cache_fast(&self) -> Result<Option<IndexReport>> {
+        let start = Instant::now();
+
+        let cache_dir = self.open_cache_dir()?;
+        let metadata_path = cache_dir.metadata_path();
+        if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
+            return Ok(None);
+        }
+
+        let files = self.project_java_files()?;
+        let snapshot_start = Instant::now();
+        let stamp_snapshot = ProjectSnapshot::new_fast(&self.root, files).with_context(|| {
+            format!(
+                "failed to build file stamp snapshot for {}",
+                self.root.display()
+            )
+        })?;
+        let snapshot_ms = snapshot_start.elapsed().as_millis();
+
+        // Fast path: check if the existing cache is reusable without allocating the in-memory
+        // indexes. This is used by `nova index` / cache warming where the caller doesn't need to
+        // query symbols immediately.
+        let shard_count = DEFAULT_SHARD_COUNT;
+        let loaded = load_sharded_index_archives_from_fast_snapshot(
+            &cache_dir,
+            &stamp_snapshot,
+            shard_count,
+        )
+        .context("failed to load cached indexes")?;
+        let Some(loaded) = loaded else {
+            return Ok(None);
+        };
+        if !loaded.invalidated_files.is_empty() {
+            return Ok(None);
+        }
+
+        let symbols_indexed = self
+            .read_cache_perf(&cache_dir)
+            .ok()
+            .flatten()
+            .map(|perf| perf.symbols_indexed)
+            .unwrap_or(0);
+
+        let metrics = PerfMetrics {
+            files_total: stamp_snapshot.file_fingerprints().len(),
+            files_indexed: 0,
+            bytes_indexed: 0,
+            files_invalidated: 0,
+            symbols_indexed,
+            snapshot_ms,
+            index_ms: 0,
+            elapsed_ms: start.elapsed().as_millis(),
+            rss_bytes: current_rss_bytes(),
+        };
+
+        self.write_cache_perf(&cache_dir, &metrics)?;
+
+        Ok(Some(IndexReport {
+            root: stamp_snapshot.project_root().to_path_buf(),
+            project_hash: stamp_snapshot.project_hash().as_str().to_string(),
+            cache_root: cache_dir.root().to_path_buf(),
+            metrics,
+        }))
     }
 
     fn build_indexes(
