@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use crate::edit::{FileId as RefactorFileId, FileOp, TextEdit as WorkspaceTextEdit, TextRange, WorkspaceEdit};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMove {
     pub old_path: PathBuf,
@@ -42,6 +44,61 @@ impl RefactoringEdit {
         for edit in &self.file_edits {
             files.insert(edit.path.clone(), edit.new_contents.clone());
         }
+    }
+
+    /// Convert this edit into Nova's canonical [`WorkspaceEdit`] representation.
+    ///
+    /// The canonical model expresses changes as:
+    /// - file operations (`rename`/`create`/`delete`)
+    /// - byte-offset text edits (`replace`/`insert`/`delete`)
+    ///
+    /// This conversion preserves the behavior of `apply_to(..., apply_file_ops=true)`: file moves
+    /// become `Rename` file ops, and each touched file is rewritten as a single full-document
+    /// replacement edit.
+    pub fn to_workspace_edit(
+        &self,
+        original_files: &BTreeMap<PathBuf, String>,
+    ) -> Result<WorkspaceEdit, crate::edit::EditError> {
+        let mut out = WorkspaceEdit {
+            file_ops: Vec::new(),
+            text_edits: Vec::new(),
+        };
+
+        for mv in &self.file_moves {
+            let from = RefactorFileId::new(mv.old_path.to_string_lossy().into_owned());
+            let to = RefactorFileId::new(mv.new_path.to_string_lossy().into_owned());
+
+            let old_contents = original_files
+                .get(&mv.old_path)
+                .ok_or_else(|| crate::edit::EditError::UnknownFile(from.clone()))?;
+
+            out.file_ops.push(FileOp::Rename {
+                from: from.clone(),
+                to: to.clone(),
+            });
+
+            out.text_edits.push(WorkspaceTextEdit::replace(
+                to,
+                TextRange::new(0, old_contents.len()),
+                mv.new_contents.clone(),
+            ));
+        }
+
+        for fe in &self.file_edits {
+            let file = RefactorFileId::new(fe.path.to_string_lossy().into_owned());
+            let old_contents = original_files
+                .get(&fe.path)
+                .ok_or_else(|| crate::edit::EditError::UnknownFile(file.clone()))?;
+
+            out.text_edits.push(WorkspaceTextEdit::replace(
+                file,
+                TextRange::new(0, old_contents.len()),
+                fe.new_contents.clone(),
+            ));
+        }
+
+        out.normalize()?;
+        Ok(out)
     }
 }
 

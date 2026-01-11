@@ -107,13 +107,15 @@ impl InMemoryJavaDatabase {
     }
 
     pub fn symbol_at(&self, file: &FileId, offset: usize) -> Option<SymbolId> {
-        self.spans.iter().find_map(|(span_file, range, symbol)| {
-            if span_file == file && range.contains(offset) {
-                Some(*symbol)
-            } else {
-                None
-            }
-        })
+        self.spans
+            .iter()
+            .find_map(|(span_file, range, symbol)| {
+                if span_file == file && range.start <= offset && offset < range.end {
+                    Some(*symbol)
+                } else {
+                    None
+                }
+            })
     }
 
     pub fn symbol_kind(&self, symbol: SymbolId) -> Option<JavaSymbolKind> {

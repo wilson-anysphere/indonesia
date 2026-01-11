@@ -9,6 +9,19 @@
 //! - Inline Method for simple private methods (`inline_method`)
 //! - Convert a data class to a Java record (`convert_to_record`)
 //!
+//! ## Canonical edit model
+//!
+//! Nova refactorings are converging on a single, canonical edit representation:
+//! [`WorkspaceEdit`]. A workspace edit contains:
+//! - optional file operations (rename/create/delete)
+//! - byte-offset text edits (replace/insert/delete) across one or more files
+//!
+//! Many refactorings in this crate still return legacy edit types (for example
+//! `safe_delete::TextEdit` or `move_java::RefactoringEdit`). Those APIs are kept
+//! temporarily to allow incremental migration, but conversion helpers exist so
+//! all refactorings can ultimately be piped through the same preview/conflict/LSP
+//! conversion code.
+//!
 //! Additionally, the crate contains a small semantic refactoring engine used for
 //! early experiments. It models changes as [`SemanticChange`] values and
 //! materializes deterministic, previewable [`WorkspaceEdit`]s.
@@ -59,11 +72,11 @@ pub use nova_index::TextRange;
 // Semantic refactoring engine API (renamed to avoid clashing with `nova_index::TextRange` and
 // the move refactoring error type).
 pub use edit::{
-    apply_text_edits, FileId, TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange,
-    WorkspaceEdit,
+    apply_text_edits, apply_workspace_edit, FileId, FileOp, RefactorFileId,
+    TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange, WorkspaceEdit,
 };
 pub use java::{InMemoryJavaDatabase, JavaSymbolKind, SymbolId};
-pub use lsp::{code_action_for_edit, workspace_edit_to_lsp};
+pub use lsp::{code_action_for_edit, workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes};
 pub use materialize::{materialize, MaterializeError};
 pub use preview::{generate_preview, FilePreview, RefactoringPreview};
 pub use refactorings::{
