@@ -1115,6 +1115,10 @@ impl TypePattern {
         support::ident_token(&self.syntax)
     }
 
+    pub fn unnamed_pattern(&self) -> Option<UnnamedPattern> {
+        support::child::<UnnamedPattern>(&self.syntax)
+    }
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1149,6 +1153,25 @@ impl RecordPattern {
         support::children::<Pattern>(&self.syntax)
     }
 
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnnamedPattern {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for UnnamedPattern {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::UnnamedPattern
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

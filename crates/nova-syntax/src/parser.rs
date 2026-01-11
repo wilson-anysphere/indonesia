@@ -2094,6 +2094,15 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::Eof
         ) {
             self.error_here("expected binding identifier");
+        } else if self.at(SyntaxKind::Identifier)
+            && self
+                .tokens
+                .front()
+                .is_some_and(|tok| tok.text(self.input) == "_")
+        {
+            self.builder.start_node(SyntaxKind::UnnamedPattern.into());
+            self.bump();
+            self.builder.finish_node();
         } else if allow_guard
             && self.at(SyntaxKind::WhenKw)
             // In a switch case label, `when` introduces a guard if it is followed by an expression.
