@@ -73,6 +73,15 @@ pub struct ProjectIndexesView {
     pub overlay: ProjectIndexes,
 }
 
+/// A lightweight, allocation-free view of a location stored in either a
+/// persisted archive or the in-memory overlay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LocationRef<'a> {
+    pub file: &'a str,
+    pub line: u32,
+    pub column: u32,
+}
+
 impl ProjectIndexesView {
     /// Returns `true` if `file` should be treated as stale and filtered out of
     /// archived query results.
@@ -116,6 +125,38 @@ impl ProjectIndexesView {
             })
     }
 
+    /// Returns symbol definition locations for `name`, merging persisted results
+    /// (with invalidated files filtered out) and the in-memory overlay.
+    ///
+    /// This is useful for incremental indexing flows where callers want to
+    /// query updated files (stored in `overlay`) without materializing the full
+    /// persisted index into memory.
+    pub fn symbol_locations_merged<'a>(
+        &'a self,
+        name: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let archived = self.symbol_locations(name).map(|loc| LocationRef {
+            file: loc.file.as_str(),
+            line: loc.line,
+            column: loc.column,
+        });
+
+        let overlay = self
+            .overlay
+            .symbols
+            .symbols
+            .get(name)
+            .into_iter()
+            .flat_map(|locations| locations.iter())
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            });
+
+        archived.chain(overlay)
+    }
+
     /// Returns annotation locations for `name`, filtering out any locations
     /// that come from invalidated files.
     pub fn annotation_locations<'a>(
@@ -133,6 +174,34 @@ impl ProjectIndexesView {
                     .iter()
                     .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
             })
+    }
+
+    /// Returns annotation locations for `name`, merging persisted results (with
+    /// invalidated files filtered out) and the in-memory overlay.
+    pub fn annotation_locations_merged<'a>(
+        &'a self,
+        name: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let archived = self.annotation_locations(name).map(|loc| LocationRef {
+            file: loc.file.as_str(),
+            line: loc.line,
+            column: loc.column,
+        });
+
+        let overlay = self
+            .overlay
+            .annotations
+            .annotations
+            .get(name)
+            .into_iter()
+            .flat_map(|locations| locations.iter())
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            });
+
+        archived.chain(overlay)
     }
 
     /// Returns all annotation names that have at least one location in a
@@ -168,6 +237,34 @@ impl ProjectIndexesView {
                     .iter()
                     .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
             })
+    }
+
+    /// Returns reference locations for `symbol`, merging persisted results
+    /// (with invalidated files filtered out) and the in-memory overlay.
+    pub fn reference_locations_merged<'a>(
+        &'a self,
+        symbol: &str,
+    ) -> impl Iterator<Item = LocationRef<'a>> + 'a {
+        let archived = self.reference_locations(symbol).map(|loc| LocationRef {
+            file: loc.file.as_str(),
+            line: loc.line,
+            column: loc.column,
+        });
+
+        let overlay = self
+            .overlay
+            .references
+            .references
+            .get(symbol)
+            .into_iter()
+            .flat_map(|locations| locations.iter())
+            .map(|loc| LocationRef {
+                file: loc.file.as_str(),
+                line: loc.line,
+                column: loc.column,
+            });
+
+        archived.chain(overlay)
     }
 
     /// Returns all symbols that have at least one reference location in a
