@@ -85,6 +85,29 @@ pub struct LocationRef<'a> {
     pub column: u32,
 }
 
+fn merge_sorted_dedup<'a, L, R>(left: L, right: R) -> impl Iterator<Item = &'a str> + 'a
+where
+    L: Iterator<Item = &'a str> + 'a,
+    R: Iterator<Item = &'a str> + 'a,
+{
+    let mut left = left.peekable();
+    let mut right = right.peekable();
+    std::iter::from_fn(move || match (left.peek(), right.peek()) {
+        (Some(&a), Some(&b)) => match a.cmp(b) {
+            std::cmp::Ordering::Less => left.next(),
+            std::cmp::Ordering::Greater => right.next(),
+            std::cmp::Ordering::Equal => {
+                let item = left.next();
+                right.next();
+                item
+            }
+        },
+        (Some(_), None) => left.next(),
+        (None, Some(_)) => right.next(),
+        (None, None) => None,
+    })
+}
+
 impl ProjectIndexesView {
     /// Returns `true` if `file` should be treated as stale and filtered out of
     /// archived query results.
@@ -107,6 +130,19 @@ impl ProjectIndexesView {
                     .any(|loc| !invalidated_files.contains(loc.file.as_str()))
                     .then(|| name.as_str())
             })
+    }
+
+    /// Returns all symbol names from both persisted archives (filtering out
+    /// invalidated files) and the in-memory overlay.
+    pub fn symbol_names_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        merge_sorted_dedup(
+            self.symbol_names(),
+            self.overlay
+                .symbols
+                .symbols
+                .keys()
+                .map(|name| name.as_str()),
+        )
     }
 
     /// Returns symbol definition locations for `name`, filtering out any
@@ -223,6 +259,19 @@ impl ProjectIndexesView {
             })
     }
 
+    /// Returns all annotation names from both persisted archives (filtering out
+    /// invalidated files) and the in-memory overlay.
+    pub fn annotation_names_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        merge_sorted_dedup(
+            self.annotation_names(),
+            self.overlay
+                .annotations
+                .annotations
+                .keys()
+                .map(|name| name.as_str()),
+        )
+    }
+
     /// Returns reference locations for `symbol`, filtering out any locations
     /// that come from invalidated files.
     pub fn reference_locations<'a>(
@@ -284,6 +333,19 @@ impl ProjectIndexesView {
                     .any(|loc| !invalidated_files.contains(loc.file.as_str()))
                     .then(|| symbol.as_str())
             })
+    }
+
+    /// Returns all referenced symbols from both persisted archives (filtering
+    /// out invalidated files) and the in-memory overlay.
+    pub fn referenced_symbols_merged<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
+        merge_sorted_dedup(
+            self.referenced_symbols(),
+            self.overlay
+                .references
+                .references
+                .keys()
+                .map(|name| name.as_str()),
+        )
     }
 }
 

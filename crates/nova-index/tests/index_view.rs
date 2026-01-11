@@ -151,13 +151,30 @@ fn index_view_filters_invalidated_files_without_materializing() {
 
     // Simulate re-indexing the invalidated file by adding updated results to
     // the in-memory overlay; merged queries should now include both B.java
-    // (persisted) and A.java (overlay).
+    // (persisted) and A.java (overlay), and should also surface any new keys
+    // introduced by the updated file.
     view_v2.overlay.symbols.insert(
         "Foo",
         SymbolLocation {
             file: "A.java".to_string(),
             line: 2,
             column: 1,
+        },
+    );
+    view_v2.overlay.symbols.insert(
+        "OnlyA",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 2,
+            column: 1,
+        },
+    );
+    view_v2.overlay.symbols.insert(
+        "NewInA",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 2,
+            column: 10,
         },
     );
     view_v2.overlay.references.insert(
@@ -168,12 +185,44 @@ fn index_view_filters_invalidated_files_without_materializing() {
             column: 1,
         },
     );
+    view_v2.overlay.references.insert(
+        "OnlyA",
+        ReferenceLocation {
+            file: "A.java".to_string(),
+            line: 2,
+            column: 1,
+        },
+    );
+    view_v2.overlay.references.insert(
+        "NewInA",
+        ReferenceLocation {
+            file: "A.java".to_string(),
+            line: 2,
+            column: 10,
+        },
+    );
     view_v2.overlay.annotations.insert(
         "@Deprecated",
         AnnotationLocation {
             file: "A.java".to_string(),
             line: 2,
             column: 1,
+        },
+    );
+    view_v2.overlay.annotations.insert(
+        "@OnlyA",
+        AnnotationLocation {
+            file: "A.java".to_string(),
+            line: 2,
+            column: 1,
+        },
+    );
+    view_v2.overlay.annotations.insert(
+        "@NewInA",
+        AnnotationLocation {
+            file: "A.java".to_string(),
+            line: 2,
+            column: 10,
         },
     );
 
@@ -183,17 +232,42 @@ fn index_view_filters_invalidated_files_without_materializing() {
         .collect();
     assert_eq!(merged_symbol_files, vec!["B.java", "A.java"]);
 
+    let merged_only_a_files: Vec<&str> = view_v2
+        .symbol_locations_merged("OnlyA")
+        .map(|loc| loc.file)
+        .collect();
+    assert_eq!(merged_only_a_files, vec!["A.java"]);
+
     let merged_reference_files: Vec<&str> = view_v2
         .reference_locations_merged("Foo")
         .map(|loc| loc.file)
         .collect();
     assert_eq!(merged_reference_files, vec!["B.java", "A.java"]);
 
+    let merged_new_refs: Vec<&str> = view_v2
+        .reference_locations_merged("NewInA")
+        .map(|loc| loc.file)
+        .collect();
+    assert_eq!(merged_new_refs, vec!["A.java"]);
+
     let merged_annotation_files: Vec<&str> = view_v2
         .annotation_locations_merged("@Deprecated")
         .map(|loc| loc.file)
         .collect();
     assert_eq!(merged_annotation_files, vec!["B.java", "A.java"]);
+
+    assert_eq!(
+        view_v2.symbol_names_merged().collect::<Vec<_>>(),
+        vec!["Foo", "NewInA", "OnlyA"]
+    );
+    assert_eq!(
+        view_v2.referenced_symbols_merged().collect::<Vec<_>>(),
+        vec!["Foo", "NewInA", "OnlyA"]
+    );
+    assert_eq!(
+        view_v2.annotation_names_merged().collect::<Vec<_>>(),
+        vec!["@Deprecated", "@NewInA", "@OnlyA"]
+    );
 
     assert_eq!(view_v2.symbol_names().collect::<Vec<_>>(), vec!["Foo"]);
     assert_eq!(
