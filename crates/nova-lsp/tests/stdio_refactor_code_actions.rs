@@ -183,6 +183,164 @@ fn stdio_server_resolves_extract_constant_code_action() {
 }
 
 #[test]
+fn stdio_server_resolves_extract_field_code_action() {
+    let temp = TempDir::new().expect("tempdir");
+    let file_path = temp.path().join("Test.java");
+
+    let source = "class C {\n    void m() {\n        int x = 1 + 2;\n    }\n}\n";
+    fs::write(&file_path, source).expect("write file");
+
+    let uri = Uri::from_file_path(&file_path).expect("uri");
+
+    let expr_start = source.find("1 + 2").expect("expression start");
+    let expr_end = expr_start + "1 + 2".len();
+    let index = LineIndex::new(source);
+    let start = index.position(source, TextSize::from(expr_start as u32));
+    let end = index.position(source, TextSize::from(expr_end as u32));
+    let range = Range::new(
+        Position::new(start.line, start.character),
+        Position::new(end.line, end.character),
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": range,
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let code_action_resp = read_jsonrpc_message(&mut stdout);
+    let actions = code_action_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+    let extract_field = actions
+        .iter()
+        .find(|action| action.get("title").and_then(|v| v.as_str()) == Some("Extract field"))
+        .expect("extract field action");
+
+    assert!(
+        extract_field.get("data").is_some(),
+        "expected extract field to carry `data`"
+    );
+    let uri_string = uri.to_string();
+    assert_eq!(
+        extract_field
+            .get("data")
+            .and_then(|data| data.get("uri"))
+            .and_then(|uri| uri.as_str()),
+        Some(uri_string.as_str()),
+        "expected extract field `data.uri` to round-trip for codeAction/resolve"
+    );
+    assert!(
+        extract_field.get("edit").is_none(),
+        "expected extract field to be unresolved (no `edit`)"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "codeAction/resolve",
+            "params": extract_field.clone()
+        }),
+    );
+
+    let resolve_resp = read_jsonrpc_message(&mut stdout);
+    let resolved: CodeAction =
+        serde_json::from_value(resolve_resp.get("result").cloned().expect("result"))
+            .expect("decode resolved CodeAction");
+
+    let edit = resolved.edit.expect("resolved edit");
+    let changes = edit.changes.expect("changes");
+    let edits = changes.get(&uri).expect("edits for file");
+    let updated = apply_lsp_text_edits(source, edits);
+
+    let field_edit = edits
+        .iter()
+        .find(|e| e.new_text.contains("private final"))
+        .expect("field insertion edit");
+    let name = field_edit
+        .new_text
+        .split("private final int ")
+        .nth(1)
+        .and_then(|rest| rest.split('=').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .expect("field name");
+
+    assert!(
+        updated.contains(&format!("private final int {name} = 1 + 2;")),
+        "expected extracted field declaration"
+    );
+    assert!(
+        updated.contains(&format!("int x = {name};")),
+        "expected initializer replaced with field reference"
+    );
+    assert!(
+        !updated.contains("int x = 1 + 2;"),
+        "expected original expression to be replaced"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
 fn stdio_server_offers_convert_to_record_code_action() {
     let temp = TempDir::new().expect("tempdir");
     let file_path = temp.path().join("Point.java");
