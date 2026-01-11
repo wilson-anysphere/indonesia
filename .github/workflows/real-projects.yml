@@ -51,10 +51,12 @@ jobs:
         id: test-projects-cache
         uses: actions/cache/restore@v4
         with:
-          path: test-projects
-          key: test-projects-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
+          # Cache only the fixture repositories (not the pinned metadata files in the
+          # `test-projects/` root) to avoid overwriting `pins.toml` on restore.
+          path: test-projects/*/
+          key: test-projects-v2-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
           restore-keys: |
-            test-projects-${{ runner.os }}-
+            test-projects-v2-${{ runner.os }}-
 
       - name: Run real project tests
         env:
@@ -88,8 +90,8 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
-          path: test-projects
-          key: test-projects-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
+          path: test-projects/*/
+          key: test-projects-v2-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
 
       - name: Upload logs
         if: always()
