@@ -433,6 +433,25 @@ mod tests {
     }
 
     #[test]
+    fn jar_constructor_rejects_invalid_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive_path = dir.path().join("lib.jar");
+
+        assert!(matches!(
+            VfsPath::jar(archive_path.clone(), "../evil.class"),
+            VfsPath::Uri(_)
+        ));
+        assert!(matches!(
+            VfsPath::jar(archive_path.clone(), "a/../evil.class"),
+            VfsPath::Uri(_)
+        ));
+        assert!(matches!(
+            VfsPath::jar(archive_path.clone(), "C:/evil.class"),
+            VfsPath::Uri(_)
+        ));
+    }
+
+    #[test]
     fn decompiled_uri_roundtrips() {
         let path = VfsPath::decompiled("abc123", "com/example/Foo");
         let uri = path.to_uri().expect("decompiled uri");
