@@ -29,12 +29,15 @@ CompilationUnit
               ArgumentList
                 LParen "("
                 LambdaExpression
-                  Identifier "x"
+                  LambdaParameters
+                    LambdaParameter
+                      Identifier "x"
                   Whitespace " "
                   Arrow "->"
-                  Whitespace " "
-                  NameExpression
-                    Identifier "x"
+                  LambdaBody
+                    Whitespace " "
+                    NameExpression
+                      Identifier "x"
                 RParen ")"
             Semicolon ";"
           Whitespace " "

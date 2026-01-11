@@ -34,8 +34,25 @@ CompilationUnit
                 Whitespace " "
                 LambdaExpression
                   LambdaParameters
-                    LambdaParameter
-                      Identifier "x"
+                    LambdaParameterList
+                      LParen "("
+                      LambdaParameter
+                        Modifiers
+                        Type
+                          PrimitiveType
+                            IntKw "int"
+                          Whitespace " "
+                        Identifier "x"
+                      Comma ","
+                      Whitespace " "
+                      LambdaParameter
+                        Modifiers
+                        Type
+                          NamedType
+                            Identifier "String"
+                            Whitespace " "
+                        Identifier "y"
+                      RParen ")"
                   Whitespace " "
                   Arrow "->"
                   LambdaBody
@@ -46,8 +63,14 @@ CompilationUnit
                         Whitespace " "
                       Plus "+"
                       Whitespace " "
-                      LiteralExpression
-                        IntLiteral "1"
+                      MethodCallExpression
+                        NameExpression
+                          Identifier "y"
+                          Dot "."
+                          Identifier "length"
+                        ArgumentList
+                          LParen "("
+                          RParen ")"
             Semicolon ";"
           Whitespace " "
           RBrace "}"

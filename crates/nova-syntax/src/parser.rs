@@ -3379,19 +3379,132 @@ impl<'a> Parser<'a> {
     fn parse_lambda_expression(&mut self, checkpoint: rowan::Checkpoint) {
         self.builder
             .start_node_at(checkpoint, SyntaxKind::LambdaExpression.into());
-        // Params.
+        self.builder.start_node(SyntaxKind::LambdaParameters.into());
         if self.at(SyntaxKind::LParen) {
-            self.bump();
-            while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
-                if self.at_underscore_identifier() {
-                    self.parse_unnamed_pattern();
-                } else if self.at_ident_like() || self.at(SyntaxKind::Comma) {
-                    self.bump();
-                } else {
+            self.parse_lambda_parameter_list();
+        } else {
+            self.parse_lambda_parameter(false);
+        }
+        self.builder.finish_node(); // LambdaParameters
+
+        // Robust recovery: lambda parameter parsing should never consume the `->` token. If we
+        // encountered malformed parameters, skip forward to the arrow and continue parsing the
+        // body.
+        if !self.at(SyntaxKind::Arrow) {
+            self.builder.start_node(SyntaxKind::Error.into());
+            self.error_here("expected `->` in lambda");
+            while !matches!(self.current(), SyntaxKind::Arrow | SyntaxKind::Eof) {
+                self.bump_any();
+            }
+            self.builder.finish_node(); // Error
+        }
+
+        self.expect(SyntaxKind::Arrow, "expected `->` in lambda");
+
+        self.builder.start_node(SyntaxKind::LambdaBody.into());
+        if self.at(SyntaxKind::LBrace) {
+            self.parse_block(StatementContext::Normal);
+        } else {
+            self.parse_expression(0);
+        }
+        self.builder.finish_node(); // LambdaBody
+
+        self.builder.finish_node(); // LambdaExpression
+    }
+
+    fn parse_lambda_parameter_list(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::LambdaParameterList.into());
+        self.expect(SyntaxKind::LParen, "expected `(` in lambda parameters");
+
+        let formal = self.lambda_parameter_list_is_formal();
+
+        while !matches!(
+            self.current(),
+            SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::Eof
+        ) {
+            self.eat_trivia();
+            if self.at(SyntaxKind::Comma) {
+                // `() ->` and `(, x) ->` should not get stuck; treat as a missing parameter.
+                self.error_here("expected lambda parameter");
+                self.bump();
+                continue;
+            }
+
+            self.parse_lambda_parameter(formal);
+
+            if self.at(SyntaxKind::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+
+        if !matches!(
+            self.current(),
+            SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::Eof
+        ) {
+            self.builder.start_node(SyntaxKind::Error.into());
+            self.error_here("expected `)` in lambda parameters");
+            while !matches!(
+                self.current(),
+                SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::Eof
+            ) {
+                self.bump_any();
+            }
+            self.builder.finish_node(); // Error
+        }
+
+        self.expect(SyntaxKind::RParen, "expected `)` in lambda parameters");
+        self.builder.finish_node(); // LambdaParameterList
+    }
+
+    fn lambda_parameter_list_is_formal(&mut self) -> bool {
+        self.eat_trivia();
+        match self.current() {
+            SyntaxKind::At | SyntaxKind::FinalKw => true,
+            kind if is_primitive_type(kind) => true,
+            SyntaxKind::VarKw => self.nth(1).is_some_and(|k| k.is_identifier_like()),
+            kind if kind.is_identifier_like() => {
+                !matches!(self.nth(1), Some(SyntaxKind::Comma | SyntaxKind::RParen))
+            }
+            _ => false,
+        }
+    }
+
+    fn parse_lambda_parameter(&mut self, formal: bool) {
+        self.builder.start_node(SyntaxKind::LambdaParameter.into());
+        if formal {
+            self.parse_modifiers();
+            if self.at_type_start() {
+                self.parse_type();
+                // Permit type-use annotations on varargs ellipsis (e.g. `String @A ... args`).
+                while self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw) {
+                    self.parse_annotation();
+                }
+            } else {
+                self.error_here("expected lambda parameter type");
+                // Ensure progress without swallowing the lambda arrow.
+                if !matches!(
+                    self.current(),
+                    SyntaxKind::Comma | SyntaxKind::RParen | SyntaxKind::Arrow | SyntaxKind::Eof
+                ) {
                     self.bump_any();
                 }
             }
-            self.expect(SyntaxKind::RParen, "expected `)` in lambda parameters");
+            if self.at(SyntaxKind::Ellipsis) {
+                self.bump();
+            }
+            if self.at_underscore_identifier() {
+                self.parse_unnamed_pattern();
+            } else {
+                self.expect_ident_like("expected lambda parameter name");
+            }
+            // Support Java's `var x[]` / `String... args[]` style dims.
+            while self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
+                self.bump();
+                self.bump();
+            }
         } else {
             if self.at_underscore_identifier() {
                 self.parse_unnamed_pattern();
@@ -3399,13 +3512,7 @@ impl<'a> Parser<'a> {
                 self.expect_ident_like("expected lambda parameter");
             }
         }
-        self.expect(SyntaxKind::Arrow, "expected `->` in lambda");
-        if self.at(SyntaxKind::LBrace) {
-            self.parse_block(StatementContext::Normal);
-        } else {
-            self.parse_expression(0);
-        }
-        self.builder.finish_node();
+        self.builder.finish_node(); // LambdaParameter
     }
 
     fn is_lambda_paren(&mut self) -> bool {

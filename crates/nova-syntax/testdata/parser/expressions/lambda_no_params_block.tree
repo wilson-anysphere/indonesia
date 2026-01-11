@@ -33,19 +33,22 @@ CompilationUnit
                 Eq "="
                 Whitespace " "
                 LambdaExpression
-                  LParen "("
-                  RParen ")"
+                  LambdaParameters
+                    LambdaParameterList
+                      LParen "("
+                      RParen ")"
                   Whitespace " "
                   Arrow "->"
-                  Whitespace " "
-                  Block
-                    LBrace "{"
+                  LambdaBody
                     Whitespace " "
-                    ReturnStatement
-                      ReturnKw "return"
-                      Semicolon ";"
-                    Whitespace " "
-                    RBrace "}"
+                    Block
+                      LBrace "{"
+                      Whitespace " "
+                      ReturnStatement
+                        ReturnKw "return"
+                        Semicolon ";"
+                      Whitespace " "
+                      RBrace "}"
             Semicolon ";"
           Whitespace " "
           RBrace "}"

@@ -81,8 +81,6 @@ Expression =
      | CastExpression
      | ArrayInitializer
 
-LambdaBody = Block | Expression
-
 SwitchRuleBody = Block | Statement | Expression
 
 ModuleDirectiveKind =
@@ -545,7 +543,29 @@ ConditionalExpression {
 }
 
 LambdaExpression {
+  parameters: LambdaParameters?
   body: LambdaBody?
+}
+
+LambdaParameters {
+  parameter_list: LambdaParameterList?
+  parameter: LambdaParameter?
+}
+
+LambdaParameterList {
+  parameters: LambdaParameter*
+}
+
+LambdaParameter {
+  modifiers: Modifiers?
+  ty: Type?
+  name_token: Ident?
+  unnamed_pattern: UnnamedPattern?
+}
+
+LambdaBody {
+  block: Block?
+  expression: Expression?
 }
 
 CastExpression {

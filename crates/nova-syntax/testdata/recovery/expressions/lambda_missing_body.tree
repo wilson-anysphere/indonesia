@@ -33,11 +33,14 @@ CompilationUnit
                 Eq "="
                 Whitespace " "
                 LambdaExpression
-                  Identifier "x"
+                  LambdaParameters
+                    LambdaParameter
+                      Identifier "x"
                   Whitespace " "
                   Arrow "->"
-                  Whitespace " "
-                  Error
+                  LambdaBody
+                    Whitespace " "
+                    Error
             Semicolon ";"
           Whitespace " "
           RBrace "}"

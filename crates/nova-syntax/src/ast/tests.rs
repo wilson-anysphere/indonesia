@@ -1,7 +1,7 @@
 use crate::ast::{
     AstNode, BlockFragment, CastExpression, ClassDeclaration, ClassMember, ClassMemberFragment,
     CompilationUnit, Expression, ExpressionFragment, FieldDeclaration, ModuleDirectiveKind,
-    Statement, StatementFragment, SwitchRuleBody, TypeDeclaration, UnnamedPattern,
+    Statement, StatementFragment, SwitchRuleBody, TypeDeclaration,
 };
 use crate::SyntaxKind;
 use crate::{
@@ -431,12 +431,12 @@ fn lambda_unnamed_parameter_is_unnamed_pattern_node() {
         other => panic!("expected LambdaExpression, got {other:?}"),
     };
 
-    let param = lambda
-        .syntax()
-        .children()
-        .find_map(UnnamedPattern::cast)
+    let params = lambda.parameters().expect("lambda parameters");
+    let param = params.parameter().expect("expected single parameter");
+    let unnamed = param
+        .unnamed_pattern()
         .expect("expected UnnamedPattern parameter");
-    assert_eq!(param.syntax().first_token().unwrap().text(), "_");
+    assert_eq!(unnamed.syntax().first_token().unwrap().text(), "_");
 }
 
 #[test]
@@ -1010,4 +1010,24 @@ fn type_use_annotations_are_attached_to_types() {
         .map(|anno| anno.name().unwrap().text())
         .collect();
     assert_eq!(cast_annotations, vec!["C".to_string()]);
+}
+
+#[test]
+fn lambda_parameter_iteration_typed() {
+    let parse = parse_java_expression_fragment("(int x, String y) -> x", 0);
+    assert!(parse.parse.errors.is_empty());
+
+    let fragment = ExpressionFragment::cast(parse.parse.syntax()).expect("ExpressionFragment");
+    let lambda = match fragment.expression().expect("expression") {
+        Expression::LambdaExpression(lambda) => lambda,
+        other => panic!("expected lambda expression, got {other:?}"),
+    };
+
+    let params = lambda.parameters().unwrap();
+    let list = params.parameter_list().unwrap();
+    let names: Vec<_> = list
+        .parameters()
+        .map(|param| param.name_token().unwrap().text().to_string())
+        .collect();
+    assert_eq!(names, vec!["x", "y"]);
 }

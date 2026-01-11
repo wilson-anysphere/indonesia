@@ -33,23 +33,28 @@ CompilationUnit
                 Eq "="
                 Whitespace " "
                 LambdaExpression
-                  LParen "("
-                  Identifier "a"
-                  Comma ","
-                  Whitespace " "
-                  Identifier "b"
-                  RParen ")"
+                  LambdaParameters
+                    LambdaParameterList
+                      LParen "("
+                      LambdaParameter
+                        Identifier "a"
+                      Comma ","
+                      Whitespace " "
+                      LambdaParameter
+                        Identifier "b"
+                      RParen ")"
                   Whitespace " "
                   Arrow "->"
-                  Whitespace " "
-                  BinaryExpression
-                    NameExpression
-                      Identifier "a"
-                      Whitespace " "
-                    Plus "+"
+                  LambdaBody
                     Whitespace " "
-                    NameExpression
-                      Identifier "b"
+                    BinaryExpression
+                      NameExpression
+                        Identifier "a"
+                        Whitespace " "
+                      Plus "+"
+                      Whitespace " "
+                      NameExpression
+                        Identifier "b"
             Semicolon ";"
           Whitespace " "
           RBrace "}"

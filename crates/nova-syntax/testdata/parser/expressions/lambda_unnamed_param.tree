@@ -33,16 +33,20 @@ CompilationUnit
                 Eq "="
                 Whitespace " "
                 LambdaExpression
-                  LParen "("
-                  UnnamedPattern
-                    Identifier "_"
-                  RParen ")"
+                  LambdaParameters
+                    LambdaParameterList
+                      LParen "("
+                      LambdaParameter
+                        UnnamedPattern
+                          Identifier "_"
+                      RParen ")"
                   Whitespace " "
                   Arrow "->"
-                  Whitespace " "
-                  Block
-                    LBrace "{"
-                    RBrace "}"
+                  LambdaBody
+                    Whitespace " "
+                    Block
+                      LBrace "{"
+                      RBrace "}"
             Semicolon ";"
           Whitespace "\n  "
           RBrace "}"
