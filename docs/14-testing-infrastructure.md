@@ -333,7 +333,7 @@ CI runs short, time-boxed fuzz jobs in `.github/workflows/fuzz.yml` (scheduled +
 **Run locally (from the repo root):**
 
 ```bash
-rustup toolchain install nightly --component llvm-tools-preview
+rustup toolchain install nightly --component llvm-tools-preview --component rust-src
 cargo +nightly install cargo-fuzz --locked
 
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144

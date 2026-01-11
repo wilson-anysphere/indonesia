@@ -11,7 +11,7 @@ The fuzz targets are intentionally **not** part of the main Cargo workspace, so 
 1. Install a nightly toolchain with LLVM tools:
 
 ```bash
-rustup toolchain install nightly --component llvm-tools-preview
+rustup toolchain install nightly --component llvm-tools-preview --component rust-src
 ```
 
 2. Install `cargo-fuzz`:

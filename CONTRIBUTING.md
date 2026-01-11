@@ -205,7 +205,7 @@ continuously test core parsing and formatting surfaces against panics, hangs, an
 issues. For more details (timeouts, minimization), see [`docs/fuzzing.md`](docs/fuzzing.md).
 
 ```bash
-rustup toolchain install nightly --component llvm-tools-preview
+rustup toolchain install nightly --component llvm-tools-preview --component rust-src
 cargo +nightly install cargo-fuzz --locked
 
 # Run from the repository root.
