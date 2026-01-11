@@ -155,6 +155,7 @@ fn main() -> std::io::Result<()> {
                 metrics.record_panic(method);
             }
             flush_memory_status_notifications(&mut writer, &mut state)?;
+            flush_safe_mode_notifications(&mut writer, &mut state)?;
             continue;
         }
 
@@ -206,6 +207,7 @@ fn main() -> std::io::Result<()> {
             metrics.record_panic(method);
         }
         flush_memory_status_notifications(&mut writer, &mut state)?;
+        flush_safe_mode_notifications(&mut writer, &mut state)?;
     }
 
     Ok(())
@@ -429,6 +431,8 @@ struct ServerState {
     memory_events: Arc<Mutex<Vec<MemoryEvent>>>,
     documents_memory: nova_memory::MemoryRegistration,
     next_outgoing_request_id: u64,
+    last_safe_mode_enabled: bool,
+    last_safe_mode_reason: Option<&'static str>,
 }
 
 struct CachedRefactorWorkspaceSnapshot {
@@ -521,6 +525,8 @@ impl ServerState {
             memory_events,
             documents_memory,
             next_outgoing_request_id: 1,
+            last_safe_mode_enabled: false,
+            last_safe_mode_reason: None,
         }
     }
 
@@ -1319,6 +1325,33 @@ fn flush_memory_status_notifications(
     let notification = json!({
         "jsonrpc": "2.0",
         "method": nova_lsp::MEMORY_STATUS_NOTIFICATION,
+        "params": params,
+    });
+    write_json_message(writer, &notification)?;
+    Ok(())
+}
+
+fn flush_safe_mode_notifications(
+    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    state: &mut ServerState,
+) -> std::io::Result<()> {
+    let (enabled, reason) = nova_lsp::hardening::safe_mode_snapshot();
+    if enabled == state.last_safe_mode_enabled && reason == state.last_safe_mode_reason {
+        return Ok(());
+    }
+
+    state.last_safe_mode_enabled = enabled;
+    state.last_safe_mode_reason = reason;
+
+    let params = serde_json::to_value(nova_lsp::SafeModeStatusResponse {
+        schema_version: nova_lsp::SAFE_MODE_STATUS_SCHEMA_VERSION,
+        enabled,
+        reason: reason.map(ToString::to_string),
+    })
+    .unwrap_or(serde_json::Value::Null);
+    let notification = json!({
+        "jsonrpc": "2.0",
+        "method": nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION,
         "params": params,
     });
     write_json_message(writer, &notification)?;

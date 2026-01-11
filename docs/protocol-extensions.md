@@ -1163,15 +1163,16 @@ Compatibility note: older servers may return a bare boolean `true | false`.
 
 ---
 
-### `nova/safeModeChanged` (currently not implemented)
+### `nova/safeModeChanged`
 
 The VS Code extension registers this notification to update UI state when safe-mode changes
-(`editors/vscode/src/extension.ts`). The shipped `nova-lsp` server does **not** emit it yet.
+(`editors/vscode/src/extension.ts`).
 
 - **Kind:** notification
 - **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server only)
 
-#### Notification params (proposed)
+#### Notification params
 
 Same object as the `nova/safeModeStatus` response.
 
