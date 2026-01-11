@@ -227,8 +227,8 @@ mod tests {
         assert_eq!(
             edits[0].range,
             Range::new(
-                Position::new(0, "package com.example;".encode_utf16().count() as u32),
-                Position::new(0, "package com.example;".encode_utf16().count() as u32),
+                Position::new(0, "package com.example; ".encode_utf16().count() as u32),
+                Position::new(0, "package com.example; ".encode_utf16().count() as u32),
             )
         );
         assert_eq!(

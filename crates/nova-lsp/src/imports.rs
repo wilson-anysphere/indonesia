@@ -34,7 +34,7 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
             if let Some(semi) = line.find(';') {
                 let after = &line[semi + 1..];
                 package_insert_offset = Some(if has_code_after_semicolon(after) {
-                    line_start + semi + 1
+                    line_start + semi + 1 + leading_whitespace_len(after)
                 } else {
                     line_end
                 });
@@ -49,7 +49,7 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
             if let Some(semi) = line.find(';') {
                 let after = &line[semi + 1..];
                 last_import_insert_offset = Some(if has_code_after_semicolon(after) {
-                    line_start + semi + 1
+                    line_start + semi + 1 + leading_whitespace_len(after)
                 } else {
                     line_end
                 });
@@ -115,6 +115,18 @@ fn has_code_after_semicolon(after: &str) -> bool {
         return !after[end + 2..].trim_start().is_empty();
     }
     true
+}
+
+fn leading_whitespace_len(mut s: &str) -> usize {
+    let mut consumed = 0usize;
+    while let Some(ch) = s.chars().next() {
+        if !ch.is_whitespace() {
+            break;
+        }
+        consumed += ch.len_utf8();
+        s = &s[ch.len_utf8()..];
+    }
+    consumed
 }
 
 fn offset_to_position_utf16(text: &str, offset: usize) -> Position {
@@ -208,7 +220,7 @@ mod tests {
         let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
         assert_eq!(
             edit.range.start,
-            Position::new(0, "package com.example;".encode_utf16().count() as u32)
+            Position::new(0, "package com.example; ".encode_utf16().count() as u32)
         );
         assert_eq!(edit.range.end, edit.range.start);
         assert_eq!(edit.new_text, "\nimport java.util.List;\n");
@@ -241,7 +253,7 @@ mod tests {
         let edit = java_import_text_edit(text, "java.util.Set").expect("expected edit");
         assert_eq!(
             edit.range.start,
-            Position::new(0, "import java.util.List;".encode_utf16().count() as u32)
+            Position::new(0, "import java.util.List; ".encode_utf16().count() as u32)
         );
         assert_eq!(edit.range.end, edit.range.start);
         assert_eq!(edit.new_text, "\nimport java.util.Set;\n");
