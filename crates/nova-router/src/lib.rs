@@ -858,7 +858,29 @@ async fn handle_new_connection(
     mut stream: BoxedStream,
     identity: WorkerIdentity,
 ) -> Result<()> {
-    let hello = read_message(&mut stream).await?;
+    let payload = read_payload(&mut stream).await?;
+    let hello = match nova_remote_proto::decode_message(&payload) {
+        Ok(message) => message,
+        Err(v2_err) => {
+            if let Ok(frame) = nova_remote_proto::v3::decode_wire_frame(&payload) {
+                if matches!(frame, nova_remote_proto::v3::WireFrame::Hello(_)) {
+                    let reject = nova_remote_proto::v3::WireFrame::Reject(
+                        nova_remote_proto::v3::HandshakeReject {
+                            code: nova_remote_proto::v3::RejectCode::UnsupportedVersion,
+                            message: "router only supports legacy_v2 protocol".into(),
+                        },
+                    );
+                    if let Ok(bytes) = nova_remote_proto::v3::encode_wire_frame(&reject) {
+                        let _ = write_payload(&mut stream, &bytes).await;
+                    }
+                    return Err(anyhow!(
+                        "received v3 worker hello; this router only supports legacy_v2"
+                    ));
+                }
+            }
+            return Err(v2_err).context("decode legacy_v2 worker hello");
+        }
+    };
     let (shard_id, auth_token, has_cached_index) = match hello {
         RpcMessage::WorkerHello {
             shard_id,
@@ -1511,26 +1533,24 @@ async fn collect_java_files(root: &Path) -> Result<Vec<FileText>> {
     Ok(out)
 }
 
-async fn write_message(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMessage) -> Result<()> {
-    let payload = nova_remote_proto::encode_message(message)?;
+async fn write_payload(stream: &mut (impl AsyncWrite + Unpin), payload: &[u8]) -> Result<()> {
     let len: u32 = payload
         .len()
         .try_into()
         .map_err(|_| anyhow!("message too large"))?;
-
     stream
         .write_u32_le(len)
         .await
         .context("write message len")?;
     stream
-        .write_all(&payload)
+        .write_all(payload)
         .await
         .context("write message payload")?;
     stream.flush().await.context("flush message")?;
     Ok(())
 }
 
-async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
+async fn read_payload(stream: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>> {
     let len = stream.read_u32_le().await.context("read message len")?;
     let len_usize = len as usize;
     if len_usize > nova_remote_proto::MAX_MESSAGE_BYTES {
@@ -1544,6 +1564,16 @@ async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessag
         .read_exact(&mut buf)
         .await
         .context("read message payload")?;
+    Ok(buf)
+}
+
+async fn write_message(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMessage) -> Result<()> {
+    let payload = nova_remote_proto::encode_message(message)?;
+    write_payload(stream, &payload).await
+}
+
+async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
+    let buf = read_payload(stream).await?;
     nova_remote_proto::decode_message(&buf)
 }
 
