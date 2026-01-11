@@ -24,6 +24,7 @@ When v3 is enabled, the reference implementation (`crates/nova-remote-rpc`) curr
 - Compression: prefer `zstd` (negotiated) and compress payloads ≥ **1 KiB** when it produces smaller
   on-wire bytes
 - Chunking: available when negotiated (`supports_chunking=true`); disabled by default
+- Cancellation: disabled by default (`supports_cancel=false`) and not yet handled end-to-end
 - Keepalive: no application-level heartbeat yet
 
 These are internal defaults rather than user-facing CLI knobs.

@@ -18,6 +18,9 @@ It is intended to be implementable without reading Nova’s source code. Where w
 >   `PacketChunk` chunking/reassembly is implemented there but disabled by default
 >   (`supports_chunking` defaults to `false`). `Cancel` handling is not yet implemented end-to-end
 >   (`supports_cancel` defaults to `false`).
+> - Request IDs are generated with the correct parity (router even / worker odd) in
+>   `crates/nova-remote-rpc`, but inbound parity enforcement is not yet implemented; implementations
+>   SHOULD still validate parity to detect misbehaving peers.
 
 ## Design background
 
