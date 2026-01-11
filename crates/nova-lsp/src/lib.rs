@@ -368,6 +368,33 @@ pub fn goto_definition(
     nova_ide::goto_definition(db, file, position)
 }
 
+/// Delegate go-to-implementation requests to `nova-ide`.
+pub fn implementation(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Vec<lsp_types::Location> {
+    nova_ide::implementation(db, file, position)
+}
+
+/// Delegate go-to-declaration requests to `nova-ide`.
+pub fn declaration(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Option<lsp_types::Location> {
+    nova_ide::declaration(db, file, position)
+}
+
+/// Delegate go-to-type-definition requests to `nova-ide`.
+pub fn type_definition(
+    db: &dyn nova_db::Database,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Option<lsp_types::Location> {
+    nova_ide::type_definition(db, file, position)
+}
+
 /// Delegate diagnostics to `nova-ide`.
 pub fn diagnostics(
     db: &dyn nova_db::Database,

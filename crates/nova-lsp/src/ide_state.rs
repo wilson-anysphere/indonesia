@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use lsp_types::{
     CodeActionOrCommand, CompletionParams, CompletionResponse, DiagnosticSeverity, InlayHintParams,
-    NumberOrString, Uri,
+    Location, NumberOrString, Position, Uri,
 };
 use nova_config::NovaConfig;
 use nova_db::{Database, FileId};
@@ -87,6 +87,23 @@ impl NovaLspIdeState {
             self.ide_extensions
                 .inlay_hints_lsp(cancel, file, params.range),
         )
+    }
+
+    pub fn implementation(&self, uri: &Uri, position: Position) -> Vec<Location> {
+        let Some(file) = self.file_id_for_uri(uri) else {
+            return Vec::new();
+        };
+        nova_ide::implementation(self.db.as_ref(), file, position)
+    }
+
+    pub fn declaration(&self, uri: &Uri, position: Position) -> Option<Location> {
+        let file = self.file_id_for_uri(uri)?;
+        nova_ide::declaration(self.db.as_ref(), file, position)
+    }
+
+    pub fn type_definition(&self, uri: &Uri, position: Position) -> Option<Location> {
+        let file = self.file_id_for_uri(uri)?;
+        nova_ide::type_definition(self.db.as_ref(), file, position)
     }
 
     pub fn diagnostics(&self, cancel: CancellationToken, uri: &Uri) -> Vec<lsp_types::Diagnostic> {
