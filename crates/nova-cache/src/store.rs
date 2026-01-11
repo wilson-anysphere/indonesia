@@ -68,9 +68,15 @@ impl CacheStore for S3Store {
         let max_download_bytes = s3_max_download_bytes_from_env()?;
         let dest = dest.to_path_buf();
 
-        let runtime = tokio::runtime::Runtime::new().map_err(|err| CacheError::S3 {
-            message: err.to_string(),
-        })?;
+        // We use a single-thread runtime here: `fetch` is a sync API, and spinning up a full
+        // multi-thread runtime (defaulting to `num_cpus` worker threads) is unnecessarily heavy
+        // for a single download.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| CacheError::S3 {
+                message: err.to_string(),
+            })?;
 
         runtime.block_on(async move {
             let config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
