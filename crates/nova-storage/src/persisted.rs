@@ -484,6 +484,19 @@ fn decompress(
 }
 
 fn verify_payload_hash(header: &StorageHeader, payload: &[u8]) -> Result<(), StorageError> {
+    let should_validate = match header.compression {
+        // Compressed artifacts already require a full decompression into memory,
+        // so validating the content hash is a cheap extra integrity check.
+        Compression::Zstd => true,
+        // For uncompressed (typically mmap-backed) artifacts, allow opting into
+        // hashing via env var since it requires touching the full payload.
+        Compression::None => env_flag_enabled("NOVA_STORAGE_VALIDATE_HASH"),
+    };
+
+    if !should_validate {
+        return Ok(());
+    }
+
     let found = content_hash(payload);
     if found != header.content_hash {
         return Err(StorageError::HashMismatch {
@@ -510,4 +523,12 @@ fn max_uncompressed_len_bytes() -> u64 {
 fn env_u64(key: &str) -> Option<u64> {
     let value = std::env::var(key).ok()?;
     value.parse::<u64>().ok()
+}
+
+fn env_flag_enabled(key: &str) -> bool {
+    let Some(value) = std::env::var_os(key) else {
+        return false;
+    };
+    let value = value.to_string_lossy();
+    matches!(value.as_ref(), "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
 }
