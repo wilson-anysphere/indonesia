@@ -9,6 +9,7 @@
 mod anonymizer;
 mod client;
 mod completion;
+mod completion_provider;
 mod completion_context;
 mod completion_ranking;
 mod config;
@@ -35,6 +36,7 @@ pub use anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
 pub use client::AiClient;
 pub use cloud::{CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
 pub use completion::{AdditionalEdit, MultiTokenCompletion, MultiTokenInsertTextFormat};
+pub use completion_provider::CloudMultiTokenCompletionProvider;
 pub use completion_context::{CompletionContextBuilder, MultiTokenCompletionContext};
 pub use completion_ranking::{
     maybe_rank_completions, rank_completions_with_timeout, BaselineCompletionRanker,
