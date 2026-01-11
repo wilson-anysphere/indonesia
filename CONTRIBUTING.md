@@ -39,6 +39,9 @@ cargo run -p nova-dap -- --version
 ```bash
 # CI-equivalent default suite (fast, no network)
 cargo test
+
+# Exercise feature-gated code paths (slower, enables all optional integrations)
+cargo test --workspace --all-features
 ```
 
 More detailed guidance (fixtures, snapshots, ignored suites, CI mapping) lives in:
