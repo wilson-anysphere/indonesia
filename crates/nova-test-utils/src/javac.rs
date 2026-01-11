@@ -260,7 +260,9 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
         return None;
     }
 
-    Some((file, line_no, col_no, rest))
+    // `javac` columns are 1-based. When the compiler omits a column (e.g. in the
+    // classic format `file:line: error: ...`), we fall back to column 1.
+    Some((file, line_no, col_no.max(1), rest))
 }
 
 #[cfg(test)]
@@ -319,7 +321,7 @@ mod tests {
         let diag = parse_diagnostic_line(line).unwrap();
         assert_eq!(diag.file, "Test.java");
         assert_eq!(diag.line, 3);
-        assert_eq!(diag.column, 0);
+        assert_eq!(diag.column, 1);
         assert_eq!(diag.kind, "error");
         assert_eq!(diag.message, "compiler.err.expected");
     }
