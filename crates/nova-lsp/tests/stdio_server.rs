@@ -1117,9 +1117,10 @@ fn stdio_server_handles_java_classpath_request_with_fake_gradle_wrapper_and_cach
 last=""
 for arg in "$@"; do last="$arg"; done
 case "$last" in
-  *printNovaClasspath)
-    printf '%s\n' '{}'
-    printf '%s\n' '{}'
+  *printNovaJavaCompileConfig)
+    printf '%s\n' 'NOVA_JSON_BEGIN'
+    printf '%s\n' '{{"compileClasspath":["{}","{}"]}}'
+    printf '%s\n' 'NOVA_JSON_END'
     ;;
 esac
 "#,
@@ -1708,8 +1709,14 @@ fn stdio_server_reload_project_invalidates_gradle_classpath_cache() {
     fs::write(&dep1, "").expect("write dep1");
     fs::write(&dep2, "").expect("write dep2");
 
-    fs::write(root.join(".classpath-out"), format!("{}\n", dep1.display()))
-        .expect("write classpath-out");
+    fs::write(
+        root.join(".classpath-out"),
+        format!(
+            "NOVA_JSON_BEGIN\n{{\"compileClasspath\":[\"{}\"]}}\nNOVA_JSON_END\n",
+            dep1.display()
+        ),
+    )
+    .expect("write classpath-out");
 
     let gradlew_path = root.join("gradlew");
     fs::write(
@@ -1718,10 +1725,10 @@ fn stdio_server_reload_project_invalidates_gradle_classpath_cache() {
 last=""
 for arg in "$@"; do last="$arg"; done
 case "$last" in
-  *printNovaClasspath)
+  *printNovaJavaCompileConfig)
     cat .classpath-out
     ;;
-esac
+  esac
 "#,
     )
     .expect("write fake gradlew");
@@ -1781,8 +1788,14 @@ esac
         ]
     );
 
-    fs::write(root.join(".classpath-out"), format!("{}\n", dep2.display()))
-        .expect("rewrite classpath-out");
+    fs::write(
+        root.join(".classpath-out"),
+        format!(
+            "NOVA_JSON_BEGIN\n{{\"compileClasspath\":[\"{}\"]}}\nNOVA_JSON_END\n",
+            dep2.display()
+        ),
+    )
+    .expect("rewrite classpath-out");
 
     write_jsonrpc_message(
         &mut stdin,

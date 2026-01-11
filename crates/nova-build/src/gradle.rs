@@ -2,14 +2,17 @@ use crate::cache::{BuildCache, BuildFileFingerprint, CachedProjectInfo};
 use crate::command::format_command;
 use crate::{
     BuildError, BuildResult, BuildSystemKind, Classpath, CommandOutput, CommandRunner,
-    DefaultCommandRunner, Result,
+    DefaultCommandRunner, JavaCompileConfig, Result,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const NOVA_NO_CLASSPATH_MARKER: &str = "NOVA_NO_CLASSPATH";
+const NOVA_JSON_BEGIN: &str = "NOVA_JSON_BEGIN";
+const NOVA_JSON_END: &str = "NOVA_JSON_END";
+const NOVA_GRADLE_TASK: &str = "printNovaJavaCompileConfig";
+
 const NOVA_PROJECTS_BEGIN: &str = "NOVA_PROJECTS_BEGIN";
 const NOVA_PROJECTS_END: &str = "NOVA_PROJECTS_END";
 
@@ -63,10 +66,7 @@ impl GradleBuild {
             if let Some(projects) = cached.projects {
                 return Ok(projects
                     .into_iter()
-                    .map(|p| GradleProjectInfo {
-                        path: p.path,
-                        dir: p.dir,
-                    })
+                    .map(|p| GradleProjectInfo { path: p.path, dir: p.dir })
                     .collect());
             }
         }
@@ -109,6 +109,17 @@ impl GradleBuild {
         cache: &BuildCache,
     ) -> Result<Classpath> {
         let project_path = project_path.filter(|p| *p != ":");
+        let cfg = self.java_compile_config(project_root, project_path, cache)?;
+        Ok(Classpath::new(cfg.compile_classpath))
+    }
+
+    pub fn java_compile_config(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+        cache: &BuildCache,
+    ) -> Result<JavaCompileConfig> {
+        let project_path = project_path.filter(|p| *p != ":");
         let fingerprint = gradle_build_fingerprint(project_root)?;
         let module_key = project_path.unwrap_or("<root>");
 
@@ -118,12 +129,20 @@ impl GradleBuild {
             &fingerprint,
             module_key,
         )? {
+            if let Some(cfg) = cached.java_compile_config {
+                return Ok(cfg);
+            }
+            // Backwards-compat: older cache entries may contain only classpath.
             if let Some(entries) = cached.classpath {
-                return Ok(Classpath::new(entries));
+                return Ok(JavaCompileConfig {
+                    compile_classpath: entries,
+                    ..JavaCompileConfig::default()
+                });
             }
         }
 
-        let (program, args, output) = self.run_print_classpath(project_root, project_path)?;
+        let (program, args, output) =
+            self.run_print_java_compile_config(project_root, project_path)?;
         if !output.status.success() {
             return Err(BuildError::CommandFailed {
                 tool: "gradle",
@@ -135,25 +154,23 @@ impl GradleBuild {
         }
 
         let combined = output.combined();
-        let has_classpath = !combined
-            .lines()
-            .any(|line| line.trim() == NOVA_NO_CLASSPATH_MARKER);
+        let json = parse_gradle_java_compile_config_json(&combined)?;
 
         // Aggregator roots often don't apply the Java plugin and thus do not
-        // expose `compileClasspath`. When querying the workspace-level
-        // classpath (project path == None), fall back to unioning all
-        // subprojects.
-        if project_path.is_none() && !has_classpath {
+        // expose `compileClasspath`. When querying the workspace-level config
+        // (project path == None), fall back to unioning all subprojects.
+        if project_path.is_none() && json.compile_classpath.is_none() {
             let projects = self.projects(project_root, cache)?;
 
-            let mut classpaths = Vec::new();
+            let mut configs = Vec::new();
             for project in projects.into_iter().filter(|p| p.path != ":") {
-                classpaths.push(
-                    self.classpath(project_root, Some(project.path.as_str()), cache)?
-                        .entries,
-                );
+                configs.push(self.java_compile_config(
+                    project_root,
+                    Some(project.path.as_str()),
+                    cache,
+                )?);
             }
-            let entries = union_classpath_entries(classpaths);
+            let union = JavaCompileConfig::union(configs);
 
             cache.update_module(
                 project_root,
@@ -161,33 +178,19 @@ impl GradleBuild {
                 &fingerprint,
                 module_key,
                 |m| {
-                    m.classpath = Some(entries.clone());
+                    m.java_compile_config = Some(union.clone());
+                    m.classpath = Some(union.compile_classpath.clone());
                 },
             )?;
 
-            return Ok(Classpath::new(entries));
+            return Ok(union);
         }
 
-        let stdout_entries = parse_gradle_classpath_output(&output.stdout);
-        let mut entries = if stdout_entries.is_empty() {
-            parse_gradle_classpath_output(&combined)
-        } else {
-            stdout_entries
-        };
-
-        // Best-effort: include the project's compiled classes output directory.
-        //
-        // Gradle's `compileClasspath` typically only includes dependency artifacts
-        // and does not include the output directory for the current project.
-        // For language-server classpath resolution we want the directory that
-        // `compileJava` emits classes into.
-        if has_classpath {
-            let output_dir =
-                gradle_output_dir_cached(project_root, project_path, cache, &fingerprint)?;
-            if !entries.iter().any(|p| p == &output_dir) {
-                entries.insert(0, output_dir);
-            }
-        }
+        let main_output_fallback =
+            gradle_output_dir_cached(project_root, project_path, cache, &fingerprint)?;
+        let test_output_fallback = gradle_test_output_dir_from_main(&main_output_fallback);
+        let config =
+            normalize_gradle_java_compile_config(json, main_output_fallback, test_output_fallback);
 
         cache.update_module(
             project_root,
@@ -195,11 +198,13 @@ impl GradleBuild {
             &fingerprint,
             module_key,
             |m| {
-                m.classpath = Some(entries.clone());
+                m.java_compile_config = Some(config.clone());
+                // Keep populating the legacy classpath field for older readers.
+                m.classpath = Some(config.compile_classpath.clone());
             },
         )?;
 
-        Ok(Classpath::new(entries))
+        Ok(config)
     }
 
     pub fn build(
@@ -244,7 +249,7 @@ impl GradleBuild {
         })
     }
 
-    fn run_print_classpath(
+    fn run_print_java_compile_config(
         &self,
         project_root: &Path,
         project_path: Option<&str>,
@@ -260,8 +265,8 @@ impl GradleBuild {
         args.push(init_script.to_string_lossy().to_string());
 
         let task = match project_path {
-            Some(p) => format!("{p}:printNovaClasspath"),
-            None => "printNovaClasspath".to_string(),
+            Some(p) => format!("{p}:{NOVA_GRADLE_TASK}"),
+            None => NOVA_GRADLE_TASK.to_string(),
         };
         args.push(task);
 
@@ -353,7 +358,7 @@ fn gradle_output_dir_cached(
     };
 
     // Root project path can't be used as a task prefix (it would produce
-    // `::printNovaClasspath`), so callers use `None` instead.
+    // `::printNovaJavaCompileConfig`), so callers use `None` instead.
     if project_path == ":" {
         return Ok(gradle_output_dir(project_root, None));
     }
@@ -395,6 +400,13 @@ fn gradle_output_dir(project_root: &Path, project_path: Option<&str>) -> PathBuf
         .join("classes")
         .join("java")
         .join("main")
+}
+
+fn gradle_test_output_dir_from_main(main_output_dir: &Path) -> PathBuf {
+    let mut path = main_output_dir.to_path_buf();
+    path.pop();
+    path.push("test");
+    path
 }
 
 #[cfg(test)]
@@ -446,17 +458,26 @@ BUILD SUCCESSFUL
 
     #[test]
     fn union_classpath_preserves_order_and_dedupes() {
-        let union = union_classpath_entries([
-            vec![
-                PathBuf::from("/a"),
-                PathBuf::from("/b"),
-                PathBuf::from("/c"),
-            ],
-            vec![PathBuf::from("/b"), PathBuf::from("/d")],
-            vec![PathBuf::from("/a"), PathBuf::from("/e")],
+        let union = JavaCompileConfig::union([
+            JavaCompileConfig {
+                compile_classpath: vec![
+                    PathBuf::from("/a"),
+                    PathBuf::from("/b"),
+                    PathBuf::from("/c"),
+                ],
+                ..JavaCompileConfig::default()
+            },
+            JavaCompileConfig {
+                compile_classpath: vec![PathBuf::from("/b"), PathBuf::from("/d")],
+                ..JavaCompileConfig::default()
+            },
+            JavaCompileConfig {
+                compile_classpath: vec![PathBuf::from("/a"), PathBuf::from("/e")],
+                ..JavaCompileConfig::default()
+            },
         ]);
         assert_eq!(
-            union,
+            union.compile_classpath,
             vec![
                 PathBuf::from("/a"),
                 PathBuf::from("/b"),
@@ -469,9 +490,109 @@ BUILD SUCCESSFUL
 
     #[test]
     fn parse_gradle_classpath_ignores_nova_markers() {
-        let out = "NOVA_NO_CLASSPATH\n/a/b/c.jar\n";
+        let out = "NOVA_JSON_BEGIN\n/a/b/c.jar\n";
         let cp = parse_gradle_classpath_output(out);
         assert_eq!(cp, vec![PathBuf::from("/a/b/c.jar")]);
+    }
+
+    #[test]
+    fn extracts_nova_json_block_from_gradle_noise() {
+        let out = r#"
+> Task :someTask
+
+NOVA_JSON_BEGIN
+{"compileClasspath":["/a.jar"]}
+NOVA_JSON_END
+
+BUILD SUCCESSFUL in 1s
+"#;
+        let json = extract_nova_json_block(out).unwrap();
+        assert_eq!(json.trim(), r#"{"compileClasspath":["/a.jar"]}"#);
+    }
+
+    #[test]
+    fn parses_gradle_java_compile_config_and_dedupes_paths() {
+        let out = r#"
+NOVA_JSON_BEGIN
+{
+  "compileClasspath": ["/dep/a.jar", "/dep/a.jar", "/dep/b.jar"],
+  "testCompileClasspath": ["/dep/test.jar"],
+  "mainSourceRoots": ["/src/main/java"],
+  "testSourceRoots": ["/src/test/java"],
+  "mainOutputDirs": ["/out/main", "/out/main"],
+  "testOutputDirs": ["/out/test"],
+  "sourceCompatibility": "17",
+  "targetCompatibility": "17",
+  "toolchainLanguageVersion": "21"
+}
+NOVA_JSON_END
+"#;
+        let parsed = parse_gradle_java_compile_config_json(out).expect("parse json");
+        let cfg = normalize_gradle_java_compile_config(
+            parsed,
+            PathBuf::from("/fallback/main"),
+            PathBuf::from("/fallback/test"),
+        );
+        assert_eq!(cfg.main_source_roots, vec![PathBuf::from("/src/main/java")]);
+        assert_eq!(cfg.test_source_roots, vec![PathBuf::from("/src/test/java")]);
+        assert_eq!(cfg.main_output_dir, Some(PathBuf::from("/out/main")));
+        assert_eq!(cfg.test_output_dir, Some(PathBuf::from("/out/test")));
+        assert_eq!(
+            cfg.compile_classpath,
+            vec![
+                PathBuf::from("/out/main"),
+                PathBuf::from("/dep/a.jar"),
+                PathBuf::from("/dep/b.jar")
+            ]
+        );
+        assert_eq!(
+            cfg.test_classpath,
+            vec![
+                PathBuf::from("/out/test"),
+                PathBuf::from("/out/main"),
+                PathBuf::from("/dep/test.jar")
+            ]
+        );
+        assert_eq!(cfg.source.as_deref(), Some("17"));
+        assert_eq!(cfg.target.as_deref(), Some("17"));
+        assert_eq!(cfg.release.as_deref(), Some("21"));
+    }
+
+    #[test]
+    fn parses_gradle_java_compile_config_with_null_fields() {
+        let out = r#"
+some warning
+NOVA_JSON_BEGIN
+{"compileClasspath":null,"testCompileClasspath":null,"mainOutputDirs":null,"testOutputDirs":null}
+NOVA_JSON_END
+"#;
+        let parsed = parse_gradle_java_compile_config_json(out).expect("parse json");
+        let main_output_fallback = gradle_output_dir(Path::new("/workspace"), Some(":app"));
+        let test_output_fallback = gradle_test_output_dir_from_main(&main_output_fallback);
+        let cfg = normalize_gradle_java_compile_config(
+            parsed,
+            main_output_fallback,
+            test_output_fallback,
+        );
+        assert_eq!(
+            cfg.main_output_dir,
+            Some(PathBuf::from("/workspace/app/build/classes/java/main"))
+        );
+        assert_eq!(
+            cfg.test_output_dir,
+            Some(PathBuf::from("/workspace/app/build/classes/java/test"))
+        );
+        assert_eq!(
+            cfg.compile_classpath,
+            vec![PathBuf::from("/workspace/app/build/classes/java/main")]
+        );
+        assert_eq!(
+            cfg.test_classpath,
+            vec![
+                PathBuf::from("/workspace/app/build/classes/java/test"),
+                PathBuf::from("/workspace/app/build/classes/java/main")
+            ]
+        );
     }
 }
 
@@ -523,21 +644,108 @@ pub fn parse_gradle_projects_output(output: &str) -> Result<Vec<GradleProjectInf
     Ok(projects)
 }
 
-fn union_classpath_entries<I, T>(classpaths: I) -> Vec<PathBuf>
-where
-    I: IntoIterator<Item = T>,
-    T: IntoIterator<Item = PathBuf>,
-{
-    let mut entries = Vec::new();
-    let mut seen = HashSet::new();
-    for cp in classpaths {
-        for path in cp {
-            if seen.insert(path.clone()) {
-                entries.push(path);
-            }
-        }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GradleJavaCompileConfigJson {
+    #[serde(default)]
+    compile_classpath: Option<Vec<String>>,
+    #[serde(default)]
+    test_compile_classpath: Option<Vec<String>>,
+    #[serde(default)]
+    main_source_roots: Option<Vec<String>>,
+    #[serde(default)]
+    test_source_roots: Option<Vec<String>>,
+    #[serde(default)]
+    main_output_dirs: Option<Vec<String>>,
+    #[serde(default)]
+    test_output_dirs: Option<Vec<String>>,
+    #[serde(default)]
+    source_compatibility: Option<String>,
+    #[serde(default)]
+    target_compatibility: Option<String>,
+    #[serde(default)]
+    toolchain_language_version: Option<String>,
+}
+
+fn parse_gradle_java_compile_config_json(output: &str) -> Result<GradleJavaCompileConfigJson> {
+    let json = extract_nova_json_block(output)?;
+    serde_json::from_str(json.trim()).map_err(|e| BuildError::Parse(e.to_string()))
+}
+
+fn normalize_gradle_java_compile_config(
+    parsed: GradleJavaCompileConfigJson,
+    main_output_fallback: PathBuf,
+    test_output_fallback: PathBuf,
+) -> JavaCompileConfig {
+    let mut main_output_dirs = strings_to_paths(parsed.main_output_dirs);
+    dedupe_paths(&mut main_output_dirs);
+    if main_output_dirs.is_empty() {
+        main_output_dirs.push(main_output_fallback);
     }
-    entries
+
+    let mut test_output_dirs = strings_to_paths(parsed.test_output_dirs);
+    dedupe_paths(&mut test_output_dirs);
+    if test_output_dirs.is_empty() {
+        test_output_dirs.push(test_output_fallback);
+    }
+
+    let main_output_dir = main_output_dirs.first().cloned();
+    let test_output_dir = test_output_dirs.first().cloned();
+
+    let mut compile_classpath = Vec::new();
+    compile_classpath.extend(main_output_dirs.clone());
+    compile_classpath.extend(strings_to_paths(parsed.compile_classpath));
+    dedupe_paths(&mut compile_classpath);
+
+    let mut test_classpath = Vec::new();
+    test_classpath.extend(test_output_dirs);
+    test_classpath.extend(main_output_dirs);
+    test_classpath.extend(strings_to_paths(parsed.test_compile_classpath));
+    dedupe_paths(&mut test_classpath);
+
+    let mut main_source_roots = strings_to_paths(parsed.main_source_roots);
+    let mut test_source_roots = strings_to_paths(parsed.test_source_roots);
+    dedupe_paths(&mut main_source_roots);
+    dedupe_paths(&mut test_source_roots);
+
+    JavaCompileConfig {
+        compile_classpath,
+        test_classpath,
+        module_path: Vec::new(),
+        main_source_roots,
+        test_source_roots,
+        main_output_dir,
+        test_output_dir,
+        source: parsed.source_compatibility,
+        target: parsed.target_compatibility,
+        release: parsed.toolchain_language_version,
+        enable_preview: false,
+    }
+}
+
+fn extract_nova_json_block(output: &str) -> Result<String> {
+    extract_sentinel_block(output, NOVA_JSON_BEGIN, NOVA_JSON_END)
+        .ok_or_else(|| BuildError::Parse("failed to locate Gradle JSON block".into()))
+}
+
+fn strings_to_paths(value: Option<Vec<String>>) -> Vec<PathBuf> {
+    value
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|s| {
+            let s = s.trim();
+            if s.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(s))
+            }
+        })
+        .collect()
+}
+
+fn dedupe_paths(paths: &mut Vec<PathBuf>) {
+    let mut seen = HashSet::new();
+    paths.retain(|p| seen.insert(p.clone()));
 }
 
 fn extract_sentinel_block(output: &str, begin: &str, end: &str) -> Option<String> {
@@ -587,19 +795,83 @@ fn write_init_script(project_root: &Path) -> Result<PathBuf> {
 import groovy.json.JsonOutput
 
 allprojects { proj ->
-    proj.tasks.register("printNovaClasspath") {
+    proj.tasks.register("printNovaJavaCompileConfig") {
         doLast {
+            def payload = [:]
+
             def cfg = proj.configurations.findByName("compileClasspath")
             if (cfg == null) {
                 cfg = proj.configurations.findByName("runtimeClasspath")
             }
-            if (cfg == null) {
-                println("NOVA_NO_CLASSPATH")
-                return
+
+            def testCfg = proj.configurations.findByName("testCompileClasspath")
+            if (testCfg == null) {
+                testCfg = proj.configurations.findByName("testRuntimeClasspath")
             }
-            cfg.resolve().each { f ->
-                println(f.absolutePath)
+            if (testCfg == null) {
+                testCfg = proj.configurations.findByName("runtimeClasspath")
             }
+
+            payload.compileClasspath = (cfg != null) ? cfg.resolve().collect { it.absolutePath } : null
+            payload.testCompileClasspath = (testCfg != null) ? testCfg.resolve().collect { it.absolutePath } : null
+
+            def sourceSets = null
+            try {
+                sourceSets = proj.extensions.findByName("sourceSets")
+            } catch (Exception ignored) {}
+
+            if (sourceSets != null) {
+                def main = sourceSets.findByName("main")
+                def test = sourceSets.findByName("test")
+                payload.mainSourceRoots = (main != null) ? main.java.srcDirs.collect { it.absolutePath } : null
+                payload.testSourceRoots = (test != null) ? test.java.srcDirs.collect { it.absolutePath } : null
+                payload.mainOutputDirs = (main != null) ? main.output.classesDirs.files.collect { it.absolutePath } : null
+                payload.testOutputDirs = (test != null) ? test.output.classesDirs.files.collect { it.absolutePath } : null
+            } else {
+                payload.mainSourceRoots = null
+                payload.testSourceRoots = null
+                payload.mainOutputDirs = null
+                payload.testOutputDirs = null
+            }
+
+            def sourceCompat = null
+            def targetCompat = null
+            def toolchainLang = null
+
+            def javaExt = null
+            try {
+                javaExt = proj.extensions.findByName("java")
+            } catch (Exception ignored) {}
+
+            if (javaExt != null) {
+                try {
+                    sourceCompat = javaExt.sourceCompatibility?.toString()
+                } catch (Exception ignored) {}
+                try {
+                    targetCompat = javaExt.targetCompatibility?.toString()
+                } catch (Exception ignored) {}
+                try {
+                    def lv = javaExt.toolchain?.languageVersion
+                    if (lv != null && lv.isPresent()) {
+                        toolchainLang = lv.get().asInt().toString()
+                    }
+                } catch (Exception ignored) {}
+            } else {
+                try {
+                    sourceCompat = proj.sourceCompatibility?.toString()
+                } catch (Exception ignored) {}
+                try {
+                    targetCompat = proj.targetCompatibility?.toString()
+                } catch (Exception ignored) {}
+            }
+
+            payload.sourceCompatibility = sourceCompat
+            payload.targetCompatibility = targetCompat
+            payload.toolchainLanguageVersion = toolchainLang
+
+            println("NOVA_JSON_BEGIN")
+            println(JsonOutput.toJson(payload))
+            println("NOVA_JSON_END")
         }
     }
 
@@ -723,8 +995,8 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
                 // NOTE: we intentionally exclude the wrapper scripts (`gradlew*`) from
                 // the fingerprint. They are execution helpers rather than build
                 // configuration. Keeping them out of the fingerprint lets Nova reuse
-                // cached classpaths/diagnostics even if a workspace is missing the
-                // wrapper scripts (e.g. sparse checkouts).
+                // cached build metadata even if a workspace is missing the wrapper
+                // scripts (e.g. sparse checkouts).
                 out.push(path);
             }
             "gradle-wrapper.properties" => {
