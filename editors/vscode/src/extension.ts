@@ -9,6 +9,7 @@ import { buildNovaLspLaunchConfig } from './lspArgs';
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
 let ensureClientStarted: ((opts?: { promptForInstall?: boolean }) => Promise<void>) | undefined;
+let stopClient: (() => Promise<void>) | undefined;
 let setSafeModeEnabled: ((enabled: boolean) => void) | undefined;
 let testOutput: vscode.OutputChannel | undefined;
 let testController: vscode.TestController | undefined;
@@ -1011,6 +1012,7 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   ensureClientStarted = ensureLanguageClientStarted;
+  stopClient = stopLanguageClient;
 
   let restartPromptInFlight: Promise<void> | undefined;
   const promptRestartLanguageServer = () => {
@@ -1083,8 +1085,15 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 export function deactivate(): Thenable<void> | undefined {
+  const stop = stopClient;
   ensureClientStarted = undefined;
+  stopClient = undefined;
   setSafeModeEnabled = undefined;
+
+  if (stop) {
+    return stop();
+  }
+
   if (!client) {
     return undefined;
   }
