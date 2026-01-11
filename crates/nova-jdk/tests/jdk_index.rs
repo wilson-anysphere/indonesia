@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use nova_core::{Name, ProjectConfig, StaticMemberId, TypeIndex, TypeName};
-use nova_jdk::{JdkIndex, JdkInstallation};
+use nova_jdk::{IndexingStats, JdkIndex, JdkInstallation};
 use nova_modules::ModuleName;
 use nova_types::TypeProvider;
 use tempfile::tempdir;
@@ -293,6 +293,38 @@ fn discovery_falls_back_to_java_on_path_via_symlink_resolution() -> Result<(), B
 
     let install = JdkInstallation::discover(None)?;
     assert_eq!(install.root(), root);
+
+    Ok(())
+}
+
+#[test]
+fn reuses_persisted_jmod_class_map_cache() -> Result<(), Box<dyn std::error::Error>> {
+    let cache_dir = tempdir()?;
+
+    let stats_first = IndexingStats::default();
+    let _ = JdkIndex::from_jdk_root_with_cache_and_stats(
+        fake_jdk_root(),
+        Some(cache_dir.path()),
+        Some(&stats_first),
+    )?;
+
+    assert_eq!(stats_first.cache_hits(), 0);
+    assert_eq!(stats_first.cache_writes(), 1);
+    assert!(stats_first.module_scans() > 0);
+
+    let stats_second = IndexingStats::default();
+    let index = JdkIndex::from_jdk_root_with_cache_and_stats(
+        fake_jdk_root(),
+        Some(cache_dir.path()),
+        Some(&stats_second),
+    )?;
+
+    assert_eq!(stats_second.cache_hits(), 1);
+    assert_eq!(stats_second.cache_writes(), 0);
+    assert_eq!(stats_second.module_scans(), 0);
+
+    // Ensure the loaded mapping is actually used to locate classes.
+    assert!(index.lookup_type("java.lang.String")?.is_some());
 
     Ok(())
 }

@@ -11,9 +11,11 @@
 mod discovery;
 mod index;
 mod jmod;
+mod persist;
 mod stub;
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::path::Path;
 use std::sync::Arc;
 use std::borrow::Cow;
@@ -25,6 +27,7 @@ use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
 pub use discovery::{JdkDiscoveryError, JdkInstallation};
+pub use index::IndexingStats;
 pub use index::JdkIndexError;
 pub use stub::{JdkClassStub, JdkFieldStub, JdkMethodStub};
 
@@ -109,15 +112,61 @@ impl JdkIndex {
 
     /// Build an index backed by a JDK installation's `jmods/` directory.
     pub fn from_jdk_root(root: impl AsRef<Path>) -> Result<Self, JdkIndexError> {
-        let mut this = Self::new();
-        this.symbols = Some(index::JdkSymbolIndex::from_jdk_root(root)?);
-        Ok(this)
+        let cache_dir = cache_dir_from_env();
+        Self::from_jdk_root_with_cache_and_stats(root, cache_dir.as_deref(), None)
     }
 
     /// Discover a JDK installation and build an index backed by its `jmods/`.
     pub fn discover(config: Option<&ProjectConfig>) -> Result<Self, JdkIndexError> {
+        let cache_dir = cache_dir_from_env();
+        Self::discover_with_cache_and_stats(config, cache_dir.as_deref(), None)
+    }
+
+    /// Build an index backed by a JDK installation's `jmods/` directory and an optional persisted cache.
+    pub fn from_jdk_root_with_cache(
+        root: impl AsRef<Path>,
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, JdkIndexError> {
+        Self::from_jdk_root_with_cache_and_stats(root, cache_dir, None)
+    }
+
+    /// Build an index backed by a JDK installation's `jmods/` directory and an optional persisted cache,
+    /// emitting indexing stats as it loads or rebuilds the on-disk cache.
+    pub fn from_jdk_root_with_cache_and_stats(
+        root: impl AsRef<Path>,
+        cache_dir: Option<&Path>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, JdkIndexError> {
         let mut this = Self::new();
-        this.symbols = Some(index::JdkSymbolIndex::discover(config)?);
+        this.symbols = Some(index::JdkSymbolIndex::from_jdk_root_with_cache(
+            root,
+            cache_dir,
+            stats,
+        )?);
+        Ok(this)
+    }
+
+    /// Discover a JDK installation and build an index backed by its `jmods/` and an optional persisted cache.
+    pub fn discover_with_cache(
+        config: Option<&ProjectConfig>,
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, JdkIndexError> {
+        Self::discover_with_cache_and_stats(config, cache_dir, None)
+    }
+
+    /// Discover a JDK installation and build an index backed by its `jmods/` and an optional persisted cache,
+    /// emitting indexing stats as it loads or rebuilds the on-disk cache.
+    pub fn discover_with_cache_and_stats(
+        config: Option<&ProjectConfig>,
+        cache_dir: Option<&Path>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, JdkIndexError> {
+        let mut this = Self::new();
+        this.symbols = Some(index::JdkSymbolIndex::discover_with_cache(
+            config,
+            cache_dir,
+            stats,
+        )?);
         Ok(this)
     }
 
@@ -333,6 +382,10 @@ fn normalize_binary_prefix(prefix: &str) -> Cow<'_, str> {
     } else {
         Cow::Borrowed(prefix)
     }
+}
+
+fn cache_dir_from_env() -> Option<PathBuf> {
+    std::env::var_os("NOVA_JDK_CACHE_DIR").map(PathBuf::from)
 }
 // === Minimal class/method/type model (used by nova-types) ====================
 

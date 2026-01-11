@@ -3507,11 +3507,13 @@ dependencies = [
 name = "nova-jdk"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "nova-classfile",
  "nova-core",
  "nova-modules",
  "nova-types",
  "once_cell",
+ "serde",
  "tempfile",
  "thiserror 1.0.69",
  "zip 0.6.6",

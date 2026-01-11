@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use nova_classfile::{parse_module_info_class, ClassFile};
@@ -11,8 +12,49 @@ use thiserror::Error;
 
 use crate::discovery::{JdkDiscoveryError, JdkInstallation};
 use crate::jmod;
+use crate::persist;
 use crate::stub::{binary_to_internal, internal_to_binary};
 use crate::{JdkClassStub, JdkFieldStub, JdkMethodStub};
+
+/// Optional indexing counters used by tests and the CLI.
+#[derive(Debug, Default)]
+pub struct IndexingStats {
+    module_scans: AtomicUsize,
+    cache_hits: AtomicUsize,
+    cache_writes: AtomicUsize,
+}
+
+impl IndexingStats {
+    pub fn module_scans(&self) -> usize {
+        self.module_scans.load(Ordering::Relaxed)
+    }
+
+    pub fn cache_hits(&self) -> usize {
+        self.cache_hits.load(Ordering::Relaxed)
+    }
+
+    pub fn cache_writes(&self) -> usize {
+        self.cache_writes.load(Ordering::Relaxed)
+    }
+}
+
+fn record_module_scan(stats: Option<&IndexingStats>) {
+    if let Some(stats) = stats {
+        stats.module_scans.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn record_cache_hit(stats: Option<&IndexingStats>) {
+    if let Some(stats) = stats {
+        stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn record_cache_write(stats: Option<&IndexingStats>) {
+    if let Some(stats) = stats {
+        stats.cache_writes.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[derive(Debug)]
 struct JdkModule {
@@ -38,21 +80,35 @@ pub(crate) struct JdkSymbolIndex {
 }
 
 impl JdkSymbolIndex {
-    pub fn discover(config: Option<&ProjectConfig>) -> Result<Self, JdkIndexError> {
+    pub fn discover_with_cache(
+        config: Option<&ProjectConfig>,
+        cache_dir: Option<&Path>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, JdkIndexError> {
         let install = JdkInstallation::discover(config)?;
-        Self::from_jmods_dir(install.jmods_dir())
+        Self::from_jmods_dir_with_cache(install.jmods_dir(), cache_dir, stats)
     }
 
-    pub fn from_jdk_root(root: impl AsRef<Path>) -> Result<Self, JdkIndexError> {
+    pub fn from_jdk_root_with_cache(
+        root: impl AsRef<Path>,
+        cache_dir: Option<&Path>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, JdkIndexError> {
         let install = JdkInstallation::from_root(root)?;
-        Self::from_jmods_dir(install.jmods_dir())
+        Self::from_jmods_dir_with_cache(install.jmods_dir(), cache_dir, stats)
     }
 
-    pub fn from_jmods_dir(jmods_dir: impl AsRef<Path>) -> Result<Self, JdkIndexError> {
+    pub fn from_jmods_dir_with_cache(
+        jmods_dir: impl AsRef<Path>,
+        cache_dir: Option<&Path>,
+        stats: Option<&IndexingStats>,
+    ) -> Result<Self, JdkIndexError> {
         let jmods_dir = jmods_dir.as_ref().to_path_buf();
         if !jmods_dir.is_dir() {
             return Err(JdkIndexError::MissingJmodsDir { dir: jmods_dir });
         }
+
+        let jmods_dir = std::fs::canonicalize(&jmods_dir).unwrap_or(jmods_dir);
 
         let mut module_paths: Vec<PathBuf> = std::fs::read_dir(&jmods_dir)?
             .filter_map(|e| e.ok())
@@ -69,6 +125,12 @@ impl JdkSymbolIndex {
         if module_paths.is_empty() {
             return Err(JdkIndexError::NoModulesFound { dir: jmods_dir });
         }
+
+        let fingerprints = if cache_dir.is_some() {
+            Some(persist::fingerprint_jmods(&module_paths)?)
+        } else {
+            None
+        };
 
         let mut module_graph = ModuleGraph::new();
         let mut modules = Vec::with_capacity(module_paths.len());
@@ -87,7 +149,7 @@ impl JdkSymbolIndex {
             });
         }
 
-        Ok(Self {
+        let this = Self {
             modules,
             module_graph,
             by_internal: Mutex::new(HashMap::new()),
@@ -97,7 +159,66 @@ impl JdkSymbolIndex {
             packages: OnceLock::new(),
             java_lang: OnceLock::new(),
             binary_names_sorted: OnceLock::new(),
-        })
+        };
+
+        let Some(cache_dir) = cache_dir else {
+            return Ok(this);
+        };
+        let Some(fingerprints) = fingerprints else {
+            return Ok(this);
+        };
+
+        if let Some(cached) = persist::load_symbol_index(cache_dir, &jmods_dir, &fingerprints) {
+            record_cache_hit(stats);
+
+            {
+                let mut map = this.class_to_module.lock().expect("mutex poisoned");
+                *map = cached
+                    .class_to_module
+                    .into_iter()
+                    .map(|(k, v)| (k, v as usize))
+                    .collect();
+            }
+
+            let _ = this.packages.set(cached.packages_sorted);
+            let _ = this.binary_names_sorted.set(cached.binary_names_sorted);
+
+            for module in &this.modules {
+                let _ = module.indexed.set(());
+            }
+
+            return Ok(this);
+        }
+
+        // Cache miss: eagerly scan all modules to build and persist the class map.
+        for module_idx in 0..this.modules.len() {
+            this.ensure_module_indexed(module_idx)?;
+            record_module_scan(stats);
+        }
+
+        let packages_sorted = this.packages_sorted()?.clone();
+        let binary_names_sorted = this.binary_names_sorted()?.clone();
+
+        let class_to_module: HashMap<String, u32> = this
+            .class_to_module
+            .lock()
+            .expect("mutex poisoned")
+            .iter()
+            .map(|(k, v)| (k.clone(), *v as u32))
+            .collect();
+
+        if persist::store_symbol_index(
+            cache_dir,
+            &jmods_dir,
+            fingerprints,
+            class_to_module,
+            packages_sorted,
+            binary_names_sorted,
+        ) {
+            record_cache_write(stats);
+        }
+
+        Ok(this)
     }
 
     pub fn module_graph(&self) -> &ModuleGraph {
