@@ -6,6 +6,7 @@ pub const NOVA_COMPLETION_MORE_METHOD: &str = "nova/completion/more";
 /// Params for `nova/completion/more`.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MoreCompletionsParams {
+    #[serde(alias = "contextId")]
     pub context_id: String,
 }
 
