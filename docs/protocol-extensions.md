@@ -1367,6 +1367,11 @@ Notes:
   using the same argument shape as `SafeDeleteParams` and returning the same `SafeDeleteResult`.
   When the command returns a `WorkspaceEdit`, the server also sends a `workspace/applyEdit`
   request (label: `"Safe delete"`) to apply it immediately.
+- `textDocument/codeAction` may return a Safe Delete code action with:
+  - an inline `edit` (when Safe Delete is immediately applicable), or
+  - `data` containing a `nova/refactor/preview` payload and a `command` (`nova.safeDelete`) that
+    re-runs Safe Delete. Clients can show a preview using `data.report`, then confirm by calling
+    `nova/refactor/safeDelete` (or `nova.safeDelete`) with `mode: "deleteAnyway"`.
 
 #### Errors
 
