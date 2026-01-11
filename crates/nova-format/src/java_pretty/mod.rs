@@ -1,6 +1,5 @@
-use crate::comments::CommentStore;
 use crate::doc::{self, Doc, PrintConfig};
-use crate::{ends_with_line_break, FormatConfig, NewlineStyle};
+use crate::{ends_with_line_break, FormatConfig, JavaComments, NewlineStyle, TokenKey};
 use nova_syntax::{ast, AstNode, JavaParseResult, SyntaxKind, SyntaxNode};
 
 mod decl;
@@ -14,8 +13,7 @@ pub(crate) struct JavaPrettyFormatter<'a> {
     pub(crate) source: &'a str,
     pub(crate) config: &'a FormatConfig,
     pub(crate) newline: NewlineStyle,
-    #[allow(dead_code)]
-    pub(crate) comments: CommentStore,
+    pub(crate) comments: JavaComments<'a>,
 }
 
 impl<'a> JavaPrettyFormatter<'a> {
@@ -25,7 +23,7 @@ impl<'a> JavaPrettyFormatter<'a> {
         config: &'a FormatConfig,
         newline: NewlineStyle,
     ) -> Self {
-        let comments = CommentStore::new(&parse.syntax(), source);
+        let comments = JavaComments::new(&parse.syntax(), source);
         Self {
             parse,
             source,
@@ -39,7 +37,10 @@ impl<'a> JavaPrettyFormatter<'a> {
         let root = self.parse.syntax();
         match ast::CompilationUnit::cast(root.clone()) {
             Some(unit) => self.print_compilation_unit(unit.syntax()),
-            None => fallback::node(self.source, &root),
+            None => {
+                self.comments.consume_in_range(root.text_range());
+                fallback::node(self.source, &root)
+            }
         }
     }
 
@@ -64,6 +65,9 @@ impl<'a> JavaPrettyFormatter<'a> {
                 if let Some(ty) = ast::TypeDeclaration::cast(child.clone()) {
                     parts.push(self.print_type_declaration(ty));
                 } else {
+                    // Fallback nodes print verbatim source, including any nested comment tokens.
+                    // Consume those comments so they don't trip the drain assertion.
+                    self.comments.consume_in_range(child.text_range());
                     parts.push(fallback::node(self.source, child));
                 }
                 continue;
@@ -75,7 +79,31 @@ impl<'a> JavaPrettyFormatter<'a> {
             if is_synthetic_missing(tok.kind()) || tok.kind() == SyntaxKind::Eof {
                 continue;
             }
-            parts.push(fallback::token(self.source, tok));
+            if tok.kind().is_trivia() {
+                // Trivia tokens (whitespace + comments) are printed via `CommentStore` anchors.
+                continue;
+            }
+
+            let key = TokenKey::from(tok);
+            let leading = self.comments.take_leading_doc(key, 0);
+            let trailing = self.comments.take_trailing_doc(key, 0);
+
+            parts.push(Doc::concat([
+                leading,
+                fallback::token(self.source, tok),
+                trailing,
+            ]));
+        }
+
+        // Comments at EOF are anchored to the EOF token.
+        let eof = self
+            .parse
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| tok.kind() == SyntaxKind::Eof);
+        if let Some(eof) = eof {
+            parts.push(self.comments.take_leading_doc(TokenKey::from(&eof), 0));
         }
 
         Doc::concat(parts)

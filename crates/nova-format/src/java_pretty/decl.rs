@@ -1,4 +1,5 @@
 use crate::doc::Doc;
+use crate::TokenKey;
 use nova_syntax::{ast, AstNode, SyntaxKind, SyntaxNode};
 
 use super::{fallback, print, JavaPrettyFormatter};
@@ -28,9 +29,13 @@ impl<'a> JavaPrettyFormatter<'a> {
                     decl.body().map(|b| b.syntax().clone()),
                 ),
             ast::TypeDeclaration::EmptyDeclaration(decl) => {
+                self.comments.consume_in_range(decl.syntax().text_range());
                 fallback::node(self.source, decl.syntax())
             }
-            other => fallback::node(self.source, other.syntax()),
+            other => {
+                self.comments.consume_in_range(other.syntax().text_range());
+                fallback::node(self.source, other.syntax())
+            }
         }
     }
 
@@ -40,18 +45,33 @@ impl<'a> JavaPrettyFormatter<'a> {
         body: Option<SyntaxNode>,
     ) -> Doc<'a> {
         let Some(body) = body else {
+            self.comments.consume_in_range(decl.text_range());
             return fallback::node(self.source, decl);
         };
 
         let Some((l_brace, r_brace)) = find_braces(&body) else {
+            self.comments.consume_in_range(decl.text_range());
             return fallback::node(self.source, decl);
         };
 
-        let header_start = u32::from(decl.text_range().start());
+        let first_sig = decl
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| tok.kind() != SyntaxKind::Eof && !tok.kind().is_trivia() && !is_synthetic_missing(tok.kind()));
+
+        let header_start = first_sig
+            .as_ref()
+            .map(|tok| u32::from(tok.text_range().start()))
+            .unwrap_or_else(|| u32::from(decl.text_range().start()));
         let header_end = u32::from(l_brace.text_range().start());
         let header = self
             .print_verbatim_tokens(decl, header_start, header_end, true)
             .unwrap_or_else(|| fallback::byte_range(self.source, header_start, header_end));
+
+        let leading = first_sig
+            .as_ref()
+            .map(|tok| self.comments.take_leading_doc(TokenKey::from(tok), 0))
+            .unwrap_or_else(Doc::nil);
 
         let body_doc = self.print_brace_body(&body, &l_brace, &r_brace);
         let trailer_start = u32::from(r_brace.text_range().end());
@@ -62,7 +82,11 @@ impl<'a> JavaPrettyFormatter<'a> {
             Doc::nil()
         };
 
-        Doc::concat([header, print::space(), body_doc, trailer])
+        // Anything we still print via `fallback::byte_range`/raw slices has already emitted comment
+        // tokens, so mark them as consumed so we can debug-assert that nothing is silently dropped.
+        self.comments.consume_in_range(decl.text_range());
+
+        Doc::concat([leading, header, print::space(), body_doc, trailer])
     }
 
     fn print_brace_body(

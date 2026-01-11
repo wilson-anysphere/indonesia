@@ -225,6 +225,16 @@ impl CommentStore {
             self.trailing.keys().collect::<Vec<_>>(),
         );
     }
+
+    /// Mark any comments whose text range is fully contained within `range` as consumed.
+    ///
+    /// This is useful when formatting falls back to emitting verbatim source slices that already
+    /// contain comment tokens (so they are not "dropped", but also not explicitly drained via
+    /// [`take_leading`] / [`take_trailing`]).
+    pub fn consume_in_range(&mut self, range: TextRange) {
+        consume_map_in_range(&mut self.leading, range);
+        consume_map_in_range(&mut self.trailing, range);
+    }
 }
 
 fn count_line_breaks_between(source: &str, start: TextSize, end: TextSize) -> u32 {
@@ -301,4 +311,15 @@ fn has_blank_line_between(source: &str, start: TextSize, end: TextSize) -> bool 
     }
 
     false
+}
+
+fn consume_map_in_range(map: &mut HashMap<TokenKey, Vec<Comment>>, range: TextRange) {
+    map.retain(|_, comments| {
+        comments.retain(|comment| !range_fully_contains(range, comment.text_range));
+        !comments.is_empty()
+    });
+}
+
+fn range_fully_contains(outer: TextRange, inner: TextRange) -> bool {
+    inner.start() >= outer.start() && inner.end() <= outer.end()
 }

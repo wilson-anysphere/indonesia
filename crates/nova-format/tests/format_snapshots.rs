@@ -277,7 +277,7 @@ class Foo {
     java.util.List<? super Integer> supers;
     void m() {
         java.util.Collections.<String>emptyList();
-        java.util.function.Function<String, String> f=this::<String>id;
+        java.util.function.Function<String, String> f = this::<String>id;
         new java.util.ArrayList<>();
     }
     <T> T id(T t) {
@@ -377,17 +377,17 @@ fn ast_formatting_avoids_punctuation_token_merges() {
         @r###"
 class Foo {
     void m() {
-        int a=1/ /2;
-        int b=1/ *2;
-        int c=1: :2;
-        int d=1- >2;
-        boolean e=1> >2;
-        boolean f=1> >>2;
-        boolean g=1>> >2;
-        boolean h=1> >=2;
-        boolean i=1> =2;
-        boolean j=1= =2;
-        boolean k=1! =2;
+        int a = 1/ /2;
+        int b = 1/ *2;
+        int c = 1: :2;
+        int d = 1- >2;
+        boolean e = 1> >2;
+        boolean f = 1> >>2;
+        boolean g = 1>> >2;
+        boolean h = 1> >=2;
+        boolean i = 1> = 2;
+        boolean j = 1 = = 2;
+        boolean k = 1! = 2;
     }
 }
 "###
@@ -809,6 +809,49 @@ fn pretty_indents_after_existing_newlines_inside_block() {
     assert_eq!(
         formatted, "class Foo {\n    int x;\n    int y;\n}\n",
         "pretty formatter should indent lines that were separated by real newlines"
+    );
+}
+
+#[test]
+fn pretty_formats_doc_comment_before_class() {
+    let input = "/**\n   * docs\n   */class Foo{int x;}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+/**
+ * docs
+*/
+class Foo {
+    int x;
+}
+"###
+    );
+}
+
+#[test]
+fn pretty_preserves_inline_block_comment_spacing() {
+    let input = "/* header */class Foo{int x;}\n";
+    let edits = edits_for_document_formatting_with_strategy(
+        input,
+        &FormatConfig::default(),
+        FormatStrategy::JavaPrettyAst,
+    );
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+/* header */ class Foo {
+    int x;
+}
+"###
     );
 }
 

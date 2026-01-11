@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use nova_core::TextSize;
+use nova_core::{TextRange, TextSize};
 use nova_syntax::{SyntaxKind, SyntaxNode};
 
 use crate::comment_printer::{fmt_comment, FmtCtx};
@@ -96,6 +96,14 @@ impl<'a> JavaComments<'a> {
         self.store.assert_drained();
     }
 
+    /// Mark any comments fully contained within `range` as consumed.
+    ///
+    /// This is intended for formatter fallbacks that print verbatim source slices containing
+    /// comment tokens.
+    pub fn consume_in_range(&mut self, range: TextRange) {
+        self.store.consume_in_range(range);
+    }
+
     fn fmt_leading_comments(
         &self,
         ctx: &FmtCtx,
@@ -136,8 +144,12 @@ impl<'a> JavaComments<'a> {
             }
 
             // Ensure the next token/declaration cannot be glued to a standalone block comment.
-            if comment.kind == CommentKind::Block && !comment.is_inline_with_next {
-                parts.push(Doc::hardline());
+            if comment.kind == CommentKind::Block {
+                if comment.is_inline_with_next {
+                    parts.push(Doc::text(" "));
+                } else {
+                    parts.push(Doc::hardline());
+                }
             }
             if comment.blank_line_after {
                 parts.push(Doc::hardline());
