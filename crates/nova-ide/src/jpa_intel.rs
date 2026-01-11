@@ -163,7 +163,20 @@ fn fingerprint_sources(db: &dyn FileDatabase, files: &[(PathBuf, FileId)]) -> u6
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for (path, file_id) in files {
         path.hash(&mut hasher);
-        db.file_content(*file_id).hash(&mut hasher);
+        let text = db.file_content(*file_id);
+        // NOTE: We intentionally avoid hashing the full file contents here: JPQL
+        // completions/navigation can run on every keystroke, and hashing an
+        // entire workspace worth of Java sources would be prohibitively
+        // expensive.
+        //
+        // The `nova_db::Database` implementations used by Nova replace the
+        // underlying `String` on edits (rather than mutating in-place), so using
+        // the content pointer/len is a cheap best-effort invalidation signal.
+        //
+        // This means the cache may produce stale results if a database were to
+        // mutate strings in place *and* keep the allocation stable.
+        text.len().hash(&mut hasher);
+        (text.as_ptr() as usize).hash(&mut hasher);
     }
     hasher.finish()
 }
