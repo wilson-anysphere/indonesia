@@ -253,7 +253,11 @@ impl NovaServer {
 ## Nova LSP Extensions
 
 ### Custom Methods
- 
+
+> Note: This document contains **design sketches** and may list planned/aspirational `nova/*`
+> methods. For the **current implemented** extension method set and exact JSON schemas, see:
+> [`protocol-extensions.md`](protocol-extensions.md).
+  
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    NOVA LSP EXTENSIONS                           │

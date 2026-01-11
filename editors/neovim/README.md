@@ -30,12 +30,18 @@ lspconfig.nova.setup({})
 
 ## Calling Nova custom requests (optional)
 
-Nova defines custom LSP methods like `nova/java/organizeImports`.
+Nova defines custom LSP methods under the `nova/*` namespace. For the stable spec, see
+[`docs/protocol-extensions.md`](../../docs/protocol-extensions.md).
+
+### Organize imports
+
+`nova-lsp` does **not** currently implement the custom request `nova/java/organizeImports`; prefer
+the standard LSP code action kind `source.organizeImports`:
 
 ```lua
 vim.api.nvim_create_user_command('NovaOrganizeImports', function()
-  local uri = vim.uri_from_bufnr(0)
-  vim.lsp.buf_request(0, 'nova/java/organizeImports', { uri = uri }, function(_, _, _) end)
+  vim.lsp.buf.code_action({
+    context = { only = { 'source.organizeImports' } },
+  })
 end, {})
 ```
-
