@@ -133,6 +133,95 @@ class Foo {
 }
 
 #[test]
+fn formats_generic_spacing_and_disambiguation() {
+    let input = r#"
+class Foo{
+java.util.List<String>xs;
+java.util.Map<String,java.util.List<Integer>>map;
+java.util.List<java.util.List<java.util.List<Integer>>>deep;
+java.util.List<?extends Number>numbers;
+java.util.List<?super Integer>supers;
+void m(){
+java.util.Collections.<String> emptyList();
+java.util.function.Function<String,String>f=this::<String> id;
+new java.util.ArrayList<> ();
+}
+<T> T id(T t){return t;}
+}
+"#;
+
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    // Smoke check: make sure generic closes don't run into declaration identifiers.
+    assert!(!formatted.contains(">xs"), "expected space after generic close: {formatted}");
+    assert!(
+        !formatted.contains(">>map"),
+        "expected space after generic close: {formatted}"
+    );
+    assert!(
+        !formatted.contains(">>>deep"),
+        "expected space after generic close: {formatted}"
+    );
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    java.util.List<String> xs;
+    java.util.Map<String, java.util.List<Integer>> map;
+    java.util.List<java.util.List<java.util.List<Integer>>> deep;
+    java.util.List<? extends Number> numbers;
+    java.util.List<? super Integer> supers;
+    void m() {
+        java.util.Collections.<String>emptyList();
+        java.util.function.Function<String, String> f=this::<String>id;
+        new java.util.ArrayList<>();
+    }
+    <T> T id(T t) {
+        return t;
+    }
+}
+"###
+    );
+}
+
+#[test]
+fn ast_formatting_is_idempotent() {
+    fn assert_idempotent(input: &str) {
+        let parse = parse_java(input);
+        let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+        let reparsed = parse_java(&formatted);
+        let formatted_again = format_java_ast(&reparsed, &formatted, &FormatConfig::default());
+        assert_eq!(formatted_again, formatted);
+    }
+
+    assert_idempotent(
+        r#"
+ class  Foo{
+public static void main(String[]args){
+System.out.println("hi"); // comment
+if(true){System.out.println("x");}
+}
+}
+"#,
+    );
+
+    assert_idempotent(
+        r#"
+class Foo{
+java.util.List<String>xs;
+java.util.Map<String,java.util.List<Integer>>map;
+java.util.List<?extends Number>numbers;
+void m(){
+java.util.Collections.<String> emptyList();
+}
+}
+"#,
+    );
+}
+
+#[test]
 fn formats_record_declaration() {
     let input = "package foo;\npublic record  Point( int x,int y){}\n";
     let parse = parse_java(input);

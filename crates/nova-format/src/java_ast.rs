@@ -53,6 +53,7 @@ fn format_compilation_unit(
     let mut idx = 0usize;
     while idx < tokens.len() {
         let token = &tokens[idx];
+        let token_idx = idx;
         idx += 1;
 
         if token.kind() == SyntaxKind::Whitespace {
@@ -80,8 +81,6 @@ fn format_compilation_unit(
             state.pending_blank_line = false;
         }
 
-        let text = token.text();
-
         if at_top_level && token.kind() == SyntaxKind::ImportKw {
             let is_static = lookahead_import_is_static(&tokens, idx);
             if let Some(prev) = sections.last_import_static {
@@ -97,8 +96,8 @@ fn format_compilation_unit(
             sections.in_package = true;
         }
 
-        let next = next_significant(&tokens, idx).map(|t| t.text());
-        state.write_token(&mut out, token.kind(), text, next);
+        let next = next_significant(&tokens, idx);
+        state.write_token(&mut out, &tokens, token_idx, token, next);
 
         if at_top_level && token.kind() == SyntaxKind::Semicolon {
             if sections.in_package {
@@ -306,14 +305,38 @@ struct TokenFormatState<'a> {
     paren_depth: usize,
     for_paren_depth: Option<usize>,
     pending_for: bool,
-    last_sig: Option<LastToken>,
+    last_sig: Option<SigToken>,
+    /// The most recent non-comment significant token, used for generic disambiguation.
+    last_code_sig: Option<SigToken>,
+    generic_stack: Vec<GenericContext>,
     newline: &'static str,
 }
 
 #[derive(Debug, Clone)]
-struct LastToken {
-    kind: SyntaxKind,
-    text: String,
+enum SigToken {
+    Token { kind: SyntaxKind, text: String },
+    GenericClose { after_dot: bool },
+}
+
+impl SigToken {
+    fn kind(&self) -> Option<SyntaxKind> {
+        match self {
+            SigToken::Token { kind, .. } => Some(*kind),
+            SigToken::GenericClose { .. } => None,
+        }
+    }
+
+    fn text(&self) -> &str {
+        match self {
+            SigToken::Token { text, .. } => text,
+            SigToken::GenericClose { .. } => ">",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GenericContext {
+    after_dot: bool,
 }
 
 impl<'a> TokenFormatState<'a> {
@@ -327,6 +350,8 @@ impl<'a> TokenFormatState<'a> {
             for_paren_depth: None,
             pending_for: false,
             last_sig: None,
+            last_code_sig: None,
+            generic_stack: Vec::new(),
             newline: newline.as_str(),
         }
     }
@@ -334,11 +359,15 @@ impl<'a> TokenFormatState<'a> {
     fn ensure_newline(&mut self, out: &mut String) {
         ensure_newline(out, self.newline);
         self.at_line_start = true;
+        self.last_sig = None;
+        self.last_code_sig = None;
     }
 
     fn ensure_blank_line(&mut self, out: &mut String) {
         ensure_blank_line(out, self.newline);
         self.at_line_start = true;
+        self.last_sig = None;
+        self.last_code_sig = None;
     }
 
     fn write_indent(&mut self, out: &mut String) {
@@ -368,9 +397,38 @@ impl<'a> TokenFormatState<'a> {
         }
         out.push_str(self.newline);
         self.at_line_start = true;
+        self.last_sig = None;
+        self.last_code_sig = None;
     }
 
-    fn write_token(&mut self, out: &mut String, kind: SyntaxKind, text: &str, next: Option<&str>) {
+    fn generic_depth(&self) -> usize {
+        self.generic_stack.len()
+    }
+
+    fn pop_generic(&mut self, count: usize) -> bool {
+        let mut after_dot = false;
+        for _ in 0..count {
+            if let Some(ctx) = self.generic_stack.pop() {
+                after_dot = ctx.after_dot;
+            } else {
+                break;
+            }
+        }
+        after_dot
+    }
+
+    fn write_token(
+        &mut self,
+        out: &mut String,
+        tokens: &[SyntaxToken],
+        idx: usize,
+        token: &SyntaxToken,
+        next: Option<&SyntaxToken>,
+    ) {
+        let kind = token.kind();
+        let text = token.text();
+        let next_kind = next.map(|t| t.kind());
+
         match kind {
             SyntaxKind::LineComment => {
                 self.write_indent(out);
@@ -380,6 +438,7 @@ impl<'a> TokenFormatState<'a> {
                 out.push_str(text.trim_end_matches(['\r', '\n']));
                 self.ensure_newline(out);
                 self.last_sig = None;
+                self.last_code_sig = None;
                 self.pending_for = false;
             }
             SyntaxKind::DocComment => {
@@ -390,6 +449,7 @@ impl<'a> TokenFormatState<'a> {
                 self.write_block_comment(out, text);
                 self.ensure_newline(out);
                 self.last_sig = None;
+                self.last_code_sig = None;
                 self.pending_for = false;
             }
             SyntaxKind::BlockComment => {
@@ -398,10 +458,82 @@ impl<'a> TokenFormatState<'a> {
                     self.ensure_space(out);
                 }
                 self.write_block_comment(out, text);
-                self.last_sig = Some(LastToken {
+                self.last_sig = Some(SigToken::Token {
                     kind,
                     text: text.to_string(),
                 });
+                self.pending_for = false;
+            }
+            SyntaxKind::Less => {
+                let prev_sig = if self.at_line_start {
+                    None
+                } else {
+                    self.last_code_sig.clone()
+                };
+                let starts_generic = should_start_generic(tokens, idx, prev_sig.as_ref());
+                self.write_indent(out);
+                if starts_generic {
+                    if prev_sig
+                        .as_ref()
+                        .is_some_and(|sig| sig.kind().is_some_and(|k| k.is_modifier_keyword()))
+                    {
+                        self.ensure_space(out);
+                    }
+                    out.push_str(text);
+                    self.generic_stack.push(GenericContext {
+                        after_dot: prev_sig.as_ref().is_some_and(|sig| {
+                            sig.kind().is_some_and(|k| {
+                                matches!(k, SyntaxKind::Dot | SyntaxKind::DoubleColon)
+                            })
+                        }),
+                    });
+                } else {
+                    if needs_space_between(self.last_sig.as_ref(), kind, text) {
+                        self.ensure_space(out);
+                    }
+                    out.push_str(text);
+                }
+                let sig = SigToken::Token {
+                    kind,
+                    text: text.to_string(),
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
+                self.pending_for = false;
+            }
+            SyntaxKind::Greater | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift
+                if self.generic_depth() > 0 =>
+            {
+                self.write_indent(out);
+                out.push_str(text);
+                let after_dot = match kind {
+                    SyntaxKind::Greater => self.pop_generic(1),
+                    SyntaxKind::RightShift => self.pop_generic(2),
+                    SyntaxKind::UnsignedRightShift => self.pop_generic(3),
+                    _ => false,
+                };
+                let sig = SigToken::GenericClose { after_dot };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
+                self.pending_for = false;
+            }
+            SyntaxKind::Question if self.generic_depth() > 0 => {
+                self.write_indent(out);
+                if needs_space_between(self.last_sig.as_ref(), kind, text) {
+                    self.ensure_space(out);
+                }
+                out.push_str(text);
+                if let Some(next) = next {
+                    if next.kind() == SyntaxKind::At || is_word_token(next.kind(), next.text()) {
+                        self.ensure_space(out);
+                    }
+                }
+                let sig = SigToken::Token {
+                    kind,
+                    text: text.to_string(),
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
             _ if text == "{" => {
@@ -413,6 +545,7 @@ impl<'a> TokenFormatState<'a> {
                 self.ensure_newline(out);
                 self.indent_level = self.indent_level.saturating_add(1);
                 self.last_sig = None;
+                self.last_code_sig = None;
                 self.pending_for = false;
             }
             _ if text == "}" => {
@@ -421,18 +554,43 @@ impl<'a> TokenFormatState<'a> {
                 self.write_indent(out);
                 out.push('}');
 
-                let join_next = matches!(next, Some("else" | "catch" | "finally" | "while"))
-                    || matches!(next, Some(";") | Some(",") | Some(")") | Some("]"));
-                if matches!(next, Some("else" | "catch" | "finally" | "while")) {
+                let join_next = matches!(
+                    next_kind,
+                    Some(
+                        SyntaxKind::ElseKw
+                            | SyntaxKind::CatchKw
+                            | SyntaxKind::FinallyKw
+                            | SyntaxKind::WhileKw
+                    )
+                ) || matches!(
+                    next_kind,
+                    Some(
+                        SyntaxKind::Semicolon
+                            | SyntaxKind::Comma
+                            | SyntaxKind::RParen
+                            | SyntaxKind::RBracket
+                    )
+                );
+                if matches!(
+                    next_kind,
+                    Some(
+                        SyntaxKind::ElseKw
+                            | SyntaxKind::CatchKw
+                            | SyntaxKind::FinallyKw
+                            | SyntaxKind::WhileKw
+                    )
+                ) {
                     self.ensure_space(out);
                 } else if !join_next {
                     self.ensure_newline(out);
                 }
 
-                self.last_sig = Some(LastToken {
+                let sig = SigToken::Token {
                     kind,
                     text: "}".to_string(),
-                });
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
             _ if text == ";" => {
@@ -442,34 +600,44 @@ impl<'a> TokenFormatState<'a> {
                 let in_for_header = self
                     .for_paren_depth
                     .is_some_and(|depth| self.paren_depth >= depth);
-                let next_is_comment =
-                    matches!(next, Some(s) if s.starts_with("//") || s.starts_with("/*"));
+                let next_is_comment = matches!(
+                    next_kind,
+                    Some(SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment)
+                );
                 if next_is_comment {
                     // Keep trailing comments on the same line.
                 } else if in_for_header {
-                    if next.is_some() && !matches!(next, Some(")") | Some(";")) {
+                    if next.is_some()
+                        && !matches!(next_kind, Some(SyntaxKind::RParen | SyntaxKind::Semicolon))
+                    {
                         self.ensure_space(out);
                     }
                 } else {
                     self.ensure_newline(out);
                 }
 
-                self.last_sig = Some(LastToken {
+                let sig = SigToken::Token {
                     kind,
                     text: ";".to_string(),
-                });
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
             _ if text == "," => {
                 self.write_indent(out);
                 out.push(',');
-                if next.is_some() && !matches!(next, Some(")") | Some("]")) {
+                if next.is_some()
+                    && !matches!(next_kind, Some(SyntaxKind::RParen | SyntaxKind::RBracket))
+                {
                     self.ensure_space(out);
                 }
-                self.last_sig = Some(LastToken {
+                let sig = SigToken::Token {
                     kind,
                     text: ",".to_string(),
-                });
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
             _ if text == "(" => {
@@ -483,10 +651,12 @@ impl<'a> TokenFormatState<'a> {
                     self.for_paren_depth = Some(self.paren_depth);
                     self.pending_for = false;
                 }
-                self.last_sig = Some(LastToken {
+                let sig = SigToken::Token {
                     kind,
                     text: "(".to_string(),
-                });
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
             }
             _ if text == ")" => {
                 self.write_indent(out);
@@ -497,10 +667,12 @@ impl<'a> TokenFormatState<'a> {
                     }
                 }
                 self.paren_depth = self.paren_depth.saturating_sub(1);
-                self.last_sig = Some(LastToken {
+                let sig = SigToken::Token {
                     kind,
                     text: ")".to_string(),
-                });
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
             _ if text == "for" => {
@@ -509,10 +681,12 @@ impl<'a> TokenFormatState<'a> {
                     self.ensure_space(out);
                 }
                 out.push_str(text);
-                self.last_sig = Some(LastToken {
+                let sig = SigToken::Token {
                     kind,
                     text: text.to_string(),
-                });
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
                 self.pending_for = true;
             }
             _ => {
@@ -522,10 +696,12 @@ impl<'a> TokenFormatState<'a> {
                 }
 
                 out.push_str(text);
-                self.last_sig = Some(LastToken {
+                let sig = SigToken::Token {
                     kind,
                     text: text.to_string(),
-                });
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
         }
@@ -579,7 +755,7 @@ fn is_word_token(kind: SyntaxKind, text: &str) -> bool {
         .is_some_and(|ch| ch.is_alphanumeric() || ch == '_' || ch == '$')
 }
 
-fn needs_space_before(last: Option<&LastToken>, next_text: &str) -> bool {
+fn needs_space_before(last: Option<&SigToken>, next_text: &str) -> bool {
     let Some(last) = last else {
         return false;
     };
@@ -588,22 +764,25 @@ fn needs_space_before(last: Option<&LastToken>, next_text: &str) -> bool {
         return false;
     }
 
-    if matches!(last.text.as_str(), "(" | "[" | "." | "@" | "::") {
+    if matches!(last.text(), "(" | "[" | "." | "@" | "::") {
         return false;
     }
 
-    if is_control_keyword(&last.text) && next_text == "(" {
+    if is_control_keyword(last.text()) && next_text == "(" {
         return true;
     }
 
     if next_text == "{" {
-        return !matches!(last.text.as_str(), "(" | "[" | "." | "@" | "::");
+        return !matches!(last.text(), "(" | "[" | "." | "@" | "::");
     }
 
-    is_word_token(last.kind, &last.text) && !matches!(next_text, "(")
+    match last {
+        SigToken::Token { kind, text } => is_word_token(*kind, text) && !matches!(next_text, "("),
+        SigToken::GenericClose { .. } => false,
+    }
 }
 
-fn needs_space_between(last: Option<&LastToken>, next_kind: SyntaxKind, next_text: &str) -> bool {
+fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text: &str) -> bool {
     let Some(last) = last else {
         return false;
     };
@@ -611,23 +790,38 @@ fn needs_space_between(last: Option<&LastToken>, next_kind: SyntaxKind, next_tex
     if matches!(next_text, ")" | "]" | "}" | ";" | "," | "." | "::") {
         return false;
     }
-    if matches!(last.text.as_str(), "(" | "[" | "." | "@" | "::") {
+    if matches!(last.text(), "(" | "[" | "." | "@" | "::") {
         return false;
     }
     if next_text == "@" {
         return true;
     }
-    if is_control_keyword(&last.text) && next_text == "(" {
+    if is_control_keyword(last.text()) && next_text == "(" {
         return true;
     }
-    if last.text == "," {
+    if last.text() == "," {
         return true;
     }
 
-    if last.text == "]" && is_word_token(next_kind, next_text) {
+    if last.text() == "]" && is_word_token(next_kind, next_text) {
         return true;
     }
-    is_word_token(last.kind, &last.text) && is_word_token(next_kind, next_text)
+
+    match last {
+        SigToken::GenericClose { after_dot } => {
+            if *after_dot {
+                return false;
+            }
+            // `List<String> foo` but not `List<String>()` / `List<String>[]` / `foo.<T>bar`.
+            if matches!(next_text, "(" | "[") {
+                return false;
+            }
+            is_word_token(next_kind, next_text)
+        }
+        SigToken::Token { kind, text } => {
+            is_word_token(*kind, text) && is_word_token(next_kind, next_text)
+        }
+    }
 }
 
 fn is_control_keyword(text: &str) -> bool {
@@ -635,4 +829,192 @@ fn is_control_keyword(text: &str) -> bool {
         text,
         "if" | "for" | "while" | "switch" | "catch" | "synchronized"
     )
+}
+
+fn should_start_generic(tokens: &[SyntaxToken], idx: usize, prev: Option<&SigToken>) -> bool {
+    let next = next_non_trivia(tokens, idx + 1);
+    let next2 = next_non_trivia(tokens, idx + 2);
+    let Some(next) = next else {
+        return false;
+    };
+
+    let prev_allows = match prev {
+        None => true,
+        Some(SigToken::GenericClose { .. }) => true,
+        Some(SigToken::Token { kind, text }) => match kind {
+            SyntaxKind::Dot | SyntaxKind::DoubleColon => true,
+            _ if kind.is_modifier_keyword() || *kind == SyntaxKind::NewKw => true,
+            _ if kind.is_identifier_like() => looks_like_type_name(text),
+            SyntaxKind::RBracket
+            | SyntaxKind::RParen
+            | SyntaxKind::Greater
+            | SyntaxKind::RightShift
+            | SyntaxKind::UnsignedRightShift => true,
+            _ => false,
+        },
+    };
+
+    if !prev_allows {
+        return false;
+    }
+
+    // Diamond operator `<>` in `new Foo<>()`.
+    if next.kind() == SyntaxKind::Greater {
+        return true;
+    }
+
+    let next_is_typeish = match next.kind() {
+        SyntaxKind::Question | SyntaxKind::At => true,
+        kind if kind.is_identifier_like() => {
+            looks_like_type_name(next.text()) || matches!(next2.map(|t| t.kind()), Some(SyntaxKind::Dot))
+        }
+        _ => false,
+    };
+
+    if !next_is_typeish {
+        return false;
+    }
+
+    // If the type argument begins with an identifier, require that we see a matching `>` before we
+    // hit disqualifying expression punctuation. This prevents treating comparisons like
+    // `MAX < MIN` as generics when there is no closing `>`.
+    if next.kind().is_identifier_like() && !has_generic_close_ahead(tokens, idx) {
+        return false;
+    }
+
+    true
+}
+
+fn next_non_trivia(tokens: &[SyntaxToken], mut idx: usize) -> Option<&SyntaxToken> {
+    while idx < tokens.len() {
+        match tokens[idx].kind() {
+            SyntaxKind::Whitespace | SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment => {
+                idx += 1;
+            }
+            _ => return Some(&tokens[idx]),
+        }
+    }
+    None
+}
+
+fn has_generic_close_ahead(tokens: &[SyntaxToken], l_angle_idx: usize) -> bool {
+    let mut generic_depth: usize = 1;
+    let mut paren_depth: usize = 0;
+    let mut bracket_depth: usize = 0;
+    let mut brace_depth: usize = 0;
+
+    // Limit lookahead to keep the formatter linear-ish even on pathological input.
+    let limit = 256usize;
+    let mut steps = 0usize;
+
+    for tok in tokens.iter().skip(l_angle_idx + 1) {
+        if steps >= limit {
+            break;
+        }
+        steps += 1;
+
+        match tok.kind() {
+            SyntaxKind::Whitespace
+            | SyntaxKind::LineComment
+            | SyntaxKind::BlockComment
+            | SyntaxKind::DocComment => continue,
+            _ => {}
+        }
+
+        let is_top_level = paren_depth == 0 && bracket_depth == 0 && brace_depth == 0;
+
+        match tok.kind() {
+            SyntaxKind::LParen => paren_depth += 1,
+            SyntaxKind::RParen => {
+                if paren_depth == 0 {
+                    return false;
+                }
+                paren_depth -= 1;
+            }
+            SyntaxKind::LBracket => bracket_depth += 1,
+            SyntaxKind::RBracket => {
+                if bracket_depth == 0 {
+                    return false;
+                }
+                bracket_depth -= 1;
+            }
+            SyntaxKind::LBrace => brace_depth += 1,
+            SyntaxKind::RBrace => {
+                if brace_depth == 0 {
+                    return false;
+                }
+                brace_depth -= 1;
+            }
+            SyntaxKind::Less if is_top_level => {
+                generic_depth = generic_depth.saturating_add(1);
+            }
+            SyntaxKind::Greater if is_top_level => {
+                generic_depth = generic_depth.saturating_sub(1);
+                if generic_depth == 0 {
+                    return true;
+                }
+            }
+            SyntaxKind::RightShift if is_top_level => {
+                generic_depth = generic_depth.saturating_sub(2);
+                if generic_depth == 0 {
+                    return true;
+                }
+            }
+            SyntaxKind::UnsignedRightShift if is_top_level => {
+                generic_depth = generic_depth.saturating_sub(3);
+                if generic_depth == 0 {
+                    return true;
+                }
+            }
+            kind if is_top_level && is_disqualifying_generic_punct(kind) => return false,
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn is_disqualifying_generic_punct(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::Semicolon
+            | SyntaxKind::Colon
+            | SyntaxKind::Eq
+            | SyntaxKind::EqEq
+            | SyntaxKind::BangEq
+            | SyntaxKind::LessEq
+            | SyntaxKind::GreaterEq
+            | SyntaxKind::AmpAmp
+            | SyntaxKind::PipePipe
+            | SyntaxKind::Plus
+            | SyntaxKind::Minus
+            | SyntaxKind::Star
+            | SyntaxKind::Slash
+            | SyntaxKind::Percent
+            | SyntaxKind::Caret
+            | SyntaxKind::Pipe
+            | SyntaxKind::Bang
+            | SyntaxKind::Tilde
+            | SyntaxKind::PlusPlus
+            | SyntaxKind::MinusMinus
+            | SyntaxKind::LeftShift
+            | SyntaxKind::RightShiftEq
+            | SyntaxKind::UnsignedRightShiftEq
+            | SyntaxKind::LeftShiftEq
+            | SyntaxKind::PlusEq
+            | SyntaxKind::MinusEq
+            | SyntaxKind::StarEq
+            | SyntaxKind::SlashEq
+            | SyntaxKind::PercentEq
+            | SyntaxKind::AmpEq
+            | SyntaxKind::PipeEq
+            | SyntaxKind::CaretEq
+            | SyntaxKind::Arrow
+    )
+}
+
+fn looks_like_type_name(text: &str) -> bool {
+    text.chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_uppercase())
 }
