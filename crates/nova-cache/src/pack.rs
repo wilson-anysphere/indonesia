@@ -281,6 +281,69 @@ fn should_extract(path: &str, full_install: bool) -> bool {
 }
 
 fn fingerprints_match(cache_dir: &CacheDir, metadata: &CacheMetadata) -> (bool, usize) {
+    // Prefer fast, metadata-only fingerprints when available. This avoids hashing
+    // full file contents in the common mismatch case.
+    if !metadata.file_metadata_fingerprints.is_empty() {
+        let files: Vec<PathBuf> = metadata
+            .file_fingerprints
+            .keys()
+            .map(PathBuf::from)
+            .collect();
+
+        let local = ProjectSnapshot::new_fast(cache_dir.project_root(), files);
+        let Ok(local) = local else {
+            return (false, metadata.file_fingerprints.len());
+        };
+
+        let mismatched = metadata
+            .file_fingerprints
+            .keys()
+            .filter(|path| {
+                metadata.file_metadata_fingerprints.get(*path)
+                    != local.file_fingerprints().get(*path)
+            })
+            .count();
+
+        if mismatched != 0 {
+            return (false, mismatched);
+        }
+
+        // Optional safety: verify a small sample of full content hashes to reduce
+        // false positives from coarse mtimes.
+        let sample_size = cache_package_verify_sample_size();
+        if sample_size > 0 {
+            let sampled_files = sample_files(
+                metadata.file_fingerprints.keys(),
+                &metadata.project_hash,
+                sample_size,
+            );
+            let sampled_paths: Vec<PathBuf> = sampled_files
+                .iter()
+                .map(|p| PathBuf::from(p.as_str()))
+                .collect();
+
+            let local_full = ProjectSnapshot::new(cache_dir.project_root(), sampled_paths);
+            let Ok(local_full) = local_full else {
+                return (false, sampled_files.len());
+            };
+
+            let mismatched_full = sampled_files
+                .iter()
+                .filter(|path| {
+                    let expected = metadata.file_fingerprints.get(path.as_str());
+                    expected != local_full.file_fingerprints().get(path.as_str())
+                })
+                .count();
+            if mismatched_full != 0 {
+                return (false, mismatched_full);
+            }
+        }
+
+        return (true, 0);
+    }
+
+    // Backwards-compatibility fallback for packages built before
+    // `file_metadata_fingerprints` was introduced.
     let files: Vec<PathBuf> = metadata
         .file_fingerprints
         .keys()
@@ -297,6 +360,41 @@ fn fingerprints_match(cache_dir: &CacheDir, metadata: &CacheMetadata) -> (bool, 
         .filter(|(path, fp)| local.file_fingerprints().get(*path) != Some(*fp))
         .count();
     (mismatched == 0, mismatched)
+}
+
+fn cache_package_verify_sample_size() -> usize {
+    std::env::var("NOVA_CACHE_PACKAGE_VERIFY_SAMPLE")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn sample_files<'a>(
+    files: impl Iterator<Item = &'a String>,
+    seed: &Fingerprint,
+    sample_size: usize,
+) -> Vec<&'a String> {
+    use sha2::{Digest, Sha256};
+
+    let mut scored: Vec<(u64, &'a String)> = files
+        .map(|path| {
+            let mut hasher = Sha256::new();
+            hasher.update(seed.as_str().as_bytes());
+            hasher.update(b":");
+            hasher.update(path.as_bytes());
+            let digest = hasher.finalize();
+            let score = u64::from_le_bytes(digest[0..8].try_into().expect("sha256 digest len"));
+            (score, path)
+        })
+        .collect();
+
+    scored
+        .sort_by(|(a_score, a_path), (b_score, b_path)| (a_score, a_path).cmp(&(b_score, b_path)));
+    scored
+        .into_iter()
+        .take(sample_size)
+        .map(|(_, path)| path)
+        .collect()
 }
 
 fn replace_dir_atomically(src_dir: &Path, dest_dir: &Path) -> Result<()> {
