@@ -14,6 +14,7 @@ mod cache_dir;
 mod derived_cache;
 mod error;
 mod fingerprint;
+mod gc;
 mod metadata;
 mod pack;
 mod path;
@@ -29,6 +30,10 @@ pub use cache_dir::{CacheConfig, CacheDir};
 pub use derived_cache::DerivedArtifactCache;
 pub use error::CacheError;
 pub use fingerprint::{Fingerprint, ProjectSnapshot};
+pub use gc::{
+    cache_root, enumerate_project_caches, enumerate_project_caches_from_config, gc_project_caches,
+    gc_project_caches_from_config, CacheGcFailure, CacheGcPolicy, CacheGcReport, ProjectCacheInfo,
+};
 pub use metadata::{CacheMetadata, CACHE_METADATA_SCHEMA_VERSION};
 pub use pack::{
     fetch_cache_package, install_cache_package, pack_cache_package, CachePackageInstallOutcome,

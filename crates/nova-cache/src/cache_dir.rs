@@ -94,7 +94,7 @@ pub fn deps_cache_dir(config: &CacheConfig) -> Result<PathBuf, CacheError> {
     Ok(root)
 }
 
-fn default_cache_root() -> Result<PathBuf, CacheError> {
+pub(crate) fn default_cache_root() -> Result<PathBuf, CacheError> {
     let home = std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)

@@ -1,0 +1,395 @@
+use crate::error::CacheError;
+use crate::metadata::CacheMetadata;
+use crate::util::now_millis;
+use crate::CacheConfig;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+/// Information about a single per-project cache directory under the global cache root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectCacheInfo {
+    /// Directory name under the global cache root (typically a project hash).
+    pub name: String,
+    /// Full on-disk path to the cache directory.
+    pub path: PathBuf,
+    /// Best-effort size on disk (bytes).
+    pub size_bytes: u64,
+    /// Last time the cache was updated, if known.
+    ///
+    /// This is derived from `metadata.json` (preferred) and/or filesystem timestamps
+    /// for `perf.json` when available.
+    pub last_updated_millis: Option<u64>,
+    /// Nova version recorded in `metadata.json` (if available).
+    pub nova_version: Option<String>,
+    /// Cache metadata schema version recorded in `metadata.json` (if available).
+    pub schema_version: Option<u32>,
+}
+
+/// Policy for garbage-collecting global per-project caches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheGcPolicy {
+    /// Maximum total disk usage allowed for per-project caches.
+    pub max_total_bytes: u64,
+    /// Optional maximum age for per-project caches. Caches older than this (based
+    /// on `last_updated_millis`) are removed first.
+    pub max_age_ms: Option<u64>,
+    /// Number of most-recently-updated caches to always keep.
+    pub keep_latest_n: usize,
+}
+
+/// Result summary from a GC run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheGcReport {
+    pub before_total_bytes: u64,
+    pub after_total_bytes: u64,
+    pub deleted: Vec<ProjectCacheInfo>,
+    pub failed: Vec<CacheGcFailure>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CacheGcFailure {
+    pub cache: ProjectCacheInfo,
+    pub error: String,
+}
+
+/// Returns the global cache root (e.g. `~/.nova/cache`) honoring `CacheConfig` / `NOVA_CACHE_DIR`.
+pub fn cache_root(config: &CacheConfig) -> Result<PathBuf, CacheError> {
+    Ok(match &config.cache_root_override {
+        Some(root) => root.clone(),
+        None => crate::cache_dir::default_cache_root()?,
+    })
+}
+
+/// Enumerate all per-project caches under `cache_root`, excluding the shared `deps/` cache.
+pub fn enumerate_project_caches(
+    cache_root: impl AsRef<Path>,
+) -> Result<Vec<ProjectCacheInfo>, CacheError> {
+    let cache_root = cache_root.as_ref();
+    if !cache_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut caches = Vec::new();
+    for entry in std::fs::read_dir(cache_root)? {
+        let entry = entry?;
+        let name_os = entry.file_name();
+        if name_os == "deps" {
+            continue;
+        }
+
+        let file_type = entry.file_type()?;
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        // NOTE: `read_dir` entries are direct children of `cache_root`, but we still
+        // validate to avoid path surprises if callers pass inconsistent roots.
+        let path = entry.path();
+        if path.strip_prefix(cache_root).is_err() {
+            continue;
+        }
+
+        let name = name_os.to_string_lossy().to_string();
+
+        let mut last_updated_millis = None;
+        let mut nova_version = None;
+        let mut schema_version = None;
+
+        let metadata_path = path.join("metadata.json");
+        if metadata_path.is_file() {
+            if let Ok(metadata) = CacheMetadata::load(&metadata_path) {
+                last_updated_millis = Some(metadata.last_updated_millis);
+                nova_version = Some(metadata.nova_version);
+                schema_version = Some(metadata.schema_version);
+            }
+        }
+
+        let perf_path = path.join("perf.json");
+        if perf_path.is_file() {
+            if let Some(perf_updated) = modified_millis(&perf_path) {
+                last_updated_millis = Some(match last_updated_millis {
+                    Some(prev) => prev.max(perf_updated),
+                    None => perf_updated,
+                });
+            }
+        }
+
+        let size_bytes = dir_size_bytes_nofollow(&path);
+
+        caches.push(ProjectCacheInfo {
+            name,
+            path,
+            size_bytes,
+            last_updated_millis,
+            nova_version,
+            schema_version,
+        });
+    }
+
+    // Deterministic ordering.
+    caches.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(caches)
+}
+
+/// Enumerate all per-project caches under the configured global cache root.
+pub fn enumerate_project_caches_from_config(
+    config: &CacheConfig,
+) -> Result<Vec<ProjectCacheInfo>, CacheError> {
+    let root = cache_root(config)?;
+    enumerate_project_caches(root)
+}
+
+/// Garbage-collect per-project caches under `cache_root`.
+///
+/// The GC algorithm:
+/// - never deletes `deps/`
+/// - determines a "protected set" of the `keep_latest_n` newest caches
+/// - deletes stale caches first when `max_age_ms` is set (oldest-first)
+/// - then deletes additional caches oldest-first until `max_total_bytes` is met
+///
+/// Cache directories are removed "atomically" by first renaming them to a unique sibling
+/// path and then deleting the renamed directory without following symlinks.
+pub fn gc_project_caches(
+    cache_root: impl AsRef<Path>,
+    policy: &CacheGcPolicy,
+) -> Result<CacheGcReport, CacheError> {
+    let cache_root = cache_root.as_ref();
+    let mut caches = enumerate_project_caches(cache_root)?;
+
+    let mut before_total_bytes = 0_u64;
+    for cache in &caches {
+        before_total_bytes = before_total_bytes.saturating_add(cache.size_bytes);
+    }
+
+    let now = now_millis();
+
+    // Determine the "protected" set of newest caches.
+    let mut newest = caches.clone();
+    newest.sort_by(|a, b| {
+        let a_ts = a.last_updated_millis.unwrap_or(0);
+        let b_ts = b.last_updated_millis.unwrap_or(0);
+        b_ts.cmp(&a_ts).then_with(|| a.name.cmp(&b.name))
+    });
+
+    let mut protected = HashSet::<String>::new();
+    for cache in newest.into_iter().take(policy.keep_latest_n) {
+        protected.insert(cache.name);
+    }
+
+    // Oldest-first candidates excluding protected caches.
+    caches.retain(|c| !protected.contains(&c.name));
+    caches.sort_by(|a, b| {
+        let a_ts = a.last_updated_millis.unwrap_or(0);
+        let b_ts = b.last_updated_millis.unwrap_or(0);
+        a_ts.cmp(&b_ts).then_with(|| a.name.cmp(&b.name))
+    });
+
+    let mut remaining_bytes = before_total_bytes;
+    let mut deleted = Vec::new();
+    let mut failed = Vec::new();
+    let mut deleted_names = HashSet::<String>::new();
+
+    if let Some(max_age_ms) = policy.max_age_ms {
+        for cache in &caches {
+            if protected.contains(&cache.name) {
+                continue;
+            }
+
+            if !is_stale(cache.last_updated_millis, now, max_age_ms) {
+                continue;
+            }
+
+            match delete_cache_dir(cache_root, cache) {
+                Ok(()) => {
+                    remaining_bytes = remaining_bytes.saturating_sub(cache.size_bytes);
+                    deleted_names.insert(cache.name.clone());
+                    deleted.push(cache.clone());
+                }
+                Err(err) => {
+                    failed.push(CacheGcFailure {
+                        cache: cache.clone(),
+                        error: err.to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    for cache in &caches {
+        if remaining_bytes <= policy.max_total_bytes {
+            break;
+        }
+        if deleted_names.contains(&cache.name) {
+            continue;
+        }
+
+        match delete_cache_dir(cache_root, cache) {
+            Ok(()) => {
+                remaining_bytes = remaining_bytes.saturating_sub(cache.size_bytes);
+                deleted_names.insert(cache.name.clone());
+                deleted.push(cache.clone());
+            }
+            Err(err) => {
+                failed.push(CacheGcFailure {
+                    cache: cache.clone(),
+                    error: err.to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(CacheGcReport {
+        before_total_bytes,
+        after_total_bytes: remaining_bytes,
+        deleted,
+        failed,
+    })
+}
+
+/// GC per-project caches under the configured global cache root.
+pub fn gc_project_caches_from_config(
+    config: &CacheConfig,
+    policy: &CacheGcPolicy,
+) -> Result<CacheGcReport, CacheError> {
+    let root = cache_root(config)?;
+    gc_project_caches(root, policy)
+}
+
+fn is_stale(last_updated_millis: Option<u64>, now_millis: u64, max_age_ms: u64) -> bool {
+    let Some(last) = last_updated_millis else {
+        // If we can't determine recency, treat it as stale so GC can clean it up.
+        return true;
+    };
+    now_millis.saturating_sub(last) > max_age_ms
+}
+
+fn delete_cache_dir(cache_root: &Path, cache: &ProjectCacheInfo) -> Result<(), CacheError> {
+    validate_under_root(cache_root, &cache.path)?;
+
+    let meta = std::fs::symlink_metadata(&cache.path)?;
+    if meta.file_type().is_symlink() {
+        // Best-effort: remove the symlink itself, never follow it.
+        remove_symlink_best_effort(&cache.path)?;
+        return Ok(());
+    }
+
+    if !meta.is_dir() {
+        // Unexpected cache entry; nothing to do.
+        return Ok(());
+    }
+
+    let parent = cache
+        .path
+        .parent()
+        .ok_or_else(|| CacheError::InvalidArchivePath {
+            path: cache.path.clone(),
+        })?;
+
+    let trash = unique_sibling_path(parent, &cache.name, "gc");
+    match std::fs::rename(&cache.path, &trash) {
+        Ok(()) => match remove_dir_all_nofollow(&trash) {
+            Ok(()) => Ok(()),
+            Err(err) => Err(CacheError::Io(err)),
+        },
+        Err(_) => {
+            // Fall back to removing in place if the rename fails (e.g. Windows file locks).
+            remove_dir_all_nofollow(&cache.path).map_err(CacheError::Io)
+        }
+    }
+}
+
+fn validate_under_root(cache_root: &Path, path: &Path) -> Result<(), CacheError> {
+    // Prefer canonical paths for stronger guarantees (resolves symlinks), but fall
+    // back to lexical checks for non-existent roots.
+    let root_canon = std::fs::canonicalize(cache_root).unwrap_or_else(|_| cache_root.to_path_buf());
+    let path_canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+
+    if !path_canon.starts_with(&root_canon) {
+        return Err(CacheError::PathNotUnderCacheRoot {
+            path: path.to_path_buf(),
+            cache_root: cache_root.to_path_buf(),
+        });
+    }
+    Ok(())
+}
+
+fn unique_sibling_path(parent: &Path, name: &str, suffix: &str) -> PathBuf {
+    let pid = std::process::id();
+    let ts = now_millis();
+    for attempt in 0..1000u32 {
+        let candidate = parent.join(format!("{name}.{suffix}-{pid}-{ts}-{attempt}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    parent.join(format!("{name}.{suffix}-{pid}-{ts}"))
+}
+
+fn modified_millis(path: &Path) -> Option<u64> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    modified
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
+}
+
+fn dir_size_bytes_nofollow(root: &Path) -> u64 {
+    let mut total = 0_u64;
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let ty = entry.file_type();
+        if !(ty.is_file() || ty.is_symlink()) {
+            continue;
+        }
+        let len = match std::fs::symlink_metadata(entry.path()) {
+            Ok(meta) => meta.len(),
+            Err(_) => continue,
+        };
+        total = total.saturating_add(len);
+    }
+    total
+}
+
+fn remove_dir_all_nofollow(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() || meta.is_file() {
+        return remove_symlink_best_effort(path);
+    }
+    if !meta.is_dir() {
+        // Best-effort for unknown file types.
+        return remove_symlink_best_effort(path);
+    }
+
+    for entry in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .contents_first(true)
+    {
+        let entry = entry.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        let ty = entry.file_type();
+        if ty.is_dir() {
+            std::fs::remove_dir(entry.path())?;
+        } else {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::IsADirectory => {
+                    std::fs::remove_dir(entry.path())?
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remove_symlink_best_effort(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::IsADirectory => std::fs::remove_dir(path),
+        Err(err) => Err(err),
+    }
+}

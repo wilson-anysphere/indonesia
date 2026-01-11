@@ -26,6 +26,9 @@ pub enum CacheError {
         project_root: PathBuf,
     },
 
+    #[error("path {path} is not under cache root {cache_root}")]
+    PathNotUnderCacheRoot { path: PathBuf, cache_root: PathBuf },
+
     #[error("incompatible cache schema version: expected {expected}, found {found}")]
     IncompatibleSchemaVersion { expected: u32, found: u32 },
 
