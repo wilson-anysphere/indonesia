@@ -306,7 +306,11 @@ impl QueryDiskCache {
         }
 
         // Evict oldest files first until we're within budget.
-        candidates.sort_by_key(|entry| entry.last_used_millis);
+        candidates.sort_by(|a, b| {
+            a.last_used_millis
+                .cmp(&b.last_used_millis)
+                .then_with(|| a.path.cmp(&b.path))
+        });
         for entry in candidates {
             if total_bytes <= self.policy.max_bytes {
                 break;
