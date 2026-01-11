@@ -1471,6 +1471,58 @@ fn feature_gate_unnamed_variables_version_matrix() {
 }
 
 #[test]
+fn feature_gate_unnamed_variables_applies_to_local_vars_and_catch_params() {
+    let input = r#"
+class Foo {
+  void m() {
+    try { } catch (Exception _) { }
+    int _ = 0;
+  }
+}
+"#;
+
+    let java21_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21,
+        },
+    );
+    assert_eq!(java21_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java21_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec![
+            "JAVA_FEATURE_UNNAMED_VARIABLES",
+            "JAVA_FEATURE_UNNAMED_VARIABLES",
+        ]
+    );
+
+    let java21_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21.with_preview(true),
+        },
+    );
+    assert_eq!(java21_preview.result.errors, Vec::new());
+    assert!(java21_preview.diagnostics.is_empty());
+
+    let java22 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 22,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java22.result.errors, Vec::new());
+    assert!(java22.diagnostics.is_empty());
+}
+
+#[test]
 fn parse_instanceof_type_patterns() {
     let input = r#"
 class Foo {

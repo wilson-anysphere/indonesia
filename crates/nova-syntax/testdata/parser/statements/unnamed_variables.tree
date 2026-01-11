@@ -1,0 +1,69 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          TryStatement
+            TryKw "try"
+            Whitespace " "
+            Block
+              LBrace "{"
+              Whitespace " "
+              RBrace "}"
+            Whitespace " "
+            CatchClause
+              CatchKw "catch"
+              Whitespace " "
+              LParen "("
+              Type
+                NamedType
+                  Identifier "Exception"
+                  Whitespace " "
+              UnnamedPattern
+                Identifier "_"
+              RParen ")"
+              Block
+                Whitespace " "
+                LBrace "{"
+                Whitespace " "
+                RBrace "}"
+            Whitespace "\n    "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              PrimitiveType
+                IntKw "int"
+              Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                UnnamedPattern
+                  Identifier "_"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                LiteralExpression
+                  IntLiteral "0"
+            Semicolon ";"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

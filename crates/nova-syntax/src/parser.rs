@@ -1390,7 +1390,7 @@ impl<'a> Parser<'a> {
             } else {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::FieldDeclaration.into());
-                self.parse_variable_declarator_list();
+                self.parse_variable_declarator_list(false);
                 self.expect(
                     SyntaxKind::Semicolon,
                     "expected `;` after field declaration",
@@ -1976,7 +1976,7 @@ impl<'a> Parser<'a> {
                     );
                     self.parse_modifiers();
                     self.parse_type();
-                    self.parse_variable_declarator_list();
+                    self.parse_variable_declarator_list(true);
                     self.expect(
                         SyntaxKind::Semicolon,
                         "expected `;` after local variable declaration",
@@ -2398,15 +2398,8 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::Eof
         ) {
             self.error_here("expected binding identifier");
-        } else if self.at(SyntaxKind::Identifier)
-            && self
-                .tokens
-                .front()
-                .is_some_and(|tok| tok.text(self.input) == "_")
-        {
-            self.builder.start_node(SyntaxKind::UnnamedPattern.into());
-            self.bump();
-            self.builder.finish_node();
+        } else if self.at_underscore_identifier() {
+            self.parse_unnamed_pattern();
         } else if allow_guard
             && self.at(SyntaxKind::WhenKw)
             // In a switch case label, `when` introduces a guard if it is followed by an expression.
@@ -2520,7 +2513,11 @@ impl<'a> Parser<'a> {
                     self.parse_type();
                 }
             }
-            self.expect_ident_like("expected catch parameter name");
+            if self.at_underscore_identifier() {
+                self.parse_unnamed_pattern();
+            } else {
+                self.expect_ident_like("expected catch parameter name");
+            }
             self.expect(SyntaxKind::RParen, "expected `)` after catch parameter");
             self.parse_block_with_recovery(stmt_ctx, TRY_BLOCK_RECOVERY);
             self.builder.finish_node();
@@ -2544,7 +2541,7 @@ impl<'a> Parser<'a> {
                 self.parse_modifiers();
                 self.parse_type();
                 // Try-with-resources allows only a single declarator.
-                self.parse_variable_declarator();
+                self.parse_variable_declarator(true);
             } else {
                 self.parse_expression(0);
             }
@@ -2569,7 +2566,7 @@ impl<'a> Parser<'a> {
         if self.at_local_var_decl_start() {
             self.parse_modifiers();
             self.parse_type();
-            self.parse_variable_declarator_list();
+            self.parse_variable_declarator_list(true);
 
             if self.at(SyntaxKind::Colon) {
                 // Enhanced for: `for (T x : expr)`.
@@ -2616,21 +2613,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_variable_declarator_list(&mut self) {
+    fn parse_variable_declarator_list(&mut self, allow_unnamed: bool) {
         self.builder
             .start_node(SyntaxKind::VariableDeclaratorList.into());
-        self.parse_variable_declarator();
+        self.parse_variable_declarator(allow_unnamed);
         while self.at(SyntaxKind::Comma) {
             self.bump();
-            self.parse_variable_declarator();
+            self.parse_variable_declarator(allow_unnamed);
         }
         self.builder.finish_node();
     }
 
-    fn parse_variable_declarator(&mut self) {
+    fn parse_variable_declarator(&mut self, allow_unnamed: bool) {
         self.builder
             .start_node(SyntaxKind::VariableDeclarator.into());
-        self.expect_ident_like("expected variable name");
+        if allow_unnamed && self.at_underscore_identifier() {
+            self.parse_unnamed_pattern();
+        } else {
+            self.expect_ident_like("expected variable name");
+        }
         if self.at(SyntaxKind::Eq) {
             self.bump();
             if self.at(SyntaxKind::Semicolon) || self.at(SyntaxKind::Comma) {
@@ -3737,6 +3738,20 @@ impl<'a> Parser<'a> {
 
     fn at_ident_like(&mut self) -> bool {
         self.current().is_identifier_like()
+    }
+
+    fn at_underscore_identifier(&mut self) -> bool {
+        self.at(SyntaxKind::Identifier)
+            && self
+                .tokens
+                .front()
+                .is_some_and(|tok| tok.text(self.input) == "_")
+    }
+
+    fn parse_unnamed_pattern(&mut self) {
+        self.builder.start_node(SyntaxKind::UnnamedPattern.into());
+        self.bump();
+        self.builder.finish_node();
     }
 
     fn eat_trivia(&mut self) {

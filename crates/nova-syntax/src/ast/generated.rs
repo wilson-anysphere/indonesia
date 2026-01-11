@@ -1977,6 +1977,10 @@ impl VariableDeclarator {
         support::ident_token(&self.syntax)
     }
 
+    pub fn unnamed_pattern(&self) -> Option<UnnamedPattern> {
+        support::child::<UnnamedPattern>(&self.syntax)
+    }
+
     pub fn initializer(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
