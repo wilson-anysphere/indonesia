@@ -258,12 +258,10 @@ fn unresolved_nested_type_uses_binary_guess_from_imported_outer() {
     index.add_type("java.util", "Map");
     // Intentionally omit `Map$Entry` so scope-based resolution fails.
 
-    let mut unit = CompilationUnit::new(None);
-    unit.imports.push(ImportDecl::TypeSingle {
-        ty: QualifiedName::from_dotted("java.util.Map"),
-        alias: None,
-    });
-    let scopes = build_scopes(&jdk, &unit);
+    let file = FileId::from_raw(0);
+    let mut db = TestDb::default();
+    db.set_file_text(file, "import java.util.Map; class C {}");
+    let scopes = build_scopes(&db, file);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
 
     let env = TypeStore::with_minimal_jdk();

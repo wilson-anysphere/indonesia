@@ -11,7 +11,7 @@ use std::ops::Range;
 use nova_core::{Name, QualifiedName};
 use nova_types::{Diagnostic, PrimitiveType, Span, Type, TypeEnv, TypeVarId, WildcardBound};
 
-use crate::{Resolution, Resolver, ScopeGraph, ScopeId};
+use crate::{Resolution, Resolver, ScopeGraph, ScopeId, TypeResolution};
 
 #[derive(Debug, Clone)]
 pub struct ResolvedType {
@@ -276,12 +276,21 @@ impl<'a, 'idx> Parser<'a, 'idx> {
             if let Some(Resolution::Type(owner)) =
                 self.resolver.resolve_name(self.scopes, self.scope, &first)
             {
-                let mut candidate = owner.as_str().to_string();
-                for seg in &segments[1..] {
-                    candidate.push('$');
-                    candidate.push_str(seg);
+                let owner_name = match owner {
+                    TypeResolution::External(ty) => Some(ty.as_str()),
+                    TypeResolution::Source(item) => {
+                        self.scopes.type_name(item).map(|t| t.as_str())
+                    }
+                };
+
+                if let Some(owner_name) = owner_name {
+                    let mut candidate = owner_name.to_string();
+                    for seg in &segments[1..] {
+                        candidate.push('$');
+                        candidate.push_str(seg);
+                    }
+                    best_guess = candidate;
                 }
-                best_guess = candidate;
             }
         }
 
