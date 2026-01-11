@@ -43,6 +43,7 @@ pub mod handlers;
 pub mod hardening;
 pub mod imports;
 pub mod refactor;
+pub mod text_pos;
 
 mod cancellation;
 #[cfg(feature = "ai")]

@@ -1954,57 +1954,26 @@ fn extract_snippet(text: &str, range: &Range, context_lines: u32) -> String {
 }
 
 fn extract_range_text(text: &str, range: &Range) -> Option<String> {
-    let start = offset_from_position(text, &range.start)?;
-    let end = offset_from_position(text, &range.end)?;
-    if end < start || end > text.len() {
-        return None;
-    }
-    Some(text[start..end].to_string())
+    let range = to_lsp_types_range(range);
+    let bytes = nova_lsp::text_pos::byte_range(text, range)?;
+    text.get(bytes).map(ToString::to_string)
 }
 
 fn byte_range_for_ide_range(
     text: &str,
     range: nova_ide::LspRange,
 ) -> Option<std::ops::Range<usize>> {
-    let start = offset_from_position(
-        text,
-        &Position {
+    let range = LspTypesRange {
+        start: LspTypesPosition {
             line: range.start.line,
             character: range.start.character,
         },
-    )?;
-    let end = offset_from_position(
-        text,
-        &Position {
+        end: LspTypesPosition {
             line: range.end.line,
             character: range.end.character,
         },
-    )?;
-    Some(start..end)
-}
-
-fn offset_from_position(text: &str, pos: &Position) -> Option<usize> {
-    let mut offset = 0usize;
-    let mut current_line = 0u32;
-
-    for line in text.split_inclusive('\n') {
-        if current_line == pos.line {
-            let mut char_offset = 0usize;
-            for (idx, _ch) in line.char_indices() {
-                if (char_offset as u32) == pos.character {
-                    offset += idx;
-                    return Some(offset);
-                }
-                char_offset += 1;
-            }
-            offset += line.len();
-            return Some(offset);
-        }
-        offset += line.len();
-        current_line += 1;
-    }
-
-    None
+    };
+    nova_lsp::text_pos::byte_range(text, range)
 }
 
 fn detect_empty_method_signature(selected: &str) -> Option<String> {
