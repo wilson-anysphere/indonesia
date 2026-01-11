@@ -276,6 +276,7 @@ pub mod transport {
 
     pub const LEN_PREFIX_BYTES: usize = 4;
 
+    const DEFAULT_MAX_FRAME_BYTES: usize = 32 * 1024 * 1024; // 32 MiB
     const MAX_MESSAGE_SIZE_ENV_VAR: &str = "NOVA_RPC_MAX_MESSAGE_SIZE";
 
     static MAX_FRAME_SIZE: OnceLock<usize> = OnceLock::new();
@@ -286,7 +287,7 @@ pub mod transport {
                 .ok()
                 .and_then(|value| value.parse::<usize>().ok())
                 .filter(|value| *value > 0)
-                .unwrap_or(MAX_FRAME_BYTES)
+                .unwrap_or(DEFAULT_MAX_FRAME_BYTES)
                 .min(MAX_FRAME_BYTES)
         })
     }
