@@ -20,20 +20,11 @@ fn fixture(text_with_caret: &str) -> (RootDatabase, nova_db::FileId, lsp_types::
 }
 
 fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    lsp_types::Position::new(line, col)
+    let offset = offset.min(text.len());
+    let offset_u32 = u32::try_from(offset).unwrap_or(u32::MAX);
+    let index = nova_core::LineIndex::new(text);
+    let pos = index.position(text, nova_core::TextSize::from(offset_u32));
+    lsp_types::Position::new(pos.line, pos.character)
 }
 
 #[test]
@@ -91,6 +82,32 @@ class A {
     Foo f = null;
     f.<|>
   }
+}
+
+#[test]
+fn context_uses_utf16_positions_for_non_bmp_characters() {
+    // The caret is after the `.` in the same line as a non-BMP character. If we
+    // accidentally treat `Position.character` as a Unicode scalar offset, the
+    // position would land inside the surrogate pair and we'd lose the trailing
+    // `.` in the surrounding code window.
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    String s = "😀"; s.<|>
+  }
+}
+"#,
+    );
+
+    let ctx = multi_token_completion_context(&db, file, pos);
+    assert_eq!(ctx.receiver_type.as_deref(), Some("String"));
+    assert!(ctx.surrounding_code.contains("😀"));
+    assert!(
+        ctx.surrounding_code.trim_end().ends_with('.'),
+        "expected surrounding code to include the '.' before the cursor, got: {:?}",
+        ctx.surrounding_code
+    );
 }
 "#,
     );

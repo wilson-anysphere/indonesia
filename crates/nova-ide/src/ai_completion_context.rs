@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use lsp_types::Position;
 use nova_ai::MultiTokenCompletionContext;
+use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_db::{Database, FileId};
 
 use crate::code_intelligence::{
@@ -9,7 +10,6 @@ use crate::code_intelligence::{
     skip_whitespace_backwards, CompletionContextAnalysis, STREAM_MEMBER_METHODS,
     STRING_MEMBER_METHODS,
 };
-use crate::text::position_to_offset;
 
 /// Build a [`MultiTokenCompletionContext`] for Nova's multi-token completion pipeline.
 ///
@@ -22,9 +22,18 @@ pub fn multi_token_completion_context(
     position: Position,
 ) -> MultiTokenCompletionContext {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position)
-        .unwrap_or(text.len())
-        .min(text.len());
+    let index = LineIndex::new(text);
+    let core_pos = CorePosition::new(position.line, position.character);
+    let (offset, position) = match index.offset_of_position(text, core_pos) {
+        Some(offset) => (u32::from(offset) as usize, position),
+        None => {
+            let offset = text.len();
+            let offset_u32 = u32::try_from(offset).unwrap_or(u32::MAX);
+            let eof = index.position(text, TextSize::from(offset_u32));
+            (offset, Position::new(eof.line, eof.character))
+        }
+    };
+    let offset = offset.min(text.len());
 
     let analysis = analyze_for_completion_context(text);
 
@@ -32,7 +41,7 @@ pub fn multi_token_completion_context(
     let available_methods = available_methods_for_receiver(receiver_type.as_deref(), &analysis);
     let importable_paths = importable_paths_for_receiver(receiver_type.as_deref());
 
-    let surrounding_code = surrounding_code_window(text, position, offset, 10);
+    let surrounding_code = surrounding_code_window(text, &index, position, offset, 10);
 
     MultiTokenCompletionContext {
         receiver_type,
@@ -172,29 +181,17 @@ fn importable_paths_for_receiver(receiver_type: Option<&str>) -> Vec<String> {
 
 fn surrounding_code_window(
     text: &str,
+    index: &LineIndex,
     position: Position,
     offset: usize,
     context_lines: u32,
 ) -> String {
     let start_line = position.line.saturating_sub(context_lines);
-    let start_offset = offset_for_line(text, start_line).min(offset.min(text.len()));
+    let start_offset = index
+        .line_start(start_line)
+        .map(|offset| u32::from(offset) as usize)
+        .unwrap_or_else(|| text.len())
+        .min(offset.min(text.len()));
     let end_offset = offset.min(text.len());
     text.get(start_offset..end_offset).unwrap_or("").to_string()
-}
-
-fn offset_for_line(text: &str, target_line: u32) -> usize {
-    let mut line = 0u32;
-    let mut offset = 0usize;
-    for segment in text.split_inclusive('\n') {
-        if line == target_line {
-            return offset;
-        }
-        offset += segment.len();
-        line += 1;
-    }
-    if line == target_line {
-        offset
-    } else {
-        text.len()
-    }
 }
