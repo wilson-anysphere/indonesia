@@ -181,15 +181,6 @@ impl BuildCache {
         data: &CachedBuildData,
     ) -> Result<()> {
         let path = self.cache_file(project_root, kind, fingerprint);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let bytes = serde_json::to_vec_pretty(data).map_err(|e| CacheError::Json {
-            path: path.clone(),
-            source: e,
-        })?;
-
         let parent = path
             .parent()
             .ok_or_else(|| CacheError::Write {
@@ -201,6 +192,12 @@ impl BuildCache {
         } else {
             parent
         };
+        fs::create_dir_all(parent)?;
+
+        let bytes = serde_json::to_vec_pretty(data).map_err(|e| CacheError::Json {
+            path: path.clone(),
+            source: e,
+        })?;
         let (tmp_path, mut file) =
             open_unique_tmp_file(&path, parent).map_err(|source| CacheError::Write {
                 path: path.clone(),

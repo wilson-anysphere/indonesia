@@ -135,11 +135,6 @@ impl BazelCache {
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let data = serde_json::to_string_pretty(self)?;
-
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "path has no parent"))?;
@@ -148,6 +143,9 @@ impl BazelCache {
         } else {
             parent
         };
+        fs::create_dir_all(parent)?;
+
+        let data = serde_json::to_string_pretty(self)?;
 
         let (tmp_path, mut file) = open_unique_tmp_file(path, parent)?;
         if let Err(err) = file.write_all(data.as_bytes()).and_then(|()| file.sync_all()) {
