@@ -782,7 +782,7 @@ fn handle_code_action_resolve(
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
     let mut action: CodeAction = serde_json::from_value(params).map_err(|e| e.to_string())?;
-    let Some(mut data) = action.data.take() else {
+    let Some(data) = action.data.clone() else {
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
 
@@ -791,33 +791,34 @@ fn handle_code_action_resolve(
         .and_then(|v| v.as_str())
         .is_some_and(|t| t == "ExtractMember");
     if !is_extract_member {
-        action.data = Some(data);
         return serde_json::to_value(action).map_err(|e| e.to_string());
     }
 
     let Some(uri) = data.get("uri").and_then(|v| v.as_str()) else {
-        action.data = Some(data);
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
     let Ok(uri) = uri.parse::<LspUri>() else {
-        action.data = Some(data);
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
     let Some(source) = load_document_text(state, uri.as_str()) else {
-        action.data = Some(data);
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
 
     // We inject `data.uri` for `codeAction/resolve` so the server can locate the open document.
     // Strip it before forwarding to `nova_ide`, so the underlying payload stays stable even if
     // `nova_ide` switches to strict (deny-unknown-fields) deserialization later.
-    if let Some(obj) = data.as_object_mut() {
+    let mut data_without_uri = data.clone();
+    if let Some(obj) = data_without_uri.as_object_mut() {
         obj.remove("uri");
     }
-    action.data = Some(data);
+    action.data = Some(data_without_uri);
 
     nova_ide::refactor::resolve_extract_member_code_action(&uri, &source, &mut action, None)
         .map_err(|e| e.to_string())?;
+
+    // Restore the original payload (including the injected `uri`) so clients can re-resolve if
+    // needed and so downstream tooling can introspect the origin of the action.
+    action.data = Some(data);
 
     serde_json::to_value(action).map_err(|e| e.to_string())
 }
