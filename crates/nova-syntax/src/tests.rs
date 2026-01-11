@@ -1113,6 +1113,25 @@ class Foo {
 }
 
 #[test]
+fn parse_switch_patterns_with_legacy_and_and_guard() {
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case Integer i && i > 0 -> {}
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let has_guard = result.syntax().descendants().any(|n| n.kind() == SyntaxKind::Guard);
+    assert!(has_guard);
+}
+
+#[test]
 fn parse_switch_pattern_allows_when_identifier() {
     let input = r#"
 class Foo {

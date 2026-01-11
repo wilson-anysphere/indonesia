@@ -1442,7 +1442,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        if is_pattern && self.at(SyntaxKind::WhenKw) {
+        if is_pattern && (self.at(SyntaxKind::WhenKw) || self.at(SyntaxKind::AmpAmp)) {
             self.parse_guard();
         }
 
@@ -1451,7 +1451,14 @@ impl<'a> Parser<'a> {
 
     fn parse_guard(&mut self) {
         self.builder.start_node(SyntaxKind::Guard.into());
-        self.expect(SyntaxKind::WhenKw, "expected `when`");
+        if self.at(SyntaxKind::WhenKw) {
+            self.bump();
+        } else if self.at(SyntaxKind::AmpAmp) {
+            // Early preview builds of pattern matching for switch used `&&` for guards.
+            self.bump();
+        } else {
+            self.error_here("expected `when` or `&&`");
+        }
         // Avoid consuming the label terminator on malformed guards.
         if matches!(
             self.current(),
