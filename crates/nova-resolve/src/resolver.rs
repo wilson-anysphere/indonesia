@@ -479,10 +479,11 @@ impl<'a> Resolver<'a> {
                         NameResolution::Unresolved => {}
                     }
 
-                    // JLS-ish precedence (simplified to match Nova's current model):
+                    // JLS 6.5.5.1 (simplified) type name lookup order:
                     // 1) single-type imports
                     // 2) same-package types
-                    // 3) on-demand imports
+                    // 3) java.lang (implicit)
+                    // 4) on-demand imports (star imports; ambiguous if multiple match)
                     match self.resolve_single_type_imports(imports, name) {
                         NameResolution::Resolved(res) => return NameResolution::Resolved(res),
                         NameResolution::Ambiguous(candidates) => {
@@ -497,6 +498,14 @@ impl<'a> Resolver<'a> {
                                 TypeResolution::External(ty),
                             ));
                         }
+                    }
+
+                    if let Some(ty) = self
+                        .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
+                    {
+                        return NameResolution::Resolved(Resolution::Type(TypeResolution::External(
+                            ty,
+                        )));
                     }
 
                     match self.resolve_star_type_imports(imports, name) {
@@ -519,7 +528,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 ScopeKind::Universe => {
-                    // `java.lang.*` is always implicitly available (after package + imports).
+                    // `java.lang.*` is always implicitly available.
                     if let Some(ty) = self
                         .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
                     {

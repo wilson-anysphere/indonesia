@@ -286,7 +286,7 @@ impl<'a> ScopeBuilder<'a> {
         self.class_scopes.insert(item, class_scope);
 
         // Copy the members out so we can mutably borrow `self` while iterating.
-        let members: Vec<Member> = self.item_members(item).to_vec();
+        let members = self.item_members(item).to_vec();
 
         // Populate member namespaces.
         for member in &members {

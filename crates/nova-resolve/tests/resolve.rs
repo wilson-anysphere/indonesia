@@ -202,6 +202,35 @@ fn java_lang_is_implicit() {
 }
 
 #[test]
+fn java_lang_beats_star_import() {
+    let mut db = TestDb::default();
+    let file = FileId::from_raw(0);
+    db.set_file_text(
+        file,
+        r#"
+package p;
+import q.*;
+class C {}
+"#,
+    );
+
+    let mut index = TestIndex::default();
+    index.add_type("q", "String");
+
+    let scopes = build_scopes(&db, file);
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk).with_classpath(&index);
+
+    let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("String"));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::External(TypeName::from(
+            "java.lang.String"
+        ))))
+    );
+}
+
+#[test]
 fn static_import_single_resolves_member() {
     let mut db = TestDb::default();
     let file = FileId::from_raw(0);
