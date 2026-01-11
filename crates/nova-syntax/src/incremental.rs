@@ -4,7 +4,7 @@ use crate::parser::{
     parse_block_fragment, parse_class_body_fragment, parse_class_member_fragment,
     parse_switch_block_fragment,
 };
-use crate::{parse_java, JavaParseResult, ParseError, SyntaxKind, TextEdit, TextRange};
+use crate::{lex, parse_java, JavaParseResult, ParseError, SyntaxKind, TextEdit, TextRange};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReparseTarget {
@@ -67,6 +67,21 @@ pub fn reparse_java(
         ReparseTarget::ClassMember => parse_class_member_fragment(fragment_text),
     };
 
+    // If the fragment ends in an unterminated string/comment/text block, the lexer would normally
+    // continue tokenizing into the following text. Splicing the fragment into the previous tree
+    // would leave the preserved portion tokenized under the old lexer state, producing an
+    // inconsistent syntax tree. Fall back to a full reparse in that case.
+    let fragment_reaches_eof = plan.new_range.end as usize == new_text.len();
+    if !fragment_reaches_eof && fragment_has_unterminated_lex_error(&fragment) {
+        return parse_java(new_text);
+    }
+    if !fragment_reaches_eof
+        && fragment_ends_in_line_comment(fragment_text)
+        && !matches!(new_text.as_bytes()[fragment_end], b'\n' | b'\r')
+    {
+        return parse_java(new_text);
+    }
+
     if fragment.syntax().kind() != plan.target_node.kind() {
         return parse_java(new_text);
     }
@@ -94,6 +109,23 @@ pub fn reparse_java(
     }
 
     result
+}
+
+fn fragment_has_unterminated_lex_error(fragment: &JavaParseResult) -> bool {
+    fragment
+        .errors
+        .iter()
+        .any(|e| e.message.starts_with("unterminated "))
+}
+
+fn fragment_ends_in_line_comment(fragment_text: &str) -> bool {
+    let tokens = lex(fragment_text);
+    if tokens.len() < 2 {
+        return false;
+    }
+
+    let last = &tokens[tokens.len().saturating_sub(2)];
+    last.kind == SyntaxKind::LineComment
 }
 
 /// Convenience wrapper used by query integrations: reparse when an edit + old parse is available,

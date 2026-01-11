@@ -92,12 +92,71 @@ pub fn parse_module_info(text: &str) -> Result<JavaParseResult, Vec<ParseError>>
     }
 }
 
+/// Parse a `module-info.java` file and return the module declaration node.
+///
+/// Unlike [`parse_java`], this performs additional validation on the compilation unit shape:
+/// `module-info.java` must not contain a package declaration, import declarations, or type
+/// declarations.
+pub fn parse_module_info(text: &str) -> Result<ModuleDeclaration, Vec<ParseError>> {
+    let parsed = parse_java(text);
+    let root = parsed.syntax();
+    let mut errors = parsed.errors;
+
+    let unit = CompilationUnit::cast(root).expect("root node is a compilation unit");
+
+    if let Some(pkg) = unit.package() {
+        errors.push(ParseError {
+            message: "module-info.java must not contain a package declaration".to_string(),
+            range: syntax_text_range(pkg.syntax()),
+        });
+    }
+
+    if let Some(first_import) = unit.imports().next() {
+        errors.push(ParseError {
+            message: "module-info.java must not contain import declarations".to_string(),
+            range: syntax_text_range(first_import.syntax()),
+        });
+    }
+
+    if let Some(first_type) = unit.type_declarations().next() {
+        errors.push(ParseError {
+            message: "module-info.java must not contain type declarations".to_string(),
+            range: syntax_text_range(first_type.syntax()),
+        });
+    }
+
+    let decl = match unit.module_declaration() {
+        Some(decl) => decl,
+        None => {
+            errors.push(ParseError {
+                message: "module-info.java is missing a module declaration".to_string(),
+                range: TextRange { start: 0, end: 0 },
+            });
+            return Err(errors);
+        }
+    };
+
+    if errors.is_empty() {
+        Ok(decl)
+    } else {
+        Err(errors)
+    }
+}
+
 /// Run the Java syntax feature gate pass on an already-parsed syntax tree.
 pub fn feature_gate_diagnostics(
     root: &SyntaxNode,
     language_level: JavaLanguageLevel,
 ) -> Vec<nova_types::Diagnostic> {
     feature_gate::feature_gate_diagnostics(root, language_level)
+}
+
+fn syntax_text_range(node: &SyntaxNode) -> TextRange {
+    let range = node.text_range();
+    TextRange {
+        start: u32::from(range.start()),
+        end: u32::from(range.end()),
+    }
 }
 
 use serde::{Deserialize, Serialize};

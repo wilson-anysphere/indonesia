@@ -1988,3 +1988,28 @@ fn incremental_insertion_at_block_end_does_not_drop_text() {
     let new_parse = reparse_java(&old, old_text, edit, &new_text);
     assert_eq!(new_parse.syntax().text().to_string(), new_text);
 }
+
+#[test]
+fn incremental_edit_creating_unterminated_block_comment_falls_back_to_full_reparse() {
+    // Insert `/*` inside a method body, but let it terminate at an existing `*/` outside the
+    // method. If we only reparse the method block fragment, the lexer would see an unterminated
+    // comment at fragment EOF and stop early, producing an inconsistent tree if we spliced it in.
+    let old_text = "class Foo {\n  void m() { int x = 1; }\n  /* tail */\n}\nclass Bar {}\n";
+    let old = parse_java(old_text);
+
+    // Insert right before the method body's closing `}`.
+    let brace_offset = old_text.find("1; }").unwrap() as u32 + 3;
+    let edit = TextEdit::insert(brace_offset, "/*");
+
+    let mut new_text = old_text.to_string();
+    new_text.insert_str(brace_offset as usize, "/*");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        !green_ptr_eq(&old_bar, &new_bar),
+        "expected unterminated comment in fragment to force full reparse"
+    );
+}
