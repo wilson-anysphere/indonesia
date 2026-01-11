@@ -482,7 +482,6 @@ fn gradle_test_output_dir(
     let dir = gradle_project_dir_cached(project_root, project_path, cache, fingerprint)?;
     Ok(dir.join("build").join("classes").join("java").join("test"))
 }
-
 fn gradle_output_dir(project_root: &Path, project_path: Option<&str>) -> PathBuf {
     // Best-effort mapping from Gradle project paths to directories.
     //
@@ -531,44 +530,6 @@ mod tests {
         assert_eq!(
             gradle_output_dir(root, Some(":lib:core")),
             PathBuf::from("/workspace/lib/core/build/classes/java/main")
-        );
-    }
-
-    #[test]
-    fn gradle_project_dir_maps_project_path_to_directory() {
-        let root = Path::new("/workspace");
-        let fp = BuildFileFingerprint {
-            digest: "dummy".into(),
-        };
-        let cache = BuildCache::new(tempfile::tempdir().unwrap().path());
-        assert_eq!(
-            gradle_project_dir_cached(root, None, &cache, &fp).unwrap(),
-            PathBuf::from("/workspace")
-        );
-        assert_eq!(
-            gradle_project_dir_cached(root, Some(":app"), &cache, &fp).unwrap(),
-            PathBuf::from("/workspace/app")
-        );
-        assert_eq!(
-            gradle_project_dir_cached(root, Some(":lib:core"), &cache, &fp).unwrap(),
-            PathBuf::from("/workspace/lib/core")
-        );
-    }
-
-    #[test]
-    fn gradle_test_output_dir_maps_project_path_to_directory() {
-        let root = Path::new("/workspace");
-        let fp = BuildFileFingerprint {
-            digest: "dummy".into(),
-        };
-        let cache = BuildCache::new(tempfile::tempdir().unwrap().path());
-        assert_eq!(
-            gradle_test_output_dir(root, None, &cache, &fp).unwrap(),
-            PathBuf::from("/workspace/build/classes/java/test")
-        );
-        assert_eq!(
-            gradle_test_output_dir(root, Some(":app"), &cache, &fp).unwrap(),
-            PathBuf::from("/workspace/app/build/classes/java/test")
         );
     }
 
@@ -1035,28 +996,6 @@ allprojects { proj ->
             println("NOVA_JSON_BEGIN")
             println(JsonOutput.toJson(payload))
             println("NOVA_JSON_END")
-        }
-    }
-
-    proj.tasks.register("printNovaTestClasspath") {
-        doLast {
-            def cfg = proj.configurations.findByName("testCompileClasspath")
-            if (cfg == null) {
-                cfg = proj.configurations.findByName("testRuntimeClasspath")
-            }
-            if (cfg == null) {
-                cfg = proj.configurations.findByName("compileClasspath")
-            }
-            if (cfg == null) {
-                cfg = proj.configurations.findByName("runtimeClasspath")
-            }
-            if (cfg == null) {
-                println("NOVA_NO_CLASSPATH")
-                return
-            }
-            cfg.resolve().each { f ->
-                println(f.absolutePath)
-            }
         }
     }
 
