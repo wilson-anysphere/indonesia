@@ -634,19 +634,21 @@ fn handle_request(
                 .collect();
             let index = Index::new(files);
 
-            Ok(match nova_lsp::change_signature_workspace_edit(&index, &change) {
-                Ok(edit) => match serde_json::to_value(edit) {
-                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err(err) => {
-                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
-                    }
+            Ok(
+                match nova_lsp::change_signature_workspace_edit(&index, &change) {
+                    Ok(edit) => match serde_json::to_value(edit) {
+                        Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                        Err(err) => {
+                            json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                        }
+                    },
+                    Err(err) => json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32603, "message": err }
+                    }),
                 },
-                Err(err) => json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "error": { "code": -32603, "message": err }
-                }),
-            })
+            )
         }
         _ => {
             if state.shutdown_requested {
@@ -1348,7 +1350,8 @@ fn offset_to_position_utf16(text: &str, offset: usize) -> lsp_types::Position {
     while clamped > 0 && !text.is_char_boundary(clamped) {
         clamped -= 1;
     }
-    nova_lsp::text_pos::lsp_position(text, clamped).unwrap_or_else(|| lsp_types::Position::new(0, 0))
+    nova_lsp::text_pos::lsp_position(text, clamped)
+        .unwrap_or_else(|| lsp_types::Position::new(0, 0))
 }
 
 fn ident_range_at(text: &str, offset: usize) -> Option<(usize, usize)> {

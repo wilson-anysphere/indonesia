@@ -6,9 +6,10 @@ use nova_core::{LineIndex, Position as CorePosition};
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
-    change_signature as refactor_change_signature, convert_to_record, safe_delete, workspace_edit_to_lsp,
-    ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId, SafeDeleteMode,
-    SafeDeleteOutcome, SafeDeleteTarget, TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit,
+    change_signature as refactor_change_signature, convert_to_record, safe_delete,
+    workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId,
+    SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, TextDatabase,
+    WorkspaceEdit as RefactorWorkspaceEdit,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -129,13 +130,15 @@ pub fn safe_delete_code_action(
             edit: Some(workspace_edit_to_lsp(index, &edit).ok()?),
             ..CodeAction::default()
         })),
-        SafeDeleteOutcome::Preview { report } => Some(CodeActionOrCommand::CodeAction(CodeAction {
-            title: format!("{title_base}…"),
-            kind: Some(CodeActionKind::REFACTOR),
-            // In a full server we'd attach this to a command that returns the preview.
-            data: Some(serde_json::to_value(RefactorResponse::Preview { report }).ok()?),
-            ..CodeAction::default()
-        })),
+        SafeDeleteOutcome::Preview { report } => {
+            Some(CodeActionOrCommand::CodeAction(CodeAction {
+                title: format!("{title_base}…"),
+                kind: Some(CodeActionKind::REFACTOR),
+                // In a full server we'd attach this to a command that returns the preview.
+                data: Some(serde_json::to_value(RefactorResponse::Preview { report }).ok()?),
+                ..CodeAction::default()
+            }))
+        }
     }
 }
 
@@ -430,8 +433,14 @@ class A {
         let lsp_edit = &edits[0];
         assert_eq!(lsp_edit.new_text, "");
 
-        assert_eq!(lsp_edit.range.start, position_utf16(source, sym.decl_range.start));
-        assert_eq!(lsp_edit.range.end, position_utf16(source, sym.decl_range.end));
+        assert_eq!(
+            lsp_edit.range.start,
+            position_utf16(source, sym.decl_range.start)
+        );
+        assert_eq!(
+            lsp_edit.range.end,
+            position_utf16(source, sym.decl_range.end)
+        );
     }
 
     #[test]
