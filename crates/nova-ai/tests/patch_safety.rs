@@ -103,6 +103,33 @@ fn rejects_parent_directory_segments() {
 }
 
 #[test]
+fn rejects_dot_and_empty_segments() {
+    let workspace = VirtualWorkspace::default();
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: "src/./Main.java".to_string(),
+            range: zero_range(),
+            text: "x".to_string(),
+        }],
+        ops: Vec::new(),
+    });
+
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::NonRelativePath { .. }));
+
+    let patch = Patch::Json(JsonPatch {
+        edits: vec![TextEdit {
+            file: "src//Main.java".to_string(),
+            range: zero_range(),
+            text: "x".to_string(),
+        }],
+        ops: Vec::new(),
+    });
+    let err = enforce_patch_safety(&patch, &workspace, &PatchSafetyConfig::default()).unwrap_err();
+    assert!(matches!(err, SafetyError::NonRelativePath { .. }));
+}
+
+#[test]
 fn rejects_new_files_in_json_edits_by_default() {
     let workspace = VirtualWorkspace::new(vec![(
         "Existing.java".to_string(),

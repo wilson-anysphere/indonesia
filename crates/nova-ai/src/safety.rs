@@ -404,7 +404,14 @@ fn validate_path(
     }
 
     // Disallow traversal and drive letters / URI schemes.
-    if path.split('/').any(|segment| segment == "..") || path.contains(':') {
+    //
+    // We also reject empty (`//`) and current-directory (`./`) segments to avoid
+    // bypassing prefix/glob allowlists with non-canonical paths.
+    if path.contains(':')
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
         return Err(SafetyError::NonRelativePath {
             path: path.to_string(),
         });
