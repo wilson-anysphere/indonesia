@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 use super::build::NovaDiagnostic;
+use super::config::load_workspace_config;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -54,7 +55,7 @@ pub fn handle_generated_sources(params: serde_json::Value) -> Result<serde_json:
     let params = parse_params(params)?;
     let root = PathBuf::from(&params.project_root);
 
-    let (project, config) = load_project_with_default_config(&root)?;
+    let (project, config) = load_project_with_workspace_config(&root)?;
     let apt = AptManager::new(project, config);
     let status = apt.status().map_err(map_io_error)?;
 
@@ -69,7 +70,7 @@ pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<ser
     let cache_dir = root.join(".nova").join("build-cache");
     let build = BuildManager::new(cache_dir);
 
-    let (project, config) = load_project_with_default_config(&root)?;
+    let (project, config) = load_project_with_workspace_config(&root)?;
     let apt = AptManager::new(project, config);
 
     let mut reporter = VecProgress::default();
@@ -78,7 +79,7 @@ pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<ser
         .map_err(map_build_error)?;
 
     // Reload project + generated roots after the build.
-    let (project, config) = load_project_with_default_config(&root)?;
+    let (project, config) = load_project_with_workspace_config(&root)?;
     let apt = AptManager::new(project, config);
     let status = apt.status().map_err(map_io_error)?;
 
@@ -99,8 +100,10 @@ fn parse_params(value: serde_json::Value) -> Result<NovaGeneratedSourcesParams> 
     serde_json::from_value(value).map_err(|err| NovaLspError::InvalidParams(err.to_string()))
 }
 
-fn load_project_with_default_config(root: &Path) -> Result<(nova_project::ProjectConfig, NovaConfig)> {
-    let config = NovaConfig::default();
+fn load_project_with_workspace_config(
+    root: &Path,
+) -> Result<(nova_project::ProjectConfig, NovaConfig)> {
+    let config = load_workspace_config(root);
     let mut options = LoadOptions::default();
     options.nova_config = config.clone();
     let project = load_project_with_options(root, &options)

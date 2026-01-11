@@ -385,6 +385,36 @@ impl NovaConfig {
     }
 }
 
+/// Load Nova configuration for a workspace.
+///
+/// The configuration file is discovered by walking up from `root` (or
+/// `root.parent()` when `root` is a file) and looking for `.nova/config.toml`.
+///
+/// - If no config file is found, this returns [`NovaConfig::default`].
+/// - If a config file is found but cannot be read or parsed, an error is
+///   returned so callers can decide how to surface the failure.
+pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigError> {
+    let root = root.as_ref();
+    let start = if root.is_file() {
+        root.parent().unwrap_or(root)
+    } else {
+        root
+    };
+
+    for dir in start.ancestors() {
+        let candidate = dir.join(".nova").join("config.toml");
+        match NovaConfig::load_from_path(&candidate) {
+            Ok(config) => return Ok(config),
+            Err(ConfigError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                continue
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(NovaConfig::default())
+}
+
 /// Ring buffer of formatted log lines for bug reports.
 #[derive(Debug)]
 pub struct LogBuffer {

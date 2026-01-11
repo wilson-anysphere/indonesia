@@ -1,11 +1,14 @@
 use crate::{NovaLspError, Result};
 use nova_build::{BuildError, BuildManager, BuildResult, Classpath};
 use nova_cache::{CacheConfig, CacheDir};
+use nova_project::{load_project_with_options, LoadOptions};
 use serde::{Deserialize, Serialize};
 use std::{
     env,
     path::{Path, PathBuf},
 };
+
+use super::config::load_workspace_config;
 
 /// Parameters accepted by Nova's build-related extension requests.
 ///
@@ -306,7 +309,10 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         };
         serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
     } else {
-        let config = nova_project::load_project(&requested_root)
+        let nova_config = load_workspace_config(&requested_root);
+        let mut options = LoadOptions::default();
+        options.nova_config = nova_config;
+        let config = load_project_with_options(&requested_root, &options)
             .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
         let project_root = config.workspace_root.clone();

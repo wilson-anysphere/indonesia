@@ -1,3 +1,4 @@
+mod config;
 pub mod apt;
 pub mod build;
 pub mod debug;
