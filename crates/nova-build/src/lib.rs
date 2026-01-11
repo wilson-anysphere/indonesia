@@ -295,6 +295,15 @@ impl BuildManager {
             .java_compile_config(project_root, module_relative, &self.cache)
     }
 
+    pub fn java_compile_config_gradle(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+    ) -> Result<JavaCompileConfig> {
+        self.gradle
+            .java_compile_config(project_root, project_path, &self.cache)
+    }
+
     pub fn classpath_gradle(
         &self,
         project_root: &Path,

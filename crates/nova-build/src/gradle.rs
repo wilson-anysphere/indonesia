@@ -139,6 +139,9 @@ impl GradleBuild {
                     ..JavaCompileConfig::default()
                 });
             }
+            if let Some(cfg) = cached.java_compile_config {
+                return Ok(Classpath::new(cfg.compile_classpath));
+            }
         }
 
         let (program, args, output) =
@@ -205,6 +208,168 @@ impl GradleBuild {
         )?;
 
         Ok(config)
+    }
+
+    pub fn java_compile_config(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+        cache: &BuildCache,
+    ) -> Result<JavaCompileConfig> {
+        let project_path = project_path.filter(|p| *p != ":");
+        let fingerprint = gradle_build_fingerprint(project_root)?;
+        let module_key = project_path.unwrap_or("<root>");
+
+        if let Some(cached) = cache.get_module(
+            project_root,
+            BuildSystemKind::Gradle,
+            &fingerprint,
+            module_key,
+        )? {
+            if let Some(cfg) = cached.java_compile_config {
+                return Ok(cfg);
+            }
+        }
+
+        // Multi-module root: when the root project has no `compileClasspath`, behave like an IDE
+        // workspace and union the configs from all subprojects.
+        let (compile_program, compile_args, compile_output) =
+            self.run_print_classpath(project_root, project_path)?;
+        if !compile_output.status.success() {
+            return Err(BuildError::CommandFailed {
+                tool: "gradle",
+                command: format_command(&compile_program, &compile_args),
+                code: compile_output.status.code(),
+                stdout: compile_output.stdout,
+                stderr: compile_output.stderr,
+            });
+        }
+
+        let compile_combined = compile_output.combined();
+        let has_compile_classpath = !compile_combined
+            .lines()
+            .any(|line| line.trim() == NOVA_NO_CLASSPATH_MARKER);
+
+        if project_path.is_none() && !has_compile_classpath {
+            let projects = self.projects(project_root, cache)?;
+            let mut configs = Vec::new();
+            for project in projects.into_iter().filter(|p| p.path != ":") {
+                configs.push(self.java_compile_config(
+                    project_root,
+                    Some(project.path.as_str()),
+                    cache,
+                )?);
+            }
+
+            let cfg = JavaCompileConfig::union(configs);
+            cache.update_module(
+                project_root,
+                BuildSystemKind::Gradle,
+                &fingerprint,
+                module_key,
+                |m| {
+                    m.classpath = Some(cfg.compile_classpath.clone());
+                    m.java_compile_config = Some(cfg.clone());
+                },
+            )?;
+            return Ok(cfg);
+        }
+
+        let project_dir =
+            gradle_project_dir_cached(project_root, project_path, cache, &fingerprint)?;
+
+        let stdout_entries = parse_gradle_classpath_output(&compile_output.stdout);
+        let mut compile_classpath = if stdout_entries.is_empty() {
+            parse_gradle_classpath_output(&compile_combined)
+        } else {
+            stdout_entries
+        };
+        let main_output_dir = if has_compile_classpath {
+            let output_dir =
+                gradle_output_dir_cached(project_root, project_path, cache, &fingerprint)?;
+            if !compile_classpath.iter().any(|p| p == &output_dir) {
+                compile_classpath.insert(0, output_dir.clone());
+            }
+            Some(output_dir)
+        } else {
+            None
+        };
+
+        let (test_program, test_args, test_output) =
+            self.run_print_test_classpath(project_root, project_path)?;
+        if !test_output.status.success() {
+            return Err(BuildError::CommandFailed {
+                tool: "gradle",
+                command: format_command(&test_program, &test_args),
+                code: test_output.status.code(),
+                stdout: test_output.stdout,
+                stderr: test_output.stderr,
+            });
+        }
+
+        let test_combined = test_output.combined();
+        let has_test_classpath = !test_combined
+            .lines()
+            .any(|line| line.trim() == NOVA_NO_CLASSPATH_MARKER);
+        let stdout_entries = parse_gradle_classpath_output(&test_output.stdout);
+        let mut test_classpath = if stdout_entries.is_empty() {
+            parse_gradle_classpath_output(&test_combined)
+        } else {
+            stdout_entries
+        };
+
+        let test_output_dir = if has_test_classpath {
+            Some(gradle_test_output_dir(
+                project_root,
+                project_path,
+                cache,
+                &fingerprint,
+            )?)
+        } else {
+            None
+        };
+
+        // Best-effort: ensure output dirs are represented on the appropriate classpaths.
+        if let Some(out_dir) = &main_output_dir {
+            if !test_classpath.iter().any(|p| p == out_dir) {
+                test_classpath.insert(0, out_dir.clone());
+            }
+        }
+        if let Some(out_dir) = &test_output_dir {
+            if !test_classpath.iter().any(|p| p == out_dir) {
+                test_classpath.insert(0, out_dir.clone());
+            }
+        }
+
+        let main_source_roots = collect_source_roots(&project_dir, "main");
+        let test_source_roots = collect_source_roots(&project_dir, "test");
+
+        let cfg = JavaCompileConfig {
+            compile_classpath,
+            test_classpath,
+            module_path: Vec::new(),
+            main_source_roots,
+            test_source_roots,
+            main_output_dir,
+            test_output_dir,
+            source: None,
+            target: None,
+            release: None,
+            enable_preview: false,
+        };
+
+        cache.update_module(
+            project_root,
+            BuildSystemKind::Gradle,
+            &fingerprint,
+            module_key,
+            |m| {
+                m.classpath = Some(cfg.compile_classpath.clone());
+                m.java_compile_config = Some(cfg.clone());
+            },
+        )?;
+
+        Ok(cfg)
     }
 
     pub fn build(
@@ -295,6 +460,32 @@ impl GradleBuild {
         Ok((gradle, args, output?))
     }
 
+    fn run_print_test_classpath(
+        &self,
+        project_root: &Path,
+        project_path: Option<&str>,
+    ) -> Result<(PathBuf, Vec<String>, CommandOutput)> {
+        let gradle = self.gradle_executable(project_root);
+        let init_script = write_init_script(project_root)?;
+
+        let mut args: Vec<String> = Vec::new();
+        args.push("--no-daemon".into());
+        args.push("--console=plain".into());
+        args.push("-q".into());
+        args.push("--init-script".into());
+        args.push(init_script.to_string_lossy().to_string());
+
+        let task = match project_path {
+            Some(p) => format!("{p}:printNovaTestClasspath"),
+            None => "printNovaTestClasspath".to_string(),
+        };
+        args.push(task);
+
+        let output = self.runner.run(project_root, &gradle, &args);
+        let _ = std::fs::remove_file(&init_script);
+        Ok((gradle, args, output?))
+    }
+
     fn run_compile(
         &self,
         project_root: &Path,
@@ -379,6 +570,47 @@ fn gradle_output_dir_cached(
     Ok(gradle_output_dir(project_root, Some(project_path)))
 }
 
+fn gradle_project_dir_cached(
+    project_root: &Path,
+    project_path: Option<&str>,
+    cache: &BuildCache,
+    fingerprint: &BuildFileFingerprint,
+) -> Result<PathBuf> {
+    let Some(project_path) = project_path else {
+        return Ok(project_root.to_path_buf());
+    };
+
+    if project_path == ":" {
+        return Ok(project_root.to_path_buf());
+    }
+
+    if let Some(data) = cache.load(project_root, BuildSystemKind::Gradle, fingerprint)? {
+        if let Some(projects) = data.projects {
+            if let Some(found) = projects.into_iter().find(|p| p.path == project_path) {
+                return Ok(found.dir);
+            }
+        }
+    }
+
+    // Heuristic mapping: `:lib:core` -> `<root>/lib/core`.
+    let mut rel = PathBuf::new();
+    let trimmed = project_path.trim_matches(':');
+    for part in trimmed.split(':').filter(|p| !p.is_empty()) {
+        rel.push(part);
+    }
+    Ok(project_root.join(rel))
+}
+
+fn gradle_test_output_dir(
+    project_root: &Path,
+    project_path: Option<&str>,
+    cache: &BuildCache,
+    fingerprint: &BuildFileFingerprint,
+) -> Result<PathBuf> {
+    let dir = gradle_project_dir_cached(project_root, project_path, cache, fingerprint)?;
+    Ok(dir.join("build").join("classes").join("java").join("test"))
+}
+
 fn gradle_output_dir(project_root: &Path, project_path: Option<&str>) -> PathBuf {
     // Best-effort mapping from Gradle project paths to directories.
     //
@@ -427,6 +659,44 @@ mod tests {
         assert_eq!(
             gradle_output_dir(root, Some(":lib:core")),
             PathBuf::from("/workspace/lib/core/build/classes/java/main")
+        );
+    }
+
+    #[test]
+    fn gradle_project_dir_maps_project_path_to_directory() {
+        let root = Path::new("/workspace");
+        let fp = BuildFileFingerprint {
+            digest: "dummy".into(),
+        };
+        let cache = BuildCache::new(tempfile::tempdir().unwrap().path());
+        assert_eq!(
+            gradle_project_dir_cached(root, None, &cache, &fp).unwrap(),
+            PathBuf::from("/workspace")
+        );
+        assert_eq!(
+            gradle_project_dir_cached(root, Some(":app"), &cache, &fp).unwrap(),
+            PathBuf::from("/workspace/app")
+        );
+        assert_eq!(
+            gradle_project_dir_cached(root, Some(":lib:core"), &cache, &fp).unwrap(),
+            PathBuf::from("/workspace/lib/core")
+        );
+    }
+
+    #[test]
+    fn gradle_test_output_dir_maps_project_path_to_directory() {
+        let root = Path::new("/workspace");
+        let fp = BuildFileFingerprint {
+            digest: "dummy".into(),
+        };
+        let cache = BuildCache::new(tempfile::tempdir().unwrap().path());
+        assert_eq!(
+            gradle_test_output_dir(root, None, &cache, &fp).unwrap(),
+            PathBuf::from("/workspace/build/classes/java/test")
+        );
+        assert_eq!(
+            gradle_test_output_dir(root, Some(":app"), &cache, &fp).unwrap(),
+            PathBuf::from("/workspace/app/build/classes/java/test")
         );
     }
 
@@ -768,6 +1038,27 @@ fn extract_sentinel_block(output: &str, begin: &str, end: &str) -> Option<String
     None
 }
 
+fn collect_source_roots(project_dir: &Path, source_set: &str) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let candidates = [
+        project_dir.join("src").join(source_set).join("java"),
+        project_dir
+            .join("build")
+            .join("generated")
+            .join("sources")
+            .join("annotationProcessor")
+            .join("java")
+            .join(source_set),
+    ];
+
+    for path in candidates {
+        if path.exists() {
+            roots.push(path);
+        }
+    }
+    roots
+}
+
 #[derive(Debug, Deserialize)]
 struct GradleProjectsJson {
     projects: Vec<GradleProjectJson>,
@@ -872,6 +1163,28 @@ allprojects { proj ->
             println("NOVA_JSON_BEGIN")
             println(JsonOutput.toJson(payload))
             println("NOVA_JSON_END")
+        }
+    }
+
+    proj.tasks.register("printNovaTestClasspath") {
+        doLast {
+            def cfg = proj.configurations.findByName("testCompileClasspath")
+            if (cfg == null) {
+                cfg = proj.configurations.findByName("testRuntimeClasspath")
+            }
+            if (cfg == null) {
+                cfg = proj.configurations.findByName("compileClasspath")
+            }
+            if (cfg == null) {
+                cfg = proj.configurations.findByName("runtimeClasspath")
+            }
+            if (cfg == null) {
+                println("NOVA_NO_CLASSPATH")
+                return
+            }
+            cfg.resolve().each { f ->
+                println(f.absolutePath)
+            }
         }
     }
 
