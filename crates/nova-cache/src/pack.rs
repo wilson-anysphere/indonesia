@@ -495,11 +495,11 @@ fn install_metadata_files(src_dir: &Path, dest_dir: &Path) -> Result<()> {
 }
 
 fn install_component_dir(src_dir: &Path, dest_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest_dir)?;
+    clear_dir_except_lock(dest_dir)?;
     if !src_dir.is_dir() {
         return Ok(());
     }
-    std::fs::create_dir_all(dest_dir)?;
-    clear_dir_except_lock(dest_dir)?;
 
     let mut files = Vec::new();
     for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
@@ -526,11 +526,11 @@ fn install_component_dir(src_dir: &Path, dest_dir: &Path) -> Result<()> {
 }
 
 fn install_ast_dir(src_dir: &Path, dest_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest_dir)?;
+    clear_dir_except_lock(dest_dir)?;
     if !src_dir.is_dir() {
         return Ok(());
     }
-    std::fs::create_dir_all(dest_dir)?;
-    clear_dir_except_lock(dest_dir)?;
 
     let mut files = Vec::new();
     for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
