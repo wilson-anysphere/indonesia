@@ -3,33 +3,30 @@ use std::sync::{Arc, Barrier};
 use tempfile::tempdir;
 
 #[test]
-fn cache_is_keyed_by_query_hash_and_build_file_digests() {
+fn cache_is_keyed_by_expr_version_and_file_digests() {
     let dir = tempdir().unwrap();
     let build = dir.path().join("BUILD");
     std::fs::write(&build, "java_library(name = \"hello\")").unwrap();
 
     let digest = digest_file(&build).unwrap();
-    let query_hash = blake3::hash(b"query-output");
+    let expr_version_hex = "expr-v1".to_string();
 
     let mut cache = BazelCache::default();
     cache.insert(CacheEntry {
         target: "//:hello".to_string(),
-        query_hash_hex: query_hash.to_hex().to_string(),
-        build_files: vec![digest.clone()],
+        expr_version_hex: expr_version_hex.clone(),
+        files: vec![digest.clone()],
         info: JavaCompileInfo {
             classpath: vec!["a.jar".to_string()],
             ..JavaCompileInfo::default()
         },
     });
 
-    assert!(cache
-        .get("//:hello", query_hash, &[digest.clone()])
-        .is_some());
+    assert!(cache.get("//:hello", &expr_version_hex).is_some());
 
     // Changing the BUILD file should invalidate the entry.
     std::fs::write(&build, "java_library(name = \"hello\", srcs = [])").unwrap();
-    let new_digest = digest_file(&build).unwrap();
-    assert!(cache.get("//:hello", query_hash, &[new_digest]).is_none());
+    assert!(cache.get("//:hello", &expr_version_hex).is_none());
 }
 
 #[test]
@@ -47,12 +44,12 @@ fn cache_roundtrips_via_disk() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("bazel.json");
 
-    let query_hash = blake3::hash(b"query-output");
+    let expr_version_hex = "expr-v1".to_string();
     let mut cache = BazelCache::default();
     cache.insert(CacheEntry {
         target: "//:hello".to_string(),
-        query_hash_hex: query_hash.to_hex().to_string(),
-        build_files: Vec::new(),
+        expr_version_hex: expr_version_hex.clone(),
+        files: Vec::new(),
         info: JavaCompileInfo {
             classpath: vec!["a.jar".to_string()],
             ..JavaCompileInfo::default()
@@ -66,28 +63,54 @@ fn cache_roundtrips_via_disk() {
 }
 
 #[test]
-fn cache_save_is_safe_under_concurrent_writers() {
+fn invalidate_changed_files_drops_matching_entries() {
     let dir = tempdir().unwrap();
-    let path = Arc::new(dir.path().join("bazel.json"));
+    let build = dir.path().join("BUILD");
+    std::fs::write(&build, "java_library(name = \"hello\")").unwrap();
+    let digest = digest_file(&build).unwrap();
+    let expr_version_hex = "expr-v1".to_string();
 
-    let query_hash_a = blake3::hash(b"query-output-a");
-    let mut cache_a = BazelCache::default();
-    cache_a.insert(CacheEntry {
-        target: "//:a".to_string(),
-        query_hash_hex: query_hash_a.to_hex().to_string(),
-        build_files: Vec::new(),
+    let mut cache = BazelCache::default();
+    cache.insert(CacheEntry {
+        target: "//:hello".to_string(),
+        expr_version_hex: expr_version_hex.clone(),
+        files: vec![digest],
         info: JavaCompileInfo {
             classpath: vec!["a.jar".to_string()],
             ..JavaCompileInfo::default()
         },
     });
 
-    let query_hash_b = blake3::hash(b"query-output-b");
+    assert!(cache.get("//:hello", &expr_version_hex).is_some());
+
+    cache.invalidate_changed_files(&[dir.path().join("unrelated.txt")]);
+    assert!(cache.get("//:hello", &expr_version_hex).is_some());
+
+    cache.invalidate_changed_files(&[build]);
+    assert!(cache.get("//:hello", &expr_version_hex).is_none());
+}
+
+#[test]
+fn cache_save_is_safe_under_concurrent_writers() {
+    let dir = tempdir().unwrap();
+    let path = Arc::new(dir.path().join("bazel.json"));
+
+    let mut cache_a = BazelCache::default();
+    cache_a.insert(CacheEntry {
+        target: "//:a".to_string(),
+        expr_version_hex: "expr-a".to_string(),
+        files: Vec::new(),
+        info: JavaCompileInfo {
+            classpath: vec!["a.jar".to_string()],
+            ..JavaCompileInfo::default()
+        },
+    });
+
     let mut cache_b = BazelCache::default();
     cache_b.insert(CacheEntry {
         target: "//:b".to_string(),
-        query_hash_hex: query_hash_b.to_hex().to_string(),
-        build_files: Vec::new(),
+        expr_version_hex: "expr-b".to_string(),
+        files: Vec::new(),
         info: JavaCompileInfo {
             classpath: vec!["b.jar".to_string()],
             ..JavaCompileInfo::default()

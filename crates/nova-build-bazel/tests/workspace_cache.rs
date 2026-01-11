@@ -1,0 +1,100 @@
+use nova_build_bazel::{BazelWorkspace, CommandOutput, CommandRunner};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
+use tempfile::tempdir;
+
+#[derive(Clone)]
+struct TestRunner {
+    calls: Arc<Mutex<Vec<Vec<String>>>>,
+    query_stdout: String,
+    aquery_stdout: String,
+}
+
+impl TestRunner {
+    fn new(query_stdout: String, aquery_stdout: String) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            query_stdout,
+            aquery_stdout,
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        self.calls.lock().unwrap().len()
+    }
+}
+
+impl CommandRunner for TestRunner {
+    fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+        assert_eq!(program, "bazel");
+        self.calls
+            .lock()
+            .unwrap()
+            .push(args.iter().map(|s| s.to_string()).collect());
+
+        match args.first().copied() {
+            Some("query") => Ok(CommandOutput {
+                stdout: self.query_stdout.clone(),
+                stderr: String::new(),
+            }),
+            Some("aquery") => Ok(CommandOutput {
+                stdout: self.aquery_stdout.clone(),
+                stderr: String::new(),
+            }),
+            other => anyhow::bail!("unexpected bazel subcommand: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn dependency_build_file_changes_invalidate_cached_compile_info() {
+    let dir = tempdir().unwrap();
+
+    std::fs::write(dir.path().join("WORKSPACE"), "# test workspace\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("java")).unwrap();
+    std::fs::create_dir_all(dir.path().join("dep")).unwrap();
+
+    let java_build = dir.path().join("java/BUILD");
+    let dep_build = dir.path().join("dep/BUILD");
+    std::fs::write(&java_build, "java_library(name = \"hello\")\n").unwrap();
+    std::fs::write(&dep_build, "java_library(name = \"dep\")\n").unwrap();
+
+    // `buildfiles(deps(target))` returns build file labels for packages in the transitive closure.
+    let query_stdout = "//java:BUILD\n//dep:BUILD\n".to_string();
+    let aquery_stdout = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java:hello"
+  arguments: "javac"
+  arguments: "-classpath"
+  arguments: "lib.jar"
+  arguments: "java/Hello.java"
+}
+"#
+    .to_string();
+
+    let runner = TestRunner::new(query_stdout, aquery_stdout);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(
+        runner.call_count(),
+        3,
+        "expected aquery + buildfiles + loadfiles queries"
+    );
+
+    // Second call should hit the cache (no additional Bazel invocations).
+    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(runner.call_count(), 3, "expected cache hit");
+
+    // Mutate a *dependency* BUILD file and ensure the entry becomes invalid.
+    std::fs::write(&dep_build, "java_library(name = \"dep\", visibility = [])\n").unwrap();
+    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(
+        runner.call_count(),
+        6,
+        "expected cache miss after dep BUILD change"
+    );
+}

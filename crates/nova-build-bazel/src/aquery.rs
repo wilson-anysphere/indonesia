@@ -396,23 +396,82 @@ fn parse_quoted_field(line: &str, prefix: &str) -> Option<String> {
 // subset is enough.
 fn unescape_textproto(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
-    let mut chars = value.chars();
+    let mut chars = value.chars().peekable();
+
     while let Some(c) = chars.next() {
         if c != '\\' {
             out.push(c);
             continue;
         }
 
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('r') => out.push('\r'),
-            Some('t') => out.push('\t'),
-            Some('\\') => out.push('\\'),
-            Some('"') => out.push('"'),
-            Some(other) => out.push(other),
-            None => out.push('\\'),
+        let Some(esc) = chars.next() else {
+            out.push('\\');
+            break;
+        };
+
+        match esc {
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            '\\' => out.push('\\'),
+            '"' => out.push('"'),
+            '\'' => out.push('\''),
+            'x' => {
+                // Hex byte escape: \xNN (variable digits, at least 1)
+                let mut value: u32 = 0;
+                let mut consumed = 0;
+                while let Some(&next) = chars.peek() {
+                    let Some(hex) = next.to_digit(16) else { break };
+                    chars.next();
+                    consumed += 1;
+                    value = (value << 4) + hex;
+                }
+                if consumed == 0 {
+                    out.push('x');
+                } else if let Some(ch) = char::from_u32(value & 0xFF) {
+                    out.push(ch);
+                }
+            }
+            'u' | 'U' => {
+                // Unicode escape: \uXXXX or \UXXXXXXXX
+                let digits = if esc == 'u' { 4 } else { 8 };
+                let mut value: u32 = 0;
+                let mut ok = true;
+                for _ in 0..digits {
+                    match chars.next().and_then(|c| c.to_digit(16)) {
+                        Some(hex) => value = (value << 4) + hex,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    if let Some(ch) = char::from_u32(value) {
+                        out.push(ch);
+                    }
+                }
+            }
+            d @ '0'..='7' => {
+                // Octal escape: up to 3 digits (including the one we just consumed).
+                let mut value: u32 = d.to_digit(8).unwrap_or(0);
+                for _ in 0..2 {
+                    match chars.peek().copied().and_then(|c| c.to_digit(8)) {
+                        Some(oct) => {
+                            chars.next();
+                            value = (value << 3) + oct;
+                        }
+                        None => break,
+                    }
+                }
+                if let Some(ch) = char::from_u32(value & 0xFF) {
+                    out.push(ch);
+                }
+            }
+            other => out.push(other),
         }
     }
+
     out
 }
 
@@ -450,7 +509,8 @@ fn brace_delta_unquoted(line: &str) -> i32 {
 /// Extract the classpath/module-path/source roots from a parsed `Javac` action.
 pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
     let mut info = JavaCompileInfo::default();
-    let mut source_roots = BTreeSet::<String>::new();
+    let mut sourcepath_roots = BTreeSet::<String>::new();
+    let mut java_file_roots = BTreeSet::<String>::new();
 
     let mut it = action.arguments.iter().peekable();
     while let Some(arg) = it.next() {
@@ -468,16 +528,22 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
             "--release" => {
                 if let Some(v) = it.next() {
                     info.release = Some(v.clone());
+                    info.source = Some(v.clone());
+                    info.target = Some(v.clone());
                 }
             }
             "--source" | "-source" => {
                 if let Some(v) = it.next() {
-                    info.source = Some(v.clone());
+                    if info.release.is_none() {
+                        info.source = Some(v.clone());
+                    }
                 }
             }
             "--target" | "-target" => {
                 if let Some(v) = it.next() {
-                    info.target = Some(v.clone());
+                    if info.release.is_none() {
+                        info.target = Some(v.clone());
+                    }
                 }
             }
             "-d" => {
@@ -492,14 +558,17 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
                 if let Some(v) = it.next() {
                     for root in split_path_list(v) {
                         if !root.is_empty() {
-                            source_roots.insert(root);
+                            sourcepath_roots.insert(root);
                         }
                     }
                 }
             }
             other => {
                 if let Some(release) = other.strip_prefix("--release=") {
-                    info.release = Some(release.to_string());
+                    let release = release.to_string();
+                    info.release = Some(release.clone());
+                    info.source = Some(release.clone());
+                    info.target = Some(release);
                     continue;
                 }
 
@@ -510,16 +579,20 @@ pub fn extract_java_compile_info(action: &JavacAction) -> JavaCompileInfo {
 
                 if other.ends_with(".java") {
                     if let Some(parent) = other.rsplit_once('/') {
-                        source_roots.insert(parent.0.to_string());
+                        java_file_roots.insert(parent.0.to_string());
                     } else if let Some(parent) = other.rsplit_once('\\') {
-                        source_roots.insert(parent.0.to_string());
+                        java_file_roots.insert(parent.0.to_string());
                     }
                 }
             }
         }
     }
 
-    info.source_roots = source_roots.into_iter().collect();
+    info.source_roots = if !sourcepath_roots.is_empty() {
+        sourcepath_roots.into_iter().collect()
+    } else {
+        java_file_roots.into_iter().collect()
+    };
     info
 }
 

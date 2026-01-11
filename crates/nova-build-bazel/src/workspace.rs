@@ -1,16 +1,51 @@
 use crate::{
     aquery::{parse_aquery_textproto_streaming_javac_action_info, JavaCompileInfo},
-    cache::{BazelCache, BuildFileDigest, CacheEntry},
+    cache::{digest_file_or_absent, BazelCache, CacheEntry, FileDigest},
     command::CommandRunner,
 };
 use anyhow::{Context, Result};
-use blake3::Hash;
 use std::{
     collections::BTreeSet,
     fs,
+    io::BufRead,
     ops::ControlFlow,
     path::{Path, PathBuf},
 };
+
+const JAVA_TARGETS_QUERY: &str = r#"kind("java_.* rule", //...)"#;
+
+// Query/aquery expressions are part of the cache key; changing them should invalidate cached
+// compile info (even if file digests happen to remain the same).
+const AQUERY_OUTPUT: &str = "textproto";
+const AQUERY_DIRECT_TEMPLATE: &str = r#"mnemonic("Javac", TARGET)"#;
+const AQUERY_DEPS_TEMPLATE: &str = r#"mnemonic("Javac", deps(TARGET))"#;
+const BUILDFILES_QUERY_TEMPLATE: &str = "buildfiles(deps(TARGET))";
+const LOADFILES_QUERY_TEMPLATE: &str = "loadfiles(deps(TARGET))";
+const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v3";
+
+const COMPILE_INFO_EXPR_VERSION_SEED: &str = concat!(
+    "java_targets_query=",
+    JAVA_TARGETS_QUERY,
+    "\n",
+    "aquery_output=",
+    AQUERY_OUTPUT,
+    "\n",
+    "aquery_direct=",
+    AQUERY_DIRECT_TEMPLATE,
+    "\n",
+    "aquery_deps=",
+    AQUERY_DEPS_TEMPLATE,
+    "\n",
+    "query_buildfiles=",
+    BUILDFILES_QUERY_TEMPLATE,
+    "\n",
+    "query_loadfiles=",
+    LOADFILES_QUERY_TEMPLATE,
+    "\n",
+    "textproto_parser=",
+    TEXTPROTO_PARSER_VERSION,
+    "\n",
+);
 
 /// Walk upwards from `start` to find the Bazel workspace root.
 ///
@@ -20,11 +55,7 @@ use std::{
 /// - `MODULE.bazel`
 pub fn bazel_workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
     let start = start.as_ref();
-    let mut dir = if start.is_file() {
-        start.parent()?
-    } else {
-        start
-    };
+    let mut dir = if start.is_file() { start.parent()? } else { start };
 
     loop {
         if is_bazel_workspace(dir) {
@@ -57,7 +88,7 @@ pub struct BazelWorkspace<R: CommandRunner> {
     runner: R,
     cache_path: Option<PathBuf>,
     cache: BazelCache,
-    last_query_hash: Option<Hash>,
+    compile_info_expr_version_hex: String,
 }
 
 impl<R: CommandRunner> BazelWorkspace<R> {
@@ -67,7 +98,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             runner,
             cache_path: None,
             cache: BazelCache::default(),
-            last_query_hash: None,
+            compile_info_expr_version_hex: blake3::hash(COMPILE_INFO_EXPR_VERSION_SEED.as_bytes())
+                .to_hex()
+                .to_string(),
         })
     }
 
@@ -82,12 +115,11 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     }
 
     pub fn java_targets(&mut self) -> Result<Vec<String>> {
-        let (targets, hash) = self.runner.run_with_stdout(
+        self.runner.run_with_stdout(
             &self.root,
             "bazel",
-            &["query", r#"kind("java_.* rule", //...)"#],
+            &["query", JAVA_TARGETS_QUERY],
             |stdout| {
-                let mut hasher = blake3::Hasher::new();
                 let mut targets = Vec::new();
                 let mut line = String::new();
                 loop {
@@ -96,36 +128,30 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     if bytes == 0 {
                         break;
                     }
-
-                    hasher.update(line.as_bytes());
                     let trimmed = line.trim();
                     if !trimmed.is_empty() {
                         targets.push(trimmed.to_string());
                     }
                 }
-                Ok((targets, hasher.finalize()))
+                Ok(targets)
             },
-        )?;
-
-        self.last_query_hash = Some(hash);
-        Ok(targets)
+        )
     }
 
     /// Resolve Java compilation information for a Bazel target.
     pub fn target_compile_info(&mut self, target: &str) -> Result<JavaCompileInfo> {
-        let query_hash = self.ensure_query_hash()?;
-
-        let build_file_digests = self.build_file_digests_for_target(target)?;
-
-        if let Some(entry) = self.cache.get(target, query_hash, &build_file_digests) {
+        if let Some(entry) = self
+            .cache
+            .get(target, &self.compile_info_expr_version_hex)
+        {
             return Ok(entry.info.clone());
         }
 
-        let direct_expr = format!(r#"mnemonic("Javac", {target})"#);
+        let direct_expr = AQUERY_DIRECT_TEMPLATE.replace("TARGET", target);
         let mut info = self.aquery_compile_info(Some(target), &direct_expr)?;
 
         if info.is_none() {
-            let deps_expr = format!(r#"mnemonic("Javac", deps({target}))"#);
+            let deps_expr = AQUERY_DEPS_TEMPLATE.replace("TARGET", target);
             // The direct query returned no `Javac` actions, so the `deps(...)` fallback is only
             // used to find a *similar* `Javac` invocation from a dependency. In that case we can
             // stop after the first `Javac` action, avoiding a full scan of the (potentially huge)
@@ -135,10 +161,11 @@ impl<R: CommandRunner> BazelWorkspace<R> {
 
         let info = info.with_context(|| format!("no Javac actions found for {target}"))?;
 
+        let files = self.compile_info_file_digests_for_target(target)?;
         self.cache.insert(CacheEntry {
             target: target.to_string(),
-            query_hash_hex: query_hash.to_hex().to_string(),
-            build_files: build_file_digests.clone(),
+            expr_version_hex: self.compile_info_expr_version_hex.clone(),
+            files,
             info: info.clone(),
         });
 
@@ -147,19 +174,24 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         Ok(info)
     }
 
-    pub fn invalidate_changed_build_files(&mut self, changed: &[PathBuf]) -> Result<()> {
+    pub fn invalidate_changed_files(&mut self, changed: &[PathBuf]) -> Result<()> {
         let changed = changed
             .iter()
             .map(|path| {
-                if let Ok(rel) = path.strip_prefix(&self.root) {
-                    rel.to_path_buf()
-                } else {
+                if path.is_absolute() {
                     path.clone()
+                } else {
+                    self.root.join(path)
                 }
             })
             .collect::<Vec<_>>();
-        self.cache.invalidate_changed_build_files(&changed);
+
+        self.cache.invalidate_changed_files(&changed);
         self.persist_cache()
+    }
+
+    pub fn invalidate_changed_build_files(&mut self, changed: &[PathBuf]) -> Result<()> {
+        self.invalidate_changed_files(changed)
     }
 
     fn persist_cache(&self) -> Result<()> {
@@ -171,47 +203,16 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         Ok(())
     }
 
-    fn build_file_digests_for_target(&self, target: &str) -> Result<Vec<BuildFileDigest>> {
-        let build_files = self.build_definition_inputs_for_target(target)?;
-        digest_workspace_files(&self.root, &build_files)
-    }
-
-    fn ensure_query_hash(&mut self) -> Result<Hash> {
-        if let Some(hash) = self.last_query_hash {
-            return Ok(hash);
-        }
-
-        let hash = self.runner.run_with_stdout(
-            &self.root,
-            "bazel",
-            &["query", r#"kind("java_.* rule", //...)"#],
-            |stdout| {
-                let mut hasher = blake3::Hasher::new();
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    let bytes = stdout.read_line(&mut line)?;
-                    if bytes == 0 {
-                        break;
-                    }
-                    hasher.update(line.as_bytes());
-                }
-                Ok(hasher.finalize())
-            },
-        )?;
-        self.last_query_hash = Some(hash);
-        Ok(hash)
-    }
-
     fn aquery_compile_info(
         &self,
         prefer_owner: Option<&str>,
         expr: &str,
     ) -> Result<Option<JavaCompileInfo>> {
+        let output_flag = format!("--output={AQUERY_OUTPUT}");
         self.runner.run_with_stdout_controlled(
             &self.root,
             "bazel",
-            &["aquery", "--output=textproto", expr],
+            &["aquery", &output_flag, expr],
             |stdout| {
                 let mut first_info: Option<JavaCompileInfo> = None;
                 for action in parse_aquery_textproto_streaming_javac_action_info(stdout) {
@@ -234,37 +235,31 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         )
     }
 
-    fn build_definition_inputs_for_target(&self, target: &str) -> Result<Vec<PathBuf>> {
+    fn compile_info_file_digests_for_target(&self, target: &str) -> Result<Vec<FileDigest>> {
         let mut inputs = BTreeSet::<PathBuf>::new();
 
-        inputs.extend(bazel_config_files(&self.root));
+        // Always include core workspace config files (even if absent) for sound invalidation.
+        for name in ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel", ".bazelrc"] {
+            inputs.insert(self.root.join(name));
+        }
 
-        // Bazel's top-level module/workspace files can influence the action graph, even if the
-        // target's BUILD file is unchanged (e.g., toolchains, module deps, repository rules).
-        for name in ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"] {
-            let path = self.root.join(name);
-            if path.is_file() {
-                inputs.insert(PathBuf::from(name));
-            }
+        // Additional Bazel config files that can influence query evaluation.
+        for rel in bazel_config_files(&self.root) {
+            inputs.insert(self.root.join(rel));
         }
 
         // Best-effort: include the target package's BUILD file even if query evaluation fails.
         if let Some(build_file) = build_file_for_label(&self.root, target)? {
-            if let Ok(rel) = build_file.strip_prefix(&self.root) {
-                inputs.insert(rel.to_path_buf());
-            } else {
-                inputs.insert(build_file);
-            }
+            inputs.insert(build_file);
         }
 
         // Collect all BUILD / BUILD.bazel files that can influence `deps(target)` evaluation.
-        let buildfiles_query = format!("buildfiles(deps({target}))");
-        if let Ok(paths) = self.runner.run_with_stdout(
+        let buildfiles_query = BUILDFILES_QUERY_TEMPLATE.replace("TARGET", target);
+        let _ = self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["query", &buildfiles_query, "--output=label"],
             |stdout| {
-                let mut paths = Vec::new();
                 let mut line = String::new();
                 loop {
                     line.clear();
@@ -272,31 +267,27 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     if bytes == 0 {
                         break;
                     }
-
                     let label = line.trim();
                     if label.is_empty() {
                         continue;
                     }
                     if let Some(path) = workspace_path_from_label(label) {
-                        paths.push(path);
+                        inputs.insert(self.root.join(path));
                     }
                 }
-                Ok(paths)
+                Ok(())
             },
-        ) {
-            inputs.extend(paths);
-        }
+        );
 
         // Additionally include Starlark `.bzl` files loaded by the target's build graph.
         //
         // Not all Bazel versions support `loadfiles(...)`; treat failures as best-effort.
-        let loadfiles_query = format!("loadfiles(deps({target}))");
-        if let Ok(paths) = self.runner.run_with_stdout(
+        let loadfiles_query = LOADFILES_QUERY_TEMPLATE.replace("TARGET", target);
+        let _ = self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["query", &loadfiles_query, "--output=label"],
             |stdout| {
-                let mut paths = Vec::new();
                 let mut line = String::new();
                 loop {
                     line.clear();
@@ -304,22 +295,24 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                     if bytes == 0 {
                         break;
                     }
-
                     let label = line.trim();
                     if label.is_empty() {
                         continue;
                     }
                     if let Some(path) = workspace_path_from_label(label) {
-                        paths.push(path);
+                        inputs.insert(self.root.join(path));
                     }
                 }
-                Ok(paths)
+                Ok(())
             },
-        ) {
-            inputs.extend(paths);
-        }
+        );
 
-        Ok(inputs.into_iter().collect())
+        let mut digests = Vec::with_capacity(inputs.len());
+        for path in inputs {
+            digests.push(digest_file_or_absent(&path)?);
+        }
+        digests.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(digests)
     }
 }
 
@@ -361,12 +354,7 @@ fn build_file_for_label(workspace_root: &Path, label: &str) -> Result<Option<Pat
 fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    for name in [
-        ".bazelrc",
-        ".bazelversion",
-        "MODULE.bazel.lock",
-        "bazelisk.rc",
-    ] {
+    for name in [".bazelrc", ".bazelversion", "MODULE.bazel.lock", "bazelisk.rc"] {
         let abs = workspace_root.join(name);
         if abs.is_file() {
             paths.push(PathBuf::from(name));
@@ -409,34 +397,3 @@ fn workspace_path_from_label(label: &str) -> Option<PathBuf> {
     }
 }
 
-fn digest_workspace_files(
-    workspace_root: &Path,
-    files: &[PathBuf],
-) -> Result<Vec<BuildFileDigest>> {
-    let mut digests = Vec::new();
-    for path in files {
-        let abs = if path.is_absolute() {
-            path.clone()
-        } else {
-            workspace_root.join(path)
-        };
-
-        let bytes = match fs::read(&abs) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                // Best-effort: if the file disappeared between discovery and digesting, ignore it
-                // rather than failing the query.
-                continue;
-            }
-            Err(err) => return Err(err.into()),
-        };
-
-        let hash = blake3::hash(&bytes);
-        digests.push(BuildFileDigest {
-            path: path.clone(),
-            digest_hex: hash.to_hex().to_string(),
-        });
-    }
-
-    Ok(digests)
-}

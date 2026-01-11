@@ -53,8 +53,9 @@ action {
         Some("bazel-out/k8-fastbuild/bin/java/com/example/_javac/hello/classes")
     );
     assert!(info.enable_preview);
-    assert_eq!(info.source.as_deref(), Some("17"));
-    assert_eq!(info.target.as_deref(), Some("17"));
+    // `--release` implies both language level (`--source`) and bytecode target (`--target`).
+    assert_eq!(info.source.as_deref(), Some("21"));
+    assert_eq!(info.target.as_deref(), Some("21"));
     assert_eq!(info.source_roots, vec!["java/com/example".to_string()]);
 }
 
@@ -109,11 +110,28 @@ action {
     );
     assert_eq!(
         info.source_roots,
-        vec![
-            r"C:\src".to_string(),
-            r"C:\src\com\example".to_string(),
-            r"D:\src".to_string(),
-        ]
+        vec![r"C:\src".to_string(), r"D:\src".to_string(),]
+    );
+}
+
+#[test]
+fn prefers_sourcepath_over_java_argument_parents() {
+    let output = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:hello"
+  arguments: "external/local_jdk/bin/javac"
+  arguments: "-sourcepath"
+  arguments: "src/main/java:src/test/java"
+  arguments: "generated/Gen.java"
+}
+"#;
+
+    let actions = parse_aquery_textproto(output);
+    let info = extract_java_compile_info(&actions[0]);
+    assert_eq!(
+        info.source_roots,
+        vec!["src/main/java".to_string(), "src/test/java".to_string()]
     );
 }
 
@@ -214,4 +232,22 @@ action {
 
     assert_eq!(action.owner.as_deref(), Some(target));
     assert!(action.arguments.iter().any(|arg| arg == "-Afoo={bar}"));
+}
+
+#[test]
+fn parses_realistic_aquery_fixture_with_nested_braces_and_escapes() {
+    let fixture = std::fs::read_to_string(format!(
+        "{}/testdata/aquery/javac_nested_braces.textproto",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let actions = parse_aquery_textproto(&fixture);
+    assert_eq!(actions.len(), 1);
+    let info = extract_java_compile_info(&actions[0]);
+    assert_eq!(info.release.as_deref(), Some("17"));
+    assert!(info.enable_preview);
+    assert_eq!(
+        info.source_roots,
+        vec!["java/com/example".to_string(), "java/com/example/generated".to_string()]
+    );
 }

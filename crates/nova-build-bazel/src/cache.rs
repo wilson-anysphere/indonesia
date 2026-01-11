@@ -14,7 +14,7 @@ use std::{
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BuildFileDigest {
+pub struct FileDigest {
     pub path: PathBuf,
     pub digest_hex: String,
 }
@@ -22,8 +22,13 @@ pub struct BuildFileDigest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub target: String,
-    pub query_hash_hex: String,
-    pub build_files: Vec<BuildFileDigest>,
+    /// Digest of the Bazel query/aquery expressions (and output format) used to compute `info`.
+    pub expr_version_hex: String,
+    /// Digests of all files that influence `info`.
+    ///
+    /// This includes workspace-level configuration (`WORKSPACE`, `MODULE.bazel`, `.bazelrc`, ...)
+    /// and the BUILD files for packages in the target's transitive dependency closure.
+    pub files: Vec<FileDigest>,
     pub info: JavaCompileInfo,
 }
 
@@ -33,17 +38,16 @@ pub struct BazelCache {
 }
 
 impl BazelCache {
-    pub fn get(
-        &self,
-        target: &str,
-        query_hash: Hash,
-        build_file_digests: &[BuildFileDigest],
-    ) -> Option<&CacheEntry> {
+    pub fn get(&self, target: &str, expr_version_hex: &str) -> Option<&CacheEntry> {
         let entry = self.entries.get(target)?;
-        if entry.query_hash_hex != hash_to_hex(query_hash) {
+        if entry.expr_version_hex != expr_version_hex {
             return None;
         }
-        if entry.build_files != build_file_digests {
+
+        // Recompute digests to validate the entry. This avoids invoking Bazel when cached entries
+        // are still valid.
+        let current_digests = digest_files(&entry.files).ok()?;
+        if entry.files != current_digests {
             return None;
         }
         Some(entry)
@@ -53,16 +57,20 @@ impl BazelCache {
         self.entries.insert(entry.target.clone(), entry);
     }
 
-    pub fn invalidate_changed_build_files(&mut self, changed: &[PathBuf]) {
+    pub fn invalidate_changed_files(&mut self, changed: &[PathBuf]) {
         if changed.is_empty() {
             return;
         }
         self.entries.retain(|_, entry| {
             !entry
-                .build_files
+                .files
                 .iter()
-                .any(|bf| changed.iter().any(|c| c == &bf.path))
+                .any(|f| changed.iter().any(|c| c == &f.path))
         });
+    }
+
+    pub fn invalidate_changed_build_files(&mut self, changed: &[PathBuf]) {
+        self.invalidate_changed_files(changed);
     }
 
     pub fn load(path: &Path) -> Result<Self> {
@@ -81,6 +89,7 @@ impl BazelCache {
             fs::create_dir_all(parent)?;
         }
         let data = serde_json::to_string_pretty(self)?;
+
         let parent = path
             .parent()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "path has no parent"))?;
@@ -125,17 +134,39 @@ impl BazelCache {
     }
 }
 
-pub fn digest_file(path: &Path) -> Result<BuildFileDigest> {
+pub fn digest_file(path: &Path) -> Result<FileDigest> {
     let bytes = fs::read(path)?;
     let hash = blake3::hash(&bytes);
-    Ok(BuildFileDigest {
+    Ok(FileDigest {
         path: path.to_path_buf(),
         digest_hex: hash_to_hex(hash),
     })
 }
 
+pub fn digest_file_or_absent(path: &Path) -> Result<FileDigest> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(FileDigest {
+            path: path.to_path_buf(),
+            digest_hex: hash_to_hex(blake3::hash(&bytes)),
+        }),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(FileDigest {
+            path: path.to_path_buf(),
+            digest_hex: "absent".to_string(),
+        }),
+        Err(err) => Err(err.into()),
+    }
+}
+
 fn hash_to_hex(hash: Hash) -> String {
     hash.to_hex().to_string()
+}
+
+fn digest_files(files: &[FileDigest]) -> Result<Vec<FileDigest>> {
+    let mut out = Vec::with_capacity(files.len());
+    for file in files {
+        out.push(digest_file_or_absent(&file.path)?);
+    }
+    Ok(out)
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {

@@ -5,7 +5,7 @@
 //! - workspace discovery (`WORKSPACE`, `WORKSPACE.bazel`, `MODULE.bazel`)
 //! - Java target discovery via `bazel query`
 //! - per-target classpath / module-path / source roots via `bazel aquery` (Javac actions)
-//! - caching keyed by query hash and Bazel build definition/config file digests
+//! - caching keyed by query/aquery expression version and Bazel build definition/config file digests
 
 mod aquery;
 mod cache;
@@ -22,7 +22,7 @@ pub use crate::{
         extract_java_compile_info, parse_aquery_textproto, parse_aquery_textproto_streaming,
         JavaCompileInfo, JavacAction,
     },
-    cache::{digest_file, BazelCache, BuildFileDigest, CacheEntry},
+    cache::{digest_file, digest_file_or_absent, BazelCache, CacheEntry, FileDigest},
     command::{CommandOutput, CommandRunner, DefaultCommandRunner},
     workspace::{
         bazel_workspace_root, is_bazel_workspace, BazelWorkspace, BazelWorkspaceDiscovery,

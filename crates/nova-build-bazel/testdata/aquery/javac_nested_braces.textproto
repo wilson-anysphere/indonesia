@@ -1,0 +1,27 @@
+action {
+  mnemonic: "Symlink"
+  arguments: "ignored"
+  nested {
+    key: "brace{inside}"
+    value: "quote\\\"inside"
+  }
+}
+
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:hello"
+  arguments: "external/local_jdk/bin/javac"
+  arguments: "--release"
+  arguments: "17"
+  arguments: "--enable-preview"
+  arguments: "-sourcepath"
+  arguments: "java/com/example:java/com/example/generated"
+  arguments: "-classpath"
+  arguments: "bazel-out/k8-fastbuild/bin/java/com/example/libhello.jar:external/junit/junit.jar"
+  arguments: "-J-Dfoo={bar}"
+  environment_variables {
+    key: "JAVA_TOOL_OPTIONS"
+    value: "-Dopt={\\\"nested\\\":true}"
+  }
+  arguments: "java/com/example/Hello.java"
+}
