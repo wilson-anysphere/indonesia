@@ -115,7 +115,7 @@ fn java_import_text_edits(document_text: &str, imports: &[String]) -> Vec<TextEd
             .or_insert_with(|| (edit.range.clone(), String::new()));
 
         let mut new_text = edit.new_text;
-        if entry.1.ends_with(line_ending) && new_text.starts_with(line_ending) {
+        while entry.1.ends_with(line_ending) && new_text.starts_with(line_ending) {
             new_text = new_text[line_ending.len()..].to_string();
         }
         entry.1.push_str(&new_text);
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(edits.len(), 1);
         assert_eq!(
             edits[0].range,
-            Range::new(Position::new(1, 0), Position::new(1, 0))
+            Range::new(Position::new(2, 0), Position::new(2, 0))
         );
         assert_eq!(edits[0].new_text, "import java.util.stream.Collectors;\n");
     }
@@ -233,7 +233,7 @@ mod tests {
         );
         assert_eq!(
             edits[0].new_text,
-            "\nimport java.util.List;\nimport java.util.Set;\n"
+            "\n\nimport java.util.List;\nimport java.util.Set;\n"
         );
     }
 }

@@ -2,8 +2,9 @@ use lsp_types::{Position, Range, TextEdit};
 
 /// Best-effort Java import insertion.
 ///
-/// Returns `None` when `path` is already imported exactly. Otherwise, returns a
-/// `TextEdit` inserting `import <path>;` at an appropriate location:
+/// Returns `None` when `path` is already imported (either exactly or via a wildcard).
+/// Otherwise, returns a `TextEdit` inserting the requested import at an appropriate
+/// location:
 ///
 /// - after the `package ...;` declaration, if present
 /// - after the last existing `import ...;`, if present
@@ -11,11 +12,11 @@ use lsp_types::{Position, Range, TextEdit};
 ///
 /// The inserted text preserves `\r\n` line endings when the source contains
 /// them.
+///
+/// Static imports are requested by prefixing the path with `static `, for example:
+/// `static java.util.Collections.emptyList`.
 pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
-    let path = path.trim();
-    if path.is_empty() {
-        return None;
-    }
+    let request = normalize_import_request(path)?;
 
     let line_ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
 
@@ -44,7 +45,9 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
         }
 
         if let Some(imported) = parse_import_path(line) {
-            if imported == path || wildcard_import_covers(imported, path) {
+            if imported == request.path.as_str()
+                || wildcard_import_covers(imported, request.path.as_str())
+            {
                 return None;
             }
 
@@ -63,21 +66,90 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
         offset = line_end;
     }
 
-    let (mut start_offset, mut end_offset) = last_import_insert_range
-        .or(package_insert_range)
-        .unwrap_or((0, 0));
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum InsertionAnchor {
+        Top,
+        Package,
+        Import,
+    }
+
+    let (anchor, mut start_offset, mut end_offset) = match last_import_insert_range {
+        Some((start, end)) => (InsertionAnchor::Import, start, end),
+        None => match package_insert_range {
+            Some((start, end)) => (InsertionAnchor::Package, start, end),
+            None => (InsertionAnchor::Top, 0, 0),
+        },
+    };
+
     start_offset = start_offset.min(text.len());
     end_offset = end_offset.min(text.len()).max(start_offset);
 
+    // If we're inserting relative to the `package` declaration, ensure imports land *after*
+    // an empty line. If the file already has a blank line after `package ...;`, skip it.
+    // Otherwise insert one.
+    let mut needs_blank_line = anchor == InsertionAnchor::Package;
+    if needs_blank_line && start_offset == end_offset && start_offset < text.len() {
+        if let Some(next) = skip_blank_line(text, start_offset) {
+            start_offset = next;
+            end_offset = next;
+            needs_blank_line = false;
+        }
+    }
+
     let needs_prefix = start_offset > 0 && text.as_bytes()[start_offset - 1] != b'\n';
-    let prefix = if needs_prefix { line_ending } else { "" };
-    let new_text = format!("{prefix}import {path};{line_ending}");
+    let mut new_text = String::new();
+    if needs_prefix {
+        new_text.push_str(line_ending);
+    }
+    if needs_blank_line {
+        new_text.push_str(line_ending);
+    }
+    new_text.push_str("import ");
+    if request.is_static {
+        new_text.push_str("static ");
+    }
+    new_text.push_str(&request.path);
+    new_text.push(';');
+    new_text.push_str(line_ending);
 
     let start_pos = offset_to_position_utf16(text, start_offset);
     let end_pos = offset_to_position_utf16(text, end_offset);
     Some(TextEdit {
         range: Range::new(start_pos, end_pos),
         new_text,
+    })
+}
+
+#[derive(Debug)]
+struct ImportRequest {
+    is_static: bool,
+    path: String,
+}
+
+fn normalize_import_request(raw: &str) -> Option<ImportRequest> {
+    let mut path = raw.trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    if let Some(stripped) = path.strip_prefix("import ") {
+        path = stripped.trim_start();
+    }
+
+    let mut is_static = false;
+    if let Some(stripped) = path.strip_prefix("static ") {
+        is_static = true;
+        path = stripped.trim_start();
+    }
+
+    let path = path.trim().trim_end_matches(';').trim();
+    if path.is_empty() {
+        return None;
+    }
+
+    Some(ImportRequest {
+        is_static,
+        path: path.to_string(),
     })
 }
 
@@ -177,6 +249,26 @@ fn parse_import_path(line: &str) -> Option<&str> {
     Some(rest[..semi].trim())
 }
 
+fn skip_blank_line(text: &str, offset: usize) -> Option<usize> {
+    if offset >= text.len() {
+        return None;
+    }
+
+    let slice = &text[offset..];
+    let newline_pos = slice.find('\n').unwrap_or(slice.len());
+    let mut line = &slice[..newline_pos];
+    line = line.strip_suffix('\r').unwrap_or(line);
+    if !line.trim().is_empty() {
+        return None;
+    }
+
+    if newline_pos >= slice.len() {
+        Some(text.len())
+    } else {
+        Some(offset + newline_pos + 1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,8 +287,8 @@ mod tests {
     fn inserts_after_package_when_no_imports() {
         let text = "package com.example;\n\nclass Foo {}\n";
         let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
-        assert_eq!(edit.range.start, Position::new(1, 0));
-        assert_eq!(edit.range.end, Position::new(1, 0));
+        assert_eq!(edit.range.start, Position::new(2, 0));
+        assert_eq!(edit.range.end, Position::new(2, 0));
         assert_eq!(edit.new_text, "import java.util.List;\n");
     }
 
@@ -204,8 +296,8 @@ mod tests {
     fn preserves_crlf_line_endings() {
         let text = "package com.example;\r\n\r\nclass Foo {}\r\n";
         let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
-        assert_eq!(edit.range.start, Position::new(1, 0));
-        assert_eq!(edit.range.end, Position::new(1, 0));
+        assert_eq!(edit.range.start, Position::new(2, 0));
+        assert_eq!(edit.range.end, Position::new(2, 0));
         assert_eq!(edit.new_text, "import java.util.List;\r\n");
     }
 
@@ -218,7 +310,7 @@ mod tests {
             Position::new(0, "package com.example;".encode_utf16().count() as u32)
         );
         assert_eq!(edit.range.end, edit.range.start);
-        assert_eq!(edit.new_text, "\nimport java.util.List;\n");
+        assert_eq!(edit.new_text, "\n\nimport java.util.List;\n");
     }
 
     #[test]
@@ -233,6 +325,15 @@ mod tests {
             edit.range.end,
             Position::new(0, "package com.example; ".encode_utf16().count() as u32)
         );
+        assert_eq!(edit.new_text, "\n\nimport java.util.List;\n");
+    }
+
+    #[test]
+    fn inserts_blank_line_when_package_has_no_separating_empty_line() {
+        let text = "package com.example;\nclass Foo {}\n";
+        let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
+        assert_eq!(edit.range.start, Position::new(1, 0));
+        assert_eq!(edit.range.end, Position::new(1, 0));
         assert_eq!(edit.new_text, "\nimport java.util.List;\n");
     }
 
@@ -277,6 +378,28 @@ mod tests {
         let text = "package com.example;\n\nimport static java.util.stream.Collectors.toList;\n\nclass Foo {}\n";
         assert_eq!(
             java_import_text_edit(text, "java.util.stream.Collectors.toList"),
+            None
+        );
+    }
+
+    #[test]
+    fn inserts_static_import_when_requested() {
+        let text = "package com.example;\n\nclass Foo {}\n";
+        let edit = java_import_text_edit(text, "static java.util.Collections.emptyList")
+            .expect("expected edit");
+        assert_eq!(edit.range.start, Position::new(2, 0));
+        assert_eq!(
+            edit.new_text,
+            "import static java.util.Collections.emptyList;\n"
+        );
+    }
+
+    #[test]
+    fn returns_none_when_static_import_already_present_exactly() {
+        let text =
+            "package com.example;\n\nimport static java.util.Collections.emptyList;\n\nclass Foo {}\n";
+        assert_eq!(
+            java_import_text_edit(text, "static java.util.Collections.emptyList"),
             None
         );
     }
