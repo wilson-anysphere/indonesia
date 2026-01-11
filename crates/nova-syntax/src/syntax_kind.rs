@@ -251,6 +251,16 @@ pub enum SyntaxKind {
     LambdaExpression,
     CastExpression,
 
+    // --- Declarations / generics / annotation defaults ---
+    ExtendsClause,
+    ImplementsClause,
+    PermitsClause,
+    TypeParameters,
+    TypeParameter,
+    AnnotationElementDefault,
+    AnnotationElementValue,
+    ArrayInitializer,
+
     __Last,
 }
 

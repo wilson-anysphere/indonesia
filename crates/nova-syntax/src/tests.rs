@@ -136,6 +136,101 @@ fn parse_annotation_type_declaration() {
 }
 
 #[test]
+fn parse_interface_extends_list() {
+    let input = "interface I extends A, B {}";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::InterfaceDeclaration));
+    assert!(kinds.contains(&SyntaxKind::ExtendsClause));
+}
+
+#[test]
+fn parser_recovers_after_interface_implements_header() {
+    let input = "interface I implements A {} class Foo {}";
+    let result = parse_java(input);
+    assert!(!result.errors.is_empty(), "expected at least one error");
+
+    let type_count = result
+        .syntax()
+        .children()
+        .filter(|n| matches!(n.kind(), SyntaxKind::InterfaceDeclaration | SyntaxKind::ClassDeclaration))
+        .count();
+    assert_eq!(type_count, 2);
+}
+
+#[test]
+fn parse_generic_method_and_constructor() {
+    let input = "class Foo { <T> T id(T t) { return t; } <T> Foo(T t) { } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::TypeParameters));
+    assert!(kinds.contains(&SyntaxKind::MethodDeclaration));
+    assert!(kinds.contains(&SyntaxKind::ConstructorDeclaration));
+}
+
+#[test]
+fn parse_varargs_parameter() {
+    let input = "class Foo { void m(String... args) {} }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let ellipsis_count = result
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind() == SyntaxKind::Ellipsis)
+        .count();
+    assert_eq!(ellipsis_count, 1);
+}
+
+#[test]
+fn parse_annotation_element_default_value() {
+    let input = "@interface A { int value() default 1; }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::AnnotationElementDefault));
+}
+
+#[test]
+fn parse_permits_clause() {
+    let input = "sealed class C permits A, B {} sealed interface I permits A {}";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let permits_count = result
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::PermitsClause)
+        .count();
+    assert_eq!(permits_count, 2);
+}
+
+#[test]
+fn parser_recovers_after_bad_annotation_default() {
+    let input = "@interface A { int value() default ; int other(); } class Foo {}";
+    let result = parse_java(input);
+    assert!(!result.errors.is_empty(), "expected at least one error");
+
+    let type_count = result
+        .syntax()
+        .children()
+        .filter(|n| {
+            matches!(
+                n.kind(),
+                SyntaxKind::AnnotationTypeDeclaration | SyntaxKind::ClassDeclaration
+            )
+        })
+        .count();
+    assert_eq!(type_count, 2);
+}
+
+#[test]
 fn parse_try_with_resources_and_multi_catch() {
     let input = r#"
 class Foo {

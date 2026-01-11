@@ -124,22 +124,16 @@ impl<'a> Parser<'a> {
 
     fn parse_type_declaration_inner(&mut self, checkpoint: rowan::Checkpoint) {
         match self.current() {
-            SyntaxKind::At if self.nth(1) == Some(SyntaxKind::InterfaceKw) => {
-                self.parse_annotation_type_decl(checkpoint)
-            }
-            SyntaxKind::ClassKw => {
-                self.parse_class_decl(checkpoint, SyntaxKind::ClassDeclaration, SyntaxKind::ClassBody)
-            }
-            SyntaxKind::InterfaceKw => self.parse_class_decl(
-                checkpoint,
-                SyntaxKind::InterfaceDeclaration,
-                SyntaxKind::InterfaceBody,
-            ),
-            SyntaxKind::EnumKw => self.parse_enum_decl(checkpoint),
-            SyntaxKind::RecordKw => self.parse_record_decl(checkpoint),
-            SyntaxKind::Semicolon => {
-                self.builder
-                    .start_node_at(checkpoint, SyntaxKind::EmptyDeclaration.into());
+             SyntaxKind::At if self.nth(1) == Some(SyntaxKind::InterfaceKw) => {
+                 self.parse_annotation_type_decl(checkpoint)
+             }
+            SyntaxKind::ClassKw => self.parse_class_decl(checkpoint),
+            SyntaxKind::InterfaceKw => self.parse_interface_decl(checkpoint),
+             SyntaxKind::EnumKw => self.parse_enum_decl(checkpoint),
+             SyntaxKind::RecordKw => self.parse_record_decl(checkpoint),
+             SyntaxKind::Semicolon => {
+                 self.builder
+                     .start_node_at(checkpoint, SyntaxKind::EmptyDeclaration.into());
                 self.bump();
                 self.builder.finish_node();
             }
@@ -160,41 +154,175 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_annotation_type_decl(&mut self, checkpoint: rowan::Checkpoint) {
+     fn parse_annotation_type_decl(&mut self, checkpoint: rowan::Checkpoint) {
+         self.builder
+             .start_node_at(checkpoint, SyntaxKind::AnnotationTypeDeclaration.into());
+         self.expect(SyntaxKind::At, "expected `@`");
+         self.expect(SyntaxKind::InterfaceKw, "expected `interface` after `@`");
+         self.expect_ident_like("expected annotation type name");
+         self.parse_class_body(SyntaxKind::AnnotationBody);
+         self.builder.finish_node();
+     }
+
+    fn parse_class_decl(&mut self, checkpoint: rowan::Checkpoint) {
         self.builder
-            .start_node_at(checkpoint, SyntaxKind::AnnotationTypeDeclaration.into());
-        self.expect(SyntaxKind::At, "expected `@`");
-        self.expect(SyntaxKind::InterfaceKw, "expected `interface` after `@`");
-        self.expect_ident_like("expected annotation type name");
-        self.parse_class_body(SyntaxKind::AnnotationBody);
+            .start_node_at(checkpoint, SyntaxKind::ClassDeclaration.into());
+        // `class` keyword already in current()
+        self.bump();
+        self.expect_ident_like("expected name");
+        self.parse_type_parameters_opt();
+
+        if self.at(SyntaxKind::ExtendsKw) {
+            self.parse_extends_clause(false);
+        }
+        if self.at(SyntaxKind::ImplementsKw) {
+            self.parse_implements_clause();
+        }
+        self.parse_permits_clause_opt();
+
+        self.parse_class_body(SyntaxKind::ClassBody);
         self.builder.finish_node();
     }
 
-    fn parse_class_decl(
-        &mut self,
-        checkpoint: rowan::Checkpoint,
-        decl_kind: SyntaxKind,
-        body_kind: SyntaxKind,
-    ) {
-        self.builder.start_node_at(checkpoint, decl_kind.into());
-        // `class`/`interface` keyword already in current()
+    fn parse_interface_decl(&mut self, checkpoint: rowan::Checkpoint) {
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::InterfaceDeclaration.into());
+        // `interface` keyword already in current()
         self.bump();
         self.expect_ident_like("expected name");
+        self.parse_type_parameters_opt();
 
         if self.at(SyntaxKind::ExtendsKw) {
-            self.bump();
-            self.parse_type();
-        }
-        if self.at(SyntaxKind::ImplementsKw) {
-            self.bump();
-            self.parse_type();
-            while self.at(SyntaxKind::Comma) {
-                self.bump();
-                self.parse_type();
-            }
+            self.parse_extends_clause(true);
         }
 
-        self.parse_class_body(body_kind);
+        if self.at(SyntaxKind::ImplementsKw) {
+            // Interfaces have `extends`, not `implements`.
+            self.error_here("interfaces cannot have an `implements` clause");
+            self.parse_implements_clause();
+        }
+
+        self.parse_permits_clause_opt();
+
+        self.parse_class_body(SyntaxKind::InterfaceBody);
+        self.builder.finish_node();
+    }
+
+    fn parse_type_parameters_opt(&mut self) {
+        if !self.at(SyntaxKind::Less) {
+            return;
+        }
+        self.parse_type_parameters();
+    }
+
+    fn parse_type_parameters(&mut self) {
+        self.builder.start_node(SyntaxKind::TypeParameters.into());
+        self.expect(SyntaxKind::Less, "expected `<`");
+        while !matches!(
+            self.current(),
+            SyntaxKind::Greater | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift | SyntaxKind::Eof
+        ) {
+            self.builder.start_node(SyntaxKind::TypeParameter.into());
+
+            // Type parameter modifiers (annotations) aren't modeled yet; keep it permissive.
+            while self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw) {
+                self.parse_annotation();
+            }
+
+            self.expect_ident_like("expected type parameter name");
+            if self.at(SyntaxKind::ExtendsKw) {
+                self.bump();
+                if self.at_type_start() {
+                    self.parse_type();
+                } else {
+                    self.error_here("expected type bound");
+                }
+                while self.at(SyntaxKind::Amp) {
+                    self.bump();
+                    if self.at_type_start() {
+                        self.parse_type();
+                    } else {
+                        self.error_here("expected type bound");
+                        break;
+                    }
+                }
+            }
+
+            self.builder.finish_node(); // TypeParameter
+
+            if self.at(SyntaxKind::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect_gt();
+        self.builder.finish_node(); // TypeParameters
+    }
+
+    fn parse_extends_clause(&mut self, allow_multiple: bool) {
+        self.builder.start_node(SyntaxKind::ExtendsClause.into());
+        self.expect(SyntaxKind::ExtendsKw, "expected `extends`");
+        if self.at_type_start() {
+            self.parse_type();
+        } else {
+            self.error_here("expected type after `extends`");
+        }
+        if self.at(SyntaxKind::Comma) && !allow_multiple {
+            self.error_here("classes can only extend a single type");
+        }
+        while self.at(SyntaxKind::Comma) {
+            self.bump();
+            if self.at_type_start() {
+                self.parse_type();
+            } else {
+                self.error_here("expected type after `,`");
+                break;
+            }
+        }
+        self.builder.finish_node();
+    }
+
+    fn parse_implements_clause(&mut self) {
+        self.builder.start_node(SyntaxKind::ImplementsClause.into());
+        self.expect(SyntaxKind::ImplementsKw, "expected `implements`");
+        if self.at_type_start() {
+            self.parse_type();
+        } else {
+            self.error_here("expected type after `implements`");
+        }
+        while self.at(SyntaxKind::Comma) {
+            self.bump();
+            if self.at_type_start() {
+                self.parse_type();
+            } else {
+                self.error_here("expected type after `,`");
+                break;
+            }
+        }
+        self.builder.finish_node();
+    }
+
+    fn parse_permits_clause_opt(&mut self) {
+        if !self.at(SyntaxKind::PermitsKw) {
+            return;
+        }
+        self.builder.start_node(SyntaxKind::PermitsClause.into());
+        self.bump();
+        if self.at_type_start() {
+            self.parse_type();
+        } else {
+            self.error_here("expected type after `permits`");
+        }
+        while self.at(SyntaxKind::Comma) {
+            self.bump();
+            if self.at_type_start() {
+                self.parse_type();
+            } else {
+                self.error_here("expected type after `,`");
+                break;
+            }
+        }
         self.builder.finish_node();
     }
 
@@ -252,6 +380,7 @@ impl<'a> Parser<'a> {
             .start_node_at(checkpoint, SyntaxKind::RecordDeclaration.into());
         self.expect(SyntaxKind::RecordKw, "expected `record`");
         self.expect_ident_like("expected record name");
+        self.parse_type_parameters_opt();
         // Header.
         if self.at(SyntaxKind::LParen) {
             self.parse_parameter_list();
@@ -266,6 +395,7 @@ impl<'a> Parser<'a> {
                 self.parse_type();
             }
         }
+        self.parse_permits_clause_opt();
         self.parse_class_body(SyntaxKind::RecordBody);
         self.builder.finish_node();
     }
@@ -283,6 +413,7 @@ impl<'a> Parser<'a> {
     fn parse_class_member(&mut self) {
         let checkpoint = self.builder.checkpoint();
         self.parse_modifiers();
+        self.parse_type_parameters_opt();
 
         // Initializer blocks.
         if self.at(SyntaxKind::LBrace) {
@@ -332,7 +463,10 @@ impl<'a> Parser<'a> {
             self.expect_ident_like("expected method name");
             self.parse_parameter_list();
             self.parse_throws_opt();
-            if self.at(SyntaxKind::LBrace) {
+            if self.at(SyntaxKind::DefaultKw) {
+                self.parse_annotation_element_default();
+                self.expect(SyntaxKind::Semicolon, "expected `;` after declaration");
+            } else if self.at(SyntaxKind::LBrace) {
                 self.parse_block();
             } else {
                 self.expect(SyntaxKind::Semicolon, "expected `;` or method body");
@@ -359,7 +493,10 @@ impl<'a> Parser<'a> {
                 self.bump(); // name
                 self.parse_parameter_list();
                 self.parse_throws_opt();
-                if self.at(SyntaxKind::LBrace) {
+                if self.at(SyntaxKind::DefaultKw) {
+                    self.parse_annotation_element_default();
+                    self.expect(SyntaxKind::Semicolon, "expected `;` after declaration");
+                } else if self.at(SyntaxKind::LBrace) {
                     self.parse_block();
                 } else {
                     self.expect(SyntaxKind::Semicolon, "expected `;` or method body");
@@ -465,7 +602,15 @@ impl<'a> Parser<'a> {
             } else {
                 self.error_here("expected parameter type");
             }
+            if self.at(SyntaxKind::Ellipsis) {
+                self.bump();
+            }
             self.expect_ident_like("expected parameter name");
+            // Support Java's `var x[]` / `String... args[]` style dims.
+            while self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
+                self.bump();
+                self.bump();
+            }
             self.builder.finish_node();
 
             if self.at(SyntaxKind::Comma) {
@@ -490,6 +635,70 @@ impl<'a> Parser<'a> {
             break;
         }
         self.expect(SyntaxKind::RParen, "expected `)`");
+        self.builder.finish_node();
+    }
+
+    fn parse_annotation_element_default(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::AnnotationElementDefault.into());
+        self.expect(SyntaxKind::DefaultKw, "expected `default`");
+        self.parse_annotation_element_value();
+
+        // If the default value is malformed, skip junk until the terminating `;`
+        // to avoid cascading errors.
+        if !self.at(SyntaxKind::Semicolon) {
+            self.recover_to(&[SyntaxKind::Semicolon, SyntaxKind::RBrace, SyntaxKind::Eof]);
+        }
+
+        self.builder.finish_node();
+    }
+
+    fn parse_annotation_element_value(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::AnnotationElementValue.into());
+        self.eat_trivia();
+        match self.current() {
+            SyntaxKind::At if self.nth(1) != Some(SyntaxKind::InterfaceKw) => {
+                self.parse_annotation();
+            }
+            SyntaxKind::LBrace => {
+                self.parse_array_initializer();
+            }
+            kind if can_start_expression(kind) => {
+                self.parse_expression(0);
+            }
+            _ => {
+                self.builder.start_node(SyntaxKind::Error.into());
+                self.error_here("expected annotation element value");
+                // Don't consume obvious terminators: let the outer parser handle them.
+                if !matches!(
+                    self.current(),
+                    SyntaxKind::Semicolon
+                        | SyntaxKind::Comma
+                        | SyntaxKind::RBrace
+                        | SyntaxKind::RParen
+                        | SyntaxKind::Eof
+                ) {
+                    self.bump_any();
+                }
+                self.builder.finish_node();
+            }
+        }
+        self.builder.finish_node();
+    }
+
+    fn parse_array_initializer(&mut self) {
+        self.builder.start_node(SyntaxKind::ArrayInitializer.into());
+        self.expect(SyntaxKind::LBrace, "expected `{`");
+        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            self.parse_annotation_element_value();
+            if self.at(SyntaxKind::Comma) {
+                self.bump();
+                continue;
+            }
+            break;
+        }
+        self.expect(SyntaxKind::RBrace, "expected `}`");
         self.builder.finish_node();
     }
 
