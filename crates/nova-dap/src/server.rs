@@ -40,7 +40,7 @@ pub struct DapServer<C: JdwpClient> {
     next_seq: u64,
     db: InMemoryFileStore,
     session: DebugSession<C>,
-    breakpoints: HashMap<PathBuf, Vec<u32>>,
+    breakpoints: HashMap<PathBuf, Vec<InstalledBreakpoint>>,
     thread_ids: HashMap<i64, u64>,
     next_thread_id: i64,
     frame_ids: HashMap<i64, u64>,
@@ -53,6 +53,13 @@ pub struct DapServer<C: JdwpClient> {
 #[derive(Debug, Clone)]
 struct FrameLocation {
     source_name: Option<String>,
+    line: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstalledBreakpoint {
+    class: String,
+    method: Option<String>,
     line: u32,
 }
 
@@ -217,6 +224,12 @@ impl<C: JdwpClient> DapServer<C> {
             "supportsConfigurationDoneRequest": true,
             "supportsEvaluateForHovers": true,
             "supportsStepInTargetsRequest": true,
+            // The legacy adapter only supports simple line breakpoints. Conditional
+            // breakpoints, hit conditions, and logpoints are implemented in the
+            // default wire-level adapter.
+            "supportsConditionalBreakpoints": false,
+            "supportsHitConditionalBreakpoints": false,
+            "supportsLogPoints": false,
             "supportsStepBack": false,
             "supportsDataBreakpoints": false,
             "supportsTerminateRequest": true,
@@ -285,6 +298,18 @@ impl<C: JdwpClient> DapServer<C> {
         #[serde(rename_all = "camelCase")]
         struct SourceBreakpoint {
             line: u32,
+            #[serde(default)]
+            condition: Option<String>,
+            #[serde(default)]
+            hit_condition: Option<String>,
+            #[serde(default)]
+            log_message: Option<String>,
+        }
+
+        impl SourceBreakpoint {
+            fn uses_unsupported_features(&self) -> bool {
+                self.condition.is_some() || self.hit_condition.is_some() || self.log_message.is_some()
+            }
         }
 
         #[derive(Debug, Deserialize)]
@@ -308,27 +333,53 @@ impl<C: JdwpClient> DapServer<C> {
 
         let path_buf = PathBuf::from(&path);
 
+        // `setBreakpoints` is frequently re-sent by clients (e.g. on focus
+        // changes). The legacy adapter cannot clear JDWP breakpoints, so we track
+        // which ones we've already installed and avoid sending duplicates.
+        let mut installed_breakpoints = self.breakpoints.remove(&path_buf).unwrap_or_default();
+
         // Load file text. DAP clients typically provide absolute paths.
         let text = std::fs::read_to_string(&path_buf).unwrap_or_default();
         let file_id = self.db.file_id_for_path(&path_buf);
         self.db.set_file_text(file_id, text);
 
-        let requested: Vec<u32> = args.breakpoints.iter().map(|bp| bp.line).collect();
-        let resolved = map_line_breakpoints(&self.db, file_id, &requested);
+        let requested_lines: Vec<u32> = args.breakpoints.iter().map(|bp| bp.line).collect();
+
+        let resolved = map_line_breakpoints(&self.db, file_id, &requested_lines);
 
         let mut dap_breakpoints = Vec::new();
-        for bp in resolved {
+        for (source_bp, bp) in args.breakpoints.iter().zip(resolved) {
             let mut verified = bp.verified;
             let mut message: Option<String> = None;
-            if verified {
+            if source_bp.uses_unsupported_features() {
+                // We deliberately mark these breakpoints as unverified and do not
+                // install a "best effort" unconditional breakpoint. Ignoring the
+                // condition/hit condition/log message would change the user's
+                // intended semantics (especially for logpoints, which would
+                // incorrectly stop execution).
+                verified = false;
+                message = Some(
+                    "legacy adapter does not support conditional breakpoints/logpoints/hit conditions (run default wire adapter)"
+                        .to_string(),
+                );
+            } else if verified {
                 if let Some(class) = &bp.enclosing_class {
-                    if let Err(err) = self.session.jdwp_mut().set_line_breakpoint(
-                        class,
-                        bp.enclosing_method.as_deref(),
-                        bp.resolved_line,
-                    ) {
-                        verified = false;
-                        message = Some(err.to_string());
+                    let key = InstalledBreakpoint {
+                        class: class.clone(),
+                        method: bp.enclosing_method.clone(),
+                        line: bp.resolved_line,
+                    };
+                    if !installed_breakpoints.contains(&key) {
+                        if let Err(err) = self.session.jdwp_mut().set_line_breakpoint(
+                            class,
+                            bp.enclosing_method.as_deref(),
+                            bp.resolved_line,
+                        ) {
+                            verified = false;
+                            message = Some(err.to_string());
+                        } else {
+                            installed_breakpoints.push(key);
+                        }
                     }
                 } else {
                     verified = false;
@@ -345,7 +396,7 @@ impl<C: JdwpClient> DapServer<C> {
             dap_breakpoints.push(serde_json::Value::Object(breakpoint));
         }
 
-        self.breakpoints.insert(path_buf, requested);
+        self.breakpoints.insert(path_buf, installed_breakpoints);
 
         self.simple_ok(request, Some(json!({ "breakpoints": dap_breakpoints })))
     }
@@ -1221,5 +1272,46 @@ public class Main {
         assert_eq!(outgoing.messages.len(), 2);
         assert_eq!(outgoing.messages[0]["type"], "response");
         assert_eq!(event_name(&outgoing.messages[1]).unwrap(), "continued");
+    }
+
+    #[test]
+    fn set_breakpoints_includes_message_for_unsupported_condition() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+        let file_path = root.join("Main.java");
+        std::fs::write(
+            &file_path,
+            r#"public class Main {
+  void m() {
+    int x = 0;
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut server = DapServer::new(MockJdwp::default());
+
+        let set_bps = Request {
+            seq: 1,
+            type_: "request".into(),
+            command: "setBreakpoints".into(),
+            arguments: Some(json!({
+                "source": { "path": file_path.to_string_lossy() },
+                "breakpoints": [
+                    { "line": 3, "condition": "x == 0" },
+                ],
+            })),
+        };
+        let outgoing = server.handle_request(&set_bps).unwrap();
+        let breakpoints = response_body(&outgoing.messages[0]).unwrap()["breakpoints"]
+            .as_array()
+            .unwrap();
+        assert_eq!(breakpoints.len(), 1);
+        assert_eq!(breakpoints[0]["verified"], false);
+
+        let message = breakpoints[0]["message"].as_str().unwrap();
+        assert!(message.contains("legacy adapter"));
+        assert!(message.contains("conditional"));
     }
 }
