@@ -1595,6 +1595,22 @@ async fn worker_supervisor_loop(
                             status = ?status,
                             "worker exited; restarting"
                         );
+                        let should_clear_worker = {
+                            let mut guard = state.shards.lock().await;
+                            guard.get_mut(&shard_id).is_some_and(|shard| {
+                                let is_current = shard
+                                    .worker
+                                    .as_ref()
+                                    .is_some_and(|w| w.worker_id == worker_id);
+                                if is_current {
+                                    shard.worker = None;
+                                }
+                                is_current
+                            })
+                        };
+                        if should_clear_worker {
+                            state.notify.notify_waiters();
+                        }
                         (stable, Some(status))
                     }
                 }
