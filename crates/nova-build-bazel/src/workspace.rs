@@ -1,5 +1,5 @@
 use crate::{
-    aquery::{extract_java_compile_info, parse_aquery_textproto_streaming, JavaCompileInfo},
+    aquery::{parse_aquery_textproto_streaming_javac_action_info, JavaCompileInfo},
     cache::{BazelCache, BuildFileDigest, CacheEntry},
     command::CommandRunner,
 };
@@ -214,15 +214,15 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             &["aquery", "--output=textproto", expr],
             |stdout| {
                 let mut first_info: Option<JavaCompileInfo> = None;
-                for action in parse_aquery_textproto_streaming(stdout) {
+                for action in parse_aquery_textproto_streaming_javac_action_info(stdout) {
                     if let Some(owner) = prefer_owner {
                         if action.owner.as_deref() == Some(owner) {
-                            return Ok(ControlFlow::Break(Some(extract_java_compile_info(&action))));
+                            return Ok(ControlFlow::Break(Some(action.compile_info)));
                         }
                     }
 
                     if first_info.is_none() {
-                        first_info = Some(extract_java_compile_info(&action));
+                        first_info = Some(action.compile_info);
                         if prefer_owner.is_none() {
                             return Ok(ControlFlow::Break(first_info));
                         }

@@ -37,6 +37,12 @@ pub struct JavaCompileInfo {
     pub enable_preview: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct JavacActionInfo {
+    pub owner: Option<String>,
+    pub compile_info: JavaCompileInfo,
+}
+
 /// Parse a textproto `aquery` output and return all `Javac` actions.
 pub fn parse_aquery_textproto(output: &str) -> Vec<JavacAction> {
     parse_aquery_textproto_streaming(std::io::BufReader::new(std::io::Cursor::new(
@@ -54,6 +60,12 @@ pub fn parse_aquery_textproto_streaming<R: BufRead>(
     reader: R,
 ) -> impl Iterator<Item = JavacAction> {
     AqueryTextprotoStreamingParser::new(reader)
+}
+
+pub(crate) fn parse_aquery_textproto_streaming_javac_action_info<R: BufRead>(
+    reader: R,
+) -> impl Iterator<Item = JavacActionInfo> {
+    AqueryTextprotoStreamingJavacInfoParser::new(reader)
 }
 
 struct AqueryTextprotoStreamingParser<R: BufRead> {
@@ -155,6 +167,204 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
                 self.mnemonic = None;
                 self.owner = None;
                 self.arguments.clear();
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingJavacArg {
+    Classpath,
+    ModulePath,
+    Release,
+    Source,
+    Target,
+    OutputDir,
+    SourcePath,
+}
+
+struct AqueryTextprotoStreamingJavacInfoParser<R: BufRead> {
+    reader: R,
+    line_buf: String,
+    in_action: bool,
+    depth: i32,
+    mnemonic: Option<String>,
+    owner: Option<String>,
+    info: JavaCompileInfo,
+    source_roots: BTreeSet<String>,
+    pending: Option<PendingJavacArg>,
+    done: bool,
+}
+
+impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            line_buf: String::new(),
+            in_action: false,
+            depth: 0,
+            mnemonic: None,
+            owner: None,
+            info: JavaCompileInfo::default(),
+            source_roots: BTreeSet::new(),
+            pending: None,
+            done: false,
+        }
+    }
+
+    fn apply_argument(&mut self, arg: &str) {
+        if let Some(pending) = self.pending.take() {
+            match pending {
+                PendingJavacArg::Classpath => {
+                    self.info.classpath = split_path_list(arg);
+                }
+                PendingJavacArg::ModulePath => {
+                    self.info.module_path = split_path_list(arg);
+                }
+                PendingJavacArg::Release => {
+                    self.info.release = Some(arg.to_string());
+                }
+                PendingJavacArg::Source => {
+                    self.info.source = Some(arg.to_string());
+                }
+                PendingJavacArg::Target => {
+                    self.info.target = Some(arg.to_string());
+                }
+                PendingJavacArg::OutputDir => {
+                    self.info.output_dir = Some(arg.to_string());
+                }
+                PendingJavacArg::SourcePath => {
+                    for root in split_path_list(arg) {
+                        if !root.is_empty() {
+                            self.source_roots.insert(root);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
+        match arg {
+            "-classpath" | "--class-path" => self.pending = Some(PendingJavacArg::Classpath),
+            "--module-path" => self.pending = Some(PendingJavacArg::ModulePath),
+            "--release" => self.pending = Some(PendingJavacArg::Release),
+            "--source" | "-source" => self.pending = Some(PendingJavacArg::Source),
+            "--target" | "-target" => self.pending = Some(PendingJavacArg::Target),
+            "-d" => self.pending = Some(PendingJavacArg::OutputDir),
+            "--enable-preview" => {
+                self.info.enable_preview = true;
+            }
+            "-sourcepath" | "--source-path" => self.pending = Some(PendingJavacArg::SourcePath),
+            other => {
+                if let Some(release) = other.strip_prefix("--release=") {
+                    self.info.release = Some(release.to_string());
+                    return;
+                }
+
+                if let Some(output_dir) = other.strip_prefix("-d=") {
+                    self.info.output_dir = Some(output_dir.to_string());
+                    return;
+                }
+
+                if other.ends_with(".java") {
+                    if let Some(parent) = other.rsplit_once('/') {
+                        self.source_roots.insert(parent.0.to_string());
+                    } else if let Some(parent) = other.rsplit_once('\\') {
+                        self.source_roots.insert(parent.0.to_string());
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
+    type Item = JavacActionInfo;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        loop {
+            self.line_buf.clear();
+            let bytes = match self.reader.read_line(&mut self.line_buf) {
+                Ok(0) => {
+                    self.done = true;
+                    return None;
+                }
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    self.done = true;
+                    return None;
+                }
+            };
+
+            if bytes == 0 {
+                self.done = true;
+                return None;
+            }
+
+            let line = self.line_buf.trim_end_matches(['\n', '\r']);
+            let trimmed_start = line.trim_start();
+            let delta = brace_delta_unquoted(trimmed_start);
+
+            if !self.in_action {
+                if trimmed_start.starts_with("action {") {
+                    self.in_action = true;
+                    self.depth = delta;
+                    self.mnemonic = None;
+                    self.owner = None;
+                    self.info = JavaCompileInfo::default();
+                    self.source_roots.clear();
+                    self.pending = None;
+
+                    if self.depth <= 0 {
+                        // Malformed (or single-line) action block. Reset and keep scanning.
+                        self.in_action = false;
+                        self.depth = 0;
+                    }
+                }
+                continue;
+            }
+
+            let trimmed = trimmed_start.trim();
+            if self.depth == 1 {
+                if let Some(value) = parse_quoted_field(trimmed, "mnemonic:") {
+                    self.mnemonic = Some(value);
+                } else if let Some(value) = parse_quoted_field(trimmed, "owner:") {
+                    self.owner = Some(value);
+                } else if let Some(value) = parse_quoted_field(trimmed, "arguments:") {
+                    // Don't spend time parsing arguments for non-Javac actions, but allow arguments
+                    // before we've seen the mnemonic.
+                    if self.mnemonic.as_deref() != Some("Javac") && self.mnemonic.is_some() {
+                        // skip
+                    } else {
+                        self.apply_argument(&value);
+                    }
+                }
+            }
+
+            self.depth += delta;
+            if self.depth <= 0 {
+                self.in_action = false;
+                self.depth = 0;
+
+                if self.mnemonic.as_deref() == Some("Javac") {
+                    let mut info = std::mem::take(&mut self.info);
+                    info.source_roots = std::mem::take(&mut self.source_roots).into_iter().collect();
+                    self.pending = None;
+                    return Some(JavacActionInfo {
+                        owner: self.owner.take(),
+                        compile_info: info,
+                    });
+                }
+
+                self.mnemonic = None;
+                self.owner = None;
+                self.info = JavaCompileInfo::default();
+                self.source_roots.clear();
+                self.pending = None;
             }
         }
     }
