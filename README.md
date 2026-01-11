@@ -218,8 +218,10 @@ For Guava it builds only the main `guava` module for a lightweight sanity check.
 
 ## Editor setup
 
-Nova will be shipped as an LSP server binary named `nova-lsp`. The following editor templates assume `nova-lsp`
-is available on your `$PATH` and supports `--stdio`.
+Nova is distributed as standalone binaries (`nova-lsp`, `nova-dap`) and editor integrations.
+
+- The **VS Code extension** can automatically download and manage matching `nova-lsp`/`nova-dap` binaries.
+- The **Neovim** and **Emacs** templates assume `nova-lsp` is available on your `$PATH` and supports `--stdio`.
 
 - VS Code: [`editors/vscode/README.md`](./editors/vscode/README.md)
 - Neovim: [`editors/neovim/README.md`](./editors/neovim/README.md)

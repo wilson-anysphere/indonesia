@@ -150,7 +150,7 @@ These settings control managed downloads for both `nova-lsp` and `nova-dap`:
 
 - `nova.download.mode` ("auto" | "prompt" | "off"): download missing binaries automatically, prompt, or never download (default: "prompt").
 - `nova.download.releaseTag` (string): release tag to download from (default: `v${extensionVersion}` for packaged releases).
-- `nova.download.baseUrl` (string): base URL for release assets (default: this repo’s GitHub releases).
+- `nova.download.baseUrl` (string): GitHub Releases download base URL (e.g. `https://github.com/<owner>/<repo>/releases/download`). Used to locate the repository + assets.
 - `nova.download.allowPrerelease` (boolean): allow selecting pre-releases when `releaseTag` is `latest`.
 - `nova.download.allowVersionMismatch` (boolean): allow binaries whose `--version` output doesn’t match the extension version.
 
