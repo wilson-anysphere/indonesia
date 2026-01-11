@@ -85,7 +85,9 @@ pub enum ClasspathEntry {
 impl From<&nova_project::ClasspathEntry> for ClasspathEntry {
     fn from(value: &nova_project::ClasspathEntry) -> Self {
         match value.kind {
-            nova_project::ClasspathEntryKind::Directory => ClasspathEntry::ClassDir(value.path.clone()),
+            nova_project::ClasspathEntryKind::Directory => {
+                ClasspathEntry::ClassDir(value.path.clone())
+            }
             nova_project::ClasspathEntryKind::Jar => ClasspathEntry::Jar(value.path.clone()),
         }
     }
@@ -284,7 +286,10 @@ pub struct ClasspathIndex {
 }
 
 impl ClasspathIndex {
-    pub fn build(entries: &[ClasspathEntry], cache_dir: Option<&Path>) -> Result<Self, ClasspathError> {
+    pub fn build(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
         Self::build_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
     }
@@ -408,7 +413,10 @@ pub struct ModuleAwareClasspathIndex {
 }
 
 impl ModuleAwareClasspathIndex {
-    pub fn build(entries: &[ClasspathEntry], cache_dir: Option<&Path>) -> Result<Self, ClasspathError> {
+    pub fn build(
+        entries: &[ClasspathEntry],
+        cache_dir: Option<&Path>,
+    ) -> Result<Self, ClasspathError> {
         let deps_store = DependencyIndexStore::from_env().ok();
         Self::build_with_deps_store(entries, cache_dir, deps_store.as_ref(), None)
     }
@@ -477,6 +485,61 @@ impl ModuleAwareClasspathIndex {
             type_to_module,
             modules,
         })
+    }
+
+    /// Construct an in-memory index from existing class stubs.
+    ///
+    /// Each stub can optionally be associated with a named module.
+    pub fn from_stubs<I>(stubs: I) -> Self
+    where
+        I: IntoIterator<Item = (ClasspathClassStub, Option<ModuleName>)>,
+    {
+        let mut stubs_by_binary = HashMap::new();
+        let mut internal_to_binary = HashMap::new();
+        let mut type_to_module = HashMap::new();
+
+        for (stub, module) in stubs {
+            if stubs_by_binary.contains_key(&stub.binary_name) {
+                continue;
+            }
+
+            let binary_name = stub.binary_name.clone();
+            internal_to_binary.insert(stub.internal_name.clone(), binary_name.clone());
+            stubs_by_binary.insert(binary_name.clone(), stub);
+            type_to_module.insert(binary_name, module);
+        }
+
+        let mut binary_names_sorted: Vec<String> = stubs_by_binary.keys().cloned().collect();
+        binary_names_sorted.sort();
+
+        let mut packages: BTreeSet<String> = BTreeSet::new();
+        for name in &binary_names_sorted {
+            if let Some((pkg, _)) = name.rsplit_once('.') {
+                packages.insert(pkg.to_owned());
+            }
+        }
+
+        let types = ClasspathIndex {
+            stubs_by_binary,
+            binary_names_sorted,
+            packages_sorted: packages.into_iter().collect(),
+            internal_to_binary,
+        };
+
+        let mut module_names: BTreeSet<ModuleName> = BTreeSet::new();
+        for module in type_to_module.values().filter_map(|m| m.clone()) {
+            module_names.insert(module);
+        }
+        let modules = module_names
+            .into_iter()
+            .map(|m| (Some(m), ModuleNameKind::Explicit))
+            .collect();
+
+        Self {
+            types,
+            type_to_module,
+            modules,
+        }
     }
 
     pub fn module_of(&self, binary_name: &str) -> Option<&ModuleName> {
@@ -576,8 +639,12 @@ fn index_entry(
 ) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
     match entry {
         ClasspathEntry::ClassDir(dir) => index_class_dir(dir),
-        ClasspathEntry::Jar(path) => index_zip_with_deps_cache(path, ZipKind::Jar, deps_store, stats),
-        ClasspathEntry::Jmod(path) => index_zip_with_deps_cache(path, ZipKind::Jmod, deps_store, stats),
+        ClasspathEntry::Jar(path) => {
+            index_zip_with_deps_cache(path, ZipKind::Jar, deps_store, stats)
+        }
+        ClasspathEntry::Jmod(path) => {
+            index_zip_with_deps_cache(path, ZipKind::Jmod, deps_store, stats)
+        }
     }
 }
 
@@ -620,7 +687,10 @@ fn read_module_info_from_dir(dir: &Path) -> Result<Option<ModuleInfo>, Classpath
     Ok(Some(parse_module_info_class(&bytes)?))
 }
 
-fn read_module_info_from_zip(path: &Path, kind: ZipKind) -> Result<Option<ModuleInfo>, ClasspathError> {
+fn read_module_info_from_zip(
+    path: &Path,
+    kind: ZipKind,
+) -> Result<Option<ModuleInfo>, ClasspathError> {
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
@@ -666,7 +736,11 @@ fn index_zip_with_deps_cache(
     match store.try_load(&jar_sha256) {
         Ok(Some(bundle)) => {
             record_deps_cache_hit(stats);
-            return Ok(bundle.classes.into_iter().map(ClasspathClassStub::from).collect());
+            return Ok(bundle
+                .classes
+                .into_iter()
+                .map(ClasspathClassStub::from)
+                .collect());
         }
         Ok(None) => {}
         Err(_) => {}
@@ -681,7 +755,11 @@ fn index_zip_with_deps_cache(
     Ok(stubs)
 }
 
-fn index_zip(path: &Path, kind: ZipKind, stats: Option<&IndexingStats>) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
+fn index_zip(
+    path: &Path,
+    kind: ZipKind,
+    stats: Option<&IndexingStats>,
+) -> Result<Vec<ClasspathClassStub>, ClasspathError> {
     let file = std::fs::File::open(path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
@@ -790,7 +868,8 @@ fn index_zip(path: &Path, kind: ZipKind, stats: Option<&IndexingStats>) -> Resul
                 }
             }
 
-            let mut out: Vec<ClasspathClassStub> = best.into_values().map(|(_, stub)| stub).collect();
+            let mut out: Vec<ClasspathClassStub> =
+                best.into_values().map(|(_, stub)| stub).collect();
             out.sort_by(|a, b| a.binary_name.cmp(&b.binary_name));
             Ok(out)
         }
@@ -1003,7 +1082,10 @@ fn deps_class_stub(value: &ClasspathClassStub) -> DepsClassStub {
     }
 }
 
-fn bundle_from_classpath_stubs(jar_sha256: String, stubs: &[ClasspathClassStub]) -> DependencyIndexBundle {
+fn bundle_from_classpath_stubs(
+    jar_sha256: String,
+    stubs: &[ClasspathClassStub],
+) -> DependencyIndexBundle {
     let mut classes: Vec<DepsClassStub> = stubs.iter().map(deps_class_stub).collect();
     classes.sort_by(|a, b| a.binary_name.cmp(&b.binary_name));
 
@@ -1070,7 +1152,11 @@ impl From<DepsClassStub> for ClasspathClassStub {
             interfaces: value.interfaces,
             signature: value.signature,
             annotations: value.annotations,
-            fields: value.fields.into_iter().map(ClasspathFieldStub::from).collect(),
+            fields: value
+                .fields
+                .into_iter()
+                .map(ClasspathFieldStub::from)
+                .collect(),
             methods: value
                 .methods
                 .into_iter()
@@ -1177,11 +1263,7 @@ mod tests {
         .unwrap();
 
         let foo = index.lookup_binary("com.example.dep.Foo").unwrap();
-        let strings = foo
-            .methods
-            .iter()
-            .find(|m| m.name == "strings")
-            .unwrap();
+        let strings = foo.methods.iter().find(|m| m.name == "strings").unwrap();
 
         assert_eq!(strings.descriptor, "()Ljava/util/List;");
         assert_eq!(
@@ -1212,9 +1294,13 @@ mod tests {
     fn package_prefix_search() {
         let tmp = TempDir::new().unwrap();
         let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
-        let index =
-            ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(test_jar())], None, Some(&deps_store), None)
-                .unwrap();
+        let index = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
         let pkgs = index.packages_with_prefix("com.example");
         assert!(pkgs.contains(&"com.example.dep".to_string()));
     }
@@ -1223,21 +1309,31 @@ mod tests {
     fn lookup_type_from_jmod() {
         let tmp = TempDir::new().unwrap();
         let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
-        let index =
-            ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jmod(test_jmod())], None, Some(&deps_store), None)
-                .unwrap();
+        let index = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jmod(test_jmod())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
         assert!(index.lookup_binary("java.lang.String").is_some());
         assert!(index.lookup_internal("java/lang/String").is_some());
-        assert!(index.packages_with_prefix("java").contains(&"java.lang".to_string()));
+        assert!(index
+            .packages_with_prefix("java")
+            .contains(&"java.lang".to_string()));
     }
 
     #[test]
     fn prefix_search_accepts_internal_separators() {
         let tmp = TempDir::new().unwrap();
         let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
-        let index =
-            ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(test_jar())], None, Some(&deps_store), None)
-                .unwrap();
+        let index = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
         let classes = index.class_names_with_prefix("com/example/dep/F");
         assert!(classes.contains(&"com.example.dep.Foo".to_string()));
         let packages = index.packages_with_prefix("com/example");
@@ -1254,7 +1350,9 @@ mod tests {
             index_entry(&entry, None, None)
         })
         .unwrap();
-        assert!(stubs_first.iter().any(|s| s.binary_name == "com.example.dep.Foo"));
+        assert!(stubs_first
+            .iter()
+            .any(|s| s.binary_name == "com.example.dep.Foo"));
 
         let stubs_cached = persist::load_or_build_entry(tmp.path(), &entry, fingerprint, || {
             panic!("expected cache hit, but builder was invoked")
@@ -1268,9 +1366,13 @@ mod tests {
     fn resolve_type_returns_typename() {
         let tmp = TempDir::new().unwrap();
         let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
-        let index =
-            ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(test_jar())], None, Some(&deps_store), None)
-                .unwrap();
+        let index = ClasspathIndex::build_with_deps_store(
+            &[ClasspathEntry::Jar(test_jar())],
+            None,
+            Some(&deps_store),
+            None,
+        )
+        .unwrap();
         let ty = index
             .resolve_type(&QualifiedName::from_dotted("com.example.dep.Foo"))
             .unwrap();
@@ -1340,7 +1442,9 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(index.lookup_binary("com.example.mr.MultiReleaseOnly").is_some());
+        assert!(index
+            .lookup_binary("com.example.mr.MultiReleaseOnly")
+            .is_some());
     }
 
     #[test]
@@ -1354,7 +1458,9 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(index.lookup_binary("com.example.mr.MultiReleaseOnly").is_none());
+        assert!(index
+            .lookup_binary("com.example.mr.MultiReleaseOnly")
+            .is_none());
     }
 
     #[test]
@@ -1408,7 +1514,10 @@ mod tests {
         let bundle_path = deps_store.bundle_path(&sha);
         assert!(bundle_path.exists());
 
-        let file = std::fs::OpenOptions::new().write(true).open(&bundle_path).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&bundle_path)
+            .unwrap();
         file.set_len(10).unwrap();
 
         let stats_second = IndexingStats::default();
