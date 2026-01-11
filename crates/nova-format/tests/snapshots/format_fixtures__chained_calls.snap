@@ -1,0 +1,12 @@
+---
+source: crates/nova-format/tests/format_fixtures.rs
+expression: formatted
+---
+class Chains {
+    void m() {
+        veryLongVariableName.someVeryLongMethodName()
+            .anotherVeryLongMethodName()
+            .yetAnotherLongMethodName(123, 456, 789)
+            .finalMethod();
+    }
+}

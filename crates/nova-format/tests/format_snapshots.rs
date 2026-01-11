@@ -86,6 +86,6 @@ fn range_formatting_preserves_outside_text() {
 
     assert_eq!(
         out,
-        "class Foo {\n    void a() { int x=1; }\n    void b() {\n        int y=2;\n    }\n}\n"
+        "class Foo {\n    void a() { int x=1; }\n    void b() {\n        int y = 2;\n    }\n}\n"
     );
 }

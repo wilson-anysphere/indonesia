@@ -1,0 +1,9 @@
+@VeryLongAnnotationName(value="some-really-really-long-string",other=123,names="abc")
+class Annotated{
+@Deprecated@Repeated@Repeated
+int field;
+
+void m(@Nullable@Repeated String s,@Repeated int x){
+}
+}
+
