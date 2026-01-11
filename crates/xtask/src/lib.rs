@@ -71,8 +71,16 @@ enum Cardinality {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Field {
     name: String,
-    ty: String,
+    ty: FieldTy,
     cardinality: Cardinality,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum FieldTy {
+    Node(String),
+    Token(String),
+    /// Special token class which matches `SyntaxKind::is_identifier_like()`.
+    Ident,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,7 +222,8 @@ fn parse_grammar(src: &str) -> Result<Grammar> {
 
                 fields.push(Field {
                     name: field_name.to_string(),
-                    ty: ty.to_string(),
+                    ty: parse_field_ty(ty)
+                        .with_context(|| format!("invalid field type at line {}", idx + 1))?,
                     cardinality,
                 });
                 idx += 1;
@@ -289,6 +298,31 @@ fn parse_grammar(src: &str) -> Result<Grammar> {
     Ok(grammar)
 }
 
+fn parse_field_ty(src: &str) -> Result<FieldTy> {
+    if src == "Ident" {
+        return Ok(FieldTy::Ident);
+    }
+
+    if let Some(rest) = src.strip_prefix("Token(") {
+        let Some(inner) = rest.strip_suffix(')') else {
+            return Err(anyhow!("unterminated token type `{src}` (missing `)`)"));
+        };
+        let kind = inner.trim();
+        if kind.is_empty() {
+            return Err(anyhow!("missing token kind in `{src}`"));
+        }
+        if !kind
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(anyhow!("invalid token kind `{kind}` in `{src}`"));
+        }
+        return Ok(FieldTy::Token(kind.to_string()));
+    }
+
+    Ok(FieldTy::Node(src.to_string()))
+}
+
 fn render_ast(grammar: &Grammar) -> String {
     let mut out = String::new();
     out.push_str("//! Generated file, do not edit by hand.\n");
@@ -349,9 +383,9 @@ fn render_node(out: &mut String, node: &NodeDef) {
     let _ = writeln!(out, "impl {} {{", node.name);
 
     // Track duplicate field types so we can select nth occurrence.
-    let mut seen_counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut seen_counts: std::collections::HashMap<FieldTy, usize> = std::collections::HashMap::new();
     for field in &node.fields {
-        let count = seen_counts.entry(&field.ty).or_insert(0);
+        let count = seen_counts.entry(field.ty.clone()).or_insert(0);
         let nth = *count;
         *count += 1;
 
@@ -365,11 +399,10 @@ fn render_node(out: &mut String, node: &NodeDef) {
 fn render_field_accessor(out: &mut String, field: &Field, nth: usize) {
     use std::fmt::Write;
 
-    let ty = &field.ty;
     let name = &field.name;
 
-    match (ty.as_str(), field.cardinality) {
-        ("Ident", Cardinality::Many) => {
+    match (&field.ty, field.cardinality) {
+        (FieldTy::Ident, Cardinality::Many) => {
             let _ = writeln!(
                 out,
                 "    pub fn {name}(&self) -> impl Iterator<Item = SyntaxToken> + '_ {{"
@@ -377,7 +410,7 @@ fn render_field_accessor(out: &mut String, field: &Field, nth: usize) {
             let _ = writeln!(out, "        support::ident_tokens(&self.syntax)");
             let _ = writeln!(out, "    }}");
         }
-        ("Ident", Cardinality::One | Cardinality::Optional) => {
+        (FieldTy::Ident, Cardinality::One | Cardinality::Optional) => {
             if nth == 0 {
                 let _ = writeln!(out, "    pub fn {name}(&self) -> Option<SyntaxToken> {{");
                 let _ = writeln!(out, "        support::ident_token(&self.syntax)");
@@ -391,30 +424,52 @@ fn render_field_accessor(out: &mut String, field: &Field, nth: usize) {
                 let _ = writeln!(out, "    }}");
             }
         }
-        _ => match field.cardinality {
-            Cardinality::Many => {
+        (FieldTy::Token(kind), Cardinality::Many) => {
+            let _ = writeln!(
+                out,
+                "    pub fn {name}(&self) -> impl Iterator<Item = SyntaxToken> + '_ {{"
+            );
+            let _ = writeln!(
+                out,
+                "        support::tokens(&self.syntax, SyntaxKind::{kind})"
+            );
+            let _ = writeln!(out, "    }}");
+        }
+        (FieldTy::Token(kind), Cardinality::One | Cardinality::Optional) => {
+            let _ = writeln!(out, "    pub fn {name}(&self) -> Option<SyntaxToken> {{");
+            if nth == 0 {
                 let _ = writeln!(
                     out,
-                    "    pub fn {name}(&self) -> impl Iterator<Item = {ty}> + '_ {{"
+                    "        support::token(&self.syntax, SyntaxKind::{kind})"
                 );
-                let _ = writeln!(out, "        support::children::<{ty}>(&self.syntax)");
-                let _ = writeln!(out, "    }}");
+            } else {
+                let _ = writeln!(
+                    out,
+                    "        support::tokens(&self.syntax, SyntaxKind::{kind}).nth({nth})"
+                );
             }
-            Cardinality::One | Cardinality::Optional => {
-                if nth == 0 {
-                    let _ = writeln!(out, "    pub fn {name}(&self) -> Option<{ty}> {{");
-                    let _ = writeln!(out, "        support::child::<{ty}>(&self.syntax)");
-                    let _ = writeln!(out, "    }}");
-                } else {
-                    let _ = writeln!(out, "    pub fn {name}(&self) -> Option<{ty}> {{");
-                    let _ = writeln!(
-                        out,
-                        "        support::children::<{ty}>(&self.syntax).nth({nth})"
-                    );
-                    let _ = writeln!(out, "    }}");
-                }
+            let _ = writeln!(out, "    }}");
+        }
+        (FieldTy::Node(ty), Cardinality::Many) => {
+            let _ = writeln!(
+                out,
+                "    pub fn {name}(&self) -> impl Iterator<Item = {ty}> + '_ {{"
+            );
+            let _ = writeln!(out, "        support::children::<{ty}>(&self.syntax)");
+            let _ = writeln!(out, "    }}");
+        }
+        (FieldTy::Node(ty), Cardinality::One | Cardinality::Optional) => {
+            let _ = writeln!(out, "    pub fn {name}(&self) -> Option<{ty}> {{");
+            if nth == 0 {
+                let _ = writeln!(out, "        support::child::<{ty}>(&self.syntax)");
+            } else {
+                let _ = writeln!(
+                    out,
+                    "        support::children::<{ty}>(&self.syntax).nth({nth})"
+                );
             }
-        },
+            let _ = writeln!(out, "    }}");
+        }
     }
 }
 
@@ -491,5 +546,79 @@ fn render_enum(out: &mut String, grammar: &Grammar, enm: &EnumDef) {
                 enm.name, var
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_token_field_syntax() {
+        let src = r#"
+Foo {
+  arrow_token: Token(Arrow)?
+  semicolons: Token(Semicolon)*
+  name_token: Ident?
+  child: Bar?
+}
+Bar {}
+"#;
+
+        let grammar = parse_grammar(src).expect("parse grammar");
+        assert_eq!(grammar.nodes.len(), 2);
+
+        let foo = &grammar.nodes[0];
+        assert_eq!(foo.name, "Foo");
+        assert_eq!(foo.fields.len(), 4);
+
+        assert_eq!(foo.fields[0].name, "arrow_token");
+        assert_eq!(foo.fields[0].ty, FieldTy::Token("Arrow".to_string()));
+        assert_eq!(foo.fields[0].cardinality, Cardinality::Optional);
+
+        assert_eq!(foo.fields[1].name, "semicolons");
+        assert_eq!(foo.fields[1].ty, FieldTy::Token("Semicolon".to_string()));
+        assert_eq!(foo.fields[1].cardinality, Cardinality::Many);
+
+        assert_eq!(foo.fields[2].name, "name_token");
+        assert_eq!(foo.fields[2].ty, FieldTy::Ident);
+        assert_eq!(foo.fields[2].cardinality, Cardinality::Optional);
+
+        assert_eq!(foo.fields[3].name, "child");
+        assert_eq!(foo.fields[3].ty, FieldTy::Node("Bar".to_string()));
+        assert_eq!(foo.fields[3].cardinality, Cardinality::Optional);
+    }
+
+    #[test]
+    fn renders_token_accessors() {
+        let src = r#"
+Foo {
+  arrow_token: Token(Arrow)?
+  semicolons: Token(Semicolon)*
+  name_token: Ident?
+  child: Bar?
+  semi1: Token(Semicolon)?
+  semi2: Token(Semicolon)?
+}
+Bar {}
+"#;
+
+        let grammar = parse_grammar(src).expect("parse grammar");
+        let code = render_ast(&grammar);
+
+        assert!(code.contains("pub fn arrow_token(&self) -> Option<SyntaxToken>"));
+        assert!(code.contains("support::token(&self.syntax, SyntaxKind::Arrow)"));
+
+        assert!(code.contains(
+            "pub fn semicolons(&self) -> impl Iterator<Item = SyntaxToken> + '_"
+        ));
+        assert!(code.contains("support::tokens(&self.syntax, SyntaxKind::Semicolon)"));
+
+        assert!(code.contains("pub fn name_token(&self) -> Option<SyntaxToken>"));
+        assert!(code.contains("support::ident_token(&self.syntax)"));
+
+        assert!(code.contains(
+            "support::tokens(&self.syntax, SyntaxKind::Semicolon).nth(1)"
+        ));
     }
 }

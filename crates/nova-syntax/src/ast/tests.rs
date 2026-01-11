@@ -3,6 +3,7 @@ use crate::ast::{
     TypeDeclaration,
 };
 use crate::parse_java;
+use crate::SyntaxKind;
 
 #[test]
 fn typed_casts_smoke() {
@@ -101,13 +102,17 @@ fn switch_label_iteration() {
     assert!(labels[0].is_case());
     assert!(!labels[0].is_default());
     assert!(!labels[0].has_arrow());
+    assert_eq!(labels[0].case_kw().unwrap().kind(), SyntaxKind::CaseKw);
+    assert_eq!(labels[0].colon_token().unwrap().kind(), SyntaxKind::Colon);
     assert_eq!(labels[0].expressions().count(), 1);
 
     assert!(labels[1].is_default());
+    assert_eq!(labels[1].default_kw().unwrap().kind(), SyntaxKind::DefaultKw);
     assert_eq!(labels[1].expressions().count(), 0);
 
     assert!(labels[2].is_case());
     assert!(labels[2].has_arrow());
+    assert_eq!(labels[2].arrow_token().unwrap().kind(), SyntaxKind::Arrow);
 }
 
 #[test]
@@ -128,6 +133,8 @@ fn module_directive_extraction() {
     let unit = CompilationUnit::cast(parse.syntax()).unwrap();
     let module = unit.module_declaration().expect("module decl");
     assert!(module.is_open());
+    assert_eq!(module.open_kw().unwrap().kind(), SyntaxKind::OpenKw);
+    assert_eq!(module.module_kw().unwrap().kind(), SyntaxKind::ModuleKw);
     assert_eq!(module.name().unwrap().text(), "com.example");
 
     let directives: Vec<_> = module.directives().collect();
@@ -137,6 +144,8 @@ fn module_directive_extraction() {
         ModuleDirectiveKind::RequiresDirective(req) => {
             assert!(req.is_transitive());
             assert!(!req.is_static());
+            assert_eq!(req.requires_kw().unwrap().kind(), SyntaxKind::RequiresKw);
+            assert_eq!(req.transitive_kw().unwrap().kind(), SyntaxKind::TransitiveKw);
             assert_eq!(req.module().unwrap().text(), "java.sql");
         }
         other => panic!("expected requires, got {other:?}"),
@@ -146,6 +155,7 @@ fn module_directive_extraction() {
         ModuleDirectiveKind::RequiresDirective(req) => {
             assert!(!req.is_transitive());
             assert!(req.is_static());
+            assert_eq!(req.static_kw().unwrap().kind(), SyntaxKind::StaticKw);
             assert_eq!(req.module().unwrap().text(), "java.desktop");
         }
         other => panic!("expected requires, got {other:?}"),
@@ -154,6 +164,8 @@ fn module_directive_extraction() {
     match &directives[2] {
         ModuleDirectiveKind::ExportsDirective(exports) => {
             assert_eq!(exports.package().unwrap().text(), "com.example.api");
+            assert_eq!(exports.exports_kw().unwrap().kind(), SyntaxKind::ExportsKw);
+            assert_eq!(exports.to_kw().unwrap().kind(), SyntaxKind::ToKw);
             let to: Vec<_> = exports.to_modules().map(|n| n.text()).collect();
             assert_eq!(to, vec!["java.base", "java.sql"]);
         }
@@ -170,6 +182,8 @@ fn module_directive_extraction() {
     match &directives[4] {
         ModuleDirectiveKind::ProvidesDirective(provides) => {
             assert_eq!(provides.service().unwrap().text(), "com.example.Service");
+            assert_eq!(provides.provides_kw().unwrap().kind(), SyntaxKind::ProvidesKw);
+            assert_eq!(provides.with_kw().unwrap().kind(), SyntaxKind::WithKw);
             let impls: Vec<_> = provides.implementations().map(|n| n.text()).collect();
             assert_eq!(impls, vec!["com.example.impl.ServiceImpl"]);
         }

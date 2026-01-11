@@ -14,6 +14,7 @@
 #     field: Type?    (zero or one, accessor returns `Option<Type>`)
 #     field: Type*    (zero or more, accessor returns an iterator)
 # - `Ident` is a special token class which matches `SyntaxKind::is_identifier_like()`.
+# - `Token(Kind)` is a token accessor for a concrete `SyntaxKind` variant.
 
 TypeDeclaration =
     ClassDeclaration
@@ -245,6 +246,10 @@ SwitchBlock {
 }
 
 SwitchLabel {
+  case_kw: Token(CaseKw)?
+  default_kw: Token(DefaultKw)?
+  colon_token: Token(Colon)?
+  arrow_token: Token(Arrow)?
   elements: CaseLabelElement*
 }
 
@@ -481,6 +486,8 @@ ExpressionRoot {
 
 ModuleDeclaration {
   modifiers: Modifiers?
+  open_kw: Token(OpenKw)?
+  module_kw: Token(ModuleKw)
   name: Name?
   body: ModuleBody?
 }
@@ -494,21 +501,36 @@ ModuleDirective {
 }
 
 RequiresDirective {
+  requires_kw: Token(RequiresKw)
+  transitive_kw: Token(TransitiveKw)?
+  static_kw: Token(StaticKw)?
   module: Name?
+  semicolon: Token(Semicolon)?
 }
 
 ExportsDirective {
+  exports_kw: Token(ExportsKw)
   package: Name?
+  to_kw: Token(ToKw)?
+  semicolon: Token(Semicolon)?
 }
 
 OpensDirective {
+  opens_kw: Token(OpensKw)
   package: Name?
+  to_kw: Token(ToKw)?
+  semicolon: Token(Semicolon)?
 }
 
 UsesDirective {
+  uses_kw: Token(UsesKw)
   service: Name?
+  semicolon: Token(Semicolon)?
 }
 
 ProvidesDirective {
+  provides_kw: Token(ProvidesKw)
   service: Name?
+  with_kw: Token(WithKw)?
+  semicolon: Token(Semicolon)?
 }

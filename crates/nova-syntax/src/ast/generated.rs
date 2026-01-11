@@ -971,6 +971,22 @@ impl AstNode for SwitchLabel {
 }
 
 impl SwitchLabel {
+    pub fn case_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::CaseKw)
+    }
+
+    pub fn default_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::DefaultKw)
+    }
+
+    pub fn colon_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Colon)
+    }
+
+    pub fn arrow_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Arrow)
+    }
+
     pub fn elements(&self) -> impl Iterator<Item = CaseLabelElement> + '_ {
         support::children::<CaseLabelElement>(&self.syntax)
     }
@@ -2496,6 +2512,14 @@ impl ModuleDeclaration {
         support::child::<Modifiers>(&self.syntax)
     }
 
+    pub fn open_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::OpenKw)
+    }
+
+    pub fn module_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::ModuleKw)
+    }
+
     pub fn name(&self) -> Option<Name> {
         support::child::<Name>(&self.syntax)
     }
@@ -2578,8 +2602,24 @@ impl AstNode for RequiresDirective {
 }
 
 impl RequiresDirective {
+    pub fn requires_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::RequiresKw)
+    }
+
+    pub fn transitive_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::TransitiveKw)
+    }
+
+    pub fn static_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::StaticKw)
+    }
+
     pub fn module(&self) -> Option<Name> {
         support::child::<Name>(&self.syntax)
+    }
+
+    pub fn semicolon(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Semicolon)
     }
 
 }
@@ -2604,8 +2644,20 @@ impl AstNode for ExportsDirective {
 }
 
 impl ExportsDirective {
+    pub fn exports_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::ExportsKw)
+    }
+
     pub fn package(&self) -> Option<Name> {
         support::child::<Name>(&self.syntax)
+    }
+
+    pub fn to_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::ToKw)
+    }
+
+    pub fn semicolon(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Semicolon)
     }
 
 }
@@ -2630,8 +2682,20 @@ impl AstNode for OpensDirective {
 }
 
 impl OpensDirective {
+    pub fn opens_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::OpensKw)
+    }
+
     pub fn package(&self) -> Option<Name> {
         support::child::<Name>(&self.syntax)
+    }
+
+    pub fn to_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::ToKw)
+    }
+
+    pub fn semicolon(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Semicolon)
     }
 
 }
@@ -2656,8 +2720,16 @@ impl AstNode for UsesDirective {
 }
 
 impl UsesDirective {
+    pub fn uses_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::UsesKw)
+    }
+
     pub fn service(&self) -> Option<Name> {
         support::child::<Name>(&self.syntax)
+    }
+
+    pub fn semicolon(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Semicolon)
     }
 
 }
@@ -2682,8 +2754,20 @@ impl AstNode for ProvidesDirective {
 }
 
 impl ProvidesDirective {
+    pub fn provides_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::ProvidesKw)
+    }
+
     pub fn service(&self) -> Option<Name> {
         support::child::<Name>(&self.syntax)
+    }
+
+    pub fn with_kw(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::WithKw)
+    }
+
+    pub fn semicolon(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, SyntaxKind::Semicolon)
     }
 
 }
