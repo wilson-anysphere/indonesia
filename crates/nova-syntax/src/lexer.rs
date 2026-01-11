@@ -312,6 +312,22 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         // opening """
         self.pos += 3;
+
+        // JLS: after the opening delimiter, optional whitespace may appear but it must be
+        // followed by a line terminator. We still lex a single `TextBlock` token for
+        // resilience (so braces/semicolons inside don't get tokenized), but we emit a
+        // diagnostic for spec-invalid openings.
+        while matches!(self.peek_byte(0), Some(b' ' | b'\t' | 0x0C)) {
+            self.pos += 1;
+        }
+        if !matches!(self.peek_byte(0), Some(b'\n' | b'\r')) {
+            self.errors.push(LexError {
+                message: "text block opening delimiter must be followed by a line terminator"
+                    .to_string(),
+                range: TextRange::new(start, self.pos),
+            });
+        }
+
         while !self.is_eof() {
             if self.peek_byte(0) == Some(b'"')
                 && self.peek_byte(1) == Some(b'"')

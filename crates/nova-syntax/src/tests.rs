@@ -33,7 +33,7 @@ fn dump_non_trivia(input: &str) -> Vec<(SyntaxKind, String)> {
 
 #[test]
 fn lexer_trivia_and_literals() {
-    let input = "/** doc */ var x = 0xFF + 1_000; String t = \"\"\"hi\nthere\"\"\";";
+    let input = "/** doc */ var x = 0xFF + 1_000; String t = \"\"\"\nhi\nthere\n\"\"\";";
     let tokens = dump_tokens(input);
 
     let expected = vec![
@@ -58,7 +58,7 @@ fn lexer_trivia_and_literals() {
         (SyntaxKind::Whitespace, " ".into()),
         (SyntaxKind::Eq, "=".into()),
         (SyntaxKind::Whitespace, " ".into()),
-        (SyntaxKind::TextBlock, "\"\"\"hi\nthere\"\"\"".into()),
+        (SyntaxKind::TextBlock, "\"\"\"\nhi\nthere\n\"\"\"".into()),
         (SyntaxKind::Semicolon, ";".into()),
         (SyntaxKind::Eof, "".into()),
     ];
@@ -220,19 +220,22 @@ fn lexer_reports_unterminated_literals_and_comments() {
     ] {
         let (tokens, errors) = lex_with_errors(input);
         assert_eq!(tokens[0].kind, SyntaxKind::Error);
-        assert_eq!(errors.len(), 1);
         assert!(
-            errors[0].message.contains(expected_msg),
+            errors.iter().any(|e| e.message.contains(expected_msg)),
             "expected `{}` in `{}`",
             expected_msg,
-            errors[0].message
+            errors
+                .iter()
+                .map(|e| e.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
         );
     }
 }
 
 #[test]
 fn lexer_text_blocks_allow_escaped_triple_quotes() {
-    let input = "\"\"\"hello \\\"\"\" world\"\"\"";
+    let input = "\"\"\"\nhello \\\"\"\" world\n\"\"\"";
     let (tokens, errors) = lex_with_errors(input);
     assert_eq!(errors, Vec::new());
 
