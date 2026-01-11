@@ -12,6 +12,8 @@ By default, Nova manages the `nova-lsp` binary for you:
 
 If you're offline or want to use a custom build, you can set `nova.server.path` (or run **Nova: Use Local Server Binary...**) to point at a local `nova-lsp` executable.
 
+Nova also manages the `nova-dap` debug adapter binary. When you start a Nova debug session, the extension will ensure `nova-dap` is available (prompting or auto-downloading based on `nova.download.mode`).
+
 ## Language server + debug adapter binaries
 
 Nova resolves binaries in the following order:
@@ -40,8 +42,8 @@ npm run compile
 ## Commands
 
 - **Nova: Install/Update Server** (`nova.installOrUpdateServer`)
-  - Downloads and installs `nova-lsp` into VS Code global storage, verifying SHA-256 against the published release checksums.
-  - If checksums are missing, Nova refuses to install; use `nova.server.path` to point at a trusted local build.
+  - Downloads and installs `nova-lsp` into VS Code global storage.
+  - Managed downloads verify published SHA-256 checksums when available and always validate `--version` against the extension version (unless `nova.download.allowVersionMismatch` is enabled).
 
 - **Nova: Use Local Server Binary...** (`nova.useLocalServerBinary`)
   - Sets `nova.server.path` to a local `nova-lsp` binary.
@@ -54,6 +56,7 @@ npm run compile
 
 - **Nova: Install/Update Debug Adapter** (`nova.installOrUpdateDebugAdapter`)
   - Downloads and installs `nova-dap` into VS Code global storage.
+  - Managed downloads verify published SHA-256 checksums when available and always validate `--version` against the extension version (unless `nova.download.allowVersionMismatch` is enabled).
 
 - **Nova: Use Local Debug Adapter Binary...** (`nova.useLocalDebugAdapterBinary`)
   - Sets `nova.dap.path` to a local `nova-dap` binary.
@@ -129,7 +132,7 @@ Tests are discovered via `nova/test/discover` and can be run from the Test Explo
 Nova contributes a `nova` debug type backed by the `nova-dap` binary (DAP over stdio).
 
 If Nova can't find a usable `nova-dap` (via `nova.dap.path` or on `$PATH`), it can download and install a matching version into VS Code global storage (controlled by `nova.download.mode`).
-Managed downloads are verified via published SHA-256 checksums; if checksums are missing, use `nova.dap.path` instead.
+Managed downloads verify published SHA-256 checksums when available and fall back to validating `nova-dap --version` against the extension version.
 
 ### Attach configuration
 
@@ -166,7 +169,7 @@ Nova adds a **Debug** run profile alongside **Run**. Debugging a test will:
 
 These settings control managed downloads for both `nova-lsp` and `nova-dap`:
 
-- Managed downloads are verified via published SHA-256 checksums. If checksums are missing for a release asset, Nova refuses to install it.
+- Managed downloads verify published SHA-256 checksums when available and fall back to validating `--version` against the extension version.
 - `nova.download.mode` ("auto" | "prompt" | "off"): download missing binaries automatically, prompt, or never download (default: "prompt").
 - `nova.download.releaseTag` (string): release tag to download from (default: `v${extensionVersion}` for packaged releases).
 - `nova.download.baseUrl` (string): GitHub Releases download base URL (e.g. `https://github.com/<owner>/<repo>/releases/download`). Used to locate the repository + assets.

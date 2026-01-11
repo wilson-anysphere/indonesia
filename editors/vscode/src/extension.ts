@@ -266,6 +266,13 @@ export async function activate(context: vscode.ExtensionContext) {
     await vscode.workspace.getConfiguration('nova').update('server.path', value, vscode.ConfigurationTarget.Global);
   };
 
+  const setDapPath = async (value: string | null): Promise<void> => {
+    const config = vscode.workspace.getConfiguration('nova');
+    await config.update('dap.path', value, vscode.ConfigurationTarget.Global);
+    // Keep the deprecated alias in sync for older configurations.
+    await config.update('debug.adapterPath', value, vscode.ConfigurationTarget.Global);
+  };
+
   const clearSettingAtAllTargets = async (key: string): Promise<void> => {
     const config = vscode.workspace.getConfiguration('nova');
     const inspected = config.inspect(key);
@@ -532,6 +539,7 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   let installTask: Promise<{ path: string; version: string }> | undefined;
+  let dapInstallTask: Promise<{ path: string; version: string }> | undefined;
   let currentServerCommand: string | undefined;
   let missingServerPrompted = false;
   let ensureTask: Promise<void> | undefined;
@@ -809,6 +817,229 @@ export async function activate(context: vscode.ExtensionContext) {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       vscode.window.showErrorMessage(`Nova: failed to run nova-lsp --version: ${message}`);
+    }
+  }
+
+  const readDapSettings = (): NovaServerSettings => {
+    const cfg = vscode.workspace.getConfiguration('nova');
+    const rawPath = cfg.get<string | null>('dap.path', null) ?? cfg.get<string | null>('debug.adapterPath', null);
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const resolvedPath = resolveNovaConfigPath({ configPath: rawPath, workspaceRoot }) ?? null;
+
+    const downloadMode = cfg.get<DownloadMode>('download.mode', 'prompt');
+    const allowPrerelease = cfg.get<boolean>('download.allowPrerelease', false);
+    const rawTag = cfg.get<string>('download.releaseTag', 'latest');
+    const rawBaseUrl = cfg.get<string>(
+      'download.baseUrl',
+      'https://github.com/wilson-anysphere/indonesia/releases/download',
+    );
+    const fallbackReleaseUrl = 'https://github.com/wilson-anysphere/indonesia';
+
+    const derivedReleaseUrl = deriveReleaseUrlFromBaseUrl(rawBaseUrl, fallbackReleaseUrl);
+    const version = typeof rawTag === 'string' && rawTag.trim().length > 0 ? rawTag.trim() : 'latest';
+
+    return {
+      path: resolvedPath,
+      autoDownload: downloadMode !== 'off',
+      releaseChannel: allowPrerelease ? 'prerelease' : 'stable',
+      version,
+      releaseUrl: derivedReleaseUrl,
+    };
+  };
+
+  async function installOrUpdateDebugAdapter(): Promise<void> {
+    let settings = readDapSettings();
+    if (settings.path) {
+      const choice = await vscode.window.showInformationMessage(
+        `Nova: nova.dap.path is set to "${settings.path}". Clear it to use the downloaded debug adapter?`,
+        'Clear and Install',
+        'Install (keep setting)',
+        'Cancel',
+      );
+      if (!choice || choice === 'Cancel') {
+        return;
+      }
+      if (choice === 'Clear and Install') {
+        await setDapPath(null);
+        settings = { ...settings, path: null };
+      }
+    }
+
+    if (process.platform === 'win32' && vscode.debug.activeDebugSession?.type === 'nova') {
+      const choice = await vscode.window.showWarningMessage(
+        'Nova: A Nova debug session is running. Updating nova-dap on Windows can fail due to file locks. Stop debugging first?',
+        'Stop Debugging and Install',
+        'Install Anyway',
+        'Cancel',
+      );
+      if (choice === 'Cancel' || !choice) {
+        return;
+      }
+      if (choice === 'Stop Debugging and Install') {
+        await vscode.debug.stopDebugging(vscode.debug.activeDebugSession);
+      }
+    }
+
+    serverOutput.show(true);
+    try {
+      const installed = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Nova: Installing/Updating nova-dap…',
+          cancellable: false,
+        },
+        async () => {
+          if (dapInstallTask) {
+            return await dapInstallTask;
+          }
+          dapInstallTask = serverManager.installOrUpdateDap({ ...settings, path: null });
+          try {
+            return await dapInstallTask;
+          } finally {
+            dapInstallTask = undefined;
+          }
+        },
+      );
+      vscode.window.showInformationMessage(`Nova: Installed nova-dap ${installed.version}.`);
+
+      const refreshed = readDapSettings();
+      const resolved = await serverManager.resolveDapPath({ path: refreshed.path });
+      if (resolved) {
+        const check = await checkBinaryVersion(resolved);
+        if (!check.ok || !check.version) {
+          const suffix = check.version
+            ? `found v${check.version}, expected v${extensionVersion}`
+            : check.error
+              ? check.error
+              : 'unavailable';
+          const actions: string[] = [];
+          if (check.error && isPermissionError(check.error)) {
+            actions.push('Make Executable');
+          }
+          if (check.version && !allowVersionMismatch()) {
+            actions.push('Enable allowVersionMismatch');
+          }
+          actions.push('Open Settings', 'Open install docs');
+          const choice = await vscode.window.showErrorMessage(
+            `Nova: installed nova-dap is not usable (${suffix}): ${resolved}`,
+            ...actions,
+          );
+          if (choice === 'Make Executable') {
+            await makeExecutable(resolved);
+          } else if (choice === 'Enable allowVersionMismatch') {
+            await setAllowVersionMismatch(true);
+          } else if (choice === 'Open Settings') {
+            await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.releaseTag');
+          } else if (choice === 'Open install docs') {
+            await openInstallDocs(context);
+          }
+          return;
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      serverOutput.appendLine(`Install failed: ${message}`);
+      if (err instanceof Error && err.stack) {
+        serverOutput.appendLine(err.stack);
+      }
+      serverOutput.show(true);
+
+      const action = await vscode.window.showErrorMessage(
+        `Nova: Failed to install nova-dap: ${message}`,
+        'Show Output',
+        'Use Local Debug Adapter Binary...',
+      );
+      if (action === 'Show Output') {
+        serverOutput.show(true);
+      } else if (action === 'Use Local Debug Adapter Binary...') {
+        await useLocalDebugAdapterBinary();
+      }
+    }
+  }
+
+  async function useLocalDebugAdapterBinary(): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      title: 'Select nova-dap binary',
+      canSelectMany: false,
+      canSelectFolders: false,
+      canSelectFiles: true,
+    });
+    if (!picked?.length) {
+      return;
+    }
+
+    const dapPath = picked[0].fsPath;
+    const check = await checkBinaryVersion(dapPath);
+    if (!check.ok || !check.version) {
+      const suffix = check.version
+        ? `found v${check.version}, expected v${extensionVersion}`
+        : check.error
+          ? check.error
+          : 'unavailable';
+      const actions: string[] = [];
+      if (check.error && isPermissionError(check.error)) {
+        actions.push('Make Executable');
+      }
+      if (check.version && !allowVersionMismatch()) {
+        actions.push('Enable allowVersionMismatch');
+      }
+      actions.push('Cancel');
+      const choice = await vscode.window.showErrorMessage(
+        `Nova: selected nova-dap is not usable (${suffix}): ${dapPath}`,
+        ...actions,
+      );
+      if (choice === 'Make Executable') {
+        const updated = await makeExecutable(dapPath);
+        if (updated) {
+          const rechecked = await checkBinaryVersion(dapPath);
+          if (!rechecked.ok || !rechecked.version) {
+            return;
+          }
+        } else {
+          return;
+        }
+      } else if (choice === 'Enable allowVersionMismatch') {
+        await setAllowVersionMismatch(true);
+      } else {
+        return;
+      }
+    }
+
+    // Clear workspace/workspaceFolder overrides so the selected user setting takes effect.
+    await clearSettingAtAllTargets('dap.path');
+    await clearSettingAtAllTargets('debug.adapterPath');
+    await setDapPath(dapPath);
+    void vscode.window.showInformationMessage(`Nova: using nova-dap at ${dapPath}`);
+  }
+
+  async function showDebugAdapterVersion(): Promise<void> {
+    const settings = readDapSettings();
+    const resolved = settings.path
+      ? await serverManager.resolveDapPath({ path: settings.path })
+      : (await findOnPath('nova-dap')) ?? (await serverManager.resolveDapPath({ path: null }));
+    if (!resolved) {
+      const message = settings.path
+        ? `Nova: nova.dap.path points to a missing file: ${settings.path}`
+        : 'Nova: nova-dap is not installed.';
+      const action = await vscode.window.showErrorMessage(
+        message,
+        'Install/Update Debug Adapter',
+        'Use Local Debug Adapter Binary...',
+      );
+      if (action === 'Install/Update Debug Adapter') {
+        await installOrUpdateDebugAdapter();
+      } else if (action === 'Use Local Debug Adapter Binary...') {
+        await useLocalDebugAdapterBinary();
+      }
+      return;
+    }
+
+    try {
+      const version = await serverManager.getServerVersion(resolved);
+      vscode.window.showInformationMessage(`Nova: ${version}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Nova: failed to run nova-dap --version: ${message}`);
     }
   }
 
@@ -1100,6 +1331,9 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(vscode.commands.registerCommand('nova.useLocalServerBinary', useLocalServerBinary));
   context.subscriptions.push(vscode.commands.registerCommand('nova.showServerVersion', showServerVersion));
   context.subscriptions.push(vscode.commands.registerCommand('nova.showBinaryStatus', showBinaryStatus));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.installOrUpdateDebugAdapter', installOrUpdateDebugAdapter));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.useLocalDebugAdapterBinary', useLocalDebugAdapterBinary));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.showDebugAdapterVersion', showDebugAdapterVersion));
 
   testController = vscode.tests.createTestController('novaTests', 'Nova Tests');
   context.subscriptions.push(testController);
