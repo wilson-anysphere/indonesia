@@ -290,6 +290,7 @@ impl<'a> Lexer<'a> {
                     return SyntaxKind::StringLiteral;
                 }
                 '\\' => {
+                    let escape_start = self.pos;
                     self.bump_char();
                     // Escape sequence: consume next char if present, but do not swallow line
                     // terminators (Java does not support C-style `\\\n` line continuations in
@@ -299,8 +300,36 @@ impl<'a> Lexer<'a> {
                             self.push_error("unterminated string literal", start, self.pos);
                             return SyntaxKind::Error;
                         }
-                        Some(_) => {
-                            self.bump_char();
+                        Some(next) => {
+                            match next {
+                                // Single-character escapes.
+                                'b' | 't' | 'n' | 'f' | 'r' | '"' | '\'' | '\\' | 's' => {
+                                    self.bump_char();
+                                }
+                                // Octal escape: \0 to \377
+                                '0'..='7' => {
+                                    let first = next;
+                                    self.bump_char();
+                                    // Second digit (optional).
+                                    if matches!(self.peek_char(), Some('0'..='7')) {
+                                        self.bump_char();
+                                        // Third digit (optional), only if the first digit was 0..3.
+                                        if first <= '3'
+                                            && matches!(self.peek_char(), Some('0'..='7'))
+                                        {
+                                            self.bump_char();
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    self.bump_char();
+                                    self.push_error(
+                                        "invalid escape sequence in string literal",
+                                        escape_start,
+                                        self.pos,
+                                    );
+                                }
+                            }
                         }
                     }
                 }

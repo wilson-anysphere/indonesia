@@ -417,6 +417,55 @@ fn lexer_rejects_invalid_char_literals() {
 }
 
 #[test]
+fn lexer_string_literal_escape_sequences() {
+    let input = "\"\\\\n\" \"\\\\123\" \"\\\\s\"";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::StringLiteral, "\"\\\\n\"".into()),
+            (SyntaxKind::StringLiteral, "\"\\\\123\"".into()),
+            (SyntaxKind::StringLiteral, "\"\\\\s\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
+fn lexer_reports_invalid_string_escape_sequences() {
+    let input = "\"\\\\q\"";
+    let (tokens, errors) = lex_with_errors(input);
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::StringLiteral, "\"\\\\q\"".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("invalid escape sequence in string literal")),
+        "expected invalid escape error, got: {errors:?}"
+    );
+}
+
+#[test]
 fn lexer_translates_unicode_escapes_before_tokenization() {
     // `\u003B` is `;`, and `\u005C` is `\` so the second literal exercises the "translated
     // backslash starts another escape" rule: `\u005Cu003B` => `;`.
