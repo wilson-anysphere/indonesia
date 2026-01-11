@@ -45,7 +45,16 @@ impl MemoryBudget {
     /// - budget = min(total_ram / 4, 4GiB) clamped to at least 512MiB.
     pub fn default_for_system() -> Self {
         let total_ram = system_total_memory_bytes().unwrap_or(8 * GB);
-        let budget = (total_ram / 4).clamp(512 * MB, 4 * GB);
+        Self::default_for_system_memory_bytes(total_ram)
+    }
+
+    /// Derive the default budget from a caller-provided "system memory" value.
+    ///
+    /// This is a small pure helper used by [`MemoryBudget::default_for_system`]
+    /// and exposed for integration tests.
+    #[doc(hidden)]
+    pub fn default_for_system_memory_bytes(system_memory_bytes: u64) -> Self {
+        let budget = (system_memory_bytes / 4).clamp(512 * MB, 4 * GB);
         Self::from_total(budget)
     }
 
@@ -129,16 +138,88 @@ impl MemoryBudget {
     }
 }
 
+const UNLIMITED_THRESHOLD_BYTES: u64 = 1 << 60; // 1 EiB; above this is treated as "unlimited".
+
+/// Interpret a raw `RLIMIT_AS` value expressed in bytes.
+///
+/// Returns `None` for unlimited/unknown values.
+///
+/// Exposed for integration tests; callers should pass the platform-specific
+/// `RLIM_INFINITY` value (e.g. `libc::RLIM_INFINITY`).
+#[doc(hidden)]
+pub fn interpret_rlimit_as_bytes(raw_bytes: u64, rlim_infinity: u64) -> Option<u64> {
+    if raw_bytes == rlim_infinity || raw_bytes >= UNLIMITED_THRESHOLD_BYTES {
+        return None;
+    }
+
+    Some(raw_bytes)
+}
+
+#[cfg(unix)]
+fn process_rlimit_as_bytes() -> Option<u64> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_AS, &mut limit) };
+    if rc != 0 {
+        return None;
+    }
+
+    interpret_rlimit_as_bytes(limit.rlim_cur as u64, libc::RLIM_INFINITY as u64)
+}
+
+#[cfg(not(unix))]
+fn process_rlimit_as_bytes() -> Option<u64> {
+    None
+}
+
+/// Compute the effective system memory size for budgeting.
+///
+/// The returned value is the minimum of:
+/// - host total RAM
+/// - Linux cgroup memory limit (when available)
+/// - process `RLIMIT_AS` (when set)
+///
+/// Exposed for integration tests; it does not query the OS.
+#[doc(hidden)]
+pub fn effective_system_total_memory_bytes(
+    host_total_memory_bytes: u64,
+    cgroup_limit_bytes: Option<u64>,
+    rlimit_as_bytes: Option<u64>,
+) -> u64 {
+    let mut effective = host_total_memory_bytes;
+
+    if let Some(limit) = cgroup_limit_bytes {
+        effective = effective.min(limit);
+    }
+
+    if let Some(limit) = rlimit_as_bytes {
+        effective = effective.min(limit);
+    }
+
+    effective
+}
+
 fn system_total_memory_bytes() -> Option<u64> {
     use sysinfo::System;
-
-    #[cfg(target_os = "linux")]
-    if let Some(limit) = crate::cgroup::cgroup_memory_limit_bytes() {
-        return Some(limit);
-    }
 
     let mut sys = System::new();
     sys.refresh_memory();
     // sysinfo reports KiB.
-    Some(sys.total_memory().saturating_mul(1024))
+    let host_total = sys.total_memory().saturating_mul(1024);
+
+    #[cfg(target_os = "linux")]
+    let cgroup_limit = crate::cgroup::cgroup_memory_limit_bytes();
+    #[cfg(not(target_os = "linux"))]
+    let cgroup_limit: Option<u64> = None;
+
+    let rlimit_as = process_rlimit_as_bytes();
+
+    Some(effective_system_total_memory_bytes(
+        host_total,
+        cgroup_limit,
+        rlimit_as,
+    ))
 }

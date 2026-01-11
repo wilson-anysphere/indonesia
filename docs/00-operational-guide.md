@@ -35,6 +35,11 @@ We use **RLIMIT_AS (address space limit)** via `prlimit` or `ulimit`. This is:
 - **Inherited by child processes** - cargo, rustc, tests all respect it
 - **Simple and robust** - no cgroups, no systemd, no root required
 
+Nova’s internal memory budgeting (`nova-memory`) also respects `RLIMIT_AS` when present:
+`MemoryBudget::default_for_system()` budgets against the minimum of host RAM, Linux cgroup limit
+(when available), and `RLIMIT_AS`. This helps eviction/degraded mode engage before the process hits
+the OS-enforced ceiling.
+
 ### The Wrapper Scripts
 
 **Always use these wrappers. Never run cargo directly.**

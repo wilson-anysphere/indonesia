@@ -336,6 +336,16 @@ pub async fn index_project(
 
 ### Memory Budget
 
+Nova’s default memory budget is derived from the *effective* memory available to the
+process, not just host RAM. In environments with hard caps (containers, agent
+wrappers), we budget against the smallest applicable ceiling:
+
+- Linux cgroup memory limit (cgroup v2 `memory.max`, cgroup v1 `memory.limit_in_bytes`)
+- `RLIMIT_AS` (process address space limit) when set
+- Host total RAM
+
+This ensures eviction and degraded mode trigger *before* the process hits an OS-enforced limit.
+
 ```rust
 pub struct MemoryBudget {
     /// Total budget
@@ -347,7 +357,7 @@ pub struct MemoryBudget {
 
 impl MemoryBudget {
     pub fn default_for_system() -> Self {
-        let total_ram = system_memory();
+        let total_ram = system_memory_limit(); // min(host RAM, cgroup limit, RLIMIT_AS)
         let budget = (total_ram / 4).min(4 * GB).max(512 * MB);
         
         Self {
