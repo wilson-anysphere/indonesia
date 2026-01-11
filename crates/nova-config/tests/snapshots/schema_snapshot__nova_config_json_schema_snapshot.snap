@@ -280,18 +280,12 @@ expression: schema
         ],
         "properties": {
           "ai": {
-            "required": [
-              "provider"
-            ],
             "properties": {
               "provider": {
-                "required": [
-                  "url"
-                ],
                 "properties": {
                   "url": {
                     "type": "string",
-                    "pattern": "^https?://(localhost|127\\\\.0\\\\.0\\\\.1|\\\\[::1\\\\])(:[0-9]+)?(/|\\\\?|#|$)"
+                    "pattern": "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)"
                   }
                 }
               }

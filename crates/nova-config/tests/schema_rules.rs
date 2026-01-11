@@ -27,6 +27,42 @@ fn assert_schema_disallows_alias_collision(
 }
 
 #[test]
+fn json_schema_loopback_url_rule_does_not_require_explicit_url() {
+    // `nova_config::json_schema()` encodes a best-effort approximation of the runtime `local_only`
+    // loopback URL check. Because JSON Schema does not apply defaults during validation, the rule
+    // must *not* require that users explicitly set `ai.provider.url` (it has a safe default).
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let all_of = value
+        .pointer("/allOf")
+        .and_then(|v| v.as_array())
+        .expect("root schema should include allOf semantic constraints");
+
+    let expected_pattern =
+        "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)";
+
+    let rule = all_of
+        .iter()
+        .find(|entry| {
+            entry
+                .pointer("/then/properties/ai/properties/provider/properties/url/pattern")
+                .and_then(|v| v.as_str())
+                == Some(expected_pattern)
+        })
+        .expect("loopback URL semantic rule should exist");
+
+    assert!(
+        rule.pointer("/then/properties/ai/required").is_none(),
+        "loopback rule should not require ai.provider explicitly"
+    );
+    assert!(
+        rule.pointer("/then/properties/ai/properties/provider/required").is_none(),
+        "loopback rule should not require ai.provider.url explicitly"
+    );
+}
+
+#[test]
 fn json_schema_includes_deprecated_jdk_home_alias() {
     let schema = json_schema();
     let value = serde_json::to_value(schema).expect("schema serializes");

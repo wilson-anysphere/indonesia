@@ -214,14 +214,12 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
                 "required": ["ai"],
                 "properties": {
                     "ai": {
-                        "required": ["provider"],
                         "properties": {
                             "provider": {
-                                "required": ["url"],
                                 "properties": {
                                     "url": {
                                         "type": "string",
-                                        "pattern": "^https?://(localhost|127\\\\.0\\\\.0\\\\.1|\\\\[::1\\\\])(:[0-9]+)?(/|\\\\?|#|$)"
+                                        "pattern": "^https?://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|\\?|#|$)"
                                     }
                                 }
                             }
