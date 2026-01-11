@@ -286,20 +286,34 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     }
 
     // 3) JPA / JPQL diagnostics (best-effort).
+    //
+    // Computing the per-project entity model can require scanning the full
+    // workspace. Avoid that work for files that clearly cannot contain any JPA
+    // entity/JPQL diagnostics.
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
     {
-        if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
-            if let (Some(analysis), Some(path)) = (project.analysis.as_ref(), db.file_path(file)) {
-                if let Some(source) = project.source_index(path) {
-                    diagnostics.extend(
-                        analysis
-                            .diagnostics
-                            .iter()
-                            .filter(|d| d.source == source)
-                            .map(|d| d.diagnostic.clone()),
-                    );
+        let maybe_jpa_file = text.contains("jakarta.persistence.")
+            || text.contains("javax.persistence.")
+            || text.contains("@Entity")
+            || text.contains("@Query")
+            || text.contains("@NamedQuery");
+
+        if maybe_jpa_file {
+            if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
+                if let (Some(analysis), Some(path)) =
+                    (project.analysis.as_ref(), db.file_path(file))
+                {
+                    if let Some(source) = project.source_index(path) {
+                        diagnostics.extend(
+                            analysis
+                                .diagnostics
+                                .iter()
+                                .filter(|d| d.source == source)
+                                .map(|d| d.diagnostic.clone()),
+                        );
+                    }
                 }
             }
         }
