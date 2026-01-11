@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use nova_classpath::ModuleAwareClasspathIndex;
-use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
+use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeName};
 use nova_hir::module_info::{lower_module_info_source_strict, ModuleInfoLowerError};
 use nova_hir::{CompilationUnit, ImportDecl};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
@@ -30,7 +30,7 @@ use crate::scopes::{append_package, resolve_type_with_nesting};
 /// If either side is considered "unnamed" (missing module metadata), the type
 /// is treated as accessible, matching traditional classpath semantics.
 pub struct JpmsResolver<'a> {
-    jdk: &'a dyn TypeIndex,
+    jdk: &'a nova_jdk::JdkIndex,
     graph: &'a ModuleGraph,
     classpath: &'a ModuleAwareClasspathIndex,
     from: ModuleName,
@@ -38,7 +38,7 @@ pub struct JpmsResolver<'a> {
 
 impl<'a> JpmsResolver<'a> {
     pub fn new(
-        jdk: &'a dyn TypeIndex,
+        jdk: &'a nova_jdk::JdkIndex,
         graph: &'a ModuleGraph,
         classpath: &'a ModuleAwareClasspathIndex,
         from: ModuleName,
@@ -51,12 +51,26 @@ impl<'a> JpmsResolver<'a> {
         }
     }
 
+    fn module_of_type(&self, ty: &TypeName) -> Option<ModuleName> {
+        if let Some(to) = self.classpath.module_of(ty.as_str()) {
+            return Some(to.clone());
+        }
+
+        // If the type exists in the classpath index but has no module metadata,
+        // treat it as belonging to the unnamed module (i.e. don't enforce JPMS).
+        if self.classpath.types.lookup_binary(ty.as_str()).is_some() {
+            return None;
+        }
+
+        self.jdk.module_of_type(ty.as_str())
+    }
+
     fn type_is_accessible(&self, ty: &TypeName) -> bool {
-        let Some(to) = self.classpath.module_of(ty.as_str()) else {
+        let Some(to) = self.module_of_type(ty) else {
             return true;
         };
 
-        if !self.graph.can_read(&self.from, to) {
+        if !self.graph.can_read(&self.from, &to) {
             return false;
         }
 
@@ -66,7 +80,7 @@ impl<'a> JpmsResolver<'a> {
             .map(|(pkg, _)| pkg)
             .unwrap_or("");
 
-        let Some(info) = self.graph.get(to) else {
+        let Some(info) = self.graph.get(&to) else {
             return true;
         };
 
