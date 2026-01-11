@@ -1364,6 +1364,10 @@ fn is_subtype_class(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
         for iface in &class_def.interfaces {
             queue.push_back(substitute(iface, &subst));
         }
+        // In Java, every interface implicitly has `Object` as a supertype (JLS 4.10.2).
+        if class_def.kind == ClassKind::Interface {
+            queue.push_back(Type::class(env.well_known().object, vec![]));
+        }
     }
 
     false
@@ -1462,9 +1466,23 @@ pub fn is_assignable(env: &dyn TypeEnv, from: &Type, to: &Type) -> bool {
 
 // === Conversions (JLS 5) =====================================================
 
+/// Compile-time constant value used by conversions.
+///
+/// This intentionally only models the small subset of constants needed by the
+/// conversion engine (notably JLS 5.2 constant narrowing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstValue {
+    /// Integral constant value (`byte`, `short`, `char`, `int`, `long`).
+    Int(i64),
+    /// Boolean constant value.
+    Boolean(bool),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UncheckedReason {
     RawConversion,
+    UncheckedCast,
+    UncheckedVarargs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1673,7 +1691,69 @@ pub fn method_invocation_conversion(
 
 /// Assignment conversion (JLS 5.2).
 pub fn assignment_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -> Option<Conversion> {
-    method_invocation_conversion(env, from, to)
+    assignment_conversion_with_const(env, from, to, None)
+}
+
+/// Assignment conversion (JLS 5.2) with an optional compile-time constant value.
+///
+/// This extends [`method_invocation_conversion`] with *constant narrowing*
+/// conversions (e.g. `byte b = 1;`).
+pub fn assignment_conversion_with_const(
+    env: &dyn TypeEnv,
+    from: &Type,
+    to: &Type,
+    const_value: Option<ConstValue>,
+) -> Option<Conversion> {
+    if let Some(conv) = method_invocation_conversion(env, from, to) {
+        return Some(conv);
+    }
+
+    constant_narrowing_conversion(env, from, to, const_value)
+}
+
+fn constant_narrowing_conversion(
+    env: &dyn TypeEnv,
+    from: &Type,
+    to: &Type,
+    const_value: Option<ConstValue>,
+) -> Option<Conversion> {
+    let Some(ConstValue::Int(value)) = const_value else {
+        return None;
+    };
+
+    let from = canonicalize_named(env, from);
+    let to = canonicalize_named(env, to);
+
+    let (Type::Primitive(from_p), Type::Primitive(to_p)) = (&from, &to) else {
+        return None;
+    };
+
+    // JLS 5.2: allow narrowing for constant expressions of type byte/short/char/int
+    // to byte/short/char when the value is representable.
+    use PrimitiveType::*;
+    if !matches!(*from_p, Byte | Short | Char | Int) {
+        return None;
+    }
+    if !matches!(*to_p, Byte | Short | Char) {
+        return None;
+    }
+    if !value_representable_in_primitive(value, *to_p) {
+        return None;
+    }
+
+    Some(Conversion::new(ConversionStep::NarrowingPrimitive))
+}
+
+fn value_representable_in_primitive(value: i64, ty: PrimitiveType) -> bool {
+    use PrimitiveType::*;
+    match ty {
+        Byte => (i64::from(i8::MIN)..=i64::from(i8::MAX)).contains(&value),
+        Short => (i64::from(i16::MIN)..=i64::from(i16::MAX)).contains(&value),
+        Char => (0..=i64::from(u16::MAX)).contains(&value),
+        Int => (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&value),
+        Long => true,
+        Float | Double | Boolean => false,
+    }
 }
 
 /// Casting conversion (JLS 5.5), implemented for common cases.
@@ -1706,13 +1786,21 @@ pub fn cast_conversion(env: &dyn TypeEnv, from: &Type, to: &Type) -> Option<Conv
     }
 
     // Reference casts.
-    if from.is_reference() && to.is_reference() && reference_castable(env, &from, &to) {
-        let mut conv = Conversion::new(ConversionStep::NarrowingReference);
-        if raw_warning(env, &from, &to) {
-            conv.warnings
-                .push(TypeWarning::Unchecked(UncheckedReason::RawConversion));
+    if from.is_reference() && to.is_reference() {
+        match reference_castability(env, &from, &to) {
+            Castability::No => {}
+            castability => {
+                let mut conv = Conversion::new(ConversionStep::NarrowingReference);
+                if raw_warning(env, &from, &to) {
+                    conv.warnings
+                        .push(TypeWarning::Unchecked(UncheckedReason::RawConversion));
+                } else if castability == Castability::Uncertain || !is_reifiable(env, &to) {
+                    conv.warnings
+                        .push(TypeWarning::Unchecked(UncheckedReason::UncheckedCast));
+                }
+                return Some(conv);
+            }
         }
-        return Some(conv);
     }
 
     // Intersection casts: `(A & B) expr` is valid iff `expr` is castable to each component.
@@ -1865,23 +1953,120 @@ fn erasure(env: &dyn TypeEnv, ty: &Type) -> Type {
     }
 }
 
-fn reference_castable(env: &dyn TypeEnv, from: &Type, to: &Type) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Castability {
+    Yes,
+    No,
+    Uncertain,
+}
+
+fn reference_castability(env: &dyn TypeEnv, from: &Type, to: &Type) -> Castability {
     if matches!(from, Type::Null) {
-        return to.is_reference();
+        return if to.is_reference() {
+            Castability::Yes
+        } else {
+            Castability::No
+        };
     }
     if is_subtype(env, from, to) || is_subtype(env, to, from) {
-        return true;
+        return Castability::Yes;
     }
 
-    // Best-effort: allow casts involving interfaces.
-    let (Type::Class(ClassType { def: from_def, .. }), Type::Class(ClassType { def: to_def, .. })) =
-        (from, to)
-    else {
-        return false;
-    };
-    let from_kind = env.class(*from_def).map(|c| c.kind);
-    let to_kind = env.class(*to_def).map(|c| c.kind);
-    matches!(from_kind, Some(ClassKind::Interface)) || matches!(to_kind, Some(ClassKind::Interface))
+    match (from, to) {
+        // Arrays: `S[]` is castable to `T[]` if the element types are castable.
+        (Type::Array(from_elem), Type::Array(to_elem)) => match (&**from_elem, &**to_elem) {
+            (Type::Primitive(a), Type::Primitive(b)) => {
+                if a == b {
+                    Castability::Yes
+                } else {
+                    Castability::No
+                }
+            }
+            (a, b) if a.is_reference() && b.is_reference() => reference_castability(env, a, b),
+            // Mixed primitive/reference arrays are never castable.
+            _ => Castability::No,
+        },
+
+        // If one side is an array and we didn't hit a subtype relationship above,
+        // the cast is invalid (arrays only implement Object/Cloneable/Serializable).
+        (Type::Array(_), _) | (_, Type::Array(_)) => Castability::No,
+
+        // Classes / interfaces.
+        (Type::Class(ClassType { def: from_def, .. }), Type::Class(ClassType { def: to_def, .. })) => {
+            let Some(from_kind) = env.class(*from_def).map(|c| c.kind) else {
+                return Castability::Uncertain;
+            };
+            let Some(to_kind) = env.class(*to_def).map(|c| c.kind) else {
+                return Castability::Uncertain;
+            };
+
+            match (from_kind, to_kind) {
+                (ClassKind::Class, ClassKind::Class) => Castability::No,
+                (ClassKind::Interface, _) | (_, ClassKind::Interface) => Castability::Yes,
+            }
+        }
+
+        // Type variables / intersections: allow, but it's often unchecked.
+        (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => Castability::Uncertain,
+        (Type::Intersection(_), _) | (_, Type::Intersection(_)) => Castability::Uncertain,
+
+        // Best-effort recovery: unknown / named / synthetic types are treated as castable.
+        (Type::Named(_), _) | (_, Type::Named(_)) => Castability::Uncertain,
+        (Type::VirtualInner { .. }, _) | (_, Type::VirtualInner { .. }) => Castability::Uncertain,
+        (Type::Unknown | Type::Error, _) | (_, Type::Unknown | Type::Error) => Castability::Yes,
+
+        _ => Castability::No,
+    }
+}
+
+fn is_reifiable(env: &dyn TypeEnv, ty: &Type) -> bool {
+    match ty {
+        Type::Array(elem) => is_reifiable(env, elem),
+        Type::Class(ClassType { def: _, args }) => {
+            if args.is_empty() {
+                return true;
+            }
+            args.iter()
+                .all(|a| matches!(a, Type::Wildcard(WildcardBound::Unbounded)))
+        }
+        Type::Named(_) | Type::VirtualInner { .. } => true,
+        _ => false,
+    }
+}
+
+/// Categorize a conversion for tie-breaking.
+///
+/// This is intended for overload resolution and diagnostic ranking:
+/// `identity < widening < boxing/unboxing < unchecked < narrowing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ConversionCost {
+    Identity,
+    Widening,
+    Boxing,
+    Unchecked,
+    Narrowing,
+}
+
+pub fn conversion_cost(conv: &Conversion) -> ConversionCost {
+    let mut cost = ConversionCost::Identity;
+    for step in &conv.steps {
+        let step_cost = match step {
+            ConversionStep::Identity => ConversionCost::Identity,
+            ConversionStep::WideningPrimitive | ConversionStep::WideningReference => ConversionCost::Widening,
+            ConversionStep::Boxing | ConversionStep::Unboxing => ConversionCost::Boxing,
+            ConversionStep::Unchecked => ConversionCost::Unchecked,
+            ConversionStep::NarrowingPrimitive | ConversionStep::NarrowingReference => ConversionCost::Narrowing,
+        };
+        cost = cost.max(step_cost);
+    }
+    if conv
+        .warnings
+        .iter()
+        .any(|w| matches!(w, TypeWarning::Unchecked(_)))
+    {
+        cost = cost.max(ConversionCost::Unchecked);
+    }
+    cost
 }
 
 fn wildcard_upper_bound(env: &dyn TypeEnv, bound: &WildcardBound) -> Type {
