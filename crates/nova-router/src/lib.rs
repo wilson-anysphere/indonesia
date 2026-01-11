@@ -173,7 +173,7 @@ impl DistributedRouterConfig {
             if allowlist_configured {
                 match &self.listen_addr {
                     ListenAddr::Tcp(TcpListenAddr::Tls { config, .. }) => {
-                        if config.client_ca_cert_path.is_none() {
+                        if config.client_ca_path.is_none() || !config.require_client_auth {
                             return Err(anyhow!(
                                 "TLS client certificate fingerprint allowlist requires mTLS client verification. \
 Configure the router TLS server with a client CA certificate (TlsServerConfig::with_client_ca_cert)."
