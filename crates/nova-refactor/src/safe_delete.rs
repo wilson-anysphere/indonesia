@@ -10,8 +10,6 @@ use thiserror::Error;
 use crate::edit::{
     FileId, TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange, WorkspaceEdit,
 };
-use crate::java::SymbolId as SemanticSymbolId;
-use crate::semantic::{Reference, RefactorDatabase, SymbolDefinition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -536,30 +534,4 @@ pub fn apply_edits(
     }
 
     out
-}
-
-impl RefactorDatabase for Index {
-    fn file_text(&self, file: &FileId) -> Option<&str> {
-        Index::file_text(self, &file.0)
-    }
-
-    fn symbol_definition(&self, _symbol: SemanticSymbolId) -> Option<SymbolDefinition> {
-        None
-    }
-
-    fn symbol_scope(&self, _symbol: SemanticSymbolId) -> Option<u32> {
-        None
-    }
-
-    fn resolve_name_in_scope(&self, _scope: u32, _name: &str) -> Option<SemanticSymbolId> {
-        None
-    }
-
-    fn would_shadow(&self, _scope: u32, _name: &str) -> Option<SemanticSymbolId> {
-        None
-    }
-
-    fn find_references(&self, _symbol: SemanticSymbolId) -> Vec<Reference> {
-        Vec::new()
-    }
 }

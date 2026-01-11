@@ -1,14 +1,16 @@
 use std::collections::{BTreeMap, HashMap};
 
 use lsp_types::{
-    CodeAction, CodeActionKind, DocumentChangeOperation, DocumentChanges, OptionalVersionedTextDocumentIdentifier,
-    Position, Range, ResourceOp, TextDocumentEdit, TextEdit as LspTextEdit, Uri, WorkspaceEdit as LspWorkspaceEdit,
+    CodeAction, CodeActionKind, DocumentChangeOperation, DocumentChanges,
+    OptionalVersionedTextDocumentIdentifier, Position, Range, ResourceOp, TextDocumentEdit,
+    TextEdit as LspTextEdit, Uri, WorkspaceEdit as LspWorkspaceEdit,
 };
+use nova_index::Index;
 use thiserror::Error;
 
 use crate::edit::{apply_workspace_edit, FileId, FileOp, TextEdit, WorkspaceEdit};
 use crate::java::SymbolId;
-use crate::semantic::{Reference, RefactorDatabase, SymbolDefinition};
+use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
 
 /// Minimal [`RefactorDatabase`] implementation backed by raw file text.
 ///
@@ -30,6 +32,32 @@ impl TextDatabase {
 impl RefactorDatabase for TextDatabase {
     fn file_text(&self, file: &FileId) -> Option<&str> {
         self.files.get(file).map(String::as_str)
+    }
+
+    fn symbol_definition(&self, _symbol: SymbolId) -> Option<SymbolDefinition> {
+        None
+    }
+
+    fn symbol_scope(&self, _symbol: SymbolId) -> Option<u32> {
+        None
+    }
+
+    fn resolve_name_in_scope(&self, _scope: u32, _name: &str) -> Option<SymbolId> {
+        None
+    }
+
+    fn would_shadow(&self, _scope: u32, _name: &str) -> Option<SymbolId> {
+        None
+    }
+
+    fn find_references(&self, _symbol: SymbolId) -> Vec<Reference> {
+        Vec::new()
+    }
+}
+
+impl RefactorDatabase for Index {
+    fn file_text(&self, file: &FileId) -> Option<&str> {
+        Index::file_text(self, &file.0)
     }
 
     fn symbol_definition(&self, _symbol: SymbolId) -> Option<SymbolDefinition> {
@@ -205,14 +233,11 @@ where
                 // full rewrite of an empty document. If there are additional text edits on this
                 // file, apply them in-memory and send a single rewrite to avoid offset shifting.
                 let file_edits = edits_by_file.remove(file).unwrap_or_default();
-                let final_contents =
-                    crate::edit::apply_text_edits(contents, &file_edits).map_err(LspConversionError::Edit)?;
+                let final_contents = crate::edit::apply_text_edits(contents, &file_edits)
+                    .map_err(LspConversionError::Edit)?;
 
                 ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
-                    text_document: OptionalVersionedTextDocumentIdentifier {
-                        uri,
-                        version: None,
-                    },
+                    text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
                     edits: vec![lsp_types::OneOf::Left(LspTextEdit {
                         range: full_document_range(""),
                         new_text: final_contents,
@@ -230,20 +255,19 @@ where
         let uri = file_id_to_uri(&file)?;
 
         // Convert byte offsets -> UTF-16 positions.
-        let mut lsp_edits: Vec<lsp_types::OneOf<LspTextEdit, lsp_types::AnnotatedTextEdit>> =
-            edits
-                .drain(..)
-                .map(|e| {
-                    let range = Range {
-                        start: offset_to_position(text, e.range.start),
-                        end: offset_to_position(text, e.range.end),
-                    };
-                    lsp_types::OneOf::Left(LspTextEdit {
-                        range,
-                        new_text: e.replacement,
-                    })
+        let mut lsp_edits: Vec<lsp_types::OneOf<LspTextEdit, lsp_types::AnnotatedTextEdit>> = edits
+            .drain(..)
+            .map(|e| {
+                let range = Range {
+                    start: offset_to_position(text, e.range.start),
+                    end: offset_to_position(text, e.range.end),
+                };
+                lsp_types::OneOf::Left(LspTextEdit {
+                    range,
+                    new_text: e.replacement,
                 })
-                .collect();
+            })
+            .collect();
 
         // LSP clients tend to apply edits sequentially. Provide them in reverse order to avoid
         // offset shifting even if a client ignores the spec.
@@ -326,7 +350,10 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
 fn full_document_range(contents: &str) -> Range {
     let end = offset_to_position(contents, contents.len());
     Range {
-        start: Position { line: 0, character: 0 },
+        start: Position {
+            line: 0,
+            character: 0,
+        },
         end,
     }
 }
@@ -405,8 +432,8 @@ fn _lsp_text_edit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::semantic::{Reference, RefactorDatabase, SymbolDefinition};
     use crate::java::SymbolId;
+    use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
     use pretty_assertions::assert_eq;
 
     #[derive(Default)]
@@ -467,10 +494,8 @@ mod tests {
         };
 
         assert!(
-            ops.iter().any(|op| matches!(
-                op,
-                DocumentChangeOperation::Op(ResourceOp::Rename(_))
-            )),
+            ops.iter()
+                .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Rename(_)))),
             "expected a rename op, got: {ops:?}"
         );
 
@@ -482,15 +507,30 @@ mod tests {
             })
             .expect("expected a TextDocumentEdit");
 
-        assert_eq!(text_doc_edit.text_document.uri.as_str(), new_file.0.as_str());
+        assert_eq!(
+            text_doc_edit.text_document.uri.as_str(),
+            new_file.0.as_str()
+        );
 
         let edit = match &text_doc_edit.edits[0] {
             lsp_types::OneOf::Left(e) => e,
             lsp_types::OneOf::Right(e) => &e.text_edit,
         };
 
-        assert_eq!(edit.range.start, Position { line: 0, character: 1 });
-        assert_eq!(edit.range.end, Position { line: 0, character: 3 });
+        assert_eq!(
+            edit.range.start,
+            Position {
+                line: 0,
+                character: 1
+            }
+        );
+        assert_eq!(
+            edit.range.end,
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
         assert_eq!(edit.new_text, "X");
     }
 
