@@ -21,6 +21,7 @@ use std::rc::Rc;
 pub struct PrintConfig {
     pub max_width: usize,
     pub indent_width: usize,
+    pub newline: &'static str,
 }
 
 impl Default for PrintConfig {
@@ -28,6 +29,7 @@ impl Default for PrintConfig {
         Self {
             max_width: 100,
             indent_width: 4,
+            newline: "\n",
         }
     }
 }
@@ -40,11 +42,11 @@ enum Mode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
-    /// A regular line break: `" "` in flat mode, `"\n"` in break mode.
+    /// A regular line break: `" "` in flat mode, `config.newline` in break mode.
     Line,
-    /// A soft line break: `""` in flat mode, `"\n"` in break mode.
+    /// A soft line break: `""` in flat mode, `config.newline` in break mode.
     Soft,
-    /// A hard line break: always `"\n"`, and forces any containing group to break.
+    /// A hard line break: always `config.newline`, and forces any containing group to break.
     Hard,
 }
 
@@ -141,7 +143,7 @@ impl<'a> Doc<'a> {
         Self::new(DocKind::Line(LineKind::Soft))
     }
 
-    /// A line break that is always rendered as `"\n"`.
+    /// A line break that is always rendered as `config.newline`.
     pub fn hardline() -> Self {
         Self::new(DocKind::Line(LineKind::Hard))
     }
@@ -243,13 +245,13 @@ pub fn print<'a>(doc: Doc<'a>, config: PrintConfig) -> String {
                     }
                     LineKind::Soft => {}
                     LineKind::Hard => {
-                        out.push('\n');
+                        out.push_str(config.newline);
                         push_spaces(&mut out, indent);
                         pos = indent;
                     }
                 },
                 Mode::Break => {
-                    out.push('\n');
+                    out.push_str(config.newline);
                     push_spaces(&mut out, indent);
                     pos = indent;
                 }
@@ -364,6 +366,7 @@ mod tests {
         PrintConfig {
             max_width,
             indent_width: 4,
+            newline: "\n",
         }
     }
 
@@ -435,5 +438,16 @@ mod tests {
 
         assert_eq!(print(doc.clone(), cfg(10)), "aY b");
         assert_eq!(print(doc, cfg(2)), "aX\nb");
+    }
+
+    #[test]
+    fn respects_configured_newline() {
+        let doc = Doc::concat([Doc::text("a"), Doc::hardline(), Doc::text("b")]);
+        let cfg = PrintConfig {
+            max_width: 100,
+            indent_width: 4,
+            newline: "\r\n",
+        };
+        assert_eq!(print(doc, cfg), "a\r\nb");
     }
 }
