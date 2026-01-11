@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
-use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
+use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
 use nova_index::{
-    load_sharded_index_archives, save_sharded_indexes, shard_id_for_path, CandidateStrategy,
+    load_sharded_index_archives_fast, save_sharded_indexes, shard_id_for_path, CandidateStrategy,
     ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation, SymbolSearchIndex,
     DEFAULT_SHARD_COUNT,
 };
@@ -202,20 +202,42 @@ impl Workspace {
         let start = Instant::now();
 
         let files = self.project_java_files()?;
-        let snapshot = ProjectSnapshot::new(&self.root, files).with_context(|| {
-            format!(
-                "failed to build project snapshot for {}",
-                self.root.display()
-            )
-        })?;
-
         let cache_dir = self.open_cache_dir()?;
 
-        let shard_count = DEFAULT_SHARD_COUNT;
-        let loaded = load_sharded_index_archives(&cache_dir, &snapshot, shard_count)
-            .context("failed to load cached indexes")?;
+        // ------------------------------------------------------------------
+        // Stamp snapshot (metadata-only) + warm-start invalidation.
+        // ------------------------------------------------------------------
 
-        let (mut shards, invalidated_files) = match loaded {
+        let snapshot_start = Instant::now();
+        let stamp_snapshot = ProjectSnapshot::new_fast(&self.root, files.clone()).with_context(
+            || format!("failed to build file stamp snapshot for {}", self.root.display()),
+        )?;
+        let snapshot_ms = snapshot_start.elapsed().as_millis();
+
+        // Load cache metadata (if any) so we can reuse content fingerprints for
+        // unchanged files when persisting updated metadata.
+        let metadata_path = cache_dir.metadata_path();
+        let metadata = CacheMetadata::load(&metadata_path)
+            .ok()
+            .filter(|meta| meta.is_compatible() && &meta.project_hash == stamp_snapshot.project_hash());
+
+        let mut content_fingerprints = metadata
+            .as_ref()
+            .map(|meta| meta.file_fingerprints.clone())
+            .unwrap_or_default();
+
+        // Load persisted sharded indexes based on the stamp snapshot. This avoids hashing
+        // full file contents before deciding whether the cache is reusable.
+        let shard_count = DEFAULT_SHARD_COUNT;
+        let loaded = load_sharded_index_archives_fast(
+            &cache_dir,
+            stamp_snapshot.project_root(),
+            files,
+            shard_count,
+        )
+        .context("failed to load cached indexes")?;
+
+        let (mut shards, mut invalidated_files) = match loaded {
             Some(loaded) => {
                 let nova_index::LoadedShardedIndexArchives {
                     shards: loaded_shards,
@@ -242,9 +264,20 @@ impl Workspace {
                 (0..shard_count)
                     .map(|_| ProjectIndexes::default())
                     .collect(),
-                snapshot.file_fingerprints().keys().cloned().collect(),
+                stamp_snapshot.file_fingerprints().keys().cloned().collect(),
             ),
         };
+
+        // If metadata is missing content fingerprints for a file that still
+        // exists, force it through the indexer so we can compute a content hash
+        // without re-reading the entire project.
+        for path in stamp_snapshot.file_fingerprints().keys() {
+            if !content_fingerprints.contains_key(path) {
+                invalidated_files.push(path.clone());
+            }
+        }
+        invalidated_files.sort();
+        invalidated_files.dedup();
 
         // Remove stale results for invalidated (new/modified/deleted) files before re-indexing.
         for file in &invalidated_files {
@@ -255,17 +288,48 @@ impl Workspace {
         // `invalidated_files` may include deleted files. Only re-index files that still exist in
         // the current snapshot.
         let files_to_index: Vec<String> = invalidated_files
-            .into_iter()
-            .filter(|path| snapshot.file_fingerprints().contains_key(path))
+            .iter()
+            .filter(|path| stamp_snapshot.file_fingerprints().contains_key(*path))
+            .cloned()
             .collect();
 
-        let (files_indexed, bytes_indexed) =
-            self.index_files(&snapshot, &mut shards, shard_count, &files_to_index)?;
+        let (files_indexed, bytes_indexed, updated_fingerprints, index_ms) =
+            if files_to_index.is_empty() {
+                (0usize, 0u64, std::collections::BTreeMap::new(), 0u128)
+            } else {
+                let index_start = Instant::now();
+                let (files_indexed, bytes_indexed, updated_fingerprints) = self.index_files(
+                    &stamp_snapshot,
+                    &mut shards,
+                    shard_count,
+                    &files_to_index,
+                )?;
+                let index_ms = index_start.elapsed().as_millis();
+                (files_indexed, bytes_indexed, updated_fingerprints, index_ms)
+            };
+
+        // Apply updated fingerprints and drop deleted files to produce a complete
+        // content-hash snapshot for persistence without re-reading unchanged
+        // files.
+        content_fingerprints
+            .retain(|path, _| stamp_snapshot.file_fingerprints().contains_key(path));
+        for (path, fp) in updated_fingerprints {
+            content_fingerprints.insert(path, fp);
+        }
+
+        let snapshot = ProjectSnapshot::from_parts(
+            stamp_snapshot.project_root().to_path_buf(),
+            stamp_snapshot.project_hash().clone(),
+            content_fingerprints,
+        );
 
         let metrics = PerfMetrics {
-            files_total: snapshot.file_fingerprints().len(),
+            files_total: stamp_snapshot.file_fingerprints().len(),
             files_indexed,
             bytes_indexed,
+            files_invalidated: invalidated_files.len(),
+            snapshot_ms,
+            index_ms,
             symbols_indexed: count_symbols(&shards),
             elapsed_ms: start.elapsed().as_millis(),
             rss_bytes: current_rss_bytes(),
@@ -280,7 +344,7 @@ impl Workspace {
         shards: &mut [ProjectIndexes],
         shard_count: u32,
         files_to_index: &[String],
-    ) -> Result<(usize, u64)> {
+    ) -> Result<(usize, u64, std::collections::BTreeMap<String, Fingerprint>)> {
         let type_re = Regex::new(
             r"(?m)^\s*(?:public|protected|private)?\s*(?:abstract\s+|final\s+)?(class|interface|enum|record)\s+([A-Za-z_][A-Za-z0-9_]*)",
         )?;
@@ -291,6 +355,7 @@ impl Workspace {
 
         let mut files_indexed = 0usize;
         let mut bytes_indexed = 0u64;
+        let mut file_fingerprints = std::collections::BTreeMap::new();
 
         for file in files_to_index {
             let shard = shard_id_for_path(file, shard_count) as usize;
@@ -300,6 +365,7 @@ impl Workspace {
                 .with_context(|| format!("failed to read {}", full_path.display()))?;
             files_indexed += 1;
             bytes_indexed += content.len() as u64;
+            file_fingerprints.insert(file.clone(), Fingerprint::from_bytes(content.as_bytes()));
 
             for cap in type_re.captures_iter(&content) {
                 let m = cap.get(2).expect("regex capture");
@@ -341,7 +407,7 @@ impl Workspace {
             }
         }
 
-        Ok((files_indexed, bytes_indexed))
+        Ok((files_indexed, bytes_indexed, file_fingerprints))
     }
 
     pub fn diagnostics(&self, path: impl AsRef<Path>) -> Result<DiagnosticsReport> {
@@ -884,7 +950,10 @@ pub struct PerfMetrics {
     pub files_indexed: usize,
     #[serde(alias = "bytes_scanned")]
     pub bytes_indexed: u64,
+    pub files_invalidated: usize,
     pub symbols_indexed: usize,
+    pub snapshot_ms: u128,
+    pub index_ms: u128,
     pub elapsed_ms: u128,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rss_bytes: Option<u64>,

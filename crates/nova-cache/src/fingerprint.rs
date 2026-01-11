@@ -146,6 +146,24 @@ impl ProjectSnapshot {
         })
     }
 
+    /// Construct a snapshot from already-computed fingerprints.
+    ///
+    /// This is primarily intended for incremental indexing flows where the
+    /// caller already has the content fingerprints for the files it read (e.g.
+    /// the files it re-indexed) and wants to persist updated cache metadata
+    /// without re-reading every file in the project.
+    pub fn from_parts(
+        project_root: PathBuf,
+        project_hash: Fingerprint,
+        file_fingerprints: std::collections::BTreeMap<String, Fingerprint>,
+    ) -> Self {
+        Self {
+            project_root,
+            project_hash,
+            file_fingerprints,
+        }
+    }
+
     fn new_with_fingerprinter<F>(
         project_root: impl AsRef<Path>,
         files: Vec<PathBuf>,
