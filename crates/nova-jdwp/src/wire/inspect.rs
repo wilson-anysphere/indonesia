@@ -136,7 +136,7 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
     }
 
     if is_primitive_wrapper(&runtime_type) {
-        if let Ok(children) = object_children(jdwp, object_id).await {
+        if let Ok(children) = instance_fields_with_type(jdwp, object_id, type_id).await {
             if let Some(value) = children
                 .iter()
                 .find(|(name, ..)| name == "value")
@@ -153,7 +153,7 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
     }
 
     if runtime_type == "java.util.Optional" {
-        if let Ok(children) = object_children(jdwp, object_id).await {
+        if let Ok(children) = instance_fields_with_type(jdwp, object_id, type_id).await {
             if let Some(value) = children
                 .iter()
                 .find(|(name, ..)| name == "value")
@@ -173,7 +173,7 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
     }
 
     if runtime_type == "java.util.ArrayList" {
-        if let Ok(children) = object_children(jdwp, object_id).await {
+        if let Ok(children) = instance_fields_with_type(jdwp, object_id, type_id).await {
             let size =
                 children
                     .iter()
@@ -209,7 +209,7 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
     }
 
     if runtime_type == "java.util.LinkedList" {
-        if let Ok(children) = object_children(jdwp, object_id).await {
+        if let Ok(children) = instance_fields_with_type(jdwp, object_id, type_id).await {
             let size =
                 children
                     .iter()
@@ -266,7 +266,7 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
     }
 
     if runtime_type == "java.util.HashMap" {
-        if let Some((size, mut sample)) = hashmap_preview(jdwp, object_id).await {
+        if let Some((size, mut sample)) = hashmap_entries(jdwp, object_id, type_id, ARRAY_PREVIEW_SAMPLE).await {
             sort_map_sample(jdwp, &mut sample).await;
             return Ok(ObjectPreview {
                 runtime_type,
@@ -276,7 +276,7 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
     }
 
     if runtime_type == "java.util.HashSet" {
-        if let Ok(children) = object_children(jdwp, object_id).await {
+        if let Ok(children) = instance_fields_with_type(jdwp, object_id, type_id).await {
             let map_id =
                 children
                     .iter()
@@ -286,7 +286,18 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
                     });
 
             if let Some(map_id) = map_id {
-                if let Some((size, sample)) = hashmap_preview(jdwp, map_id).await {
+                let map_type_id = match jdwp.object_reference_reference_type(map_id).await {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return Ok(ObjectPreview {
+                            runtime_type,
+                            kind: ObjectKindPreview::Plain,
+                        });
+                    }
+                };
+                if let Some((size, sample)) =
+                    hashmap_entries(jdwp, map_id, map_type_id, ARRAY_PREVIEW_SAMPLE).await
+                {
                     let mut keys: Vec<_> = sample.into_iter().map(|(k, _)| k).collect();
                     sort_set_sample(jdwp, &mut keys).await;
                     return Ok(ObjectPreview {
@@ -343,6 +354,40 @@ pub async fn object_children(
         return Ok(vars);
     }
 
+    let runtime_type = signature_to_type_name(&signature);
+
+    match runtime_type.as_str() {
+        "java.util.ArrayList" => {
+            if let Some(vars) = array_list_children(jdwp, object_id, type_id).await? {
+                return Ok(vars);
+            }
+        }
+        "java.util.LinkedList" => {
+            if let Some(vars) = linked_list_children(jdwp, object_id, type_id).await? {
+                return Ok(vars);
+            }
+        }
+        "java.util.HashMap" => {
+            if let Some(vars) = hash_map_children(jdwp, object_id, type_id).await? {
+                return Ok(vars);
+            }
+        }
+        "java.util.HashSet" => {
+            if let Some(vars) = hash_set_children(jdwp, object_id, type_id).await? {
+                return Ok(vars);
+            }
+        }
+        _ => {}
+    }
+
+    instance_fields_with_type(jdwp, object_id, type_id).await
+}
+
+async fn instance_fields_with_type(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+    type_id: ReferenceTypeId,
+) -> Result<Vec<(String, JdwpValue, Option<String>)>> {
     let fields: Vec<FieldInfo> = jdwp
         .reference_type_fields_cached(type_id)
         .await?
@@ -368,6 +413,258 @@ pub async fn object_children(
             )
         })
         .collect())
+}
+
+async fn instance_fields(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+) -> Result<Vec<(String, JdwpValue, Option<String>)>> {
+    let type_id = jdwp.object_reference_reference_type(object_id).await?;
+    instance_fields_with_type(jdwp, object_id, type_id).await
+}
+
+async fn array_list_children(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+    type_id: ReferenceTypeId,
+) -> Result<Option<Vec<(String, JdwpValue, Option<String>)>>> {
+    let fields = instance_fields_with_type(jdwp, object_id, type_id).await?;
+    let Some(size) = fields
+        .iter()
+        .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+            ("size", JdwpValue::Int(size)) => Some((*size).max(0) as usize),
+            _ => None,
+        })
+    else {
+        return Ok(None);
+    };
+    let element_data = fields
+        .iter()
+        .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+            ("elementData", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
+            _ => None,
+        });
+
+    let mut vars = Vec::new();
+    vars.push((
+        "size".to_string(),
+        JdwpValue::Int(size as i32),
+        Some("int".to_string()),
+    ));
+
+    let array_id = element_data.unwrap_or(0);
+    let sample_len = size.min(ARRAY_CHILD_SAMPLE);
+    if array_id != 0 && sample_len > 0 {
+        let element_type = match jdwp.object_reference_reference_type(array_id).await {
+            Ok(array_type) => jdwp
+                .reference_type_signature_cached(array_type)
+                .await
+                .ok()
+                .and_then(|sig| sig.strip_prefix('[').map(signature_to_type_name)),
+            Err(_) => None,
+        };
+        let values = jdwp
+            .array_reference_get_values(array_id, 0, sample_len as i32)
+            .await
+            .unwrap_or_default();
+        for (idx, value) in values.into_iter().enumerate() {
+            vars.push((format!("[{idx}]"), value, element_type.clone()));
+        }
+    }
+
+    Ok(Some(vars))
+}
+
+async fn linked_list_children(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+    type_id: ReferenceTypeId,
+) -> Result<Option<Vec<(String, JdwpValue, Option<String>)>>> {
+    let fields = instance_fields_with_type(jdwp, object_id, type_id).await?;
+    let Some(size) = fields
+        .iter()
+        .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+            ("size", JdwpValue::Int(size)) => Some((*size).max(0) as usize),
+            _ => None,
+        })
+    else {
+        return Ok(None);
+    };
+    let mut node_id = fields
+        .iter()
+        .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+            ("first", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
+            _ => None,
+        })
+        .unwrap_or(0);
+
+    let mut vars = Vec::new();
+    vars.push((
+        "size".to_string(),
+        JdwpValue::Int(size as i32),
+        Some("int".to_string()),
+    ));
+
+    let sample_len = size.min(ARRAY_CHILD_SAMPLE);
+    for idx in 0..sample_len {
+        if node_id == 0 {
+            break;
+        }
+        let Ok(node_children) = instance_fields(jdwp, node_id).await else {
+            break;
+        };
+        let mut item: Option<(JdwpValue, Option<String>)> = None;
+        let mut next: Option<ObjectId> = None;
+        for (name, value, ty) in node_children {
+            match name.as_str() {
+                "item" => item = Some((value, ty)),
+                "next" => match value {
+                    JdwpValue::Object { id, .. } => next = Some(id),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+
+        let (value, static_type) = item.unwrap_or_else(|| (null_object(), None));
+        vars.push((format!("[{idx}]"), value, static_type));
+        node_id = next.unwrap_or(0);
+    }
+
+    Ok(Some(vars))
+}
+
+async fn hash_map_children(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+    type_id: ReferenceTypeId,
+) -> Result<Option<Vec<(String, JdwpValue, Option<String>)>>> {
+    let Some((size, mut entries)) =
+        hashmap_entries(jdwp, object_id, type_id, ARRAY_CHILD_SAMPLE).await
+    else {
+        return Ok(None);
+    };
+
+    sort_map_sample(jdwp, &mut entries).await;
+
+    let mut vars = Vec::new();
+    vars.push((
+        "size".to_string(),
+        JdwpValue::Int(size as i32),
+        Some("int".to_string()),
+    ));
+
+    for (key, value) in entries {
+        let name = map_key_display(jdwp, &key).await;
+        vars.push((name, value, None));
+    }
+
+    Ok(Some(vars))
+}
+
+async fn hash_set_children(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+    type_id: ReferenceTypeId,
+) -> Result<Option<Vec<(String, JdwpValue, Option<String>)>>> {
+    let fields = instance_fields_with_type(jdwp, object_id, type_id).await?;
+    let Some(map_id) = fields
+        .iter()
+        .find_map(|(name, value, _ty)| match (name.as_str(), value) {
+            ("map", JdwpValue::Object { id, .. }) if *id != 0 => Some(*id),
+            _ => None,
+        })
+    else {
+        return Ok(None);
+    };
+
+    let map_type_id = match jdwp.object_reference_reference_type(map_id).await {
+        Ok(id) => id,
+        Err(_) => return Ok(None),
+    };
+    let Some((size, entries)) = hashmap_entries(jdwp, map_id, map_type_id, ARRAY_CHILD_SAMPLE).await
+    else {
+        return Ok(None);
+    };
+
+    let mut keys: Vec<_> = entries.into_iter().map(|(k, _)| k).collect();
+    sort_set_sample(jdwp, &mut keys).await;
+
+    let mut vars = Vec::new();
+    vars.push((
+        "size".to_string(),
+        JdwpValue::Int(size as i32),
+        Some("int".to_string()),
+    ));
+
+    for (idx, value) in keys.into_iter().enumerate() {
+        vars.push((format!("[{idx}]"), value, None));
+    }
+
+    Ok(Some(vars))
+}
+
+async fn map_key_display(jdwp: &JdwpClient, key: &JdwpValue) -> String {
+    match key {
+        JdwpValue::Object { id: 0, .. } => "null".to_string(),
+        JdwpValue::Object { id, tag } => {
+            if *tag == b's' {
+                if let Ok(value) = jdwp.string_reference_value(*id).await {
+                    return format!("\"{}\"", escape_java_string(&value, 40));
+                }
+            }
+
+            let is_string = match jdwp.object_reference_reference_type(*id).await {
+                Ok(type_id) => jdwp
+                    .reference_type_signature_cached(type_id)
+                    .await
+                    .map(|sig| sig == "Ljava/lang/String;")
+                    .unwrap_or(false),
+                Err(_) => false,
+            };
+
+            if is_string {
+                if let Ok(value) = jdwp.string_reference_value(*id).await {
+                    return format!("\"{}\"", escape_java_string(&value, 40));
+                }
+            }
+
+            format!("@0x{id:x}")
+        }
+        JdwpValue::Boolean(v) => v.to_string(),
+        JdwpValue::Byte(v) => v.to_string(),
+        JdwpValue::Char(v) => {
+            let ch = char::from_u32(u32::from(*v)).unwrap_or('\u{FFFD}');
+            format!("'{ch}'")
+        }
+        JdwpValue::Short(v) => v.to_string(),
+        JdwpValue::Int(v) => v.to_string(),
+        JdwpValue::Long(v) => v.to_string(),
+        JdwpValue::Float(v) => v.to_string(),
+        JdwpValue::Double(v) => v.to_string(),
+        JdwpValue::Void => "void".to_string(),
+    }
+}
+
+fn escape_java_string(input: &str, max_len: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in input.chars() {
+        if used >= max_len {
+            out.push('…');
+            break;
+        }
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(ch),
+        }
+        used += 1;
+    }
+    out
 }
 
 fn is_null(value: &JdwpValue) -> bool {
@@ -404,8 +701,13 @@ enum SortKey {
     Object(ObjectId),
 }
 
-async fn hashmap_preview(jdwp: &JdwpClient, object_id: ObjectId) -> Option<(usize, Vec<(JdwpValue, JdwpValue)>)> {
-    let children = object_children(jdwp, object_id).await.ok()?;
+async fn hashmap_entries(
+    jdwp: &JdwpClient,
+    object_id: ObjectId,
+    type_id: ReferenceTypeId,
+    entry_limit: usize,
+) -> Option<(usize, Vec<(JdwpValue, JdwpValue)>)> {
+    let children = instance_fields_with_type(jdwp, object_id, type_id).await.ok()?;
     let size = children
         .iter()
         .find_map(|(name, value, _ty)| match (name.as_str(), value) {
@@ -427,7 +729,7 @@ async fn hashmap_preview(jdwp: &JdwpClient, object_id: ObjectId) -> Option<(usiz
             if scan > 0 {
                 if let Ok(buckets) = jdwp.array_reference_get_values(table_id, 0, scan as i32).await {
                     for bucket in buckets {
-                        if sample.len() >= ARRAY_PREVIEW_SAMPLE {
+                        if sample.len() >= entry_limit {
                             break;
                         }
                         let JdwpValue::Object { id: mut node_id, .. } = bucket else {
@@ -437,13 +739,13 @@ async fn hashmap_preview(jdwp: &JdwpClient, object_id: ObjectId) -> Option<(usiz
                             continue;
                         }
                         for _ in 0..HASHMAP_CHAIN_LIMIT {
-                            if sample.len() >= ARRAY_PREVIEW_SAMPLE {
+                            if sample.len() >= entry_limit {
                                 break;
                             }
                             if node_id == 0 {
                                 break;
                             }
-                            let Ok(node_fields) = object_children(jdwp, node_id).await else {
+                            let Ok(node_fields) = instance_fields(jdwp, node_id).await else {
                                 break;
                             };
                             let key = node_fields

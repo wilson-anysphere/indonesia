@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use nova_dap::jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpValue};
+use nova_dap::jdwp::wire::inspect;
 use nova_dap::wire_format::{ObjectChildrenKind, ValueFormatter};
 
 fn alloc_registry() -> impl FnMut(u64, ObjectChildrenKind) -> i64 {
@@ -137,4 +138,25 @@ async fn wire_arrays_show_length_and_sample() {
         "expected array sample: {}",
         formatted.value
     );
+}
+
+#[tokio::test]
+async fn wire_hashmap_children_are_sorted_by_key() {
+    let server = MockJdwpServer::spawn().await.unwrap();
+    let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+    let children1 = inspect::object_children(&client, server.sample_hashmap_id())
+        .await
+        .unwrap();
+    let children2 = inspect::object_children(&client, server.sample_hashmap_id())
+        .await
+        .unwrap();
+
+    let names1: Vec<_> = children1.iter().map(|(name, _, _)| name.as_str()).collect();
+    let names2: Vec<_> = children2.iter().map(|(name, _, _)| name.as_str()).collect();
+    assert_eq!(names1, names2);
+
+    let a_pos = names1.iter().position(|n| *n == "\"a\"").unwrap();
+    let b_pos = names1.iter().position(|n| *n == "\"b\"").unwrap();
+    assert!(a_pos < b_pos, "expected keys sorted: {names1:?}");
 }
