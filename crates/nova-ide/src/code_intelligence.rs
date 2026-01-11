@@ -366,25 +366,25 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         }
     }
 
-    // Spring `@Value("${...}")` completions inside Java source.
+    // Spring / Micronaut `@Value("${...}")` completions inside Java source.
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
     {
-        // Only attempt Spring `@Value` completions when the file appears to use
-        // Spring (`import org.springframework...`). Micronaut also has `@Value`,
-        // so we gate this to allow a Micronaut-specific fallback.
-        if text.contains("org.springframework.beans.factory.annotation") {
-            let index = spring_workspace_index(db);
-            let items =
-                nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
-            if !items.is_empty() {
-                return spring_completions_to_lsp(items);
-            }
-        }
-
-        // Micronaut `@Value("${...}")` completions as a fallback.
         if cursor_inside_value_placeholder(text, offset) {
+            // Only attempt Spring `@Value` completions when the file appears to use
+            // Spring (`import org.springframework...`). Micronaut also has `@Value`,
+            // so we gate this to allow a Micronaut-specific fallback.
+            if text.contains("org.springframework.beans.factory.annotation") {
+                let index = spring_workspace_index(db);
+                let items =
+                    nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
+                if !items.is_empty() {
+                    return spring_completions_to_lsp(items);
+                }
+            }
+
+            // Micronaut `@Value("${...}")` completions as a fallback.
             if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
                 let items = nova_framework_micronaut::completions_for_value_placeholder(
                     text,
