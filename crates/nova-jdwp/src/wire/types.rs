@@ -303,6 +303,15 @@ pub struct MethodInfo {
     pub mod_bits: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodInfoWithGeneric {
+    pub method_id: MethodId,
+    pub name: String,
+    pub signature: String,
+    pub generic_signature: Option<String>,
+    pub mod_bits: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameInfo {
     pub frame_id: FrameId,
@@ -332,10 +341,29 @@ pub struct VariableInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariableInfoWithGeneric {
+    pub code_index: u64,
+    pub name: String,
+    pub signature: String,
+    pub generic_signature: Option<String>,
+    pub length: u32,
+    pub slot: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldInfo {
     pub field_id: FieldId,
     pub name: String,
     pub signature: String,
+    pub mod_bits: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldInfoWithGeneric {
+    pub field_id: FieldId,
+    pub name: String,
+    pub signature: String,
+    pub generic_signature: Option<String>,
     pub mod_bits: u32,
 }
 

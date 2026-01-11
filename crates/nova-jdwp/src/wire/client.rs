@@ -21,18 +21,20 @@ use super::{
     },
     inspect::InspectCache,
     types::{
-        ClassInfo, FieldId, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError,
-        JdwpEvent, JdwpEventEnvelope, JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location,
-        MethodId, MethodInfo, MonitorInfo, ObjectId, ReferenceTypeId, Result, ThreadId,
-        VariableInfo, VmClassPaths, EVENT_KIND_BREAKPOINT, EVENT_KIND_CLASS_PREPARE,
+        ClassInfo, FieldId, FieldInfo, FieldInfoWithGeneric, FrameId, FrameInfo,
+        JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpEventEnvelope, JdwpIdSizes, JdwpValue,
+        LineTable, LineTableEntry, Location, MethodId, MethodInfo, MethodInfoWithGeneric,
+        MonitorInfo, ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo,
+        VariableInfoWithGeneric, VmClassPaths, EVENT_KIND_BREAKPOINT, EVENT_KIND_CLASS_PREPARE,
         EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION, EVENT_KIND_FIELD_ACCESS,
         EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
         EVENT_KIND_SINGLE_STEP, EVENT_KIND_VM_DEATH, EVENT_KIND_VM_DISCONNECT, EVENT_KIND_VM_START,
         EVENT_MODIFIER_KIND_CLASS_EXCLUDE, EVENT_MODIFIER_KIND_CLASS_MATCH,
-        EVENT_MODIFIER_KIND_CLASS_ONLY, EVENT_MODIFIER_KIND_COUNT, EVENT_MODIFIER_KIND_EXCEPTION_ONLY,
-        EVENT_MODIFIER_KIND_FIELD_ONLY, EVENT_MODIFIER_KIND_INSTANCE_ONLY,
-        EVENT_MODIFIER_KIND_LOCATION_ONLY, EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH,
-        EVENT_MODIFIER_KIND_STEP, EVENT_MODIFIER_KIND_THREAD_ONLY,
+        EVENT_MODIFIER_KIND_CLASS_ONLY, EVENT_MODIFIER_KIND_COUNT,
+        EVENT_MODIFIER_KIND_EXCEPTION_ONLY, EVENT_MODIFIER_KIND_FIELD_ONLY,
+        EVENT_MODIFIER_KIND_INSTANCE_ONLY, EVENT_MODIFIER_KIND_LOCATION_ONLY,
+        EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH, EVENT_MODIFIER_KIND_STEP,
+        EVENT_MODIFIER_KIND_THREAD_ONLY,
     },
 };
 
@@ -170,17 +172,16 @@ impl JdwpClient {
         // and fall back to the legacy capability list when possible.
         match client.refresh_capabilities().await {
             Ok(_) => {}
-            Err(err) if is_unsupported_command_error(&err) => match client
-                .refresh_capabilities_legacy()
-                .await
-            {
-                Ok(_) => {}
-                Err(err) if is_unsupported_command_error(&err) => {
-                    // Both capability queries are unsupported; keep the default
-                    // all-false capability struct and continue connecting.
+            Err(err) if is_unsupported_command_error(&err) => {
+                match client.refresh_capabilities_legacy().await {
+                    Ok(_) => {}
+                    Err(err) if is_unsupported_command_error(&err) => {
+                        // Both capability queries are unsupported; keep the default
+                        // all-false capability struct and continue connecting.
+                    }
+                    Err(err) => return Err(err),
                 }
-                Err(err) => return Err(err),
-            },
+            }
             Err(err) => return Err(err),
         }
 
@@ -231,11 +232,7 @@ impl JdwpClient {
         }
 
         let reply = tokio::select! {
-            _ = self.inner.shutdown.cancelled() => {
-                self.remove_pending(id);
-                pending_guard.disarm();
-                return Err(JdwpError::Cancelled);
-            }
+            biased;
             res = tokio::time::timeout(self.inner.config.reply_timeout, rx) => {
                 match res {
                     Ok(Ok(r)) => r,
@@ -246,6 +243,11 @@ impl JdwpClient {
                         return Err(JdwpError::Timeout);
                     }
                 }
+            }
+            _ = self.inner.shutdown.cancelled() => {
+                self.remove_pending(id);
+                pending_guard.disarm();
+                return Err(JdwpError::Cancelled);
             }
         }?;
 
@@ -353,6 +355,14 @@ impl JdwpClient {
         let payload = self.send_command_raw(1, 11, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         r.read_object_id(&sizes)
+    }
+
+    /// VirtualMachine.SetDefaultStratum (1, 19)
+    pub async fn virtual_machine_set_default_stratum(&self, stratum: &str) -> Result<()> {
+        let mut w = JdwpWriter::new();
+        w.write_string(stratum);
+        let _ = self.send_command_raw(1, 19, w.into_vec()).await?;
+        Ok(())
     }
 
     pub async fn all_threads(&self) -> Result<Vec<ThreadId>> {
@@ -579,6 +589,19 @@ impl JdwpClient {
         r.read_string()
     }
 
+    /// ReferenceType.SourceDebugExtension (2, 12)
+    pub async fn reference_type_source_debug_extension(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<String> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        let payload = self.send_command_raw(2, 12, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_string()
+    }
+
     pub async fn reference_type_signature(&self, class_id: ReferenceTypeId) -> Result<String> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
@@ -586,6 +609,22 @@ impl JdwpClient {
         let payload = self.send_command_raw(2, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         r.read_string()
+    }
+
+    /// ReferenceType.SignatureWithGeneric (2, 13)
+    pub async fn reference_type_signature_with_generic(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<(String, Option<String>)> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        let payload = self.send_command_raw(2, 13, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let signature = r.read_string()?;
+        let generic = r.read_string()?;
+        let generic = (!generic.is_empty()).then_some(generic);
+        Ok((signature, generic))
     }
 
     pub(crate) async fn reference_type_signature_cached(
@@ -602,6 +641,23 @@ impl JdwpClient {
         let sig = self.reference_type_signature(class_id).await?;
         let mut cache = self.inner.inspect_cache.lock().await;
         cache.signatures.insert(class_id, sig.clone());
+        Ok(sig)
+    }
+
+    pub(crate) async fn reference_type_signature_with_generic_cached(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<(String, Option<String>)> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(sig) = cache.signatures_with_generic.get(&class_id) {
+                return Ok(sig.clone());
+            }
+        }
+
+        let sig = self.reference_type_signature_with_generic(class_id).await?;
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.signatures_with_generic.insert(class_id, sig.clone());
         Ok(sig)
     }
 
@@ -636,6 +692,35 @@ impl JdwpClient {
         Ok(methods)
     }
 
+    /// ReferenceType.MethodsWithGeneric (2, 15)
+    pub async fn reference_type_methods_with_generic(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<Vec<MethodInfoWithGeneric>> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        let payload = self.send_command_raw(2, 15, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let count = r.read_u32()? as usize;
+        let mut methods = Vec::with_capacity(count);
+        for _ in 0..count {
+            let method_id = r.read_id(sizes.method_id)?;
+            let name = r.read_string()?;
+            let signature = r.read_string()?;
+            let generic = r.read_string()?;
+            let mod_bits = r.read_u32()?;
+            methods.push(MethodInfoWithGeneric {
+                method_id,
+                name,
+                signature,
+                generic_signature: (!generic.is_empty()).then_some(generic),
+                mod_bits,
+            });
+        }
+        Ok(methods)
+    }
+
     pub(crate) async fn reference_type_methods_cached(
         &self,
         class_id: ReferenceTypeId,
@@ -650,6 +735,23 @@ impl JdwpClient {
         let methods = self.reference_type_methods(class_id).await?;
         let mut cache = self.inner.inspect_cache.lock().await;
         cache.methods.insert(class_id, methods.clone());
+        Ok(methods)
+    }
+
+    pub(crate) async fn reference_type_methods_with_generic_cached(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<Vec<MethodInfoWithGeneric>> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(methods) = cache.methods_with_generic.get(&class_id) {
+                return Ok(methods.clone());
+            }
+        }
+
+        let methods = self.reference_type_methods_with_generic(class_id).await?;
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.methods_with_generic.insert(class_id, methods.clone());
         Ok(methods)
     }
     pub async fn method_line_table(
@@ -697,6 +799,40 @@ impl JdwpClient {
                 signature: r.read_string()?,
                 length: r.read_u32()?,
                 slot: r.read_u32()?,
+            });
+        }
+        Ok((arg_count, vars))
+    }
+
+    /// Method.VariableTableWithGeneric (6, 5)
+    pub async fn method_variable_table_with_generic(
+        &self,
+        class_id: ReferenceTypeId,
+        method_id: MethodId,
+    ) -> Result<(u32, Vec<VariableInfoWithGeneric>)> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        w.write_id(method_id, sizes.method_id);
+        let payload = self.send_command_raw(6, 5, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let arg_count = r.read_u32()?;
+        let count = r.read_u32()? as usize;
+        let mut vars = Vec::with_capacity(count);
+        for _ in 0..count {
+            let code_index = r.read_u64()?;
+            let name = r.read_string()?;
+            let signature = r.read_string()?;
+            let generic = r.read_string()?;
+            let length = r.read_u32()?;
+            let slot = r.read_u32()?;
+            vars.push(VariableInfoWithGeneric {
+                code_index,
+                name,
+                signature,
+                generic_signature: (!generic.is_empty()).then_some(generic),
+                length,
+                slot,
             });
         }
         Ok((arg_count, vars))
@@ -954,6 +1090,35 @@ impl JdwpClient {
         Ok(fields)
     }
 
+    /// ReferenceType.FieldsWithGeneric (2, 14)
+    pub async fn reference_type_fields_with_generic(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<Vec<FieldInfoWithGeneric>> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(class_id, &sizes);
+        let payload = self.send_command_raw(2, 14, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let count = r.read_u32()? as usize;
+        let mut fields = Vec::with_capacity(count);
+        for _ in 0..count {
+            let field_id = r.read_id(sizes.field_id)?;
+            let name = r.read_string()?;
+            let signature = r.read_string()?;
+            let generic = r.read_string()?;
+            let mod_bits = r.read_u32()?;
+            fields.push(FieldInfoWithGeneric {
+                field_id,
+                name,
+                signature,
+                generic_signature: (!generic.is_empty()).then_some(generic),
+                mod_bits,
+            });
+        }
+        Ok(fields)
+    }
+
     pub(crate) async fn reference_type_fields_cached(
         &self,
         class_id: ReferenceTypeId,
@@ -968,6 +1133,23 @@ impl JdwpClient {
         let fields = self.reference_type_fields(class_id).await?;
         let mut cache = self.inner.inspect_cache.lock().await;
         cache.fields.insert(class_id, fields.clone());
+        Ok(fields)
+    }
+
+    pub(crate) async fn reference_type_fields_with_generic_cached(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<Vec<FieldInfoWithGeneric>> {
+        {
+            let cache = self.inner.inspect_cache.lock().await;
+            if let Some(fields) = cache.fields_with_generic.get(&class_id) {
+                return Ok(fields.clone());
+            }
+        }
+
+        let fields = self.reference_type_fields_with_generic(class_id).await?;
+        let mut cache = self.inner.inspect_cache.lock().await;
+        cache.fields_with_generic.insert(class_id, fields.clone());
         Ok(fields)
     }
 
@@ -1584,15 +1766,17 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
 
     for event in non_stop_events {
         let _ = inner.events.send(event.clone());
-        let _ = inner
-            .event_envelopes
-            .send(JdwpEventEnvelope { suspend_policy, event });
+        let _ = inner.event_envelopes.send(JdwpEventEnvelope {
+            suspend_policy,
+            event,
+        });
     }
     for event in stop_events {
         let _ = inner.events.send(event.clone());
-        let _ = inner
-            .event_envelopes
-            .send(JdwpEventEnvelope { suspend_policy, event });
+        let _ = inner.event_envelopes.send(JdwpEventEnvelope {
+            suspend_policy,
+            event,
+        });
     }
 
     Ok(())
@@ -1607,11 +1791,11 @@ mod tests {
         DelayedReply, MockEventRequestModifier, MockJdwpServer, MockJdwpServerConfig,
     };
     use crate::wire::types::{
-        EVENT_KIND_BREAKPOINT, EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION, EVENT_KIND_FIELD_ACCESS,
+        JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpIdSizes, Location, EVENT_KIND_BREAKPOINT,
+        EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION, EVENT_KIND_FIELD_ACCESS,
         EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
-        EVENT_KIND_VM_DISCONNECT, INVOKE_NONVIRTUAL, INVOKE_SINGLE_THREADED, JdwpCapabilitiesNew,
-        JdwpError, JdwpEvent, JdwpIdSizes, Location, SUSPEND_POLICY_ALL, SUSPEND_POLICY_EVENT_THREAD,
-        SUSPEND_POLICY_NONE,
+        EVENT_KIND_VM_DISCONNECT, INVOKE_NONVIRTUAL, INVOKE_SINGLE_THREADED, SUSPEND_POLICY_ALL,
+        SUSPEND_POLICY_EVENT_THREAD, SUSPEND_POLICY_NONE,
     };
     use crate::wire::JdwpValue;
 
@@ -1786,10 +1970,16 @@ mod tests {
             .unwrap();
         assert_eq!(owned_depth, vec![(0x5201, 0), (0x5202, 2)]);
 
-        let contended = client.thread_current_contended_monitor(thread).await.unwrap();
+        let contended = client
+            .thread_current_contended_monitor(thread)
+            .await
+            .unwrap();
         assert_eq!(contended, 0x5203);
 
-        let info = client.object_reference_monitor_info(contended).await.unwrap();
+        let info = client
+            .object_reference_monitor_info(contended)
+            .await
+            .unwrap();
         assert_eq!(info.owner, 0x1002);
         assert_eq!(info.entry_count, 1);
         assert_eq!(info.waiters, vec![thread]);
@@ -1835,7 +2025,10 @@ mod tests {
             .unwrap();
         assert_eq!(contended, 0x5203);
 
-        let info = client.object_reference_monitor_info(contended).await.unwrap();
+        let info = client
+            .object_reference_monitor_info(contended)
+            .await
+            .unwrap();
         assert_eq!(info.owner, 0x1002);
         assert_eq!(info.waiters, vec![thread]);
     }
@@ -1877,7 +2070,9 @@ mod tests {
 
         assert_eq!(envelope.suspend_policy, SUSPEND_POLICY_ALL);
         match envelope.event {
-            JdwpEvent::Breakpoint { request_id: rid, .. } => assert_eq!(rid, request_id),
+            JdwpEvent::Breakpoint {
+                request_id: rid, ..
+            } => assert_eq!(rid, request_id),
             other => panic!("expected breakpoint event, got {other:?}"),
         }
     }
@@ -1959,7 +2154,9 @@ mod tests {
             other => panic!("expected Exception second, got {other:?}"),
         }
         match third {
-            JdwpEvent::Breakpoint { request_id, .. } => assert_eq!(request_id, breakpoint_request_id),
+            JdwpEvent::Breakpoint { request_id, .. } => {
+                assert_eq!(request_id, breakpoint_request_id)
+            }
             other => panic!("expected Breakpoint third, got {other:?}"),
         }
     }
@@ -1993,7 +2190,10 @@ mod tests {
             .unwrap();
 
         let requests = server.event_requests().await;
-        let last = requests.last().cloned().expect("no EventRequest.Set observed");
+        let last = requests
+            .last()
+            .cloned()
+            .expect("no EventRequest.Set observed");
 
         assert_eq!(
             last.modifiers,
@@ -2166,10 +2366,7 @@ mod tests {
         let server = MockJdwpServer::spawn().await.unwrap();
         let client = JdwpClient::connect(server.addr()).await.unwrap();
 
-        let string_id = client
-            .virtual_machine_create_string("hello")
-            .await
-            .unwrap();
+        let string_id = client.virtual_machine_create_string("hello").await.unwrap();
         let value = client.string_reference_value(string_id).await.unwrap();
         assert_eq!(value, "hello");
 
@@ -2194,13 +2391,7 @@ mod tests {
                 frame.frame_id,
                 &[
                     (0, JdwpValue::Int(123)),
-                    (
-                        2,
-                        JdwpValue::Object {
-                            tag: b's',
-                            id: 0,
-                        },
-                    ),
+                    (2, JdwpValue::Object { tag: b's', id: 0 }),
                 ],
             )
             .await
@@ -2269,7 +2460,10 @@ mod tests {
             .class_type_set_values(class_id, &[(field_id, JdwpValue::Int(77))])
             .await
             .unwrap();
-        let values = client.reference_type_get_values(class_id, &[field_id]).await.unwrap();
+        let values = client
+            .reference_type_get_values(class_id, &[field_id])
+            .await
+            .unwrap();
         assert_eq!(values, vec![JdwpValue::Int(77)]);
 
         let calls = server.class_type_set_values_calls().await;
@@ -2283,7 +2477,10 @@ mod tests {
             .array_reference_set_values(array_id, 1, &[JdwpValue::Int(999)])
             .await
             .unwrap();
-        let values = client.array_reference_get_values(array_id, 0, 5).await.unwrap();
+        let values = client
+            .array_reference_get_values(array_id, 0, 5)
+            .await
+            .unwrap();
         assert_eq!(
             values,
             vec![
@@ -2317,13 +2514,7 @@ mod tests {
                 class_id,
                 thread,
                 ctor_method,
-                &[
-                    JdwpValue::Int(1),
-                    JdwpValue::Object {
-                        tag: b'L',
-                        id: 0,
-                    },
-                ],
+                &[JdwpValue::Int(1), JdwpValue::Object { tag: b'L', id: 0 }],
                 INVOKE_SINGLE_THREADED,
             )
             .await
@@ -2338,13 +2529,7 @@ mod tests {
         assert_eq!(calls[0].ctor_method, ctor_method);
         assert_eq!(
             calls[0].args,
-            vec![
-                JdwpValue::Int(1),
-                JdwpValue::Object {
-                    tag: b'L',
-                    id: 0
-                }
-            ]
+            vec![JdwpValue::Int(1), JdwpValue::Object { tag: b'L', id: 0 }]
         );
         assert_eq!(calls[0].options, INVOKE_SINGLE_THREADED);
         assert_eq!(calls[0].returned_id, new_object);
@@ -2353,7 +2538,10 @@ mod tests {
             .object_reference_reference_type(server.sample_int_array_id())
             .await
             .unwrap();
-        let new_array = client.array_type_new_instance(array_type_id, 4).await.unwrap();
+        let new_array = client
+            .array_type_new_instance(array_type_id, 4)
+            .await
+            .unwrap();
         assert_ne!(new_array, 0);
         assert_eq!(client.array_reference_length(new_array).await.unwrap(), 4);
 
@@ -2384,5 +2572,200 @@ mod tests {
         assert_eq!(calls[0].method_id, ctor_method);
         assert_eq!(calls[0].args, vec![arg]);
         assert_eq!(calls[0].options, INVOKE_SINGLE_THREADED | INVOKE_NONVIRTUAL);
+    }
+
+    #[tokio::test]
+    async fn signature_with_generic_decodes_generic_signature() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let main_id = client
+            .classes_by_signature("LMain;")
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .type_id;
+
+        let (signature, generic) = client
+            .reference_type_signature_with_generic(main_id)
+            .await
+            .unwrap();
+        assert_eq!(signature, "LMain;");
+        assert_eq!(
+            generic.as_deref(),
+            Some("Ljava/util/List<Ljava/lang/String;>;")
+        );
+
+        let foo_id = client
+            .classes_by_signature("Lcom/example/Foo;")
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .type_id;
+        let (_signature, generic) = client
+            .reference_type_signature_with_generic(foo_id)
+            .await
+            .unwrap();
+        assert_eq!(generic, None);
+    }
+
+    #[tokio::test]
+    async fn fields_with_generic_include_generic_signature() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let main_id = client
+            .classes_by_signature("LMain;")
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .type_id;
+
+        let fields = client
+            .reference_type_fields_with_generic(main_id)
+            .await
+            .unwrap();
+
+        assert_eq!(fields.len(), 2);
+
+        assert_eq!(fields[0].name, "strings");
+        assert_eq!(fields[0].signature, "Ljava/util/List;");
+        assert_eq!(
+            fields[0].generic_signature.as_deref(),
+            Some("Ljava/util/List<Ljava/lang/String;>;")
+        );
+
+        assert_eq!(fields[1].name, "count");
+        assert_eq!(fields[1].signature, "I");
+        assert_eq!(fields[1].generic_signature, None);
+    }
+
+    #[tokio::test]
+    async fn methods_with_generic_include_generic_signature() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let main_id = client
+            .classes_by_signature("LMain;")
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .type_id;
+
+        let methods = client
+            .reference_type_methods_with_generic(main_id)
+            .await
+            .unwrap();
+
+        let accept_list = methods.iter().find(|m| m.name == "acceptList").unwrap();
+        assert_eq!(accept_list.signature, "(Ljava/util/List;)V");
+        assert_eq!(
+            accept_list.generic_signature.as_deref(),
+            Some("(Ljava/util/List<Ljava/lang/String;>;)V")
+        );
+    }
+
+    #[tokio::test]
+    async fn variable_table_with_generic_includes_generic_signature() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let main_id = client
+            .classes_by_signature("LMain;")
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .type_id;
+
+        let methods = client
+            .reference_type_methods_with_generic(main_id)
+            .await
+            .unwrap();
+        let method_id = methods
+            .iter()
+            .find(|m| m.name == "acceptList")
+            .unwrap()
+            .method_id;
+
+        let (arg_count, vars) = client
+            .method_variable_table_with_generic(main_id, method_id)
+            .await
+            .unwrap();
+        assert_eq!(arg_count, 0);
+
+        let list_var = vars.iter().find(|v| v.name == "list").unwrap();
+        assert_eq!(list_var.signature, "Ljava/util/List;");
+        assert_eq!(
+            list_var.generic_signature.as_deref(),
+            Some("Ljava/util/List<Ljava/lang/String;>;")
+        );
+    }
+
+    #[tokio::test]
+    async fn source_debug_extension_reads_smap() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let main_id = client
+            .classes_by_signature("LMain;")
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .type_id;
+
+        let smap = client
+            .reference_type_source_debug_extension(main_id)
+            .await
+            .unwrap();
+        assert_eq!(smap, "SMAP\nMain.java\nJava\n*E\n");
+    }
+
+    #[tokio::test]
+    async fn set_default_stratum_is_recorded_by_mock() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        client
+            .virtual_machine_set_default_stratum("Kotlin")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            server.last_default_stratum().await.as_deref(),
+            Some("Kotlin")
+        );
+    }
+
+    #[tokio::test]
+    async fn signature_with_generic_is_cached() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let main_id = client
+            .classes_by_signature("LMain;")
+            .await
+            .unwrap()
+            .first()
+            .unwrap()
+            .type_id;
+
+        assert_eq!(server.signature_with_generic_calls(), 0);
+
+        let _ = client
+            .reference_type_signature_with_generic_cached(main_id)
+            .await
+            .unwrap();
+        let _ = client
+            .reference_type_signature_with_generic_cached(main_id)
+            .await
+            .unwrap();
+
+        assert_eq!(server.signature_with_generic_calls(), 1);
     }
 }

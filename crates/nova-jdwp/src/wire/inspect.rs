@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
 use super::{
-    types::{FieldInfo, JdwpValue, MethodInfo, ObjectId, ReferenceTypeId, Result},
+    types::{
+        FieldInfo, FieldInfoWithGeneric, JdwpValue, MethodInfo, MethodInfoWithGeneric, ObjectId,
+        ReferenceTypeId, Result,
+    },
     JdwpClient,
 };
 
@@ -21,8 +24,11 @@ pub const ERROR_INVALID_OBJECT: u16 = 20;
 #[derive(Debug, Default)]
 pub(crate) struct InspectCache {
     pub(crate) signatures: HashMap<ReferenceTypeId, String>,
+    pub(crate) signatures_with_generic: HashMap<ReferenceTypeId, (String, Option<String>)>,
     pub(crate) fields: HashMap<ReferenceTypeId, Vec<FieldInfo>>,
+    pub(crate) fields_with_generic: HashMap<ReferenceTypeId, Vec<FieldInfoWithGeneric>>,
     pub(crate) methods: HashMap<ReferenceTypeId, Vec<MethodInfo>>,
+    pub(crate) methods_with_generic: HashMap<ReferenceTypeId, Vec<MethodInfoWithGeneric>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
