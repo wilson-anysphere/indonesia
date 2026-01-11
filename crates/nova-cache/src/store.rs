@@ -131,7 +131,7 @@ fn tmp_download_path(dest: &Path) -> PathBuf {
 
 #[cfg(feature = "s3")]
 async fn stream_async_read_to_path(
-    reader: impl tokio::io::AsyncRead + Unpin,
+    reader: impl tokio::io::AsyncRead,
     dest: &Path,
     max_bytes: Option<u64>,
 ) -> Result<u64> {
@@ -147,12 +147,13 @@ async fn stream_async_read_to_path(
     let result = async {
         let mut file = tokio::fs::File::create(&tmp_path).await?;
 
-        let copied = if let Some(max_bytes) = max_bytes {
-            let mut limited = reader.take(max_bytes.saturating_add(1));
-            tokio::io::copy(&mut limited, &mut file).await?
-        } else {
-            let mut reader = reader;
-            tokio::io::copy(&mut reader, &mut file).await?
+        let mut reader = Box::pin(reader);
+        let copied = match max_bytes {
+            Some(max_bytes) => {
+                let mut limited = reader.take(max_bytes.saturating_add(1));
+                tokio::io::copy(&mut limited, &mut file).await?
+            }
+            None => tokio::io::copy(&mut reader, &mut file).await?,
         };
 
         file.flush().await?;
@@ -257,13 +258,15 @@ mod tests {
         let dest = tmp.path().join("nested").join("payload.bin");
 
         let bytes = vec![0xAB_u8; 16 * 1024 * 1024];
-        let cursor = tokio::io::Cursor::new(bytes.clone());
+        let len = bytes.len();
+        let cursor = std::io::Cursor::new(bytes);
 
         let copied = stream_async_read_to_path(cursor, &dest, None).await?;
-        assert_eq!(copied as usize, bytes.len());
+        assert_eq!(copied as usize, len);
 
         let on_disk = tokio::fs::read(&dest).await?;
-        assert_eq!(on_disk, bytes);
+        assert_eq!(on_disk.len(), len);
+        assert!(on_disk.iter().all(|&b| b == 0xAB));
         Ok(())
     }
 
@@ -273,7 +276,7 @@ mod tests {
         let dest = tmp.path().join("payload.bin");
 
         let bytes = vec![0xCD_u8; 1024 * 1024];
-        let cursor = tokio::io::Cursor::new(bytes);
+        let cursor = std::io::Cursor::new(bytes);
 
         let err = stream_async_read_to_path(cursor, &dest, Some(64 * 1024))
             .await
