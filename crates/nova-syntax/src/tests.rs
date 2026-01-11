@@ -466,6 +466,18 @@ there"""; }"#;
         vec!["JAVA_FEATURE_TEXT_BLOCKS"]
     );
 
+    let java14_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 14,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java14_preview.result.errors, Vec::new());
+    assert!(java14_preview.diagnostics.is_empty());
+
     let java15 = parse_java_with_options(
         input,
         ParseOptions {
@@ -590,6 +602,18 @@ fn feature_gate_switch_expressions_version_matrix() {
         java13.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
         vec!["JAVA_FEATURE_SWITCH_EXPRESSIONS", "JAVA_FEATURE_SWITCH_EXPRESSIONS"]
     );
+
+    let java13_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 13,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java13_preview.result.errors, Vec::new());
+    assert!(java13_preview.diagnostics.is_empty());
 
     let java14 = parse_java_with_options(
         input,

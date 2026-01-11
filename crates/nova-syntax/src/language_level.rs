@@ -64,6 +64,8 @@ impl JavaLanguageLevel {
             SwitchExpressions => {
                 if self.major >= 14 {
                     Stable
+                } else if self.major == 12 || self.major == 13 {
+                    Preview
                 } else {
                     Unavailable
                 }
@@ -72,6 +74,8 @@ impl JavaLanguageLevel {
             TextBlocks => {
                 if self.major >= 15 {
                     Stable
+                } else if self.major == 13 || self.major == 14 {
+                    Preview
                 } else {
                     Unavailable
                 }
@@ -257,4 +261,3 @@ pub enum FeatureAvailability {
     Preview,
     Stable,
 }
-
