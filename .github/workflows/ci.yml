@@ -24,9 +24,16 @@ jobs:
         run: cargo fmt --all -- --check
       - name: repo invariants (nova-devtools)
         run: |
-          cargo run -p nova-devtools -- check-deps
-          cargo run -p nova-devtools -- check-layers
-          cargo run -p nova-devtools -- check-architecture-map --strict
+          set -euo pipefail
+
+          tmp="$(mktemp)"
+          trap 'rm -f "$tmp"' EXIT
+
+          cargo metadata --format-version=1 --no-deps --locked >"$tmp"
+
+          cargo run -p nova-devtools -- check-deps --metadata-path "$tmp"
+          cargo run -p nova-devtools -- check-layers --metadata-path "$tmp"
+          cargo run -p nova-devtools -- check-architecture-map --metadata-path "$tmp" --strict
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 

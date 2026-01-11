@@ -122,8 +122,11 @@ Negative:
 Nova enforces this ADR in CI using a lightweight dependency validator:
 
 - **Layer map config**: [`crate-layers.toml`](../../crate-layers.toml)
-- **Runner**: `./scripts/check-deps.sh`
-- **Direct invocation**: `cargo run -p nova-devtools -- check-deps`
+- **Runner**: `nova-devtools` (invoked from CI and optional local scripts)
+- **Commands**:
+  - `cargo run -p nova-devtools -- check-deps` — validate workspace dependency edges against layer policy.
+  - `cargo run -p nova-devtools -- check-layers` — ensure `crate-layers.toml` stays in sync with workspace members.
+  - `cargo run -p nova-devtools -- check-architecture-map` — ensure `docs/architecture-map.md` stays in sync with the workspace.
 
 ### Dev-dependency policy
 
