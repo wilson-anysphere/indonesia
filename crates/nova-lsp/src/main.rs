@@ -194,13 +194,14 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
     // using `nova_config::load_for_workspace` see the same config via
     // `NOVA_CONFIG_PATH`.
     if let Some(path) = parse_config_arg(args) {
-        env::set_var("NOVA_CONFIG_PATH", &path);
-        match nova_config::NovaConfig::load_from_path(&path) {
+        let resolved = path.canonicalize().unwrap_or(path);
+        env::set_var("NOVA_CONFIG_PATH", &resolved);
+        match nova_config::NovaConfig::load_from_path(&resolved) {
             Ok(config) => return config,
             Err(err) => {
                 eprintln!(
                     "nova-lsp: failed to load config from {}: {err}",
-                    path.display()
+                    resolved.display()
                 );
                 return nova_config::NovaConfig::default();
             }
