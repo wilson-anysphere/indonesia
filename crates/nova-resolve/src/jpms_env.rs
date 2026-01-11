@@ -359,11 +359,13 @@ mod tests {
                 root: root.clone(),
             }],
             jpms_modules: Vec::new(),
+            jpms_workspace: None,
             source_roots: Vec::new(),
             module_path: Vec::new(),
             classpath: Vec::new(),
             output_dirs: Vec::new(),
             dependencies: Vec::new(),
+            workspace_model: None,
         };
 
         let module_path = [ClasspathEntry::Jar(test_named_module_jar())];

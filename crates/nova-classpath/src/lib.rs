@@ -511,6 +511,7 @@ impl TypeProvider for ClasspathIndex {
     }
 }
 
+#[derive(Debug)]
 pub struct ModuleAwareClasspathIndex {
     pub types: ClasspathIndex,
     pub type_to_module: HashMap<String, Option<ModuleName>>,
