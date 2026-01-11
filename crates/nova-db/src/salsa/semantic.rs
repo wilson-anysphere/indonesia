@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use nova_cache::{Fingerprint, FileAstArtifacts};
 use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
 
 use crate::FileId;
@@ -41,14 +42,44 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<ItemTree> {
 
     cancel::check_cancelled(db);
 
-    let parse = db.parse(file);
     let text = if db.file_exists(file) {
         db.file_content(file)
     } else {
         Arc::new(String::new())
     };
+
+    let file_path = db.file_path(file).filter(|p| !p.is_empty());
+    let fingerprint = if file_path.is_some() && db.persistence().mode() != crate::PersistenceMode::Disabled
+    {
+        Some(Fingerprint::from_bytes(text.as_bytes()))
+    } else {
+        None
+    };
+
+    if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {
+        if let Some(artifacts) = db
+            .persistence()
+            .load_ast_artifacts(file_path.as_str(), fingerprint)
+        {
+            let result = Arc::new(artifacts.item_tree);
+            db.record_query_stat("item_tree", start.elapsed());
+            return result;
+        }
+    }
+
+    let parse = db.parse(file);
     let it = build_item_tree(&parse, text.as_str());
     let result = Arc::new(it);
+
+    if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {
+        let artifacts = FileAstArtifacts {
+            parse: (*parse).clone(),
+            item_tree: (*result).clone(),
+            symbol_summary: None,
+        };
+        db.persistence()
+            .store_ast_artifacts(file_path.as_str(), fingerprint, &artifacts);
+    }
     db.record_query_stat("item_tree", start.elapsed());
     result
 }

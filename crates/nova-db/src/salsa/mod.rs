@@ -45,7 +45,9 @@ pub use stats::{HasQueryStats, QueryStat, QueryStats};
 pub use syntax::{NovaSyntax, SyntaxTree};
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -53,6 +55,7 @@ use parking_lot::RwLock;
 
 use nova_project::ProjectConfig;
 
+use crate::persistence::{HasPersistence, Persistence, PersistenceConfig};
 use crate::{FileId, ProjectId, SourceRootId};
 
 use self::stats::QueryStatsCollector;
@@ -114,14 +117,28 @@ fn with_query_name<R>(
     })
 }
 
+/// Best-effort file path lookup used for persistence keys.
+///
+/// This is intentionally *not* tracked by Salsa: file paths should never affect
+/// the semantic output of queries (only the ability to warm-start from disk).
+pub trait HasFilePaths {
+    fn file_path(&self, file: FileId) -> Option<Arc<String>>;
+}
+
 /// Runs `f` and catches any Salsa cancellation.
 ///
 /// This is a convenience wrapper around `ra_salsa::Cancelled::catch`.
 pub fn catch_cancelled<F, T>(f: F) -> Result<T, ra_salsa::Cancelled>
 where
-    F: FnOnce() -> T + std::panic::UnwindSafe,
+    F: FnOnce() -> T,
 {
-    ra_salsa::Cancelled::catch(f)
+    // `ra_salsa::Cancelled::catch` is based on `catch_unwind`, which requires
+    // `UnwindSafe`. Our database carries intentionally non-tracked state used
+    // for persistence (locks, disk caches) that is not `UnwindSafe` by default.
+    //
+    // Cancellation unwinds are expected control-flow in Salsa; queries must be
+    // written so that any such unwind results in a benign cache miss on retry.
+    ra_salsa::Cancelled::catch(std::panic::AssertUnwindSafe(f))
 }
 
 /// Read-only snapshot type for concurrent query execution.
@@ -138,18 +155,41 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
 pub struct RootDatabase {
     storage: ra_salsa::Storage<RootDatabase>,
     stats: QueryStatsCollector,
+    persistence: Persistence,
+    file_paths: Arc<RwLock<HashMap<FileId, Arc<String>>>>,
 }
 
 impl Default for RootDatabase {
     fn default() -> Self {
-        Self {
-            storage: ra_salsa::Storage::default(),
-            stats: QueryStatsCollector::default(),
-        }
+        let project_root =
+            std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+        Self::new_with_persistence(project_root, PersistenceConfig::from_env())
     }
 }
 
 impl RootDatabase {
+    pub fn new_with_persistence(
+        project_root: impl AsRef<Path>,
+        persistence: PersistenceConfig,
+    ) -> Self {
+        Self {
+            storage: ra_salsa::Storage::default(),
+            stats: QueryStatsCollector::default(),
+            persistence: Persistence::new(project_root, persistence),
+            file_paths: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub fn set_file_path(&mut self, file: FileId, path: impl Into<String>) {
+        self.file_paths
+            .write()
+            .insert(file, Arc::new(path.into()));
+    }
+
+    pub fn persistence_stats(&self) -> crate::PersistenceStats {
+        self.persistence.stats()
+    }
+
     /// Request cancellation for in-flight queries.
     ///
     /// Salsa's cancellation is driven by pending writes: this triggers a
@@ -191,6 +231,18 @@ impl HasQueryStats for RootDatabase {
 
     fn record_disk_cache_miss(&self, query_name: &'static str) {
         self.stats.record_disk_miss(query_name);
+    }
+}
+
+impl HasPersistence for RootDatabase {
+    fn persistence(&self) -> &Persistence {
+        &self.persistence
+    }
+}
+
+impl HasFilePaths for RootDatabase {
+    fn file_path(&self, file: FileId) -> Option<Arc<String>> {
+        self.file_paths.read().get(&file).cloned()
     }
 }
 
@@ -253,6 +305,8 @@ impl ra_salsa::ParallelDatabase for RootDatabase {
         ra_salsa::Snapshot::new(RootDatabase {
             storage: self.storage.snapshot(),
             stats: self.stats.clone(),
+            persistence: self.persistence.clone(),
+            file_paths: self.file_paths.clone(),
         })
     }
 }
@@ -272,6 +326,18 @@ impl Database {
         Self::default()
     }
 
+    pub fn new_with_persistence(
+        project_root: impl AsRef<Path>,
+        persistence: PersistenceConfig,
+    ) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(RootDatabase::new_with_persistence(
+                project_root,
+                persistence,
+            ))),
+        }
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         self.inner.read().snapshot()
     }
@@ -283,7 +349,7 @@ impl Database {
 
     pub fn with_snapshot_catch_cancelled<T>(
         &self,
-        f: impl FnOnce(&Snapshot) -> T + std::panic::UnwindSafe,
+        f: impl FnOnce(&Snapshot) -> T,
     ) -> Result<T, ra_salsa::Cancelled> {
         let snap = self.snapshot();
         catch_cancelled(|| f(&snap))
@@ -295,6 +361,10 @@ impl Database {
 
     pub fn clear_query_stats(&self) {
         self.inner.read().clear_query_stats();
+    }
+
+    pub fn persistence_stats(&self) -> crate::PersistenceStats {
+        self.inner.read().persistence_stats()
     }
 
     pub fn with_write<T>(&self, f: impl FnOnce(&mut RootDatabase) -> T) -> T {
@@ -322,6 +392,10 @@ impl Database {
         db.set_file_content(file, text);
     }
 
+    pub fn set_file_path(&self, file: FileId, path: impl Into<String>) {
+        self.inner.write().set_file_path(file, path);
+    }
+
     pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
         self.inner.write().set_project_config(project, config);
     }
@@ -340,7 +414,7 @@ impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax + NovaSemantic + Nov
 fn assert_query_is_cancelled<T, F>(mut db: RootDatabase, run_query: F)
 where
     T: Send + 'static,
-    F: FnOnce(&Snapshot) -> T + Send + std::panic::UnwindSafe + 'static,
+    F: FnOnce(&Snapshot) -> T + Send + 'static,
 {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -407,6 +481,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nova_cache::CacheConfig;
+    use tempfile::TempDir;
 
     fn stat(db: &RootDatabase, query_name: &str) -> QueryStat {
         db.query_stats()
@@ -685,5 +761,135 @@ mod tests {
             assert!(snap.file_exists(file));
             assert_eq!(snap.source_root(file), SourceRootId::from_raw(0));
         });
+    }
+
+    #[test]
+    fn persistence_mode_does_not_change_query_results() {
+        let tmp = TempDir::new().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let cache_root = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let cache_cfg = CacheConfig {
+            cache_root_override: Some(cache_root),
+        };
+
+        let file = FileId::from_raw(1);
+        let file_path = "src/Foo.java";
+        let text = Arc::new("class Foo { int x; }".to_string());
+
+        // First run: RW (populates cache).
+        let mut rw_db = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: cache_cfg.clone(),
+            },
+        );
+        rw_db.set_file_exists(file, true);
+        rw_db.set_file_path(file, file_path);
+        rw_db.set_file_content(file, text.clone());
+
+        let from_rw = rw_db.item_tree(file);
+        drop(rw_db);
+
+        // Second run: RW again (should be able to warm-start from disk).
+        let mut rw_db2 = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: cache_cfg.clone(),
+            },
+        );
+        rw_db2.set_file_exists(file, true);
+        rw_db2.set_file_path(file, file_path);
+        rw_db2.set_file_content(file, text.clone());
+
+        let from_cache = rw_db2.item_tree(file);
+        assert_eq!(&*from_cache, &*from_rw);
+        assert_eq!(executions(&rw_db2, "parse"), 0);
+
+        // Third run: disabled (must ignore cache but produce identical results).
+        let mut disabled_db = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::Disabled,
+                cache: cache_cfg,
+            },
+        );
+        disabled_db.set_file_exists(file, true);
+        disabled_db.set_file_path(file, file_path);
+        disabled_db.set_file_content(file, text);
+
+        let from_disabled = disabled_db.item_tree(file);
+        assert_eq!(&*from_disabled, &*from_rw);
+    }
+
+    #[test]
+    fn corrupted_cache_is_ignored_and_forces_recompute() {
+        let tmp = TempDir::new().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let cache_root = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let cache_cfg = CacheConfig {
+            cache_root_override: Some(cache_root.clone()),
+        };
+
+        let file = FileId::from_raw(1);
+        let rel_path = "src/Foo.java";
+        let text = Arc::new("class Foo { int x; }".to_string());
+
+        // Populate cache.
+        let mut db = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: cache_cfg.clone(),
+            },
+        );
+        db.set_file_exists(file, true);
+        db.set_file_path(file, rel_path);
+        db.set_file_content(file, text.clone());
+        let expected = db.item_tree(file);
+        drop(db);
+
+        // Corrupt the artifact file.
+        let cache_dir = nova_cache::CacheDir::new(&project_root, cache_cfg).unwrap();
+        let ast_dir = cache_dir.ast_dir();
+        let artifact_name = format!(
+            "{}.ast",
+            nova_cache::Fingerprint::from_bytes(rel_path.as_bytes()).as_str()
+        );
+        let artifact_path = ast_dir.join(artifact_name);
+        assert!(artifact_path.exists(), "expected cache artifact to exist");
+        std::fs::write(&artifact_path, b"corrupted").unwrap();
+
+        // New DB should treat corruption as cache miss and recompute.
+        let mut db2 = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: CacheConfig {
+                    cache_root_override: Some(cache_root),
+                },
+            },
+        );
+        db2.set_file_exists(file, true);
+        db2.set_file_path(file, rel_path);
+        db2.set_file_content(file, text);
+
+        let actual = db2.item_tree(file);
+        assert_eq!(&*actual, &*expected);
+
+        let stats = db2.persistence_stats();
+        assert!(
+            stats.ast_load_misses > 0 && stats.ast_store_success > 0,
+            "expected corruption to be treated as miss + recompute: {stats:?}"
+        );
     }
 }

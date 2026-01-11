@@ -1,11 +1,14 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+use nova_cache::Fingerprint;
 use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
 
 use crate::FileId;
+use crate::persistence::HasPersistence;
 
 use super::cancellation as cancel;
+use super::HasFilePaths;
 use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
 
@@ -13,7 +16,7 @@ use super::stats::HasQueryStats;
 pub type SyntaxTree = GreenNode;
 
 #[ra_salsa::query_group(NovaSyntaxStorage)]
-pub trait NovaSyntax: NovaInputs + HasQueryStats {
+pub trait NovaSyntax: NovaInputs + HasQueryStats + HasPersistence + HasFilePaths {
     /// Parse a file into a syntax tree (memoized and dependency-tracked).
     fn parse(&self, file: FileId) -> Arc<ParseResult>;
 
@@ -37,6 +40,20 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
     } else {
         Arc::new(String::new())
     };
+
+    if db.persistence().mode().allows_read() {
+        if let Some(file_path) = db.file_path(file).filter(|p| !p.is_empty()) {
+            let fingerprint = Fingerprint::from_bytes(text.as_bytes());
+            if let Some(artifacts) = db
+                .persistence()
+                .load_ast_artifacts(file_path.as_str(), &fingerprint)
+            {
+                let result = Arc::new(artifacts.parse);
+                db.record_query_stat("parse", start.elapsed());
+                return result;
+            }
+        }
+    }
 
     let parsed = nova_syntax::parse(text.as_str());
     let result = Arc::new(parsed);

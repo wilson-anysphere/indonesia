@@ -10,6 +10,8 @@
 mod query_cache;
 pub use query_cache::{PersistentQueryCache, QueryCache};
 
+pub mod persistence;
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -347,3 +349,5 @@ pub use salsa::{
     NovaSemantic, NovaSyntax, QueryStat, QueryStats, RootDatabase as SalsaRootDatabase, Snapshot,
     SyntaxTree,
 };
+
+pub use persistence::{HasPersistence, Persistence, PersistenceConfig, PersistenceMode, PersistenceStats};
