@@ -3565,6 +3565,7 @@ dependencies = [
  "nova-syntax",
  "nova-test-utils",
  "nova-testing",
+ "nova-vfs",
  "nova-workspace",
  "pretty_assertions",
  "schemars",

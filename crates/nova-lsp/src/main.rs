@@ -19,6 +19,7 @@ use nova_refactor::{
     InMemoryJavaDatabase, OrganizeImportsParams, RenameParams as RefactorRenameParams, SemanticRefactorError,
 };
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
+use nova_vfs::{ContentChange, Document};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
@@ -112,7 +113,7 @@ fn main() -> std::io::Result<()> {
 
 struct ServerState {
     shutdown_requested: bool,
-    documents: HashMap<String, String>,
+    documents: HashMap<String, Document>,
     ai: Option<AiService>,
     privacy: nova_ai::PrivacyMode,
     runtime: Option<tokio::runtime::Runtime>,
@@ -161,7 +162,11 @@ impl ServerState {
     }
 
     fn refresh_document_memory(&mut self) {
-        let total: u64 = self.documents.values().map(|t| t.len() as u64).sum();
+        let total: u64 = self
+            .documents
+            .values()
+            .map(|doc| doc.text().len() as u64)
+            .sum();
         self.documents_memory.tracker().set_bytes(total);
         self.memory.enforce();
     }
@@ -181,7 +186,7 @@ fn handle_request(
             // still call custom `nova/*` requests directly.
             let result = json!({
                     "capabilities": {
-                        "textDocumentSync": { "openClose": true, "change": 1 },
+                        "textDocumentSync": { "openClose": true, "change": 2 },
                         "documentFormattingProvider": true,
                         "documentRangeFormattingProvider": true,
                         "documentOnTypeFormattingProvider": {
@@ -287,7 +292,7 @@ fn handle_request(
                     "error": { "code": -32602, "message": "missing textDocument.uri" }
                 }));
             };
-            let Some(text) = state.documents.get(uri) else {
+            let Some(doc) = state.documents.get(uri) else {
                 return Ok(json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -295,7 +300,7 @@ fn handle_request(
                 }));
             };
 
-            Ok(match nova_lsp::handle_formatting_request(method, params, text) {
+            Ok(match nova_lsp::handle_formatting_request(method, params, doc.text()) {
                 Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                 Err(err) => {
                     let (code, message) = match err {
@@ -361,45 +366,48 @@ fn handle_notification(method: &str, message: &serde_json::Value, state: &mut Se
             std::process::exit(0);
         }
         "textDocument/didOpen" => {
-            let params: DidOpenTextDocumentParams =
-                serde_json::from_value(message.get("params").cloned().unwrap_or_default())
-                    .unwrap_or_else(|_| DidOpenTextDocumentParams {
-                        text_document: TextDocumentItem {
-                            uri: String::new(),
-                            text: String::new(),
-                        },
-                    });
-            if !params.text_document.uri.is_empty() {
-                state
-                    .documents
-                    .insert(params.text_document.uri, params.text_document.text);
-                state.refresh_document_memory();
-            }
+            let Ok(params) = serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(
+                message.get("params").cloned().unwrap_or_default(),
+            ) else {
+                return Ok(());
+            };
+            let uri = params.text_document.uri.to_string();
+            state.documents.insert(
+                uri,
+                Document::new(params.text_document.text, params.text_document.version),
+            );
+            state.refresh_document_memory();
         }
         "textDocument/didChange" => {
-            let params: DidChangeTextDocumentParams =
-                serde_json::from_value(message.get("params").cloned().unwrap_or_default())
-                    .unwrap_or_else(|_| DidChangeTextDocumentParams {
-                        text_document: VersionedTextDocumentIdentifier { uri: String::new() },
-                        content_changes: Vec::new(),
-                    });
-            if let Some(change) = params.content_changes.last() {
-                state
-                    .documents
-                    .insert(params.text_document.uri, change.text.clone());
-                state.refresh_document_memory();
+            let Ok(params) = serde_json::from_value::<lsp_types::DidChangeTextDocumentParams>(
+                message.get("params").cloned().unwrap_or_default(),
+            ) else {
+                return Ok(());
+            };
+            let uri = params.text_document.uri.to_string();
+            let Some(doc) = state.documents.get_mut(&uri) else {
+                // LSP guarantees `didChange` only for open documents.
+                return Ok(());
+            };
+
+            let changes: Vec<ContentChange> =
+                params.content_changes.into_iter().map(ContentChange::from).collect();
+            if let Err(err) = doc.apply_changes(params.text_document.version, &changes) {
+                tracing::warn!(target = "nova.lsp", uri, "failed to apply document changes: {err}");
+                return Ok(());
             }
+            state.refresh_document_memory();
         }
         "textDocument/didClose" => {
-            let params: DidCloseTextDocumentParams =
-                serde_json::from_value(message.get("params").cloned().unwrap_or_default())
-                    .unwrap_or_else(|_| DidCloseTextDocumentParams {
-                        text_document: VersionedTextDocumentIdentifier { uri: String::new() },
-                    });
-            if !params.text_document.uri.is_empty() {
-                state.documents.remove(&params.text_document.uri);
-                state.refresh_document_memory();
-            }
+            let Ok(params) = serde_json::from_value::<lsp_types::DidCloseTextDocumentParams>(
+                message.get("params").cloned().unwrap_or_default(),
+            ) else {
+                return Ok(());
+            };
+            state
+                .documents
+                .remove(params.text_document.uri.as_str());
+            state.refresh_document_memory();
         }
         _ => {}
     }
@@ -429,44 +437,6 @@ fn flush_memory_status_notifications(
     });
     write_json_message(writer, &notification)?;
     Ok(())
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DidOpenTextDocumentParams {
-    text_document: TextDocumentItem,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TextDocumentItem {
-    uri: String,
-    text: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DidChangeTextDocumentParams {
-    text_document: VersionedTextDocumentIdentifier,
-    content_changes: Vec<TextDocumentContentChangeEvent>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DidCloseTextDocumentParams {
-    text_document: VersionedTextDocumentIdentifier,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VersionedTextDocumentIdentifier {
-    uri: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct TextDocumentContentChangeEvent {
-    text: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -827,7 +797,7 @@ fn load_document_text(state: &ServerState, uri: &str) -> Option<String> {
     state
         .documents
         .get(uri)
-        .cloned()
+        .map(|doc| doc.text().to_owned())
         .or_else(|| read_file_from_uri(uri))
 }
 

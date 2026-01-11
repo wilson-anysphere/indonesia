@@ -150,7 +150,14 @@ fn stdio_server_handles_document_formatting_request() {
         &json!({
             "jsonrpc": "2.0",
             "method": "textDocument/didOpen",
-            "params": { "textDocument": { "uri": uri, "text": text } }
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
         }),
     );
 
@@ -176,6 +183,115 @@ fn stdio_server_handles_document_formatting_request() {
         formatted,
         "class Foo {\n    void m() {\n        int x=1;\n    }\n}\n"
     );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_applies_incremental_did_change_utf16_correctly() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    let uri = "file:///test/Foo.java";
+    let text = "class Foo{void m(){String s=\"😀\";int x=1;}}\n";
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let start_offset = text.find("int x=1;").expect("int x=1 statement");
+    let digit_offset = start_offset + "int x=".len();
+    let digit_end = digit_offset + "1".len();
+
+    let index = nova_core::LineIndex::new(text);
+    let start_pos = index.position(text, nova_core::TextSize::from(digit_offset as u32));
+    let end_pos = index.position(text, nova_core::TextSize::from(digit_end as u32));
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": { "uri": uri, "version": 2 },
+                "contentChanges": [{
+                    "range": {
+                        "start": { "line": start_pos.line, "character": start_pos.character },
+                        "end": { "line": end_pos.line, "character": end_pos.character }
+                    },
+                    "text": "2"
+                }]
+            }
+        }),
+    );
+
+    let mut updated_text = text.to_string();
+    updated_text.replace_range(digit_offset..digit_end, "2");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": { "uri": uri },
+                "options": { "tabSize": 4, "insertSpaces": true }
+            }
+        }),
+    );
+
+    let formatting_resp = read_jsonrpc_message(&mut stdout);
+    let result = formatting_resp.get("result").cloned().expect("result");
+    let edits: Vec<LspTextEdit> = serde_json::from_value(result).expect("decode text edits");
+    let formatted = apply_lsp_text_edits(&updated_text, &edits);
+
+    assert!(
+        formatted.contains("int x=2;"),
+        "formatted output did not reflect incremental edit:\n{formatted}"
+    );
+    assert!(!formatted.contains("int x=1;"));
+    assert!(formatted.contains("😀"), "emoji should be preserved");
 
     write_jsonrpc_message(
         &mut stdin,
@@ -379,6 +495,8 @@ fn stdio_server_provides_inline_method_code_action() {
             "params": {
                 "textDocument": {
                     "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
                     "text": source
                 }
             }
