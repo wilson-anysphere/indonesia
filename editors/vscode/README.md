@@ -74,7 +74,7 @@ Tests are discovered via `nova/test/discover` and can be run from the Test Explo
 
 ### Server
 
-- `nova.server.path` (string | null): override the `nova-lsp` binary path (disables managed downloads).
+- `nova.server.path` (string | null): override the `nova-lsp` binary path (disables managed downloads). Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder.
 - `nova.server.autoDownload` (boolean): prompt to download the server when missing (default: true).
 - `nova.server.releaseChannel` ("stable" | "prerelease"): which channel to use when resolving `latest`.
 - `nova.server.version` (string | "latest"): version to install (default: "latest").

@@ -4,7 +4,7 @@ import * as path from 'path';
 import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { ServerManager, type NovaServerSettings } from './serverManager';
-import { buildNovaLspLaunchConfig } from './lspArgs';
+import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
@@ -143,11 +143,13 @@ export async function activate(context: vscode.ExtensionContext) {
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');
     const rawPath = cfg.get<string | null>('server.path', null);
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const resolvedPath = resolveNovaConfigPath({ configPath: rawPath, workspaceRoot }) ?? null;
     const rawChannel = cfg.get<string>('server.releaseChannel', 'stable');
     const rawVersion = cfg.get<string>('server.version', 'latest');
     const rawReleaseUrl = cfg.get<string>('server.releaseUrl', 'https://github.com/wilson-anysphere/indonesia');
     return {
-      path: typeof rawPath === 'string' && rawPath.trim().length > 0 ? rawPath.trim() : null,
+      path: resolvedPath,
       autoDownload: cfg.get<boolean>('server.autoDownload', true),
       releaseChannel: rawChannel === 'prerelease' ? 'prerelease' : 'stable',
       version: typeof rawVersion === 'string' && rawVersion.trim().length > 0 ? rawVersion.trim() : 'latest',
