@@ -13,6 +13,7 @@ nova-classfile = { path = "../crates/nova-classfile" }
 nova-format = { path = "../crates/nova-format" }
 nova-refactor = { path = "../crates/nova-refactor", optional = true }
 nova-syntax = { path = "../crates/nova-syntax" }
+nova-testing = { path = "../crates/nova-testing" }
 
 [features]
 refactor = ["dep:nova-refactor"]
@@ -48,6 +49,13 @@ bench = false
 [[bin]]
 name = "format_java"
 path = "fuzz_targets/format_java.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_junit_report"
+path = "fuzz_targets/fuzz_junit_report.rs"
 test = false
 doc = false
 bench = false

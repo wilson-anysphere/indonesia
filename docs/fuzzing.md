@@ -66,6 +66,15 @@ cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
 
 This target feeds arbitrary bytes into `nova_classfile::ClassFile::parse`.
 
+### Parse JUnit XML reports
+
+```bash
+cargo +nightly fuzz run fuzz_junit_report -- -max_total_time=60 -max_len=262144
+```
+
+This target feeds arbitrary UTF-8 input into `nova_testing::report::parse_junit_report_str` and
+treats parse errors as expected (the target only enforces "never panic / never hang").
+
 ### Optional targets
 
 Nova also has additional fuzz targets for deeper invariants / higher-level smoke tests:

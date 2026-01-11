@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.example.ParameterizedTest" tests="4">
+  <testcase classname="com.example.ParameterizedTest" name="testFoo[1]" time="0.010" />
+  <testcase classname="com.example.ParameterizedTest" name="testFoo(int)[2]" time="0.020" />
+  <testcase classname="com.example.ParameterizedTest" name="testFoo(int, java.lang.String)" time="0.030" />
+  <testcase name="[already-bracketed]" time="0.001" />
+</testsuite>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="outer">
+    <testsuite name="inner">
+      <testcase classname="com.example.SkipTest" name="testSkipped" time="0">
+        <skipped />
+      </testcase>
+      <testcase classname="com.example.SkipTest" name="testSkippedWithMessage[3]">
+        <skipped message="not supported"></skipped>
+      </testcase>
+      <testcase classname="com.example.SkipTest" name="" time="not-a-float" />
+    </testsuite>
+  </testsuite>
+</testsuites>
