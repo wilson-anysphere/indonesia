@@ -1,4 +1,5 @@
 mod persist;
+mod module_name;
 
 use std::borrow::Cow;
 use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap};
@@ -32,9 +33,15 @@ pub enum ClasspathError {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModuleNameKind {
-    None,
-    Automatic,
     Explicit,
+    Automatic,
+    None,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EntryModuleMeta {
+    pub name: Option<ModuleName>,
+    pub kind: ModuleNameKind,
 }
 
 /// Optional indexing counters used by tests and the CLI.
@@ -125,23 +132,59 @@ impl ClasspathEntry {
             ClasspathEntry::Jmod(path) => read_module_info_from_zip(path, ZipKind::Jmod),
         }
     }
-
-    pub fn module_meta(&self) -> Result<(Option<ModuleName>, ModuleNameKind), ClasspathError> {
+    pub fn module_meta(&self) -> Result<EntryModuleMeta, ClasspathError> {
         match self {
-            ClasspathEntry::ClassDir(_) => Ok((None, ModuleNameKind::None)),
-            ClasspathEntry::Jar(path) | ClasspathEntry::Jmod(path) => {
-                if let Some(info) = self.module_info()? {
-                    return Ok((Some(info.name), ModuleNameKind::Explicit));
-                }
-
-                let name = read_manifest_main_attribute(path, "Automatic-Module-Name")?
-                    .filter(|value| !value.trim().is_empty())
-                    .or_else(|| derive_automatic_module_name(path))
-                    .map(ModuleName::new);
-                Ok((name, ModuleNameKind::Automatic))
-            }
+            ClasspathEntry::ClassDir(_) => Ok(EntryModuleMeta {
+                name: None,
+                kind: ModuleNameKind::None,
+            }),
+            ClasspathEntry::Jar(path) => jar_module_meta(path),
+            ClasspathEntry::Jmod(_) => match self.module_info()? {
+                Some(info) => Ok(EntryModuleMeta {
+                    name: Some(info.name),
+                    kind: ModuleNameKind::Explicit,
+                }),
+                None => Ok(EntryModuleMeta {
+                    name: None,
+                    kind: ModuleNameKind::None,
+                }),
+            },
         }
     }
+}
+
+fn jar_module_meta(path: &Path) -> Result<EntryModuleMeta, ClasspathError> {
+    let file = std::fs::File::open(path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    for candidate in ["module-info.class", "META-INF/versions/9/module-info.class"] {
+        match archive.by_name(candidate) {
+            Ok(mut entry) => {
+                let mut bytes = Vec::with_capacity(entry.size() as usize);
+                entry.read_to_end(&mut bytes)?;
+                let info = parse_module_info_class(&bytes)?;
+                return Ok(EntryModuleMeta {
+                    name: Some(info.name),
+                    kind: ModuleNameKind::Explicit,
+                });
+            }
+            Err(zip::result::ZipError::FileNotFound) => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+
+    let name = module_name::automatic_module_name_from_jar_manifest(&mut archive)
+        .or_else(|| module_name::derive_automatic_module_name_from_jar_path(path).map(ModuleName::new));
+    let kind = if name.is_some() {
+        ModuleNameKind::Automatic
+    } else {
+        ModuleNameKind::None
+    };
+
+    Ok(EntryModuleMeta {
+        name,
+        kind,
+    })
 }
 
 fn canonicalize_if_possible(path: &Path) -> std::io::Result<PathBuf> {
@@ -434,8 +477,8 @@ impl ModuleAwareClasspathIndex {
 
         for entry in entries {
             let entry = entry.normalize()?;
-            let (module_name, module_kind) = entry.module_meta()?;
-            modules.push((module_name.clone(), module_kind));
+            let module_meta = entry.module_meta()?;
+            modules.push((module_meta.name.clone(), module_meta.kind));
 
             let stubs = match &entry {
                 ClasspathEntry::ClassDir(_) => {
@@ -459,7 +502,7 @@ impl ModuleAwareClasspathIndex {
                 let binary_name = stub.binary_name.clone();
                 internal_to_binary.insert(stub.internal_name.clone(), binary_name.clone());
                 stubs_by_binary.insert(binary_name.clone(), stub);
-                type_to_module.insert(binary_name, module_name.clone());
+                type_to_module.insert(binary_name, module_meta.name.clone());
             }
         }
 
@@ -903,95 +946,6 @@ fn manifest_is_multi_release(manifest: &str) -> bool {
     false
 }
 
-fn read_manifest_main_attribute(path: &Path, key: &str) -> Result<Option<String>, ClasspathError> {
-    let file = std::fs::File::open(path)?;
-    let mut archive = zip::ZipArchive::new(file)?;
-
-    let mut file = match archive.by_name("META-INF/MANIFEST.MF") {
-        Ok(file) => file,
-        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
-        Err(err) => return Err(err.into()),
-    };
-
-    let mut manifest = String::new();
-    file.read_to_string(&mut manifest)?;
-    Ok(manifest_main_attribute(&manifest, key))
-}
-
-fn manifest_main_attribute(manifest: &str, key: &str) -> Option<String> {
-    let mut current_key = None::<&str>;
-    let mut current_value = String::new();
-
-    let flush = |current_key: Option<&str>, current_value: &str, key: &str| -> Option<String> {
-        let current_key = current_key?;
-        if current_key.eq_ignore_ascii_case(key) {
-            Some(current_value.trim().to_string())
-        } else {
-            None
-        }
-    };
-
-    for line in manifest.lines() {
-        if line.starts_with(' ') {
-            if current_key.is_some() {
-                current_value.push_str(line.trim_start());
-            }
-            continue;
-        }
-
-        if let Some(found) = flush(current_key.take(), &current_value, key) {
-            return Some(found);
-        }
-
-        let Some((k, v)) = line.split_once(':') else {
-            continue;
-        };
-        current_key = Some(k.trim());
-        current_value = v.trim_start().to_string();
-    }
-
-    flush(current_key, &current_value, key)
-}
-
-fn derive_automatic_module_name(path: &Path) -> Option<String> {
-    let file_name = path.file_name()?.to_string_lossy();
-
-    let mut name = match file_name.rsplit_once('.') {
-        Some((stem, _)) => stem.to_string(),
-        None => file_name.to_string(),
-    };
-
-    if let Some((before, after)) = name.rsplit_once('-') {
-        if after
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_digit())
-            && after.chars().all(|c| c.is_ascii_digit() || c == '.')
-        {
-            name = before.to_string();
-        }
-    }
-
-    let mut out = String::new();
-    let mut prev_dot = false;
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-            prev_dot = false;
-        } else if !prev_dot {
-            out.push('.');
-            prev_dot = true;
-        }
-    }
-
-    let trimmed = out.trim_matches('.');
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
 fn stub_from_classfile(cf: ClassFile) -> ClasspathClassStub {
     let internal_name = cf.this_class;
     let binary_name = internal_name_to_binary(&internal_name);
@@ -1204,6 +1158,10 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/named-module.jmod")
     }
 
+    fn test_manifest_named_jar() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/automatic-module-name-1.2.3.jar")
+    }
+
     #[test]
     fn reads_module_info_from_jmod_entry() {
         let entry = ClasspathEntry::Jmod(test_named_module_jmod());
@@ -1228,6 +1186,34 @@ mod tests {
     fn module_info_returns_none_for_regular_jar() {
         let entry = ClasspathEntry::Jar(test_jar());
         assert!(entry.module_info().unwrap().is_none());
+    }
+
+    #[test]
+    fn module_meta_reports_explicit_named_module() {
+        let entry = ClasspathEntry::Jar(test_named_module_jar());
+        let meta = entry.module_meta().unwrap();
+        assert_eq!(meta.kind, ModuleNameKind::Explicit);
+        assert_eq!(meta.name.unwrap().as_str(), "example.mod");
+    }
+
+    #[test]
+    fn module_meta_prefers_manifest_automatic_module_name() {
+        let entry = ClasspathEntry::Jar(test_manifest_named_jar());
+        let meta = entry.module_meta().unwrap();
+        assert_eq!(meta.kind, ModuleNameKind::Automatic);
+        assert_eq!(meta.name.unwrap().as_str(), "com.example.manifest_override");
+    }
+
+    #[test]
+    fn module_meta_derives_automatic_module_name_from_filename() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("foo-bar_baz-1.2.3.jar");
+        std::fs::copy(test_jar(), &path).unwrap();
+
+        let entry = ClasspathEntry::Jar(path);
+        let meta = entry.module_meta().unwrap();
+        assert_eq!(meta.kind, ModuleNameKind::Automatic);
+        assert_eq!(meta.name.unwrap().as_str(), "foo.bar.baz");
     }
 
     #[test]

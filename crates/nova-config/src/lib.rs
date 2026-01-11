@@ -431,7 +431,7 @@ impl NovaConfig {
     }
 }
 
-/// Load the effective Nova config for a workspace root.
+/// Load Nova configuration for a workspace root.
 ///
 /// Discovery order (first match wins):
 /// 1) `NOVA_CONFIG_PATH` env var (if set)
@@ -439,11 +439,11 @@ impl NovaConfig {
 /// 3) `<workspace>/nova.toml`
 /// 4) fallback `NovaConfig::default()`
 pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigError> {
-    let root = root.as_ref();
     if let Some(path) = std::env::var_os("NOVA_CONFIG_PATH") {
         return NovaConfig::load_from_path(PathBuf::from(path));
     }
 
+    let root = root.as_ref();
     let candidates = [
         root.join(".nova").join("config.toml"),
         root.join("nova.toml"),
