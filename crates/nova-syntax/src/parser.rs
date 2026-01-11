@@ -542,6 +542,12 @@ pub(crate) fn parse_argument_list_fragment(input: &str) -> JavaParseResult {
     })
 }
 
+pub(crate) fn parse_annotation_element_value_pair_list_fragment(input: &str) -> JavaParseResult {
+    parse_node_fragment(input, SyntaxKind::AnnotationElementValuePairList, |parser| {
+        parser.parse_annotation_element_value_pair_list_contents();
+    })
+}
+
 pub(crate) fn parse_parameter_list_fragment(input: &str) -> JavaParseResult {
     parse_node_fragment(input, SyntaxKind::ParameterList, |parser| {
         parser.parse_parameter_list_contents();
@@ -1468,12 +1474,16 @@ impl<'a> Parser<'a> {
     fn parse_annotation_element_value_pair_list(&mut self) {
         self.builder
             .start_node(SyntaxKind::AnnotationElementValuePairList.into());
+        self.parse_annotation_element_value_pair_list_contents();
+        self.builder.finish_node(); // AnnotationElementValuePairList
+    }
+
+    fn parse_annotation_element_value_pair_list_contents(&mut self) {
         self.expect(SyntaxKind::LParen, "expected `(`");
 
         self.eat_trivia();
         if self.at(SyntaxKind::RParen) {
             self.bump();
-            self.builder.finish_node(); // AnnotationElementValuePairList
             return;
         }
 
@@ -1534,7 +1544,6 @@ impl<'a> Parser<'a> {
         }
 
         self.expect(SyntaxKind::RParen, "expected `)`");
-        self.builder.finish_node(); // AnnotationElementValuePairList
     }
 
     fn parse_annotation_element_value_pair(&mut self) {

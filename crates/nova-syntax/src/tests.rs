@@ -2425,6 +2425,48 @@ fn incremental_edit_inside_parameter_list_reuses_method_body_and_shifts_errors()
 }
 
 #[test]
+fn incremental_edit_inside_annotation_arguments_reuses_class_body() {
+    let old_text = "@Anno(x = 1)\nclass Foo { int y = 0; }\n";
+    let old = parse_java(old_text);
+
+    let edit_offset = old_text
+        .find("x = 1")
+        .expect("expected `x = 1`") as u32
+        + "x = ".len() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: edit_offset,
+            end: edit_offset + 1,
+        },
+        "2",
+    );
+    let mut new_text = old_text.to_string();
+    new_text.replace_range(edit_offset as usize..(edit_offset + 1) as usize, "2");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+    assert_eq!(new_parse.errors, parse_java(&new_text).errors);
+
+    let old_body = find_class_by_name(&old, "Foo")
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::ClassBody)
+        .expect("expected class body")
+        .green()
+        .into_owned();
+    let new_body = find_class_by_name(&new_parse, "Foo")
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::ClassBody)
+        .expect("expected class body")
+        .green()
+        .into_owned();
+
+    assert!(
+        green_ptr_eq(&old_body, &new_body),
+        "expected class body to be reused when reparsing only the annotation argument list"
+    );
+}
+
+#[test]
 fn incremental_edit_inside_type_arguments_reuses_variable_declarator_list() {
     let old_text = "import java.util.List;\nclass Foo { List<String> xs = null; int y = 0; }\n";
     let old = parse_java(old_text);
