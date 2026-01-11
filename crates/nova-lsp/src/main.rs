@@ -448,7 +448,7 @@ impl ServerState {
         privacy_override: Option<nova_ai::PrivacyMode>,
     ) -> Self {
         let privacy = privacy_override.unwrap_or_else(|| nova_ai::PrivacyMode {
-            anonymize_identifiers: ai_config.privacy.effective_anonymize(),
+            anonymize_identifiers: ai_config.privacy.effective_anonymize_identifiers(),
             include_file_paths: false,
             ..nova_ai::PrivacyMode::default()
         });
@@ -2738,7 +2738,7 @@ mod tests {
         cfg.provider.timeout_ms = Duration::from_secs(2).as_millis() as u64;
         cfg.provider.concurrency = 1;
         cfg.privacy.local_only = false;
-        cfg.privacy.anonymize = Some(false);
+        cfg.privacy.anonymize_identifiers = Some(false);
         cfg.cache_enabled = false;
 
         let ai = NovaAi::new(&cfg).unwrap();
@@ -3357,7 +3357,7 @@ fn load_ai_config_from_env() -> Result<Option<(nova_config::AiConfig, nova_ai::P
     cfg.cache_ttl_secs = cache_ttl.as_secs().max(1);
     cfg.provider.model = model;
     cfg.provider.timeout_ms = timeout.as_millis().min(u64::MAX as u128) as u64;
-    cfg.privacy.anonymize = Some(anonymize_identifiers);
+    cfg.privacy.anonymize_identifiers = Some(anonymize_identifiers);
 
     cfg.provider.kind = match provider.as_str() {
         "ollama" => {

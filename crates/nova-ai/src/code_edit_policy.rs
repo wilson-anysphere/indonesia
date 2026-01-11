@@ -14,8 +14,8 @@ pub enum CodeEditPolicyError {
     CloudEditsDisabled,
 
     #[error(
-        "AI code edits are disabled when anonymization is enabled in cloud mode (patches cannot be applied reliably). \
-To enable cloud code edits, set nova.ai.privacy.anonymize=false (ai.privacy.anonymize=false in nova.toml), \
+        "AI code edits are disabled when identifier anonymization is enabled in cloud mode (patches cannot be applied reliably). \
+To enable cloud code edits, set nova.ai.privacy.anonymize_identifiers=false (ai.privacy.anonymize_identifiers=false or ai.privacy.anonymize=false in nova.toml), \
 nova.ai.privacy.allow_cloud_code_edits=true, and \
 nova.ai.privacy.allow_code_edits_without_anonymization=true (or use nova.ai.privacy.local_only=true)."
     )]
@@ -38,7 +38,7 @@ pub fn enforce_code_edit_policy(config: &AiPrivacyConfig) -> Result<(), CodeEdit
         return Ok(());
     }
 
-    if config.effective_anonymize() {
+    if config.effective_anonymize_identifiers() {
         // Patches produced against anonymized identifiers cannot reliably apply
         // to the original source. Until Nova has a reversible anonymization
         // pipeline for patches, refuse in this mode.
@@ -64,7 +64,7 @@ mod tests {
     fn local_only_allows_code_edits_by_default() {
         let cfg = AiPrivacyConfig {
             local_only: true,
-            anonymize: None,
+            anonymize_identifiers: None,
             ..AiPrivacyConfig::default()
         };
         assert_eq!(enforce_code_edit_policy(&cfg), Ok(()));
@@ -74,7 +74,7 @@ mod tests {
     fn local_only_allows_code_edits_even_when_anonymize_enabled() {
         let cfg = AiPrivacyConfig {
             local_only: true,
-            anonymize: Some(true),
+            anonymize_identifiers: Some(true),
             ..AiPrivacyConfig::default()
         };
         assert_eq!(enforce_code_edit_policy(&cfg), Ok(()));
@@ -84,7 +84,7 @@ mod tests {
     fn cloud_without_anonymization_requires_cloud_opt_in() {
         let cfg = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(false),
+            anonymize_identifiers: Some(false),
             // Still blocked without this explicit opt-in.
             allow_cloud_code_edits: false,
             ..AiPrivacyConfig::default()
@@ -99,7 +99,7 @@ mod tests {
     fn cloud_anonymized_refuses_by_default() {
         let cfg = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(true),
+            anonymize_identifiers: Some(true),
             ..AiPrivacyConfig::default()
         };
         assert_eq!(
@@ -112,7 +112,7 @@ mod tests {
     fn cloud_anonymized_refuses_even_with_cloud_edits_enabled() {
         let cfg = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(true),
+            anonymize_identifiers: Some(true),
             allow_cloud_code_edits: true,
             ..AiPrivacyConfig::default()
         };
@@ -126,7 +126,7 @@ mod tests {
     fn cloud_without_anonymization_requires_explicit_opt_in() {
         let cfg = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(false),
+            anonymize_identifiers: Some(false),
             allow_cloud_code_edits: true,
             ..AiPrivacyConfig::default()
         };
@@ -140,7 +140,7 @@ mod tests {
     fn cloud_without_anonymization_allows_when_fully_opted_in() {
         let cfg = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(false),
+            anonymize_identifiers: Some(false),
             allow_cloud_code_edits: true,
             allow_code_edits_without_anonymization: true,
             ..AiPrivacyConfig::default()

@@ -517,7 +517,7 @@ mod tests {
             local_only: false,
             // Cloud mode defaults to anonymization, but the first refusal reason should
             // be that anonymization makes patches impossible to apply reliably.
-            anonymize: None,
+            anonymize_identifiers: None,
             ..AiPrivacyConfig::default()
         };
 
@@ -544,7 +544,7 @@ mod tests {
         let config = CodeGenerationConfig::default();
         let privacy = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(true),
+            anonymize_identifiers: Some(true),
             allow_cloud_code_edits: true,
             ..AiPrivacyConfig::default()
         };
@@ -572,7 +572,7 @@ mod tests {
         let config = CodeGenerationConfig::default();
         let privacy = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(false),
+            anonymize_identifiers: Some(false),
             ..AiPrivacyConfig::default()
         };
 
@@ -599,7 +599,7 @@ mod tests {
         let config = CodeGenerationConfig::default();
         let privacy = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(false),
+            anonymize_identifiers: Some(false),
             allow_cloud_code_edits: true,
             ..AiPrivacyConfig::default()
         };

@@ -15,7 +15,7 @@ fn http_config(url: Url, model: &str) -> AiConfig {
     cfg.provider.concurrency = Some(1);
     cfg.provider.max_tokens = 64;
     cfg.privacy.local_only = false;
-    cfg.privacy.anonymize = Some(false);
+    cfg.privacy.anonymize_identifiers = Some(false);
     cfg.cache_enabled = true;
     cfg.cache_max_entries = 32;
     cfg.cache_ttl_secs = 60;

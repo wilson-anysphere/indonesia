@@ -448,17 +448,26 @@ LLM-generated patches impossible to apply reliably to the original source.
 As a result, Nova refuses AI code edits when:
 
 - `ai.privacy.local_only = false` (cloud mode) **and**
-- anonymization is enabled (the default in cloud mode)
+- **identifier anonymization** is enabled (the default in cloud mode)
 
-To enable cloud code edits, you must **explicitly opt in** and **disable anonymization**:
+To enable cloud code edits, you must **explicitly opt in** and **disable identifier anonymization**:
 
 ```toml
 [ai.privacy]
 local_only = false
-anonymize = false
+anonymize_identifiers = false # `anonymize = false` is accepted as an alias
 allow_cloud_code_edits = true
 allow_code_edits_without_anonymization = true
 ```
+
+Disabling identifier anonymization does **not** disable other privacy protections. In cloud mode,
+Nova still defaults to redacting:
+
+- suspicious string literals (`redact_sensitive_strings = true`)
+- long numeric literals (`redact_numeric_literals = true`)
+- comment bodies (`strip_or_redact_comments = true`)
+
+These knobs can be overridden independently under `[ai.privacy]`.
 
 Depending on the editor integration, these may be surfaced as settings prefixed with `nova.`
 (for example: `nova.ai.privacy.allow_cloud_code_edits`).

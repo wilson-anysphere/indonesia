@@ -12,7 +12,8 @@ use std::path::Path;
 pub struct PrivacyFilter {
     excluded_paths: GlobSet,
     redact_patterns: Vec<Regex>,
-    anonymize_code: bool,
+    anonymizer_options: CodeAnonymizerOptions,
+    use_anonymizer: bool,
 }
 
 /// Request-scoped state for privacy sanitization.
@@ -26,15 +27,7 @@ pub(crate) struct SanitizationSession {
 }
 
 impl SanitizationSession {
-    fn new(anonymize_code: bool) -> Self {
-        let options = CodeAnonymizerOptions {
-            anonymize_identifiers: anonymize_code,
-            // These are only enabled when anonymization is enabled. When
-            // everything stays local we avoid extra transformations.
-            redact_sensitive_strings: anonymize_code,
-            redact_numeric_literals: anonymize_code,
-            strip_or_redact_comments: anonymize_code,
-        };
+    fn new(options: CodeAnonymizerOptions) -> Self {
         Self {
             anonymizer: CodeAnonymizer::new(options),
         }
@@ -63,15 +56,27 @@ impl PrivacyFilter {
             redact_patterns.push(re);
         }
 
+        let anonymizer_options = CodeAnonymizerOptions {
+            anonymize_identifiers: config.effective_anonymize_identifiers(),
+            redact_sensitive_strings: config.effective_redact_sensitive_strings(),
+            redact_numeric_literals: config.effective_redact_numeric_literals(),
+            strip_or_redact_comments: config.effective_strip_or_redact_comments(),
+        };
+        let use_anonymizer = anonymizer_options.anonymize_identifiers
+            || anonymizer_options.redact_sensitive_strings
+            || anonymizer_options.redact_numeric_literals
+            || anonymizer_options.strip_or_redact_comments;
+
         Ok(Self {
             excluded_paths,
             redact_patterns,
-            anonymize_code: config.effective_anonymize(),
+            anonymizer_options,
+            use_anonymizer,
         })
     }
 
     pub(crate) fn new_session(&self) -> SanitizationSession {
-        SanitizationSession::new(self.anonymize_code)
+        SanitizationSession::new(self.anonymizer_options)
     }
 
     pub fn is_excluded(&self, path: &Path) -> bool {
@@ -83,7 +88,7 @@ impl PrivacyFilter {
         sanitize_markdown_fenced_code_blocks(
             text,
             |block| {
-                let sanitized = if self.anonymize_code {
+                let sanitized = if self.use_anonymizer {
                     session.anonymizer.anonymize(block)
                 } else {
                     block.to_string()
@@ -96,7 +101,7 @@ impl PrivacyFilter {
 
     /// Apply redaction and (optionally) anonymization to code before sending it to an LLM.
     pub fn sanitize_code_text(&self, session: &mut SanitizationSession, code: &str) -> String {
-        let sanitized = if self.anonymize_code {
+        let sanitized = if self.use_anonymizer {
             session.anonymizer.anonymize(code)
         } else {
             code.to_string()
@@ -189,7 +194,7 @@ mod tests {
     fn fenced_code_blocks_are_anonymized_with_stable_mapping() {
         let cfg = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(true),
+            anonymize_identifiers: Some(true),
             ..AiPrivacyConfig::default()
         };
         let filter = PrivacyFilter::new(&cfg).expect("filter");
@@ -209,5 +214,24 @@ mod tests {
         // Ensure we didn't anonymize the language tag / fence markers.
         assert!(out1.contains("```java"));
         assert!(out1.contains("```"));
+    }
+
+    #[test]
+    fn cloud_redacts_sensitive_strings_by_default_even_when_identifier_anonymization_disabled() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(false),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let code = r#"class SecretService { String apiKey = "sk-verysecretstringthatislong"; }"#;
+        let out = filter.sanitize_code_text(&mut session, code);
+
+        assert!(out.contains("\"[REDACTED]\""), "{out}");
+        assert!(out.contains("SecretService"), "{out}");
+        assert!(!out.contains("id_0"), "{out}");
+        assert!(!out.contains("sk-verysecret"), "{out}");
     }
 }

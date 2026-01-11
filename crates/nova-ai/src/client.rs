@@ -310,11 +310,7 @@ impl AiClient {
             let sanitized = self
                 .privacy
                 .sanitize_prompt_text(&mut session, &message.content);
-            message.content = if self.audit_enabled {
-                audit::sanitize_prompt_for_audit(&sanitized)
-            } else {
-                sanitized
-            };
+            message.content = sanitized;
         }
 
         request
@@ -937,8 +933,12 @@ mod tests {
         ) -> Result<String, AiError> {
             let prompt = audit::format_chat_prompt(&request.messages);
             assert!(
-                prompt.contains("[REDACTED]"),
-                "expected prompt to be sanitized before sending"
+                prompt.contains(SECRET),
+                "expected provider to receive unmodified prompt content"
+            );
+            assert!(
+                !prompt.contains("[REDACTED]"),
+                "audit logging must not mutate provider-visible prompts"
             );
             Ok(format!("completion {SECRET}"))
         }
@@ -950,8 +950,12 @@ mod tests {
         ) -> Result<AiStream, AiError> {
             let prompt = audit::format_chat_prompt(&request.messages);
             assert!(
-                prompt.contains("[REDACTED]"),
-                "expected prompt to be sanitized before sending"
+                prompt.contains(SECRET),
+                "expected provider to receive unmodified prompt content"
+            );
+            assert!(
+                !prompt.contains("[REDACTED]"),
+                "audit logging must not mutate provider-visible prompts"
             );
 
             let stream = async_stream::try_stream! {
@@ -1192,7 +1196,7 @@ mod tests {
 
         let privacy_cfg = AiPrivacyConfig {
             local_only: false,
-            anonymize: Some(true),
+            anonymize_identifiers: Some(true),
             ..AiPrivacyConfig::default()
         };
         let privacy = PrivacyFilter::new(&privacy_cfg).expect("privacy filter");

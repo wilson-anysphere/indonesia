@@ -59,7 +59,7 @@ fn base_config(kind: AiProviderKind, url: Url, model: &str) -> AiConfig {
         },
         privacy: AiPrivacyConfig {
             local_only,
-            anonymize: Some(false),
+            anonymize_identifiers: Some(false),
             ..AiPrivacyConfig::default()
         },
         enabled: true,

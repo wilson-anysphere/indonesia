@@ -693,11 +693,40 @@ pub struct AiPrivacyConfig {
     /// - `false` when `local_only = true`
     /// - `true` when `local_only = false` (cloud mode)
     ///
-    /// This matches Nova's privacy philosophy: anonymize when sending code to a
-    /// third-party, but avoid needless transformations when everything stays
-    /// local.
+    /// This matches Nova's privacy philosophy: anonymize identifiers when
+    /// sending code to a third-party, but avoid needless transformations when
+    /// everything stays local.
+    ///
+    /// Backwards compatibility: `ai.privacy.anonymize` is accepted as an alias
+    /// for this field.
+    #[serde(default, alias = "anonymize")]
+    pub anonymize_identifiers: Option<bool>,
+
+    /// Redact suspicious string literals (API keys, tokens, passwords) before
+    /// sending code to an AI provider.
+    ///
+    /// If unset, defaults to:
+    /// - `false` when `local_only = true` (unless identifier anonymization is explicitly enabled)
+    /// - `true` when `local_only = false` (cloud mode)
     #[serde(default)]
-    pub anonymize: Option<bool>,
+    pub redact_sensitive_strings: Option<bool>,
+
+    /// Redact suspiciously long numeric literals (IDs / hashes) before sending
+    /// code to an AI provider.
+    ///
+    /// If unset, defaults to:
+    /// - `false` when `local_only = true` (unless identifier anonymization is explicitly enabled)
+    /// - `true` when `local_only = false` (cloud mode)
+    #[serde(default)]
+    pub redact_numeric_literals: Option<bool>,
+
+    /// Strip or redact comment bodies before sending code to an AI provider.
+    ///
+    /// If unset, defaults to:
+    /// - `false` when `local_only = true` (unless identifier anonymization is explicitly enabled)
+    /// - `true` when `local_only = false` (cloud mode)
+    #[serde(default)]
+    pub strip_or_redact_comments: Option<bool>,
 
     /// Glob patterns for file paths that must never be sent to the LLM.
     #[serde(default)]
@@ -733,7 +762,10 @@ impl Default for AiPrivacyConfig {
     fn default() -> Self {
         Self {
             local_only: default_local_only(),
-            anonymize: None,
+            anonymize_identifiers: None,
+            redact_sensitive_strings: None,
+            redact_numeric_literals: None,
+            strip_or_redact_comments: None,
             excluded_paths: Vec::new(),
             redact_patterns: Vec::new(),
             allow_cloud_code_edits: false,
@@ -745,9 +777,34 @@ impl Default for AiPrivacyConfig {
 impl AiPrivacyConfig {
     /// Resolve the effective anonymization flag based on privacy defaults.
     pub fn effective_anonymize(&self) -> bool {
-        match self.anonymize {
+        self.effective_anonymize_identifiers()
+    }
+
+    pub fn effective_anonymize_identifiers(&self) -> bool {
+        match self.anonymize_identifiers {
             Some(value) => value,
             None => !self.local_only,
+        }
+    }
+
+    pub fn effective_redact_sensitive_strings(&self) -> bool {
+        match self.redact_sensitive_strings {
+            Some(value) => value,
+            None => !self.local_only || self.anonymize_identifiers.unwrap_or(false),
+        }
+    }
+
+    pub fn effective_redact_numeric_literals(&self) -> bool {
+        match self.redact_numeric_literals {
+            Some(value) => value,
+            None => !self.local_only || self.anonymize_identifiers.unwrap_or(false),
+        }
+    }
+
+    pub fn effective_strip_or_redact_comments(&self) -> bool {
+        match self.strip_or_redact_comments {
+            Some(value) => value,
+            None => !self.local_only || self.anonymize_identifiers.unwrap_or(false),
         }
     }
 }

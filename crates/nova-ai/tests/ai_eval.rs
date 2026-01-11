@@ -32,7 +32,7 @@ fn dummy_ai_client_config(privacy: AiPrivacyConfig) -> AiConfig {
 fn privacy_excluded_paths_omit_snippet() {
     let client = AiClient::from_config(&dummy_ai_client_config(AiPrivacyConfig {
         local_only: true,
-        anonymize: Some(true),
+        anonymize_identifiers: Some(true),
         excluded_paths: vec!["src/secrets/**".to_string()],
         ..AiPrivacyConfig::default()
     }))
@@ -49,6 +49,28 @@ fn privacy_excluded_paths_omit_snippet() {
 
     let allowed = nova_ai::CodeSnippet::new("src/Main.java", "class Main {}");
     assert!(client.sanitize_snippet(&allowed).is_some());
+}
+
+#[test]
+fn cloud_mode_disabling_identifier_anonymization_still_redacts_string_literals_by_default() {
+    let client = AiClient::from_config(&dummy_ai_client_config(AiPrivacyConfig {
+        local_only: false,
+        anonymize_identifiers: Some(false),
+        ..AiPrivacyConfig::default()
+    }))
+    .expect("client");
+
+    let snippet = nova_ai::CodeSnippet::new(
+        "src/Main.java",
+        r#"class Main { String token = "sk-verysecretstringthatislong"; }"#,
+    );
+    let sanitized = client
+        .sanitize_snippet(&snippet)
+        .expect("snippet should be included");
+
+    assert!(sanitized.contains("class Main"), "{sanitized}");
+    assert!(sanitized.contains("\"[REDACTED]\""), "{sanitized}");
+    assert!(!sanitized.contains("sk-verysecret"), "{sanitized}");
 }
 
 #[test]
