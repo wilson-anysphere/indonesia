@@ -95,7 +95,7 @@ pub fn load_project(root: impl AsRef<Path>) -> Result<ProjectConfig, ProjectErro
 }
 
 pub fn load_workspace_model(root: impl AsRef<Path>) -> Result<WorkspaceProjectModel, ProjectError> {
-    load_workspace_model_with_options(root, &LoadOptions::default())
+    load_workspace_model_with_workspace_config(root)
 }
 
 pub fn load_project_with_workspace_config(
@@ -113,6 +113,22 @@ pub fn load_project_with_workspace_config(
     };
 
     load_project_from_workspace_root(&workspace_root, &options)
+}
+
+pub fn load_workspace_model_with_workspace_config(
+    root: impl AsRef<Path>,
+) -> Result<WorkspaceProjectModel, ProjectError> {
+    let start_path = crate::workspace_config::canonicalize_workspace_root(root)?;
+    let workspace_root = workspace_root(&start_path)
+        .ok_or(ProjectError::UnknownProjectType { root: start_path })?;
+    let (nova_config, nova_config_path) = crate::workspace_config::load_nova_config(&workspace_root)?;
+    let options = LoadOptions {
+        nova_config,
+        nova_config_path,
+        ..LoadOptions::default()
+    };
+
+    load_workspace_model_from_workspace_root(&workspace_root, &options)
 }
 
 pub fn load_project_with_options(
