@@ -176,10 +176,22 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 let bsp_program =
                     std::env::var("NOVA_BSP_PROGRAM").unwrap_or_else(|_| "bsp4bazel".to_string());
                 let bsp_args_raw = std::env::var("NOVA_BSP_ARGS").unwrap_or_default();
-                let bsp_args_owned: Vec<String> = bsp_args_raw
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect();
+                let bsp_args_raw = bsp_args_raw.trim();
+                let bsp_args_owned: Vec<String> = if bsp_args_raw.is_empty() {
+                    Vec::new()
+                } else if bsp_args_raw.starts_with('[') {
+                    serde_json::from_str::<Vec<String>>(bsp_args_raw).unwrap_or_else(|_| {
+                        bsp_args_raw
+                            .split_whitespace()
+                            .map(|s| s.to_string())
+                            .collect()
+                    })
+                } else {
+                    bsp_args_raw
+                        .split_whitespace()
+                        .map(|s| s.to_string())
+                        .collect()
+                };
                 let bsp_args: Vec<&str> = bsp_args_owned.iter().map(String::as_str).collect();
 
                 if let Ok(info) = crate::bsp::target_compile_info_via_bsp(
