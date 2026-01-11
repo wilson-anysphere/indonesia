@@ -236,6 +236,10 @@ impl<'a> Parser<'a> {
             SyntaxKind::ProvidesKw,
             SyntaxKind::Eof,
         ]);
+    }
+
+    fn recover_past_directive_boundary(&mut self) {
+        self.recover_to_directive_boundary();
         if self.at(SyntaxKind::Semicolon) {
             self.bump();
         }
@@ -259,6 +263,9 @@ impl<'a> Parser<'a> {
         }
 
         self.recover_to_directive_boundary();
+        if self.at(SyntaxKind::Semicolon) {
+            self.bump();
+        }
     }
 
     fn parse_name(&mut self) -> Option<Name> {
@@ -366,7 +373,7 @@ impl<'a> Parser<'a> {
                 SyntaxKind::ProvidesKw => self.parse_provides(),
                 _ => {
                     self.error_here("expected module directive");
-                    self.recover_to_directive_boundary();
+                    self.recover_past_directive_boundary();
                     None
                 }
             };
@@ -415,7 +422,7 @@ impl<'a> Parser<'a> {
         let module = match self.parse_name() {
             Some(name) => name,
             None => {
-                self.recover_to_directive_boundary();
+                self.recover_past_directive_boundary();
                 return None;
             }
         };
@@ -433,7 +440,7 @@ impl<'a> Parser<'a> {
         let package = match self.parse_name() {
             Some(name) => name,
             None => {
-                self.recover_to_directive_boundary();
+                self.recover_past_directive_boundary();
                 return None;
             }
         };
@@ -447,7 +454,7 @@ impl<'a> Parser<'a> {
         let package = match self.parse_name() {
             Some(name) => name,
             None => {
-                self.recover_to_directive_boundary();
+                self.recover_past_directive_boundary();
                 return None;
             }
         };
@@ -490,7 +497,7 @@ impl<'a> Parser<'a> {
         let service = match self.parse_name() {
             Some(name) => name,
             None => {
-                self.recover_to_directive_boundary();
+                self.recover_past_directive_boundary();
                 return None;
             }
         };
@@ -503,7 +510,7 @@ impl<'a> Parser<'a> {
         let service = match self.parse_name() {
             Some(name) => name,
             None => {
-                self.recover_to_directive_boundary();
+                self.recover_past_directive_boundary();
                 return None;
             }
         };
@@ -519,7 +526,7 @@ impl<'a> Parser<'a> {
             Some(name) => implementations.push(name),
             None => {
                 self.error_here("expected implementation name");
-                self.recover_to_directive_boundary();
+                self.recover_past_directive_boundary();
                 return None;
             }
         }
@@ -646,6 +653,25 @@ mod tests {
                 .iter()
                 .any(|e| e.to_string().contains("expected `{`")),
             "missing opening brace should be reported"
+        );
+    }
+
+    #[test]
+    fn incomplete_to_clause_does_not_consume_semicolon() {
+        let src = "module m { exports p.q to ; requires java.sql; }";
+        let (decl, errors) = parse_module_info_lossy(src);
+
+        let decl = decl.expect("module decl");
+        assert_eq!(decl.directives.len(), 2, "should continue parsing after bad `to` clause");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.to_string().contains("expected module name after `to`")),
+            "expected error for missing module name"
+        );
+        assert!(
+            !errors.iter().any(|e| e.to_string().contains("expected `;`")),
+            "semicolon should still terminate the directive"
         );
     }
 }
