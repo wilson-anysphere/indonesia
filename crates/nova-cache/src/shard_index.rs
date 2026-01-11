@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use bincode::Options;
-use nova_remote_proto::{ShardId, ShardIndex, PROTOCOL_VERSION};
+use nova_remote_proto::{ShardId, ShardIndex, MAX_SYMBOLS_PER_SHARD_INDEX, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CacheError;
@@ -71,6 +70,19 @@ pub fn load_shard_index(
 
     // 1) Current versioned wrapper format.
     if bytes.starts_with(&SHARD_INDEX_CACHE_MAGIC) {
+        if let Some(symbol_count) = fixint_symbols_len_in_versioned_wrapper(&bytes) {
+            if symbol_count > MAX_SYMBOLS_PER_SHARD_INDEX as u64 {
+                emit_cache_diagnostic(
+                    shard_id,
+                    &path,
+                    format_args!(
+                        "shard cache symbol count too large: {symbol_count} (limit {MAX_SYMBOLS_PER_SHARD_INDEX})"
+                    ),
+                );
+                return Ok(None);
+            }
+        }
+
         let file: ShardIndexCacheFileOwned = match bincode_deserialize(&bytes) {
             Ok(file) => file,
             Err(err) => {
@@ -128,62 +140,81 @@ pub fn load_shard_index(
     }
 
     // 2) Legacy persisted wrapper format (no magic bytes).
-    match bincode_deserialize::<LegacyPersistedShardIndexOwned>(&bytes) {
-        Ok(persisted)
-            if persisted.schema_version == LEGACY_SHARD_INDEX_SCHEMA_VERSION
-                && persisted.nova_version == nova_core::NOVA_VERSION =>
-        {
-            if persisted.protocol_version != PROTOCOL_VERSION {
-                emit_cache_diagnostic(
-                    shard_id,
-                    &path,
-                    format_args!(
-                        "incompatible protocol version in legacy wrapper: expected {PROTOCOL_VERSION}, found {}",
-                        persisted.protocol_version
-                    ),
-                );
-                return Ok(None);
-            }
-
-            if persisted.index.shard_id != shard_id {
-                emit_cache_diagnostic(
-                    shard_id,
-                    &path,
-                    format_args!(
-                        "shard id mismatch in legacy cache payload: requested {shard_id}, found {}",
-                        persisted.index.shard_id
-                    ),
-                );
-                return Ok(None);
-            }
-
-            return Ok(Some(persisted.index));
+    if let Some(header) = legacy_wrapper_header(&bytes) {
+        if header.symbol_count > MAX_SYMBOLS_PER_SHARD_INDEX as u64 {
+            emit_cache_diagnostic(
+                shard_id,
+                &path,
+                format_args!(
+                    "shard cache symbol count too large: {} (limit {MAX_SYMBOLS_PER_SHARD_INDEX})",
+                    header.symbol_count
+                ),
+            );
+            return Ok(None);
         }
-        Ok(_) | Err(_) => {}
+
+        if header.protocol_version != PROTOCOL_VERSION {
+            emit_cache_diagnostic(
+                shard_id,
+                &path,
+                format_args!(
+                    "incompatible protocol version in legacy wrapper: expected {PROTOCOL_VERSION}, found {}",
+                    header.protocol_version
+                ),
+            );
+            return Ok(None);
+        }
+
+        if header.index_shard_id != shard_id {
+            emit_cache_diagnostic(
+                shard_id,
+                &path,
+                format_args!(
+                    "shard id mismatch in legacy cache payload: requested {shard_id}, found {}",
+                    header.index_shard_id
+                ),
+            );
+            return Ok(None);
+        }
+
+        let persisted: LegacyPersistedShardIndexOwned = match bincode_deserialize(&bytes) {
+            Ok(persisted) => persisted,
+            Err(err) => {
+                emit_cache_diagnostic(
+                    shard_id,
+                    &path,
+                    format_args!("failed to decode legacy shard cache wrapper: {err}"),
+                );
+                return Ok(None);
+            }
+        };
+
+        return Ok(Some(persisted.index));
     }
 
     // 3) Legacy raw `ShardIndex` payload (no wrapper).
-    let index = match bincode_deserialize::<ShardIndex>(&bytes) {
-        Ok(index) => index,
-        Err(fixint_err) => {
-            let legacy = bincode::DefaultOptions::new()
-                .with_little_endian()
-                .with_limit(BINCODE_PAYLOAD_LIMIT_BYTES as u64)
-                .deserialize::<ShardIndex>(&bytes);
+    if let Some(symbol_count) = fixint_symbols_len_in_raw_shard_index(&bytes) {
+        if symbol_count > MAX_SYMBOLS_PER_SHARD_INDEX as u64 {
+            emit_cache_diagnostic(
+                shard_id,
+                &path,
+                format_args!(
+                    "shard cache symbol count too large: {symbol_count} (limit {MAX_SYMBOLS_PER_SHARD_INDEX})"
+                ),
+            );
+            return Ok(None);
+        }
+    }
 
-            match legacy {
-                Ok(index) => index,
-                Err(default_err) => {
-                    emit_cache_diagnostic(
-                        shard_id,
-                        &path,
-                        format_args!(
-                            "failed to decode shard cache (fixint error: {fixint_err}; legacy error: {default_err})"
-                        ),
-                    );
-                    return Ok(None);
-                }
-            }
+    let index: ShardIndex = match bincode_deserialize(&bytes) {
+        Ok(index) => index,
+        Err(err) => {
+            emit_cache_diagnostic(
+                shard_id,
+                &path,
+                format_args!("failed to decode legacy shard cache: {err}"),
+            );
+            return Ok(None);
         }
     };
 
@@ -200,6 +231,64 @@ pub fn load_shard_index(
     }
 
     Ok(Some(index))
+}
+
+fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    let slice = bytes.get(offset..offset + 4)?;
+    Some(u32::from_le_bytes(slice.try_into().ok()?))
+}
+
+fn read_le_u64(bytes: &[u8], offset: usize) -> Option<u64> {
+    let slice = bytes.get(offset..offset + 8)?;
+    Some(u64::from_le_bytes(slice.try_into().ok()?))
+}
+
+fn fixint_symbols_len_in_versioned_wrapper(bytes: &[u8]) -> Option<u64> {
+    // Wrapper header is fixed width (magic + two u32 fields), and we always write shard caches
+    // using fixed-int bincode options.
+    read_le_u64(bytes, 36)
+}
+
+#[derive(Debug)]
+struct LegacyWrapperHeader {
+    protocol_version: u32,
+    index_shard_id: ShardId,
+    symbol_count: u64,
+}
+
+fn legacy_wrapper_header(bytes: &[u8]) -> Option<LegacyWrapperHeader> {
+    let schema_version = read_le_u32(bytes, 0)?;
+    if schema_version != LEGACY_SHARD_INDEX_SCHEMA_VERSION {
+        return None;
+    }
+
+    // Legacy wrapper uses fixed-int bincode and begins with `nova_version: String`, encoded as a
+    // `u64` length prefix followed by UTF-8 bytes.
+    let version_len = read_le_u64(bytes, 4)? as usize;
+    let version_start = 12usize;
+    let version_end = version_start.checked_add(version_len)?;
+    let version_bytes = bytes.get(version_start..version_end)?;
+    if version_bytes != nova_core::NOVA_VERSION.as_bytes() {
+        return None;
+    }
+
+    let protocol_version = read_le_u32(bytes, version_end)?;
+
+    // After the version string: protocol_version (u32) + saved_at_millis (u64) + ShardIndex header.
+    let index_offset = version_end.checked_add(4 + 8)?;
+    let index_shard_id: ShardId = read_le_u32(bytes, index_offset)?;
+    let symbol_count = read_le_u64(bytes, index_offset.checked_add(20)?)?;
+
+    Some(LegacyWrapperHeader {
+        protocol_version,
+        index_shard_id,
+        symbol_count,
+    })
+}
+
+fn fixint_symbols_len_in_raw_shard_index(bytes: &[u8]) -> Option<u64> {
+    // ShardIndex header is fixed width (u32 + u64 + u64), followed by Vec length as u64.
+    read_le_u64(bytes, 20)
 }
 
 fn read_shard_cache_bytes(path: &Path, shard_id: ShardId) -> Option<Vec<u8>> {

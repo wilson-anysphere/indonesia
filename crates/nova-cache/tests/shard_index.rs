@@ -1,6 +1,6 @@
 use bincode::Options;
 use nova_cache::{load_shard_index, save_shard_index, shard_cache_path};
-use nova_remote_proto::{ShardId, ShardIndex, Symbol, PROTOCOL_VERSION};
+use nova_remote_proto::{ShardId, ShardIndex, Symbol, MAX_SYMBOLS_PER_SHARD_INDEX, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
@@ -219,4 +219,47 @@ fn shard_index_symlink_is_cache_miss() {
     let loaded = load_shard_index(tmp.path(), shard_id).unwrap();
     assert!(loaded.is_none());
     assert!(!path.exists());
+}
+
+#[test]
+fn shard_index_wrapper_with_too_many_symbols_is_cache_miss() {
+    let tmp = tempfile::tempdir().unwrap();
+    let shard_id: ShardId = 7;
+
+    // Write a truncated wrapper payload with an absurd symbol count. `load_shard_index` should
+    // reject it without attempting to allocate a giant `Vec<Symbol>`.
+    let too_many = (MAX_SYMBOLS_PER_SHARD_INDEX as u64) + 1;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&SHARD_INDEX_CACHE_MAGIC);
+    bytes.extend_from_slice(&SHARD_INDEX_CACHE_FORMAT_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&shard_id.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // revision
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // index_generation
+    bytes.extend_from_slice(&too_many.to_le_bytes());
+
+    let path = shard_cache_path(tmp.path(), shard_id);
+    std::fs::write(&path, bytes).unwrap();
+
+    let loaded = load_shard_index(tmp.path(), shard_id).unwrap();
+    assert!(loaded.is_none());
+}
+
+#[test]
+fn shard_index_raw_with_too_many_symbols_is_cache_miss() {
+    let tmp = tempfile::tempdir().unwrap();
+    let shard_id: ShardId = 7;
+
+    let too_many = (MAX_SYMBOLS_PER_SHARD_INDEX as u64) + 1;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&shard_id.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // revision
+    bytes.extend_from_slice(&0u64.to_le_bytes()); // index_generation
+    bytes.extend_from_slice(&too_many.to_le_bytes());
+
+    let path = shard_cache_path(tmp.path(), shard_id);
+    std::fs::write(&path, bytes).unwrap();
+
+    let loaded = load_shard_index(tmp.path(), shard_id).unwrap();
+    assert!(loaded.is_none());
 }
