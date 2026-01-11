@@ -422,6 +422,12 @@ NOVA_REAL_PROJECT=spring-petclinic,maven-resolver ./scripts/clone-test-projects.
 
 **What:** Criterion benchmarks + a regression guard comparing PR results to base branch thresholds.
 
+**CI notes (how this is enforced):** `.github/workflows/perf.yml` pins the Rust toolchain and sets a shared
+`CARGO_TARGET_DIR` so the PR baseline worktree and the current checkout can reuse build artifacts. On pull
+requests, it compares the PR head against the base SHA (preferring the cached `perf-baseline-main` artifact
+from `main`, otherwise benching the base commit in a git worktree). For full operational details, see
+[`perf/README.md`](../perf/README.md).
+
 **Where:**
 
 - Bench suites:
