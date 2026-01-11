@@ -608,6 +608,44 @@ fn handle_request(
                 }
             })
         }
+        nova_lsp::CHANGE_SIGNATURE_METHOD => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+
+            let change: nova_refactor::ChangeSignature = match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": err.to_string() }
+                    }));
+                }
+            };
+
+            // Best-effort: build an in-memory index from open documents.
+            let files: BTreeMap<String, String> = state
+                .documents
+                .iter()
+                .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
+                .collect();
+            let index = Index::new(files);
+
+            Ok(match nova_lsp::change_signature_workspace_edit(&index, &change) {
+                Ok(edit) => match serde_json::to_value(edit) {
+                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                    Err(err) => {
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                    }
+                },
+                Err(err) => json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": -32603, "message": err }
+                }),
+            })
+        }
         _ => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
