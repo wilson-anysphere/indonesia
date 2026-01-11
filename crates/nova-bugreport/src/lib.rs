@@ -725,6 +725,8 @@ pub fn create_bug_report_bundle(
 ) -> Result<BugReportBundle, BugReportError> {
     BugReportBuilder::new(config, log_buffer, crash_store, perf)
         .options(options)
+        // Legacy API: preserve the previous default of emitting a directory on disk.
+        .create_archive(false)
         .build()
 }
 

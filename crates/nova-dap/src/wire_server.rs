@@ -17,7 +17,7 @@ use tokio::{
     task::JoinSet,
 };
 
-use nova_bugreport::{create_bug_report_bundle, global_crash_store, BugReportOptions, PerfStats};
+use nova_bugreport::{BugReportBuilder, global_crash_store, BugReportOptions, PerfStats};
 use nova_config::NovaConfig;
 
 use crate::{
@@ -270,26 +270,29 @@ async fn handle_request_inner(
                 reproduction,
             };
 
-            match create_bug_report_bundle(
-                &cfg,
-                log_buffer.as_ref(),
-                crash_store.as_ref(),
-                &perf,
-                options,
-            ) {
-                Ok(bundle) => {
+            match BugReportBuilder::new(&cfg, log_buffer.as_ref(), crash_store.as_ref(), &perf)
+                .options(options)
+                .extra_attachments(|dir| {
                     if let Ok(metrics_json) = serde_json::to_string_pretty(
                         &nova_metrics::MetricsRegistry::global().snapshot(),
                     ) {
-                        let _ = std::fs::write(bundle.path().join("metrics.json"), metrics_json);
+                        let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
                     }
-
+                    Ok(())
+                })
+                .build()
+            {
+                Ok(bundle) => {
+                    let archive_path = bundle.archive_path().map(|p| p.display().to_string());
                     send_response(
                         out_tx,
                         seq,
                         request,
                         true,
-                        Some(json!({ "path": bundle.path().display().to_string() })),
+                        Some(json!({
+                            "path": bundle.path().display().to_string(),
+                            "archivePath": archive_path,
+                        })),
                         None,
                     );
                 }

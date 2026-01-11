@@ -6,7 +6,7 @@ use crate::session::DebugSession;
 use crate::smart_step_into::enumerate_step_in_targets_in_line;
 use crate::stream_debug::{run_stream_debug, StreamDebugArguments, STREAM_DEBUG_COMMAND};
 use anyhow::Context;
-use nova_bugreport::{create_bug_report_bundle, global_crash_store, BugReportOptions, PerfStats};
+use nova_bugreport::{BugReportBuilder, global_crash_store, BugReportOptions, PerfStats};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
@@ -814,25 +814,28 @@ impl<C: JdwpClient> DapServer<C> {
             reproduction: args.reproduction,
         };
 
-        let bundle = create_bug_report_bundle(
-            &cfg,
-            log_buffer.as_ref(),
-            crash_store.as_ref(),
-            &perf,
-            options,
-        )
-        .map_err(|err| anyhow::anyhow!(err))
-        .context("failed to create bug report bundle")?;
+        let bundle = BugReportBuilder::new(&cfg, log_buffer.as_ref(), crash_store.as_ref(), &perf)
+            .options(options)
+            .extra_attachments(|dir| {
+                if let Ok(metrics_json) = serde_json::to_string_pretty(
+                    &nova_metrics::MetricsRegistry::global().snapshot(),
+                ) {
+                    let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
+                }
+                Ok(())
+            })
+            .build()
+            .map_err(|err| anyhow::anyhow!(err))
+            .context("failed to create bug report bundle")?;
 
-        if let Ok(metrics_json) =
-            serde_json::to_string_pretty(&nova_metrics::MetricsRegistry::global().snapshot())
-        {
-            let _ = std::fs::write(bundle.path().join("metrics.json"), metrics_json);
-        }
+        let archive_path = bundle.archive_path().map(|p| p.display().to_string());
 
         self.simple_ok(
             request,
-            Some(json!({ "path": bundle.path().display().to_string() })),
+            Some(json!({
+                "path": bundle.path().display().to_string(),
+                "archivePath": archive_path,
+            })),
         )
     }
 
