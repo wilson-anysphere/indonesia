@@ -30,7 +30,7 @@ zstd = "0.13"
 
 aws-config = { version = "1.1.10", optional = true }
 aws-sdk-s3 = { version = "1.9.0", optional = true }
-tokio = { version = "1.36.0", optional = true, features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+tokio = { version = "1.36.0", optional = true, features = ["rt", "macros", "fs", "io-util"] }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

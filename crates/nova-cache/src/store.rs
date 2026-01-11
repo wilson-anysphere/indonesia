@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(parse_s3_url("s3://bucket/"), None);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn stream_async_read_to_path_writes_large_payload() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let dest = tmp.path().join("nested").join("payload.bin");
@@ -350,7 +350,7 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn stream_async_read_to_path_enforces_max_bytes() -> Result<()> {
         let tmp = tempfile::tempdir()?;
         let dest = tmp.path().join("payload.bin");
