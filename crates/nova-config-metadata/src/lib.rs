@@ -1,8 +1,9 @@
 //! Spring Boot configuration metadata indexing.
 //!
-//! Spring Boot publishes `META-INF/spring-configuration-metadata.json` inside
-//! dependency JARs. This crate ingests those JSON files and provides lookup
-//! APIs used for completions and diagnostics.
+//! Spring Boot publishes `META-INF/spring-configuration-metadata.json` (and
+//! optionally `META-INF/additional-spring-configuration-metadata.json`) inside
+//! dependency JARs. This crate ingests those JSON files and provides lookup APIs
+//! used for completions and diagnostics.
 
 use std::collections::HashMap;
 
@@ -57,17 +58,26 @@ impl MetadataIndex {
     }
 
     pub fn ingest_archive(&mut self, archive: &Archive) -> anyhow::Result<()> {
-        const PATH: &str = "META-INF/spring-configuration-metadata.json";
-        let Some(bytes) = archive.read(PATH)? else {
-            return Ok(());
-        };
-        self.ingest_json_bytes(&bytes)
-            .with_context(|| format!("while ingesting {} from {}", PATH, archive.path().display()))
+        const PATHS: [&str; 2] = [
+            "META-INF/spring-configuration-metadata.json",
+            "META-INF/additional-spring-configuration-metadata.json",
+        ];
+
+        for path in PATHS {
+            let Some(bytes) = archive.read(path)? else {
+                continue;
+            };
+            self.ingest_json_bytes(&bytes).with_context(|| {
+                format!("while ingesting {} from {}", path, archive.path().display())
+            })?;
+        }
+
+        Ok(())
     }
 
     pub fn ingest_json_bytes(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
         let raw: RawMetadata = serde_json::from_slice(bytes)
-            .with_context(|| "failed to parse spring-configuration-metadata.json")?;
+            .with_context(|| "failed to parse Spring configuration metadata JSON")?;
 
         for prop in raw.properties.unwrap_or_default() {
             self.insert_property(prop);
@@ -236,6 +246,26 @@ mod tests {
             }}"#
         )
         .unwrap();
+
+        jar.start_file(
+            "META-INF/additional-spring-configuration-metadata.json",
+            options,
+        )
+        .unwrap();
+        write!(
+            jar,
+            r#"{{
+              "properties": [
+                {{
+                  "name": "acme.feature.enabled",
+                  "type": "java.lang.Boolean",
+                  "description": "Turns on the Acme feature",
+                  "defaultValue": true
+                }}
+              ]
+            }}"#
+        )
+        .unwrap();
         jar.finish().unwrap();
 
         let mut index = MetadataIndex::new();
@@ -250,5 +280,9 @@ mod tests {
         let banner_mode = index.property_meta("spring.main.banner-mode").unwrap();
         assert_eq!(banner_mode.allowed_values, vec!["off", "console"]);
         assert!(banner_mode.deprecation.is_some());
+
+        let acme_enabled = index.property_meta("acme.feature.enabled").unwrap();
+        assert_eq!(acme_enabled.ty.as_deref(), Some("java.lang.Boolean"));
+        assert_eq!(acme_enabled.default_value.as_deref(), Some("true"));
     }
 }
