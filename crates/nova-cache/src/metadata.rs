@@ -196,3 +196,91 @@ fn metadata_paths(path: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
         _ => (path.with_extension("bin"), path.to_path_buf()),
     }
 }
+
+/// A zero-copy view of persisted metadata backed by a validated `rkyv` archive.
+///
+/// This is intended for warm-start cache validation: callers can compute file
+/// invalidation sets without allocating the full `CacheMetadata` (which can be
+/// very large for big workspaces).
+#[derive(Debug)]
+pub struct CacheMetadataArchive {
+    archive: nova_storage::PersistedArchive<CacheMetadata>,
+}
+
+impl CacheMetadataArchive {
+    /// Open `metadata.bin` if present and valid; returns `Ok(None)` on any failure.
+    pub fn open(path: impl AsRef<Path>) -> Result<Option<Self>, CacheError> {
+        let path = path.as_ref();
+        let (bin_path, _json_path) = metadata_paths(path);
+
+        match nova_storage::PersistedArchive::<CacheMetadata>::open_optional(
+            &bin_path,
+            nova_storage::ArtifactKind::ProjectMetadata,
+            CACHE_METADATA_SCHEMA_VERSION,
+        ) {
+            Ok(Some(archive)) => Ok(Some(Self { archive })),
+            Ok(None) => Ok(None),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub fn is_compatible(&self) -> bool {
+        let archived = self.archive.archived();
+        archived.schema_version == CACHE_METADATA_SCHEMA_VERSION
+            && archived.nova_version.as_str() == nova_core::NOVA_VERSION
+    }
+
+    pub fn project_hash(&self) -> &str {
+        self.archive.archived().project_hash.as_str()
+    }
+
+    pub fn last_updated_millis(&self) -> u64 {
+        self.archive.archived().last_updated_millis
+    }
+
+    pub fn diff_files(&self, snapshot: &ProjectSnapshot) -> Vec<String> {
+        let mut invalidated = BTreeSet::new();
+        let stored = &self.archive.archived().file_fingerprints;
+
+        for (path, current_fp) in snapshot.file_fingerprints() {
+            match stored.get(path.as_str()) {
+                Some(previous_fp) if previous_fp.as_str() == current_fp.as_str() => {}
+                _ => {
+                    invalidated.insert(path.clone());
+                }
+            }
+        }
+
+        for (path, _) in stored.iter() {
+            let path_str = path.as_str();
+            if !snapshot.file_fingerprints().contains_key(path_str) {
+                invalidated.insert(path_str.to_string());
+            }
+        }
+
+        invalidated.into_iter().collect()
+    }
+
+    pub fn diff_files_fast(&self, snapshot: &ProjectSnapshot) -> Vec<String> {
+        let mut invalidated = BTreeSet::new();
+        let stored = &self.archive.archived().file_metadata_fingerprints;
+
+        for (path, current_fp) in snapshot.file_fingerprints() {
+            match stored.get(path.as_str()) {
+                Some(previous_fp) if previous_fp.as_str() == current_fp.as_str() => {}
+                _ => {
+                    invalidated.insert(path.clone());
+                }
+            }
+        }
+
+        for (path, _) in stored.iter() {
+            let path_str = path.as_str();
+            if !snapshot.file_fingerprints().contains_key(path_str) {
+                invalidated.insert(path_str.to_string());
+            }
+        }
+
+        invalidated.into_iter().collect()
+    }
+}

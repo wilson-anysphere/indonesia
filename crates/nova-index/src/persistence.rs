@@ -5,7 +5,7 @@ use crate::indexes::{
 };
 use crate::segments::{build_file_to_newest_segment_map, build_segment_files, segment_file_name};
 use fs2::FileExt as _;
-use nova_cache::{CacheDir, CacheMetadata, ProjectSnapshot};
+use nova_cache::{CacheDir, CacheMetadata, CacheMetadataArchive, ProjectSnapshot};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
@@ -17,6 +17,49 @@ const INDEX_WRITE_LOCK_NAME: &str = "indexes.lock";
 pub const DEFAULT_SHARD_COUNT: u32 = 64;
 
 pub type ShardId = u32;
+
+#[derive(Debug)]
+enum MetadataSource {
+    Archived(CacheMetadataArchive),
+    Owned(CacheMetadata),
+}
+
+impl MetadataSource {
+    fn is_compatible(&self) -> bool {
+        match self {
+            Self::Archived(meta) => meta.is_compatible(),
+            Self::Owned(meta) => meta.is_compatible(),
+        }
+    }
+
+    fn project_hash_matches(&self, snapshot: &ProjectSnapshot) -> bool {
+        match self {
+            Self::Archived(meta) => meta.project_hash() == snapshot.project_hash().as_str(),
+            Self::Owned(meta) => &meta.project_hash == snapshot.project_hash(),
+        }
+    }
+
+    fn last_updated_millis(&self) -> u64 {
+        match self {
+            Self::Archived(meta) => meta.last_updated_millis(),
+            Self::Owned(meta) => meta.last_updated_millis,
+        }
+    }
+
+    fn diff_files(&self, snapshot: &ProjectSnapshot) -> Vec<String> {
+        match self {
+            Self::Archived(meta) => meta.diff_files(snapshot),
+            Self::Owned(meta) => meta.diff_files(snapshot),
+        }
+    }
+
+    fn diff_files_fast(&self, snapshot: &ProjectSnapshot) -> Vec<String> {
+        match self {
+            Self::Archived(meta) => meta.diff_files_fast(snapshot),
+            Self::Owned(meta) => meta.diff_files_fast(snapshot),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexPersistenceError {
@@ -628,14 +671,17 @@ pub fn load_index_archives(
     if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
-    let metadata = match CacheMetadata::load(metadata_path) {
-        Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
+    let metadata = match CacheMetadataArchive::open(&metadata_path)? {
+        Some(metadata) => MetadataSource::Archived(metadata),
+        None => match CacheMetadata::load(&metadata_path) {
+            Ok(metadata) => MetadataSource::Owned(metadata),
+            Err(_) => return Ok(None),
+        },
     };
     if !metadata.is_compatible() {
         return Ok(None);
     }
-    if &metadata.project_hash != current_snapshot.project_hash() {
+    if !metadata.project_hash_matches(current_snapshot) {
         return Ok(None);
     }
 
@@ -740,7 +786,7 @@ pub fn load_index_archives(
             Err(_) => return Ok(None),
         };
 
-    if metadata.last_updated_millis != expected_generation {
+    if metadata.last_updated_millis() != expected_generation {
         return Ok(None);
     }
 
@@ -772,9 +818,12 @@ pub fn load_index_archives_fast(
     if !metadata_path.exists() && !cache_dir.metadata_bin_path().exists() {
         return Ok(None);
     }
-    let metadata = match CacheMetadata::load(metadata_path) {
-        Ok(metadata) => metadata,
-        Err(_) => return Ok(None),
+    let metadata = match CacheMetadataArchive::open(&metadata_path)? {
+        Some(metadata) => MetadataSource::Archived(metadata),
+        None => match CacheMetadata::load(&metadata_path) {
+            Ok(metadata) => MetadataSource::Owned(metadata),
+            Err(_) => return Ok(None),
+        },
     };
     if !metadata.is_compatible() {
         return Ok(None);
@@ -785,7 +834,7 @@ pub fn load_index_archives_fast(
         Err(_) => return Ok(None),
     };
 
-    if &metadata.project_hash != current_snapshot.project_hash() {
+    if !metadata.project_hash_matches(&current_snapshot) {
         return Ok(None);
     }
 
@@ -889,7 +938,7 @@ pub fn load_index_archives_fast(
             Err(_) => return Ok(None),
         };
 
-    if metadata.last_updated_millis != expected_generation {
+    if metadata.last_updated_millis() != expected_generation {
         return Ok(None);
     }
 

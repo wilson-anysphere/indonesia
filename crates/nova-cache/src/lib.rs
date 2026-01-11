@@ -38,7 +38,7 @@ pub use gc::{
     gc_project_caches_from_config, CacheGcFailure, CacheGcPolicy, CacheGcReport, ProjectCacheInfo,
 };
 pub use metadata::{
-    CacheMetadata,
+    CacheMetadata, CacheMetadataArchive,
     CACHE_METADATA_BIN_FILENAME,
     CACHE_METADATA_JSON_FILENAME,
     CACHE_METADATA_SCHEMA_VERSION,

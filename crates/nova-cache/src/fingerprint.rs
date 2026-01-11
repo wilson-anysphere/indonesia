@@ -107,6 +107,12 @@ impl Fingerprint {
     }
 }
 
+impl ArchivedFingerprint {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 impl fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
