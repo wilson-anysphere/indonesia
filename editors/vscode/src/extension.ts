@@ -778,6 +778,8 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(memoryStatusItem);
 
   let lastMemoryPressure: MemoryPressureLevel | undefined;
+  let lastSafeModeEnabled = false;
+  let safeModeWarningInFlight: Promise<void> | undefined;
 
   const updateSafeModeStatus = (enabled: boolean) => {
     if (enabled) {
@@ -785,6 +787,24 @@ export async function activate(context: vscode.ExtensionContext) {
     } else {
       safeModeStatusItem.hide();
     }
+
+    if (enabled && !lastSafeModeEnabled && !safeModeWarningInFlight) {
+      safeModeWarningInFlight = (async () => {
+        try {
+          const picked = await vscode.window.showWarningMessage(
+            'Nova: nova-lsp is running in safe mode. Create a bug report to help diagnose the issue.',
+            'Create Bug Report',
+          );
+          if (picked === 'Create Bug Report') {
+            await vscode.commands.executeCommand(BUG_REPORT_COMMAND);
+          }
+        } finally {
+          safeModeWarningInFlight = undefined;
+        }
+      })();
+    }
+
+    lastSafeModeEnabled = enabled;
   };
   setSafeModeEnabled = updateSafeModeStatus;
 
@@ -835,6 +855,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   const resetObservabilityState = () => {
     lastMemoryPressure = undefined;
+    lastSafeModeEnabled = false;
     updateSafeModeStatus(false);
     memoryStatusItem.text = '$(pulse) Nova Mem: —';
     memoryStatusItem.tooltip = 'Nova memory status';

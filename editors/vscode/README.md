@@ -58,6 +58,7 @@ Nova has resilience features to keep the language server responsive even if a re
 - **Safe mode**
   - When Nova enters safe mode, most `nova/*` requests are disabled so you can safely collect diagnostics.
   - The extension shows a **“Nova: Safe Mode”** status bar item while safe mode is active. Click it to run **Nova: Create Bug Report**.
+  - The extension also shows a one-time warning notification the first time safe mode is detected.
 
 - **Memory pressure**
   - The extension shows a **“Nova Mem: …”** status bar item with the current memory pressure level (Low/Medium/High/Critical).
