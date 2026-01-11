@@ -354,7 +354,14 @@ impl<'a> Lexer<'a> {
                 && self.peek_byte(2) == Some(b'"')
                 && !self.is_escaped_quote()
             {
-                self.pos += 3;
+                // The closing delimiter is the last `"""` in a run of `"` characters.
+                // Any additional quotes before it are part of the text block's contents, so we
+                // must consume the entire run.
+                let mut run_len = 3usize;
+                while self.peek_byte(run_len) == Some(b'"') {
+                    run_len += 1;
+                }
+                self.pos += run_len;
                 return SyntaxKind::TextBlock;
             }
             self.bump_char();

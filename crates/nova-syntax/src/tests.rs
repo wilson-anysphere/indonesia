@@ -344,6 +344,29 @@ fn lexer_text_blocks_allow_escaped_triple_quotes() {
 }
 
 #[test]
+fn lexer_text_block_closing_allows_trailing_quotes() {
+    // A run of more than three quotes at the end of a text block should treat the *last* three
+    // quotes as the closing delimiter and keep the preceding quotes as content.
+    let input = "\"\"\"\nhello\"\"\"\"";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::TextBlock, input.to_string()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
 fn parse_java_surfaces_lexer_errors_as_parse_errors() {
     let input = "class Foo { String s = \"unterminated\n }";
     let result = parse_java(input);
