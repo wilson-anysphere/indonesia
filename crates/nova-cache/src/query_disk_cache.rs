@@ -83,7 +83,7 @@ impl QueryDiskCache {
         let path = self.entry_path(&key_fingerprint);
         let persisted = PersistedQueryValue {
             schema_version: QUERY_DISK_CACHE_SCHEMA_VERSION,
-            nova_version: nova_core::NOVA_VERSION.to_string(),
+            nova_version: nova_core::NOVA_VERSION,
             saved_at_millis: now_millis(),
             key,
             key_fingerprint,
@@ -345,7 +345,7 @@ struct GcEntry {
 #[derive(Debug, Serialize)]
 struct PersistedQueryValue<'a> {
     schema_version: u32,
-    nova_version: String,
+    nova_version: &'a str,
     saved_at_millis: u64,
     key: &'a str,
     key_fingerprint: Fingerprint,
