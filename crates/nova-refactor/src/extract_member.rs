@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use nova_format::format_member_insertion;
+use nova_format::{format_member_insertion_with_newline, NewlineStyle};
 use nova_index::TextRange;
 use nova_types::TypeRef;
 use thiserror::Error;
@@ -122,7 +122,12 @@ fn extract_impl(
         ExtractKind::Field => format!("private final {} {} = {};", type_spelling, name, expr_text),
     };
 
-    let insert_text = format_member_insertion(&indent, &declaration, needs_blank_line_after);
+    let insert_text = format_member_insertion_with_newline(
+        &indent,
+        &declaration,
+        needs_blank_line_after,
+        NewlineStyle::detect(source),
+    );
 
     let mut edits = Vec::new();
     if let Some(import_edit) = import_edit {

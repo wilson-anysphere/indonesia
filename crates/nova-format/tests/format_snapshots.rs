@@ -2,7 +2,8 @@ use insta::assert_snapshot;
 use nova_core::{apply_text_edits, LineIndex, Position, Range};
 use nova_format::{
     edits_for_formatting, edits_for_formatting_ast, edits_for_on_type_formatting,
-    edits_for_range_formatting, format_java, format_java_ast, FormatConfig, IndentStyle,
+    edits_for_range_formatting, format_java, format_java_ast, format_member_insertion_with_newline,
+    FormatConfig, IndentStyle, NewlineStyle,
 };
 use nova_syntax::{parse, parse_java};
 use pretty_assertions::assert_eq;
@@ -415,4 +416,17 @@ fn on_type_formatting_preserves_crlf_line_endings() {
         out,
         "class Foo {\r\nvoid m(){\r\n        int x=1;\r\n}\r\n}\r\n"
     );
+}
+
+#[test]
+fn member_insertion_preserves_requested_newline_style() {
+    let out = format_member_insertion_with_newline(
+        "    ",
+        "private static final int X = 1;",
+        true,
+        NewlineStyle::CrLf,
+    );
+
+    assert_crlf_only(&out);
+    assert_eq!(out, "    private static final int X = 1;\r\n\r\n");
 }

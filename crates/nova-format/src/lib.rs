@@ -92,12 +92,31 @@ pub fn format_member_insertion(
     declaration: &str,
     needs_blank_line_after: bool,
 ) -> String {
+    format_member_insertion_with_newline(
+        indent,
+        declaration,
+        needs_blank_line_after,
+        NewlineStyle::Lf,
+    )
+}
+
+/// Formats a single class member declaration (field/constant) for insertion using `newline`.
+///
+/// This is useful for refactorings so inserted code matches the file's newline style.
+#[must_use]
+pub fn format_member_insertion_with_newline(
+    indent: &str,
+    declaration: &str,
+    needs_blank_line_after: bool,
+    newline: NewlineStyle,
+) -> String {
     let mut out = String::new();
+    let newline = newline.as_str();
     out.push_str(indent);
     out.push_str(declaration.trim_end());
-    out.push('\n');
+    out.push_str(newline);
     if needs_blank_line_after {
-        out.push('\n');
+        out.push_str(newline);
     }
     out
 }
@@ -148,7 +167,7 @@ pub struct FormatPipeline<'a> {
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
-enum NewlineStyle {
+pub enum NewlineStyle {
     Lf,
     CrLf,
     Cr,
@@ -159,7 +178,7 @@ impl NewlineStyle {
     ///
     /// Deterministic rule for mixed-newline documents: if the input contains any CRLF sequences,
     /// treat the file as CRLF. Otherwise fall back to LF (or bare CR if the input contains `\r`).
-    fn detect(source: &str) -> Self {
+    pub fn detect(source: &str) -> Self {
         if source.contains("\r\n") {
             Self::CrLf
         } else if source.contains('\r') {
@@ -169,7 +188,7 @@ impl NewlineStyle {
         }
     }
 
-    const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Lf => "\n",
             Self::CrLf => "\r\n",
