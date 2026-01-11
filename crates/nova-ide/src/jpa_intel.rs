@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,8 +13,60 @@ use nova_framework_jpa::{
 };
 use nova_project::ProjectConfig;
 
-static JPA_ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<CachedJpaProject>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+const MAX_CACHED_JPA_ROOTS: usize = 16;
+
+static JPA_ANALYSIS_CACHE: Lazy<Mutex<LruCache<PathBuf, Arc<CachedJpaProject>>>> =
+    Lazy::new(|| Mutex::new(LruCache::new(MAX_CACHED_JPA_ROOTS)));
+
+#[derive(Debug)]
+struct LruCache<K, V> {
+    capacity: usize,
+    map: HashMap<K, V>,
+    order: VecDeque<K>,
+}
+
+impl<K, V> LruCache<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone,
+{
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn get_cloned(&mut self, key: &K) -> Option<V> {
+        let value = self.map.get(key)?.clone();
+        self.touch(key);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: K, value: V) {
+        self.map.insert(key.clone(), value);
+        self.touch(&key);
+        self.evict_if_needed();
+    }
+
+    fn touch(&mut self, key: &K) {
+        if let Some(pos) = self.order.iter().position(|k| k == key) {
+            self.order.remove(pos);
+        }
+        self.order.push_back(key.clone());
+    }
+
+    fn evict_if_needed(&mut self) {
+        while self.map.len() > self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct CachedJpaProject {
@@ -65,12 +117,13 @@ pub(crate) fn project_for_file(
 
     let fingerprint = fingerprint_sources(db, &java_files);
 
+    let root_key = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+
     if let Some(hit) = JPA_ANALYSIS_CACHE
         .lock()
         .expect("jpa cache mutex poisoned")
-        .get(&root)
+        .get_cloned(&root_key)
         .filter(|entry| entry.fingerprint == fingerprint)
-        .cloned()
     {
         return Some(hit);
     }
@@ -104,7 +157,7 @@ pub(crate) fn project_for_file(
     JPA_ANALYSIS_CACHE
         .lock()
         .expect("jpa cache mutex poisoned")
-        .insert(root, entry.clone());
+        .insert(root_key, entry.clone());
 
     Some(entry)
 }
