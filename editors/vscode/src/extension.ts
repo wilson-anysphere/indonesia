@@ -28,6 +28,17 @@ const MAX_AI_CONTEXT_IDS = 50;
 
 const BUG_REPORT_COMMAND = 'nova.createBugReport';
 
+const SAFE_MODE_EXEMPT_REQUESTS = new Set<string>([
+  'nova/bugReport',
+  // These endpoints are intentionally available even while Nova is in safe mode, so a successful
+  // response should not be treated as an indication that safe mode has exited.
+  'nova/memoryStatus',
+  'nova/metrics',
+  'nova/resetMetrics',
+  // Best-effort: safe mode status endpoints may exist in newer server builds.
+  'nova/safeModeStatus',
+]);
+
 type TestKind = 'class' | 'test';
 
 interface LspPosition {
@@ -209,12 +220,17 @@ export async function activate(context: vscode.ExtensionContext) {
       sendRequest: async (type, param, token, next) => {
         try {
           const result = await next(type, param, token);
-          if (typeof type === 'string' && type.startsWith('nova/') && type !== 'nova/bugReport') {
+          if (typeof type === 'string' && type.startsWith('nova/') && !SAFE_MODE_EXEMPT_REQUESTS.has(type)) {
             setSafeModeEnabled?.(false);
           }
           return result;
         } catch (err) {
-          if (typeof type === 'string' && type.startsWith('nova/') && type !== 'nova/bugReport' && isSafeModeError(err)) {
+          if (
+            typeof type === 'string' &&
+            type.startsWith('nova/') &&
+            !SAFE_MODE_EXEMPT_REQUESTS.has(type) &&
+            isSafeModeError(err)
+          ) {
             setSafeModeEnabled?.(true);
           }
           throw err;
@@ -1252,7 +1268,7 @@ async function sendNovaRequest<R>(method: string, params?: unknown): Promise<R> 
   try {
     const result =
       typeof params === 'undefined' ? await c.sendRequest<R>(method) : await c.sendRequest<R>(method, params);
-    if (method.startsWith('nova/') && method !== 'nova/bugReport') {
+    if (method.startsWith('nova/') && !SAFE_MODE_EXEMPT_REQUESTS.has(method)) {
       setSafeModeEnabled?.(false);
     }
     return result;
