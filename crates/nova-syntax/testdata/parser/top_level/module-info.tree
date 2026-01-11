@@ -1,0 +1,153 @@
+CompilationUnit
+  ModuleDeclaration
+    Annotation
+      At "@"
+      Name
+        Identifier "Deprecated"
+        Whitespace "\n"
+    OpenKw "open"
+    Whitespace " "
+    ModuleKw "module"
+    Name
+      Whitespace " "
+      Identifier "com"
+      Dot "."
+      Identifier "example"
+      Dot "."
+      Identifier "mod"
+      Whitespace " "
+    ModuleBody
+      LBrace "{"
+      Whitespace "\n  "
+      ModuleDirective
+        RequiresDirective
+          RequiresKw "requires"
+          Whitespace " "
+          TransitiveKw "transitive"
+          Whitespace " "
+          Name
+            Identifier "java"
+            Dot "."
+            Identifier "base"
+          Semicolon ";"
+      Whitespace "\n  "
+      ModuleDirective
+        RequiresDirective
+          RequiresKw "requires"
+          Whitespace " "
+          StaticKw "static"
+          Whitespace " "
+          Name
+            Identifier "java"
+            Dot "."
+            Identifier "sql"
+          Semicolon ";"
+      Whitespace "\n  "
+      ModuleDirective
+        ExportsDirective
+          ExportsKw "exports"
+          Name
+            Whitespace " "
+            Identifier "com"
+            Dot "."
+            Identifier "example"
+            Dot "."
+            Identifier "api"
+          Semicolon ";"
+      Whitespace "\n  "
+      ModuleDirective
+        ExportsDirective
+          ExportsKw "exports"
+          Name
+            Whitespace " "
+            Identifier "com"
+            Dot "."
+            Identifier "example"
+            Dot "."
+            Identifier "internal"
+            Whitespace " "
+          ToKw "to"
+          Name
+            Whitespace " "
+            Identifier "java"
+            Dot "."
+            Identifier "base"
+          Comma ","
+          Name
+            Whitespace " "
+            Identifier "java"
+            Dot "."
+            Identifier "logging"
+          Semicolon ";"
+      Whitespace "\n  "
+      ModuleDirective
+        OpensDirective
+          OpensKw "opens"
+          Name
+            Whitespace " "
+            Identifier "com"
+            Dot "."
+            Identifier "example"
+            Dot "."
+            Identifier "internal"
+            Whitespace " "
+          ToKw "to"
+          Name
+            Whitespace " "
+            Identifier "java"
+            Dot "."
+            Identifier "base"
+          Semicolon ";"
+      Whitespace "\n  "
+      ModuleDirective
+        UsesDirective
+          UsesKw "uses"
+          Name
+            Whitespace " "
+            Identifier "com"
+            Dot "."
+            Identifier "example"
+            Dot "."
+            Identifier "spi"
+            Dot "."
+            Identifier "Service"
+          Semicolon ";"
+      Whitespace "\n  "
+      ModuleDirective
+        ProvidesDirective
+          ProvidesKw "provides"
+          Name
+            Whitespace " "
+            Identifier "com"
+            Dot "."
+            Identifier "example"
+            Dot "."
+            Identifier "spi"
+            Dot "."
+            Identifier "Service"
+            Whitespace " "
+          WithKw "with"
+          Name
+            Whitespace " "
+            Identifier "com"
+            Dot "."
+            Identifier "example"
+            Dot "."
+            Identifier "impl"
+            Dot "."
+            Identifier "ServiceImpl"
+          Comma ","
+          Name
+            Whitespace " "
+            Identifier "com"
+            Dot "."
+            Identifier "example"
+            Dot "."
+            Identifier "impl"
+            Dot "."
+            Identifier "OtherImpl"
+          Semicolon ";"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n\n"
+  Eof ""

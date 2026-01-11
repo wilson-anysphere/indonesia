@@ -1,0 +1,31 @@
+CompilationUnit
+  DocComment "/** Package documentation. */"
+  Whitespace "\n"
+  PackageDeclaration
+    Annotation
+      At "@"
+      Name
+        Identifier "Deprecated"
+        Whitespace "\n"
+    PackageKw "package"
+    Name
+      Whitespace " "
+      Identifier "com"
+      Dot "."
+      Identifier "example"
+      Dot "."
+      Identifier "pkg"
+    Semicolon ";"
+  Whitespace "\n\n"
+  ImportDeclaration
+    ImportKw "import"
+    Whitespace " "
+    Name
+      Identifier "java"
+      Dot "."
+      Identifier "lang"
+      Dot "."
+      Identifier "Deprecated"
+    Semicolon ";"
+  Whitespace "\n\n"
+  Eof ""
