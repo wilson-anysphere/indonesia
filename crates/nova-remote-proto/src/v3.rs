@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{FileText, Revision, ShardId, ShardIndex, WorkerId, WorkerStats};
+use crate::{FileText, Revision, ShardId, ShardIndex, WorkerId, WorkerStats, MAX_MESSAGE_BYTES};
 
 pub const PROTOCOL_MAJOR: u32 = 3;
 pub const PROTOCOL_MINOR: u32 = 0;
@@ -291,6 +291,13 @@ pub fn encode_wire_frame(frame: &WireFrame) -> anyhow::Result<Vec<u8>> {
 }
 
 pub fn decode_wire_frame(bytes: &[u8]) -> anyhow::Result<WireFrame> {
+    anyhow::ensure!(
+        bytes.len() <= MAX_MESSAGE_BYTES,
+        "wire frame too large: {} bytes (max {})",
+        bytes.len(),
+        MAX_MESSAGE_BYTES
+    );
+    crate::validate_cbor::validate_cbor(bytes)?;
     Ok(serde_cbor::from_slice(bytes)?)
 }
 
@@ -299,5 +306,12 @@ pub fn encode_rpc_payload(payload: &RpcPayload) -> anyhow::Result<Vec<u8>> {
 }
 
 pub fn decode_rpc_payload(bytes: &[u8]) -> anyhow::Result<RpcPayload> {
+    anyhow::ensure!(
+        bytes.len() <= MAX_MESSAGE_BYTES,
+        "rpc payload too large: {} bytes (max {})",
+        bytes.len(),
+        MAX_MESSAGE_BYTES
+    );
+    crate::validate_cbor::validate_cbor(bytes)?;
     Ok(serde_cbor::from_slice(bytes)?)
 }

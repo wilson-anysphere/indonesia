@@ -5,6 +5,7 @@ use nova_remote_proto::v3::{
 };
 use nova_remote_proto::{FileText, ShardIndex, Symbol, WorkerStats};
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 #[test]
 fn hello_and_welcome_roundtrip() {
@@ -214,4 +215,54 @@ fn decoding_unknown_enum_variants_does_not_fail() {
     let bytes = serde_cbor::to_vec(&v).unwrap();
     let decoded = decode_rpc_payload(&bytes).unwrap();
     assert!(matches!(decoded, RpcPayload::Unknown));
+}
+
+#[test]
+fn decoding_rejects_allocation_bombs() {
+    // `WireFrame::Packet` with `data` declared as a 4GiB byte string (but no bytes follow).
+    // This must fail without attempting a giant allocation.
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[
+        0xa2, // map(2)
+        0x64, b't', b'y', b'p', b'e', // "type"
+        0x66, b'p', b'a', b'c', b'k', b'e', b't', // "packet"
+        0x64, b'b', b'o', b'd', b'y', // "body"
+        0xa3, // map(3)
+        0x62, b'i', b'd', // "id"
+        0x01, // 1
+        0x6b, b'c', b'o', b'm', b'p', b'r', b'e', b's', b's', b'i', b'o', b'n', // "compression"
+        0x64, b'n', b'o', b'n', b'e', // "none"
+        0x64, b'd', b'a', b't', b'a', // "data"
+        0x5a, 0xff, 0xff, 0xff, 0xff, // bytes(u32::MAX)
+    ]);
+
+    let start = Instant::now();
+    assert!(decode_wire_frame(&bytes).is_err());
+    assert!(
+        start.elapsed() < Duration::from_millis(250),
+        "decode took too long"
+    );
+
+    // `RpcPayload::Request(Request::IndexShard { files: <huge array> })` with a bogus array length.
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&[
+        0xa2, // map(2)
+        0x64, b't', b'y', b'p', b'e', // "type"
+        0x67, b'r', b'e', b'q', b'u', b'e', b's', b't', // "request"
+        0x64, b'b', b'o', b'd', b'y', // "body"
+        0xa3, // map(3)
+        0x64, b't', b'y', b'p', b'e', // "type"
+        0x6b, b'i', b'n', b'd', b'e', b'x', b'_', b's', b'h', b'a', b'r', b'd', // "index_shard"
+        0x68, b'r', b'e', b'v', b'i', b's', b'i', b'o', b'n', // "revision"
+        0x01, // 1
+        0x65, b'f', b'i', b'l', b'e', b's', // "files"
+        0x9a, 0xff, 0xff, 0xff, 0xff, // array(u32::MAX)
+    ]);
+
+    let start = Instant::now();
+    assert!(decode_rpc_payload(&bytes).is_err());
+    assert!(
+        start.elapsed() < Duration::from_millis(250),
+        "decode took too long"
+    );
 }
