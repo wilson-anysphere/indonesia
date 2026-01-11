@@ -2,6 +2,7 @@ use crate::error::CacheError;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -19,9 +20,21 @@ impl Fingerprint {
     }
 
     /// Compute the SHA-256 fingerprint of a file's contents.
+    ///
+    /// This uses a streaming implementation to avoid reading large cache files
+    /// (e.g. `.idx` indexes) into memory all at once.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, CacheError> {
-        let bytes = std::fs::read(path)?;
-        Ok(Self::from_bytes(bytes))
+        let mut file = std::fs::File::open(path)?;
+        let mut hasher = Sha256::new();
+        let mut buf = [0_u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buf)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buf[..read]);
+        }
+        Ok(Self(hex::encode(hasher.finalize())))
     }
 
     /// Compute a fast fingerprint based on file metadata (size + mtime).
