@@ -1,5 +1,7 @@
 use crate::error::CacheError;
-use crate::metadata::CacheMetadata;
+use crate::metadata::{
+    CacheMetadata, CacheMetadataArchive, CACHE_METADATA_BIN_FILENAME, CACHE_METADATA_JSON_FILENAME,
+};
 use crate::util::now_millis;
 use crate::CacheConfig;
 use std::collections::HashSet;
@@ -17,12 +19,12 @@ pub struct ProjectCacheInfo {
     pub size_bytes: u64,
     /// Last time the cache was updated, if known.
     ///
-    /// This is derived from `metadata.json` (preferred) and/or filesystem timestamps
+    /// This is derived from `metadata.bin`/`metadata.json` (preferred) and/or filesystem timestamps
     /// for `perf.json` when available.
     pub last_updated_millis: Option<u64>,
-    /// Nova version recorded in `metadata.json` (if available).
+    /// Nova version recorded in cache metadata (if available).
     pub nova_version: Option<String>,
-    /// Cache metadata schema version recorded in `metadata.json` (if available).
+    /// Cache metadata schema version recorded in cache metadata (if available).
     pub schema_version: Option<u32>,
 }
 
@@ -100,13 +102,34 @@ pub fn enumerate_project_caches(
         // project entry is a symlink, treat it as opaque and allow GC to remove
         // the symlink itself.
         if !file_type.is_symlink() {
-            let metadata_path = path.join("metadata.json");
-            if let Ok(meta) = std::fs::symlink_metadata(&metadata_path) {
-                if meta.is_file() {
-                    if let Ok(metadata) = CacheMetadata::load(&metadata_path) {
-                        last_updated_millis = Some(metadata.last_updated_millis);
-                        nova_version = Some(metadata.nova_version);
-                        schema_version = Some(metadata.schema_version);
+            let metadata_path = path.join(CACHE_METADATA_JSON_FILENAME);
+            let metadata_bin_path = path.join(CACHE_METADATA_BIN_FILENAME);
+
+            let metadata_bin_is_file = std::fs::symlink_metadata(&metadata_bin_path)
+                .ok()
+                .is_some_and(|meta| meta.is_file());
+
+            let mut loaded_metadata = false;
+            if metadata_bin_is_file {
+                if let Some(metadata) = CacheMetadataArchive::open(&metadata_bin_path)? {
+                    last_updated_millis = Some(metadata.last_updated_millis());
+                    nova_version = Some(metadata.nova_version().to_string());
+                    schema_version = Some(metadata.schema_version());
+                    loaded_metadata = true;
+                }
+            }
+
+            if !loaded_metadata {
+                if std::fs::symlink_metadata(&metadata_path)
+                    .ok()
+                    .is_some_and(|meta| meta.is_file())
+                {
+                    if let Ok(bytes) = std::fs::read(&metadata_path) {
+                        if let Ok(metadata) = serde_json::from_slice::<CacheMetadata>(&bytes) {
+                            last_updated_millis = Some(metadata.last_updated_millis);
+                            nova_version = Some(metadata.nova_version);
+                            schema_version = Some(metadata.schema_version);
+                        }
                     }
                 }
             }

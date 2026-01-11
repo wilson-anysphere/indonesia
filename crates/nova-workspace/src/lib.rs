@@ -680,7 +680,7 @@ impl Workspace {
         let cache_dir = self.open_cache_dir()?;
 
         let metadata_path = cache_dir.metadata_path();
-        let metadata = if metadata_path.exists() {
+        let metadata = if metadata_path.exists() || cache_dir.metadata_bin_path().exists() {
             CacheMetadata::load(&metadata_path).ok()
         } else {
             None

@@ -242,6 +242,14 @@ impl CacheMetadataArchive {
         self.archive.archived().project_hash.as_str()
     }
 
+    pub fn schema_version(&self) -> u32 {
+        self.archive.archived().schema_version
+    }
+
+    pub fn nova_version(&self) -> &str {
+        self.archive.archived().nova_version.as_str()
+    }
+
     pub fn last_updated_millis(&self) -> u64 {
         self.archive.archived().last_updated_millis
     }
