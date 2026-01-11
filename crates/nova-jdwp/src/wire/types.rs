@@ -242,7 +242,7 @@ impl fmt::Display for JdwpValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum JdwpEvent {
     VmStart {
         request_id: i32,
@@ -265,6 +265,12 @@ pub enum JdwpEvent {
         request_id: i32,
         thread: ThreadId,
         location: Location,
+    },
+    MethodExitWithReturnValue {
+        request_id: i32,
+        thread: ThreadId,
+        location: Location,
+        value: JdwpValue,
     },
     Exception {
         request_id: i32,

@@ -986,27 +986,38 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
     let mut r = JdwpReader::new(payload);
     let _suspend_policy = r.read_u8()?;
     let event_count = r.read_u32()? as usize;
+
+    // Composite packets can include both stop events (SingleStep/Breakpoint) and
+    // `MethodExitWithReturnValue`. The legacy TCP client parses the whole composite and
+    // attaches method-exit values to the stop that follows. To preserve that behavior
+    // for async consumers, we must emit `MethodExitWithReturnValue` (and all other
+    // non-stop events) before stop events, even if the VM sends them in the opposite
+    // order.
+    let mut stop_events = Vec::new();
+    let mut non_stop_events = Vec::new();
+
     for _ in 0..event_count {
         let kind = r.read_u8()?;
         let request_id = r.read_i32()?;
-        match kind {
+
+        let event = match kind {
             1 => {
                 let thread = r.read_object_id(&sizes)?;
                 let location = r.read_location(&sizes)?;
-                let _ = inner.events.send(JdwpEvent::SingleStep {
+                Some(JdwpEvent::SingleStep {
                     request_id,
                     thread,
                     location,
-                });
+                })
             }
             2 => {
                 let thread = r.read_object_id(&sizes)?;
                 let location = r.read_location(&sizes)?;
-                let _ = inner.events.send(JdwpEvent::Breakpoint {
+                Some(JdwpEvent::Breakpoint {
                     request_id,
                     thread,
                     location,
-                });
+                })
             }
             4 => {
                 let thread = r.read_object_id(&sizes)?;
@@ -1024,25 +1035,21 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                         Some(catch_loc)
                     }
                 };
-                let _ = inner.events.send(JdwpEvent::Exception {
+                Some(JdwpEvent::Exception {
                     request_id,
                     thread,
                     location,
                     exception,
                     catch_location,
-                });
+                })
             }
             6 => {
                 let thread = r.read_object_id(&sizes)?;
-                let _ = inner
-                    .events
-                    .send(JdwpEvent::ThreadStart { request_id, thread });
+                Some(JdwpEvent::ThreadStart { request_id, thread })
             }
             7 => {
                 let thread = r.read_object_id(&sizes)?;
-                let _ = inner
-                    .events
-                    .send(JdwpEvent::ThreadDeath { request_id, thread });
+                Some(JdwpEvent::ThreadDeath { request_id, thread })
             }
             8 => {
                 let thread = r.read_object_id(&sizes)?;
@@ -1050,28 +1057,58 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                 let type_id = r.read_reference_type_id(&sizes)?;
                 let signature = r.read_string()?;
                 let status = r.read_u32()?;
-                let _ = inner.events.send(JdwpEvent::ClassPrepare {
+                Some(JdwpEvent::ClassPrepare {
                     request_id,
                     thread,
                     ref_type_tag,
                     type_id,
                     signature,
                     status,
-                });
+                })
+            }
+            42 => {
+                let thread = r.read_object_id(&sizes)?;
+                let location = r.read_location(&sizes)?;
+                let tag = r.read_u8()?;
+                let value = r.read_value(tag, &sizes)?;
+                Some(JdwpEvent::MethodExitWithReturnValue {
+                    request_id,
+                    thread,
+                    location,
+                    value,
+                })
             }
             90 => {
                 let thread = r.read_object_id(&sizes)?;
-                let _ = inner.events.send(JdwpEvent::VmStart { request_id, thread });
+                Some(JdwpEvent::VmStart { request_id, thread })
             }
             99 => {
                 let _ = request_id;
-                let _ = inner.events.send(JdwpEvent::VmDeath);
+                Some(JdwpEvent::VmDeath)
             }
             _ => {
                 // Unknown event kind: ignore the remainder of this composite packet.
-                return Ok(());
+                None
             }
+        };
+
+        let Some(event) = event else {
+            break;
+        };
+
+        if matches!(event, JdwpEvent::SingleStep { .. } | JdwpEvent::Breakpoint { .. }) {
+            stop_events.push(event);
+        } else {
+            non_stop_events.push(event);
         }
     }
+
+    for event in non_stop_events {
+        let _ = inner.events.send(event);
+    }
+    for event in stop_events {
+        let _ = inner.events.send(event);
+    }
+
     Ok(())
 }

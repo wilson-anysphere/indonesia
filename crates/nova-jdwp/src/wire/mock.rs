@@ -150,6 +150,7 @@ struct State {
     hashmap_bucket_calls: AtomicU32,
     breakpoint_request: tokio::sync::Mutex<Option<i32>>,
     step_request: tokio::sync::Mutex<Option<i32>>,
+    method_exit_request: tokio::sync::Mutex<Option<i32>>,
     thread_start_request: tokio::sync::Mutex<Option<i32>>,
     thread_death_request: tokio::sync::Mutex<Option<i32>>,
     threads: tokio::sync::Mutex<Vec<u64>>,
@@ -188,6 +189,7 @@ impl State {
             hashmap_bucket_calls: AtomicU32::new(0),
             breakpoint_request: tokio::sync::Mutex::new(None),
             step_request: tokio::sync::Mutex::new(None),
+            method_exit_request: tokio::sync::Mutex::new(None),
             thread_start_request: tokio::sync::Mutex::new(None),
             thread_death_request: tokio::sync::Mutex::new(None),
             threads: tokio::sync::Mutex::new(vec![THREAD_ID]),
@@ -1040,6 +1042,7 @@ async fn handle_packet(
                 }
                 6 => *state.thread_start_request.lock().await = Some(request_id),
                 7 => *state.thread_death_request.lock().await = Some(request_id),
+                42 => *state.method_exit_request.lock().await = Some(request_id),
                 _ => {}
             }
             let mut w = JdwpWriter::new();
@@ -1081,6 +1084,12 @@ async fn handle_packet(
                         *guard = None;
                     }
                 }
+                42 => {
+                    let mut guard = state.method_exit_request.lock().await;
+                    if guard.map(|v| v == request_id).unwrap_or(false) {
+                        *guard = None;
+                    }
+                }
                 _ => {}
             }
             (0, Vec::new())
@@ -1107,6 +1116,7 @@ async fn handle_packet(
         // After a resume, immediately emit a stop event if a request is configured.
         let breakpoint_request = { *state.breakpoint_request.lock().await };
         let step_request = { *state.step_request.lock().await };
+        let method_exit_request = { *state.method_exit_request.lock().await };
         let exception_request = { *state.exception_request.lock().await };
         let thread_start_request = { *state.thread_start_request.lock().await };
         let thread_death_request = { *state.thread_death_request.lock().await };
@@ -1148,6 +1158,7 @@ async fn handle_packet(
             id_sizes,
             breakpoint_request,
             step_request,
+            method_exit_request,
             exception_request,
         ) {
             follow_up.extend(stop_packet);
@@ -1228,8 +1239,34 @@ fn make_stop_event_packet(
     id_sizes: &JdwpIdSizes,
     breakpoint_request: Option<i32>,
     step_request: Option<i32>,
+    method_exit_request: Option<i32>,
     exception_request: Option<MockExceptionRequest>,
 ) -> Option<Vec<u8>> {
+    if let (Some(step_request), Some(method_exit_request)) = (step_request, method_exit_request) {
+        let mut w = JdwpWriter::new();
+        w.write_u8(1); // suspend policy: event thread
+        w.write_u32(2); // event count
+
+        // Step event first.
+        w.write_u8(1); // SingleStep
+        w.write_i32(step_request);
+        w.write_object_id(THREAD_ID, id_sizes);
+        w.write_location(&default_location(), id_sizes);
+
+        // MethodExitWithReturnValue event after the stop event to validate that
+        // the client reorders events before broadcasting.
+        w.write_u8(42);
+        w.write_i32(method_exit_request);
+        w.write_object_id(THREAD_ID, id_sizes);
+        w.write_location(&default_location(), id_sizes);
+        w.write_u8(b'I');
+        w.write_i32(123);
+
+        let payload = w.into_vec();
+        let packet_id = state.alloc_packet_id();
+        return Some(encode_command(packet_id, 64, 100, &payload));
+    }
+
     let (kind, request_id) = if let Some(request_id) = breakpoint_request {
         (2, request_id)
     } else if let Some(request_id) = step_request {

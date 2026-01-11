@@ -1,4 +1,6 @@
-use nova_dap::jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpError, JdwpValue};
+use nova_dap::jdwp::wire::{
+    mock::MockJdwpServer, EventModifier, JdwpClient, JdwpError, JdwpEvent, JdwpValue,
+};
 
 #[tokio::test]
 async fn jdwp_client_can_handshake_and_fetch_values() {
@@ -235,4 +237,48 @@ async fn jdwp_client_supports_classpaths_and_invocation() {
         .unwrap();
     assert_eq!(exception, 0);
     assert_eq!(value, arg);
+}
+
+#[tokio::test]
+async fn jdwp_client_reorders_method_exit_with_return_value_before_stop() {
+    let server = MockJdwpServer::spawn().await.unwrap();
+    let client = JdwpClient::connect(server.addr()).await.unwrap();
+    let mut events = client.subscribe_events();
+
+    let threads = client.all_threads().await.unwrap();
+    let thread = threads[0];
+
+    let _step_request = client
+        .event_request_set(
+            1,
+            1,
+            vec![EventModifier::Step {
+                thread,
+                size: 1,
+                depth: 1,
+            }],
+        )
+        .await
+        .unwrap();
+    let _method_exit_request = client
+        .event_request_set(42, 0, vec![EventModifier::ThreadOnly { thread }])
+        .await
+        .unwrap();
+
+    client.vm_resume().await.unwrap();
+
+    let first = events.recv().await.unwrap();
+    let second = events.recv().await.unwrap();
+
+    match first {
+        JdwpEvent::MethodExitWithReturnValue { value, .. } => {
+            assert_eq!(value, JdwpValue::Int(123));
+        }
+        other => panic!("expected MethodExitWithReturnValue, got {other:?}"),
+    }
+
+    match second {
+        JdwpEvent::SingleStep { .. } => {}
+        other => panic!("expected SingleStep, got {other:?}"),
+    }
 }
