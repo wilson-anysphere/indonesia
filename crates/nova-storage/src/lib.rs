@@ -18,6 +18,18 @@
 //!   `usize`.
 //!
 //! Nova detects these mismatches and treats the artifact as incompatible.
+//!
+//! ## Safety limits and integrity checks
+//! Persisted headers are validated before any large allocation or decompression to
+//! guard against corrupted cache files causing OOMs.
+//!
+//! The default caps can be overridden via environment variables:
+//! - `NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES` (default: [`MAX_PAYLOAD_LEN_BYTES`])
+//! - `NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES` (default: [`MAX_UNCOMPRESSED_LEN_BYTES`])
+//!
+//! The header also stores a truncated blake3 hash of the uncompressed payload:
+//! - always validated for zstd-compressed artifacts
+//! - for uncompressed artifacts, validation is opt-in via `NOVA_STORAGE_VALIDATE_HASH=1`
 
 mod header;
 mod persisted;
@@ -47,6 +59,12 @@ mod tests {
     }
 
     impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+
         fn remove(key: &'static str) -> Self {
             let prev = std::env::var_os(key);
             std::env::remove_var(key);
