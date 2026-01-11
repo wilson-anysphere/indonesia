@@ -775,8 +775,11 @@ fn feature_gate_modules_version_matrix() {
 
 #[test]
 fn feature_gate_text_blocks_version_matrix() {
-    let input = r#"class Foo { String s = """hi
-there"""; }"#;
+    // Java text blocks require a line terminator immediately after the opening delimiter.
+    let input = r#"class Foo { String s = """
+hi
+there
+"""; }"#;
 
     let java14 = parse_java_with_options(
         input,
@@ -1216,6 +1219,8 @@ class Foo {
       case String s -> {}
       case null, default -> {}
       case Integer i when i > 0 -> {}
+      case Integer i when (i > 0) -> {}
+      case Integer i when flag -> {}
       default -> {}
     }
   }

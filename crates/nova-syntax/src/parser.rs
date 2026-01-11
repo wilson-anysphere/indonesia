@@ -1500,7 +1500,9 @@ impl<'a> Parser<'a> {
         ) {
             self.error_here("expected guard expression");
         } else {
-            self.parse_expression(0);
+            // `->`/`:` are switch-label terminators, not part of the guard expression; disable
+            // lambda parsing here so `when (i > 0) ->` doesn't get misparsed as a lambda.
+            self.parse_expression_no_lambda(0);
         }
         self.builder.finish_node(); // Guard
     }

@@ -58,6 +58,31 @@ pub fn parse_java_with_options(text: &str, opts: ParseOptions) -> JavaParse {
     JavaParse { result, diagnostics }
 }
 
+/// Parse a `module-info.java` file.
+///
+/// Nova's Java parser accepts a modern superset grammar, but callers sometimes want to
+/// specifically assert that a given source is a module declaration (e.g. for fixtures).
+pub fn parse_module_info(text: &str) -> Result<JavaParseResult, Vec<ParseError>> {
+    let result = parse_java(text);
+    if !result.errors.is_empty() {
+        return Err(result.errors);
+    }
+
+    let is_module_info = result
+        .syntax()
+        .children()
+        .any(|n| n.kind() == SyntaxKind::ModuleDeclaration);
+
+    if is_module_info {
+        Ok(result)
+    } else {
+        Err(vec![ParseError {
+            message: "expected module declaration".to_string(),
+            range: TextRange { start: 0, end: 0 },
+        }])
+    }
+}
+
 /// Run the Java syntax feature gate pass on an already-parsed syntax tree.
 pub fn feature_gate_diagnostics(
     root: &SyntaxNode,
