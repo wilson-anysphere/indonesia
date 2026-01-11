@@ -279,6 +279,9 @@ Negotiation rules (normative):
 - `chosen_capabilities.supports_chunking` MUST be `true` only if **both** sides offered
   `supports_chunking = true`.
 
+If the router cannot compute a valid `chosen_capabilities` set (for example: no common compression
+algorithm), it MUST send `Reject(code="invalid_request", ...)` and close the connection.
+
 Receivers MUST enforce these negotiated limits for the lifetime of the connection.
 
 Default values in `nova_remote_proto::v3` (informative):
