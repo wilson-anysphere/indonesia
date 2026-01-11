@@ -1451,6 +1451,86 @@ class Foo {
 }
 
 #[test]
+fn ast_switch_label_expressions_compat_returns_constant_labels() {
+    use crate::{AstNode, SwitchLabel};
+
+    let input = r#"
+class Foo {
+  void m(int x) {
+    switch (x) {
+      case 1, 2 -> {}
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let label = result
+        .syntax()
+        .descendants()
+        .find_map(SwitchLabel::cast)
+        .expect("expected a switch label");
+
+    let expr_text: Vec<_> = label
+        .expressions()
+        .filter_map(|expr| expr.syntax().first_token())
+        .map(|tok| tok.text().to_string())
+        .collect();
+
+    assert_eq!(expr_text, vec!["1", "2"]);
+}
+
+#[test]
+fn ast_record_pattern_accessors_work() {
+    use crate::{AstNode, RecordPattern};
+
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case Point(int x, int y) -> {}
+      case Box(Point(int x, int y)) -> {}
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let patterns: Vec<_> = result.syntax().descendants().filter_map(RecordPattern::cast).collect();
+    assert_eq!(patterns.len(), 3, "expected outer + nested record patterns");
+
+    // `Point(int x, int y)`
+    let point = &patterns[0];
+    assert!(point.ty().is_some());
+    let mut components = point.components();
+    let x = components
+        .next()
+        .and_then(|p| p.type_pattern())
+        .expect("expected first component type pattern");
+    let y = components
+        .next()
+        .and_then(|p| p.type_pattern())
+        .expect("expected second component type pattern");
+    assert!(components.next().is_none());
+    assert_eq!(x.name_token().unwrap().text(), "x");
+    assert_eq!(y.name_token().unwrap().text(), "y");
+
+    // `Box(Point(int x, int y))` should contain a nested record pattern component.
+    let box_pattern = &patterns[1];
+    let nested = box_pattern
+        .components()
+        .next()
+        .and_then(|p| p.record_pattern())
+        .expect("expected nested record pattern component");
+    assert!(nested.ty().is_some());
+    assert_eq!(nested.components().count(), 2);
+}
+
+#[test]
 fn parse_switch_patterns_with_legacy_and_and_guard() {
     let input = r#"
 class Foo {
