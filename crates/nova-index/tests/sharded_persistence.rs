@@ -6,6 +6,7 @@ use nova_index::{
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 fn empty_shards(shard_count: u32) -> Vec<ProjectIndexes> {
     (0..shard_count)
@@ -442,4 +443,117 @@ fn sharded_fast_load_does_not_read_project_file_contents() {
     .unwrap();
 
     assert!(loaded.is_some());
+}
+
+#[test]
+fn save_sharded_indexes_rewrites_only_affected_shards() {
+    let shard_count = 64;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    // Pick two file names that land in different shards so we can observe that only the affected
+    // shard is rewritten.
+    let mut paths = Vec::new();
+    let mut seen = BTreeSet::new();
+    for idx in 0..500u32 {
+        let name = format!("File{idx}.java");
+        let shard_id = shard_id_for_path(&name, shard_count);
+        if seen.insert(shard_id) {
+            paths.push(name);
+        }
+        if paths.len() >= 2 {
+            break;
+        }
+    }
+    assert_eq!(paths.len(), 2);
+
+    for name in &paths {
+        std::fs::write(project_root.join(name), "class X {}").unwrap();
+    }
+
+    let snapshot_v1 =
+        ProjectSnapshot::new(&project_root, paths.iter().map(PathBuf::from).collect()).unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    for name in &paths {
+        let shard = shard_id_for_path(name, shard_count) as usize;
+        let symbol = name.trim_end_matches(".java");
+        shards[shard].symbols.insert(
+            symbol,
+            SymbolLocation {
+                file: name.clone(),
+                line: 1,
+                column: 1,
+            },
+        );
+    }
+
+    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, shards.clone()).unwrap();
+
+    let affected_path = &paths[0];
+    let unaffected_path = &paths[1];
+    let affected_shard = shard_id_for_path(affected_path, shard_count);
+    let unaffected_shard = shard_id_for_path(unaffected_path, shard_count);
+    assert_ne!(affected_shard, unaffected_shard);
+
+    let affected_symbols_idx = cache_dir
+        .indexes_dir()
+        .join("shards")
+        .join(affected_shard.to_string())
+        .join("symbols.idx");
+    let unaffected_symbols_idx = cache_dir
+        .indexes_dir()
+        .join("shards")
+        .join(unaffected_shard.to_string())
+        .join("symbols.idx");
+
+    let affected_mtime_v1 = std::fs::metadata(&affected_symbols_idx)
+        .unwrap()
+        .modified()
+        .unwrap();
+    let unaffected_mtime_v1 = std::fs::metadata(&unaffected_symbols_idx)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    // Ensure we cross any coarse filesystem timestamp boundaries.
+    std::thread::sleep(Duration::from_millis(1100));
+
+    std::fs::write(project_root.join(affected_path), "class X { void m() {} }").unwrap();
+    let snapshot_v2 =
+        ProjectSnapshot::new(&project_root, paths.iter().map(PathBuf::from).collect()).unwrap();
+
+    // Simulate an incremental rebuild by updating only the affected shard payload.
+    shards[affected_shard as usize].symbols.insert(
+        "Updated",
+        SymbolLocation {
+            file: affected_path.clone(),
+            line: 2,
+            column: 1,
+        },
+    );
+
+    save_sharded_indexes(&cache_dir, &snapshot_v2, shard_count, shards).unwrap();
+
+    let affected_mtime_v2 = std::fs::metadata(&affected_symbols_idx)
+        .unwrap()
+        .modified()
+        .unwrap();
+    let unaffected_mtime_v2 = std::fs::metadata(&unaffected_symbols_idx)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    assert_ne!(affected_mtime_v2, affected_mtime_v1);
+    assert_eq!(unaffected_mtime_v2, unaffected_mtime_v1);
 }
