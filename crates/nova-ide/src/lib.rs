@@ -16,6 +16,7 @@ pub mod format;
 pub mod semantics;
 
 pub mod code_intelligence;
+mod spring_di;
 mod completion;
 mod jpa_intel;
 mod micronaut_intel;

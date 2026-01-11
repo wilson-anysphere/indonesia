@@ -23,6 +23,7 @@ use nova_types::{Diagnostic, Severity, Span};
 
 use crate::lombok_intel;
 use crate::micronaut_intel;
+use crate::spring_di;
 use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
 
 #[cfg(feature = "ai")]
@@ -97,6 +98,22 @@ fn jpa_completions_to_lsp(items: Vec<nova_types::CompletionItem>) -> Vec<Complet
 fn spring_location_to_lsp(
     db: &dyn Database,
     loc: &nova_framework_spring::ConfigLocation,
+) -> Option<Location> {
+    let uri = uri_from_path(&loc.path)?;
+    let target_text = db
+        .file_id(&loc.path)
+        .map(|id| db.file_content(id).to_string())
+        .or_else(|| std::fs::read_to_string(&loc.path).ok())?;
+
+    Some(Location {
+        uri,
+        range: span_to_lsp_range(&target_text, loc.span),
+    })
+}
+
+fn spring_source_location_to_lsp(
+    db: &dyn Database,
+    loc: &spring_di::SpringSourceLocation,
 ) -> Option<Location> {
     let uri = uri_from_path(&loc.path)?;
     let target_text = db
@@ -208,9 +225,12 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
                 }
             }
         }
+
+        // 4) Spring DI diagnostics (missing / ambiguous beans, circular deps).
+        diagnostics.extend(spring_di::diagnostics_for_file(db, file));
     }
 
-    // 4) Micronaut framework diagnostics (DI + validation).
+    // 5) Micronaut framework diagnostics (DI + validation).
     if let Some(path) = db
         .file_path(file)
         .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
@@ -275,6 +295,29 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
             let items =
                 nova_framework_spring::completions_for_yaml_file(path, text, offset, &index);
             return spring_completions_to_lsp(items);
+        }
+    }
+
+    // Spring DI completions inside Java source.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        if let Some(ctx) = spring_di::annotation_string_context(text, offset) {
+            match ctx {
+                spring_di::AnnotationStringContext::Qualifier => {
+                    let items = spring_di::qualifier_completion_items(db, file);
+                    if !items.is_empty() {
+                        return spring_completions_to_lsp(items);
+                    }
+                }
+                spring_di::AnnotationStringContext::Profile => {
+                    let items = nova_framework_spring::profile_completions();
+                    if !items.is_empty() {
+                        return spring_completions_to_lsp(items);
+                    }
+                }
+            }
         }
     }
 
@@ -503,11 +546,15 @@ fn member_completions(
     if receiver_type != "String" {
         for member in lombok_intel::complete_members(db, file, receiver_type) {
             let (kind, insert_text) = match member.kind {
-                lombok_intel::MemberKind::Field => (CompletionItemKind::FIELD, member.label.clone()),
+                lombok_intel::MemberKind::Field => {
+                    (CompletionItemKind::FIELD, member.label.clone())
+                }
                 lombok_intel::MemberKind::Method => {
                     (CompletionItemKind::METHOD, format!("{}()", member.label))
                 }
-                lombok_intel::MemberKind::Class => (CompletionItemKind::CLASS, member.label.clone()),
+                lombok_intel::MemberKind::Class => {
+                    (CompletionItemKind::CLASS, member.label.clone())
+                }
             };
             items.push(CompletionItem {
                 label: member.label,
@@ -632,6 +679,15 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
         if let Some(target) = targets.first() {
             return spring_location_to_lsp(db, target);
         }
+
+        // Spring DI navigation from injection site -> bean definition.
+        if let Some(targets) = spring_di::injection_definition_targets(db, file, offset) {
+            if let Some(target) = targets.first() {
+                if let Some(loc) = spring_source_location_to_lsp(db, target) {
+                    return Some(loc);
+                }
+            }
+        }
     }
 
     // JPA navigation inside JPQL strings.
@@ -687,6 +743,27 @@ pub fn find_references(
                 .iter()
                 .filter_map(|t| spring_location_to_lsp(db, t))
                 .collect();
+        }
+    }
+
+    // Spring DI references from bean definition -> injection sites.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        if let Some((decl, targets)) = spring_di::bean_usage_targets(db, file, offset) {
+            let mut out = Vec::new();
+            if include_declaration {
+                if let Some(loc) = spring_source_location_to_lsp(db, &decl) {
+                    out.push(loc);
+                }
+            }
+            out.extend(
+                targets
+                    .iter()
+                    .filter_map(|t| spring_source_location_to_lsp(db, t)),
+            );
+            return out;
         }
     }
 
