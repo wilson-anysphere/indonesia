@@ -23,6 +23,47 @@ pub fn extract_jaxrs_endpoints(sources: &[&str]) -> Vec<Endpoint> {
         .collect()
 }
 
+/// Extract HTTP endpoints from Java sources across supported web frameworks.
+///
+/// This is a best-effort line-based extractor intended for lightweight tooling
+/// (e.g. Nova's LSP extensions). It currently supports:
+/// - JAX-RS (`@Path`, `@GET`, ...)
+/// - Spring MVC (`@RequestMapping`, `@GetMapping`, ...)
+/// - Micronaut (`@Controller`, `@Get`, ...)
+pub fn extract_http_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<Endpoint> {
+    sources
+        .iter()
+        .flat_map(|(src, file)| extract_http_endpoints_from_source(src, file.clone()))
+        .collect()
+}
+
+pub fn extract_http_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
+    let mut endpoints = Vec::new();
+    endpoints.extend(extract_jaxrs_endpoints_from_source(source, file.clone()));
+    endpoints.extend(extract_spring_mvc_endpoints_from_source(source, file.clone()));
+    endpoints.extend(extract_micronaut_endpoints_from_source(source, file));
+    endpoints
+}
+
+pub fn extract_http_endpoints_in_dir(project_root: impl AsRef<Path>) -> std::io::Result<Vec<Endpoint>> {
+    let project_root = project_root.as_ref();
+    let mut java_files = Vec::new();
+    collect_java_files(project_root, &mut java_files)?;
+
+    let mut endpoints = Vec::new();
+    for file in java_files {
+        let content = match std::fs::read_to_string(&file) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let rel = file.strip_prefix(project_root).unwrap_or(&file).to_path_buf();
+        endpoints.extend(extract_http_endpoints_from_source(&content, Some(rel)));
+    }
+
+    Ok(endpoints)
+}
+
 pub fn extract_jaxrs_endpoints_in_dir(project_root: impl AsRef<Path>) -> std::io::Result<Vec<Endpoint>> {
     let project_root = project_root.as_ref();
     let mut java_files = Vec::new();
@@ -117,6 +158,252 @@ fn extract_jaxrs_endpoints_from_source(source: &str, file: Option<PathBuf>) -> V
     }
 
     endpoints
+}
+
+pub fn extract_spring_mvc_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<Endpoint> {
+    sources
+        .iter()
+        .flat_map(|(src, file)| extract_spring_mvc_endpoints_from_source(src, file.clone()))
+        .collect()
+}
+
+fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
+    let method_sig_re = Regex::new(
+        r#"^\s*(?:public|protected|private|static|final|synchronized|abstract|default|\s)+\s*[\w<>\[\].$]+\s+(\w+)\s*\("#,
+    )
+    .unwrap();
+
+    let mut endpoints = Vec::new();
+    let mut pending_annotations: Vec<PendingAnnotation> = Vec::new();
+
+    let mut class_base_path: Option<String> = None;
+    let mut in_class = false;
+    let mut brace_depth: i32 = 0;
+
+    // Best-effort check to reduce false positives.
+    let mut is_controller_class = false;
+
+    for (idx, raw_line) in source.lines().enumerate() {
+        let line_no = (idx + 1) as u32;
+        let line_no_comment = raw_line.split("//").next().unwrap_or(raw_line);
+        let mut line = line_no_comment;
+
+        line = consume_leading_annotations(line, &mut pending_annotations);
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if !in_class {
+            if looks_like_java_class_decl(line) {
+                is_controller_class = pending_annotations.iter().any(|ann| {
+                    matches!(ann.name.as_str(), "RestController" | "Controller" | "RequestMapping")
+                });
+                class_base_path = pending_annotations
+                    .iter()
+                    .find(|ann| ann.name == "RequestMapping")
+                    .and_then(|ann| ann.args.as_deref().and_then(extract_spring_mapping_path));
+                pending_annotations.clear();
+                in_class = true;
+            }
+        } else if brace_depth == 1 {
+            if is_controller_class && method_sig_re.is_match(line) {
+                if let Some(mapping) = parse_spring_method_mapping(&pending_annotations) {
+                    let full_path = join_paths(class_base_path.as_deref(), mapping.path.as_deref());
+                    endpoints.push(Endpoint {
+                        path: full_path,
+                        methods: mapping.methods,
+                        handler: HandlerLocation {
+                            file: file.clone(),
+                            line: line_no,
+                        },
+                    });
+                }
+            }
+            pending_annotations.clear();
+        }
+
+        brace_depth += count_braces(line);
+        if in_class && brace_depth <= 0 {
+            // Reset once we leave the class body so multiple classes per file still work.
+            in_class = false;
+            is_controller_class = false;
+            class_base_path = None;
+            pending_annotations.clear();
+        }
+    }
+
+    endpoints
+}
+
+struct ParsedMapping {
+    methods: Vec<String>,
+    path: Option<String>,
+}
+
+fn parse_spring_method_mapping(annotations: &[PendingAnnotation]) -> Option<ParsedMapping> {
+    for ann in annotations {
+        let (method, path_keys) = match ann.name.as_str() {
+            "GetMapping" => ("GET", &["path", "value"][..]),
+            "PostMapping" => ("POST", &["path", "value"][..]),
+            "PutMapping" => ("PUT", &["path", "value"][..]),
+            "DeleteMapping" => ("DELETE", &["path", "value"][..]),
+            "PatchMapping" => ("PATCH", &["path", "value"][..]),
+            _ => continue,
+        };
+
+        let path = ann.args.as_deref().and_then(|args| extract_mapping_path(args, path_keys));
+        return Some(ParsedMapping {
+            methods: vec![method.to_string()],
+            path,
+        });
+    }
+
+    for ann in annotations {
+        if ann.name != "RequestMapping" {
+            continue;
+        }
+
+        let methods = spring_request_mapping_methods(ann.args.as_deref());
+        let path = ann
+            .args
+            .as_deref()
+            .and_then(|args| extract_mapping_path(args, &["path", "value"]));
+
+        return Some(ParsedMapping { methods, path });
+    }
+
+    None
+}
+
+fn spring_request_mapping_methods(args: Option<&str>) -> Vec<String> {
+    let mut methods = Vec::new();
+    if let Some(args) = args {
+        let mut rest = args;
+        while let Some(pos) = rest.find("RequestMethod.") {
+            rest = &rest[pos + "RequestMethod.".len()..];
+            let end = rest
+                .bytes()
+                .take_while(|b| b.is_ascii_alphabetic())
+                .count();
+            if end == 0 {
+                continue;
+            }
+            let method = rest[..end].to_ascii_uppercase();
+            if is_http_method(&method) && !methods.iter().any(|m| m == &method) {
+                methods.push(method);
+            }
+            rest = &rest[end..];
+        }
+    }
+
+    if methods.is_empty() {
+        // No explicit method restriction in @RequestMapping => all methods.
+        all_http_methods()
+    } else {
+        methods
+    }
+}
+
+fn extract_spring_mapping_path(args: &str) -> Option<String> {
+    extract_mapping_path(args, &["path", "value"])
+}
+
+pub fn extract_micronaut_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<Endpoint> {
+    sources
+        .iter()
+        .flat_map(|(src, file)| extract_micronaut_endpoints_from_source(src, file.clone()))
+        .collect()
+}
+
+fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
+    let method_sig_re = Regex::new(
+        r#"^\s*(?:public|protected|private|static|final|synchronized|abstract|default|\s)+\s*[\w<>\[\].$]+\s+(\w+)\s*\("#,
+    )
+    .unwrap();
+
+    let mut endpoints = Vec::new();
+    let mut pending_annotations: Vec<PendingAnnotation> = Vec::new();
+
+    let mut class_base_path: Option<String> = None;
+    let mut in_class = false;
+    let mut brace_depth: i32 = 0;
+    let mut is_controller_class = false;
+
+    for (idx, raw_line) in source.lines().enumerate() {
+        let line_no = (idx + 1) as u32;
+        let line_no_comment = raw_line.split("//").next().unwrap_or(raw_line);
+        let mut line = line_no_comment;
+
+        line = consume_leading_annotations(line, &mut pending_annotations);
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if !in_class {
+            if looks_like_java_class_decl(line) {
+                is_controller_class = pending_annotations.iter().any(|ann| ann.name == "Controller");
+                class_base_path = pending_annotations
+                    .iter()
+                    .find(|ann| ann.name == "Controller")
+                    .and_then(|ann| ann.args.as_deref().and_then(extract_micronaut_mapping_path));
+                pending_annotations.clear();
+                in_class = true;
+            }
+        } else if brace_depth == 1 {
+            if is_controller_class && method_sig_re.is_match(line) {
+                if let Some(mapping) = parse_micronaut_method_mapping(&pending_annotations) {
+                    let full_path = join_paths(class_base_path.as_deref(), mapping.path.as_deref());
+                    endpoints.push(Endpoint {
+                        path: full_path,
+                        methods: mapping.methods,
+                        handler: HandlerLocation {
+                            file: file.clone(),
+                            line: line_no,
+                        },
+                    });
+                }
+            }
+            pending_annotations.clear();
+        }
+
+        brace_depth += count_braces(line);
+        if in_class && brace_depth <= 0 {
+            in_class = false;
+            is_controller_class = false;
+            class_base_path = None;
+            pending_annotations.clear();
+        }
+    }
+
+    endpoints
+}
+
+fn parse_micronaut_method_mapping(annotations: &[PendingAnnotation]) -> Option<ParsedMapping> {
+    for ann in annotations {
+        let method = match ann.name.as_str() {
+            "Get" => "GET",
+            "Post" => "POST",
+            "Put" => "PUT",
+            "Delete" => "DELETE",
+            "Patch" => "PATCH",
+            "Head" => "HEAD",
+            "Options" => "OPTIONS",
+            _ => continue,
+        };
+        let path = ann
+            .args
+            .as_deref()
+            .and_then(|args| extract_mapping_path(args, &["uri", "value"]));
+        return Some(ParsedMapping {
+            methods: vec![method.to_string()],
+            path,
+        });
+    }
+    None
+}
+
+fn extract_micronaut_mapping_path(args: &str) -> Option<String> {
+    extract_mapping_path(args, &["uri", "value"])
 }
 
 fn join_paths(class_path: Option<&str>, method_path: Option<&str>) -> String {
@@ -233,6 +520,89 @@ fn extract_first_string_literal(args: &str) -> Option<String> {
     let rest = &args[start + 1..];
     let end = rest.find('"')?;
     Some(rest[..end].to_string())
+}
+
+fn extract_mapping_path(args: &str, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(value) = extract_named_string_literal(args, key) {
+            return Some(value);
+        }
+    }
+    extract_first_string_literal(args)
+}
+
+fn extract_named_string_literal(args: &str, key: &str) -> Option<String> {
+    let bytes = args.as_bytes();
+    let key_bytes = key.as_bytes();
+
+    let mut idx = 0usize;
+    while idx + key_bytes.len() <= bytes.len() {
+        if &bytes[idx..idx + key_bytes.len()] != key_bytes {
+            idx += 1;
+            continue;
+        }
+
+        let before_ok = idx == 0 || !is_ident_byte(bytes[idx - 1]);
+        let after_idx = idx + key_bytes.len();
+        let after_ok = after_idx == bytes.len() || !is_ident_byte(bytes[after_idx]);
+        if !before_ok || !after_ok {
+            idx += key_bytes.len();
+            continue;
+        }
+
+        let mut j = after_idx;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j >= bytes.len() || bytes[j] != b'=' {
+            idx += key_bytes.len();
+            continue;
+        }
+        j += 1;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+
+        return extract_first_string_literal(args.get(j..).unwrap_or(""));
+    }
+
+    None
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+fn is_http_method(method: &str) -> bool {
+    matches!(
+        method,
+        "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS" | "TRACE"
+    )
+}
+
+fn all_http_methods() -> Vec<String> {
+    vec![
+        "GET".to_string(),
+        "HEAD".to_string(),
+        "POST".to_string(),
+        "PUT".to_string(),
+        "PATCH".to_string(),
+        "DELETE".to_string(),
+        "OPTIONS".to_string(),
+        "TRACE".to_string(),
+    ]
+}
+
+fn looks_like_java_class_decl(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("class ")
+        || line.contains(" class ")
+        || line.starts_with("interface ")
+        || line.contains(" interface ")
+        || line.starts_with("record ")
+        || line.contains(" record ")
+        || line.starts_with("enum ")
+        || line.contains(" enum ")
 }
 
 fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
