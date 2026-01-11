@@ -183,7 +183,10 @@ initial handshake). Because the token is sent on the wire, remote TCP deployment
 enabled, authentication tokens) in cleartext. By default, the router **refuses** to start with
 plaintext TCP when listening on a non-loopback address. If an authentication token is configured,
 Nova requires TLS for TCP by default (even on loopback) unless explicitly opting in to insecure mode
-for local testing.
+for local testing (set `DistributedRouterConfig.allow_insecure_tcp = true`).
+
+If you do opt into plaintext TCP for local testing and you are using an auth token, the worker must
+also opt in by passing `--allow-insecure` (otherwise it refuses to send the token in cleartext).
 
 This mode is best thought of as: **router stays close to the filesystem; workers are compute-only**.
 Workers do not need direct access to the project checkout because the router sends full file
@@ -245,7 +248,7 @@ nova-worker \
   --tls-domain router.example.com \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache \
-  --auth-token <token>
+  --auth-token-file ./shard-0.token
 ```
 
 Example (mTLS; router must be configured with a client CA bundle):
@@ -259,7 +262,7 @@ nova-worker \
   --tls-client-key ./worker.key \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache \
-  --auth-token <token>
+  --auth-token-file ./shard-0.token
 ```
 
 For the intended “secure remote mode” requirements (TLS + authentication + shard-scoped
@@ -293,7 +296,8 @@ into more shards (more source roots) to bound per-message and per-worker memory.
 
 Remote mode is **not hardened** and should not be exposed to untrusted networks.
 
-- The `--auth-token` is a **shared secret** and is sent by the worker during the initial handshake
+- The authentication token (provided via `--auth-token`, `--auth-token-file`, or `--auth-token-env`)
+  is a **shared secret** and is sent by the worker during the initial handshake
   (`WorkerHello.auth_token`; in v3 this is the `WireFrame::Hello` body field).
   **Do not send it over plaintext TCP.**
 - Plain `tcp:` also sends **full file contents** in cleartext. Use TLS for any remote deployment.
