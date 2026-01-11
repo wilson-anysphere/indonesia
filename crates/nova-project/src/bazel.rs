@@ -335,6 +335,7 @@ pub fn load_bazel_workspace_project_model_with_runner<R: CommandRunner>(
         .map(|module| Module {
             name: module.name.clone(),
             root: module.root.clone(),
+            annotation_processing: Default::default(),
         })
         .collect::<Vec<_>>();
     let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);
