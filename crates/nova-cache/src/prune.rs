@@ -161,7 +161,8 @@ fn prune_ast(
 
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy().to_string();
-        if file_name == "metadata.bin" || file_name == ".lock" || file_name == "metadata.lock" {
+        // Lockfiles are out-of-band coordination primitives; never prune them.
+        if file_name == "metadata.bin" || file_name.ends_with(".lock") {
             continue;
         }
 
@@ -388,6 +389,13 @@ fn prune_indexes(
         }
 
         let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".lock"))
+        {
+            continue;
+        }
         if is_current_index_file(&path) {
             continue;
         }
@@ -544,7 +552,8 @@ fn gather_ast_candidates(
         }
 
         let file_name = entry.file_name().to_string_lossy().to_string();
-        if file_name == "metadata.bin" || file_name == ".lock" || file_name == "metadata.lock" {
+        // Lockfiles are out-of-band coordination primitives; never prune them.
+        if file_name == "metadata.bin" || file_name.ends_with(".lock") {
             continue;
         }
 
@@ -594,6 +603,13 @@ fn gather_query_candidates(
         }
 
         let path = entry.into_path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".lock"))
+        {
+            continue;
+        }
         let size = file_size_bytes(&path, report).unwrap_or(0);
         let last_used = derived_entry_saved_at_millis(&path, report)
             .or_else(|| file_modified_millis(&path, report))
@@ -646,6 +662,13 @@ fn gather_legacy_index_candidates(
         }
 
         let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".lock"))
+        {
+            continue;
+        }
         if is_current_index_file(&path) {
             continue;
         }
