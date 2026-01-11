@@ -49,6 +49,38 @@ fn utf16_positions_treat_crlf_as_newline_and_reject_carriage_return_columns() {
 }
 
 #[test]
+fn utf16_positions_out_of_bounds_return_none() {
+    let text = "a😀b\nx";
+    let pos = TextPos::new(text);
+
+    // Line out of bounds.
+    assert_eq!(pos.byte_offset(Position::new(2, 0)), None);
+
+    // Character out of bounds on line 0 (line length is 4 UTF-16 code units).
+    assert_eq!(pos.byte_offset(Position::new(0, 5)), None);
+}
+
+#[test]
+fn utf16_ranges_validate_order_and_bounds() {
+    let text = "a😀b\nx";
+    let pos = TextPos::new(text);
+
+    // end < start
+    let reversed = Range {
+        start: Position::new(0, 3),
+        end: Position::new(0, 1),
+    };
+    assert_eq!(pos.byte_range(reversed), None);
+
+    // end past end-of-line
+    let oob = Range {
+        start: Position::new(0, 0),
+        end: Position::new(0, 10),
+    };
+    assert_eq!(pos.byte_range(oob), None);
+}
+
+#[test]
 fn utf16_range_to_byte_range_is_validated_and_safe_for_slicing() {
     let text = "a😀b\nx";
     let pos = TextPos::new(text);
