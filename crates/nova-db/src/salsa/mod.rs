@@ -38,6 +38,7 @@ mod resolve;
 mod semantic;
 mod stats;
 mod syntax;
+mod workspace;
 
 pub use hir::NovaHir;
 pub use ide::NovaIde;
@@ -47,6 +48,7 @@ pub use resolve::NovaResolve;
 pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStatsReport};
 pub use syntax::{NovaSyntax, SyntaxTree};
+pub use workspace::{WorkspaceLoadError, WorkspaceLoader};
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -744,17 +746,33 @@ impl Database {
 
     pub fn set_file_text(&self, file: FileId, text: impl Into<String>) {
         let text = Arc::new(text.into());
-        {
+        let default_project = ProjectId::from_raw(0);
+        let default_root = SourceRootId::from_raw(0);
+        let (set_default_project, set_default_root) = {
             let mut inputs = self.inputs.lock();
             inputs.file_exists.insert(file, true);
-            inputs.file_project.insert(file, ProjectId::from_raw(0));
-            inputs.source_root.insert(file, SourceRootId::from_raw(0));
             inputs.file_content.insert(file, text.clone());
-        }
+
+            let set_default_project = !inputs.file_project.contains_key(&file);
+            if set_default_project {
+                inputs.file_project.insert(file, default_project);
+            }
+
+            let set_default_root = !inputs.source_root.contains_key(&file);
+            if set_default_root {
+                inputs.source_root.insert(file, default_root);
+            }
+
+            (set_default_project, set_default_root)
+        };
         let mut db = self.inner.lock();
         db.set_file_exists(file, true);
-        db.set_file_project(file, ProjectId::from_raw(0));
-        db.set_source_root(file, SourceRootId::from_raw(0));
+        if set_default_project {
+            db.set_file_project(file, default_project);
+        }
+        if set_default_root {
+            db.set_source_root(file, default_root);
+        }
         db.set_file_content(file, text);
     }
 

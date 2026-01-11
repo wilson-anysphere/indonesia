@@ -6,7 +6,7 @@ use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
 use nova_types::Diagnostic;
 
 use crate::persistence::HasPersistence;
-use crate::{FileId, ProjectId};
+use crate::FileId;
 
 use super::cancellation as cancel;
 use super::inputs::NovaInputs;
@@ -29,9 +29,8 @@ pub trait NovaSyntax:
 
     /// Effective Java language level for this file.
     ///
-    /// This is currently derived from `ProjectConfig.java.source` for a single
-    /// "default" project (ProjectId(0)). As Nova's project model matures, this
-    /// should become a true per-file/per-module query.
+    /// This is derived from the owning project's [`nova_project::ProjectConfig`]
+    /// (`file_project(file)` -> `project_config(project)`).
     fn java_language_level(&self, file: FileId) -> nova_syntax::JavaLanguageLevel;
 
     /// Version-aware diagnostics for syntax features that are not enabled at
@@ -109,8 +108,9 @@ fn parse_java(db: &dyn NovaSyntax, file: FileId) -> Arc<JavaParseResult> {
     result
 }
 
-fn java_language_level(db: &dyn NovaSyntax, _file: FileId) -> nova_syntax::JavaLanguageLevel {
-    let cfg = db.project_config(ProjectId::from_raw(0));
+fn java_language_level(db: &dyn NovaSyntax, file: FileId) -> nova_syntax::JavaLanguageLevel {
+    let project = db.file_project(file);
+    let cfg = db.project_config(project);
     nova_syntax::JavaLanguageLevel {
         major: cfg.java.source.0,
         preview: cfg.java.enable_preview,
@@ -188,6 +188,7 @@ mod tests {
     fn feature_diagnostics_use_project_language_level() {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
+        db.set_file_project(file, crate::ProjectId::from_raw(0));
 
         db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
@@ -197,7 +198,7 @@ mod tests {
         );
 
         db.set_project_config(
-            ProjectId::from_raw(0),
+            crate::ProjectId::from_raw(0),
             Arc::new(config_with_source(JavaVersion::JAVA_8)),
         );
 
@@ -214,7 +215,7 @@ mod tests {
 
         // Updating project language level invalidates + recomputes diagnostics.
         db.set_project_config(
-            ProjectId::from_raw(0),
+            crate::ProjectId::from_raw(0),
             Arc::new(config_with_source(JavaVersion(10))),
         );
         let diags = db.syntax_feature_diagnostics(file);
@@ -225,6 +226,7 @@ mod tests {
     fn feature_diagnostics_respect_enable_preview() {
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(2);
+        db.set_file_project(file, crate::ProjectId::from_raw(0));
 
         db.set_file_exists(file, true);
         db.set_source_root(file, SourceRootId::from_raw(0));
@@ -237,7 +239,7 @@ mod tests {
         );
 
         db.set_project_config(
-            ProjectId::from_raw(0),
+            crate::ProjectId::from_raw(0),
             Arc::new(config_with_source_preview(JavaVersion(13), false)),
         );
 
@@ -255,7 +257,7 @@ mod tests {
             .all(|diag| diag.code == "JAVA_FEATURE_SWITCH_EXPRESSIONS"));
 
         db.set_project_config(
-            ProjectId::from_raw(0),
+            crate::ProjectId::from_raw(0),
             Arc::new(config_with_source_preview(JavaVersion(13), true)),
         );
         let diags = db.syntax_feature_diagnostics(file);
