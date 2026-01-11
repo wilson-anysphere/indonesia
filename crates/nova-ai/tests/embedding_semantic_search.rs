@@ -94,10 +94,9 @@ fn context_builder_can_include_embedding_related_code() {
             include_file_paths: true,
             ..PrivacyMode::default()
         },
-    }
-    .with_related_code_from_search(&search, "hello world", 1);
+    };
 
-    let ctx = ContextBuilder::new().build(req);
+    let ctx = ContextBuilder::new().build_with_semantic_search(req, &search, 1);
     assert!(ctx.text.contains("## Related code"));
     assert!(ctx.text.contains("helloWorld"));
 }

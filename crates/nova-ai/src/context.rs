@@ -11,6 +11,16 @@ impl ContextBuilder {
         Self
     }
 
+    /// Build a context bundle while populating `related_code` from a semantic search engine.
+    pub fn build_with_semantic_search(
+        &self,
+        req: ContextRequest,
+        search: &dyn crate::SemanticSearch,
+        max_related: usize,
+    ) -> BuiltContext {
+        self.build(req.with_related_code_from_focal(search, max_related))
+    }
+
     pub fn build(&self, req: ContextRequest) -> BuiltContext {
         let mut remaining = req.token_budget;
         let mut out = String::new();
@@ -221,6 +231,17 @@ impl ContextRequest {
             })
             .collect();
         self
+    }
+
+    /// Convenience wrapper around [`ContextRequest::with_related_code_from_search`] that uses the
+    /// current `focal_code` contents as the query text.
+    pub fn with_related_code_from_focal(
+        self,
+        search: &dyn crate::SemanticSearch,
+        max_results: usize,
+    ) -> Self {
+        let query = self.focal_code.clone();
+        self.with_related_code_from_search(search, &query, max_results)
     }
 }
 

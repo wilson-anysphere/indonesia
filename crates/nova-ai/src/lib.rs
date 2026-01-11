@@ -52,9 +52,11 @@ pub use error::AiError;
 pub use features::NovaAi;
 pub use privacy::{PrivacyMode, RedactionConfig};
 pub use provider::MultiTokenCompletionProvider;
+pub use semantic_search::{
+    semantic_search_from_config, SearchResult, SemanticSearch, TrigramSemanticSearch,
+};
 #[cfg(feature = "embeddings")]
 pub use semantic_search::{Embedder, EmbeddingSemanticSearch, HashEmbedder};
-pub use semantic_search::{SearchResult, SemanticSearch, TrigramSemanticSearch};
 pub use types::{AiStream, ChatMessage, ChatRequest, ChatRole, CodeSnippet};
 
 pub use cancel::CancellationToken;

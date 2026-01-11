@@ -27,6 +27,33 @@ pub trait SemanticSearch: Send + Sync {
     fn search(&self, query: &str) -> Vec<SearchResult>;
 }
 
+/// Construct a [`SemanticSearch`] implementation from runtime configuration.
+///
+/// If `ai.embeddings.enabled = true` and the crate is compiled with the
+/// `embeddings` Cargo feature, this returns an [`EmbeddingSemanticSearch`]
+/// instance backed by a lightweight local embedder.
+///
+/// When embeddings are enabled in config but the crate is built without the
+/// `embeddings` feature, this falls back to [`TrigramSemanticSearch`].
+pub fn semantic_search_from_config(config: &nova_config::AiConfig) -> Box<dyn SemanticSearch> {
+    if config.embeddings.enabled {
+        #[cfg(feature = "embeddings")]
+        {
+            return Box::new(EmbeddingSemanticSearch::new(HashEmbedder::default()));
+        }
+
+        #[cfg(not(feature = "embeddings"))]
+        {
+            tracing::warn!(
+                target = "nova.ai",
+                "ai.embeddings.enabled is true but nova-ai was built without the `embeddings` feature; falling back to trigram search"
+            );
+        }
+    }
+
+    Box::new(TrigramSemanticSearch::new())
+}
+
 #[derive(Debug, Default)]
 pub struct TrigramSemanticSearch {
     docs: Vec<IndexedDocument>,
