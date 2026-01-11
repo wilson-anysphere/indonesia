@@ -65,7 +65,7 @@ jobs:
         run: |
           set -euxo pipefail
           cargo llvm-cov report -p nova-core -p nova-syntax -p nova-ide --color never \
-            | tee coverage-report.txt
+            > coverage-report.txt
           {
             echo "## Test coverage"
             echo
@@ -73,6 +73,16 @@ jobs:
             awk 'NR==1 || $1=="TOTAL"' coverage-report.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          for crate in nova-core nova-syntax nova-ide; do
+            {
+              echo
+              echo "### ${crate}"
+              echo
+              echo '```text'
+              cargo llvm-cov report -p "${crate}" --color never | awk 'NR==1 || $1=="TOTAL"'
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - name: Coverage gate (warn only)
         run: |
