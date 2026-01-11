@@ -1,9 +1,10 @@
 use pretty_assertions::assert_eq;
 
 use crate::{
-    lex, lex_with_errors, parse_expression, parse_java, parse_java_with_options, reparse_java,
-    AstNode, CompilationUnit, ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions,
-    ProvidesDirective, RequiresDirective, SyntaxKind, TextEdit, TextRange, UsesDirective,
+    lex, lex_with_errors, parse_expression, parse_java, parse_java_expression, parse_java_with_options,
+    reparse_java, AstNode, CompilationUnit, ExportsDirective, JavaLanguageLevel, OpensDirective,
+    ParseOptions, ProvidesDirective, RequiresDirective, SyntaxKind, TextEdit, TextRange,
+    UsesDirective,
 };
 
 fn bless_enabled() -> bool {
@@ -371,6 +372,47 @@ fn parse_class_snapshot() {
 
     let expected = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn parse_expression_smoke() {
+    let result = parse_java_expression("1 + 2 * 3");
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::BinaryExpression));
+}
+
+#[test]
+fn parse_expression_trailing_tokens_are_reported_and_consumed() {
+    let result = parse_java_expression("1 2");
+    assert!(
+        !result.errors.is_empty(),
+        "expected at least one error for trailing tokens"
+    );
+
+    let int_literals: Vec<_> = result
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind() == SyntaxKind::IntLiteral)
+        .map(|t| t.text().to_string())
+        .collect();
+
+    assert_eq!(int_literals, vec!["1".to_string(), "2".to_string()]);
+}
+
+#[test]
+fn parse_expression_empty_input_errors() {
+    let result = parse_java_expression(" ");
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|e| e.message.contains("expected expression")),
+        "expected an error containing `expected expression`, got: {:?}",
+        result.errors
+    );
 }
 
 #[test]

@@ -30,7 +30,8 @@ pub use literals::{
     LiteralError, LiteralValue,
 };
 pub use parser::{
-    parse_expression, parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken,
+    parse_expression, parse_java, parse_java_expression, JavaParseResult, SyntaxElement, SyntaxNode,
+    SyntaxToken,
 };
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
 pub use tree_store::SyntaxTreeStore;

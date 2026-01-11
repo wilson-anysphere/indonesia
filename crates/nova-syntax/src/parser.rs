@@ -263,26 +263,6 @@ pub fn parse_java(input: &str) -> JavaParseResult {
     Parser::new(input).parse()
 }
 
-pub fn parse_expression(input: &str) -> JavaParseResult {
-    let mut parser = Parser::new(input);
-    parser.builder.start_node(SyntaxKind::ExpressionRoot.into());
-    parser.eat_trivia();
-    parser.parse_expression(0);
-    parser.eat_trivia();
-    if !parser.expect(SyntaxKind::Eof, "expected end of expression") {
-        // Keep the parse lossless by consuming trailing junk tokens until EOF.
-        parser.builder.start_node(SyntaxKind::Error.into());
-        parser.recover_to(TokenSet::new(&[SyntaxKind::Eof]));
-        parser.builder.finish_node();
-        parser.expect(SyntaxKind::Eof, "expected end of expression");
-    }
-    parser.builder.finish_node();
-    JavaParseResult {
-        green: parser.builder.finish(),
-        errors: parser.errors,
-    }
-}
-
 /// Parses `input` as a standalone Java expression.
 ///
 /// This entry point is intended for debugger/expression-evaluation scenarios where the input is
@@ -293,6 +273,11 @@ pub fn parse_expression(input: &str) -> JavaParseResult {
 /// - Use [`JavaParseResult::expression`] to obtain the parsed expression node.
 pub fn parse_java_expression(input: &str) -> JavaParseResult {
     Parser::new(input).parse_expression_root()
+}
+
+/// Compatibility alias for [`parse_java_expression`].
+pub fn parse_expression(input: &str) -> JavaParseResult {
+    parse_java_expression(input)
 }
 
 pub(crate) fn parse_block_fragment(input: &str) -> JavaParseResult {
@@ -436,7 +421,7 @@ impl<'a> Parser<'a> {
 
         if !self.at(SyntaxKind::Eof) {
             self.builder.start_node(SyntaxKind::Error.into());
-            self.error_here("unexpected tokens after expression");
+            self.error_here("unexpected token after expression");
             self.recover_to(TokenSet::new(&[SyntaxKind::Eof]));
             self.builder.finish_node();
         }
