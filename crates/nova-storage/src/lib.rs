@@ -118,13 +118,25 @@ mod tests {
         let mut bytes = std::fs::read(&path).unwrap();
         assert!(bytes.len() > HEADER_LEN);
 
-        let payload_start = HEADER_LEN;
-        let payload_len = bytes.len() - payload_start;
-        let header = StorageHeader::decode(&bytes[..HEADER_LEN]).unwrap();
-        let offset = (header.content_hash as usize) % payload_len;
-        bytes[payload_start + offset] ^= 0x01;
+        let payload = &bytes[HEADER_LEN..];
+
+        // Corrupt a byte in a `u64` value so `rkyv` validation still succeeds, and the
+        // content hash is what reliably detects the corruption.
+        let mut aligned = rkyv::util::AlignedVec::with_capacity(payload.len());
+        aligned.extend_from_slice(payload);
+        let archived = rkyv::check_archived_root::<Sample>(&aligned).unwrap();
+
+        let element_ptr = &archived.values[0] as *const u64 as *const u8;
+        let payload_ptr = aligned.as_ptr();
+        let offset = unsafe { element_ptr.offset_from(payload_ptr) as usize };
+        bytes[HEADER_LEN + offset] ^= 0x01;
 
         std::fs::write(&path, &bytes).unwrap();
+
+        let corrupted_payload = &bytes[HEADER_LEN..];
+        let mut aligned_corrupted = rkyv::util::AlignedVec::with_capacity(corrupted_payload.len());
+        aligned_corrupted.extend_from_slice(corrupted_payload);
+        assert!(rkyv::check_archived_root::<Sample>(&aligned_corrupted).is_ok());
 
         let err = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
         match err {
