@@ -51,6 +51,12 @@ npm run compile
 - **Nova: Run Test** (`nova.runTest`)
   - Prompts for a discovered test ID and runs it via `nova/test/run`.
 
+- **Nova: Add Debug Configuration…** (`nova.addDebugConfiguration`)
+  - Queries `nova/debug/configurations` and appends discovered launch configs to `.vscode/launch.json`.
+
+- **Nova: Hot Swap Changed Files** (`nova.hotSwapChangedFiles`)
+  - Runs `nova/debug/hotSwap` for recently saved Java files (requires an active Nova debug session).
+
 ## Safe mode + memory pressure
 
 Nova has resilience features to keep the language server responsive even if a request panics or times out.
@@ -69,6 +75,32 @@ Nova has resilience features to keep the language server responsive even if a re
 
 When the extension is active, Nova registers a VS Code Test Explorer controller.
 Tests are discovered via `nova/test/discover` and can be run from the Test Explorer.
+
+## Debugging (nova-dap)
+
+Nova contributes a `nova` debug type backed by the `nova-dap` binary (DAP over stdio).
+
+### Attach configuration
+
+In `.vscode/launch.json`:
+
+```jsonc
+{
+  "type": "nova",
+  "request": "attach",
+  "name": "Nova: Attach (5005)",
+  "host": "127.0.0.1",
+  "port": 5005
+}
+```
+
+### Debug tests from the Test Explorer
+
+Nova adds a **Debug** run profile alongside **Run**. Debugging a test will:
+
+1. Ask the language server for a build-tool-specific debug command (`nova/test/debugConfiguration`).
+2. Spawn the build tool in debug mode (default JDWP port: `5005`).
+3. Start a `nova` debug session that attaches via JDWP.
 
 ## Settings
 
@@ -103,6 +135,14 @@ Changing these settings requires restarting the language server; the extension p
 - `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request.
 - `nova.aiCompletions.requestTimeoutMs` (number): max wall-clock time (ms) to poll `nova/completion/more` for async AI completions.
 - `nova.aiCompletions.pollIntervalMs` (number): base polling interval (ms). Nova uses a short exponential backoff derived from this value.
+
+### Debugging
+
+- `nova.debug.adapterPath` (string | null): override the `nova-dap` binary path. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder.
+- `nova.debug.host` (string): default JDWP host for Nova debug sessions (default: `127.0.0.1`).
+- `nova.debug.port` (number): default JDWP port for Nova debug sessions (default: `5005`).
+- `nova.debug.legacyAdapter` (boolean): run `nova-dap --legacy` (default: false).
+- `nova.tests.buildTool` ("auto" | "maven" | "gradle" | "prompt"): build tool to use for test runs/debugging.
 
 ## Packaging
 

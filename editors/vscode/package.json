@@ -23,7 +23,10 @@
     "onCommand:nova.organizeImports",
     "onCommand:nova.createBugReport",
     "onCommand:nova.discoverTests",
-    "onCommand:nova.runTest"
+    "onCommand:nova.runTest",
+    "onCommand:nova.addDebugConfiguration",
+    "onCommand:nova.hotSwapChangedFiles",
+    "onDebug"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -55,6 +58,14 @@
       {
         "command": "nova.runTest",
         "title": "Nova: Run Test"
+      },
+      {
+        "command": "nova.addDebugConfiguration",
+        "title": "Nova: Add Debug Configuration\u2026"
+      },
+      {
+        "command": "nova.hotSwapChangedFiles",
+        "title": "Nova: Hot Swap Changed Files"
       }
     ],
     "configuration": {
@@ -135,9 +146,108 @@
           "default": 50,
           "minimum": 1,
           "description": "Base polling interval (ms) for nova/completion/more. Nova uses a short exponential backoff derived from this value."
+        },
+        "nova.debug.adapterPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Override the nova-dap binary path. Supports ~ and ${workspaceFolder}. Relative paths resolve against the first workspace folder."
+        },
+        "nova.debug.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Default JDWP host for Nova debug sessions."
+        },
+        "nova.debug.port": {
+          "type": "number",
+          "default": 5005,
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Default JDWP port for Nova debug sessions."
+        },
+        "nova.debug.legacyAdapter": {
+          "type": "boolean",
+          "default": false,
+          "description": "Start nova-dap with --legacy (useful for troubleshooting)."
+        },
+        "nova.tests.buildTool": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "maven",
+            "gradle",
+            "prompt"
+          ],
+          "default": "auto",
+          "description": "Build tool to use for test runs/debugging. Use 'prompt' to choose each time."
         }
       }
-    }
+    },
+    "debuggers": [
+      {
+        "type": "nova",
+        "label": "Nova",
+        "languages": [
+          "java"
+        ],
+        "configurationAttributes": {
+          "attach": {
+            "required": [
+              "port"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Name of the debug configuration."
+              },
+              "host": {
+                "type": "string",
+                "default": "127.0.0.1",
+                "description": "JDWP host to attach to."
+              },
+              "port": {
+                "type": "number",
+                "default": 5005,
+                "minimum": 1,
+                "maximum": 65535,
+                "description": "JDWP port to attach to."
+              }
+            }
+          },
+          "launch": {
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Name of the debug configuration."
+              },
+              "host": {
+                "type": "string",
+                "default": "127.0.0.1",
+                "description": "JDWP host to connect to."
+              },
+              "port": {
+                "type": "number",
+                "default": 5005,
+                "minimum": 1,
+                "maximum": 65535,
+                "description": "JDWP port to connect to."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "nova",
+            "request": "attach",
+            "name": "Nova: Attach (5005)",
+            "host": "127.0.0.1",
+            "port": 5005
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "sync-version": "node scripts/sync-version.mjs",

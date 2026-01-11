@@ -3,6 +3,10 @@ import { LanguageClient, State, type LanguageClientOptions, type ServerOptions }
 import * as path from 'path';
 import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
+import { registerNovaDebugAdapter } from './debugAdapter';
+import { registerNovaDebugConfigurations } from './debugConfigurations';
+import { registerNovaHotSwap } from './hotSwap';
+import { registerNovaTestDebugRunProfile } from './testDebug';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
 
@@ -158,6 +162,10 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(serverOutput);
 
   const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
+
+  registerNovaDebugAdapter(context);
+  registerNovaDebugConfigurations(context, requireClient);
+  registerNovaHotSwap(context, requireClient);
 
   const readServerSettings = (): NovaServerSettings => {
     const cfg = vscode.workspace.getConfiguration('nova');
@@ -635,6 +643,18 @@ export async function activate(context: vscode.ExtensionContext) {
     true,
   );
 
+  registerNovaTestDebugRunProfile(
+    context,
+    testController,
+    requireClient,
+    async () => {
+      if (testController && testController.items.size === 0) {
+        await refreshTests();
+      }
+    },
+    (id) => vscodeTestItemsById.get(id),
+  );
+
   testController.resolveHandler = async () => {
     await refreshTests();
   };
@@ -1099,7 +1119,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         const resp = await sendNovaRequest<RunResponse>('nova/test/run', {
           projectRoot: workspace.uri.fsPath,
-          buildTool: 'auto',
+          buildTool: await getTestBuildTool(workspace),
           tests: [picked.testId],
         });
 
@@ -1324,7 +1344,7 @@ async function runTestsFromTestExplorer(
 
     const resp = await sendNovaRequest<RunResponse>('nova/test/run', {
       projectRoot: workspace.uri.fsPath,
-      buildTool: 'auto',
+      buildTool: await getTestBuildTool(workspace),
       tests: ids,
     });
 
@@ -1416,6 +1436,30 @@ function getTestOutputChannel(): vscode.OutputChannel {
     testOutput = vscode.window.createOutputChannel('Nova Tests');
   }
   return testOutput;
+}
+
+type BuildTool = 'auto' | 'maven' | 'gradle';
+
+async function getTestBuildTool(workspace: vscode.WorkspaceFolder): Promise<BuildTool> {
+  const config = vscode.workspace.getConfiguration('nova', workspace.uri);
+  const setting = config.get<string>('tests.buildTool', 'auto');
+  if (setting === 'auto' || setting === 'maven' || setting === 'gradle') {
+    return setting;
+  }
+
+  if (setting !== 'prompt') {
+    return 'auto';
+  }
+
+  const picked = await vscode.window.showQuickPick(
+    [
+      { label: 'Auto', value: 'auto' as const },
+      { label: 'Maven', value: 'maven' as const },
+      { label: 'Gradle', value: 'gradle' as const },
+    ],
+    { placeHolder: 'Select build tool' },
+  );
+  return picked?.value ?? 'auto';
 }
 
 async function promptForBugReportReproduction(): Promise<string | undefined> {
