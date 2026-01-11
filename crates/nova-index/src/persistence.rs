@@ -74,7 +74,7 @@ impl ProjectIndexesView {
     /// locations that come from invalidated files.
     pub fn symbol_locations<'a>(
         &'a self,
-        name: &'a str,
+        name: &str,
     ) -> impl Iterator<Item = &'a ArchivedSymbolLocation> + 'a {
         let invalidated_files = &self.invalidated_files;
         self.symbols
@@ -93,7 +93,7 @@ impl ProjectIndexesView {
     /// that come from invalidated files.
     pub fn annotation_locations<'a>(
         &'a self,
-        name: &'a str,
+        name: &str,
     ) -> impl Iterator<Item = &'a ArchivedAnnotationLocation> + 'a {
         let invalidated_files = &self.invalidated_files;
         self.annotations
@@ -112,7 +112,7 @@ impl ProjectIndexesView {
     /// that come from invalidated files.
     pub fn reference_locations<'a>(
         &'a self,
-        symbol: &'a str,
+        symbol: &str,
     ) -> impl Iterator<Item = &'a ArchivedReferenceLocation> + 'a {
         let invalidated_files = &self.invalidated_files;
         self.references

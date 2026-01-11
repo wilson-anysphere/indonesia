@@ -83,21 +83,26 @@ fn index_view_filters_invalidated_files_without_materializing() {
         BTreeSet::from(["A.java".to_string()])
     );
 
-    let symbol_files: Vec<&str> = view_v2
-        .symbol_locations("Foo")
-        .map(|loc| loc.file.as_str())
-        .collect();
+    // Ensure the query string doesn't have to outlive the iterator (the view
+    // does not retain the lookup key).
+    let symbol_iter = {
+        let name = "Foo".to_string();
+        view_v2.symbol_locations(&name)
+    };
+    let symbol_files: Vec<&str> = symbol_iter.map(|loc| loc.file.as_str()).collect();
     assert_eq!(symbol_files, vec!["B.java"]);
 
-    let annotation_files: Vec<&str> = view_v2
-        .annotation_locations("@Deprecated")
-        .map(|loc| loc.file.as_str())
-        .collect();
+    let annotation_iter = {
+        let name = "@Deprecated".to_string();
+        view_v2.annotation_locations(&name)
+    };
+    let annotation_files: Vec<&str> = annotation_iter.map(|loc| loc.file.as_str()).collect();
     assert_eq!(annotation_files, vec!["B.java"]);
 
-    let reference_files: Vec<&str> = view_v2
-        .reference_locations("Foo")
-        .map(|loc| loc.file.as_str())
-        .collect();
+    let reference_iter = {
+        let symbol = "Foo".to_string();
+        view_v2.reference_locations(&symbol)
+    };
+    let reference_files: Vec<&str> = reference_iter.map(|loc| loc.file.as_str()).collect();
     assert_eq!(reference_files, vec!["B.java"]);
 }
