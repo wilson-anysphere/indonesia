@@ -546,7 +546,7 @@ impl Default for AiProviderKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct AiProviderConfig {
     /// Which backend implementation to use.
@@ -596,6 +596,81 @@ pub struct AiProviderConfig {
     /// Configuration for in-process inference when `kind = "in_process_llama"`.
     #[serde(default)]
     pub in_process_llama: Option<InProcessLlamaConfig>,
+}
+
+impl fmt::Debug for AiProviderConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AiProviderConfig")
+            .field("kind", &self.kind)
+            .field("url", &sanitize_url_for_debug(&self.url))
+            .field("model", &self.model)
+            .field("azure_deployment", &self.azure_deployment)
+            .field("azure_api_version", &self.azure_api_version)
+            .field("max_tokens", &self.max_tokens)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("concurrency", &self.concurrency)
+            .field("in_process_llama", &self.in_process_llama)
+            .finish()
+    }
+}
+
+fn sanitize_url_for_debug(url: &Url) -> String {
+    const REDACTION: &str = "<redacted>";
+    let mut out = String::new();
+
+    // Use a stable, human-readable redacted representation rather than `Url::to_string()`, which
+    // percent-encodes `<redacted>` in the userinfo/query components.
+    out.push_str(url.scheme());
+    out.push_str("://");
+
+    if !url.username().is_empty() || url.password().is_some() {
+        out.push_str(REDACTION);
+        out.push('@');
+    }
+
+    match url.host_str() {
+        Some(host) => out.push_str(host),
+        None => out.push_str("<unknown-host>"),
+    }
+
+    if let Some(port) = url.port() {
+        out.push(':');
+        out.push_str(&port.to_string());
+    }
+
+    out.push_str(url.path());
+
+    if url.query().is_some() {
+        out.push('?');
+        let mut first = true;
+        for (k, v) in url.query_pairs() {
+            if !first {
+                out.push('&');
+            }
+            first = false;
+            out.push_str(&k);
+            out.push('=');
+            if is_sensitive_url_param(&k) {
+                out.push_str(REDACTION);
+            } else {
+                out.push_str(&v);
+            }
+        }
+    }
+
+    if let Some(fragment) = url.fragment() {
+        out.push('#');
+        out.push_str(fragment);
+    }
+
+    out
+}
+
+fn is_sensitive_url_param(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "key" | "token" | "access_token" | "api_key" | "apikey" | "authorization"
+    )
 }
 
 fn default_provider_url() -> Url {
@@ -1393,6 +1468,36 @@ mod tests {
         assert!(
             output.contains("api_key_present"),
             "AiConfig debug output should include api_key presence indicator: {output}"
+        );
+    }
+
+    #[test]
+    fn ai_provider_config_debug_redacts_sensitive_url_parts() {
+        let username = "super-secret-user";
+        let password = "super-secret-pass";
+        let token = "super-secret-token";
+        let mut config = AiProviderConfig::default();
+        config.url = Url::parse(&format!(
+            "https://{username}:{password}@example.com/path?token={token}&other=1"
+        ))
+        .expect("parse url");
+
+        let output = format!("{config:?}");
+        assert!(
+            !output.contains(username),
+            "AiProviderConfig debug output leaked url username: {output}"
+        );
+        assert!(
+            !output.contains(password),
+            "AiProviderConfig debug output leaked url password: {output}"
+        );
+        assert!(
+            !output.contains(token),
+            "AiProviderConfig debug output leaked url token param: {output}"
+        );
+        assert!(
+            output.contains("<redacted>"),
+            "AiProviderConfig debug output should include redaction markers: {output}"
         );
     }
 
