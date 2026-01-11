@@ -442,6 +442,7 @@ mod disk_cache_tests {
     use super::*;
     use bincode::Options;
     use nova_cache::QueryDiskCachePolicy;
+    use nova_memory::MemoryBudget;
     use serde::{Deserialize, Serialize};
     use tempfile::TempDir;
 
@@ -640,6 +641,53 @@ mod disk_cache_tests {
         let fingerprint = Fingerprint::from_bytes("key".as_bytes());
         let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn query_cache_flush_to_disk_persists_warm_entries() {
+        let tmp = TempDir::new().unwrap();
+        let manager = MemoryManager::new(MemoryBudget::from_total(1024 * 1024));
+
+        let cache1 = QueryCache::new_with_disk(&manager, Some(tmp.path().to_path_buf()));
+        cache1.insert("k".to_string(), Arc::new(b"value".to_vec()));
+
+        // Force the value into the warm tier.
+        let _ = nova_memory::MemoryEvictor::evict(
+            cache1.as_ref(),
+            EvictionRequest {
+                pressure: nova_memory::MemoryPressure::Low,
+                target_bytes: 1,
+            },
+        );
+
+        nova_memory::MemoryEvictor::flush_to_disk(cache1.as_ref()).unwrap();
+        drop(cache1);
+
+        let cache2 = QueryCache::new_with_disk(&manager, Some(tmp.path().to_path_buf()));
+        let loaded = cache2.get("k").expect("load from disk");
+        assert_eq!(&*loaded, b"value");
+    }
+
+    #[test]
+    fn query_cache_eviction_under_high_pressure_persists_to_disk() {
+        let tmp = TempDir::new().unwrap();
+        let manager = MemoryManager::new(MemoryBudget::from_total(1024 * 1024));
+
+        let cache1 = QueryCache::new_with_disk(&manager, Some(tmp.path().to_path_buf()));
+        cache1.insert("k".to_string(), Arc::new(b"value".to_vec()));
+
+        let _ = nova_memory::MemoryEvictor::evict(
+            cache1.as_ref(),
+            EvictionRequest {
+                pressure: nova_memory::MemoryPressure::High,
+                target_bytes: 1,
+            },
+        );
+        drop(cache1);
+
+        let cache2 = QueryCache::new_with_disk(&manager, Some(tmp.path().to_path_buf()));
+        let loaded = cache2.get("k").expect("load from disk");
+        assert_eq!(&*loaded, b"value");
     }
 
     #[test]
