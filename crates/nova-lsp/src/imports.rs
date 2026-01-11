@@ -21,7 +21,9 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
     let line_ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
 
     let mut package_insert_range: Option<(usize, usize)> = None;
-    let mut last_import_insert_range: Option<(usize, usize)> = None;
+    let mut first_import_start_offset: Option<usize> = None;
+    let mut last_non_static_import_insert_range: Option<(usize, usize)> = None;
+    let mut last_static_import_insert_range: Option<(usize, usize)> = None;
 
     let mut offset = 0usize;
     for segment in text.split_inclusive('\n') {
@@ -44,11 +46,15 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
             }
         }
 
-        if let Some(imported) = parse_import_path(line) {
+        if let Some((imported, is_static)) = parse_import_path(line) {
             if imported == request.path.as_str()
                 || wildcard_import_covers(imported, request.path.as_str())
             {
                 return None;
+            }
+
+            if first_import_start_offset.is_none() {
+                first_import_start_offset = Some(line_start);
             }
 
             if let Some(semi) = line.find(';') {
@@ -56,9 +62,19 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
                 if has_code_after_semicolon(after) {
                     let ws = leading_whitespace_len(after);
                     let start = line_start + semi + 1;
-                    last_import_insert_range = Some((start, start + ws));
+                    let range = (start, start + ws);
+                    if is_static {
+                        last_static_import_insert_range = Some(range);
+                    } else {
+                        last_non_static_import_insert_range = Some(range);
+                    }
                 } else {
-                    last_import_insert_range = Some((line_end, line_end));
+                    let range = (line_end, line_end);
+                    if is_static {
+                        last_static_import_insert_range = Some(range);
+                    } else {
+                        last_non_static_import_insert_range = Some(range);
+                    }
                 }
             }
         }
@@ -73,14 +89,32 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
         Import,
     }
 
-    let (anchor, mut start_offset, mut end_offset) = match last_import_insert_range {
-        Some((start, end)) => (InsertionAnchor::Import, start, end),
-        None => match package_insert_range {
-            Some((start, end)) => (InsertionAnchor::Package, start, end),
-            None => (InsertionAnchor::Top, 0, 0),
-        },
+    let (anchor, mut start_offset, mut end_offset) = if request.is_static {
+        match last_static_import_insert_range {
+            Some((start, end)) => (InsertionAnchor::Import, start, end),
+            None => match last_non_static_import_insert_range {
+                Some((start, end)) => (InsertionAnchor::Import, start, end),
+                None => match first_import_start_offset {
+                    Some(offset) => (InsertionAnchor::Import, offset, offset),
+                    None => match package_insert_range {
+                        Some((start, end)) => (InsertionAnchor::Package, start, end),
+                        None => (InsertionAnchor::Top, 0, 0),
+                    },
+                },
+            },
+        }
+    } else {
+        match last_non_static_import_insert_range {
+            Some((start, end)) => (InsertionAnchor::Import, start, end),
+            None => match first_import_start_offset {
+                Some(offset) => (InsertionAnchor::Import, offset, offset),
+                None => match package_insert_range {
+                    Some((start, end)) => (InsertionAnchor::Package, start, end),
+                    None => (InsertionAnchor::Top, 0, 0),
+                },
+            },
+        }
     };
-
     start_offset = start_offset.min(text.len());
     end_offset = end_offset.min(text.len()).max(start_offset);
 
@@ -231,22 +265,24 @@ fn offset_to_position_utf16(text: &str, offset: usize) -> Position {
     Position::new(line, col_utf16)
 }
 
-fn parse_import_path(line: &str) -> Option<&str> {
+fn parse_import_path(line: &str) -> Option<(&str, bool)> {
     let trimmed = line.trim_start();
     let rest = trimmed.strip_prefix("import")?;
     if !rest.starts_with(char::is_whitespace) {
         return None;
     }
     let mut rest = rest.trim_start();
+    let mut is_static = false;
 
     if let Some(after_static) = rest.strip_prefix("static") {
         if after_static.starts_with(char::is_whitespace) {
+            is_static = true;
             rest = after_static.trim_start();
         }
     }
 
     let semi = rest.find(';')?;
-    Some(rest[..semi].trim())
+    Some((rest[..semi].trim(), is_static))
 }
 
 fn skip_blank_line(text: &str, offset: usize) -> Option<usize> {
@@ -344,6 +380,24 @@ mod tests {
         assert_eq!(edit.range.start, Position::new(4, 0));
         assert_eq!(edit.range.end, Position::new(4, 0));
         assert_eq!(edit.new_text, "import java.util.Map;\n");
+    }
+
+    #[test]
+    fn inserts_before_static_imports_when_no_non_static_imports() {
+        let text = "package com.example;\n\nimport static java.util.Collections.emptyList;\n\nclass Foo {}\n";
+        let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
+        assert_eq!(edit.range.start, Position::new(2, 0));
+        assert_eq!(edit.range.end, Position::new(2, 0));
+        assert_eq!(edit.new_text, "import java.util.List;\n");
+    }
+
+    #[test]
+    fn inserts_after_last_non_static_import_before_static_block() {
+        let text = "package com.example;\n\nimport java.util.List;\n\nimport static java.util.Collections.emptyList;\n\nclass Foo {}\n";
+        let edit = java_import_text_edit(text, "java.util.Set").expect("expected edit");
+        assert_eq!(edit.range.start, Position::new(3, 0));
+        assert_eq!(edit.range.end, Position::new(3, 0));
+        assert_eq!(edit.new_text, "import java.util.Set;\n");
     }
 
     #[test]
