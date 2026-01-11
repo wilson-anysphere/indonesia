@@ -454,7 +454,8 @@ Always inspect `git diff` after updating snapshots.
 In practice, Nova’s CI splits into:
 
 - **PR/push gates**: `ci.yml`, `perf.yml`, `javac.yml`
-- **Scheduled/manual heavy jobs**: `fuzz.yml`, `real-projects.yml`, `coverage.yml`
+- **Scheduled/manual heavy jobs**: `fuzz.yml`, `real-projects.yml`
+- **Main branch health jobs** (no PR gate): `coverage.yml`
 - **Release automation** (not a test gate): `release.yml`
 
 | Workflow | Status | What it runs | Local equivalent |
