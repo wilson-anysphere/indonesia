@@ -2,6 +2,7 @@ use crate::anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
 use crate::patch::{Position, Range as PositionRange};
 use crate::privacy::PrivacyMode;
 use crate::types::CodeSnippet;
+use nova_core::{LineIndex, TextSize};
 use nova_core::ProjectDatabase;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -313,8 +314,11 @@ impl ContextRequest {
         privacy: PrivacyMode,
         include_doc_comments: bool,
     ) -> Self {
-        let selection = clamp_range(selection, source.len());
-        let focal_code = source[selection.clone()].to_string();
+        let selection = clamp_range_to_char_boundaries(source, clamp_range(selection, source.len()));
+        let focal_code = source
+            .get(selection.clone())
+            .unwrap_or("")
+            .to_string();
 
         let extracted =
             analyze_java_context(source, selection.clone(), &focal_code, include_doc_comments);
@@ -456,6 +460,21 @@ struct ExtractedJavaContext {
 fn clamp_range(range: Range<usize>, len: usize) -> Range<usize> {
     let start = range.start.min(len);
     let end = range.end.min(len).max(start);
+    start..end
+}
+
+fn clamp_range_to_char_boundaries(text: &str, range: Range<usize>) -> Range<usize> {
+    let mut start = range.start.min(text.len());
+    let mut end = range.end.min(text.len()).max(start);
+
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+
     start..end
 }
 
@@ -808,25 +827,13 @@ fn is_word_char(ch: char) -> bool {
 
 fn position_for_offset(text: &str, offset: usize) -> Position {
     let offset = offset.min(text.len());
-    let mut line = 0u32;
-    let mut last_line_start = 0usize;
-
-    for (idx, ch) in text.char_indices() {
-        if idx >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            last_line_start = idx + ch.len_utf8();
-        }
+    let offset_u32 = u32::try_from(offset).unwrap_or(u32::MAX);
+    let index = LineIndex::new(text);
+    let pos = index.position(text, TextSize::from(offset_u32));
+    Position {
+        line: pos.line,
+        character: pos.character,
     }
-
-    let mut character = 0u32;
-    for _ch in text[last_line_start..offset].chars() {
-        character += 1;
-    }
-
-    Position { line, character }
 }
 
 fn render_import_decl(imp: &nova_syntax::java::ast::ImportDecl) -> String {
@@ -1325,6 +1332,43 @@ public class Foo {
 
         let docs = req.doc_comments.as_deref().unwrap();
         assert!(docs.contains("Method docs"));
+    }
+
+    #[test]
+    fn java_source_range_does_not_panic_on_non_char_boundary_selection() {
+        // 😀 is 4 bytes in UTF-8. A selection that lands inside its byte sequence
+        // should not panic when building the focal snippet.
+        let source = "class A { String s = \"😀\"; }\n";
+        let emoji = source.find('😀').expect("emoji present");
+
+        // Pick an intentionally invalid UTF-8 slice boundary inside the emoji bytes.
+        let selection = (emoji + 1)..(emoji + 3);
+
+        let req = ContextRequest::for_java_source_range(
+            source,
+            selection,
+            200,
+            PrivacyMode::default(),
+            /*include_doc_comments=*/ false,
+        );
+
+        assert!(
+            req.focal_code.contains('😀') || req.focal_code.is_empty(),
+            "expected focal_code to be empty or include the emoji; got {:?}",
+            req.focal_code
+        );
+    }
+
+    #[test]
+    fn position_for_offset_uses_utf16_code_units() {
+        // 😀 is a surrogate pair in UTF-16.
+        let text = "a😀b\n";
+        let offset_after_emoji = text.find('b').expect("b");
+        let pos = position_for_offset(text, offset_after_emoji);
+
+        assert_eq!(pos.line, 0);
+        // a = 1 code unit, 😀 = 2 code units -> column 3.
+        assert_eq!(pos.character, 3);
     }
 
     #[test]
