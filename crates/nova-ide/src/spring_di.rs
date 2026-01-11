@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -204,7 +204,11 @@ pub(crate) fn profile_completion_items(db: &dyn Database, file: FileId) -> Vec<C
         return Vec::new();
     }
 
-    nova_framework_spring::profile_completions()
+    let mut items = nova_framework_spring::profile_completions();
+    items.extend(discovered_profile_completions(db, &entry.root));
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items.dedup_by(|a, b| a.label == b.label);
+    items
 }
 
 pub(crate) fn injection_definition_targets(
@@ -420,6 +424,45 @@ fn sources_fingerprint(db: &dyn Database, sources: &[JavaSource]) -> u64 {
 
 fn looks_like_spring_source(text: &str) -> bool {
     text.contains("org.springframework")
+}
+
+fn discovered_profile_completions(db: &dyn Database, root: &Path) -> Vec<CompletionItem> {
+    let mut out = BTreeSet::<String>::new();
+
+    for file_id in db.all_file_ids() {
+        let Some(path) = db.file_path(file_id) else {
+            continue;
+        };
+        if !path.starts_with(root) {
+            continue;
+        }
+
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+        if !matches!(ext, "properties" | "yml" | "yaml") {
+            continue;
+        }
+
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(profile) = stem.strip_prefix("application-") else {
+            continue;
+        };
+        if profile.is_empty() {
+            continue;
+        }
+
+        out.insert(profile.to_string());
+    }
+
+    out.into_iter()
+        .map(|profile| CompletionItem {
+            label: profile,
+            detail: None,
+        })
+        .collect()
 }
 
 fn discover_project_root(path: &Path) -> PathBuf {

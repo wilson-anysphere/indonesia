@@ -288,6 +288,31 @@ class A {}
 }
 
 #[test]
+fn spring_profile_completion_discovers_profiles_from_filenames() {
+    let config_path =
+        PathBuf::from("/spring-profile-discover/src/main/resources/application-staging.properties");
+    let java_path = PathBuf::from("/spring-profile-discover/src/main/java/A.java");
+
+    let config_text = "server.port=8080\n".to_string();
+    let java_text = r#"import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
+
+@Profile("<|>")
+@Component
+class A {}
+"#;
+
+    let (db, file, pos) = fixture_multi(java_path, java_text, vec![(config_path, config_text)]);
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"staging"),
+        "expected discovered profile completion; got {labels:?}"
+    );
+}
+
+#[test]
 fn spring_find_references_from_bean_definition_to_injection_site() {
     let bean_path = PathBuf::from("/spring-refs/src/main/java/FooService.java");
     let bean_text = r#"import org.springframework.stereotype.Component;
