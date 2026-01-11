@@ -10,16 +10,25 @@ When running hundreds of concurrent agents on a shared system (e.g., 192 vCPU / 
 |----------|----------|
 | **CPU** | Let it burst. Scheduler handles contention fine. Use `-j$(nproc)`. |
 | **Disk I/O** | Let it burst. NVMe handles parallel access. |
-| **Memory** | **HARD LIMIT 4GB per agent.** Exceeding = machine death. |
-| **Swap** | **DISABLED.** Swap + 300 agents = cascading slowdown = brick. |
+| **Memory** | **HARD LIMIT via RLIMIT_AS.** Exceeding = process killed (good). |
 
 **Key Rules:**
-1. **NO SWAP** - Set `memory.swap.max=0` in cgroups. Non-negotiable.
-2. **FAIL FAST** - Let OOM killer terminate individual agents, not the system.
-3. **GO FAST** - Don't be tepid. Use all cores for builds. Only memory matters.
-4. **MONITOR** - System memory >85% = stop spawning. >95% = start killing.
+1. **ALWAYS USE WRAPPER SCRIPTS** - `bash scripts/cargo_agent.sh` for all cargo commands
+2. **NEVER RUN UNSCOPED CARGO** - Always use `-p <crate>`, `--test <name>`, or `--lib`
+3. **GO FAST** - Use all cores for builds. Only memory matters.
+4. **FAIL FAST** - Let RLIMIT_AS kill runaway processes, not the whole system.
 
-See [docs/00-operational-guide.md](docs/00-operational-guide.md) for setup scripts, cgroup configuration, and emergency procedures.
+```bash
+# CORRECT:
+bash scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh test -p nova-core --lib
+
+# WRONG - WILL DESTROY HOST:
+cargo test
+cargo build --all-targets
+```
+
+See [docs/00-operational-guide.md](docs/00-operational-guide.md) for details on the wrapper scripts.
 
 ---
 

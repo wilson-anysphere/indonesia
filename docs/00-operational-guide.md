@@ -6,9 +6,6 @@
 
 This guide is for **coding agents developing Nova** (not end-users of Nova). When hundreds of agents work on the codebase simultaneously on a shared machine, we need guardrails to prevent memory exhaustion while letting agents work as fast as possible.
 
-For Nova’s test tiers, fixture/snapshot workflows, and CI parity commands, see:
-[`docs/14-testing-infrastructure.md`](14-testing-infrastructure.md).
-
 **Target Environment**: Headless Ubuntu Linux x64 (EC2 or similar), no GPU required
 
 Example specs: 192 vCPU, 1.5TB RAM, 110TB NVMe
@@ -26,314 +23,236 @@ Example specs: 192 vCPU, 1.5TB RAM, 110TB NVMe
 │   Disk I/O: Let it burst. NVMe can handle parallel access.      │
 │   Memory: HARD LIMIT. Exceeding = machine death.                │
 │                                                                  │
-│   Per-agent memory limit: 4GB                                   │
-│   System memory threshold: 85% = stop spawning                  │
-│   System memory critical: 95% = start killing                   │
-│                                                                  │
-│   SWAP MUST BE DISABLED for agent processes.                    │
-│   Swap + 300 agents = cascading slowdown = brick.               │
-│                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Quick Setup
+## How We Enforce Memory Limits
 
-Run this once on the host machine as root:
+We use **RLIMIT_AS (address space limit)** via `prlimit` or `ulimit`. This is:
+- A **hard kernel limit** - works immediately, no setup required
+- **Inherited by child processes** - cargo, rustc, tests all respect it
+- **Simple and robust** - no cgroups, no systemd, no root required
 
-```bash
-sudo ./scripts/setup-agent-host.sh
-```
+### The Wrapper Scripts
 
-This script:
-- Disables swap (critical!)
-- Sets up cgroups v2 for memory isolation
-- Creates workspace pool (500 slots)
-- Tunes kernel parameters for many processes
-- Sets up tmpfs scratch space
-
----
-
-## Available Scripts
-
-All scripts are in the `scripts/` directory:
+**Always use these wrappers. Never run cargo directly.**
 
 | Script | Purpose |
 |--------|---------|
-| `setup-agent-host.sh` | One-time host setup (run as root) |
-| `spawn-agent.sh` | Start an agent with memory isolation |
-| `kill-agent.sh` | Stop an agent (graceful or forced) |
-| `check-agent-memory.sh` | Show memory usage per agent |
-| `agent-status.sh` | Full status overview |
-| `watch-memory.sh` | Continuous memory monitoring |
-| `emergency-memory-relief.sh` | Kill agents to free memory |
-| `create-agent-cgroup.sh` | Low-level cgroup creation |
-| `run-in-cgroup.sh` | Run command in agent's cgroup |
+| `scripts/cargo_agent.sh` | Run any cargo command with memory cap |
+| `scripts/run_limited.sh` | Run any command with memory/cpu limits |
 
-### Usage Examples
+### Usage
 
 ```bash
-# Spawn an agent
-./scripts/spawn-agent.sh agent-001 /var/nova-agents/active/ws-001 cargo build
+# CORRECT - Always use the wrapper:
+bash scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh test -p nova-core --lib
+bash scripts/cargo_agent.sh check -p nova-semantic
 
-# Check all agent memory
-./scripts/check-agent-memory.sh
-
-# Kill an agent gracefully
-./scripts/kill-agent.sh agent-001
-
-# Force kill an agent
-./scripts/kill-agent.sh agent-001 --force
-
-# Watch memory with auto-kill if critical
-./scripts/watch-memory.sh --auto-kill
-
-# Emergency: kill agents until memory < 75%
-sudo ./scripts/emergency-memory-relief.sh 75
+# WRONG - Will OOM the host:
+cargo test                    # Spawns 100s of rustc processes
+cargo build --all-targets     # Compiles everything
+cargo check --all-features    # Unbounded work
 ```
 
 ---
 
-## What Agents Should Know
+## Mandatory Rules for Cargo Commands
 
-### Go Fast, Watch Memory
+### FORBIDDEN (no exceptions):
 
-- **DO** use `-j$(nproc)` for builds - CPU contention is fine
-- **DO** run tests in parallel - the scheduler handles it
-- **DO** use all available cores for compilation
-- **DON'T** cache unbounded data in memory
-- **DON'T** load entire large files into memory when streaming works
-- **DON'T** spawn hundreds of child processes that each consume memory
+- `cargo build` / `cargo test` / `cargo check` **without wrapper scripts**
+- `cargo test` **without scoping** (`-p <crate>`, `--test <name>`, or `--lib`)
+- `cargo build --all-targets`
+- `cargo test --all-targets`
+- `cargo check --all-features --tests`
+- **ANY command that compiles all targets**
 
-### Memory-Conscious Patterns
+### MANDATORY:
 
-```rust
-// GOOD: Stream large files
-fn process_large_file(path: &Path) -> Result<()> {
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
-    for line in reader.lines() {
-        process_line(line?)?;
-    }
-    Ok(())
-}
+- **Always use `bash scripts/cargo_agent.sh`** for all cargo commands
+- **Always scope test runs**: `-p <crate>`, `--test <name>`, `--lib`, or `--bin <name>`
 
-// BAD: Load everything into memory
-fn process_large_file(path: &Path) -> Result<()> {
-    let content = std::fs::read_to_string(path)?;  // Could be gigabytes!
-    for line in content.lines() {
-        process_line(line)?;
-    }
-    Ok(())
-}
+```bash
+# CORRECT:
+bash scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh test -p nova-core --lib
+bash scripts/cargo_agent.sh test --test type_checker_tests
+bash scripts/cargo_agent.sh check -p nova-parser
+
+# WRONG — WILL DESTROY HOST:
+cargo test
+cargo build --all-targets
+cargo check --all-features --tests
 ```
 
-```rust
-// GOOD: Bounded cache
-let cache: LruCache<Key, Value> = LruCache::new(NonZeroUsize::new(10000).unwrap());
-
-// BAD: Unbounded cache
-let cache: HashMap<Key, Value> = HashMap::new();  // Can grow forever
-```
-
-### Timeouts
-
-- **30 minute hard limit** per task - your process will receive SIGTERM
-- **15 minute soft limit** - you'll receive SIGUSR1 as a warning to wrap up
-- Handle these signals gracefully if doing long-running work
-
-### Handling Timeout Signals
-
-```rust
-use signal_hook::{iterator::Signals, consts::*};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-
-fn main() {
-    let should_stop = Arc::new(AtomicBool::new(false));
-    let stop_clone = should_stop.clone();
-    
-    // Handle timeout signals
-    std::thread::spawn(move || {
-        let mut signals = Signals::new(&[SIGUSR1, SIGTERM]).unwrap();
-        for sig in signals.forever() {
-            match sig {
-                SIGUSR1 => {
-                    eprintln!("Soft timeout (15min) - wrapping up...");
-                    stop_clone.store(true, Ordering::SeqCst);
-                }
-                SIGTERM => {
-                    eprintln!("Hard timeout (30min) - stopping now");
-                    std::process::exit(0);
-                }
-                _ => {}
-            }
-        }
-    });
-    
-    // Your work loop
-    while !should_stop.load(Ordering::SeqCst) {
-        do_work();
-    }
-    
-    save_state();  // Clean up before hard timeout
-}
-```
-
-### Checking Memory Pressure
-
-```rust
-fn should_reduce_memory_usage() -> bool {
-    // Check cgroup limit (if running in cgroup)
-    if let Ok(current) = std::fs::read_to_string("/sys/fs/cgroup/memory.current") {
-        if let Ok(max) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
-            let current: u64 = current.trim().parse().unwrap_or(0);
-            let max: u64 = max.trim().parse().unwrap_or(u64::MAX);
-            if current > max * 80 / 100 {
-                return true;  // Over 80% of our 4GB limit
-            }
-        }
-    }
-    false
-}
-```
+**Why this matters**: If you run unscoped cargo commands, you will compile dozens of binaries with LTO, spawn hundreds of parallel rustc/linker processes, exhaust all RAM, and render the machine unusable. **There are no exceptions.**
 
 ---
 
-## Memory Limit Rationale
+## Script Details
+
+### `scripts/run_limited.sh`
+
+Runs any command under OS-enforced resource limits. Prefers `prlimit` (hard limits), falls back to `ulimit`.
+
+```bash
+# Run with 4GB address space limit (default)
+bash scripts/run_limited.sh -- ./my-program
+
+# Override the limit
+bash scripts/run_limited.sh --as 8G -- ./memory-hungry-program
+
+# Multiple limits
+bash scripts/run_limited.sh --as 8G --cpu 3600 -- ./long-running-task
+```
+
+Options:
+- `--as <size>`: Address-space limit (e.g., `4G`, `8192M`). Default: `4G`
+- `--cpu <secs>`: CPU time limit in seconds
+- `--stack <size>`: Stack size limit
+
+### `scripts/cargo_agent.sh`
+
+High-throughput cargo wrapper for multi-agent hosts.
+
+```bash
+bash scripts/cargo_agent.sh build --release
+bash scripts/cargo_agent.sh test -p nova-core --lib
+bash scripts/cargo_agent.sh check --quiet
+```
+
+Features:
+- Enforces RAM cap via `RLIMIT_AS` (default: `4G`)
+- Throttles concurrent cargo commands with slot locks
+- Caps `RUST_TEST_THREADS` to avoid spawning hundreds of test threads
+- Handles toolchain specs (`+nightly`, etc.)
+
+Environment variables:
+- `NOVA_CARGO_LIMIT_AS`: Address-space cap (default: `4G`)
+- `NOVA_CARGO_SLOTS`: Max concurrent cargo commands (default: auto)
+- `NOVA_CARGO_JOBS`: Force `-j` value (default: cargo's default)
+- `NOVA_RUST_TEST_THREADS`: Test thread cap (default: `min(nproc, 32)`)
+
+---
+
+## Why RLIMIT_AS, Not Cgroups?
+
+1. **No setup required** - Works on any Linux system immediately
+2. **No root required** - Any user can set their own limits
+3. **Simpler to understand** - One number, hard limit
+4. **More reliable** - Kernel enforces it, no daemon needed
+5. **Inherited automatically** - All child processes get the same limit
+
+Cgroups are more powerful (can limit RSS, I/O, CPU shares), but:
+- Require host configuration
+- Need root to set up
+- More complex to manage
+- Overkill when address-space limits solve the problem
+
+**Address space != RSS**: A process can reserve 64GB of address space but only use 1GB of physical RAM. This is fine - RLIMIT_AS prevents runaway allocations, and the kernel handles actual memory pressure.
+
+---
+
+## Memory Budget Rationale
 
 ```
 Total RAM:           1,536 GB
 ─────────────────────────────
-System/kernel:          32 GB   (page cache, buffers, kernel)
-Safety headroom:       200 GB   (~13%, for spikes)
+System/kernel:          32 GB
+Safety headroom:       200 GB
 Available for agents: 1,304 GB
 ─────────────────────────────
 Per agent limit:         4 GB
 Max concurrent:        ~325 agents
 
-Recommended max:       300 agents (leaves buffer)
+Recommended max:       300 agents
 ```
 
 ### Why 4GB per agent?
 
-- Rust compilation of medium project: 1-2GB
-- Running tests with coverage: 1-2GB  
-- IDE-like analysis: 500MB-1GB
+- Rust compilation of medium crate: 1-2GB
+- Running tests: 500MB-1GB
+- Linker (especially with LTO): 1-2GB
 - Headroom for spikes: 1GB
 - Total reasonable max: 4GB
 
-### Why no CPU/IO limits?
-
-The Linux scheduler is excellent at fair CPU sharing. If 300 agents all try to use CPU, each gets ~1/300th. That's fine - work gets done, just slower.
-
-Disk I/O is similar - NVMe handles parallel access well, and the kernel I/O scheduler prevents starvation.
-
-Memory is different. If 300 agents each try to use 10GB, you need 3TB. You have 1.5TB. Machine dies.
-
 ---
 
-## Cgroup Configuration Details
+## Handling OOMs
 
-Each agent runs in its own cgroup with these settings:
+When RLIMIT_AS is hit, the process gets a memory allocation failure (usually manifests as `out of memory` or similar error). This is **expected behavior** - it's the limit working.
+
+If this happens:
+1. **Good**: The limit protected the system
+2. **Fix**: Either the task needs more memory (bump limit) or the code has a memory bug
 
 ```bash
-# Hard memory limit (OOM kill beyond this)
-memory.max = 4G
+# If 4GB isn't enough for a specific task:
+NOVA_CARGO_LIMIT_AS=8G bash scripts/cargo_agent.sh build --release
 
-# Soft limit (kernel starts reclaiming here)
-memory.high = 3G
-
-# NO SWAP - fail fast, don't slow down
-memory.swap.max = 0
-
-# Process limit (prevent fork bombs)
-pids.max = 512
-
-# CPU: No limit (let scheduler handle it)
-# I/O: No limit (let NVMe handle it)
+# Or use run_limited directly:
+bash scripts/run_limited.sh --as 8G -- ./memory-hungry-task
 ```
 
 ---
 
-## Monitoring Commands
+## Disk Hygiene
+
+`target/` grows without bound. Check size periodically and clean when over budget:
 
 ```bash
-# Watch all agent memory usage
-watch -n 5 ./scripts/check-agent-memory.sh
+TARGET_MAX_GB="${TARGET_MAX_GB:-100}"
+TARGET_MAX_BYTES=$((TARGET_MAX_GB * 1024 * 1024 * 1024))
 
-# Continuous monitoring with auto-kill
-./scripts/watch-memory.sh --auto-kill
-
-# Watch system memory
-watch -n 1 free -h
-
-# See what's using memory system-wide
-htop --sort-key=PERCENT_MEM
-
-# Check specific agent's memory
-cat /sys/fs/cgroup/nova-agents/agent-123/memory.current
-
-# Full status report
-./scripts/agent-status.sh
+if [[ -d target ]]; then
+  size_bytes=$(du -sb target 2>/dev/null | cut -f1 || echo 0)
+  if [[ "${size_bytes}" -ge "${TARGET_MAX_BYTES}" ]]; then
+    echo "target/ exceeds ${TARGET_MAX_GB}GB; running cargo clean..."
+    bash scripts/cargo_agent.sh clean
+  fi
+fi
 ```
 
 ---
 
-## Emergency Procedures
+## Test Organization
 
-### Memory Critical (>95%)
+When this repo grows to have many test targets, **never create loose `tests/*.rs` files**. Each `.rs` file directly in `tests/` becomes a separate binary that must be compiled and linked.
 
-```bash
-# Auto-kill agents until under 75%
-sudo ./scripts/emergency-memory-relief.sh 75
+Add tests to existing harness subdirectories:
+
 ```
-
-### Kill Specific Agent
-
-```bash
-# Graceful (SIGTERM, wait 10s, then SIGKILL)
-./scripts/kill-agent.sh agent-123
-
-# Immediate (SIGKILL)
-./scripts/kill-agent.sh agent-123 --force
-```
-
-### Nuclear Option
-
-```bash
-# Kill ALL agents immediately
-for cg in /sys/fs/cgroup/nova-agents/agent-*; do
-    cat "$cg/cgroup.procs" 2>/dev/null | xargs -r kill -9
-done
-```
-
-### System Unresponsive
-
-If SSH is still working but system is very slow:
-
-```bash
-# Check what's consuming memory
-ps aux --sort=-%mem | head -20
-
-# Kill largest process
-kill -9 $(ps aux --sort=-%mem | head -2 | tail -1 | awk '{print $2}')
+tests/
+├── parser_tests.rs      ← harness (compiles as ONE binary)
+├── parser/              ← subdirectory
+│   ├── mod.rs
+│   └── your_new_test.rs ← ADD YOUR TEST HERE
+├── semantic_tests.rs
+├── semantic/
+└── ...
 ```
 
 ---
 
-## Summary Table
+## Go Fast
 
-| Concern | Approach | Reason |
-|---------|----------|--------|
-| **Memory** | Hard 4GB limit per agent, NO SWAP | Only thing that can brick machine |
-| **CPU** | Unlimited (burst freely) | Scheduler handles contention |
-| **Disk I/O** | Unlimited (burst freely) | NVMe + I/O scheduler handle it |
-| **Timeouts** | 30 min hard, 15 min soft | Prevent runaway tasks |
-| **Processes** | 512 max per agent | Prevent fork bombs |
+Remember: **CPU and I/O are free**. Use them aggressively.
 
-**Go fast. Just don't eat all the RAM.**
+```bash
+# GOOD: Use all cores
+bash scripts/cargo_agent.sh build --release -j$(nproc)
+
+# GOOD: Run tests in parallel
+bash scripts/cargo_agent.sh test -p nova-core --lib
+
+# The wrapper handles throttling - you don't need to be conservative
+```
+
+The only constraint is memory. The wrapper enforces it. Go fast.
 
 ---
 
