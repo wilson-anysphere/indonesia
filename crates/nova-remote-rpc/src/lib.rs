@@ -1514,8 +1514,6 @@ fn wire_frame_type(frame: &WireFrame) -> &'static str {
 use std::alloc::{GlobalAlloc, Layout, System};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-#[cfg(test)]
-use std::sync::Mutex as StdMutex;
 
 /// Tracks the maximum single allocation size for tests that protect against unbounded allocations.
 #[cfg(test)]
