@@ -904,10 +904,13 @@ export async function activate(context: vscode.ExtensionContext) {
         missingServerPrompted = true;
         const action = await vscode.window.showErrorMessage(
           'Nova: nova-lsp is not installed and auto-download is disabled. Set nova.server.path or enable nova.download.mode.',
+          'Use Local Server Binary...',
           'Open Settings',
           'Open install docs',
         );
-        if (action === 'Open Settings') {
+        if (action === 'Use Local Server Binary...') {
+          await useLocalServerBinary();
+        } else if (action === 'Open Settings') {
           await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.mode');
         } else if (action === 'Open install docs') {
           await openInstallDocs(context);
@@ -928,10 +931,13 @@ export async function activate(context: vscode.ExtensionContext) {
         'Nova: nova-lsp is not installed. Download it now?',
         { modal: true },
         'Download',
+        'Use Local Server Binary...',
         'Open install docs',
       );
       if (choice === 'Download') {
         await installOrUpdateServer();
+      } else if (choice === 'Use Local Server Binary...') {
+        await useLocalServerBinary();
       } else if (choice === 'Open install docs') {
         await openInstallDocs(context);
       }
