@@ -6,10 +6,11 @@ use nova_core::{LineIndex, Position as CorePosition};
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
-    change_signature as refactor_change_signature, convert_to_record, safe_delete,
-    workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId,
-    SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, TextDatabase,
-    WorkspaceEdit as RefactorWorkspaceEdit,
+    change_signature as refactor_change_signature, convert_to_record, extract_variable, inline_variable,
+    safe_delete, workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError, ConvertToRecordOptions,
+    ExtractVariableParams, FileId, InMemoryJavaDatabase, InlineVariableParams, JavaSymbolKind,
+    SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, SemanticRefactorError, TextDatabase,
+    WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -107,6 +108,17 @@ pub enum RefactorResponse {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum CodeActionData {
+    ExtractVariable {
+        start: usize,
+        end: usize,
+        use_var: bool,
+        name: Option<String>,
+    },
+}
+
 /// Build a `Refactor` code action for Safe Delete.
 ///
 /// If the delete is unsafe this returns a code action whose `data` contains a
@@ -175,6 +187,134 @@ pub fn resolve_extract_member_code_action(
     nova_ide::refactor::resolve_extract_member_code_action(uri, source, action, name)
 }
 
+/// Build `Extract variable…` code actions for a selection in a single document.
+///
+/// The returned action is unresolved (it only carries `data`). Clients can
+/// resolve it through [`resolve_extract_variable_code_action`], supplying a
+/// variable name.
+pub fn extract_variable_code_actions(uri: &Uri, source: &str, selection: Range) -> Vec<CodeActionOrCommand> {
+    if !is_java_uri(uri) {
+        return Vec::new();
+    }
+
+    let Some(expr_range) = lsp_range_to_workspace_text_range(source, selection) else {
+        return Vec::new();
+    };
+    if expr_range.is_empty() {
+        return Vec::new();
+    }
+
+    let selected = source
+        .get(expr_range.start..expr_range.end)
+        .unwrap_or_default()
+        .trim();
+    if selected.is_empty() {
+        return Vec::new();
+    }
+
+    // Probe the refactoring with a placeholder name to avoid offering the action
+    // when it can't be applied.
+    let file_path = uri.to_string();
+    let file = FileId::new(file_path.clone());
+    let db = InMemoryJavaDatabase::single_file(file_path, source);
+    if extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: "extracted".to_string(),
+            use_var: true,
+        },
+    )
+    .is_err()
+    {
+        return Vec::new();
+    }
+
+    vec![CodeActionOrCommand::CodeAction(CodeAction {
+        title: "Extract variable…".to_string(),
+        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
+        data: Some(
+            serde_json::to_value(CodeActionData::ExtractVariable {
+                start: expr_range.start,
+                end: expr_range.end,
+                use_var: true,
+                name: None,
+            })
+            .expect("serializable"),
+        ),
+        ..CodeAction::default()
+    })]
+}
+
+/// Resolve a code action produced by [`extract_variable_code_actions`].
+///
+/// If `name` is provided, it overrides the stored name and enables a simple
+/// "extract + rename" integration via a custom request.
+pub fn resolve_extract_variable_code_action(
+    uri: &Uri,
+    source: &str,
+    action: &mut CodeAction,
+    name: Option<String>,
+) -> Result<(), SemanticRefactorError> {
+    let Some(data) = action.data.take() else {
+        return Ok(());
+    };
+
+    let Ok(parsed) = serde_json::from_value::<CodeActionData>(data) else {
+        // Not our code action; leave it unresolved.
+        return Ok(());
+    };
+
+    let CodeActionData::ExtractVariable {
+        start,
+        end,
+        use_var,
+        name: stored_name,
+    } = parsed;
+
+    if start > end {
+        action.disabled = Some(CodeActionDisabled {
+            reason: "invalid extraction range".to_string(),
+        });
+        return Ok(());
+    }
+
+    let expr_range = WorkspaceTextRange::new(start, end);
+    let file_path = uri.to_string();
+    let file = FileId::new(file_path.clone());
+    let db = InMemoryJavaDatabase::single_file(file_path, source);
+
+    let edit = match extract_variable(
+        &db,
+        ExtractVariableParams {
+            file,
+            expr_range,
+            name: name.or(stored_name).unwrap_or_else(|| "extracted".to_string()),
+            use_var,
+        },
+    ) {
+        Ok(edit) => edit,
+        Err(err) => {
+            action.disabled = Some(CodeActionDisabled {
+                reason: err.to_string(),
+            });
+            return Ok(());
+        }
+    };
+
+    match workspace_edit_to_lsp(&db, &edit) {
+        Ok(lsp_edit) => action.edit = Some(lsp_edit),
+        Err(err) => {
+            action.disabled = Some(CodeActionDisabled {
+                reason: err.to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 /// Build `RefactorInline` code actions for Inline Method.
 pub fn inline_method_code_actions(
     uri: &Uri,
@@ -182,6 +322,85 @@ pub fn inline_method_code_actions(
     position: lsp_types::Position,
 ) -> Vec<CodeActionOrCommand> {
     nova_ide::refactor::inline_method_code_actions(uri, source, position)
+}
+
+/// Build `RefactorInline` code actions for Inline Variable.
+pub fn inline_variable_code_actions(
+    uri: &Uri,
+    source: &str,
+    position: Position,
+) -> Vec<CodeActionOrCommand> {
+    if !is_java_uri(uri) {
+        return Vec::new();
+    }
+
+    let Some(offset) = lsp_position_to_offset(source, position) else {
+        return Vec::new();
+    };
+
+    let file_path = uri.to_string();
+    let file = FileId::new(file_path.clone());
+    let db = InMemoryJavaDatabase::single_file(file_path, source);
+
+    let Some(symbol) = db.symbol_at(&file, offset) else {
+        return Vec::new();
+    };
+
+    if db.symbol_kind(symbol) != Some(JavaSymbolKind::Local) {
+        return Vec::new();
+    }
+
+    let mut actions = Vec::new();
+    for (inline_all, title) in [
+        (false, "Inline variable"),
+        (true, "Inline variable (all usages)"),
+    ] {
+        let edit = match inline_variable(
+            &db,
+            InlineVariableParams {
+                symbol,
+                inline_all,
+            },
+        ) {
+            Ok(edit) => edit,
+            Err(SemanticRefactorError::InlineNotSupported) => continue,
+            Err(err) => {
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: title.to_string(),
+                    kind: Some(CodeActionKind::REFACTOR_INLINE),
+                    disabled: Some(CodeActionDisabled {
+                        reason: err.to_string(),
+                    }),
+                    ..CodeAction::default()
+                }));
+                continue;
+            }
+        };
+
+        if edit.edits.is_empty() {
+            continue;
+        }
+
+        match workspace_edit_to_lsp(&db, &edit) {
+            Ok(lsp_edit) => actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: title.to_string(),
+                kind: Some(CodeActionKind::REFACTOR_INLINE),
+                edit: Some(lsp_edit),
+                is_preferred: Some(!inline_all),
+                ..CodeAction::default()
+            })),
+            Err(err) => actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: title.to_string(),
+                kind: Some(CodeActionKind::REFACTOR_INLINE),
+                disabled: Some(CodeActionDisabled {
+                    reason: err.to_string(),
+                }),
+                ..CodeAction::default()
+            })),
+        }
+    }
+
+    actions
 }
 
 pub fn convert_to_record_code_action(
@@ -222,6 +441,31 @@ pub fn convert_to_record_code_action(
             ..CodeAction::default()
         })),
     }
+}
+
+fn lsp_position_to_offset(text: &str, position: Position) -> Option<usize> {
+    let index = LineIndex::new(text);
+    let offset = index.offset_of_position(text, CorePosition::new(position.line, position.character))?;
+    Some(u32::from(offset) as usize)
+}
+
+fn lsp_range_to_workspace_text_range(text: &str, range: Range) -> Option<WorkspaceTextRange> {
+    let index = LineIndex::new(text);
+    let start = index.offset_of_position(
+        text,
+        CorePosition::new(range.start.line, range.start.character),
+    )?;
+    let end = index.offset_of_position(text, CorePosition::new(range.end.line, range.end.character))?;
+    let start = u32::from(start) as usize;
+    let end = u32::from(end) as usize;
+    if start > end {
+        return None;
+    }
+    Some(WorkspaceTextRange::new(start, end))
+}
+
+fn is_java_uri(uri: &Uri) -> bool {
+    uri.as_str().ends_with(".java")
 }
 
 pub fn handle_safe_delete(
