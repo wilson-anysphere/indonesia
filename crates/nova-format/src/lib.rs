@@ -6,11 +6,14 @@
 //!
 //! Formatting is deterministic and should never panic on malformed input.
 
+pub mod comments;
+
 use nova_core::{Position, Range, TextEdit, TextRange, TextSize};
 use nova_syntax::{SyntaxKind, SyntaxTree};
 use thiserror::Error;
 
 pub use nova_core::LineIndex;
+pub use comments::{Comment, CommentKind, CommentStore, TokenKey};
 
 mod formatter;
 
