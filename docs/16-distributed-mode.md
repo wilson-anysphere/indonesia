@@ -350,7 +350,7 @@ authorization + DoS hardening), see
 The current implementation supports the core primitives needed for secure remote mode (TLS, mTLS
 authentication, shard-scoped authorization via client certificate fingerprints, and basic protocol
 DoS hardening). However, remote mode should still be treated as **beta** until additional
-hardening work lands (e.g. fuzzing and rate limiting).
+hardening work lands (e.g. expanding fuzzing coverage and adding rate limiting).
 
 ## Observability (logging & crash reports)
 
@@ -401,7 +401,7 @@ Remote mode supports the core security primitives needed for safe remote deploym
 mTLS client authentication, shard-scoped authorization via fingerprint allowlists, and basic
 protocol-level DoS hardening). However, it should still be treated as **beta**: do not expose the
 router’s TCP port to the public internet, and prefer running behind strict network controls (VPN /
-firewall allowlists) until additional hardening lands (rate limiting, fuzzing, etc.).
+firewall allowlists) until additional hardening lands (rate limiting, expanded fuzzing, etc.).
 
 - The authentication token (prefer `--auth-token-file` or `--auth-token-env`; `--auth-token` is
   discouraged because it exposes secrets via `argv`)

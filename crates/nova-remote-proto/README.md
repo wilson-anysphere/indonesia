@@ -66,6 +66,9 @@ Targets:
 - `decode_v3_wire_frame`: v3 CBOR envelope decoding (`v3::decode_wire_frame`)
 - `decode_v3_rpc_payload`: v3 application payload decoding (`v3::decode_rpc_payload`)
 
+For end-to-end framed transport fuzzing (handshake + post-handshake framing), see the v3 transport
+crate: `crates/nova-remote-rpc/fuzz/`.
+
 ## Golden vectors
 
 `testdata/rpc_v2_hello.bin` is a known-good framed legacy `WorkerHello` for `PROTOCOL_VERSION == 4`.
