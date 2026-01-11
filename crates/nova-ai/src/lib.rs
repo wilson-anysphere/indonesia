@@ -53,7 +53,7 @@ pub use context::{BuiltContext, ContextBuilder, ContextRequest, RelatedCode, Rel
 pub use error::AiError;
 pub use features::NovaAi;
 pub use privacy::{PrivacyMode, RedactionConfig};
-pub use provider::MultiTokenCompletionProvider;
+pub use provider::{MultiTokenCompletionProvider, MultiTokenCompletionRequest};
 pub use semantic_search::{
     semantic_search_from_config, NoopSemanticSearch, SearchResult, SemanticSearch,
     TrigramSemanticSearch,

@@ -7,11 +7,11 @@ use std::time::Duration;
 use futures::future::BoxFuture;
 use nova_ai::{
     AdditionalEdit, AiProviderError, CompletionContextBuilder, MultiTokenCompletion,
-    MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenInsertTextFormat,
+    MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenCompletionRequest,
+    MultiTokenInsertTextFormat,
 };
 use nova_ide::{CompletionConfig, CompletionEngine};
 use nova_lsp::{MoreCompletionsParams, NovaCompletionService};
-use tokio_util::sync::CancellationToken;
 
 struct Gate {
     ready: AtomicBool,
@@ -71,10 +71,9 @@ impl MockProvider {
 impl MultiTokenCompletionProvider for MockProvider {
     fn complete_multi_token<'a>(
         &'a self,
-        prompt: String,
-        _max_items: usize,
-        cancel: CancellationToken,
+        request: MultiTokenCompletionRequest,
     ) -> BoxFuture<'a, Result<Vec<MultiTokenCompletion>, AiProviderError>> {
+        let MultiTokenCompletionRequest { prompt, cancel, .. } = request;
         self.prompts.lock().expect("poisoned mutex").push(prompt);
         let gate = Arc::clone(&self.gate);
         let response = self.response.lock().expect("poisoned mutex").clone();
@@ -113,7 +112,6 @@ async fn completion_more_returns_multi_token_items_async() {
             }],
             confidence: 0.9,
         },
-        // Duplicate of a standard completion; should be removed during merge.
         MultiTokenCompletion {
             label: "dup".into(),
             insert_text: "filter".into(),
@@ -121,7 +119,6 @@ async fn completion_more_returns_multi_token_items_async() {
             additional_edits: vec![],
             confidence: 0.8,
         },
-        // Invalid: unknown top-level method, should be filtered by validation.
         MultiTokenCompletion {
             label: "invalid".into(),
             insert_text: "unknown().map(x -> x)".into(),
@@ -177,7 +174,6 @@ async fn completion_more_returns_multi_token_items_async() {
         Some(lsp_types::InsertTextFormat::SNIPPET)
     );
 
-    // Prompt construction included important context.
     let prompts = provider.prompts();
     assert_eq!(prompts.len(), 1);
     assert!(prompts[0].contains("Receiver type: Stream<Person>"));
@@ -211,10 +207,9 @@ impl CancelAwareProvider {
 impl MultiTokenCompletionProvider for CancelAwareProvider {
     fn complete_multi_token<'a>(
         &'a self,
-        _prompt: String,
-        _max_items: usize,
-        cancel: CancellationToken,
+        request: MultiTokenCompletionRequest,
     ) -> BoxFuture<'a, Result<Vec<MultiTokenCompletion>, AiProviderError>> {
+        let cancel = request.cancel;
         Box::pin(async move {
             self.started.notify_one();
             tokio::select! {
@@ -255,6 +250,70 @@ async fn completion_can_be_cancelled() {
     let poll = service.completion_more(MoreCompletionsParams {
         context_id: completion.context_id.to_string(),
     });
+    assert!(poll.items.is_empty());
+    assert!(!poll.is_incomplete);
+}
+
+struct SlowProvider {
+    started: tokio::sync::Notify,
+}
+
+impl SlowProvider {
+    fn new() -> Self {
+        Self {
+            started: tokio::sync::Notify::new(),
+        }
+    }
+
+    async fn wait_started(&self) {
+        self.started.notified().await;
+    }
+}
+
+impl MultiTokenCompletionProvider for SlowProvider {
+    fn complete_multi_token<'a>(
+        &'a self,
+        _request: MultiTokenCompletionRequest,
+    ) -> BoxFuture<'a, Result<Vec<MultiTokenCompletion>, AiProviderError>> {
+        Box::pin(async move {
+            self.started.notify_one();
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Ok(Vec::new())
+        })
+    }
+}
+
+#[tokio::test]
+async fn completion_times_out_and_returns_no_items() {
+    let provider = Arc::new(SlowProvider::new());
+    let mut config = CompletionConfig::default();
+    config.ai_timeout_ms = 25;
+    let engine = CompletionEngine::new(
+        config,
+        CompletionContextBuilder::new(10_000),
+        Some(provider.clone()),
+    );
+    let service = NovaCompletionService::new(engine);
+
+    let completion = service.completion(ctx());
+
+    tokio::time::timeout(Duration::from_secs(1), provider.wait_started())
+        .await
+        .expect("provider should start");
+
+    let mut resolved = None;
+    for _ in 0..50 {
+        let poll = service.completion_more(MoreCompletionsParams {
+            context_id: completion.context_id.to_string(),
+        });
+        if !poll.is_incomplete {
+            resolved = Some(poll);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let poll = resolved.expect("AI completions should resolve (via timeout)");
     assert!(poll.items.is_empty());
     assert!(!poll.is_incomplete);
 }

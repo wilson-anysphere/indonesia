@@ -1,6 +1,7 @@
 use crate::{validate_ai_completion, CompletionConfig, NovaCompletionItem};
 use nova_ai::{
     CompletionContextBuilder, MultiTokenCompletionContext, MultiTokenCompletionProvider,
+    MultiTokenCompletionRequest,
 };
 use std::sync::Arc;
 use tokio::time;
@@ -69,8 +70,14 @@ impl CompletionEngine {
             .build_completion_prompt(ctx, self.config.ai_max_items);
 
         let timeout = std::time::Duration::from_millis(self.config.ai_timeout_ms.max(1));
-        let request =
-            provider.complete_multi_token(prompt, self.config.ai_max_items, cancel.clone());
+        let request = MultiTokenCompletionRequest {
+            prompt,
+            max_items: self.config.ai_max_items,
+            timeout,
+            cancel: cancel.clone(),
+        };
+
+        let request = provider.complete_multi_token(request);
         tokio::pin!(request);
 
         let suggestions = match tokio::select! {

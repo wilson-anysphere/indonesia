@@ -1,8 +1,8 @@
 use httpmock::prelude::*;
 use nova_ai::{
     CloudLlmClient, CloudLlmConfig, CloudMultiTokenCompletionProvider, CompletionContextBuilder,
-    MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenInsertTextFormat,
-    PrivacyMode, ProviderKind, RetryConfig,
+    MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenCompletionRequest,
+    MultiTokenInsertTextFormat, PrivacyMode, ProviderKind, RetryConfig,
 };
 use serde_json::json;
 use std::time::Duration;
@@ -70,7 +70,12 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
 
     let out = provider
-        .complete_multi_token(prompt, 3, CancellationToken::new())
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 3,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
         .await
         .expect("provider call succeeds");
 
@@ -97,7 +102,12 @@ async fn parses_json_wrapped_in_fenced_block() {
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
 
     let out = provider
-        .complete_multi_token(prompt, 3, CancellationToken::new())
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 3,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
         .await
         .expect("provider call succeeds");
 
@@ -122,7 +132,12 @@ async fn invalid_json_gracefully_degrades_to_empty() {
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
 
     let out = provider
-        .complete_multi_token(prompt, 3, CancellationToken::new())
+        .complete_multi_token(MultiTokenCompletionRequest {
+            prompt,
+            max_items: 3,
+            timeout: Duration::from_secs(1),
+            cancel: CancellationToken::new(),
+        })
         .await
         .expect("provider call succeeds");
 

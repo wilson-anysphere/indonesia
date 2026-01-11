@@ -13,10 +13,29 @@ pub struct CompletionConfig {
     /// Timeout (in milliseconds) for a single AI completion request.
     #[serde(default = "default_ai_timeout_ms")]
     pub ai_timeout_ms: u64,
+    /// Maximum number of concurrent multi-token completion requests that may be
+    /// executed at once. Requests over the limit wait for capacity until the
+    /// per-request timeout elapses.
+    #[serde(default = "default_ai_max_concurrent_jobs")]
+    pub ai_max_concurrent_jobs: usize,
+    /// Time-to-live (TTL) for outstanding completion sessions.
+    ///
+    /// Sessions are best-effort evicted when new completion requests arrive or
+    /// when `nova/completion/more` is polled.
+    #[serde(default = "default_ai_session_ttl_ms")]
+    pub ai_session_ttl_ms: u64,
 }
 
 fn default_ai_timeout_ms() -> u64 {
     5_000
+}
+
+fn default_ai_max_concurrent_jobs() -> usize {
+    4
+}
+
+fn default_ai_session_ttl_ms() -> u64 {
+    30_000
 }
 
 impl Default for CompletionConfig {
@@ -27,6 +46,8 @@ impl Default for CompletionConfig {
             ai_max_additional_edits: 3,
             ai_max_tokens: 64,
             ai_timeout_ms: default_ai_timeout_ms(),
+            ai_max_concurrent_jobs: default_ai_max_concurrent_jobs(),
+            ai_session_ttl_ms: default_ai_session_ttl_ms(),
         }
     }
 }

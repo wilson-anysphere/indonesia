@@ -128,8 +128,17 @@ impl NovaCompletionService {
         }
     }
 
+    fn cancel_all_sessions(&self) {
+        let mut sessions = self.sessions.lock().expect("poisoned mutex");
+        for (_, session) in sessions.drain() {
+            session.cancel();
+        }
+    }
+
     /// Equivalent to `textDocument/completion` for the multi-token completion prototype.
     pub fn completion(&self, ctx: MultiTokenCompletionContext) -> NovaCompletionResponse {
+        self.cancel_all_sessions();
+
         let context_id = CompletionContextId(self.next_id.fetch_add(1, Ordering::Relaxed));
 
         let standard_items = self.engine.standard_completions(&ctx);

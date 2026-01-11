@@ -1,11 +1,10 @@
 use crate::cloud::{CloudLlmClient, CloudLlmError, GenerateRequest};
 use crate::privacy::{redact_suspicious_literals, PrivacyMode};
-use crate::provider::{AiProviderError, MultiTokenCompletionProvider};
+use crate::provider::{AiProviderError, MultiTokenCompletionProvider, MultiTokenCompletionRequest};
 use crate::{AdditionalEdit, MultiTokenCompletion, MultiTokenInsertTextFormat};
 use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::Value;
-use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -60,36 +59,39 @@ impl CloudMultiTokenCompletionProvider {
 impl MultiTokenCompletionProvider for CloudMultiTokenCompletionProvider {
     fn complete_multi_token<'a>(
         &'a self,
-        prompt: String,
-        max_items: usize,
-        cancel: CancellationToken,
+        request: MultiTokenCompletionRequest,
     ) -> BoxFuture<'a, Result<Vec<MultiTokenCompletion>, AiProviderError>> {
         Box::pin(async move {
-            let max_items = max_items.clamp(0, 32);
+            let max_items = request.max_items.clamp(0, 32);
             if max_items == 0 {
                 return Ok(Vec::new());
             }
 
-            let sanitized_prompt = sanitize_prompt(&prompt, &self.privacy);
+            let sanitized_prompt = sanitize_prompt(&request.prompt, &self.privacy);
             let full_prompt = format!("{sanitized_prompt}\n\n{}", json_instructions(max_items));
 
             // Use a child token so dropping this request cancels only this request (and not the
             // parent token if it's shared).
-            let cancel = cancel.child_token();
+            let cancel = request.cancel.child_token();
             let _guard = cancel.clone().drop_guard();
 
-            let response = self
-                .llm
-                .generate(
-                    GenerateRequest {
-                        prompt: full_prompt,
-                        max_tokens: self.max_output_tokens,
-                        temperature: self.temperature,
-                    },
-                    cancel,
-                )
-                .await
-                .map_err(map_cloud_error)?;
+            let generate = self.llm.generate(
+                GenerateRequest {
+                    prompt: full_prompt,
+                    max_tokens: self.max_output_tokens,
+                    temperature: self.temperature,
+                },
+                cancel,
+            );
+
+            let response = if request.timeout.is_zero() {
+                generate.await.map_err(map_cloud_error)?
+            } else {
+                tokio::time::timeout(request.timeout, generate)
+                    .await
+                    .map_err(|_| AiProviderError::Timeout)?
+                    .map_err(map_cloud_error)?
+            };
 
             Ok(parse_completions(
                 &response,

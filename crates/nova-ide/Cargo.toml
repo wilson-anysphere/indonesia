@@ -10,7 +10,7 @@ nova-config-metadata = { path = "../nova-config-metadata" }
 nova-core = { path = "../nova-core" }
 nova-decompile = { path = "../nova-decompile" }
 futures = "0.3"
-tokio = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["macros", "time"] }
 tokio-util = { version = "0.7", optional = true }
 nova-classpath = { path = "../nova-classpath" }
 nova-project = { path = "../nova-project" }

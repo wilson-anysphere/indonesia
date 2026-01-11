@@ -13,7 +13,7 @@ dist = true
 
 [dependencies]
 anyhow = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 nova-ai = { path = "../nova-ai" }
 nova-apt = { path = "../nova-apt" }

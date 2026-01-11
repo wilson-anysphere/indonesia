@@ -20,6 +20,18 @@ impl CompletionContextBuilder {
         Self { max_prompt_chars }
     }
 
+    fn truncate_utf8_boundary(prompt: &mut String, max_bytes: usize) {
+        if max_bytes >= prompt.len() {
+            return;
+        }
+
+        let mut idx = max_bytes;
+        while idx > 0 && !prompt.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        prompt.truncate(idx);
+    }
+
     /// Build an instruction prompt for multi-token completions.
     pub fn build_completion_prompt(
         &self,
@@ -65,7 +77,7 @@ impl CompletionContextBuilder {
 
         // Cap size defensively to avoid accidentally sending huge prompts.
         if self.max_prompt_chars > 0 && prompt.len() > self.max_prompt_chars {
-            prompt.truncate(self.max_prompt_chars);
+            Self::truncate_utf8_boundary(&mut prompt, self.max_prompt_chars);
         }
 
         prompt
@@ -95,5 +107,25 @@ mod tests {
         assert!(prompt.contains("- collect"));
         assert!(prompt.contains("- java.util.stream.Collectors"));
         assert!(prompt.contains("```java\npeople.stream().\n```"));
+    }
+
+    #[test]
+    fn prompt_truncation_is_utf8_safe() {
+        let ctx = MultiTokenCompletionContext {
+            receiver_type: Some("String".into()),
+            expected_type: Some("void".into()),
+            surrounding_code: "System.out.println(\"😀\");".into(),
+            available_methods: vec!["println".into()],
+            importable_paths: vec![],
+        };
+
+        let full_prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx, 1);
+        let emoji_idx = full_prompt.find('😀').expect("emoji should be present");
+
+        let truncated =
+            CompletionContextBuilder::new(emoji_idx + 1).build_completion_prompt(&ctx, 1);
+
+        assert_eq!(truncated.len(), emoji_idx);
+        assert!(!truncated.contains('😀'));
     }
 }
