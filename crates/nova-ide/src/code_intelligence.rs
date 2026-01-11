@@ -391,7 +391,7 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     }
                 }
                 spring_di::AnnotationStringContext::Profile => {
-                    let items = nova_framework_spring::profile_completions();
+                    let items = spring_di::profile_completion_items(db, file);
                     if !items.is_empty() {
                         return spring_completions_to_lsp(items);
                     }

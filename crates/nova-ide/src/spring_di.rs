@@ -22,11 +22,11 @@ struct CacheEntry<V> {
 /// This intentionally stays lightweight: we compute a best-effort fingerprint from the
 /// relevant source set and reuse the cached value when the fingerprint matches.
 #[derive(Debug)]
-pub(crate) struct FrameworkWorkspaceCache<V> {
+pub(crate) struct SpringWorkspaceCache<V> {
     entries: Mutex<HashMap<PathBuf, CacheEntry<V>>>,
 }
 
-impl<V> Default for FrameworkWorkspaceCache<V> {
+impl<V> Default for SpringWorkspaceCache<V> {
     fn default() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
@@ -34,7 +34,7 @@ impl<V> Default for FrameworkWorkspaceCache<V> {
     }
 }
 
-impl<V> FrameworkWorkspaceCache<V> {
+impl<V> SpringWorkspaceCache<V> {
     pub(crate) fn get_or_update_with<F>(&self, root: PathBuf, fingerprint: u64, build: F) -> Arc<V>
     where
         F: FnOnce() -> V,
@@ -98,8 +98,8 @@ pub(crate) enum AnnotationStringContext {
     Profile,
 }
 
-static SPRING_DI_CACHE: Lazy<FrameworkWorkspaceCache<SpringDiWorkspaceEntry>> =
-    Lazy::new(FrameworkWorkspaceCache::default);
+static SPRING_DI_CACHE: Lazy<SpringWorkspaceCache<SpringDiWorkspaceEntry>> =
+    Lazy::new(SpringWorkspaceCache::default);
 
 pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
     let Some(path) = db.file_path(file) else {
@@ -131,6 +131,20 @@ pub(crate) fn qualifier_completion_items(db: &dyn Database, file: FileId) -> Vec
         return Vec::new();
     };
     nova_framework_spring::qualifier_completions(&analysis.model)
+}
+
+pub(crate) fn profile_completion_items(db: &dyn Database, file: FileId) -> Vec<CompletionItem> {
+    let Some(entry) = workspace_entry(db, file) else {
+        return Vec::new();
+    };
+
+    // Avoid offering Spring-specific profile completions when the workspace does not
+    // appear to be a Spring project (e.g. CDI's `@Profile`).
+    if entry.analysis.is_none() {
+        return Vec::new();
+    }
+
+    nova_framework_spring::profile_completions()
 }
 
 pub(crate) fn injection_definition_targets(
