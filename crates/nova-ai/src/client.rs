@@ -570,6 +570,11 @@ mod tests {
             .iter()
             .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_request"))
             .expect("request audit event emitted");
+        let request_id = request
+            .fields
+            .get("request_id")
+            .expect("request_id field present")
+            .to_string();
         let prompt = request.fields.get("prompt").expect("prompt field present");
         assert!(
             prompt.contains("[REDACTED]"),
@@ -584,6 +589,11 @@ mod tests {
             .iter()
             .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_response"))
             .expect("response audit event emitted");
+        assert_eq!(
+            response.fields.get("request_id").map(String::as_str),
+            Some(request_id.as_str()),
+            "request_id should correlate request/response"
+        );
         let completion = response
             .fields
             .get("completion")
@@ -632,6 +642,16 @@ mod tests {
             .iter()
             .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_response"))
             .expect("response audit event emitted");
+        let request_id = audit
+            .iter()
+            .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_request"))
+            .and_then(|event| event.fields.get("request_id"))
+            .expect("request_id field present");
+        assert_eq!(
+            response.fields.get("request_id").map(String::as_str),
+            Some(request_id.as_str()),
+            "request_id should correlate request/response"
+        );
         assert_eq!(
             response.fields.get("stream").map(String::as_str),
             Some("true"),
