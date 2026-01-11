@@ -1925,6 +1925,39 @@ fn jpms_module_name_recovers_from_syntax_errors() {
     assert_eq!(jpms_module_name(input), Some("com.example.mod".to_string()));
 }
 
+#[test]
+fn module_directive_missing_semicolon_recovers_to_next_directive() {
+    let input = "module com.example.mod { requires java.base exports com.example.api; }";
+    let parse = parse_java(input);
+    assert!(
+        !parse.errors.is_empty(),
+        "expected parse errors for missing semicolon"
+    );
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let module = unit.module_declaration().unwrap();
+    let body = module.body().unwrap();
+    let directives: Vec<_> = body.directives().collect();
+    assert!(directives.iter().any(|n| n.kind() == SyntaxKind::RequiresDirective));
+    assert!(directives.iter().any(|n| n.kind() == SyntaxKind::ExportsDirective));
+}
+
+#[test]
+fn module_body_missing_rbrace_recovers_to_eof() {
+    let input = "module com.example.mod { requires java.base;";
+    let parse = parse_java(input);
+    assert!(
+        !parse.errors.is_empty(),
+        "expected parse errors for missing module body `}`"
+    );
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let module = unit.module_declaration().unwrap();
+    assert_eq!(module.name().unwrap().text(), "com.example.mod");
+    let body = module.body().unwrap();
+    assert_eq!(body.directives().count(), 1);
+}
+
 fn find_class_by_name(parse: &crate::JavaParseResult, name: &str) -> crate::SyntaxNode {
     parse
         .syntax()
