@@ -80,6 +80,7 @@ Tests are discovered via `nova/test/discover` and can be run from the Test Explo
 - `nova.server.version` (string | "latest"): version to install (default: "latest").
 - `nova.server.releaseUrl` (string): GitHub repository URL (or "owner/repo") to download releases from.
 - If you hit GitHub rate limits in the VS Code extension host, you can set `GITHUB_TOKEN`/`GH_TOKEN` (for public GitHub) or `NOVA_GITHUB_TOKEN` (for custom hosts) in the environment before launching VS Code.
+  - Accepted `releaseUrl` formats include `owner/repo`, `https://github.com/owner/repo`, `git@github.com:owner/repo.git`, and GitHub API base URLs like `https://api.github.com/repos/owner/repo` (or GHES equivalents).
 
 ### LSP
 
