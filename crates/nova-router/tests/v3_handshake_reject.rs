@@ -26,6 +26,7 @@ async fn v2_router_rejects_v3_hello_with_clear_error() -> Result<()> {
         worker_command: PathBuf::from("unused"),
         cache_dir,
         auth_token: None,
+        allow_insecure_tcp: false,
         #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: false,
