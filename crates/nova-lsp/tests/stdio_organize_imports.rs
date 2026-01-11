@@ -1,0 +1,177 @@
+use lsp_types::{TextEdit, Uri, WorkspaceEdit};
+use pretty_assertions::assert_eq;
+use serde_json::json;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
+use std::str::FromStr;
+
+fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
+    if edits.is_empty() {
+        return original.to_string();
+    }
+
+    let index = nova_core::LineIndex::new(original);
+    let core_edits: Vec<nova_core::TextEdit> = edits
+        .iter()
+        .map(|edit| {
+            let range = nova_core::Range::new(
+                nova_core::Position::new(edit.range.start.line, edit.range.start.character),
+                nova_core::Position::new(edit.range.end.line, edit.range.end.character),
+            );
+            let range = index.text_range(original, range).expect("valid range");
+            nova_core::TextEdit::new(range, edit.new_text.clone())
+        })
+        .collect();
+
+    nova_core::apply_text_edits(original, &core_edits).expect("apply edits")
+}
+
+#[test]
+fn stdio_server_supports_java_organize_imports_request() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    let uri = "file:///test/Foo.java";
+    let source = r#"package com.example;
+
+import java.util.List;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
+public class Foo {
+    private List<String> xs = new ArrayList<>();
+}
+"#;
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": { "textDocument": { "uri": uri, "languageId": "java", "version": 1, "text": source } }
+        }),
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/java/organizeImports",
+            "params": { "uri": uri }
+        }),
+    );
+
+    let mut apply_edit = None;
+    let response = loop {
+        let msg = read_jsonrpc_message(&mut stdout);
+
+        if msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit") {
+            apply_edit = Some(msg.clone());
+            let id = msg.get("id").cloned().expect("applyEdit id");
+            write_jsonrpc_message(
+                &mut stdin,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": { "applied": true }
+                }),
+            );
+            continue;
+        }
+
+        if msg.get("id").and_then(|v| v.as_i64()) == Some(2) {
+            break msg;
+        }
+    };
+
+    let apply_edit = apply_edit.expect("server emitted workspace/applyEdit request");
+    assert_eq!(
+        apply_edit.get("method").and_then(|v| v.as_str()),
+        Some("workspace/applyEdit")
+    );
+
+    let result = response.get("result").cloned().expect("result");
+    assert_eq!(result.get("applied").and_then(|v| v.as_bool()), Some(true));
+
+    let edit_value = result.get("edit").cloned().expect("edit");
+    let edit: WorkspaceEdit = serde_json::from_value(edit_value).expect("workspace edit");
+    let uri = Uri::from_str(uri).expect("uri");
+    let changes = edit.changes.expect("changes map");
+    let edits = changes.get(&uri).expect("edits for uri");
+
+    let actual = apply_lsp_edits(source, edits);
+    let expected = r#"package com.example;
+
+import java.util.ArrayList;
+import java.util.List;
+
+public class Foo {
+    private List<String> xs = new ArrayList<>();
+}
+"#;
+    assert_eq!(actual, expected);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+fn write_jsonrpc_message(writer: &mut impl Write, message: &serde_json::Value) {
+    let bytes = serde_json::to_vec(message).expect("serialize");
+    write!(writer, "Content-Length: {}\r\n\r\n", bytes.len()).expect("write header");
+    writer.write_all(&bytes).expect("write body");
+    writer.flush().expect("flush");
+}
+
+fn read_jsonrpc_message(reader: &mut impl BufRead) -> serde_json::Value {
+    let mut content_length: Option<usize> = None;
+
+    loop {
+        let mut line = String::new();
+        let bytes_read = reader.read_line(&mut line).expect("read header line");
+        assert!(bytes_read > 0, "unexpected EOF while reading headers");
+
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("Content-Length") {
+                content_length = value.trim().parse::<usize>().ok();
+            }
+        }
+    }
+
+    let len = content_length.expect("Content-Length header");
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).expect("read body");
+    serde_json::from_slice(&buf).expect("parse json")
+}

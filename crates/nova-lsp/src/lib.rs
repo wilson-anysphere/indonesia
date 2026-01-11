@@ -10,6 +10,7 @@
 //! - Build integration endpoints (backed by `nova-build`)
 //!   - `nova/buildProject`
 //!   - `nova/java/classpath`
+//!   - `nova/java/organizeImports`
 //!   - `nova/reloadProject`
 //! - Annotation processing endpoints (backed by `nova-apt`)
 //!   - `nova/java/generatedSources`
@@ -94,6 +95,7 @@ pub const TEST_RUN_METHOD: &str = "nova/test/run";
 pub const TEST_DEBUG_CONFIGURATION_METHOD: &str = "nova/test/debugConfiguration";
 pub const BUILD_PROJECT_METHOD: &str = "nova/buildProject";
 pub const JAVA_CLASSPATH_METHOD: &str = "nova/java/classpath";
+pub const JAVA_ORGANIZE_IMPORTS_METHOD: &str = "nova/java/organizeImports";
 pub const JAVA_GENERATED_SOURCES_METHOD: &str = "nova/java/generatedSources";
 pub const RUN_ANNOTATION_PROCESSING_METHOD: &str = "nova/java/runAnnotationProcessing";
 pub const RELOAD_PROJECT_METHOD: &str = "nova/reloadProject";

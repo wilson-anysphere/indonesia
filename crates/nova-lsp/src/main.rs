@@ -23,7 +23,7 @@ use nova_refactor::{
 use nova_vfs::{ContentChange, Document};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -119,12 +119,14 @@ fn main() -> std::io::Result<()> {
 struct ServerState {
     shutdown_requested: bool,
     documents: HashMap<String, Document>,
+    cancelled_requests: HashSet<String>,
     ai: Option<AiService>,
     privacy: nova_ai::PrivacyMode,
     runtime: Option<tokio::runtime::Runtime>,
     memory: MemoryManager,
     memory_events: Arc<Mutex<Vec<MemoryEvent>>>,
     documents_memory: nova_memory::MemoryRegistration,
+    next_outgoing_request_id: u64,
 }
 
 impl ServerState {
@@ -157,12 +159,14 @@ impl ServerState {
         Self {
             shutdown_requested: false,
             documents: HashMap::new(),
+            cancelled_requests: HashSet::new(),
             ai,
             privacy,
             runtime,
             memory,
             memory_events,
             documents_memory,
+            next_outgoing_request_id: 1,
         }
     }
 
@@ -175,6 +179,24 @@ impl ServerState {
         self.documents_memory.tracker().set_bytes(total);
         self.memory.enforce();
     }
+
+    fn next_outgoing_id(&mut self) -> String {
+        let id = self.next_outgoing_request_id;
+        self.next_outgoing_request_id = self.next_outgoing_request_id.saturating_add(1);
+        format!("nova:{id}")
+    }
+
+    fn cancel_request(&mut self, id: &serde_json::Value) {
+        if let Some(key) = request_id_key(id) {
+            self.cancelled_requests.insert(key);
+        }
+    }
+
+    fn take_cancelled_request(&mut self, id: &serde_json::Value) -> bool {
+        request_id_key(id)
+            .as_ref()
+            .is_some_and(|key| self.cancelled_requests.remove(key))
+    }
 }
 
 fn handle_request(
@@ -184,6 +206,14 @@ fn handle_request(
     state: &mut ServerState,
     writer: &mut BufWriter<std::io::StdoutLock<'_>>,
 ) -> std::io::Result<serde_json::Value> {
+    if state.take_cancelled_request(&id) {
+        return Ok(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": -32800, "message": "Request cancelled" }
+        }));
+    }
+
     match method {
         "initialize" => {
             // Minimal initialize response. We advertise the handful of standard
@@ -375,6 +405,18 @@ fn handle_request(
                 "result": serde_json::to_value(resolved).unwrap_or(serde_json::Value::Null)
             }))
         }
+        nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_java_organize_imports(params, state, writer);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err((code, message)) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                }
+            })
+        }
         _ => {
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
@@ -460,12 +502,25 @@ fn server_shutting_down_error(id: serde_json::Value) -> serde_json::Value {
     })
 }
 
+fn request_id_key(id: &serde_json::Value) -> Option<String> {
+    match id {
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::String(string) => Some(string.clone()),
+        _ => None,
+    }
+}
+
 fn handle_notification(
     method: &str,
     message: &serde_json::Value,
     state: &mut ServerState,
 ) -> std::io::Result<()> {
     match method {
+        "$/cancelRequest" => {
+            if let Some(id) = message.get("params").and_then(|params| params.get("id")) {
+                state.cancel_request(id);
+            }
+        }
         "exit" => {
             // By convention `exit` is only respected after shutdown; this server
             // keeps behaviour simple and always exits.
@@ -768,6 +823,73 @@ fn organize_imports_code_action(uri: &LspUri, source: &str) -> Option<CodeAction
     ))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct JavaOrganizeImportsRequestParams {
+    uri: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JavaOrganizeImportsResponse {
+    applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edit: Option<LspWorkspaceEdit>,
+}
+
+fn handle_java_organize_imports(
+    params: serde_json::Value,
+    state: &mut ServerState,
+    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+) -> Result<serde_json::Value, (i32, String)> {
+    let params: JavaOrganizeImportsRequestParams =
+        serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
+    let uri_string = params.uri;
+    let uri = uri_string
+        .parse::<LspUri>()
+        .map_err(|e| (-32602, format!("invalid uri: {e}")))?;
+
+    let Some(source) =
+        load_document_text(state, &uri_string).or_else(|| load_document_text(state, uri.as_str()))
+    else {
+        return Err((-32602, format!("unknown document: {}", uri.as_str())));
+    };
+
+    let file = FileId::new(uri.to_string());
+    let db = InMemoryJavaDatabase::new([(file.clone(), source)]);
+    let edit = organize_imports(&db, OrganizeImportsParams { file: file.clone() })
+        .map_err(|e| (-32603, e.to_string()))?;
+
+    if edit.edits.is_empty() {
+        return serde_json::to_value(JavaOrganizeImportsResponse {
+            applied: false,
+            edit: None,
+        })
+        .map_err(|e| (-32603, e.to_string()));
+    }
+
+    let lsp_edit = workspace_edit_to_lsp(&db, &edit).map_err(|e| (-32603, e.to_string()))?;
+    write_json_message(
+        writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": state.next_outgoing_id(),
+            "method": "workspace/applyEdit",
+            "params": {
+                "label": "Organize imports",
+                "edit": lsp_edit.clone(),
+            }
+        }),
+    )
+    .map_err(|e| (-32603, e.to_string()))?;
+
+    serde_json::to_value(JavaOrganizeImportsResponse {
+        applied: true,
+        edit: Some(lsp_edit),
+    })
+    .map_err(|e| (-32603, e.to_string()))
+}
+
 fn handle_prepare_rename(
     params: serde_json::Value,
     state: &ServerState,
@@ -1021,8 +1143,9 @@ mod tests {
             then.status(200).json_body(json!({ "completion": long }));
         });
 
-        let mut cfg =
-            CloudLlmConfig::http(url::Url::parse(&format!("{}/complete", server.base_url())).unwrap());
+        let mut cfg = CloudLlmConfig::http(
+            url::Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+        );
         cfg.timeout = Duration::from_secs(2);
         cfg.retry = RetryConfig {
             max_retries: 0,
