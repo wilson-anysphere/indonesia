@@ -200,8 +200,10 @@ impl RpcConnection {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let mut cfg = RouterConfig::default();
-        cfg.expected_auth_token = expected_auth_token.map(|s| s.to_string());
+        let cfg = RouterConfig {
+            expected_auth_token: expected_auth_token.map(|s| s.to_string()),
+            ..RouterConfig::default()
+        };
         Self::handshake_as_router_with_config(stream, cfg).await
     }
 
@@ -580,21 +582,22 @@ fn default_worker_hello() -> WorkerHello {
 }
 
 fn default_capabilities() -> Capabilities {
-    let mut caps = Capabilities::default();
-    caps.supported_compression = local_supported_compression();
-    caps.supports_cancel = true;
-    caps.supports_chunking = true;
-    caps
+    Capabilities {
+        supported_compression: local_supported_compression(),
+        supports_cancel: true,
+        supports_chunking: true,
+        ..Capabilities::default()
+    }
 }
 
 fn local_supported_compression() -> Vec<CompressionAlgo> {
     #[cfg(feature = "zstd")]
     {
-        return vec![CompressionAlgo::Zstd, CompressionAlgo::None];
+        vec![CompressionAlgo::Zstd, CompressionAlgo::None]
     }
     #[cfg(not(feature = "zstd"))]
     {
-        return vec![CompressionAlgo::None];
+        vec![CompressionAlgo::None]
     }
 }
 
@@ -620,11 +623,7 @@ fn negotiate_capabilities(router: &Capabilities, worker: &Capabilities) -> Resul
         .supported_compression
         .iter()
         .copied()
-        .filter(|algo| {
-            *algo != CompressionAlgo::Unknown
-                && worker.supported_compression.contains(algo)
-                && *algo != CompressionAlgo::Unknown
-        })
+        .filter(|algo| *algo != CompressionAlgo::Unknown && worker.supported_compression.contains(algo))
         .collect();
 
     if supported_compression.is_empty() {
@@ -1161,8 +1160,7 @@ fn maybe_compress(
 
     let allow_zstd = negotiated
         .supported_compression
-        .iter()
-        .any(|algo| *algo == CompressionAlgo::Zstd);
+        .contains(&CompressionAlgo::Zstd);
 
     #[cfg(not(feature = "zstd"))]
     let _ = threshold;
@@ -1228,11 +1226,13 @@ fn maybe_decompress(
         CompressionAlgo::Zstd => {
             #[cfg(feature = "zstd")]
             {
-                return decompress_zstd_with_limit(data, max_packet_len);
+                decompress_zstd_with_limit(data, max_packet_len)
             }
             #[cfg(not(feature = "zstd"))]
             {
-                return Err(RpcTransportError::UnsupportedCompression { algo: compression });
+                Err(RpcTransportError::UnsupportedCompression {
+                    algo: CompressionAlgo::Zstd,
+                })
             }
         }
         CompressionAlgo::Unknown => Err(RpcTransportError::UnsupportedCompression { algo: compression }),

@@ -332,7 +332,7 @@ fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
     if segments[0] != "decompiled" {
         return None;
     }
-    if segments.iter().any(|seg| *seg == "..") {
+    if segments.contains(&"..") {
         return None;
     }
 
@@ -342,9 +342,7 @@ fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
     }
 
     let filename = *segments.last()?;
-    let Some(filename_stem) = filename.strip_suffix(".java") else {
-        return None;
-    };
+    let filename_stem = filename.strip_suffix(".java")?;
     if filename_stem.is_empty() {
         return None;
     }

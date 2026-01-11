@@ -356,7 +356,7 @@ fn terminate_process_tree(
         unsafe {
             let _ = libc::kill(-pid, libc::SIGKILL);
         }
-        return child.wait();
+        child.wait()
     }
 
     #[cfg(windows)]
@@ -379,14 +379,14 @@ fn terminate_process_tree(
             .status();
 
         let _ = child.kill();
-        return child.wait();
+        child.wait()
     }
 
     #[cfg(not(any(unix, windows)))]
     {
         let _ = grace;
         let _ = child.kill();
-        return child.wait();
+        child.wait()
     }
 }
 

@@ -106,7 +106,7 @@ async fn multiplexing_matches_responses_by_id() {
         match req {
             Request::UpdateFile { revision, .. } => {
                 // Force an out-of-order response with staggered delays.
-                let delay_ms = (20u64.saturating_sub(revision.min(20))) as u64;
+                let delay_ms = 20u64.saturating_sub(revision.min(20));
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 Ok(Response::WorkerStats(WorkerStats {
                     shard_id: 7,
