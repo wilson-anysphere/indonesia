@@ -548,6 +548,9 @@ mod tests {
         let privacy = PrivacyFilter::new(&nova_config::AiPrivacyConfig::default())
             .expect("default privacy config is valid");
 
+        let endpoint =
+            url::Url::parse("http://user:pass@localhost/?token=supersecret").expect("valid url");
+
         AiClient {
             provider,
             semaphore: Arc::new(Semaphore::new(1)),
@@ -556,7 +559,7 @@ mod tests {
             audit_enabled: true,
             provider_label: "dummy",
             model: "dummy-model".to_string(),
-            endpoint: url::Url::parse("http://localhost").expect("valid url"),
+            endpoint,
             cache: None,
         }
     }
@@ -610,6 +613,10 @@ mod tests {
             .get("request_id")
             .expect("request_id field present")
             .to_string();
+        let endpoint = request.fields.get("endpoint").expect("endpoint field present");
+        assert!(!endpoint.contains("token="));
+        assert!(!endpoint.contains("supersecret"));
+        assert!(!endpoint.contains("user:pass@"));
         let prompt = request.fields.get("prompt").expect("prompt field present");
         assert!(
             prompt.contains("[REDACTED]"),
@@ -682,6 +689,14 @@ mod tests {
             .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_request"))
             .and_then(|event| event.fields.get("request_id"))
             .expect("request_id field present");
+        let endpoint = audit
+            .iter()
+            .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_request"))
+            .and_then(|event| event.fields.get("endpoint"))
+            .expect("endpoint field present");
+        assert!(!endpoint.contains("token="));
+        assert!(!endpoint.contains("supersecret"));
+        assert!(!endpoint.contains("user:pass@"));
         assert_eq!(
             response.fields.get("request_id").map(String::as_str),
             Some(request_id.as_str()),
