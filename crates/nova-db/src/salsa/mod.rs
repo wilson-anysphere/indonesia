@@ -614,6 +614,13 @@ mod tests {
             &["Foo".to_string(), "x".to_string(), "bar".to_string()]
         );
 
+        let method = nova_hir::ids::MethodId::new(file, 0);
+        let range_before = db
+            .hir_item_tree(file)
+            .method(method)
+            .body_range
+            .expect("method has a body");
+
         assert_eq!(executions(&db, "java_parse"), 1);
         assert_eq!(executions(&db, "hir_item_tree"), 1);
         assert_eq!(executions(&db, "hir_symbol_names"), 1);
@@ -627,6 +634,18 @@ mod tests {
         assert_eq!(&*second, &*first);
         assert_eq!(executions(&db, "java_parse"), 2);
         assert_eq!(executions(&db, "hir_item_tree"), 2);
+
+        let range_after = db
+            .hir_item_tree(file)
+            .method(method)
+            .body_range
+            .expect("method still has a body");
+        assert_eq!(range_after.start, range_before.start);
+        assert!(
+            range_after.end > range_before.end,
+            "expected method body range to expand after adding a statement"
+        );
+
         assert_eq!(
             executions(&db, "hir_symbol_names"),
             1,
@@ -651,6 +670,13 @@ mod tests {
             &["Foo".to_string(), "x".to_string(), "bar".to_string()]
         );
 
+        let method = nova_hir::ids::MethodId::new(file, 0);
+        let range_before = db
+            .hir_item_tree(file)
+            .method(method)
+            .body_range
+            .expect("method has a body");
+
         assert_eq!(executions(&db, "java_parse"), 1);
         assert_eq!(executions(&db, "hir_item_tree"), 1);
         assert_eq!(executions(&db, "hir_symbol_names"), 1);
@@ -666,6 +692,18 @@ mod tests {
         assert_eq!(&*second, &*first);
         assert_eq!(executions(&db, "java_parse"), 2);
         assert_eq!(executions(&db, "hir_item_tree"), 2);
+
+        let range_after = db
+            .hir_item_tree(file)
+            .method(method)
+            .body_range
+            .expect("method still has a body");
+        assert_eq!(
+            range_after.start,
+            range_before.start + 2,
+            "expected leading whitespace to shift method body range start by two bytes"
+        );
+
         assert_eq!(
             executions(&db, "hir_symbol_names"),
             1,
