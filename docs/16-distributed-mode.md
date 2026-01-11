@@ -376,7 +376,11 @@ into more shards (more source roots) to bound per-message and per-worker memory.
 
 ## Remote mode security guidance (read before deploying)
 
-Remote mode is **not hardened** and should not be exposed to untrusted networks.
+Remote mode supports the core security primitives needed for safe remote deployments (TLS, optional
+mTLS client authentication, shard-scoped authorization via fingerprint allowlists, and basic
+protocol-level DoS hardening). However, it should still be treated as **beta**: do not expose the
+router’s TCP port to the public internet, and prefer running behind strict network controls (VPN /
+firewall allowlists) until additional hardening lands (rate limiting, fuzzing, etc.).
 
 - The authentication token (prefer `--auth-token-file` or `--auth-token-env`; `--auth-token` is
   discouraged because it exposes secrets via `argv`)
