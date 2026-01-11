@@ -3314,7 +3314,9 @@ impl<'a> Parser<'a> {
         if self.at(SyntaxKind::LParen) {
             self.bump();
             while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
-                if self.at_ident_like() || self.at(SyntaxKind::Comma) {
+                if self.at_underscore_identifier() {
+                    self.parse_unnamed_pattern();
+                } else if self.at_ident_like() || self.at(SyntaxKind::Comma) {
                     self.bump();
                 } else {
                     self.bump_any();
@@ -3322,7 +3324,11 @@ impl<'a> Parser<'a> {
             }
             self.expect(SyntaxKind::RParen, "expected `)` in lambda parameters");
         } else {
-            self.expect_ident_like("expected lambda parameter");
+            if self.at_underscore_identifier() {
+                self.parse_unnamed_pattern();
+            } else {
+                self.expect_ident_like("expected lambda parameter");
+            }
         }
         self.expect(SyntaxKind::Arrow, "expected `->` in lambda");
         if self.at(SyntaxKind::LBrace) {
