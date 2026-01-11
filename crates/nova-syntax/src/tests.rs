@@ -418,7 +418,7 @@ fn lexer_rejects_invalid_char_literals() {
 
 #[test]
 fn lexer_string_literal_escape_sequences() {
-    let input = "\"\\\\n\" \"\\\\123\" \"\\\\s\"";
+    let input = "\"\\n\" \"\\123\" \"\\s\"";
     let (tokens, errors) = lex_with_errors(input);
     assert_eq!(errors, Vec::new());
 
@@ -431,9 +431,9 @@ fn lexer_string_literal_escape_sequences() {
     assert_eq!(
         tokens,
         vec![
-            (SyntaxKind::StringLiteral, "\"\\\\n\"".into()),
-            (SyntaxKind::StringLiteral, "\"\\\\123\"".into()),
-            (SyntaxKind::StringLiteral, "\"\\\\s\"".into()),
+            (SyntaxKind::StringLiteral, "\"\\n\"".into()),
+            (SyntaxKind::StringLiteral, "\"\\123\"".into()),
+            (SyntaxKind::StringLiteral, "\"\\s\"".into()),
             (SyntaxKind::Eof, "".into()),
         ]
     );
@@ -2229,6 +2229,30 @@ fn green_ptr_eq(a: &rowan::GreenNode, b: &rowan::GreenNode) -> bool {
     a_ptr == b_ptr
 }
 
+fn find_identifier_token(parse: &crate::JavaParseResult, ident: &str) -> crate::SyntaxToken {
+    parse
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .find(|t| t.kind() == SyntaxKind::Identifier && t.text() == ident)
+        .unwrap_or_else(|| panic!("identifier `{ident}` not found"))
+}
+
+fn find_method_by_name(parse: &crate::JavaParseResult, name: &str) -> crate::SyntaxNode {
+    parse
+        .syntax()
+        .descendants()
+        .find(|n| {
+            n.kind() == SyntaxKind::MethodDeclaration
+                && n.descendants_with_tokens().any(|el| {
+                    el.into_token()
+                        .map(|t| t.kind() == SyntaxKind::Identifier && t.text() == name)
+                        .unwrap_or(false)
+                })
+        })
+        .unwrap_or_else(|| panic!("method `{name}` not found"))
+}
+
 #[test]
 fn incremental_edit_reuses_unchanged_type_subtrees() {
     let old_text = "class Foo { void m() { int x = 1; } }\nclass Bar {}\n";
@@ -2251,6 +2275,168 @@ fn incremental_edit_reuses_unchanged_type_subtrees() {
     assert!(
         green_ptr_eq(&old_bar, &new_bar),
         "expected unchanged `Bar` subtree to be reused"
+    );
+}
+
+#[test]
+fn incremental_edit_inside_argument_list_reuses_sibling_statement() {
+    let old_text = "class Foo { void m() { f(1, 2); g(3); } }\n";
+    let old = parse_java(old_text);
+
+    let edit_offset = old_text.find("2").unwrap() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: edit_offset,
+            end: edit_offset + 1,
+        },
+        "4",
+    );
+    let mut new_text = old_text.to_string();
+    new_text.replace_range(edit_offset as usize..(edit_offset + 1) as usize, "4");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+    assert_eq!(new_parse.errors, parse_java(&new_text).errors);
+
+    let old_g = find_identifier_token(&old, "g");
+    let old_stmt = old_g
+        .parent()
+        .unwrap()
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::ExpressionStatement)
+        .expect("expected `g(3);` expression statement");
+    let new_g = find_identifier_token(&new_parse, "g");
+    let new_stmt = new_g
+        .parent()
+        .unwrap()
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::ExpressionStatement)
+        .expect("expected `g(3);` expression statement");
+
+    let old_green = old_stmt.green().into_owned();
+    let new_green = new_stmt.green().into_owned();
+    assert!(
+        green_ptr_eq(&old_green, &new_green),
+        "expected untouched sibling statement to be reused"
+    );
+}
+
+#[test]
+fn incremental_edit_inside_parameter_list_reuses_method_body_and_shifts_errors() {
+    let old_text =
+        "class Foo { void m(int x) { int a = 0; } int z = 0 int ok = 1; }\n";
+    let old = parse_java(old_text);
+
+    // Insert a new parameter before the closing `)`.
+    let insert_offset = old_text.find(") {").unwrap() as u32;
+    let edit = TextEdit::insert(insert_offset, ", int y");
+    let mut new_text = old_text.to_string();
+    new_text.insert_str(insert_offset as usize, ", int y");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+
+    // Ensure preserved errors after the fragment are shifted correctly.
+    assert_eq!(new_parse.errors, parse_java(&new_text).errors);
+
+    let old_method = find_method_by_name(&old, "m");
+    let old_body = old_method
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::Block)
+        .expect("expected method body block")
+        .green()
+        .into_owned();
+    let new_method = find_method_by_name(&new_parse, "m");
+    let new_body = new_method
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::Block)
+        .expect("expected method body block")
+        .green()
+        .into_owned();
+    assert!(
+        green_ptr_eq(&old_body, &new_body),
+        "expected method body block to be reused when reparsing only the parameter list"
+    );
+}
+
+#[test]
+fn incremental_edit_inside_type_arguments_reuses_variable_declarator_list() {
+    let old_text = "import java.util.List;\nclass Foo { List<String> xs = null; int y = 0; }\n";
+    let old = parse_java(old_text);
+
+    let string_offset = old_text.find("String").unwrap() as u32;
+    let edit = TextEdit::new(
+        TextRange {
+            start: string_offset,
+            end: string_offset + "String".len() as u32,
+        },
+        "Integer",
+    );
+    let mut new_text = old_text.to_string();
+    new_text.replace_range(
+        string_offset as usize..(string_offset + "String".len() as u32) as usize,
+        "Integer",
+    );
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+    assert_eq!(new_parse.errors, parse_java(&new_text).errors);
+
+    let old_xs = find_identifier_token(&old, "xs");
+    let old_decl_list = old_xs
+        .parent()
+        .unwrap()
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::VariableDeclaratorList)
+        .expect("expected variable declarator list");
+    let new_xs = find_identifier_token(&new_parse, "xs");
+    let new_decl_list = new_xs
+        .parent()
+        .unwrap()
+        .ancestors()
+        .find(|n| n.kind() == SyntaxKind::VariableDeclaratorList)
+        .expect("expected variable declarator list");
+
+    let old_green = old_decl_list.green().into_owned();
+    let new_green = new_decl_list.green().into_owned();
+    assert!(
+        green_ptr_eq(&old_green, &new_green),
+        "expected variable declarator list to be reused when reparsing only type arguments"
+    );
+}
+
+#[test]
+fn incremental_edit_inside_type_parameters_reuses_class_body() {
+    let old_text = "class Foo<T> { int x = 0; }\n";
+    let old = parse_java(old_text);
+
+    let insert_offset = old_text.find("> {").unwrap() as u32;
+    let edit = TextEdit::insert(insert_offset, ", U");
+    let mut new_text = old_text.to_string();
+    new_text.insert_str(insert_offset as usize, ", U");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+    assert_eq!(new_parse.syntax().text().to_string(), new_text);
+    assert_eq!(new_parse.errors, parse_java(&new_text).errors);
+
+    let old_foo = find_class_by_name(&old, "Foo");
+    let old_body = old_foo
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::ClassBody)
+        .expect("expected class body")
+        .green()
+        .into_owned();
+    let new_foo = find_class_by_name(&new_parse, "Foo");
+    let new_body = new_foo
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::ClassBody)
+        .expect("expected class body")
+        .green()
+        .into_owned();
+
+    assert!(
+        green_ptr_eq(&old_body, &new_body),
+        "expected class body to be reused when reparsing only type parameters"
     );
 }
 

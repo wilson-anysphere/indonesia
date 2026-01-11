@@ -457,6 +457,36 @@ pub(crate) fn parse_block_fragment(input: &str, stmt_ctx: StatementContext) -> J
     }
 }
 
+fn parse_node_fragment(
+    input: &str,
+    root_kind: SyntaxKind,
+    parse_inner: impl FnOnce(&mut Parser<'_>),
+) -> JavaParseResult {
+    let mut parser = Parser::new(input);
+    parser.builder.start_node(root_kind.into());
+    parse_inner(&mut parser);
+
+    // Ensure fragment parsing is lossless: if the fragment parser stops early,
+    // wrap remaining tokens in an `Error` node so everything in `input` is
+    // represented in the syntax tree. We intentionally avoid bumping the EOF
+    // token itself so we don't introduce `Eof` tokens into non-root nodes.
+    parser.eat_trivia();
+    if !parser.at(SyntaxKind::Eof) {
+        parser.builder.start_node(SyntaxKind::Error.into());
+        while !parser.at(SyntaxKind::Eof) {
+            parser.bump_any();
+        }
+        parser.builder.finish_node(); // Error
+    }
+
+    parser.builder.finish_node(); // root_kind
+
+    JavaParseResult {
+        green: parser.builder.finish(),
+        errors: parser.errors,
+    }
+}
+
 pub(crate) fn parse_switch_block_fragment(
     input: &str,
     stmt_ctx: StatementContext,
@@ -504,6 +534,30 @@ pub(crate) fn parse_class_member_fragment(input: &str) -> JavaParseResult {
         green: member,
         errors: parser.errors,
     }
+}
+
+pub(crate) fn parse_argument_list_fragment(input: &str) -> JavaParseResult {
+    parse_node_fragment(input, SyntaxKind::ArgumentList, |parser| {
+        parser.parse_argument_list_contents();
+    })
+}
+
+pub(crate) fn parse_parameter_list_fragment(input: &str) -> JavaParseResult {
+    parse_node_fragment(input, SyntaxKind::ParameterList, |parser| {
+        parser.parse_parameter_list_contents();
+    })
+}
+
+pub(crate) fn parse_type_arguments_fragment(input: &str) -> JavaParseResult {
+    parse_node_fragment(input, SyntaxKind::TypeArguments, |parser| {
+        parser.parse_type_arguments_contents();
+    })
+}
+
+pub(crate) fn parse_type_parameters_fragment(input: &str) -> JavaParseResult {
+    parse_node_fragment(input, SyntaxKind::TypeParameters, |parser| {
+        parser.parse_type_parameters_contents();
+    })
 }
 
 struct Parser<'a> {
@@ -931,6 +985,11 @@ impl<'a> Parser<'a> {
 
     fn parse_type_parameters(&mut self) {
         self.builder.start_node(SyntaxKind::TypeParameters.into());
+        self.parse_type_parameters_contents();
+        self.builder.finish_node(); // TypeParameters
+    }
+
+    fn parse_type_parameters_contents(&mut self) {
         self.expect(SyntaxKind::Less, "expected `<`");
 
         let mut parsed_any = false;
@@ -971,9 +1030,7 @@ impl<'a> Parser<'a> {
 
             self.error_here("expected `,` or `>` after type parameter");
         }
-
         self.expect_gt();
-        self.builder.finish_node(); // TypeParameters
     }
 
     fn at_type_parameters_end(&mut self, parsed_any: bool) -> bool {
@@ -1614,6 +1671,17 @@ impl<'a> Parser<'a> {
 
     fn parse_parameter_list(&mut self) {
         self.builder.start_node(SyntaxKind::ParameterList.into());
+        self.parse_parameter_list_contents();
+        self.builder.finish_node();
+    }
+
+    fn parse_argument_list(&mut self) {
+        self.builder.start_node(SyntaxKind::ArgumentList.into());
+        self.parse_argument_list_contents();
+        self.builder.finish_node();
+    }
+
+    fn parse_parameter_list_contents(&mut self) {
         self.expect(SyntaxKind::LParen, "expected `(`");
         while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
             self.builder.start_node(SyntaxKind::Parameter.into());
@@ -1637,7 +1705,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 self.bump();
             }
-            self.builder.finish_node();
+            self.builder.finish_node(); // Parameter
 
             if self.at(SyntaxKind::Comma) {
                 self.bump();
@@ -1646,11 +1714,9 @@ impl<'a> Parser<'a> {
             break;
         }
         self.expect(SyntaxKind::RParen, "expected `)`");
-        self.builder.finish_node();
     }
 
-    fn parse_argument_list(&mut self) {
-        self.builder.start_node(SyntaxKind::ArgumentList.into());
+    fn parse_argument_list_contents(&mut self) {
         self.expect(SyntaxKind::LParen, "expected `(`");
         while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
             self.eat_trivia();
@@ -1673,7 +1739,6 @@ impl<'a> Parser<'a> {
             break;
         }
         self.expect(SyntaxKind::RParen, "expected `)`");
-        self.builder.finish_node();
     }
 
     fn parse_annotation_element_default(&mut self) {
@@ -2633,6 +2698,11 @@ impl<'a> Parser<'a> {
 
     fn parse_type_arguments(&mut self) {
         self.builder.start_node(SyntaxKind::TypeArguments.into());
+        self.parse_type_arguments_contents();
+        self.builder.finish_node();
+    }
+
+    fn parse_type_arguments_contents(&mut self) {
         self.expect(SyntaxKind::Less, "expected `<`");
         while !matches!(
             self.current(),
@@ -2649,16 +2719,16 @@ impl<'a> Parser<'a> {
                     self.bump();
                     self.parse_type();
                 }
-                self.builder.finish_node();
+                self.builder.finish_node(); // WildcardType
             } else if self.at_type_start() {
                 self.parse_type();
             } else {
                 self.builder.start_node(SyntaxKind::Error.into());
                 self.error_here("expected type argument");
                 self.recover_to_including_angles(TYPE_ARGUMENT_RECOVERY);
-                self.builder.finish_node();
+                self.builder.finish_node(); // Error
             }
-            self.builder.finish_node();
+            self.builder.finish_node(); // TypeArgument
             if self.at(SyntaxKind::Comma) {
                 self.bump();
                 continue;
@@ -2666,7 +2736,6 @@ impl<'a> Parser<'a> {
             break;
         }
         self.expect_gt();
-        self.builder.finish_node();
     }
 
     fn expect_gt(&mut self) {

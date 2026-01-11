@@ -1,8 +1,9 @@
 use rowan::{NodeOrToken, TokenAtOffset};
 
 use crate::parser::{
-    parse_block_fragment, parse_class_body_fragment, parse_class_member_fragment,
-    parse_switch_block_fragment, StatementContext, SwitchContext,
+    parse_argument_list_fragment, parse_block_fragment, parse_class_body_fragment,
+    parse_class_member_fragment, parse_parameter_list_fragment, parse_switch_block_fragment,
+    parse_type_arguments_fragment, parse_type_parameters_fragment, StatementContext, SwitchContext,
 };
 use crate::{lex, parse_java, JavaParseResult, ParseError, SyntaxKind, TextEdit, TextRange};
 
@@ -15,6 +16,10 @@ enum ReparseTarget {
     },
     ClassBody(SyntaxKind),
     ClassMember,
+    ArgumentList,
+    ParameterList,
+    TypeArguments,
+    TypeParameters,
 }
 
 #[derive(Debug)]
@@ -71,6 +76,10 @@ pub fn reparse_java(
         } => parse_switch_block_fragment(fragment_text, stmt_ctx, switch_ctx),
         ReparseTarget::ClassBody(kind) => parse_class_body_fragment(fragment_text, kind),
         ReparseTarget::ClassMember => parse_class_member_fragment(fragment_text),
+        ReparseTarget::ArgumentList => parse_argument_list_fragment(fragment_text),
+        ReparseTarget::ParameterList => parse_parameter_list_fragment(fragment_text),
+        ReparseTarget::TypeArguments => parse_type_arguments_fragment(fragment_text),
+        ReparseTarget::TypeParameters => parse_type_parameters_fragment(fragment_text),
     };
 
     // If the fragment ends in an unterminated string/comment/text block, the lexer would normally
@@ -357,6 +366,10 @@ fn classify_list_or_block(node: &crate::SyntaxNode) -> Option<ReparseTarget> {
         | SyntaxKind::EnumBody
         | SyntaxKind::RecordBody
         | SyntaxKind::AnnotationBody => ReparseTarget::ClassBody(kind),
+        SyntaxKind::ArgumentList => ReparseTarget::ArgumentList,
+        SyntaxKind::ParameterList => ReparseTarget::ParameterList,
+        SyntaxKind::TypeArguments => ReparseTarget::TypeArguments,
+        SyntaxKind::TypeParameters => ReparseTarget::TypeParameters,
         _ => return None,
     })
 }
