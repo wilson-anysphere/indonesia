@@ -7,6 +7,11 @@ It is an MVP of the “distributed queries” direction described in
 [`docs/04-incremental-computation.md`](04-incremental-computation.md), but it also calls out the
 correctness and security guardrails that matter for real usage.
 
+**Protocol note:** the original MVP used a simple lockstep message protocol (legacy `v2` in
+`nova_remote_proto`). New work should target **nova remote RPC v3**, which adds explicit
+`request_id: u64` (odd/even parity), multiplexing, chunking (`PacketChunk`), and negotiated
+compression/cancellation. See [`docs/17-remote-rpc-protocol.md`](17-remote-rpc-protocol.md).
+
 ## Scope (what exists today)
 
 Nova can split **indexing** work across **shards** (project modules / source roots). A
@@ -21,8 +26,8 @@ The current distributed mode is intentionally narrow:
 - The RPC protocol is purpose-built for indexing (`IndexShard`, `UpdateFile`, `LoadFiles`) and
   monitoring (`GetWorkerStats`). It is *not* a general “semantic query RPC” yet.
 
-Anything beyond this (semantic query routing, multiplexing, etc.) should be treated as **future
-work** and is documented separately below.
+Anything beyond this (semantic query routing, a generalized query RPC surface, aggressive
+parallelization, etc.) should be treated as **future work** and is documented separately below.
 
 ## Architecture & responsibilities
 
@@ -33,7 +38,7 @@ work** and is documented separately below.
   - Calls into the router for shard indexing and workspace symbol search.
 - **Router (`nova-router`)**
   - Owns the *sharding layout* (source roots → shard IDs).
-  - Listens for worker connections over a simple length-delimited RPC transport.
+  - Listens for worker connections over the nova remote RPC transport (v3).
   - Optionally spawns and supervises local `nova-worker` processes (one per shard).
   - Aggregates per-shard indexes into a global workspace symbol index.
   - Loads cached shard indexes on startup for warm results.
@@ -135,7 +140,8 @@ nova-worker \
 ### Remote mode (optional, not hardened)
 
 The router can listen on TCP and accept workers connecting from other machines. An authentication
-token is supported as a stub (a shared secret passed to both router and worker).
+token is supported as a stub (a shared secret sent by the worker during the v3 `WorkerHello`
+handshake).
 
 This mode is best thought of as: **router stays close to the filesystem; workers are compute-only**.
 Workers do not need direct access to the project checkout because the router sends full file
@@ -166,9 +172,9 @@ Distributed mode currently prioritizes correctness and simplicity over throughpu
   in a shard. This can be expensive locally and prohibitive remotely for large shards.
 - **Full shard rebuilds.** `UpdateFile` triggers a full rebuild of the shard index (not an
   incremental update).
-- **Large payloads / memory spikes.** The router and worker both hold full file texts in memory,
-  and RPC messages are encoded as a single length-delimited blob. Very large shards can cause high
-  peak memory usage or fail with “message too large”.
+- **Large payloads / memory spikes.** The router and worker both hold full file texts in memory.
+  Even with v3 packet chunking/reassembly and negotiated size limits, very large shards can cause
+  high peak memory usage or hit “packet too large” failures.
 - **Sequential indexing.** `index_workspace` currently indexes shards in a straightforward loop,
   rather than aggressively parallelizing shard RPCs.
 
@@ -179,7 +185,8 @@ into more shards (more source roots) to bound per-message and per-worker memory.
 
 Remote mode is **not hardened** and should not be exposed to untrusted networks.
 
-- The `--auth-token` is a **shared secret** and is sent by the worker during the initial handshake.
+- The `--auth-token` is a **shared secret** and is sent by the worker during the initial handshake
+  (`WorkerHello`).
   **Do not send it over plaintext TCP.**
 - Plain `tcp:` also sends **full file contents** in cleartext. Use TLS for any remote deployment.
 - TLS support exists behind the `tls` Cargo feature for both router and worker (see the worker
