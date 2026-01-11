@@ -904,6 +904,7 @@ export async function activate(context: vscode.ExtensionContext) {
     lastMemoryPressure = undefined;
     warnedHighMemoryPressure = false;
     warnedCriticalMemoryPressure = false;
+    safeModeWarningInFlight = undefined;
     lastSafeModeEnabled = false;
     updateSafeModeStatus(false);
     memoryStatusItem.text = '$(pulse) Nova Mem: —';
