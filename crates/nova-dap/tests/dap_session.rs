@@ -834,7 +834,7 @@ async fn dap_exception_info_includes_type_name() {
         3,
         "setExceptionBreakpoints",
         json!({
-            "filters": ["uncaught"]
+            "filters": ["all"]
         }),
     )
     .await;
@@ -924,7 +924,7 @@ async fn dap_exception_info_includes_type_name() {
     );
     assert_eq!(
         exc_info.pointer("/body/breakMode").and_then(|v| v.as_str()),
-        Some("unhandled")
+        Some("always")
     );
     assert_eq!(
         exc_info

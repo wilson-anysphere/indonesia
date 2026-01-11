@@ -104,6 +104,12 @@ enum StopReason {
     Exception,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ExceptionBreakConfig {
+    caught: bool,
+    uncaught: bool,
+}
+
 impl<K, T> Default for HandleTable<K, T> {
     fn default() -> Self {
         Self {
@@ -154,6 +160,7 @@ pub struct Debugger {
     exception_requests: Vec<i32>,
     last_stop_reason: HashMap<ThreadId, StopReason>,
     exception_stop_context: HashMap<ThreadId, ExceptionStopContext>,
+    exception_break_config: Option<ExceptionBreakConfig>,
     throwable_detail_message_field: Option<Option<u64>>,
 
     /// Mapping from JDWP `ReferenceType.SourceFile` (usually just `Main.java`) to the
@@ -216,6 +223,7 @@ impl Debugger {
             exception_requests: Vec::new(),
             last_stop_reason: HashMap::new(),
             exception_stop_context: HashMap::new(),
+            exception_break_config: None,
             throwable_detail_message_field: None,
             source_paths: HashMap::new(),
             source_cache: HashMap::new(),
@@ -532,7 +540,13 @@ impl Debugger {
             Err(_) => format!("exception@0x{:x}", ctx.exception),
         };
 
-        let break_mode = if ctx.catch_location.is_some() {
+        let break_mode = if let Some(config) = self.exception_break_config {
+            if config.uncaught && !config.caught {
+                "unhandled".to_string()
+            } else {
+                "always".to_string()
+            }
+        } else if ctx.catch_location.is_some() {
             "always".to_string()
         } else {
             "unhandled".to_string()
@@ -591,6 +605,7 @@ impl Debugger {
 
     pub async fn set_exception_breakpoints(&mut self, caught: bool, uncaught: bool) -> Result<()> {
         self.clear_exception_breakpoints().await;
+        self.exception_break_config = None;
         if !caught && !uncaught {
             return Ok(());
         }
@@ -608,6 +623,7 @@ impl Debugger {
             )
             .await?;
         self.exception_requests.push(request_id);
+        self.exception_break_config = Some(ExceptionBreakConfig { caught, uncaught });
         Ok(())
     }
 
