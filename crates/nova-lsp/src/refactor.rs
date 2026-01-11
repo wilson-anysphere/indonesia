@@ -5,8 +5,9 @@ use lsp_types::{
 use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_index::Index;
 use nova_refactor::{
-    convert_to_record, safe_delete, ConvertToRecordError, ConvertToRecordOptions, SafeDeleteMode,
-    SafeDeleteOutcome, SafeDeleteTarget,
+    change_signature as refactor_change_signature, convert_to_record, safe_delete, workspace_edit_to_lsp,
+    ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId, InMemoryJavaDatabase,
+    SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -34,6 +35,27 @@ pub struct MoveStaticMemberParams {
 
 pub fn change_signature_schema() -> RootSchema {
     schema_for!(nova_refactor::ChangeSignature)
+}
+
+/// Run Change Signature and convert the resulting edit into an LSP `WorkspaceEdit`.
+///
+/// The refactoring itself returns Nova's canonical [`nova_refactor::WorkspaceEdit`], which stores
+/// edits as byte offsets. This helper uses the shared `workspace_edit_to_lsp` conversion to map
+/// byte offsets to UTF-16 LSP positions.
+pub fn change_signature_workspace_edit(index: &Index, change: &ChangeSignature) -> Result<WorkspaceEdit, String> {
+    let edit = refactor_change_signature(index, change).map_err(|err| err.to_string())?;
+
+    // `workspace_edit_to_lsp` needs file contents to map byte offsets to LSP UTF-16 positions.
+    // Until Nova's real semantic database is available in the LSP layer, we use the small
+    // in-memory database shipped with `nova-refactor`.
+    let db = InMemoryJavaDatabase::new(
+        index
+            .files()
+            .iter()
+            .map(|(file, text)| (FileId::new(file.clone()), text.clone())),
+    );
+
+    workspace_edit_to_lsp(&db, &edit).map_err(|err| err.to_string())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

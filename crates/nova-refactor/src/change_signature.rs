@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use lsp_types::{
-    DocumentChanges, OneOf, OptionalVersionedTextDocumentIdentifier, Position, Range,
-    TextDocumentEdit, TextEdit, WorkspaceEdit,
+use crate::edit::{
+    EditError, FileId, TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange, WorkspaceEdit,
 };
 use nova_index::{Index, ReferenceKind, SymbolId, SymbolKind, TextRange};
 use nova_types::MethodId;
@@ -230,7 +229,7 @@ pub fn change_signature(
 
     edits.extend(call_updates);
 
-    build_workspace_edit(index, edits).map_err(|c| ChangeSignatureError { conflicts: vec![c] })
+    build_workspace_edit(edits).map_err(|c| ChangeSignatureError { conflicts: vec![c] })
 }
 
 fn collect_affected_methods(
@@ -1228,20 +1227,14 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
     out
 }
 
-fn build_workspace_edit(
-    index: &Index,
-    edits: Vec<(String, TextRange, String)>,
-) -> Result<WorkspaceEdit, ChangeSignatureConflict> {
+fn build_workspace_edit(edits: Vec<(String, TextRange, String)>) -> Result<WorkspaceEdit, ChangeSignatureConflict> {
     let mut by_file: BTreeMap<String, Vec<(TextRange, String)>> = BTreeMap::new();
     for (file, range, text) in edits {
         by_file.entry(file).or_default().push((range, text));
     }
 
-    let mut doc_edits = Vec::new();
+    let mut out = Vec::new();
     for (file, mut file_edits) in by_file {
-        let Some(file_text) = index.file_text(&file) else {
-            continue;
-        };
         file_edits.sort_by_key(|(r, _)| r.start);
         for w in file_edits.windows(2) {
             let a = &w[0].0;
@@ -1255,57 +1248,33 @@ fn build_workspace_edit(
             }
         }
 
-        let lsp_edits = file_edits
-            .into_iter()
-            .map(|(range, new_text)| TextEdit {
-                range: Range {
-                    start: offset_to_position(file_text, range.start),
-                    end: offset_to_position(file_text, range.end),
-                },
-                new_text,
-            })
-            .collect::<Vec<_>>();
-
-        let uri: lsp_types::Uri = file
-            .parse()
-            .map_err(|_| ChangeSignatureConflict::InvalidDocumentUri { file: file.clone() })?;
-        doc_edits.push(TextDocumentEdit {
-            text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
-            edits: lsp_edits.into_iter().map(OneOf::Left).collect(),
-        });
+        let file_id = FileId::new(file.clone());
+        out.extend(file_edits.into_iter().map(|(range, new_text)| WorkspaceTextEdit {
+            file: file_id.clone(),
+            range: WorkspaceTextRange::new(range.start, range.end),
+            replacement: new_text,
+        }));
     }
 
-    doc_edits.sort_by(|a, b| {
-        a.text_document
-            .uri
-            .to_string()
-            .cmp(&b.text_document.uri.to_string())
-    });
-    Ok(WorkspaceEdit {
-        changes: None,
-        document_changes: Some(DocumentChanges::Edits(doc_edits)),
-        change_annotations: None,
-    })
-}
-
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line = 0u32;
-    let mut col = 0u32;
-    let mut count = 0usize;
-    for ch in text.chars() {
-        if count >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-        count += ch.len_utf8();
-    }
-    Position {
-        line,
-        character: col,
-    }
+    let mut edit = WorkspaceEdit::new(out);
+    edit.normalize().map_err(|err| match err {
+        EditError::InvalidRange { file: FileId(file), .. } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "invalid edit range",
+        },
+        EditError::OverlappingEdits {
+            file: FileId(file),
+            first,
+            second,
+        } => ChangeSignatureConflict::OverlappingEdits {
+            file,
+            first: TextRange::new(first.start, first.end),
+            second: TextRange::new(second.start, second.end),
+        },
+        EditError::OutOfBounds { file: FileId(file), .. } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "edit out of bounds",
+        },
+    })?;
+    Ok(edit)
 }
