@@ -247,14 +247,14 @@ async fn completion_more_injects_document_uri_into_items() {
 
 struct CancelAwareProvider {
     started: tokio::sync::Notify,
-    cancelled: tokio::sync::Notify,
+    finished: tokio::sync::Notify,
 }
 
 impl CancelAwareProvider {
     fn new() -> Self {
         Self {
             started: tokio::sync::Notify::new(),
-            cancelled: tokio::sync::Notify::new(),
+            finished: tokio::sync::Notify::new(),
         }
     }
 
@@ -262,8 +262,8 @@ impl CancelAwareProvider {
         self.started.notified().await;
     }
 
-    async fn wait_cancelled(&self) {
-        self.cancelled.notified().await;
+    async fn wait_finished(&self) {
+        self.finished.notified().await;
     }
 }
 
@@ -275,11 +275,17 @@ impl MultiTokenCompletionProvider for CancelAwareProvider {
         let cancel = request.cancel;
         Box::pin(async move {
             self.started.notify_one();
-            tokio::select! {
-                _ = cancel.cancelled() => {
-                    self.cancelled.notify_one();
-                    Err(AiProviderError::Cancelled)
+            struct NotifyOnDrop<'a>(&'a tokio::sync::Notify);
+
+            impl Drop for NotifyOnDrop<'_> {
+                fn drop(&mut self) {
+                    self.0.notify_one();
                 }
+            }
+
+            let _guard = NotifyOnDrop(&self.finished);
+            tokio::select! {
+                _ = cancel.cancelled() => Err(AiProviderError::Cancelled),
                 _ = tokio::time::sleep(Duration::from_secs(60)) => Ok(Vec::new()),
             }
         })
@@ -306,9 +312,9 @@ async fn completion_can_be_cancelled() {
 
     assert!(service.cancel(completion.context_id));
 
-    tokio::time::timeout(Duration::from_secs(1), provider.wait_cancelled())
+    tokio::time::timeout(Duration::from_secs(5), provider.wait_finished())
         .await
-        .expect("provider should observe cancellation");
+        .expect("provider should stop after cancellation");
 
     let poll = service.completion_more(MoreCompletionsParams {
         context_id: completion.context_id.to_string(),

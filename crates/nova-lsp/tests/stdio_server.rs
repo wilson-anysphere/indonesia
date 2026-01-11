@@ -1491,18 +1491,22 @@ fn stdio_server_handles_build_project_request_with_fake_gradle_diagnostics() {
         &gradlew_path,
         format!(
             r#"#!/bin/sh
-last=""
-for arg in "$@"; do last="$arg"; done
-case "$last" in
-  *compileJava|*novaCompileAllJava)
-    printf '%s\n' '{}:10: error: cannot find symbol'
-    printf '%s\n' '        foo.bar();'
-    printf '%s\n' '            ^'
-    printf '%s\n' '  symbol:   method bar()'
-    printf '%s\n' '  location: variable foo of type Foo'
-    exit 1
-    ;;
-esac
+found_compile_java=0
+for arg in "$@"; do
+  case "$arg" in
+    *compileJava|*novaCompileAllJava) found_compile_java=1 ;;
+  esac
+done
+
+if [ "$found_compile_java" -eq 1 ]; then
+  printf '%s\n' '{}:10: error: cannot find symbol' >&2
+  printf '%s\n' '        foo.bar();' >&2
+  printf '%s\n' '            ^' >&2
+  printf '%s\n' '  symbol:   method bar()' >&2
+  printf '%s\n' '  location: variable foo of type Foo' >&2
+  exit 1
+fi
+
 exit 0
 "#,
             java_file.display()
