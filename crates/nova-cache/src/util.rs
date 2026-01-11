@@ -61,6 +61,16 @@ pub(crate) fn read_file_limited(path: &Path) -> Option<Vec<u8>> {
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
+    atomic_write_with(path, |file| {
+        file.write_all(bytes)?;
+        Ok(())
+    })
+}
+
+pub(crate) fn atomic_write_with(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> Result<(), CacheError>,
+) -> Result<(), CacheError> {
     let Some(parent) = path.parent() else {
         return Err(std::io::Error::new(std::io::ErrorKind::Other, "path has no parent").into());
     };
@@ -73,14 +83,15 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
     fs::create_dir_all(parent)?;
 
     let (tmp_path, mut file) = open_unique_tmp_file(path, parent)?;
-    if let Err(err) = file
-        .write_all(bytes)
-        .and_then(|()| file.sync_all())
-        .and_then(|()| Ok(()))
-    {
+    let write_result = (|| -> Result<(), CacheError> {
+        write(&mut file)?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(err) = write_result {
         drop(file);
         let _ = fs::remove_file(&tmp_path);
-        return Err(CacheError::from(err));
+        return Err(err);
     }
     drop(file);
 

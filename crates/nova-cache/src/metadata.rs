@@ -1,6 +1,6 @@
 use crate::error::CacheError;
 use crate::fingerprint::{Fingerprint, ProjectSnapshot};
-use crate::util::now_millis;
+use crate::util::{atomic_write_with, now_millis};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -153,8 +153,8 @@ impl CacheMetadata {
             }
         }
 
-        let bytes = std::fs::read(json_path)?;
-        Ok(serde_json::from_slice(&bytes)?)
+        let file = std::fs::File::open(json_path)?;
+        Ok(serde_json::from_reader(file)?)
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), CacheError> {
@@ -171,8 +171,10 @@ impl CacheMetadata {
 
         // Keep a JSON copy around for debugging / human inspection. Avoid pretty
         // printing to keep file size down on large workspaces.
-        let json = serde_json::to_vec(self)?;
-        crate::util::atomic_write(&json_path, &json)
+        atomic_write_with(&json_path, |file| {
+            serde_json::to_writer(file, self)?;
+            Ok(())
+        })
     }
 }
 

@@ -2,8 +2,8 @@ use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::path::normalize_inputs_map;
 use crate::util::{
-    atomic_write, bincode_deserialize, bincode_options_limited, bincode_serialize, now_millis,
-    read_file_limited,
+    atomic_write, atomic_write_with, bincode_deserialize, bincode_options_limited, bincode_serialize,
+    now_millis, read_file_limited,
 };
 use bincode::Options;
 use serde::de::DeserializeOwned;
@@ -348,12 +348,10 @@ impl DerivedArtifactCache {
         let index_path = query_dir.join(DERIVED_CACHE_INDEX_FILE_NAME);
 
         let mut dirty = false;
-        let mut index = match std::fs::read(&index_path) {
-            Ok(bytes) => match serde_json::from_slice::<DerivedQueryIndex>(&bytes) {
+        let mut index = match std::fs::File::open(&index_path) {
+            Ok(file) => match serde_json::from_reader::<_, DerivedQueryIndex>(std::io::BufReader::new(file)) {
                 Ok(mut index) => {
-                    if index.schema_version != DERIVED_CACHE_INDEX_SCHEMA_VERSION
-                        || !index.is_safe()
-                    {
+                    if index.schema_version != DERIVED_CACHE_INDEX_SCHEMA_VERSION || !index.is_safe() {
                         dirty = true;
                         index = DerivedQueryIndex::empty();
                     }
@@ -460,8 +458,10 @@ impl DerivedArtifactCache {
         index: &DerivedQueryIndex,
     ) -> Result<(), CacheError> {
         let index_path = query_dir.join(DERIVED_CACHE_INDEX_FILE_NAME);
-        let bytes = serde_json::to_vec(index)?;
-        atomic_write(&index_path, &bytes)
+        atomic_write_with(&index_path, |file| {
+            serde_json::to_writer(file, index)?;
+            Ok(())
+        })
     }
 
     fn update_index_after_store(

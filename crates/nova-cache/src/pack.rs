@@ -168,8 +168,8 @@ fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>> {
 fn read_metadata_and_manifest(
     package_file: &Path,
 ) -> Result<(CacheMetadata, BTreeMap<String, String>)> {
-    let mut metadata_bytes = None;
-    let mut manifest_bytes = None;
+    let mut metadata: Option<CacheMetadata> = None;
+    let mut manifest: Option<BTreeMap<String, String>> = None;
 
     let file = File::open(package_file)?;
     let decoder = zstd::Decoder::new(file)?;
@@ -183,32 +183,26 @@ fn read_metadata_and_manifest(
 
         match path_string.as_str() {
             "metadata.json" => {
-                let mut buf = Vec::new();
-                entry.read_to_end(&mut buf)?;
-                metadata_bytes = Some(buf);
+                metadata = Some(serde_json::from_reader(&mut entry)?);
             }
             CACHE_PACKAGE_MANIFEST_PATH => {
-                let mut buf = Vec::new();
-                entry.read_to_end(&mut buf)?;
-                manifest_bytes = Some(buf);
+                manifest = Some(serde_json::from_reader(&mut entry)?);
             }
             _ => {}
         }
 
-        if metadata_bytes.is_some() && manifest_bytes.is_some() {
+        if metadata.is_some() && manifest.is_some() {
             break;
         }
     }
 
-    let metadata_bytes = metadata_bytes.ok_or(CacheError::MissingArchiveEntry {
+    let metadata = metadata.ok_or(CacheError::MissingArchiveEntry {
         path: "metadata.json",
     })?;
-    let manifest_bytes = manifest_bytes.ok_or(CacheError::MissingArchiveEntry {
+    let manifest = manifest.ok_or(CacheError::MissingArchiveEntry {
         path: CACHE_PACKAGE_MANIFEST_PATH,
     })?;
 
-    let metadata = serde_json::from_slice(&metadata_bytes)?;
-    let manifest = serde_json::from_slice(&manifest_bytes)?;
     Ok((metadata, manifest))
 }
 
