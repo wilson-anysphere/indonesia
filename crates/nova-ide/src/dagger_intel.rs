@@ -10,6 +10,8 @@ use nova_db::{Database, FileId};
 use nova_framework_dagger::{analyze_java_files, DaggerAnalysis, JavaSourceFile, NavigationKind};
 use nova_types::{Diagnostic, Severity, Span};
 
+use crate::framework_cache;
+
 /// Cached Dagger/Hilt analysis for a single project root.
 #[derive(Debug)]
 pub(crate) struct CachedDaggerProject {
@@ -40,8 +42,6 @@ impl CachedDaggerProject {
     }
 }
 
-static DAGGER_DEP_HINT_CACHE: Lazy<Mutex<HashMap<PathBuf, bool>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
 static DAGGER_ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, Arc<CachedDaggerProject>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
@@ -209,30 +209,11 @@ fn project_analysis(db: &dyn Database, file_path: &Path) -> Option<Arc<CachedDag
 }
 
 fn project_has_dagger_dependency(root: &Path) -> bool {
-    let root = normalize_root(root);
-
-    if let Some(cached) = DAGGER_DEP_HINT_CACHE
-        .lock()
-        .expect("dagger dependency cache mutex poisoned")
-        .get(&root)
-        .copied()
-    {
-        return cached;
-    }
-
-    let has = match nova_project::load_project(&root) {
-        Ok(cfg) => cfg
-            .dependencies
+    framework_cache::project_config(root).is_some_and(|cfg| {
+        cfg.dependencies
             .iter()
-            .any(|dep| dep.group_id == "com.google.dagger" || dep.artifact_id == "hilt-android"),
-        Err(_) => false,
-    };
-
-    DAGGER_DEP_HINT_CACHE
-        .lock()
-        .expect("dagger dependency cache mutex poisoned")
-        .insert(root, has);
-    has
+            .any(|dep| dep.group_id == "com.google.dagger" || dep.artifact_id == "hilt-android")
+    })
 }
 
 fn sources_look_like_dagger(files: &[JavaSourceFile]) -> bool {
