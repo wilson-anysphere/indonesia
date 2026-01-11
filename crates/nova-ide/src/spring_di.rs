@@ -165,6 +165,16 @@ pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagn
     let Some(path) = db.file_path(file) else {
         return Vec::new();
     };
+
+    // Avoid workspace-scoped Spring analysis for unrelated Java files in the same
+    // project root. DI diagnostics only apply to Spring-managed sources, which
+    // (in this baseline implementation) we detect via Spring imports / fully
+    // qualified annotations.
+    let source_text = db.file_content(file);
+    if !looks_like_spring_source(source_text) {
+        return Vec::new();
+    }
+
     let Some(entry) = workspace_entry(db, file) else {
         return Vec::new();
     };
