@@ -1,6 +1,13 @@
-use nova_cache::{DerivedArtifactCache, Fingerprint};
+use bincode::Options;
+use nova_cache::{DerivedArtifactCache, DerivedCachePolicy, Fingerprint};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+fn bincode_options() -> impl bincode::Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_little_endian()
+}
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct Args {
@@ -58,10 +65,10 @@ fn derived_artifact_cache_corruption_is_cache_miss() {
     let query_dir = temp.path().join("type_of");
     let entry_path = std::fs::read_dir(&query_dir)
         .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .expect("bin entry");
     std::fs::write(&entry_path, b"not a valid bincode payload").unwrap();
 
     let loaded: Option<Value> = cache.load("type_of", &args, &inputs).expect("load");
@@ -88,10 +95,10 @@ fn derived_artifact_cache_oversized_payload_is_cache_miss() {
     let query_dir = temp.path().join("type_of");
     let entry_path = std::fs::read_dir(&query_dir)
         .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .expect("bin entry");
 
     let file = std::fs::File::create(&entry_path).unwrap();
     file.set_len((nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES + 1) as u64)
@@ -99,4 +106,136 @@ fn derived_artifact_cache_oversized_payload_is_cache_miss() {
 
     let loaded: Option<Value> = cache.load("type_of", &args, &inputs).expect("load");
     assert_eq!(loaded, None);
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PersistedDerivedValueOwned<T> {
+    schema_version: u32,
+    nova_version: String,
+    saved_at_millis: u64,
+    query_name: String,
+    key_fingerprint: Fingerprint,
+    value: T,
+}
+
+#[test]
+fn derived_artifact_cache_gc_respects_global_max_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = DerivedArtifactCache::new(temp.path());
+
+    #[derive(Debug, Serialize)]
+    struct BigValue {
+        bytes: Vec<u8>,
+    }
+
+    let value = BigValue {
+        bytes: vec![0u8; 1024],
+    };
+
+    let mut inputs = BTreeMap::new();
+    inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
+
+    for query in ["q1", "q2"] {
+        for i in 0..10 {
+            let args = Args {
+                file: format!("{query}-{i}.java"),
+            };
+            cache.store(query, &args, &inputs, &value).unwrap();
+        }
+    }
+
+    let before = cache.stats().unwrap();
+    assert!(before.total_entries > 0);
+
+    let policy = DerivedCachePolicy {
+        max_bytes: 5 * 1024,
+        max_age_ms: None,
+        per_query_max_bytes: None,
+    };
+    let report = cache.gc(policy).unwrap();
+    assert!(report.after.total_bytes <= policy.max_bytes);
+    assert!(report.after.total_entries < report.before.total_entries);
+}
+
+#[test]
+fn derived_artifact_cache_gc_respects_ttl() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = DerivedArtifactCache::new(temp.path());
+
+    let mut inputs = BTreeMap::new();
+    inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
+
+    let args1 = Args {
+        file: "Main.java".to_string(),
+    };
+    let args2 = Args {
+        file: "Other.java".to_string(),
+    };
+
+    cache
+        .store("ttl_query", &args1, &inputs, &Value { answer: 1 })
+        .unwrap();
+    cache
+        .store("ttl_query", &args2, &inputs, &Value { answer: 2 })
+        .unwrap();
+
+    let query_dir = temp.path().join("ttl_query");
+    let mut entries: Vec<_> = std::fs::read_dir(&query_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .collect();
+    entries.sort();
+    assert_eq!(entries.len(), 2);
+
+    // Patch one entry to look ancient; delete the index so `gc()` is forced to rebuild.
+    let old_path = &entries[0];
+    let bytes = std::fs::read(old_path).unwrap();
+    let mut persisted: PersistedDerivedValueOwned<Value> =
+        bincode_options().deserialize(&bytes).unwrap();
+    persisted.saved_at_millis = 0;
+    let bytes = bincode_options().serialize(&persisted).unwrap();
+    std::fs::write(old_path, bytes).unwrap();
+    let _ = std::fs::remove_file(query_dir.join("index.json"));
+
+    let policy = DerivedCachePolicy {
+        max_bytes: u64::MAX,
+        max_age_ms: Some(60_000),
+        per_query_max_bytes: None,
+    };
+    cache.gc(policy).unwrap();
+
+    let after = cache.stats().unwrap();
+    let ttl_stats = after.per_query.get("ttl_query").unwrap();
+    assert_eq!(ttl_stats.entries, 1);
+}
+
+#[test]
+fn derived_artifact_cache_gc_survives_corrupt_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = DerivedArtifactCache::new(temp.path());
+
+    let mut inputs = BTreeMap::new();
+    inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
+
+    for i in 0..5 {
+        let args = Args {
+            file: format!("Main{i}.java"),
+        };
+        cache
+            .store("corrupt_index", &args, &inputs, &Value { answer: i })
+            .unwrap();
+    }
+
+    let query_dir = temp.path().join("corrupt_index");
+    std::fs::write(query_dir.join("index.json"), b"not valid json").unwrap();
+
+    let policy = DerivedCachePolicy {
+        max_bytes: 0,
+        max_age_ms: None,
+        per_query_max_bytes: None,
+    };
+    let report = cache.gc(policy).unwrap();
+    assert_eq!(report.after.total_entries, 0);
 }

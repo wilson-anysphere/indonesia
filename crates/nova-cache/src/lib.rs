@@ -18,16 +18,19 @@ mod gc;
 mod metadata;
 mod pack;
 mod path;
+mod prune;
 mod query_disk_cache;
 mod shard_index;
-mod prune;
 mod store;
 mod util;
 
 pub use ast_cache::{AstArtifactCache, FileAstArtifacts, AST_ARTIFACT_SCHEMA_VERSION};
 pub use cache_dir::deps_cache_dir;
 pub use cache_dir::{CacheConfig, CacheDir};
-pub use derived_cache::DerivedArtifactCache;
+pub use derived_cache::{
+    DerivedArtifactCache, DerivedCacheGcReport, DerivedCachePolicy, DerivedCacheQueryStats,
+    DerivedCacheStats,
+};
 pub use error::CacheError;
 pub use fingerprint::{Fingerprint, ProjectSnapshot};
 pub use gc::{
@@ -40,8 +43,8 @@ pub use pack::{
     CACHE_PACKAGE_MANIFEST_PATH,
 };
 pub use path::{normalize_inputs_map, normalize_rel_path};
+pub use prune::{prune_cache, PruneError, PrunePolicy, PruneReport};
 pub use query_disk_cache::{QueryDiskCache, QueryDiskCachePolicy, QUERY_DISK_CACHE_SCHEMA_VERSION};
 pub use shard_index::{load_shard_index, save_shard_index, shard_cache_path};
-pub use prune::{prune_cache, PruneError, PrunePolicy, PruneReport};
 pub use store::{store_for_url, CacheStore, HttpStore, LocalStore};
 pub use util::{atomic_write, now_millis, BINCODE_PAYLOAD_LIMIT_BYTES};
