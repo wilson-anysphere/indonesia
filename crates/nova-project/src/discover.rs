@@ -17,6 +17,45 @@ pub struct LoadOptions {
 
     /// Nova-specific configuration (e.g. generated source roots).
     pub nova_config: NovaConfig,
+
+    /// Bazel-specific loader configuration.
+    ///
+    /// By default Nova uses a heuristic (treat BUILD directories as source roots) to
+    /// avoid invoking Bazel unexpectedly. Enable `bazel.enable_target_loading` to
+    /// populate per-target compilation metadata by running `bazel query`/`aquery`.
+    pub bazel: BazelLoadOptions,
+}
+
+#[derive(Debug, Clone)]
+pub struct BazelLoadOptions {
+    /// When enabled, Nova invokes Bazel to build a target-aware project model.
+    ///
+    /// This runs:
+    /// - `bazel query kind("java_.* rule", //...)` to discover Java targets
+    /// - `bazel aquery` per target to extract `javac` settings
+    pub enable_target_loading: bool,
+
+    /// Cap the number of targets for which we will execute `aquery`.
+    ///
+    /// Large workspaces can have thousands of targets; this avoids loading too much
+    /// data on startup. Targets are sorted lexicographically before applying the
+    /// limit for determinism.
+    pub target_limit: usize,
+
+    /// Optional explicit target list to load.
+    ///
+    /// When set, only these targets are loaded (and `target_limit` is applied).
+    pub targets: Option<Vec<String>>,
+}
+
+impl Default for BazelLoadOptions {
+    fn default() -> Self {
+        Self {
+            enable_target_loading: false,
+            target_limit: 200,
+            targets: None,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +79,9 @@ pub enum ProjectError {
 
     #[error("unsupported or empty workspace at {root}")]
     UnknownProjectType { root: PathBuf },
+
+    #[error("bazel integration failed: {message}")]
+    Bazel { message: String },
 }
 
 pub fn load_project(root: impl AsRef<Path>) -> Result<ProjectConfig, ProjectError> {

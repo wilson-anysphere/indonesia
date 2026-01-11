@@ -1,0 +1,14 @@
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:lib_test"
+  arguments: "external/local_jdk/bin/javac"
+  arguments: "--source"
+  arguments: "17"
+  arguments: "--target"
+  arguments: "17"
+  arguments: "-classpath"
+  arguments: "bazel-out/k8-fastbuild/bin/java/com/example/lib.jar:external/junit/junit.jar"
+  arguments: "-d"
+  arguments: "bazel-out/k8-fastbuild/bin/java/com/example/lib_test_classes"
+  arguments: "javatests/com/example/HelloTest.java"
+}

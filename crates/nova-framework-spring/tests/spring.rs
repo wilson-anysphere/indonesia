@@ -148,6 +148,7 @@ fn applicability_detects_spring_via_classpath_marker() {
             classifier: None,
             type_: None,
         }],
+        workspace_model: None,
     };
 
     assert!(is_spring_applicable(&config));

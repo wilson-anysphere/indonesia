@@ -46,6 +46,20 @@ impl Default for JavaConfig {
     }
 }
 
+/// A module-specific Java language level.
+///
+/// Build tools can specify language level in multiple ways:
+/// - `--release` (preferred, Java 9+)
+/// - `--source` and `--target`
+/// - preview mode (`--enable-preview`)
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JavaLanguageLevel {
+    pub release: Option<JavaVersion>,
+    pub source: Option<JavaVersion>,
+    pub target: Option<JavaVersion>,
+    pub preview: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SourceRootKind {
     Main,
@@ -111,6 +125,27 @@ pub struct Module {
     pub root: PathBuf,
 }
 
+/// Per-module build configuration (classpath, source roots, language level).
+///
+/// For Bazel this corresponds to a build target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleConfig {
+    /// Stable module identifier (e.g. Bazel label).
+    pub id: String,
+    pub source_roots: Vec<SourceRoot>,
+    pub classpath: Vec<ClasspathEntry>,
+    pub module_path: Vec<ClasspathEntry>,
+    pub language_level: JavaLanguageLevel,
+    /// Java compiler output directory if discoverable (e.g. via `-d` / BSP `classDirectory`).
+    pub output_dir: Option<PathBuf>,
+}
+
+/// Target-aware workspace model.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceModel {
+    pub modules: Vec<ModuleConfig>,
+}
+
 /// A JPMS module root discovered in the workspace (i.e. it has a `module-info.java`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JpmsModuleRoot {
@@ -137,6 +172,10 @@ pub struct ProjectConfig {
     pub classpath: Vec<ClasspathEntry>,
     pub output_dirs: Vec<OutputDir>,
     pub dependencies: Vec<Dependency>,
+
+    /// Optional target-aware model (e.g. Bazel targets) for consumers that need
+    /// per-module compilation settings.
+    pub workspace_model: Option<WorkspaceModel>,
 }
 
 impl ProjectConfig {

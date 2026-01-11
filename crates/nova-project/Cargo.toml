@@ -3,6 +3,10 @@ name = "nova-project"
 version.workspace = true
 edition = "2021"
 
+[features]
+default = ["bazel"]
+bazel = ["dep:nova-build-bazel"]
+
 [dependencies]
 regex = "1.10.3"
 roxmltree = "0.20.0"
@@ -12,6 +16,8 @@ serde = { version = "1", features = ["derive"] }
 nova-config = { path = "../nova-config" }
 nova-hir = { path = "../nova-hir" }
 nova-modules = { path = "../nova-modules" }
+nova-build-bazel = { path = "../nova-build-bazel", optional = true }
 
 [dev-dependencies]
+anyhow = "1"
 tempfile = "3.10.1"

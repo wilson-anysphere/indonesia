@@ -148,6 +148,7 @@ pub(crate) fn load_maven_project(
         classpath,
         output_dirs,
         dependencies,
+        workspace_model: None,
     })
 }
 

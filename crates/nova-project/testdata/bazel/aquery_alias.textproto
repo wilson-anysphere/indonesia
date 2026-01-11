@@ -1,0 +1,5 @@
+action {
+  mnemonic: "Symlink"
+  owner: "//java/com/example:alias"
+  arguments: "ignored"
+}

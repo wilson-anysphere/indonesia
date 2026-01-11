@@ -1,0 +1,3 @@
+//java/com/example:alias
+//java/com/example:lib
+//java/com/example:lib_test

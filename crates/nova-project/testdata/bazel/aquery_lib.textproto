@@ -1,0 +1,15 @@
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:lib"
+  arguments: "external/local_jdk/bin/javac"
+  arguments: "--release"
+  arguments: "21"
+  arguments: "--enable-preview"
+  arguments: "-classpath"
+  arguments: "bazel-out/k8-fastbuild/bin/java/com/example/lib.jar:external/junit/junit.jar"
+  arguments: "--module-path"
+  arguments: "external/modules"
+  arguments: "-d"
+  arguments: "bazel-out/k8-fastbuild/bin/java/com/example/lib_classes"
+  arguments: "java/com/example/Hello.java"
+}

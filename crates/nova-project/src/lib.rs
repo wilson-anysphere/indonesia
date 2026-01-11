@@ -17,11 +17,15 @@ pub mod package;
 mod simple;
 mod workspace_config;
 
+pub use discover::BazelLoadOptions;
 pub use discover::{
     bazel_workspace_root, is_bazel_workspace, load_project, load_project_with_options,
     load_project_with_workspace_config, reload_project, LoadOptions, ProjectError,
 };
 pub use model::*;
+
+#[cfg(feature = "bazel")]
+pub use bazel::load_bazel_workspace_model_with_runner;
 pub use package::{
     class_to_file_name, infer_source_root, is_valid_package_name, package_to_path,
     validate_package_name, PackageNameError,
