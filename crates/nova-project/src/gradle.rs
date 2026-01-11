@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -6,7 +6,9 @@ use regex::Regex;
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaVersion, Module,
-    OutputDir, OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
+    JavaLanguageLevel, LanguageLevelProvenance, ModuleLanguageLevel, OutputDir, OutputDirKind,
+    ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId,
+    WorkspaceModuleConfig, WorkspaceProjectModel,
 };
 
 pub(crate) fn load_gradle_project(
@@ -146,6 +148,159 @@ pub(crate) fn load_gradle_project(
     })
 }
 
+pub(crate) fn load_gradle_workspace_model(
+    root: &Path,
+    options: &LoadOptions,
+) -> Result<WorkspaceProjectModel, ProjectError> {
+    let settings_path = ["settings.gradle.kts", "settings.gradle"]
+        .into_iter()
+        .map(|name| root.join(name))
+        .find(|p| p.is_file());
+
+    let module_refs = if let Some(settings_path) = settings_path {
+        let contents =
+            std::fs::read_to_string(&settings_path).map_err(|source| ProjectError::Io {
+                path: settings_path.clone(),
+                source,
+            })?;
+        parse_gradle_settings_projects(&contents)
+    } else {
+        vec![GradleModuleRef::root()]
+    };
+
+    let (root_java, root_java_provenance) = match parse_gradle_java_config_with_path(root) {
+        Some((java, path)) => (java, LanguageLevelProvenance::BuildFile(path)),
+        None => (JavaConfig::default(), LanguageLevelProvenance::Default),
+    };
+
+    let mut module_configs = Vec::new();
+    for module_ref in module_refs {
+        let module_root = if module_ref.dir_rel == "." {
+            root.to_path_buf()
+        } else {
+            root.join(&module_ref.dir_rel)
+        };
+
+        let module_display_name = if module_ref.dir_rel == "." {
+            root.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("root")
+                .to_string()
+        } else {
+            module_ref
+                .project_path
+                .trim_start_matches(':')
+                .rsplit(':')
+                .next()
+                .unwrap_or(&module_ref.project_path)
+                .to_string()
+        };
+
+        let (module_java, provenance) = match parse_gradle_java_config_with_path(&module_root) {
+            Some((java, path)) => (java, LanguageLevelProvenance::BuildFile(path)),
+            None => (root_java, root_java_provenance.clone()),
+        };
+
+        let language_level = ModuleLanguageLevel {
+            level: JavaLanguageLevel::from_java_config(module_java),
+            provenance,
+        };
+
+        let mut source_roots = Vec::new();
+        push_source_root(
+            &mut source_roots,
+            &module_root,
+            SourceRootKind::Main,
+            "src/main/java",
+        );
+        push_source_root(
+            &mut source_roots,
+            &module_root,
+            SourceRootKind::Test,
+            "src/test/java",
+        );
+        crate::generated::append_generated_source_roots(
+            &mut source_roots,
+            &module_root,
+            &options.nova_config,
+        );
+
+        let main_output = module_root.join("build/classes/java/main");
+        let test_output = module_root.join("build/classes/java/test");
+        let mut output_dirs = vec![
+            OutputDir {
+                kind: OutputDirKind::Main,
+                path: main_output.clone(),
+            },
+            OutputDir {
+                kind: OutputDirKind::Test,
+                path: test_output.clone(),
+            },
+        ];
+
+        let mut classpath = vec![
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: main_output,
+            },
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: test_output,
+            },
+        ];
+
+        for entry in &options.classpath_overrides {
+            classpath.push(ClasspathEntry {
+                kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+                    ClasspathEntryKind::Jar
+                } else {
+                    ClasspathEntryKind::Directory
+                },
+                path: entry.clone(),
+            });
+        }
+
+        let mut dependencies = parse_gradle_dependencies(&module_root);
+
+        sort_dedup_source_roots(&mut source_roots);
+        sort_dedup_output_dirs(&mut output_dirs);
+        sort_dedup_classpath(&mut classpath);
+        sort_dedup_dependencies(&mut dependencies);
+
+        module_configs.push(WorkspaceModuleConfig {
+            id: format!("gradle:{}", module_ref.project_path),
+            name: module_display_name,
+            root: module_root,
+            build_id: WorkspaceModuleBuildId::Gradle {
+                project_path: module_ref.project_path,
+            },
+            language_level,
+            source_roots,
+            output_dirs,
+            module_path: Vec::new(),
+            classpath,
+            dependencies,
+        });
+    }
+
+    let modules_for_jpms = module_configs
+        .iter()
+        .map(|module| Module {
+            name: module.name.clone(),
+            root: module.root.clone(),
+        })
+        .collect::<Vec<_>>();
+    let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);
+
+    Ok(WorkspaceProjectModel::new(
+        root.to_path_buf(),
+        BuildSystem::Gradle,
+        root_java,
+        module_configs,
+        jpms_modules,
+    ))
+}
+
 fn parse_gradle_settings_modules(contents: &str) -> Vec<String> {
     // Very conservative: look for quoted strings in lines containing `include`.
     let mut modules = Vec::new();
@@ -162,6 +317,59 @@ fn parse_gradle_settings_modules(contents: &str) -> Vec<String> {
 
     if modules.is_empty() {
         vec![".".to_string()]
+    } else {
+        modules
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GradleModuleRef {
+    project_path: String,
+    dir_rel: String,
+}
+
+impl GradleModuleRef {
+    fn root() -> Self {
+        Self {
+            project_path: ":".to_string(),
+            dir_rel: ".".to_string(),
+        }
+    }
+}
+
+fn parse_gradle_settings_projects(contents: &str) -> Vec<GradleModuleRef> {
+    let mut modules: Vec<GradleModuleRef> = Vec::new();
+    for line in contents.lines() {
+        if !line.contains("include") {
+            continue;
+        }
+        modules.extend(extract_quoted_strings(line).into_iter().map(|s| {
+            let s = s.trim();
+            let project_path = if s.starts_with(':') {
+                s.to_string()
+            } else {
+                format!(":{s}")
+            };
+            let dir_rel = project_path
+                .trim_start_matches(':')
+                .replace(':', "/")
+                .trim()
+                .to_string();
+            let dir_rel = if dir_rel.is_empty() {
+                ".".to_string()
+            } else {
+                dir_rel
+            };
+
+            GradleModuleRef {
+                project_path,
+                dir_rel,
+            }
+        }));
+    }
+
+    if modules.is_empty() {
+        vec![GradleModuleRef::root()]
     } else {
         modules
     }
@@ -187,6 +395,24 @@ fn parse_gradle_java_config(root: &Path) -> Option<JavaConfig> {
         if let Ok(contents) = std::fs::read_to_string(&path) {
             if let Some(java) = extract_java_config_from_build_script(&contents) {
                 return Some(java);
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_gradle_java_config_with_path(root: &Path) -> Option<(JavaConfig, PathBuf)> {
+    let candidates = ["build.gradle.kts", "build.gradle"]
+        .into_iter()
+        .map(|name| root.join(name))
+        .filter(|p| p.is_file())
+        .collect::<Vec<_>>();
+
+    for path in candidates {
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Some(java) = extract_java_config_from_build_script(&contents) {
+                return Some((java, path));
             }
         }
     }

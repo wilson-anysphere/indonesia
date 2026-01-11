@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use nova_config::NovaConfig;
 
-use crate::{bazel, gradle, maven, simple, BuildSystem, ProjectConfig};
+use crate::{bazel, gradle, maven, simple, BuildSystem, ProjectConfig, WorkspaceProjectModel};
 
 #[derive(Debug, Clone, Default)]
 pub struct LoadOptions {
@@ -94,6 +94,10 @@ pub fn load_project(root: impl AsRef<Path>) -> Result<ProjectConfig, ProjectErro
     load_project_with_workspace_config(root)
 }
 
+pub fn load_workspace_model(root: impl AsRef<Path>) -> Result<WorkspaceProjectModel, ProjectError> {
+    load_workspace_model_with_options(root, &LoadOptions::default())
+}
+
 pub fn load_project_with_workspace_config(
     root: impl AsRef<Path>,
 ) -> Result<ProjectConfig, ProjectError> {
@@ -118,6 +122,16 @@ pub fn load_project_with_options(
     let workspace_root = workspace_root(&start_path)
         .ok_or(ProjectError::UnknownProjectType { root: start_path })?;
     load_project_from_workspace_root(&workspace_root, options)
+}
+
+pub fn load_workspace_model_with_options(
+    root: impl AsRef<Path>,
+    options: &LoadOptions,
+) -> Result<WorkspaceProjectModel, ProjectError> {
+    let start_path = crate::workspace_config::canonicalize_workspace_root(root)?;
+    let workspace_root = workspace_root(&start_path)
+        .ok_or(ProjectError::UnknownProjectType { root: start_path })?;
+    load_workspace_model_from_workspace_root(&workspace_root, options)
 }
 
 pub fn reload_project(
@@ -146,8 +160,35 @@ pub fn reload_project(
         options.nova_config_path = new_path;
     }
 
-    // Naive implementation: re-scan the workspace root.
-    load_project_from_workspace_root(workspace_root, options)
+    if reload_config {
+        // Config changes can affect generated source roots, classpath overrides, etc.
+        return load_project_from_workspace_root(workspace_root, options);
+    }
+
+    if changed_files.is_empty()
+        || changed_files
+            .iter()
+            .any(|path| is_build_file(config.build_system, path))
+    {
+        // Build files changed (or unknown change set): rescan the workspace root.
+        return load_project_from_workspace_root(workspace_root, options);
+    }
+
+    // Module-info changes affect the JPMS module root list + workspace graph; update it without
+    // re-loading the module list.
+    if changed_files.iter().any(|path| {
+        path.file_name()
+            .is_some_and(|name| name == "module-info.java")
+    }) {
+        let mut next = config.clone();
+        next.jpms_modules = crate::jpms::discover_jpms_modules(&next.modules);
+        next.jpms_workspace =
+            crate::jpms::build_jpms_workspace(&next.jpms_modules, &next.module_path);
+        return Ok(next);
+    }
+
+    // Source-only changes: keep the config stable.
+    Ok(config.clone())
 }
 
 fn load_project_from_workspace_root(
@@ -161,6 +202,20 @@ fn load_project_from_workspace_root(
         BuildSystem::Gradle => gradle::load_gradle_project(workspace_root, options),
         BuildSystem::Bazel => bazel::load_bazel_project(workspace_root, options),
         BuildSystem::Simple => simple::load_simple_project(workspace_root, options),
+    }
+}
+
+fn load_workspace_model_from_workspace_root(
+    workspace_root: &Path,
+    options: &LoadOptions,
+) -> Result<WorkspaceProjectModel, ProjectError> {
+    let build_system = detect_build_system(workspace_root)?;
+
+    match build_system {
+        BuildSystem::Maven => maven::load_maven_workspace_model(workspace_root, options),
+        BuildSystem::Gradle => gradle::load_gradle_workspace_model(workspace_root, options),
+        BuildSystem::Bazel => bazel::load_bazel_workspace_model(workspace_root, options),
+        BuildSystem::Simple => simple::load_simple_workspace_model(workspace_root, options),
     }
 }
 
@@ -374,4 +429,27 @@ pub fn is_bazel_workspace(root: &Path) -> bool {
     ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"]
         .iter()
         .any(|marker| root.join(marker).is_file())
+}
+
+fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    match build_system {
+        BuildSystem::Maven => name == "pom.xml",
+        BuildSystem::Gradle => matches!(
+            name,
+            "build.gradle"
+                | "build.gradle.kts"
+                | "settings.gradle"
+                | "settings.gradle.kts"
+                | "gradle.properties"
+        ),
+        BuildSystem::Bazel => matches!(
+            name,
+            "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel" | "BUILD" | "BUILD.bazel"
+        ) || path.extension().is_some_and(|ext| ext == "bzl"),
+        BuildSystem::Simple => false,
+    }
 }

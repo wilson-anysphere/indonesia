@@ -5,7 +5,9 @@ use std::sync::{Arc, OnceLock};
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaVersion, Module,
-    OutputDir, OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
+    JavaLanguageLevel, LanguageLevelProvenance, MavenGav, ModuleLanguageLevel, OutputDir,
+    OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId,
+    WorkspaceModuleConfig, WorkspaceProjectModel,
 };
 use regex::Regex;
 
@@ -164,6 +166,190 @@ pub(crate) fn load_maven_project(
         dependencies,
         workspace_model: None,
     })
+}
+
+pub(crate) fn load_maven_workspace_model(
+    root: &Path,
+    options: &LoadOptions,
+) -> Result<WorkspaceProjectModel, ProjectError> {
+    let root_pom_path = root.join("pom.xml");
+    let root_pom = parse_pom(&root_pom_path)?;
+
+    let root_effective = Arc::new(EffectivePom::from_raw(&root_pom, None));
+    let mut discovered_modules =
+        discover_modules_recursive(root, &root_pom, Arc::clone(&root_effective))?;
+    discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
+    discovered_modules.dedup_by(|a, b| a.root == b.root);
+
+    let maven_repo = options
+        .maven_repo
+        .clone()
+        .or_else(default_maven_repo)
+        .unwrap_or_else(|| PathBuf::from(".m2/repository"));
+
+    let mut module_configs = Vec::new();
+    for module in &discovered_modules {
+        let module_root = &module.root;
+        let effective = module.effective.as_ref();
+
+        let module_java = effective
+            .java
+            .unwrap_or(root_effective.java.unwrap_or_default());
+
+        let module_display_name = if module_root == root {
+            module
+                .raw_pom
+                .artifact_id
+                .clone()
+                .unwrap_or_else(|| "root".to_string())
+        } else {
+            module_root
+                .strip_prefix(root)
+                .unwrap_or(module_root)
+                .to_string_lossy()
+                .to_string()
+        };
+
+        let group_id = effective.group_id.clone().unwrap_or_default();
+        let artifact_id = effective
+            .artifact_id
+            .clone()
+            .unwrap_or_else(|| module_display_name.clone());
+
+        let module_path = if module_root == root {
+            ".".to_string()
+        } else {
+            module_root
+                .strip_prefix(root)
+                .unwrap_or(module_root)
+                .to_string_lossy()
+                .to_string()
+        };
+
+        let id = if !group_id.is_empty() && !artifact_id.is_empty() {
+            format!("maven:{group_id}:{artifact_id}")
+        } else if module_root == root {
+            "maven:root".to_string()
+        } else {
+            format!("maven:path:{module_path}")
+        };
+
+        let module_pom_path = module_root.join("pom.xml");
+        let java_provenance = if module.raw_pom.java.is_some() {
+            LanguageLevelProvenance::BuildFile(module_pom_path)
+        } else if root_effective.java.is_some() {
+            LanguageLevelProvenance::BuildFile(root_pom_path.clone())
+        } else {
+            LanguageLevelProvenance::Default
+        };
+
+        let language_level = ModuleLanguageLevel {
+            level: JavaLanguageLevel::from_java_config(module_java),
+            provenance: java_provenance,
+        };
+
+        let build_id = WorkspaceModuleBuildId::Maven {
+            module_path,
+            gav: MavenGav {
+                group_id,
+                artifact_id,
+                version: effective.version.clone(),
+            },
+        };
+
+        let mut source_roots = Vec::new();
+        push_source_root(
+            &mut source_roots,
+            module_root,
+            SourceRootKind::Main,
+            "src/main/java",
+        );
+        push_source_root(
+            &mut source_roots,
+            module_root,
+            SourceRootKind::Test,
+            "src/test/java",
+        );
+        crate::generated::append_generated_source_roots(
+            &mut source_roots,
+            module_root,
+            &options.nova_config,
+        );
+
+        let main_output = module_root.join("target/classes");
+        let test_output = module_root.join("target/test-classes");
+        let mut output_dirs = vec![
+            OutputDir {
+                kind: OutputDirKind::Main,
+                path: main_output.clone(),
+            },
+            OutputDir {
+                kind: OutputDirKind::Test,
+                path: test_output.clone(),
+            },
+        ];
+
+        let mut classpath = vec![
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: main_output,
+            },
+            ClasspathEntry {
+                kind: ClasspathEntryKind::Directory,
+                path: test_output,
+            },
+        ];
+
+        let mut dependencies = Vec::new();
+        for dep in &effective.dependencies {
+            if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
+                continue;
+            }
+            dependencies.push(dep.clone());
+
+            if let Some(jar_path) = maven_dependency_jar_path(&maven_repo, dep) {
+                classpath.push(ClasspathEntry {
+                    kind: ClasspathEntryKind::Jar,
+                    path: jar_path,
+                });
+            }
+        }
+
+        sort_dedup_source_roots(&mut source_roots);
+        sort_dedup_output_dirs(&mut output_dirs);
+        sort_dedup_classpath(&mut classpath);
+        sort_dedup_dependencies(&mut dependencies);
+
+        module_configs.push(WorkspaceModuleConfig {
+            id,
+            name: module_display_name,
+            root: module_root.clone(),
+            build_id,
+            language_level,
+            source_roots,
+            output_dirs,
+            module_path: Vec::new(),
+            classpath,
+            dependencies,
+        });
+    }
+
+    let modules_for_jpms = module_configs
+        .iter()
+        .map(|module| Module {
+            name: module.name.clone(),
+            root: module.root.clone(),
+        })
+        .collect::<Vec<_>>();
+    let jpms_modules = crate::jpms::discover_jpms_modules(&modules_for_jpms);
+
+    Ok(WorkspaceProjectModel::new(
+        root.to_path_buf(),
+        BuildSystem::Maven,
+        root_effective.java.unwrap_or_default(),
+        module_configs,
+        jpms_modules,
+    ))
 }
 
 #[derive(Debug, Clone)]

@@ -61,6 +61,17 @@ pub struct JavaLanguageLevel {
     pub preview: bool,
 }
 
+impl JavaLanguageLevel {
+    pub fn from_java_config(java: JavaConfig) -> Self {
+        Self {
+            release: None,
+            source: Some(java.source),
+            target: Some(java.target),
+            preview: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SourceRootKind {
     Main,
@@ -226,5 +237,178 @@ impl ProjectConfig {
 
     pub fn readable_modules(&self, module: &ModuleName) -> Option<BTreeSet<ModuleName>> {
         Some(self.module_graph()?.readable_modules(module))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// IntelliJ-style per-build-system module model.
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum LanguageLevelProvenance {
+    /// No configuration was found (Nova fallback default).
+    Default,
+    /// Discovered in a build file (pom.xml, build.gradle, etc).
+    BuildFile(PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleLanguageLevel {
+    pub level: JavaLanguageLevel,
+    pub provenance: LanguageLevelProvenance,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MavenGav {
+    pub group_id: String,
+    pub artifact_id: String,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WorkspaceModuleBuildId {
+    Maven { module_path: String, gav: MavenGav },
+    Gradle { project_path: String },
+    Bazel { label: String },
+    Simple,
+}
+
+/// IntelliJ-style per-module configuration (workspace modules / Gradle subprojects).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceModuleConfig {
+    /// Stable module identifier used for cross-references.
+    pub id: String,
+    /// Human-friendly display name (usually build-tool module name).
+    pub name: String,
+    /// Module content root.
+    pub root: PathBuf,
+    /// Build-system identity (Maven GAV, Gradle project path, Bazel label, etc).
+    pub build_id: WorkspaceModuleBuildId,
+    /// Effective Java language level for this module.
+    pub language_level: ModuleLanguageLevel,
+    /// Module source roots (main/test, source/generated).
+    pub source_roots: Vec<SourceRoot>,
+    /// Expected output directories (main/test).
+    pub output_dirs: Vec<OutputDir>,
+    /// JPMS module-path entries (Java 9+). May be empty initially.
+    pub module_path: Vec<ClasspathEntry>,
+    /// Classpath entries for compilation/resolution.
+    pub classpath: Vec<ClasspathEntry>,
+    /// Direct build dependencies. Resolution is best-effort and may be incomplete.
+    pub dependencies: Vec<Dependency>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceProjectModel {
+    pub workspace_root: PathBuf,
+    pub build_system: BuildSystem,
+    /// Workspace-level default Java config (used for compatibility `ProjectConfig`).
+    pub java: JavaConfig,
+    pub modules: Vec<WorkspaceModuleConfig>,
+    /// JPMS module roots within this workspace.
+    pub jpms_modules: Vec<JpmsModuleRoot>,
+
+    module_index: BTreeMap<String, usize>,
+    source_root_index: Vec<WorkspaceSourceRootIndexEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceSourceRootIndexEntry {
+    module_index: usize,
+    source_root_index: usize,
+    path: PathBuf,
+    path_components: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceModuleForPath<'a> {
+    pub module: &'a WorkspaceModuleConfig,
+    pub source_root: &'a SourceRoot,
+}
+
+impl WorkspaceProjectModel {
+    pub fn new(
+        workspace_root: PathBuf,
+        build_system: BuildSystem,
+        java: JavaConfig,
+        modules: Vec<WorkspaceModuleConfig>,
+        jpms_modules: Vec<JpmsModuleRoot>,
+    ) -> Self {
+        let mut model = Self {
+            workspace_root,
+            build_system,
+            java,
+            modules,
+            jpms_modules,
+            module_index: BTreeMap::new(),
+            source_root_index: Vec::new(),
+        };
+        model.rebuild_indexes();
+        model
+    }
+
+    pub fn module_by_id(&self, id: &str) -> Option<&WorkspaceModuleConfig> {
+        self.module_index.get(id).map(|idx| &self.modules[*idx])
+    }
+
+    /// Find the owning module and source root for an (absolute) file path.
+    ///
+    /// When multiple source roots match (nested/overlapping roots), this returns the most specific
+    /// (deepest) root.
+    pub fn module_for_path(&self, path: impl AsRef<Path>) -> Option<WorkspaceModuleForPath<'_>> {
+        let path = path.as_ref();
+        let joined;
+        let path = if path.is_absolute() {
+            path
+        } else {
+            joined = self.workspace_root.join(path);
+            &joined
+        };
+
+        for entry in &self.source_root_index {
+            if path.starts_with(&entry.path) {
+                let module = &self.modules[entry.module_index];
+                let source_root = &module.source_roots[entry.source_root_index];
+                return Some(WorkspaceModuleForPath { module, source_root });
+            }
+        }
+
+        None
+    }
+
+    fn rebuild_indexes(&mut self) {
+        self.module_index.clear();
+        self.source_root_index.clear();
+
+        for (idx, module) in self.modules.iter().enumerate() {
+            self.module_index.insert(module.id.clone(), idx);
+        }
+
+        for (module_index, module) in self.modules.iter().enumerate() {
+            for (source_root_index, root) in module.source_roots.iter().enumerate() {
+                let path_components = root.path.components().count();
+                self.source_root_index.push(WorkspaceSourceRootIndexEntry {
+                    module_index,
+                    source_root_index,
+                    path: root.path.clone(),
+                    path_components,
+                });
+            }
+        }
+
+        self.source_root_index.sort_by(|a, b| {
+            b.path_components
+                .cmp(&a.path_components)
+                .then_with(|| a.path.cmp(&b.path))
+                .then_with(|| self.modules[a.module_index].id.cmp(&self.modules[b.module_index].id))
+                .then_with(|| {
+                    let a_root = &self.modules[a.module_index].source_roots[a.source_root_index];
+                    let b_root = &self.modules[b.module_index].source_roots[b.source_root_index];
+                    a_root
+                        .kind
+                        .cmp(&b_root.kind)
+                        .then(a_root.origin.cmp(&b_root.origin))
+                })
+        });
     }
 }

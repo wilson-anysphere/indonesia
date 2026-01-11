@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use nova_project::{load_project, BuildSystem, ClasspathEntryKind, JavaVersion, SourceRootKind};
+use nova_project::{
+    load_project, load_workspace_model, BuildSystem, ClasspathEntryKind, JavaVersion, OutputDirKind,
+    SourceRootKind, SourceRootOrigin,
+};
 
 fn testdata_path(rel: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -149,4 +152,128 @@ fn loads_gradle_multi_module_workspace() {
 
     let config2 = load_project(&root).expect("load gradle project again");
     assert_eq!(config, config2);
+}
+
+#[test]
+fn loads_maven_multi_module_workspace_model() {
+    let root = testdata_path("maven-multi");
+    let model = load_workspace_model(&root).expect("load maven workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Maven);
+
+    let app = model
+        .module_by_id("maven:com.example:app")
+        .expect("app module");
+    let lib = model
+        .module_by_id("maven:com.example:lib")
+        .expect("lib module");
+
+    let app_source_roots: BTreeSet<_> = app
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.origin,
+                sr.path.strip_prefix(&model.workspace_root).unwrap().to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(app_source_roots.contains(&(
+        SourceRootKind::Main,
+        SourceRootOrigin::Source,
+        PathBuf::from("app/src/main/java")
+    )));
+
+    let app_outputs: BTreeSet<_> = app
+        .output_dirs
+        .iter()
+        .map(|out| {
+            (
+                out.kind,
+                out.path.strip_prefix(&model.workspace_root).unwrap().to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(app_outputs.contains(&(OutputDirKind::Main, PathBuf::from("app/target/classes"))));
+    assert!(app_outputs.contains(&(OutputDirKind::Test, PathBuf::from("app/target/test-classes"))));
+
+    let lib_source_roots: BTreeSet<_> = lib
+        .source_roots
+        .iter()
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.origin,
+                sr.path.strip_prefix(&model.workspace_root).unwrap().to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(lib_source_roots.contains(&(
+        SourceRootKind::Main,
+        SourceRootOrigin::Source,
+        PathBuf::from("lib/src/main/java")
+    )));
+
+    let app_file = model
+        .workspace_root
+        .join("app/src/main/java/com/example/app/App.java");
+    let match_app = model.module_for_path(&app_file).expect("module for App.java");
+    assert_eq!(match_app.module.id, "maven:com.example:app");
+    assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
+
+    let lib_file = model
+        .workspace_root
+        .join("lib/src/main/java/com/example/lib/Lib.java");
+    let match_lib = model.module_for_path(&lib_file).expect("module for Lib.java");
+    assert_eq!(match_lib.module.id, "maven:com.example:lib");
+    assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
+}
+
+#[test]
+fn loads_gradle_multi_module_workspace_model() {
+    let root = testdata_path("gradle-multi");
+    let model = load_workspace_model(&root).expect("load gradle workspace model");
+
+    assert_eq!(model.build_system, BuildSystem::Gradle);
+
+    let _app = model
+        .module_by_id("gradle::app")
+        .expect("app module");
+    let lib = model
+        .module_by_id("gradle::lib")
+        .expect("lib module");
+
+    let lib_outputs: BTreeSet<_> = lib
+        .output_dirs
+        .iter()
+        .map(|out| {
+            (
+                out.kind,
+                out.path.strip_prefix(&model.workspace_root).unwrap().to_path_buf(),
+            )
+        })
+        .collect();
+    assert!(lib_outputs.contains(&(
+        OutputDirKind::Main,
+        PathBuf::from("lib/build/classes/java/main")
+    )));
+    assert!(lib_outputs.contains(&(
+        OutputDirKind::Test,
+        PathBuf::from("lib/build/classes/java/test")
+    )));
+
+    let app_file = model
+        .workspace_root
+        .join("app/src/main/java/com/example/app/App.java");
+    let match_app = model.module_for_path(&app_file).expect("module for App.java");
+    assert_eq!(match_app.module.id, "gradle::app");
+    assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
+
+    let lib_file = model
+        .workspace_root
+        .join("lib/src/main/java/com/example/lib/Lib.java");
+    let match_lib = model.module_for_path(&lib_file).expect("module for Lib.java");
+    assert_eq!(match_lib.module.id, "gradle::lib");
+    assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
 }

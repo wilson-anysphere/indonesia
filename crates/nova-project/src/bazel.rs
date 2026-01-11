@@ -3,14 +3,16 @@ use std::path::Path;
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
     BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, OutputDir, OutputDirKind,
-    ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
+    JavaLanguageLevel, LanguageLevelProvenance, ModuleLanguageLevel, ProjectConfig, SourceRoot,
+    SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
+    WorkspaceProjectModel,
 };
 
 #[cfg(feature = "bazel")]
 use std::path::PathBuf;
 
 #[cfg(feature = "bazel")]
-use crate::{JavaLanguageLevel, JavaVersion, ModuleConfig, WorkspaceModel};
+use crate::{JavaVersion, ModuleConfig, WorkspaceModel};
 
 #[cfg(feature = "bazel")]
 use nova_build_bazel::{BazelWorkspace, CommandRunner, DefaultCommandRunner, JavaCompileInfo};
@@ -31,6 +33,100 @@ pub(crate) fn load_bazel_project(
     }
 
     load_bazel_project_heuristic(root, options)
+}
+
+pub(crate) fn load_bazel_workspace_model(
+    root: &Path,
+    options: &LoadOptions,
+) -> Result<WorkspaceProjectModel, ProjectError> {
+    let mut source_roots = Vec::new();
+
+    for entry in walkdir::WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let name = entry.file_name().to_string_lossy();
+        if name != "BUILD" && name != "BUILD.bazel" {
+            continue;
+        }
+
+        let Some(dir) = entry.path().parent() else {
+            continue;
+        };
+
+        source_roots.push(SourceRoot {
+            kind: classify_bazel_source_root(dir),
+            origin: SourceRootOrigin::Source,
+            path: dir.to_path_buf(),
+        });
+    }
+
+    if source_roots.is_empty() {
+        source_roots.push(SourceRoot {
+            kind: SourceRootKind::Main,
+            origin: SourceRootOrigin::Source,
+            path: root.to_path_buf(),
+        });
+    }
+
+    crate::generated::append_generated_source_roots(&mut source_roots, root, &options.nova_config);
+
+    let mut classpath = Vec::new();
+    for entry in &options.classpath_overrides {
+        classpath.push(ClasspathEntry {
+            kind: if entry.extension().is_some_and(|ext| ext == "jar") {
+                ClasspathEntryKind::Jar
+            } else {
+                ClasspathEntryKind::Directory
+            },
+            path: entry.clone(),
+        });
+    }
+
+    sort_dedup_source_roots(&mut source_roots);
+    sort_dedup_classpath(&mut classpath);
+
+    let module_name = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("root")
+        .to_string();
+
+    let module_config = WorkspaceModuleConfig {
+        id: "bazel://".to_string(),
+        name: module_name,
+        root: root.to_path_buf(),
+        build_id: WorkspaceModuleBuildId::Bazel {
+            label: "//".to_string(),
+        },
+        language_level: ModuleLanguageLevel {
+            level: JavaLanguageLevel::from_java_config(JavaConfig::default()),
+            provenance: LanguageLevelProvenance::Default,
+        },
+        source_roots,
+        output_dirs: Vec::new(),
+        module_path: Vec::new(),
+        classpath,
+        dependencies: Vec::new(),
+    };
+
+    let jpms_modules = crate::jpms::discover_jpms_modules(&[Module {
+        name: module_config.name.clone(),
+        root: module_config.root.clone(),
+    }]);
+
+    Ok(WorkspaceProjectModel::new(
+        root.to_path_buf(),
+        BuildSystem::Bazel,
+        JavaConfig::default(),
+        vec![module_config],
+        jpms_modules,
+    ))
 }
 
 fn load_bazel_project_heuristic(
