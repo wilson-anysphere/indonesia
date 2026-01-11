@@ -1,0 +1,113 @@
+use std::sync::Arc;
+
+use nova_db::{ArcEq, FileId, NovaInputs, NovaTypeck, ProjectId, SalsaRootDatabase};
+use nova_jdk::JdkIndex;
+
+fn setup_db(text: &str) -> (SalsaRootDatabase, FileId) {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+
+    let file = FileId::from_raw(1);
+    db.set_file_project(file, project);
+    db.set_file_exists(file, true);
+    db.set_file_content(file, Arc::new(text.to_string()));
+    (db, file)
+}
+
+#[test]
+fn reports_type_mismatch_for_bad_initializer() {
+    let src = r#"
+class C {
+    void m() {
+        int x = "no";
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    let mismatch = diags
+        .iter()
+        .find(|d| d.code.as_ref() == "type-mismatch")
+        .expect("expected type-mismatch diagnostic");
+
+    let span = mismatch
+        .span
+        .expect("type-mismatch diagnostic should have a span");
+    let quote = src
+        .find("\"no\"")
+        .expect("snippet should contain string literal");
+    assert!(
+        span.start <= quote && quote < span.end,
+        "expected diagnostic span to cover string literal, got {span:?}"
+    );
+}
+
+#[test]
+fn type_at_offset_shows_string_for_substring_call() {
+    let src = r#"
+class C {
+    String m() {
+        return "x".substring(1);
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src
+        .find("substring(")
+        .expect("snippet should contain substring call")
+        + "substring".len();
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn type_at_offset_shows_string_for_concat() {
+    let src = r#"
+class C {
+    String m() {
+        return "a" + 1;
+    }
+}
+"#;
+
+    let (db, file) = setup_db(src);
+    let offset = src.find('+').expect("snippet should contain +");
+    let ty = db
+        .type_at_offset_display(file, offset as u32)
+        .expect("expected a type at offset");
+    assert_eq!(ty, "String");
+}
+
+#[test]
+fn differential_javac_type_mismatch() {
+    use nova_test_utils::javac::{javac_available, run_javac_snippet};
+
+    if !javac_available() {
+        eprintln!("skipping: javac not available");
+        return;
+    }
+
+    let src = r#"
+class Test {
+    void m() {
+        int x = "no";
+    }
+}
+"#;
+
+    let out = run_javac_snippet(src).expect("failed to invoke javac");
+    assert!(!out.success(), "expected javac to reject the snippet");
+
+    let (db, file) = setup_db(src);
+    let diags = db.type_diagnostics(file);
+    assert!(
+        diags.iter().any(|d| d.code.as_ref() == "type-mismatch"),
+        "expected Nova to report a type-mismatch diagnostic; got {diags:?}"
+    );
+}

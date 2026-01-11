@@ -386,7 +386,16 @@ fn reconcile_class_args(
     flattened: Vec<Type>,
 ) -> Vec<Type> {
     if expected_len == 0 {
-        return Vec::new();
+        // `expected_len == 0` can mean either:
+        // 1) the target class truly has no type parameters, or
+        // 2) we're currently looking at a placeholder `ClassDef` (common during
+        //    cycle-safe loading), so the real arity is unknown.
+        //
+        // Dropping type arguments in case (2) loses useful information for IDE
+        // scenarios (e.g. `Enum<E extends Enum<E>>`). Preserve the signature's
+        // type arguments and let later passes reconcile once full class defs
+        // are loaded.
+        return flattened;
     }
     if flattened.len() == expected_len {
         return flattened;

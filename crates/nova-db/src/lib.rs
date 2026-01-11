@@ -390,8 +390,9 @@ pub mod salsa;
 
 pub use salsa::{
     catch_cancelled, ArcEq, Database as SalsaDatabase, NovaDatabase, NovaHir, NovaIde,
-    NovaIndexing, NovaInputs, NovaResolve, NovaSemantic, NovaSyntax, QueryStat, QueryStatReport,
-    QueryStats, QueryStatsReport, RootDatabase as SalsaRootDatabase, Snapshot, SyntaxTree,
+    NovaIndexing, NovaInputs, NovaResolve, NovaSemantic, NovaSyntax, NovaTypeck, QueryStat,
+    QueryStatReport, QueryStats, QueryStatsReport, RootDatabase as SalsaRootDatabase, Snapshot,
+    SyntaxTree,
 };
 
 pub use persistence::{

@@ -2025,6 +2025,7 @@ impl Lowerer {
         let arg_list = node
             .children()
             .find(|child| child.kind() == SyntaxKind::ArgumentList);
+        let name_token = self.last_ident_like_before(node, SyntaxKind::ArgumentList);
         let callee_node = arg_list.as_ref().and_then(|_| {
             let mut callee = None;
             for child in node.children_with_tokens() {
@@ -2043,10 +2044,23 @@ impl Lowerer {
             callee
         });
 
-        let callee = callee_node
+        let mut callee = callee_node
             .as_ref()
             .map(|expr| self.lower_expr(expr))
             .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        if let Some(name_token) = name_token {
+            let name_range = self.spans.map_token(&name_token);
+            if callee.range().end < name_range.end {
+                let start = callee.range().start;
+                callee = ast::Expr::FieldAccess(ast::FieldAccessExpr {
+                    receiver: Box::new(callee),
+                    name: name_token.text().to_string(),
+                    name_range,
+                    range: Span::new(start, name_range.end),
+                });
+            }
+        }
 
         let args = arg_list
             .as_ref()

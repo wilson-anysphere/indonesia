@@ -19,6 +19,7 @@ nova-project = { path = "../nova-project" }
 nova-resolve = { path = "../nova-resolve" }
 nova-syntax = { path = "../nova-syntax" }
 nova-types = { path = "../nova-types" }
+nova-types-bridge = { path = "../nova-types-bridge" }
 parking_lot = "0.12"
 ra_salsa = { package = "ra_ap_salsa", version = "0.0.269" }
 tracing = "0.1"
@@ -29,6 +30,7 @@ walkdir = "2"
 
 [dev-dependencies]
 bincode = "1"
+nova-test-utils = { path = "../nova-test-utils" }
 serde_json = "1"
 tempfile = "3"
 

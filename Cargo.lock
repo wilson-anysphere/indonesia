@@ -3572,7 +3572,9 @@ dependencies = [
  "nova-project",
  "nova-resolve",
  "nova-syntax",
+ "nova-test-utils",
  "nova-types",
+ "nova-types-bridge",
  "parking_lot",
  "ra_ap_salsa",
  "serde",
@@ -4266,6 +4268,7 @@ version = "0.1.0"
 dependencies = [
  "nova-classfile",
  "nova-types",
+ "nova-types-signature",
  "thiserror 1.0.69",
 ]
 

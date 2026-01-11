@@ -6,5 +6,5 @@ edition = "2021"
 [dependencies]
 nova-classfile = { path = "../nova-classfile" }
 nova-types = { path = "../nova-types" }
+nova-types-signature = { path = "../nova-types-signature" }
 thiserror = "1"
-

@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItem,
@@ -17,7 +18,7 @@ use lsp_types::{
 };
 
 use nova_core::{path_to_file_uri, AbsPathBuf};
-use nova_db::{Database, FileId};
+use nova_db::{Database, FileId, NovaTypeck, SalsaDatabase};
 use nova_fuzzy::FuzzyMatcher;
 use nova_jdk::JdkIndex;
 use nova_types::{
@@ -455,7 +456,25 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         }));
     }
 
-    // 2) Unresolved references (best-effort).
+    // 2) Demand-driven type-checking diagnostics (best-effort, Salsa-backed).
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        let project = nova_db::ProjectId::from_raw(0);
+        let jdk = JDK_INDEX
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+        let salsa = SalsaDatabase::new();
+        salsa.set_jdk_index(project, jdk);
+        salsa.set_classpath_index(project, None);
+        salsa.set_file_text(file, text.to_string());
+        let snap = salsa.snapshot();
+        diagnostics.extend(snap.type_diagnostics(file));
+    }
+
+    // 3) Unresolved references (best-effort).
     let analysis = analyze(text);
     for call in &analysis.calls {
         if call.receiver.is_some() {
@@ -471,7 +490,7 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         ));
     }
 
-    // 3) JPA / JPQL diagnostics (best-effort).
+    // 4) JPA / JPQL diagnostics (best-effort).
     //
     // Computing the per-project entity model can require scanning the full
     // workspace. Avoid that work for files that clearly cannot contain any JPA
@@ -502,14 +521,14 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
             }
         }
 
-        // 4) Spring DI diagnostics (missing / ambiguous beans, circular deps).
+        // 5) Spring DI diagnostics (missing / ambiguous beans, circular deps).
         diagnostics.extend(spring_di::diagnostics_for_file(db, file));
 
-        // 5) Dagger/Hilt binding graph diagnostics (best-effort, workspace-scoped).
+        // 6) Dagger/Hilt binding graph diagnostics (best-effort, workspace-scoped).
         diagnostics.extend(crate::dagger_intel::diagnostics_for_file(db, file));
     }
 
-    // 6) Quarkus CDI diagnostics (best-effort, workspace-scoped).
+    // 7) Quarkus CDI diagnostics (best-effort, workspace-scoped).
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
@@ -528,7 +547,7 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         }
     }
 
-    // 7) Micronaut framework diagnostics (DI + validation).
+    // 8) Micronaut framework diagnostics (DI + validation).
     if let Some(path) = db
         .file_path(file)
         .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
@@ -1662,83 +1681,102 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
     let text = db.file_content(file);
     let offset = position_to_offset(text, position)?;
     let analysis = analyze(text);
-    let token = token_at_offset(&analysis.tokens, offset)?;
-    if token.kind != TokenKind::Ident {
-        return None;
-    }
+    let token = token_at_offset(&analysis.tokens, offset);
 
-    let mut types = TypeStore::with_minimal_jdk();
+    if let Some(token) = token {
+        if token.kind == TokenKind::Ident {
+            let mut types = TypeStore::with_minimal_jdk();
 
-    // Method hover (prefer call-sites so we can resolve classpath methods).
-    if let Some(call) = analysis.calls.iter().find(|c| c.name_span == token.span) {
-        if let Some(sig) = semantic_call_signatures(&mut types, &analysis, call, 1)
-            .into_iter()
-            .next()
-        {
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: format!("```java\n{sig}\n```"),
-                }),
-                range: None,
-            });
+            // Method hover (prefer call-sites so we can resolve classpath methods).
+            if let Some(call) = analysis.calls.iter().find(|c| c.name_span == token.span) {
+                if let Some(sig) = semantic_call_signatures(&mut types, &analysis, call, 1)
+                    .into_iter()
+                    .next()
+                {
+                    return Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!("```java\n{sig}\n```"),
+                        }),
+                        range: None,
+                    });
+                }
+            }
+
+            // Variable hover: show semantic type (best-effort).
+            if let Some(var) = analysis.vars.iter().find(|v| v.name == token.text) {
+                let ty = parse_source_type(&mut types, &var.ty);
+                let ty = nova_types::format_type(&types, &ty);
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: format!("```java\n{}: {ty}\n```", var.name),
+                    }),
+                    range: None,
+                });
+            }
+
+            // Field hover: show semantic type (best-effort).
+            if let Some(field) = analysis.fields.iter().find(|f| f.name == token.text) {
+                let ty = parse_source_type(&mut types, &field.ty);
+                let ty = nova_types::format_type(&types, &ty);
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: format!("```java\n{}: {ty}\n```", field.name),
+                    }),
+                    range: None,
+                });
+            }
+
+            // Method hover for declarations in this file.
+            if let Some(method) = analysis.methods.iter().find(|m| m.name_span == token.span) {
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: format!(
+                            "```java\n{}\n```",
+                            format_local_method_signature(&mut types, method)
+                        ),
+                    }),
+                    range: None,
+                });
+            }
+
+            // Class/type hover: show fully-qualified name.
+            if let Some(class_id) = types.class_id(&token.text) {
+                if let Some(class) = types.class(class_id) {
+                    return Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!("```java\n{}\n```", class.name),
+                        }),
+                        range: None,
+                    });
+                }
+            }
         }
     }
 
-    // Variable hover: show semantic type (best-effort).
-    if let Some(var) = analysis.vars.iter().find(|v| v.name == token.text) {
-        let ty = parse_source_type(&mut types, &var.ty);
-        let ty = nova_types::format_type(&types, &ty);
-        return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!("```java\n{}: {ty}\n```", var.name),
-            }),
-            range: None,
-        });
-    }
-
-    // Field hover: show semantic type (best-effort).
-    if let Some(field) = analysis.fields.iter().find(|f| f.name == token.text) {
-        let ty = parse_source_type(&mut types, &field.ty);
-        let ty = nova_types::format_type(&types, &ty);
-        return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!("```java\n{}: {ty}\n```", field.name),
-            }),
-            range: None,
-        });
-    }
-
-    // Method hover for declarations in this file.
-    if let Some(method) = analysis.methods.iter().find(|m| m.name_span == token.span) {
-        return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: format!(
-                    "```java\n{}\n```",
-                    format_local_method_signature(&mut types, method)
-                ),
-            }),
-            range: None,
-        });
-    }
-
-    // Class/type hover: show fully-qualified name.
-    if let Some(class_id) = types.class_id(&token.text) {
-        if let Some(class) = types.class(class_id) {
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: format!("```java\n{}\n```", class.name),
-                }),
-                range: None,
-            });
-        }
-    }
-
-    None
+    // Fallback: use Salsa-backed, demand-driven type checking to show an expression type.
+    let project = nova_db::ProjectId::from_raw(0);
+    let jdk = JDK_INDEX
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(JdkIndex::new()));
+    let salsa = SalsaDatabase::new();
+    salsa.set_jdk_index(project, jdk);
+    salsa.set_classpath_index(project, None);
+    salsa.set_file_text(file, text.to_string());
+    let snap = salsa.snapshot();
+    let ty = snap.type_at_offset_display(file, offset as u32)?;
+    Some(Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("```java\n{ty}\n```"),
+        }),
+        range: None,
+    })
 }
 
 pub fn signature_help(
@@ -1901,7 +1939,8 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
 // Semantic helpers (JDK/classpath-aware signatures and type formatting)
 // -----------------------------------------------------------------------------
 
-static JDK_INDEX: Lazy<Option<JdkIndex>> = Lazy::new(|| JdkIndex::discover(None).ok());
+static JDK_INDEX: Lazy<Option<Arc<JdkIndex>>> =
+    Lazy::new(|| JdkIndex::discover(None).ok().map(Arc::new));
 
 fn semantic_call_signatures(
     types: &mut TypeStore,

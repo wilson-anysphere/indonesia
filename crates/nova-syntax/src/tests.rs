@@ -418,6 +418,8 @@ fn lexer_rejects_invalid_char_literals() {
 
 #[test]
 fn lexer_string_literal_escape_sequences() {
+    // NOTE: These are Java escape sequences. The Rust string uses `\\` to spell a single `\`
+    // in the Java source text.
     let input = "\"\\n\" \"\\123\" \"\\s\"";
     let (tokens, errors) = lex_with_errors(input);
     assert_eq!(errors, Vec::new());

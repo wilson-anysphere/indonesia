@@ -38,6 +38,7 @@ mod resolve;
 mod semantic;
 mod stats;
 mod syntax;
+mod typeck;
 mod workspace;
 
 pub use hir::NovaHir;
@@ -48,6 +49,7 @@ pub use resolve::NovaResolve;
 pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStatsReport};
 pub use syntax::{NovaSyntax, SyntaxTree};
+pub use typeck::{BodyTypeckResult, FileExprId, NovaTypeck};
 pub use workspace::{WorkspaceLoadError, WorkspaceLoader};
 
 use std::cell::RefCell;
@@ -353,6 +355,7 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
     semantic::NovaSemanticStorage,
     hir::NovaHirStorage,
     resolve::NovaResolveStorage,
+    typeck::NovaTypeckStorage,
     ide::NovaIdeStorage,
     indexing::NovaIndexingStorage
 )]
@@ -1026,12 +1029,19 @@ impl crate::SourceDatabase for Database {
 
 /// Convenience trait alias that composes Nova's query groups.
 pub trait NovaDatabase:
-    NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve + NovaIndexing
+    NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve + NovaTypeck + NovaIndexing
 {
 }
 
 impl<T> NovaDatabase for T where
-    T: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir + NovaResolve + NovaIndexing
+    T: NovaInputs
+        + NovaSyntax
+        + NovaSemantic
+        + NovaIde
+        + NovaHir
+        + NovaResolve
+        + NovaTypeck
+        + NovaIndexing
 {
 }
 

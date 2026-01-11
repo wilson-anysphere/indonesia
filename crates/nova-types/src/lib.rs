@@ -586,6 +586,59 @@ impl TypeStore {
             constructors: vec![],
             methods: vec![],
         });
+        if let Some(string_def) = store.class_mut(string) {
+            let string_ty = Type::class(string, vec![]);
+            string_def.methods = vec![
+                MethodDef {
+                    name: "length".to_string(),
+                    type_params: vec![],
+                    params: vec![],
+                    return_type: Type::Primitive(PrimitiveType::Int),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "substring".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::Primitive(PrimitiveType::Int)],
+                    return_type: string_ty.clone(),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "substring".to_string(),
+                    type_params: vec![],
+                    params: vec![
+                        Type::Primitive(PrimitiveType::Int),
+                        Type::Primitive(PrimitiveType::Int),
+                    ],
+                    return_type: string_ty.clone(),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "charAt".to_string(),
+                    type_params: vec![],
+                    params: vec![Type::Primitive(PrimitiveType::Int)],
+                    return_type: Type::Primitive(PrimitiveType::Char),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+                MethodDef {
+                    name: "isEmpty".to_string(),
+                    type_params: vec![],
+                    params: vec![],
+                    return_type: Type::Primitive(PrimitiveType::Boolean),
+                    is_static: false,
+                    is_varargs: false,
+                    is_abstract: false,
+                },
+            ];
+        }
         let number = store.add_class(ClassDef {
             name: "java.lang.Number".to_string(),
             kind: ClassKind::Class,
