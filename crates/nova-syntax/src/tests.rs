@@ -1065,9 +1065,20 @@ class Foo {
     if (x instanceof String s) {}
     if (x instanceof final String t) {}
   }
-}
+ }
 "#;
 
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::Pattern));
+    assert!(kinds.contains(&SyntaxKind::TypePattern));
+}
+
+#[test]
+fn parse_instanceof_pattern_allows_when_identifier() {
+    let input = "class Foo { void m(Object x) { if (x instanceof String when) {} } }";
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
 
@@ -1114,6 +1125,18 @@ class Foo {
 }
 "#;
 
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::RecordPattern));
+    assert!(kinds.contains(&SyntaxKind::TypePattern));
+}
+
+#[test]
+fn parse_record_pattern_allows_when_component_name() {
+    let input =
+        "class Foo { void m(Object o) { switch (o) { case Point(int when, int y) -> {} } } }";
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
 

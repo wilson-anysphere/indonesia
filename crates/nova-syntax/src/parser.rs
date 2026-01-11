@@ -1435,7 +1435,7 @@ impl<'a> Parser<'a> {
             _ => {
                 if self.at_pattern_start() {
                     is_pattern = true;
-                    self.parse_pattern();
+                    self.parse_pattern(true);
                 } else {
                     self.parse_expression(0);
                 }
@@ -1577,17 +1577,17 @@ impl<'a> Parser<'a> {
         self.tokens.get(i).map(|t| t.kind) == Some(SyntaxKind::LParen)
     }
 
-    fn parse_pattern(&mut self) {
+    fn parse_pattern(&mut self, allow_guard: bool) {
         self.builder.start_node(SyntaxKind::Pattern.into());
         if self.at_record_pattern_start() {
             self.parse_record_pattern();
         } else {
-            self.parse_type_pattern();
+            self.parse_type_pattern(allow_guard);
         }
         self.builder.finish_node(); // Pattern
     }
 
-    fn parse_type_pattern(&mut self) {
+    fn parse_type_pattern(&mut self, allow_guard: bool) {
         self.builder.start_node(SyntaxKind::TypePattern.into());
         self.parse_pattern_modifiers();
 
@@ -1611,9 +1611,18 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::Colon
                 | SyntaxKind::Comma
                 | SyntaxKind::RParen
-                | SyntaxKind::WhenKw
                 | SyntaxKind::Eof
         ) {
+            self.error_here("expected binding identifier");
+        } else if allow_guard
+            && self.at(SyntaxKind::WhenKw)
+            // `when` is a contextual keyword; treat it as a missing binding identifier only in
+            // contexts where a guard may follow (switch case patterns).
+            //
+            // For `instanceof` patterns and record pattern components, `when` can be used as an
+            // identifier, so we must accept it.
+            && self.nth(1).map_or(true, can_start_expression)
+        {
             self.error_here("expected binding identifier");
         } else {
             self.expect_ident_like("expected binding identifier");
@@ -1641,7 +1650,7 @@ impl<'a> Parser<'a> {
             }
 
             if self.at_pattern_start() {
-                self.parse_pattern();
+                self.parse_pattern(false);
             } else {
                 self.builder.start_node(SyntaxKind::Error.into());
                 self.error_here("expected record pattern component");
@@ -2187,7 +2196,7 @@ impl<'a> Parser<'a> {
 
         // Java 16+: pattern matching for instanceof.
         if self.at_record_pattern_start() || self.at_type_pattern_start() {
-            self.parse_pattern();
+            self.parse_pattern(false);
             return;
         }
 
