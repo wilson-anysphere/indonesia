@@ -66,10 +66,16 @@ pub struct ExtensionsConfig {
     /// Extensions with an id in this list will never be loaded.
     #[serde(default)]
     pub deny: Vec<String>,
-    /// Optional memory limit for WASM extensions (in bytes). If unset, the host default is used.
+    /// Optional upper bound for WASM extension linear memory (in bytes).
+    ///
+    /// When set, the runtime uses the *minimum* of this value and the per-plugin default.
+    /// If unset, the per-plugin default applies.
     #[serde(default)]
     pub wasm_memory_limit_bytes: Option<u64>,
-    /// Optional execution timeout for WASM extensions (in milliseconds). If unset, the host default is used.
+    /// Optional upper bound for WASM extension execution timeouts (in milliseconds).
+    ///
+    /// When set, the runtime uses the *minimum* of this value and the per-plugin default.
+    /// If unset, the per-plugin default applies.
     #[serde(default)]
     pub wasm_timeout_ms: Option<u64>,
 }

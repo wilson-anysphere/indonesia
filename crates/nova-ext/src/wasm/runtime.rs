@@ -301,10 +301,14 @@ impl WasmPlugin {
     ) -> WasmPluginConfig {
         let mut config = self.config.clone();
         if let Some(timeout_ms) = ctx.config.extensions.wasm_timeout_ms {
-            config.timeout = Duration::from_millis(timeout_ms);
+            // Treat `NovaConfig.extensions.wasm_timeout_ms` as a sandbox *upper bound*.
+            // This allows tightening, but avoids accidentally relaxing the per-plugin timeout.
+            config.timeout = config.timeout.min(Duration::from_millis(timeout_ms));
         }
         if let Some(max_bytes) = ctx.config.extensions.wasm_memory_limit_bytes {
-            config.max_memory_bytes = max_bytes;
+            // Treat `NovaConfig.extensions.wasm_memory_limit_bytes` as a sandbox *upper bound*.
+            // This allows tightening, but avoids accidentally relaxing the per-plugin memory cap.
+            config.max_memory_bytes = config.max_memory_bytes.min(max_bytes);
         }
         config
     }
