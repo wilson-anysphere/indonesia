@@ -582,7 +582,9 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
 
             let original_block = &original[original_start..original_end];
             let formatted_block = &formatted[formatted_start..formatted_end];
-            const MAX_MYERS_BLOCK_CHARS: usize = 8192;
+            // Keep this low: the current Myers implementation stores the full trace (O(ND) memory),
+            // so large values can become quadratic in the worst case.
+            const MAX_MYERS_BLOCK_CHARS: usize = 2048;
             if let Some(block_edits) = minimal_text_edits_for_small_text(
                 original_block,
                 formatted_block,
