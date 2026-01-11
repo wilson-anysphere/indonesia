@@ -53,6 +53,8 @@ pub struct DiagnosticV1 {
 pub struct CompletionsRequestV1 {
     pub project_id: u32,
     pub file_id: u32,
+    #[serde(default)]
+    pub file_path: Option<String>,
     pub offset: usize,
     pub text: String,
 }
@@ -72,6 +74,8 @@ pub struct CompletionItemV1 {
 pub struct CodeActionsRequestV1 {
     pub project_id: u32,
     pub file_id: u32,
+    #[serde(default)]
+    pub file_path: Option<String>,
     #[serde(default)]
     pub span: Option<SpanV1>,
     pub text: String,
@@ -117,6 +121,8 @@ pub struct NavigationTargetV1 {
 pub struct InlayHintsRequestV1 {
     pub project_id: u32,
     pub file_id: u32,
+    #[serde(default)]
+    pub file_path: Option<String>,
     pub text: String,
 }
 

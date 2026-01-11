@@ -661,6 +661,10 @@ where
         let req = CompletionsRequestV1 {
             project_id: ctx.project.to_raw(),
             file_id: params.file.to_raw(),
+            file_path: ctx
+                .db
+                .file_path(params.file)
+                .map(|path| path.to_string_lossy().into_owned()),
             offset: params.offset,
             text: ctx.db.file_text(params.file).to_string(),
         };
@@ -707,6 +711,10 @@ where
         let req = CodeActionsRequestV1 {
             project_id: ctx.project.to_raw(),
             file_id: params.file.to_raw(),
+            file_path: ctx
+                .db
+                .file_path(params.file)
+                .map(|path| path.to_string_lossy().into_owned()),
             span: params.span.map(span_to_v1),
             text: ctx.db.file_text(params.file).to_string(),
         };
@@ -798,6 +806,10 @@ where
         let req = InlayHintsRequestV1 {
             project_id: ctx.project.to_raw(),
             file_id: params.file.to_raw(),
+            file_path: ctx
+                .db
+                .file_path(params.file)
+                .map(|path| path.to_string_lossy().into_owned()),
             text: ctx.db.file_text(params.file).to_string(),
         };
 
