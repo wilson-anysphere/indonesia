@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::fmt;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -191,7 +192,7 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
     Ok(())
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct Args {
     connect: ConnectAddr,
     shard_id: ShardId,
@@ -201,6 +202,21 @@ struct Args {
     max_rpc_bytes: usize,
     #[cfg(feature = "tls")]
     tls: Option<TlsArgs>,
+}
+
+impl fmt::Debug for Args {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut s = f.debug_struct("Args");
+        s.field("connect", &self.connect)
+            .field("shard_id", &self.shard_id)
+            .field("cache_dir", &self.cache_dir)
+            .field("auth_present", &self.auth_token.is_some())
+            .field("allow_insecure", &self.allow_insecure)
+            .field("max_rpc_bytes", &self.max_rpc_bytes);
+        #[cfg(feature = "tls")]
+        s.field("tls", &self.tls);
+        s.finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -819,6 +835,32 @@ impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn args_debug_does_not_expose_auth_token() {
+        let token = "super-secret-token";
+        let tmp = TempDir::new().expect("create temp dir");
+        let args = Args {
+            connect: ConnectAddr::Tcp("127.0.0.1:0".parse().unwrap()),
+            shard_id: 1,
+            cache_dir: tmp.path().to_path_buf(),
+            auth_token: Some(token.to_string()),
+            allow_insecure: false,
+            max_rpc_bytes: DEFAULT_MAX_RPC_BYTES,
+            #[cfg(feature = "tls")]
+            tls: None,
+        };
+
+        let output = format!("{args:?}");
+        assert!(
+            !output.contains(token),
+            "nova-worker Args debug output leaked auth token: {output}"
+        );
+        assert!(
+            output.contains("auth_present"),
+            "nova-worker Args debug output should include auth presence indicator: {output}"
+        );
+    }
 
     fn parse_executions(db: &SalsaDatabase) -> u64 {
         db.query_stats()

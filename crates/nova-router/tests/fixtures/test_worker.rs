@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::fmt;
 
 use anyhow::{anyhow, Context, Result};
 use nova_remote_proto::{RpcMessage, ShardId, WorkerStats};
@@ -179,12 +180,23 @@ impl WorkerState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct Args {
     connect: ConnectAddr,
     shard_id: ShardId,
     cache_dir: PathBuf,
     auth_token: Option<String>,
+}
+
+impl fmt::Debug for Args {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Args")
+            .field("connect", &self.connect)
+            .field("shard_id", &self.shard_id)
+            .field("cache_dir", &self.cache_dir)
+            .field("auth_present", &self.auth_token.is_some())
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -194,6 +206,33 @@ enum ConnectAddr {
     #[cfg(windows)]
     NamedPipe(String),
     Tcp(SocketAddr),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn args_debug_does_not_expose_auth_token() {
+        let token = "super-secret-token";
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let args = Args {
+            connect: ConnectAddr::Tcp("127.0.0.1:0".parse().unwrap()),
+            shard_id: 1,
+            cache_dir: tmp.path().to_path_buf(),
+            auth_token: Some(token.to_string()),
+        };
+
+        let output = format!("{args:?}");
+        assert!(
+            !output.contains(token),
+            "nova-router-test-worker Args debug output leaked auth token: {output}"
+        );
+        assert!(
+            output.contains("auth_present"),
+            "nova-router-test-worker Args debug output should include auth presence indicator: {output}"
+        );
+    }
 }
 
 impl Args {
