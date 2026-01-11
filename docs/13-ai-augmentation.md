@@ -690,10 +690,10 @@ impl NovaServer {
 
 ## Next Steps
 
-1. → [Testing Infrastructure](14-testing-infrastructure.md): How to run tests/CI and update fixtures
-2. → [Testing Strategy](14-testing-strategy.md): Quality assurance
+1. → [Testing Strategy](14-testing-strategy.md): Quality assurance
+2. → [Testing Infrastructure](14-testing-infrastructure.md): How to run tests/CI and update fixtures
 3. → [Work Breakdown](15-work-breakdown.md): Project organization
 
 ---
 
-[← Previous: Debugging Integration](12-debugging-integration.md) | [Testing Strategy](14-testing-strategy.md) | [Next: Testing Infrastructure →](14-testing-infrastructure.md)
+[← Previous: Debugging Integration](12-debugging-integration.md) | [Next: Testing Strategy →](14-testing-strategy.md) | [Testing Infrastructure](14-testing-infrastructure.md)

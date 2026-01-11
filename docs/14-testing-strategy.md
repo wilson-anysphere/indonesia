@@ -1,6 +1,6 @@
 # 14 - Testing Strategy
 
-[← Back to Main Document](../AGENTS.md) | [Previous: AI Augmentation](13-ai-augmentation.md) | [Testing Infrastructure](14-testing-infrastructure.md)
+[← Back to Main Document](../AGENTS.md) | [Previous: AI Augmentation](13-ai-augmentation.md) | [Next: Testing Infrastructure →](14-testing-infrastructure.md)
 
 ## Overview
 
@@ -661,4 +661,4 @@ pub mod test_utils {
 
 ---
 
-[← Previous: AI Augmentation](13-ai-augmentation.md) | [Testing Infrastructure](14-testing-infrastructure.md) | [Next: Work Breakdown →](15-work-breakdown.md)
+[← Previous: AI Augmentation](13-ai-augmentation.md) | [Next: Testing Infrastructure →](14-testing-infrastructure.md) | [Work Breakdown](15-work-breakdown.md)

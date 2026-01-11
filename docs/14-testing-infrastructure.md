@@ -1,6 +1,6 @@
 # 14 - Testing Infrastructure
 
-[← Back to Main Document](../AGENTS.md) | [Previous: AI Augmentation](13-ai-augmentation.md) | [Testing Strategy](14-testing-strategy.md) | [Next: Work Breakdown →](15-work-breakdown.md)
+[← Back to Main Document](../AGENTS.md) | [Previous: Testing Strategy](14-testing-strategy.md) | [Next: Work Breakdown →](15-work-breakdown.md)
 
 ## Overview
 
@@ -564,4 +564,4 @@ INSTA_UPDATE=always cargo test -p nova-format --test format_fixtures
 
 ---
 
-[← Previous: AI Augmentation](13-ai-augmentation.md) | [Testing Strategy](14-testing-strategy.md) | [Next: Work Breakdown →](15-work-breakdown.md)
+[← Previous: Testing Strategy](14-testing-strategy.md) | [Next: Work Breakdown →](15-work-breakdown.md)
