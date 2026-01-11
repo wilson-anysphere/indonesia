@@ -146,6 +146,41 @@ pub struct FormatPipeline<'a> {
     steps: Vec<Box<dyn Fn(&SyntaxTree, &str) -> String + Send + Sync + 'a>>,
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+enum NewlineStyle {
+    Lf,
+    CrLf,
+    Cr,
+}
+
+impl NewlineStyle {
+    /// Detect the newline style to use for formatter-generated output.
+    ///
+    /// Deterministic rule for mixed-newline documents: if the input contains any CRLF sequences,
+    /// treat the file as CRLF. Otherwise fall back to LF (or bare CR if the input contains `\r`).
+    fn detect(source: &str) -> Self {
+        if source.contains("\r\n") {
+            Self::CrLf
+        } else if source.contains('\r') {
+            Self::Cr
+        } else {
+            Self::Lf
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::CrLf => "\r\n",
+            Self::Cr => "\r",
+        }
+    }
+}
+
+fn ends_with_line_break(text: &str) -> bool {
+    text.ends_with('\n') || text.ends_with('\r')
+}
+
 impl<'a> FormatPipeline<'a> {
     pub fn new() -> Self {
         Self { steps: Vec::new() }
@@ -185,8 +220,9 @@ pub enum FormatError {
 /// This is the legacy, token-only formatter. It is kept temporarily to support range/on-type
 /// formatting while the AST-aware formatter (`format_java_ast`) lands.
 pub fn format_java(tree: &SyntaxTree, source: &str, config: &FormatConfig) -> String {
-    let input_has_final_newline = source.ends_with('\n');
-    format_java_with_indent(tree, source, config, 0, input_has_final_newline)
+    let newline = NewlineStyle::detect(source);
+    let input_has_final_newline = ends_with_line_break(source);
+    format_java_with_indent(tree, source, config, 0, input_has_final_newline, newline)
 }
 
 /// Return minimal edits that transform `source` into its formatted representation.
@@ -209,6 +245,7 @@ pub fn edits_for_range_formatting(
     range: Range,
     config: &FormatConfig,
 ) -> Result<Vec<TextEdit>, FormatError> {
+    let newline = NewlineStyle::detect(source);
     let line_index = LineIndex::new(source);
     let range = line_index
         .text_range(source, range)
@@ -222,7 +259,7 @@ pub fn edits_for_range_formatting(
     let indent = indent_level_at(tree, source, range.start());
     let snippet = &source[start..end];
     let snippet_tree = nova_syntax::parse(snippet);
-    let keep_final_newline = snippet.ends_with('\n');
+    let keep_final_newline = ends_with_line_break(snippet);
     let config = if end == source.len() {
         config.clone()
     } else {
@@ -232,8 +269,14 @@ pub fn edits_for_range_formatting(
             ..config.clone()
         }
     };
-    let formatted =
-        format_java_with_indent(&snippet_tree, snippet, &config, indent, keep_final_newline);
+    let formatted = format_java_with_indent(
+        &snippet_tree,
+        snippet,
+        &config,
+        indent,
+        keep_final_newline,
+        newline,
+    );
     if formatted == snippet {
         return Ok(Vec::new());
     }
@@ -861,6 +904,7 @@ fn format_java_with_indent(
     config: &FormatConfig,
     initial_indent: usize,
     input_has_final_newline: bool,
+    newline: NewlineStyle,
 ) -> String {
     formatter::format_java_with_indent(
         tree,
@@ -868,6 +912,7 @@ fn format_java_with_indent(
         config,
         initial_indent,
         input_has_final_newline,
+        newline,
     )
 }
 

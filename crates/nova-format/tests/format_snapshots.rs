@@ -1,10 +1,29 @@
 use insta::assert_snapshot;
 use nova_core::{apply_text_edits, LineIndex, Position, Range};
 use nova_format::{
-    edits_for_range_formatting, format_java, format_java_ast, FormatConfig, IndentStyle,
+    edits_for_formatting, edits_for_range_formatting, format_java, format_java_ast, FormatConfig,
+    IndentStyle,
 };
 use nova_syntax::{parse, parse_java};
 use pretty_assertions::assert_eq;
+
+fn assert_crlf_only(text: &str) {
+    let bytes = text.as_bytes();
+    for (idx, b) in bytes.iter().enumerate() {
+        if *b == b'\r' {
+            assert!(
+                bytes.get(idx + 1) == Some(&b'\n'),
+                "found bare CR at byte index {idx}"
+            );
+        }
+        if *b == b'\n' {
+            assert!(
+                idx > 0 && bytes[idx - 1] == b'\r',
+                "found bare LF at byte index {idx}"
+            );
+        }
+    }
+}
 
 #[test]
 fn formats_basic_class() {
@@ -303,4 +322,56 @@ fn respects_final_newline_policies() {
     };
     let formatted = format_java(&tree, input_extra_newlines, &config);
     assert_eq!(formatted, "class Foo {\n    /* oops\n");
+}
+
+#[test]
+fn preserves_crlf_line_endings_for_full_formatting() {
+    let input = concat!(
+        "class  Foo{\r\n",
+        "public static void main(String[]args){\r\n",
+        "System.out.println(\"hi\"); // comment\r\n",
+        "if(true){System.out.println(\"x\");}\r\n",
+        "}\r\n",
+        "}\r\n",
+    );
+    let tree = parse(input);
+    let formatted = format_java(&tree, input, &FormatConfig::default());
+
+    assert_crlf_only(&formatted);
+
+    let edits = edits_for_formatting(&tree, input, &FormatConfig::default());
+    let out = apply_text_edits(input, &edits).unwrap();
+    assert_eq!(out, formatted);
+    assert_crlf_only(&out);
+}
+
+#[test]
+fn preserves_crlf_line_endings_for_range_formatting() {
+    let input = "class Foo {\r\n    void a() { int x=1; }\r\n    void b(){int y=2;}\r\n}\r\n";
+    let tree = parse(input);
+    let index = LineIndex::new(input);
+
+    // Select only the `void b(){int y=2;}` line.
+    let start = Position::new(2, 0);
+    let end_offset = index.line_end(2).unwrap();
+    let end = index.position(input, end_offset);
+    let range = Range::new(start, end);
+
+    let edits = edits_for_range_formatting(&tree, input, range, &FormatConfig::default()).unwrap();
+    let byte_range = index.text_range(input, range).unwrap();
+    for edit in &edits {
+        assert!(
+            edit.range.start() >= byte_range.start() && edit.range.end() <= byte_range.end(),
+            "edit {:?} escaped requested range {:?}",
+            edit.range,
+            byte_range
+        );
+    }
+    let out = apply_text_edits(input, &edits).unwrap();
+
+    assert_crlf_only(&out);
+    assert_eq!(
+        out,
+        "class Foo {\r\n    void a() { int x=1; }\r\n    void b() {\r\n        int y = 2;\r\n    }\r\n}\r\n"
+    );
 }

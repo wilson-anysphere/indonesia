@@ -1,4 +1,4 @@
-use crate::{FormatConfig, IndentStyle};
+use crate::{FormatConfig, IndentStyle, NewlineStyle};
 use nova_syntax::{SyntaxKind, SyntaxTree};
 use std::fmt;
 
@@ -315,6 +315,7 @@ struct SwitchCtx {
 struct FormatState<'a> {
     config: &'a FormatConfig,
     source: &'a str,
+    newline: &'static str,
     out: String,
 
     indent_level: usize,
@@ -339,10 +340,16 @@ struct FormatState<'a> {
 }
 
 impl<'a> FormatState<'a> {
-    fn new(config: &'a FormatConfig, source: &'a str, initial_indent: usize) -> Self {
+    fn new(
+        config: &'a FormatConfig,
+        source: &'a str,
+        initial_indent: usize,
+        newline: NewlineStyle,
+    ) -> Self {
         Self {
             config,
             source,
+            newline: newline.as_str(),
             out: String::new(),
 
             indent_level: initial_indent,
@@ -379,8 +386,50 @@ impl<'a> FormatState<'a> {
                 Some(_) | None => {}
             }
         }
-        if !self.out.is_empty() && !self.out.ends_with('\n') {
-            self.out.push('\n');
+        if self.out.is_empty() {
+            self.at_line_start = true;
+            self.line_len = 0;
+            self.last_sig = None;
+            return;
+        }
+
+        if self.out.ends_with(self.newline) {
+            self.at_line_start = true;
+            self.line_len = 0;
+            self.last_sig = None;
+            return;
+        }
+
+        // Avoid creating `\r\r\n` when the output already ends in a lone `\r`.
+        if self.newline == "\r\n" {
+            if self.out.ends_with('\r') {
+                self.out.push('\n');
+            } else if self.out.ends_with('\n') {
+                self.out.pop();
+                self.out.push_str("\r\n");
+            } else {
+                self.out.push_str("\r\n");
+            }
+        } else if self.newline == "\n" {
+            if self.out.ends_with("\r\n") {
+                self.out.pop(); // '\n'
+                self.out.pop(); // '\r'
+                self.out.push('\n');
+            } else if self.out.ends_with('\r') {
+                self.out.pop();
+                self.out.push('\n');
+            } else if !self.out.ends_with('\n') {
+                self.out.push('\n');
+            }
+        } else if self.newline == "\r" {
+            if self.out.ends_with("\r\n") {
+                self.out.pop(); // '\n'
+            } else if self.out.ends_with('\n') {
+                self.out.pop();
+            }
+            if !self.out.ends_with('\r') {
+                self.out.push('\r');
+            }
         }
         self.at_line_start = true;
         self.line_len = 0;
@@ -392,8 +441,12 @@ impl<'a> FormatState<'a> {
             return;
         }
         self.ensure_newline();
-        if !self.out.ends_with("\n\n") {
-            self.out.push('\n');
+        let nl_len = self.newline.len();
+        let has_blank_line = self.out.len() >= nl_len * 2
+            && self.out.ends_with(self.newline)
+            && self.out[..self.out.len() - nl_len].ends_with(self.newline);
+        if !has_blank_line {
+            self.out.push_str(self.newline);
         }
         self.at_line_start = true;
         self.line_len = 0;
@@ -448,7 +501,10 @@ impl<'a> FormatState<'a> {
         if self.at_line_start {
             return;
         }
-        if matches!(self.out.as_bytes().last(), Some(b' ' | b'\n' | b'\t')) {
+        if matches!(
+            self.out.as_bytes().last(),
+            Some(b' ' | b'\n' | b'\r' | b'\t')
+        ) {
             return;
         }
         self.out.push(' ');
@@ -794,10 +850,11 @@ pub(crate) fn format_java_with_indent(
     config: &FormatConfig,
     initial_indent: usize,
     input_has_final_newline: bool,
+    newline: NewlineStyle,
 ) -> String {
     let tokens = tokenize(tree, source);
-    let paren_info = analyze_parens(&tokens, source, config);
-    let mut state = FormatState::new(config, source, initial_indent);
+    let paren_info = analyze_parens(&tokens, source, config, newline);
+    let mut state = FormatState::new(config, source, initial_indent, newline);
     let mut verbatim_from: Option<usize> = None;
 
     for idx in 0..tokens.len() {
@@ -833,7 +890,7 @@ pub(crate) fn format_java_with_indent(
         state.out.push_str(&source[offset..]);
     }
 
-    finalize_output(&mut state.out, config, input_has_final_newline);
+    finalize_output(&mut state.out, config, input_has_final_newline, newline);
 
     state.out
 }
@@ -852,22 +909,28 @@ fn is_unterminated_char_literal(text: &str) -> bool {
     text.starts_with('\'') && !text.ends_with('\'')
 }
 
-fn finalize_output(out: &mut String, config: &FormatConfig, input_has_final_newline: bool) {
+fn finalize_output(
+    out: &mut String,
+    config: &FormatConfig,
+    input_has_final_newline: bool,
+    newline: NewlineStyle,
+) {
+    let newline = newline.as_str();
     if config.trim_final_newlines == Some(true) {
-        while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+        while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
             out.pop();
         }
     }
 
     match config.insert_final_newline {
         Some(true) => {
-            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
                 out.pop();
             }
-            out.push('\n');
+            out.push_str(newline);
         }
         Some(false) => {
-            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+            while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
                 out.pop();
             }
         }
@@ -878,11 +941,18 @@ fn finalize_output(out: &mut String, config: &FormatConfig, input_has_final_newl
                 while matches!(out.as_bytes().last(), Some(b' ' | b'\t')) {
                     out.pop();
                 }
-                if !out.is_empty() && !out.ends_with('\n') {
-                    out.push('\n');
+                if !out.is_empty() && !out.ends_with(newline) {
+                    if newline == "\r\n" && out.ends_with('\r') {
+                        out.push('\n');
+                    } else if out.ends_with('\n') && newline == "\r\n" {
+                        out.pop();
+                        out.push_str("\r\n");
+                    } else {
+                        out.push_str(newline);
+                    }
                 }
             } else {
-                while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n')) {
+                while matches!(out.as_bytes().last(), Some(b' ' | b'\t' | b'\n' | b'\r')) {
                     out.pop();
                 }
             }
@@ -1056,9 +1126,14 @@ fn punct_from_char(ch: char) -> Punct {
     }
 }
 
-fn analyze_parens(tokens: &[Token], source: &str, config: &FormatConfig) -> Vec<Option<ParenInfo>> {
+fn analyze_parens(
+    tokens: &[Token],
+    source: &str,
+    config: &FormatConfig,
+    newline: NewlineStyle,
+) -> Vec<Option<ParenInfo>> {
     let mut info = vec![None; tokens.len()];
-    let mut state = FormatState::new(config, source, 0);
+    let mut state = FormatState::new(config, source, 0, newline);
     let mut stack: Vec<(usize, usize, usize, usize, usize)> = Vec::new();
     // (open_idx, after_open_pos, start_brace_depth, start_bracket_depth, start_generic_depth)
     let mut commas: Vec<usize> = Vec::new();
@@ -1281,13 +1356,39 @@ fn write_token(
                 state.pending_case_label = true;
             }
         }
-        Token::Number(span) | Token::StringLiteral(span) | Token::CharLiteral(span) => {
+        Token::Number(span) => {
             state.write_indent();
             let sig = SigToken::Literal;
             if state.needs_space_before(state.last_sig, sig, tok) {
                 state.ensure_space();
             }
             state.out.push_str(span.text(state.source));
+            state.line_len += span.end.saturating_sub(span.start);
+            state.last_sig = Some(sig);
+            state.pending_for = false;
+        }
+        Token::StringLiteral(span) => {
+            state.write_indent();
+            let sig = SigToken::Literal;
+            if state.needs_space_before(state.last_sig, sig, tok) {
+                state.ensure_space();
+            }
+
+            let text = span.text(state.source);
+            state.out.push_str(text);
+            state.line_len += span.end.saturating_sub(span.start);
+            state.last_sig = Some(sig);
+            state.pending_for = false;
+        }
+        Token::CharLiteral(span) => {
+            state.write_indent();
+            let sig = SigToken::Literal;
+            if state.needs_space_before(state.last_sig, sig, tok) {
+                state.ensure_space();
+            }
+
+            let text = span.text(state.source);
+            state.out.push_str(text);
             state.line_len += span.end.saturating_sub(span.start);
             state.last_sig = Some(sig);
             state.pending_for = false;
