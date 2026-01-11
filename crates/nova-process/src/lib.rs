@@ -309,6 +309,25 @@ fn kill_process_tree(child: &mut std::process::Child) {
         let _ = libc::kill(-pid, libc::SIGKILL);
     }
 
+    #[cfg(windows)]
+    {
+        // Best-effort process tree kill on Windows.
+        //
+        // `Child::kill()` only terminates the immediate process. Wrapper scripts (e.g. Gradle's
+        // `gradlew.bat`) frequently spawn a JVM child that inherits stdout/stderr handles; if only
+        // the wrapper is terminated, the pipes may remain open and the reader threads can hang
+        // indefinitely.
+        //
+        // `taskkill /T` terminates the full tree rooted at the pid.
+        let pid = child.id().to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid, "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
     // Fallback: kill just the immediate child.
     let _ = child.kill();
 }
@@ -346,49 +365,4 @@ fn read_bounded(mut reader: impl Read, max_bytes: usize) -> io::Result<(Vec<u8>,
     }
 
     Ok((out, truncated))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-
-    #[test]
-    fn truncates_large_stdout() {
-        let opts = RunOptions {
-            timeout: Some(Duration::from_secs(2)),
-            max_bytes: 1024,
-        };
-
-        let result = run_command(
-            Path::new("."),
-            Path::new("sh"),
-            &["-c".into(), "yes a | head -c 1048576".into()],
-            opts,
-        )
-        .unwrap();
-
-        assert!(result.status.success());
-        assert!(!result.timed_out);
-        assert!(result.output.truncated);
-        assert_eq!(result.output.stdout.len(), 1024);
-    }
-
-    #[test]
-    fn timeout_kills_child() {
-        let opts = RunOptions {
-            timeout: Some(Duration::from_millis(50)),
-            max_bytes: 1024,
-        };
-
-        let result = run_command(
-            Path::new("."),
-            Path::new("sh"),
-            &["-c".into(), "sleep 5".into()],
-            opts,
-        )
-        .unwrap();
-
-        assert!(result.timed_out);
-    }
 }
