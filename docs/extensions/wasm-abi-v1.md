@@ -22,6 +22,8 @@ For ABI v1:
 
 - `nova_ext_abi_version()` must return `1` (see `nova_ext_abi::ABI_V1`).
 - capability bits are defined in `nova_ext_abi::v1::capabilities`.
+- canonical export name strings are available in `nova_ext_abi::v1::exports` (useful for tooling and
+  for keeping host/guest implementations in sync).
 
 ## Ptr/len packing
 
@@ -209,6 +211,10 @@ pub extern "C" fn nova_ext_alloc(len: i32) -> i32 {
 }
 
 #[no_mangle]
+/// # Safety
+///
+/// `ptr` must have been returned by `nova_ext_alloc` with the same `len`, and the buffer must not
+/// be used after this call.
 pub unsafe extern "C" fn nova_ext_free(ptr: i32, len: i32) {
     guest::free(ptr, len)
 }
