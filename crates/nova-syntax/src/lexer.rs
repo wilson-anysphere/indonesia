@@ -1,20 +1,44 @@
+use std::borrow::Cow;
+
 use unicode_ident::{is_xid_continue, is_xid_start};
 
 use crate::syntax_kind::SyntaxKind;
 use crate::TextRange;
 
 // NOTE: The JLS specifies that Unicode escape translation (`\\uXXXX`) happens *before*
-// lexical analysis. Nova's lexer currently operates on the raw source text and does
-// not perform this translation yet, so escapes inside identifiers/keywords/comments
-// are treated as the literal bytes `\\`, `u`, etc.
-//
-// TODO: Implement full JLS Unicode escape translation with an offset mapping so
-// diagnostics/ranges remain stable.
+// lexical analysis. Nova's lexer performs this translation (including the quirky
+// case where a translated backslash can begin another unicode escape, e.g.
+// `\\u005Cu0041` -> `A`) while keeping token ranges in terms of the original source
+// byte offsets via a `TextMap`.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LexError {
     pub message: String,
     pub range: TextRange,
+}
+
+#[derive(Debug, Clone)]
+enum TextMap {
+    /// Processed text is identical to the source text, so offsets map 1:1.
+    Identity,
+    /// Maps processed byte offsets to original byte offsets (`len == processed.len() + 1`).
+    ///
+    /// The mapping is monotonic but not strictly increasing (multi-byte UTF-8 characters and
+    /// unicode-escape expansions can cause multiple processed offsets to map to the same
+    /// original offset).
+    Translated(Vec<u32>),
+}
+
+impl TextMap {
+    fn original_offset(&self, processed: usize) -> usize {
+        match self {
+            TextMap::Identity => processed,
+            TextMap::Translated(map) => map
+                .get(processed)
+                .copied()
+                .unwrap_or_else(|| map.last().copied().unwrap_or(0)) as usize,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,15 +62,20 @@ pub fn lex_with_errors(input: &str) -> (Vec<Token>, Vec<LexError>) {
 }
 
 pub struct Lexer<'a> {
-    input: &'a str,
+    source: &'a str,
+    input: Cow<'a, str>,
+    text_map: TextMap,
     pos: usize,
     errors: Vec<LexError>,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
+        let (processed, text_map) = translate_unicode_escapes(input);
         Self {
-            input,
+            source: input,
+            input: processed,
+            text_map,
             pos: 0,
             errors: Vec::new(),
         }
@@ -64,14 +93,28 @@ impl<'a> Lexer<'a> {
             let end = self.pos;
             tokens.push(Token {
                 kind,
-                range: TextRange::new(start, end),
+                range: self.range(start, end),
             });
         }
         tokens.push(Token {
             kind: SyntaxKind::Eof,
-            range: TextRange::new(self.pos, self.pos),
+            range: self.range(self.pos, self.pos),
         });
         (tokens, self.errors)
+    }
+
+    fn range(&self, start: usize, end: usize) -> TextRange {
+        TextRange::new(
+            self.text_map.original_offset(start),
+            self.text_map.original_offset(end),
+        )
+    }
+
+    fn push_error(&mut self, message: impl Into<String>, start: usize, end: usize) {
+        self.errors.push(LexError {
+            message: message.into(),
+            range: self.range(start, end),
+        });
     }
 
     fn next_kind(&mut self) -> SyntaxKind {
@@ -153,10 +196,11 @@ impl<'a> Lexer<'a> {
                     self.scan_identifier_or_keyword()
                 } else {
                     self.bump_char();
-                    self.errors.push(LexError {
-                        message: format!("unexpected character `{}`", ch.escape_debug()),
-                        range: TextRange::new(start, self.pos),
-                    });
+                    self.push_error(
+                        format!("unexpected character `{}`", ch.escape_debug()),
+                        start,
+                        self.pos,
+                    );
                     SyntaxKind::Error
                 }
             }
@@ -220,10 +264,7 @@ impl<'a> Lexer<'a> {
             }
             self.bump_char();
         }
-        self.errors.push(LexError {
-            message: "unterminated block comment".to_string(),
-            range: TextRange::new(start, self.pos),
-        });
+        self.push_error("unterminated block comment", start, self.pos);
         SyntaxKind::Error
     }
 
@@ -254,10 +295,7 @@ impl<'a> Lexer<'a> {
                     // string literals).
                     match self.peek_char() {
                         Some('\n' | '\r') | None => {
-                            self.errors.push(LexError {
-                                message: "unterminated string literal".to_string(),
-                                range: TextRange::new(start, self.pos),
-                            });
+                            self.push_error("unterminated string literal", start, self.pos);
                             return SyntaxKind::Error;
                         }
                         Some(_) => {
@@ -267,10 +305,7 @@ impl<'a> Lexer<'a> {
                 }
                 '\n' | '\r' => {
                     // Unterminated string.
-                    self.errors.push(LexError {
-                        message: "unterminated string literal".to_string(),
-                        range: TextRange::new(start, self.pos),
-                    });
+                    self.push_error("unterminated string literal", start, self.pos);
                     return SyntaxKind::Error;
                 }
                 _ => {
@@ -278,10 +313,7 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
-        self.errors.push(LexError {
-            message: "unterminated string literal".to_string(),
-            range: TextRange::new(start, self.pos),
-        });
+        self.push_error("unterminated string literal", start, self.pos);
         SyntaxKind::Error
     }
 
@@ -301,20 +333,14 @@ impl<'a> Lexer<'a> {
                     } else {
                         "character literal must contain exactly one character"
                     };
-                    self.errors.push(LexError {
-                        message: message.to_string(),
-                        range: TextRange::new(start, self.pos),
-                    });
+                    self.push_error(message, start, self.pos);
                     return SyntaxKind::Error;
                 }
                 '\\' => {
                     self.bump_char();
                     match self.peek_char() {
                         Some('\n' | '\r') | None => {
-                            self.errors.push(LexError {
-                                message: "unterminated character literal".to_string(),
-                                range: TextRange::new(start, self.pos),
-                            });
+                            self.push_error("unterminated character literal", start, self.pos);
                             return SyntaxKind::Error;
                         }
                         Some(next) => {
@@ -339,11 +365,11 @@ impl<'a> Lexer<'a> {
                                 _ => {
                                     // Keep the literal token lossless but surface a diagnostic.
                                     self.bump_char();
-                                    self.errors.push(LexError {
-                                        message: "invalid escape sequence in character literal"
-                                            .to_string(),
-                                        range: TextRange::new(start, self.pos),
-                                    });
+                                    self.push_error(
+                                        "invalid escape sequence in character literal",
+                                        start,
+                                        self.pos,
+                                    );
                                 }
                             }
                             value_count += 1;
@@ -351,10 +377,7 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '\n' | '\r' => {
-                    self.errors.push(LexError {
-                        message: "unterminated character literal".to_string(),
-                        range: TextRange::new(start, self.pos),
-                    });
+                    self.push_error("unterminated character literal", start, self.pos);
                     return SyntaxKind::Error;
                 }
                 _ => {
@@ -363,10 +386,7 @@ impl<'a> Lexer<'a> {
                 }
             }
         }
-        self.errors.push(LexError {
-            message: "unterminated character literal".to_string(),
-            range: TextRange::new(start, self.pos),
-        });
+        self.push_error("unterminated character literal", start, self.pos);
         SyntaxKind::Error
     }
 
@@ -383,11 +403,11 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
         if !matches!(self.peek_byte(0), Some(b'\n' | b'\r')) {
-            self.errors.push(LexError {
-                message: "text block opening delimiter must be followed by a line terminator"
-                    .to_string(),
-                range: TextRange::new(start, self.pos),
-            });
+            self.push_error(
+                "text block opening delimiter must be followed by a line terminator",
+                start,
+                self.pos,
+            );
         }
 
         while !self.is_eof() {
@@ -408,10 +428,7 @@ impl<'a> Lexer<'a> {
             }
             self.bump_char();
         }
-        self.errors.push(LexError {
-            message: "unterminated text block".to_string(),
-            range: TextRange::new(start, self.pos),
-        });
+        self.push_error("unterminated text block", start, self.pos);
         SyntaxKind::Error
     }
 
@@ -484,10 +501,7 @@ impl<'a> Lexer<'a> {
         match result {
             Ok(kind) => kind,
             Err(message) => {
-                self.errors.push(LexError {
-                    message,
-                    range: TextRange::new(start, self.pos),
-                });
+                self.push_error(message, start, self.pos);
                 SyntaxKind::Error
             }
         }
@@ -1056,6 +1070,132 @@ impl<'a> Lexer<'a> {
         self.pos += ch.len_utf8();
         Some(ch)
     }
+}
+
+fn translate_unicode_escapes(input: &str) -> (Cow<'_, str>, TextMap) {
+    // Fast path: no `\u` sequences => no translation needed.
+    if !input.as_bytes().windows(2).any(|w| w == b"\\u") {
+        return (Cow::Borrowed(input), TextMap::Identity);
+    }
+
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut map: Vec<u32> = Vec::with_capacity(input.len() + 1);
+    map.push(0);
+
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            if let Some((unit, consumed)) = parse_unicode_escape(bytes, i, true) {
+                let span_start = i;
+                i += consumed;
+                let mut span_end = i;
+
+                let mut ch = decode_code_unit(unit, bytes, &mut i, &mut span_end);
+
+                // A unicode escape can translate to `\`, which can then begin another unicode
+                // escape using the following source characters (`\u005Cu0041` -> `A`).
+                while ch == '\\' {
+                    let Some((unit2, consumed2)) = parse_unicode_escape(bytes, i, false) else {
+                        break;
+                    };
+                    i += consumed2;
+                    span_end = i;
+                    ch = decode_code_unit(unit2, bytes, &mut i, &mut span_end);
+                }
+
+                append_mapped_char(&mut out, &mut map, ch, span_start, span_end);
+                continue;
+            }
+        }
+
+        let ch = input[i..].chars().next().unwrap();
+        let span_start = i;
+        i += ch.len_utf8();
+        let span_end = i;
+        append_mapped_char(&mut out, &mut map, ch, span_start, span_end);
+    }
+
+    (Cow::Owned(out), TextMap::Translated(map))
+}
+
+fn append_mapped_char(out: &mut String, map: &mut Vec<u32>, ch: char, span_start: usize, span_end: usize) {
+    debug_assert_eq!(map.len(), out.len() + 1);
+    debug_assert_eq!(map.last().copied().unwrap_or(0) as usize, span_start);
+
+    let before = out.len();
+    out.push(ch);
+    let after = out.len();
+    let added = after - before;
+
+    // Intermediate boundaries within a multi-byte UTF-8 codepoint map to the start of the source
+    // span; only the final boundary maps to the end.
+    for _ in 1..added {
+        map.push(span_start as u32);
+    }
+    map.push(span_end as u32);
+}
+
+fn parse_unicode_escape(bytes: &[u8], mut i: usize, has_backslash: bool) -> Option<(u16, usize)> {
+    let start = i;
+    if has_backslash {
+        if bytes.get(i).copied()? != b'\\' {
+            return None;
+        }
+        i += 1;
+    }
+
+    // One or more `u` characters.
+    let mut saw_u = false;
+    while bytes.get(i).copied() == Some(b'u') {
+        saw_u = true;
+        i += 1;
+    }
+    if !saw_u {
+        return None;
+    }
+
+    let mut value: u16 = 0;
+    for _ in 0..4 {
+        let digit = hex_value(*bytes.get(i)? )?;
+        value = value.wrapping_mul(16).wrapping_add(digit);
+        i += 1;
+    }
+
+    Some((value, i - start))
+}
+
+fn hex_value(b: u8) -> Option<u16> {
+    Some(match b {
+        b'0'..=b'9' => (b - b'0') as u16,
+        b'a'..=b'f' => (b - b'a' + 10) as u16,
+        b'A'..=b'F' => (b - b'A' + 10) as u16,
+        _ => return None,
+    })
+}
+
+fn decode_code_unit(unit: u16, bytes: &[u8], i: &mut usize, span_end: &mut usize) -> char {
+    // If the escape produced a UTF-16 surrogate code unit, try to combine it with the following
+    // escape (if present) to form a valid Unicode scalar.
+    if (0xD800..=0xDBFF).contains(&unit) {
+        if let Some((low, consumed)) = parse_unicode_escape(bytes, *i, true) {
+            if (0xDC00..=0xDFFF).contains(&low) {
+                let high = (unit as u32) - 0xD800;
+                let low = (low as u32) - 0xDC00;
+                let codepoint = 0x10000 + ((high << 10) | low);
+                if let Some(ch) = char::from_u32(codepoint) {
+                    *i += consumed;
+                    *span_end = *i;
+                    return ch;
+                }
+            }
+        }
+        return '\u{FFFD}';
+    }
+    if (0xDC00..=0xDFFF).contains(&unit) {
+        return '\u{FFFD}';
+    }
+    char::from_u32(unit as u32).unwrap_or('\u{FFFD}')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

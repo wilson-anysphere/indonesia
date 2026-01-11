@@ -422,6 +422,52 @@ fn lexer_rejects_invalid_char_literals() {
 }
 
 #[test]
+fn lexer_translates_unicode_escapes_before_tokenization() {
+    // `\u003B` is `;`, and `\u005C` is `\` so the second literal exercises the "translated
+    // backslash starts another escape" rule: `\u005Cu003B` => `;`.
+    let input = "\\u003B \\u005Cu003B";
+    let tokens = dump_tokens(input);
+    let expected = vec![
+        (SyntaxKind::Semicolon, "\\u003B".into()),
+        (SyntaxKind::Whitespace, " ".into()),
+        (SyntaxKind::Semicolon, "\\u005Cu003B".into()),
+        (SyntaxKind::Eof, "".into()),
+    ];
+    assert_eq!(tokens, expected);
+}
+
+#[test]
+fn lexer_unicode_escapes_can_form_keywords() {
+    let input = "cl\\u0061ss";
+    let tokens = dump_tokens(input);
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::ClassKw, "cl\\u0061ss".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
+fn lexer_unicode_escape_line_terminator_ends_line_comment() {
+    let input = "// comment\\u000Aclass Foo {}";
+    let tokens = dump_tokens(input);
+    let expected = vec![
+        (SyntaxKind::LineComment, "// comment".into()),
+        (SyntaxKind::Whitespace, "\\u000A".into()),
+        (SyntaxKind::ClassKw, "class".into()),
+        (SyntaxKind::Whitespace, " ".into()),
+        (SyntaxKind::Identifier, "Foo".into()),
+        (SyntaxKind::Whitespace, " ".into()),
+        (SyntaxKind::LBrace, "{".into()),
+        (SyntaxKind::RBrace, "}".into()),
+        (SyntaxKind::Eof, "".into()),
+    ];
+    assert_eq!(tokens, expected);
+}
+
+#[test]
 fn parse_java_surfaces_lexer_errors_as_parse_errors() {
     let input = "class Foo { String s = \"unterminated\n }";
     let result = parse_java(input);
