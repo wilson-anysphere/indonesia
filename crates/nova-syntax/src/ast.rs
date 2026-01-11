@@ -136,15 +136,28 @@ impl ModuleDeclaration {
 
 impl ModuleBody {
     pub fn directives(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
-        self.syntax().children().filter(|n| {
-            matches!(
-                n.kind(),
+        self.syntax().children().filter_map(|n| {
+            if n.kind() == SyntaxKind::ModuleDirective {
+                return n.children().find(|child| {
+                    matches!(
+                        child.kind(),
+                        SyntaxKind::RequiresDirective
+                            | SyntaxKind::ExportsDirective
+                            | SyntaxKind::OpensDirective
+                            | SyntaxKind::UsesDirective
+                            | SyntaxKind::ProvidesDirective
+                    )
+                });
+            }
+
+            match n.kind() {
                 SyntaxKind::RequiresDirective
-                    | SyntaxKind::ExportsDirective
-                    | SyntaxKind::OpensDirective
-                    | SyntaxKind::UsesDirective
-                    | SyntaxKind::ProvidesDirective
-            )
+                | SyntaxKind::ExportsDirective
+                | SyntaxKind::OpensDirective
+                | SyntaxKind::UsesDirective
+                | SyntaxKind::ProvidesDirective => Some(n),
+                _ => None,
+            }
         })
     }
 }
@@ -198,4 +211,3 @@ impl ProvidesDirective {
         support::children::<Name>(self.syntax()).skip(1)
     }
 }
-

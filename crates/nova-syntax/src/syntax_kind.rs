@@ -293,6 +293,7 @@ pub enum SyntaxKind {
 
     DefaultValue,
     ExpressionRoot,
+    ModuleDirective,
 
     __Last,
 }

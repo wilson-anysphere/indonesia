@@ -347,16 +347,22 @@ impl<'a> Parser<'a> {
 
         if self.at_module_decl_start() {
             self.parse_module_declaration();
-        }
-
-        while !self.at(SyntaxKind::Eof) {
-            let before = self.tokens.len();
-            if self.at_type_decl_start() {
-                self.parse_type_declaration();
-            } else {
-                self.recover_top_level();
+            if !self.at(SyntaxKind::Eof) {
+                self.builder.start_node(SyntaxKind::Error.into());
+                self.error_here("unexpected tokens after module declaration");
+                self.recover_to(TokenSet::new(&[SyntaxKind::Eof]));
+                self.builder.finish_node();
             }
-            self.force_progress(before, TOP_LEVEL_RECOVERY);
+        } else {
+            while !self.at(SyntaxKind::Eof) {
+                let before = self.tokens.len();
+                if self.at_type_decl_start() {
+                    self.parse_type_declaration();
+                } else {
+                    self.recover_top_level();
+                }
+                self.force_progress(before, TOP_LEVEL_RECOVERY);
+            }
         }
 
         self.eat_trivia();
@@ -434,30 +440,34 @@ impl<'a> Parser<'a> {
 
     fn parse_module_directive(&mut self) {
         let checkpoint = self.builder.checkpoint();
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::ModuleDirective.into());
+
         match self.current() {
-            SyntaxKind::RequiresKw => self.parse_requires_directive(checkpoint),
-            SyntaxKind::ExportsKw => self.parse_exports_directive(checkpoint),
-            SyntaxKind::OpensKw => self.parse_opens_directive(checkpoint),
-            SyntaxKind::UsesKw => self.parse_uses_directive(checkpoint),
-            SyntaxKind::ProvidesKw => self.parse_provides_directive(checkpoint),
+            SyntaxKind::RequiresKw => self.parse_requires_directive(),
+            SyntaxKind::ExportsKw => self.parse_exports_directive(),
+            SyntaxKind::OpensKw => self.parse_opens_directive(),
+            SyntaxKind::UsesKw => self.parse_uses_directive(),
+            SyntaxKind::ProvidesKw => self.parse_provides_directive(),
             SyntaxKind::Semicolon => {
-                self.builder.start_node_at(checkpoint, SyntaxKind::Error.into());
+                self.builder.start_node(SyntaxKind::Error.into());
                 self.error_here("unexpected `;` in module body");
                 self.bump();
                 self.builder.finish_node();
             }
             _ => {
-                self.builder.start_node_at(checkpoint, SyntaxKind::Error.into());
+                self.builder.start_node(SyntaxKind::Error.into());
                 self.error_here("expected module directive");
                 self.recover_to_module_directive_boundary();
                 self.builder.finish_node();
             }
         }
+
+        self.builder.finish_node(); // ModuleDirective
     }
 
-    fn parse_requires_directive(&mut self, checkpoint: rowan::Checkpoint) {
-        self.builder
-            .start_node_at(checkpoint, SyntaxKind::RequiresDirective.into());
+    fn parse_requires_directive(&mut self) {
+        self.builder.start_node(SyntaxKind::RequiresDirective.into());
         self.expect(SyntaxKind::RequiresKw, "expected `requires`");
 
         // `requires transitive static foo.bar;`
@@ -472,9 +482,8 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    fn parse_exports_directive(&mut self, checkpoint: rowan::Checkpoint) {
-        self.builder
-            .start_node_at(checkpoint, SyntaxKind::ExportsDirective.into());
+    fn parse_exports_directive(&mut self) {
+        self.builder.start_node(SyntaxKind::ExportsDirective.into());
         self.expect(SyntaxKind::ExportsKw, "expected `exports`");
         self.parse_name();
 
@@ -493,9 +502,8 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    fn parse_opens_directive(&mut self, checkpoint: rowan::Checkpoint) {
-        self.builder
-            .start_node_at(checkpoint, SyntaxKind::OpensDirective.into());
+    fn parse_opens_directive(&mut self) {
+        self.builder.start_node(SyntaxKind::OpensDirective.into());
         self.expect(SyntaxKind::OpensKw, "expected `opens`");
         self.parse_name();
 
@@ -514,9 +522,8 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    fn parse_uses_directive(&mut self, checkpoint: rowan::Checkpoint) {
-        self.builder
-            .start_node_at(checkpoint, SyntaxKind::UsesDirective.into());
+    fn parse_uses_directive(&mut self) {
+        self.builder.start_node(SyntaxKind::UsesDirective.into());
         self.expect(SyntaxKind::UsesKw, "expected `uses`");
         self.parse_name();
         if !self.expect(SyntaxKind::Semicolon, "expected `;` after uses directive") {
@@ -525,9 +532,8 @@ impl<'a> Parser<'a> {
         self.builder.finish_node();
     }
 
-    fn parse_provides_directive(&mut self, checkpoint: rowan::Checkpoint) {
-        self.builder
-            .start_node_at(checkpoint, SyntaxKind::ProvidesDirective.into());
+    fn parse_provides_directive(&mut self) {
+        self.builder.start_node(SyntaxKind::ProvidesDirective.into());
         self.expect(SyntaxKind::ProvidesKw, "expected `provides`");
         self.parse_name();
         self.expect(SyntaxKind::WithKw, "expected `with` in provides directive");

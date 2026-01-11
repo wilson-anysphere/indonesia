@@ -1527,6 +1527,12 @@ open module com.example.mod {
     assert_eq!(module.name().unwrap().text(), "com.example.mod");
 
     let body = module.body().unwrap();
+    let wrapper_count = body
+        .syntax()
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::ModuleDirective)
+        .count();
+    assert_eq!(wrapper_count, 7);
     let directives: Vec<_> = body.directives().collect();
     assert_eq!(directives.len(), 7);
 
