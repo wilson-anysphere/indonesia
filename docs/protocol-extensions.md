@@ -1006,6 +1006,7 @@ No params are required; clients should send `{}` or omit params.
   "report": {
     "budget": { "total": 4294967296, "categories": { "query_cache": 0, "syntax_trees": 0, "indexes": 0, "type_info": 0, "other": 0 } },
     "usage": { "query_cache": 0, "syntax_trees": 0, "indexes": 0, "type_info": 0, "other": 0 },
+    "rss_bytes": 123456789,
     "pressure": "low",
     "degraded": { "skip_expensive_diagnostics": false, "completion_candidate_cap": 200, "background_indexing": "full" }
   }
@@ -1015,6 +1016,7 @@ No params are required; clients should send `{}` or omit params.
 Notes:
 
 - This payload uses **snake_case** for many nested fields (it is a direct `serde` encoding of `nova-memory` types).
+- `rss_bytes` is best-effort process RSS (currently populated on Linux; otherwise omitted/`null`).
 - Historical note: some older Nova builds accepted `nova/metrics` as an alias for this endpoint. That
   name is now used for request metrics; clients should always call `nova/memoryStatus`.
 
