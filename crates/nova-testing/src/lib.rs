@@ -128,12 +128,14 @@ pub mod discovery;
 pub mod report;
 pub mod runner;
 pub mod schema;
+pub mod test_id;
 
 mod util;
 
 pub use discovery::discover_tests;
 pub use runner::run_tests;
 pub use schema::SCHEMA_VERSION;
+pub use test_id::{parse_qualified_test_id, QualifiedTestId};
 
 use thiserror::Error;
 

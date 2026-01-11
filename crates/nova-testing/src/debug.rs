@@ -1,5 +1,6 @@
 use crate::runner::detect_build_tool;
 use crate::schema::{BuildTool, DebugConfiguration, TestDebugRequest, TestDebugResponse};
+use crate::test_id::parse_qualified_test_id;
 use crate::{Result, SCHEMA_VERSION};
 use std::path::{Path, PathBuf};
 
@@ -18,18 +19,30 @@ pub fn debug_configuration_for_test(
         other => other,
     };
 
+    let parsed = parse_qualified_test_id(test_id);
+    let module = parsed.module;
+    let stripped_test_id = parsed.test;
+    let module_rel_path = module.as_deref();
+
     let (command, args) = match tool {
         BuildTool::Maven => {
             let mvnw = project_root.join("mvnw");
             let executable = if mvnw.exists() { "./mvnw" } else { "mvn" };
 
+            let mut args = vec!["-Dmaven.surefire.debug".to_string()];
+            if let Some(module_rel_path) = module_rel_path {
+                args.push("-pl".to_string());
+                args.push(module_rel_path.to_string());
+                if module_rel_path != "." {
+                    args.push("-am".to_string());
+                }
+            }
+            args.push(format!("-Dtest={stripped_test_id}"));
+            args.push("test".to_string());
+
             (
                 executable.to_string(),
-                vec![
-                    "-Dmaven.surefire.debug".to_string(),
-                    format!("-Dtest={test_id}"),
-                    "test".to_string(),
-                ],
+                args,
             )
         }
         BuildTool::Gradle => {
@@ -39,11 +52,16 @@ pub fn debug_configuration_for_test(
             } else {
                 "gradle"
             };
-            let pattern = test_id.replace('#', ".");
+            let task = match module_rel_path {
+                Some(".") => ":test".to_string(),
+                Some(path) => format!(":{}:test", path.replace('/', ":")),
+                None => "test".to_string(),
+            };
+            let pattern = stripped_test_id.replace('#', ".");
             (
                 executable.to_string(),
                 vec![
-                    "test".to_string(),
+                    task,
                     "--tests".to_string(),
                     pattern,
                     "--debug-jvm".to_string(),

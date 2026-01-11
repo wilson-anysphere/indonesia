@@ -1,0 +1,3 @@
+rootProject.name = 'gradle-multi-module-fixture'
+include 'module-a', 'module-b'
+

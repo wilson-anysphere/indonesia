@@ -2,9 +2,10 @@ use crate::report::{merge_case_results, parse_junit_report};
 use crate::schema::{
     BuildTool, TestCaseResult, TestRunRequest, TestRunResponse, TestRunSummary, TestStatus,
 };
+use crate::test_id::{parse_qualified_test_id, qualify_test_id};
+use crate::util::{collect_module_roots, module_for_path, ModuleRoot};
 use crate::{NovaTestingError, Result, SCHEMA_VERSION};
-use std::collections::BTreeMap;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -25,23 +26,35 @@ pub fn run_tests(req: &TestRunRequest) -> Result<TestRunResponse> {
         other => other,
     };
 
-    let command = command_for_tests(&project_root, tool, &req.tests);
     let started_at = SystemTime::now();
-    let output = command_output(command)?;
+    let runs = build_runs(&project_root, tool, &req.tests)?;
+    let multi_run = runs.len() > 1;
 
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = bytes_to_string(output.stdout);
-    let stderr = bytes_to_string(output.stderr);
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let mut exit_code = 0;
+    let mut success = true;
+
+    for run in runs {
+        let output = command_output(run.command)?;
+        let run_exit_code = output.status.code().unwrap_or(-1);
+        if run_exit_code != 0 && exit_code == 0 {
+            exit_code = run_exit_code;
+        }
+        success &= run_exit_code == 0;
+
+        let label = run
+            .module_rel_path
+            .as_deref()
+            .unwrap_or("<workspace>");
+        append_scoped_output(&mut stdout, label, output.stdout, multi_run);
+        append_scoped_output(&mut stderr, label, output.stderr, multi_run);
+    }
 
     let cutoff = started_at.checked_sub(Duration::from_secs(2));
-    let allow_cached_reports = output.status.success() || !req.tests.is_empty();
-    let mut tests = collect_and_parse_reports(
-        &project_root,
-        tool,
-        cutoff,
-        allow_cached_reports,
-        &req.tests,
-    )?;
+    let allow_cached_reports = success || !req.tests.is_empty();
+    let mut tests =
+        collect_and_parse_reports(&project_root, tool, cutoff, allow_cached_reports, &req.tests)?;
     tests = filter_results_by_request(tests, &req.tests);
     tests.sort_by(|a, b| a.id.cmp(&b.id));
 
@@ -50,7 +63,7 @@ pub fn run_tests(req: &TestRunRequest) -> Result<TestRunResponse> {
     Ok(TestRunResponse {
         schema_version: SCHEMA_VERSION,
         tool,
-        success: exit_code == 0,
+        success,
         exit_code,
         stdout,
         stderr,
@@ -83,7 +96,50 @@ pub(crate) fn detect_build_tool(project_root: &Path) -> Result<BuildTool> {
     ))
 }
 
-fn command_for_tests(project_root: &Path, tool: BuildTool, tests: &[String]) -> Command {
+struct ModuleRun {
+    module_rel_path: Option<String>,
+    command: Command,
+}
+
+fn build_runs(project_root: &Path, tool: BuildTool, tests: &[String]) -> Result<Vec<ModuleRun>> {
+    if tests.is_empty() {
+        return Ok(vec![ModuleRun {
+            module_rel_path: None,
+            command: command_for_tests(project_root, tool, None, tests),
+        }]);
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut groups: BTreeMap<Option<String>, Vec<String>> = BTreeMap::new();
+    for id in tests {
+        let parsed = parse_qualified_test_id(id);
+        // Preserve request order, but avoid duplicated patterns within a module group.
+        if !seen.insert((parsed.module.clone(), parsed.test.clone())) {
+            continue;
+        }
+        groups.entry(parsed.module).or_default().push(parsed.test);
+    }
+
+    Ok(groups
+        .into_iter()
+        .map(|(module_rel_path, ids)| ModuleRun {
+            command: command_for_tests(
+                project_root,
+                tool,
+                module_rel_path.as_deref(),
+                &ids,
+            ),
+            module_rel_path,
+        })
+        .collect())
+}
+
+fn command_for_tests(
+    project_root: &Path,
+    tool: BuildTool,
+    module_rel_path: Option<&str>,
+    tests: &[String],
+) -> Command {
     match tool {
         BuildTool::Maven => {
             let mvnw = project_root.join("mvnw");
@@ -91,6 +147,13 @@ fn command_for_tests(project_root: &Path, tool: BuildTool, tests: &[String]) -> 
 
             let mut cmd = Command::new(executable);
             cmd.current_dir(project_root);
+
+            if let Some(module_rel_path) = module_rel_path {
+                cmd.arg("-pl").arg(module_rel_path);
+                if module_rel_path != "." {
+                    cmd.arg("-am");
+                }
+            }
 
             if !tests.is_empty() {
                 let pattern = tests.join(",");
@@ -109,7 +172,12 @@ fn command_for_tests(project_root: &Path, tool: BuildTool, tests: &[String]) -> 
 
             let mut cmd = Command::new(executable);
             cmd.current_dir(project_root);
-            cmd.arg("test");
+            let task = match module_rel_path {
+                Some(".") => ":test".to_string(),
+                Some(path) => format!(":{}:test", path.replace('/', ":")),
+                None => "test".to_string(),
+            };
+            cmd.arg(task);
             for test in tests {
                 let pattern = test.replace('#', ".");
                 cmd.arg("--tests").arg(pattern);
@@ -216,6 +284,23 @@ fn should_retry_spawn(err: &std::io::Error) -> bool {
     ) || err.raw_os_error() == Some(11)
 }
 
+fn append_scoped_output(out: &mut String, label: &str, bytes: Vec<u8>, multi_run: bool) {
+    let chunk = bytes_to_string(bytes);
+    if chunk.is_empty() && !multi_run {
+        return;
+    }
+    if multi_run {
+        out.push_str(&format!("===== {label} =====\n"));
+    }
+    out.push_str(&chunk);
+    if multi_run && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if multi_run {
+        out.push_str(&format!("===== end {label} =====\n"));
+    }
+}
+
 fn collect_and_parse_reports(
     project_root: &Path,
     tool: BuildTool,
@@ -223,12 +308,16 @@ fn collect_and_parse_reports(
     allow_cached_reports: bool,
     requested: &[String],
 ) -> Result<Vec<TestCaseResult>> {
-    let report_dirs = discover_report_dirs(project_root, tool)?;
+    let modules = project_modules(project_root);
+    let qualify_ids = modules.len() > 1;
+    let report_dirs = discover_report_dirs(&modules, tool)?;
     collect_and_parse_reports_in_dirs(
         &report_dirs,
         modified_since,
         allow_cached_reports,
         requested,
+        &modules,
+        qualify_ids,
     )
 }
 
@@ -237,17 +326,25 @@ fn collect_and_parse_reports_in_dirs(
     modified_since: Option<SystemTime>,
     allow_cached_reports: bool,
     requested: &[String],
+    modules: &[ModuleRoot],
+    qualify_ids: bool,
 ) -> Result<Vec<TestCaseResult>> {
     let mut xml_files = collect_report_files(report_dirs, modified_since)?;
     xml_files.sort();
 
     let mut by_id: BTreeMap<String, TestCaseResult> = BTreeMap::new();
-    merge_report_files(&mut by_id, xml_files, None)?;
+    merge_report_files(&mut by_id, xml_files, None, modules, qualify_ids)?;
 
     if by_id.is_empty() && allow_cached_reports {
         let xml_files = collect_recent_report_files(report_dirs, 50)?;
         let requested_exact = requested_exact_ids_for_early_stop(requested);
-        merge_report_files(&mut by_id, xml_files, requested_exact.as_ref())?;
+        merge_report_files(
+            &mut by_id,
+            xml_files,
+            requested_exact.as_ref(),
+            modules,
+            qualify_ids,
+        )?;
     }
 
     Ok(by_id.into_values().collect())
@@ -257,18 +354,25 @@ fn merge_report_files(
     by_id: &mut BTreeMap<String, TestCaseResult>,
     xml_files: Vec<PathBuf>,
     requested_exact: Option<&HashSet<String>>,
+    modules: &[ModuleRoot],
+    qualify_ids: bool,
 ) -> Result<()> {
     // Deduplicate by id to make results stable when multiple report files contain overlapping suites.
     let mut remaining = requested_exact.cloned();
     for path in xml_files {
-        for case in parse_junit_report(&path)? {
+        let module_rel_path = module_for_path(modules, &path).rel_path.clone();
+        for mut case in parse_junit_report(&path)? {
+            if qualify_ids {
+                case.id = qualify_test_id(&module_rel_path, &case.id);
+            }
+
             let id = case.id.clone();
             match by_id.get_mut(&id) {
                 Some(existing) => merge_case_results(existing, case),
                 None => {
                     by_id.insert(id.clone(), case);
                 }
-            }
+            };
             if let Some(remaining) = remaining.as_mut() {
                 remaining.remove(&id);
                 if remaining.is_empty() {
@@ -280,23 +384,22 @@ fn merge_report_files(
     Ok(())
 }
 
-fn discover_report_dirs(project_root: &Path, tool: BuildTool) -> Result<Vec<PathBuf>> {
+fn discover_report_dirs(modules: &[ModuleRoot], tool: BuildTool) -> Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
-    let module_roots = project_modules(project_root);
 
     match tool {
         BuildTool::Maven => {
-            for module_root in module_roots {
-                dirs.push(module_root.join("target/surefire-reports"));
-                dirs.push(module_root.join("target/failsafe-reports"));
+            for module_root in modules {
+                dirs.push(module_root.root.join("target/surefire-reports"));
+                dirs.push(module_root.root.join("target/failsafe-reports"));
             }
         }
         BuildTool::Gradle => {
-            for module_root in module_roots {
-                dirs.push(module_root.join("build/test-results/test"));
+            for module_root in modules {
+                dirs.push(module_root.root.join("build/test-results/test"));
 
                 // Best-effort: include any custom test tasks under `build/test-results/*`.
-                let test_results_dir = module_root.join("build/test-results");
+                let test_results_dir = module_root.root.join("build/test-results");
                 if let Ok(entries) = std::fs::read_dir(&test_results_dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
@@ -316,13 +419,18 @@ fn discover_report_dirs(project_root: &Path, tool: BuildTool) -> Result<Vec<Path
     Ok(dirs)
 }
 
-fn project_modules(project_root: &Path) -> Vec<PathBuf> {
+fn project_modules(project_root: &Path) -> Vec<ModuleRoot> {
     // Best-effort: if project loading fails (malformed build files, etc), fall back to scanning just
     // the workspace root as a single module. This keeps `nova/test/run` resilient while still
     // avoiding full workspace walks for report discovery.
     nova_project::load_project(project_root)
-        .map(|project| project.modules.into_iter().map(|m| m.root).collect())
-        .unwrap_or_else(|_| vec![project_root.to_path_buf()])
+        .map(|project| collect_module_roots(&project.workspace_root, &project.modules))
+        .unwrap_or_else(|_| {
+            vec![ModuleRoot {
+                root: project_root.to_path_buf(),
+                rel_path: ".".to_string(),
+            }]
+        })
 }
 
 fn is_modified_since(path: &Path, cutoff: SystemTime) -> bool {
@@ -424,6 +532,7 @@ fn requested_exact_ids_for_early_stop(requested: &[String]) -> Option<HashSet<St
 
     Some(requested.iter().cloned().collect())
 }
+
 fn filter_results_by_request(
     cases: Vec<TestCaseResult>,
     requested: &[String],
@@ -432,21 +541,42 @@ fn filter_results_by_request(
         return cases;
     }
 
-    let mut exact = HashSet::<String>::new();
-    let mut prefixes = Vec::<String>::new();
-
-    for req in requested {
-        if req.contains('#') {
-            exact.insert(req.clone());
-        } else {
-            prefixes.push(format!("{req}#"));
-        }
+    #[derive(Clone, Debug)]
+    struct Matcher {
+        module: Option<String>,
+        test: String,
+        is_exact: bool,
     }
+
+    let matchers: Vec<Matcher> = requested
+        .iter()
+        .map(|req| {
+            let parsed = parse_qualified_test_id(req);
+            Matcher {
+                module: parsed.module,
+                is_exact: parsed.test.contains('#'),
+                test: parsed.test,
+            }
+        })
+        .collect();
 
     cases
         .into_iter()
         .filter(|case| {
-            exact.contains(&case.id) || prefixes.iter().any(|prefix| case.id.starts_with(prefix))
+            let parsed_case = parse_qualified_test_id(&case.id);
+            matchers.iter().any(|matcher| {
+                if let Some(module) = matcher.module.as_deref() {
+                    if parsed_case.module.as_deref() != Some(module) {
+                        return false;
+                    }
+                }
+
+                if matcher.is_exact {
+                    parsed_case.test == matcher.test
+                } else {
+                    parsed_case.test.starts_with(&format!("{}#", matcher.test))
+                }
+            })
         })
         .collect()
 }
@@ -547,6 +677,7 @@ mod tests {
         let cmd = command_for_tests(
             &root,
             BuildTool::Maven,
+            None,
             &vec!["com.example.CalculatorTest#adds".to_string()],
         );
 
@@ -564,6 +695,7 @@ mod tests {
         let cmd = command_for_tests(
             &root,
             BuildTool::Gradle,
+            None,
             &vec!["com.example.LegacyCalculatorTest#legacyAdds".to_string()],
         );
 
@@ -585,7 +717,8 @@ mod tests {
     #[test]
     fn discovers_maven_report_dirs_from_project_modules() {
         let root = fixture_root("maven-junit5").canonicalize().unwrap();
-        let dirs = discover_report_dirs(&root, BuildTool::Maven).unwrap();
+        let modules = project_modules(&root);
+        let dirs = discover_report_dirs(&modules, BuildTool::Maven).unwrap();
         assert!(dirs.contains(&root.join("target/surefire-reports")));
         assert!(dirs.contains(&root.join("target/failsafe-reports")));
     }
@@ -593,7 +726,8 @@ mod tests {
     #[test]
     fn discovers_gradle_report_dirs_from_project_modules() {
         let root = fixture_root("gradle-junit4").canonicalize().unwrap();
-        let dirs = discover_report_dirs(&root, BuildTool::Gradle).unwrap();
+        let modules = project_modules(&root);
+        let dirs = discover_report_dirs(&modules, BuildTool::Gradle).unwrap();
         assert!(dirs.contains(&root.join("build/test-results/test")));
     }
 
@@ -638,11 +772,129 @@ mod tests {
         let cutoff = SystemTime::now()
             .checked_add(Duration::from_secs(60))
             .unwrap();
-        let cases =
-            collect_and_parse_reports_in_dirs(&[report_dir], Some(cutoff), true, &[]).unwrap();
+        let modules = vec![ModuleRoot {
+            root: tmp.path.clone(),
+            rel_path: ".".to_string(),
+        }];
+        let cases = collect_and_parse_reports_in_dirs(
+            &[report_dir],
+            Some(cutoff),
+            true,
+            &[],
+            &modules,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].id, "com.example.CalculatorTest#adds");
         assert_eq!(cases[0].status, TestStatus::Passed);
+    }
+
+    #[test]
+    fn constructs_module_scoped_maven_commands_for_qualified_ids() {
+        let root = fixture_root("maven-multi-module");
+        let runs = build_runs(
+            &root,
+            BuildTool::Maven,
+            &vec![
+                "service-a::com.example.DuplicateTest#ok".to_string(),
+                "service-b::com.example.DuplicateTest#ok".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(runs.len(), 2);
+
+        let args_for = |cmd: &Command| {
+            cmd.get_args()
+                .map(|a| a.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(runs[0].module_rel_path.as_deref(), Some("service-a"));
+        assert_eq!(runs[0].command.get_program().to_string_lossy(), "mvn");
+        assert_eq!(
+            args_for(&runs[0].command),
+            vec![
+                "-pl",
+                "service-a",
+                "-am",
+                "-Dtest=com.example.DuplicateTest#ok",
+                "test"
+            ]
+        );
+
+        assert_eq!(runs[1].module_rel_path.as_deref(), Some("service-b"));
+        assert_eq!(
+            args_for(&runs[1].command),
+            vec![
+                "-pl",
+                "service-b",
+                "-am",
+                "-Dtest=com.example.DuplicateTest#ok",
+                "test"
+            ]
+        );
+    }
+
+    #[test]
+    fn constructs_module_scoped_gradle_commands_for_qualified_ids() {
+        let root = fixture_root("gradle-multi-module");
+        let runs = build_runs(
+            &root,
+            BuildTool::Gradle,
+            &vec![
+                "module-a::com.example.DuplicateTest#ok".to_string(),
+                "module-b::com.example.DuplicateTest#ok".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(runs.len(), 2);
+
+        let args_for = |cmd: &Command| {
+            cmd.get_args()
+                .map(|a| a.to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(runs[0].module_rel_path.as_deref(), Some("module-a"));
+        assert_eq!(
+            args_for(&runs[0].command),
+            vec![":module-a:test", "--tests", "com.example.DuplicateTest.ok"]
+        );
+
+        assert_eq!(runs[1].module_rel_path.as_deref(), Some("module-b"));
+        assert_eq!(
+            args_for(&runs[1].command),
+            vec![":module-b:test", "--tests", "com.example.DuplicateTest.ok"]
+        );
+    }
+
+    #[test]
+    fn prefixes_junit_report_results_with_module_paths() {
+        let root = fixture_root("maven-multi-module");
+
+        let mut cases =
+            collect_and_parse_reports(&root, BuildTool::Maven, None, false, &[]).unwrap();
+        cases.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].id, "service-a::com.example.DuplicateTest#ok");
+        assert_eq!(cases[1].id, "service-b::com.example.DuplicateTest#ok");
+    }
+
+    #[test]
+    fn prefixes_gradle_junit_report_results_with_module_paths() {
+        let root = fixture_root("gradle-multi-module");
+
+        let mut cases =
+            collect_and_parse_reports(&root, BuildTool::Gradle, None, false, &[]).unwrap();
+        cases.sort_by(|a, b| a.id.cmp(&b.id));
+
+        assert_eq!(cases.len(), 2);
+        assert_eq!(cases[0].id, "module-a::com.example.DuplicateTest#ok");
+        assert_eq!(cases[1].id, "module-b::com.example.DuplicateTest#ok");
     }
 }

@@ -1,7 +1,8 @@
 use crate::schema::{
     Position, Range, TestDiscoverRequest, TestDiscoverResponse, TestFramework, TestItem, TestKind,
 };
-use crate::util::rel_path_string;
+use crate::test_id::qualify_test_id;
+use crate::util::{collect_module_roots, module_for_path, rel_path_string};
 use crate::{NovaTestingError, Result, SCHEMA_VERSION};
 use nova_core::{LineIndex, TextSize};
 use nova_project::SourceRootKind;
@@ -40,6 +41,8 @@ pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse>
     let project = nova_project::load_project_with_workspace_config(&requested_root)
         .map_err(|err| NovaTestingError::InvalidRequest(err.to_string()))?;
     let project_root = project.workspace_root;
+    let modules = collect_module_roots(&project_root, &project.modules);
+    let qualify_ids = modules.len() > 1;
 
     let mut roots: Vec<PathBuf> = project
         .source_roots
@@ -57,16 +60,32 @@ pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse>
     }
 
     let index = get_or_create_index(&project_root, roots);
-    let tests = {
+    let mut tests = {
         let mut index = lock_mutex(index.as_ref());
         index.refresh()?;
         index.tests()
     };
 
+    if qualify_ids {
+        for item in &mut tests {
+            let abs_path = project_root.join(Path::new(&item.path));
+            let module_rel_path = &module_for_path(&modules, &abs_path).rel_path;
+            qualify_test_item_ids(item, module_rel_path);
+        }
+        tests.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+
     Ok(TestDiscoverResponse {
         schema_version: SCHEMA_VERSION,
         tests,
     })
+}
+
+fn qualify_test_item_ids(item: &mut TestItem, module_rel_path: &str) {
+    item.id = qualify_test_id(module_rel_path, &item.id);
+    for child in &mut item.children {
+        qualify_test_item_ids(child, module_rel_path);
+    }
 }
 
 fn get_or_create_index(

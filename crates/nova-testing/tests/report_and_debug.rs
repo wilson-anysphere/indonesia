@@ -108,3 +108,49 @@ fn creates_debug_configuration_for_gradle() {
         ]
     );
 }
+
+#[test]
+fn creates_module_scoped_debug_configuration_for_maven() {
+    let root = fixture_root("maven-multi-module");
+    let cfg = debug_configuration_for_test(
+        &root,
+        BuildTool::Auto,
+        "service-a::com.example.DuplicateTest#ok",
+    )
+    .unwrap();
+
+    assert_eq!(cfg.command, "mvn");
+    assert_eq!(
+        cfg.args,
+        vec![
+            "-Dmaven.surefire.debug",
+            "-pl",
+            "service-a",
+            "-am",
+            "-Dtest=com.example.DuplicateTest#ok",
+            "test"
+        ]
+    );
+}
+
+#[test]
+fn creates_module_scoped_debug_configuration_for_gradle() {
+    let root = fixture_root("gradle-multi-module");
+    let cfg = debug_configuration_for_test(
+        &root,
+        BuildTool::Auto,
+        "module-a::com.example.DuplicateTest#ok",
+    )
+    .unwrap();
+
+    assert_eq!(cfg.command, "gradle");
+    assert_eq!(
+        cfg.args,
+        vec![
+            ":module-a:test",
+            "--tests",
+            "com.example.DuplicateTest.ok",
+            "--debug-jvm"
+        ]
+    );
+}

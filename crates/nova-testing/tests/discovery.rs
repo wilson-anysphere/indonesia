@@ -274,3 +274,59 @@ class AlphaTest {
     assert!(resp3.tests.iter().any(|t| t.id == "com.example.AlphaTest"));
     assert!(resp3.tests.iter().all(|t| t.id != "com.example.BetaTest"));
 }
+
+#[test]
+fn discovers_unique_ids_in_multi_module_maven_fixture() {
+    let root = fixture_root("maven-multi-module");
+    let resp = discover_tests(&TestDiscoverRequest {
+        project_root: root.to_string_lossy().to_string(),
+    })
+    .unwrap();
+
+    let ids: Vec<_> = resp.tests.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "service-a::com.example.DuplicateTest",
+            "service-b::com.example.DuplicateTest"
+        ]
+    );
+
+    let service_a = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "service-a::com.example.DuplicateTest")
+        .unwrap();
+    let service_b = resp
+        .tests
+        .iter()
+        .find(|t| t.id == "service-b::com.example.DuplicateTest")
+        .unwrap();
+
+    assert_eq!(
+        service_a.children[0].id,
+        "service-a::com.example.DuplicateTest#ok"
+    );
+    assert_eq!(
+        service_b.children[0].id,
+        "service-b::com.example.DuplicateTest#ok"
+    );
+}
+
+#[test]
+fn discovers_unique_ids_in_multi_module_gradle_fixture() {
+    let root = fixture_root("gradle-multi-module");
+    let resp = discover_tests(&TestDiscoverRequest {
+        project_root: root.to_string_lossy().to_string(),
+    })
+    .unwrap();
+
+    let ids: Vec<_> = resp.tests.iter().map(|t| t.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "module-a::com.example.DuplicateTest",
+            "module-b::com.example.DuplicateTest"
+        ]
+    );
+}

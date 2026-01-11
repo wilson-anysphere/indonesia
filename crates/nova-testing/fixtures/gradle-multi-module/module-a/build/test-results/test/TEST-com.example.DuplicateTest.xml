@@ -1,0 +1,4 @@
+<testsuite name="com.example.DuplicateTest" tests="1" failures="0" errors="0" skipped="0" time="0.001">
+  <testcase classname="com.example.DuplicateTest" name="ok" time="0.001"/>
+</testsuite>
+
