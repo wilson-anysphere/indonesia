@@ -1,7 +1,7 @@
 use nova_index::{Index, SymbolKind};
 use nova_refactor::{
     apply_text_edits, change_signature, workspace_edit_to_lsp, ChangeSignature, ChangeSignatureConflict,
-    FileOp, HierarchyPropagation, InMemoryJavaDatabase, ParameterOperation, WorkspaceEdit, WorkspaceTextEdit,
+    FileId, FileOp, HierarchyPropagation, ParameterOperation, TextDatabase, WorkspaceEdit, WorkspaceTextEdit,
 };
 use nova_types::MethodId;
 use pretty_assertions::assert_eq;
@@ -412,56 +412,6 @@ fn conflict_overload_collision() {
     void foo(String a) {
     }
 }
-
-#[test]
-fn unicode_identifiers_round_trip_to_utf16_lsp_positions() {
-    let source = "class A {\n    int sum(int a, int b) {\n        return a + b;\n    }\n\n    void test() {\n        int 𝒂 = sum(1, 2);\n    }\n}\n";
-    let (index, _files) = build_index(vec![(
-        "file:///A.java",
-        source,
-    )]);
-
-    let target = method_id(&index, "A", "sum", &["int", "int"]);
-    let change = ChangeSignature {
-        target,
-        new_name: None,
-        parameters: vec![
-            ParameterOperation::Existing {
-                old_index: 1,
-                new_name: None,
-                new_type: None,
-            },
-            ParameterOperation::Existing {
-                old_index: 0,
-                new_name: None,
-                new_type: None,
-            },
-        ],
-        new_return_type: None,
-        new_throws: None,
-        propagate_hierarchy: HierarchyPropagation::None,
-    };
-
-    let edit = change_signature(&index, &change).expect("refactor succeeds");
-    let db = InMemoryJavaDatabase::single_file("file:///A.java", source);
-    let lsp_edit = workspace_edit_to_lsp(&db, &edit).expect("convert to lsp");
-
-    let uri: lsp_types::Uri = "file:///A.java".parse().unwrap();
-    let changes = lsp_edit.changes.expect("changes");
-    let edits = changes.get(&uri).expect("edits for A.java");
-
-    let call_edit = edits
-        .iter()
-        .find(|edit| edit.new_text == "sum(2, 1)")
-        .expect("call edit");
-
-    // The identifier `𝒂` is a non-BMP character. In UTF-16 it occupies two code units,
-    // so the `sum` call starts at character 17, not 16.
-    assert_eq!(call_edit.range.start.line, 6);
-    assert_eq!(call_edit.range.start.character, 17);
-    assert_eq!(call_edit.range.end.line, 6);
-    assert_eq!(call_edit.range.end.character, 26);
-}
 "#,
     )]);
 
@@ -487,4 +437,51 @@ fn unicode_identifiers_round_trip_to_utf16_lsp_positions() {
         "expected OverloadCollision, got: {:?}",
         err.conflicts
     );
+}
+
+#[test]
+fn unicode_identifiers_round_trip_to_utf16_lsp_positions() {
+    let source = "class A {\n    int sum(int a, int b) {\n        return a + b;\n    }\n\n    void test() {\n        int 𝒂 = sum(1, 2);\n    }\n}\n";
+    let (index, _files) = build_index(vec![("file:///A.java", source)]);
+
+    let target = method_id(&index, "A", "sum", &["int", "int"]);
+    let change = ChangeSignature {
+        target,
+        new_name: None,
+        parameters: vec![
+            ParameterOperation::Existing {
+                old_index: 1,
+                new_name: None,
+                new_type: None,
+            },
+            ParameterOperation::Existing {
+                old_index: 0,
+                new_name: None,
+                new_type: None,
+            },
+        ],
+        new_return_type: None,
+        new_throws: None,
+        propagate_hierarchy: HierarchyPropagation::None,
+    };
+
+    let edit = change_signature(&index, &change).expect("refactor succeeds");
+    let db = TextDatabase::new([(FileId::new("file:///A.java"), source.to_string())]);
+    let lsp_edit = workspace_edit_to_lsp(&db, &edit).expect("convert to lsp");
+
+    let uri: lsp_types::Uri = "file:///A.java".parse().unwrap();
+    let changes = lsp_edit.changes.expect("changes");
+    let edits = changes.get(&uri).expect("edits for A.java");
+
+    let call_edit = edits
+        .iter()
+        .find(|edit| edit.new_text == "sum(2, 1)")
+        .expect("call edit");
+
+    // The identifier `𝒂` is a non-BMP character. In UTF-16 it occupies two code units,
+    // so the `sum` call starts at character 17, not 16.
+    assert_eq!(call_edit.range.start.line, 6);
+    assert_eq!(call_edit.range.start.character, 17);
+    assert_eq!(call_edit.range.end.line, 6);
+    assert_eq!(call_edit.range.end.character, 26);
 }

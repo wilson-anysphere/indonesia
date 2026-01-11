@@ -78,6 +78,7 @@ pub use edit::{
 };
 pub use java::{InMemoryJavaDatabase, JavaSymbolKind, SymbolId};
 pub use lsp::{code_action_for_edit, workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes};
+pub use lsp::{code_action_for_edit, workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes, TextDatabase};
 pub use materialize::{materialize, MaterializeError};
 pub use preview::{generate_preview, FilePreview, RefactoringPreview};
 pub use refactorings::{

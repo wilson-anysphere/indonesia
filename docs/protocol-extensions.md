@@ -1008,7 +1008,9 @@ VS Code extension expects:
   `ParameterOperation`, `HierarchyPropagation`)
 
 This method name exists as a constant (`crates/nova-lsp/src/refactor.rs::CHANGE_SIGNATURE_METHOD`)
-but the shipped `nova-lsp` stdio server does **not** handle it today.
+but the shipped `nova-lsp` stdio server does **not** handle it today. The LSP layer does, however,
+expose a helper (`crates/nova-lsp/src/refactor.rs::change_signature_workspace_edit`) for converting
+the refactoring engine output into an LSP `WorkspaceEdit` with correct UTF-16 positions.
 
 #### Request params (note: snake_case)
 
@@ -1025,8 +1027,11 @@ but the shipped `nova-lsp` stdio server does **not** handle it today.
 
 #### Response
 
-If/when implemented, the natural response type is a standard LSP `WorkspaceEdit` (the underlying
-refactoring engine returns `lsp_types::WorkspaceEdit`).
+If/when implemented, the natural response type is a standard LSP `WorkspaceEdit`.
+
+Note: the refactoring engine produces Nova's canonical `nova_refactor::WorkspaceEdit` (byte-offset
+text edits). The LSP layer should convert it using `nova_refactor::workspace_edit_to_lsp`, which
+maps offsets to UTF-16 LSP positions.
 
 #### Errors
 

@@ -7,7 +7,51 @@ use lsp_types::{
 use thiserror::Error;
 
 use crate::edit::{apply_workspace_edit, FileId, FileOp, TextEdit, WorkspaceEdit};
-use crate::semantic::RefactorDatabase;
+use crate::java::SymbolId;
+use crate::semantic::{Reference, RefactorDatabase, SymbolDefinition};
+
+/// Minimal [`RefactorDatabase`] implementation backed by raw file text.
+///
+/// This is useful for converting canonical [`WorkspaceEdit`] values to LSP edits in layers that
+/// don't yet have access to Nova's full semantic database.
+#[derive(Clone, Debug, Default)]
+pub struct TextDatabase {
+    files: BTreeMap<FileId, String>,
+}
+
+impl TextDatabase {
+    pub fn new(files: impl IntoIterator<Item = (FileId, String)>) -> Self {
+        Self {
+            files: files.into_iter().collect(),
+        }
+    }
+}
+
+impl RefactorDatabase for TextDatabase {
+    fn file_text(&self, file: &FileId) -> Option<&str> {
+        self.files.get(file).map(String::as_str)
+    }
+
+    fn symbol_definition(&self, _symbol: SymbolId) -> Option<SymbolDefinition> {
+        None
+    }
+
+    fn symbol_scope(&self, _symbol: SymbolId) -> Option<u32> {
+        None
+    }
+
+    fn resolve_name_in_scope(&self, _scope: u32, _name: &str) -> Option<SymbolId> {
+        None
+    }
+
+    fn would_shadow(&self, _scope: u32, _name: &str) -> Option<SymbolId> {
+        None
+    }
+
+    fn find_references(&self, _symbol: SymbolId) -> Vec<Reference> {
+        Vec::new()
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum LspConversionError {
