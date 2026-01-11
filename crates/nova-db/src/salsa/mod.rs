@@ -1224,6 +1224,8 @@ mod tests {
 
     #[test]
     fn hir_body_queries_lower_locals_and_calls() {
+        use nova_hir::item_tree::{Item as HirItem, Member as HirMember};
+
         let mut db = RootDatabase::default();
         let file = FileId::from_raw(1);
 
@@ -1272,15 +1274,35 @@ class Foo {
             tree.package.as_ref().map(|pkg| pkg.name.as_str()),
             Some("com.example")
         );
-        assert!(tree.classes.iter().any(|class| class.name == "Foo"));
-        assert!(tree.classes.iter().any(|class| class.name == "Inner"));
 
-        let bar_index = tree
-            .methods
+        let foo_id = tree
+            .items
             .iter()
-            .position(|method| method.name == "bar")
+            .find_map(|item| match item {
+                HirItem::Class(id) if tree.class(*id).name == "Foo" => Some(*id),
+                _ => None,
+            })
+            .expect("expected Foo class");
+        let foo = tree.class(foo_id);
+
+        let inner_id = foo
+            .members
+            .iter()
+            .find_map(|member| match member {
+                HirMember::Type(HirItem::Class(id)) if tree.class(*id).name == "Inner" => Some(*id),
+                _ => None,
+            })
+            .expect("expected nested Inner class");
+        assert_eq!(tree.class(inner_id).name, "Inner");
+
+        let bar_id = foo
+            .members
+            .iter()
+            .find_map(|member| match member {
+                HirMember::Method(id) if tree.method(*id).name == "bar" => Some(*id),
+                _ => None,
+            })
             .expect("bar method");
-        let bar_id = nova_hir::ids::MethodId::new(file, bar_index as u32);
         let body = db.hir_body(bar_id);
 
         let local_names: Vec<_> = body
@@ -1300,7 +1322,15 @@ class Foo {
         }
         assert!(call_paths.iter().any(|path| path == "System.out.println"));
 
-        let ctor_body = db.hir_constructor_body(nova_hir::ids::ConstructorId::new(file, 0));
+        let ctor_id = foo
+            .members
+            .iter()
+            .find_map(|member| match member {
+                HirMember::Constructor(id) => Some(*id),
+                _ => None,
+            })
+            .expect("expected Foo constructor");
+        let ctor_body = db.hir_constructor_body(ctor_id);
         let ctor_locals: Vec<_> = ctor_body
             .locals
             .iter()
@@ -1318,12 +1348,14 @@ class Foo {
         }
         assert!(ctor_call_paths.iter().any(|path| path == "bar"));
 
-        let init_index = tree
-            .initializers
+        let init_id = foo
+            .members
             .iter()
-            .position(|init| init.is_static)
+            .find_map(|member| match member {
+                HirMember::Initializer(id) if tree.initializer(*id).is_static => Some(*id),
+                _ => None,
+            })
             .expect("static initializer");
-        let init_id = nova_hir::ids::InitializerId::new(file, init_index as u32);
         let init_body = db.hir_initializer_body(init_id);
         let init_locals: Vec<_> = init_body
             .locals
