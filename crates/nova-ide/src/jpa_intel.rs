@@ -185,14 +185,14 @@ pub(crate) fn project_for_file(
 
 pub(crate) fn resolve_definition_in_jpql(
     project: &CachedJpaProject,
-    java_source: &str,
+    query: &str,
     cursor: usize,
 ) -> Option<JpaResolvedDefinition> {
     let analysis = project.analysis.as_ref()?;
     let model = &analysis.model;
 
-    let (query, query_cursor) = jpql_query_at_cursor(java_source, cursor)?;
-    let tokens = tokenize_jpql(&query);
+    let tokens = tokenize_jpql(query);
+    let query_cursor = cursor;
     let (tok_idx, tok) = token_at_cursor(&tokens, query_cursor)?;
 
     let TokenKind::Ident(ident) = &tok.kind else {
@@ -328,16 +328,34 @@ fn is_applicable_with_config(cfg: &ProjectConfig, sources: &[&str]) -> bool {
     is_jpa_applicable_with_classpath(&dep_refs, &classpath, sources)
 }
 
-fn jpql_query_at_cursor(java_source: &str, cursor: usize) -> Option<(String, usize)> {
+pub(crate) fn jpql_query_at_cursor(java_source: &str, cursor: usize) -> Option<(String, usize)> {
     for (query, lit_span) in extract_jpql_strings(java_source) {
-        let content_start = lit_span.start.saturating_add(1);
-        let content_end_exclusive = lit_span.end.saturating_sub(1);
+        let (content_start, content_end_inclusive) =
+            jpql_literal_content_bounds(java_source, lit_span);
 
-        if cursor >= content_start && cursor <= content_end_exclusive {
+        if cursor >= content_start && cursor <= content_end_inclusive {
             return Some((query, cursor.saturating_sub(content_start)));
         }
     }
     None
+}
+
+fn jpql_literal_content_bounds(source: &str, lit_span: Span) -> (usize, usize) {
+    let Some(lit) = source.get(lit_span.start..lit_span.end) else {
+        return (lit_span.start, lit_span.end);
+    };
+
+    if lit.starts_with("\"\"\"") && lit.ends_with("\"\"\"") && lit.len() >= 6 {
+        (
+            lit_span.start.saturating_add(3),
+            lit_span.end.saturating_sub(3),
+        )
+    } else {
+        (
+            lit_span.start.saturating_add(1),
+            lit_span.end.saturating_sub(1),
+        )
+    }
 }
 
 fn token_at_cursor(tokens: &[Token], cursor: usize) -> Option<(usize, &Token)> {

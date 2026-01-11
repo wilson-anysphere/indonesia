@@ -156,19 +156,6 @@ fn location_from_path_and_span(
     })
 }
 
-fn cursor_inside_jpql_string(java_source: &str, cursor: usize) -> bool {
-    if !(java_source.contains("@Query") || java_source.contains("@NamedQuery")) {
-        return false;
-    }
-    nova_framework_jpa::extract_jpql_strings(java_source)
-        .into_iter()
-        .any(|(_, lit_span)| {
-            let content_start = lit_span.start.saturating_add(1);
-            let content_end_exclusive = lit_span.end.saturating_sub(1);
-            cursor >= content_start && cursor <= content_end_exclusive
-        })
-}
-
 fn cursor_inside_value_placeholder(java_source: &str, cursor: usize) -> bool {
     // Best-effort detection for `@Value("${...}")` contexts (Spring or Micronaut).
     // This is used purely as a guard to avoid running framework analysis for
@@ -751,22 +738,20 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-        && cursor_inside_jpql_string(text, offset)
     {
-        if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
-            if let Some(analysis) = project.analysis.as_ref() {
-                let items = nova_framework_jpa::jpql_completions_in_java_source(
-                    text,
-                    offset,
-                    &analysis.model,
-                );
-                if !items.is_empty() {
-                    return decorate_completions(
-                        text,
-                        prefix_start,
-                        offset,
-                        jpa_completions_to_lsp(items),
-                    );
+        if let Some((query, query_cursor)) = crate::jpa_intel::jpql_query_at_cursor(text, offset) {
+            if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
+                if let Some(analysis) = project.analysis.as_ref() {
+                    let items =
+                        nova_framework_jpa::jpql_completions(&query, query_cursor, &analysis.model);
+                    if !items.is_empty() {
+                        return decorate_completions(
+                            text,
+                            prefix_start,
+                            offset,
+                            jpa_completions_to_lsp(items),
+                        );
+                    }
                 }
             }
         }
@@ -1142,12 +1127,14 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
     if db
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
-        && cursor_inside_jpql_string(text, offset)
     {
-        if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
-            if let Some(def) = crate::jpa_intel::resolve_definition_in_jpql(&project, text, offset)
-            {
-                return location_from_path_and_span(db, &def.path, def.span);
+        if let Some((query, query_cursor)) = crate::jpa_intel::jpql_query_at_cursor(text, offset) {
+            if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
+                if let Some(def) =
+                    crate::jpa_intel::resolve_definition_in_jpql(&project, &query, query_cursor)
+                {
+                    return location_from_path_and_span(db, &def.path, def.span);
+                }
             }
         }
     }

@@ -141,6 +141,44 @@ class UserRepository {
 }
 
 #[test]
+fn jpql_completions_work_in_text_block() {
+    let user_path = PathBuf::from("/workspace/src/main/java/com/example/User.java");
+    let post_path = PathBuf::from("/workspace/src/main/java/com/example/Post.java");
+    let repo_path = PathBuf::from("/workspace/src/main/java/com/example/UserRepository.java");
+
+    let repo_text = r#"package com.example;
+import org.springframework.data.jpa.repository.Query;
+
+class UserRepository {
+  @Query("""
+    SELECT u FROM User u WHERE u.<|>
+    """)
+  void m();
+}
+"#;
+
+    let (db, file, pos, _repo_text) = fixture_multi(
+        repo_path,
+        repo_text,
+        vec![
+            (user_path, user_entity_source()),
+            (post_path, post_entity_source()),
+        ],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"id"),
+        "expected JPQL completion list to contain `id`; got {labels:?}"
+    );
+    assert!(
+        labels.contains(&"name"),
+        "expected JPQL completion list to contain `name`; got {labels:?}"
+    );
+}
+
+#[test]
 fn jpql_completions_include_entity_names_in_from_clause() {
     let user_path = PathBuf::from("/workspace/src/main/java/com/example/User.java");
     let post_path = PathBuf::from("/workspace/src/main/java/com/example/Post.java");
@@ -261,6 +299,45 @@ class UserRepository {
         "expected goto-definition URI to point at User.java; got {:?}",
         loc.uri
     );
+    assert_eq!(loc.range.start.line, 8);
+    assert_eq!(loc.range.start.character, 9);
+}
+
+#[test]
+fn jpql_goto_definition_resolves_in_text_block() {
+    let user_path = PathBuf::from("/workspace/src/main/java/com/example/User.java");
+    let post_path = PathBuf::from("/workspace/src/main/java/com/example/Post.java");
+    let repo_path = PathBuf::from("/workspace/src/main/java/com/example/UserRepository.java");
+
+    let repo_text = r#"package com.example;
+import org.springframework.data.jpa.repository.Query;
+
+class UserRepository {
+  @Query("""
+    SELECT u FROM User u WHERE u.name = :name
+    """)
+  void m();
+  // <|>
+}
+"#;
+
+    let (db, file, _pos, repo_text) = fixture_multi(
+        repo_path,
+        repo_text,
+        vec![
+            (user_path.clone(), user_entity_source()),
+            (post_path, post_entity_source()),
+        ],
+    );
+
+    let name_offset = repo_text
+        .find("u.name")
+        .expect("expected u.name in fixture")
+        + "u.".len()
+        + 1;
+    let name_pos = offset_to_position(&repo_text, name_offset);
+    let loc = goto_definition(&db, file, name_pos).expect("expected definition for u.name");
+    assert!(loc.uri.as_str().contains("User.java"));
     assert_eq!(loc.range.start.line, 8);
     assert_eq!(loc.range.start.character, 9);
 }
