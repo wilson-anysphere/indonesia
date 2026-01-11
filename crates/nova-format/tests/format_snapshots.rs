@@ -276,6 +276,23 @@ class Foo {
 }
 
 #[test]
+fn formats_varargs_spacing() {
+    let input = "class Foo{void m(String...args){}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    void m(String... args) {
+    }
+}
+"###
+    );
+}
+
+#[test]
 fn ast_formatting_avoids_punctuation_token_merges() {
     let input = "class Foo{void m(){int a=1 / / 2;int b=1 / * 2;int c=1: :2;int d=1- >2;boolean e=1> >2;boolean f=1> =2;boolean g=1= =2;boolean h=1! =2;}}\n";
     let parse = parse_java(input);

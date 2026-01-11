@@ -536,6 +536,25 @@ impl<'a> TokenFormatState<'a> {
                 self.last_code_sig = Some(sig);
                 self.pending_for = false;
             }
+            SyntaxKind::Ellipsis => {
+                self.write_indent(out);
+                if needs_space_between(self.last_sig.as_ref(), kind, text) {
+                    self.ensure_space(out);
+                }
+                out.push_str(text);
+                if let Some(next) = next {
+                    if next.kind() == SyntaxKind::At || is_word_token(next.kind(), next.text()) {
+                        self.ensure_space(out);
+                    }
+                }
+                let sig = SigToken::Token {
+                    kind,
+                    text: text.to_string(),
+                };
+                self.last_sig = Some(sig.clone());
+                self.last_code_sig = Some(sig);
+                self.pending_for = false;
+            }
             _ if text == "{" => {
                 self.write_indent(out);
                 if needs_space_before(self.last_sig.as_ref(), text) {
