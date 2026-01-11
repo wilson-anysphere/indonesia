@@ -27,3 +27,4 @@ nova-config = { path = "../nova-config" }
 [dev-dependencies]
 httpmock = "0.7"
 hyper = { version = "0.14", features = ["server", "http1", "tcp", "stream"] }
+tracing-subscriber = "0.3"

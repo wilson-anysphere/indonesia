@@ -3,10 +3,13 @@ use reqwest::StatusCode;
 use serde::Deserialize;
 use serde_json::json;
 use std::time::Duration;
+use std::time::Instant;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use url::Url;
+
+use crate::audit;
 
 #[derive(Debug, Error)]
 pub enum CloudLlmError {
@@ -233,9 +236,13 @@ impl CloudLlmClient {
 
     pub async fn generate(
         &self,
-        req: GenerateRequest,
+        mut req: GenerateRequest,
         cancel: CancellationToken,
     ) -> Result<String, CloudLlmError> {
+        if self.cfg.audit_logging {
+            req.prompt = audit::sanitize_prompt_for_audit(&req.prompt);
+        }
+
         let mut attempt = 0usize;
 
         loop {
@@ -243,16 +250,22 @@ impl CloudLlmClient {
                 return Err(CloudLlmError::Cancelled);
             }
 
+            let started_at = Instant::now();
             let parts = self.build_request_parts(&req)?;
+            let safe_url = audit::sanitize_url_for_log(&parts.url);
+            let provider = provider_label(&self.cfg.provider);
+
             if self.cfg.audit_logging {
-                info!(
-                    provider = ?self.cfg.provider,
-                    url = %parts.url,
-                    prompt = %req.prompt,
-                    "llm request"
+                audit::log_llm_request(
+                    provider,
+                    &self.cfg.model,
+                    &req.prompt,
+                    Some(&safe_url),
+                    attempt,
+                    /*stream=*/ false,
                 );
             } else {
-                debug!(provider = ?self.cfg.provider, url = %parts.url, "llm request");
+                debug!(provider = provider, url = %safe_url, "llm request");
             }
 
             let request_builder = self.http.post(parts.url).headers(parts.headers).json(&parts.body);
@@ -286,16 +299,30 @@ impl CloudLlmClient {
 
             let completion = parse_completion(&self.cfg.provider, &bytes)?;
             if self.cfg.audit_logging {
-                info!(
-                    provider = ?self.cfg.provider,
-                    completion = %completion,
-                    "llm response"
+                audit::log_llm_response(
+                    provider,
+                    &self.cfg.model,
+                    &completion,
+                    started_at.elapsed(),
+                    attempt,
+                    /*stream=*/ false,
+                    /*chunk_count=*/ None,
                 );
             } else {
-                debug!(provider = ?self.cfg.provider, "llm response");
+                debug!(provider = provider, "llm response");
             }
             return Ok(completion);
         }
+    }
+}
+
+fn provider_label(provider: &ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::OpenAi => "openai",
+        ProviderKind::Anthropic => "anthropic",
+        ProviderKind::Gemini => "gemini",
+        ProviderKind::AzureOpenAi { .. } => "azure_openai",
+        ProviderKind::Http => "http",
     }
 }
 

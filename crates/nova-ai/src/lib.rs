@@ -7,6 +7,7 @@
 //! - Optional cloud LLM client and higher-level AI actions
 
 mod anonymizer;
+mod audit;
 mod client;
 mod completion;
 mod completion_provider;
