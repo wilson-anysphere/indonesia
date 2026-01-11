@@ -75,7 +75,7 @@ where
                             "supportsPauseRequest": true,
                             "supportsSetVariable": false,
                             "supportsStepBack": false,
-                            "supportsExceptionInfoRequest": false,
+                            "supportsExceptionInfoRequest": true,
                             "exceptionBreakpointFilters": [
                                 { "filter": "caught", "label": "Caught Exceptions", "default": false },
                                 { "filter": "uncaught", "label": "Uncaught Exceptions", "default": false },
@@ -347,6 +347,42 @@ where
                         };
                         match dbg.variables(variables_reference, start, count).await {
                             Ok(vars) => send_response(&out_tx, &seq, &request, true, Some(json!({ "variables": vars })), None),
+                            Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
+                        }
+                    }
+                    "exceptionInfo" => {
+                        let thread_id = request
+                            .arguments
+                            .get("threadId")
+                            .and_then(|v| v.as_i64())
+                            .ok_or_else(|| DebuggerError::InvalidRequest("exceptionInfo.threadId is required".to_string()))?;
+
+                        let mut guard = debugger.lock().await;
+                        let Some(dbg) = guard.as_mut() else {
+                            send_response(&out_tx, &seq, &request, false, None, Some("not attached".to_string()));
+                            continue;
+                        };
+
+                        match dbg.exception_info(thread_id).await {
+                            Ok(Some(info)) => {
+                                let exception_id = info.exception_id;
+                                let break_mode = info.break_mode;
+                                let description = info.description;
+                                let body = if let Some(description) = description {
+                                    json!({"exceptionId": exception_id, "description": description, "breakMode": break_mode})
+                                } else {
+                                    json!({"exceptionId": exception_id, "breakMode": break_mode})
+                                };
+                                send_response(&out_tx, &seq, &request, true, Some(body), None);
+                            }
+                            Ok(None) => send_response(
+                                &out_tx,
+                                &seq,
+                                &request,
+                                false,
+                                None,
+                                Some(format!("no exception context for threadId {thread_id}")),
+                            ),
                             Err(err) => send_response(&out_tx, &seq, &request, false, None, Some(err.to_string())),
                         }
                     }

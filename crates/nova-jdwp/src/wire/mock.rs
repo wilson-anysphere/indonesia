@@ -135,6 +135,7 @@ const ARRAY_OBJECT_ID: u64 = 0x5004;
 const OBJECT_CLASS_ID: u64 = 0x6001;
 const STRING_CLASS_ID: u64 = 0x6002;
 const ARRAY_CLASS_ID: u64 = 0x6003;
+const EXCEPTION_CLASS_ID: u64 = 0x6004;
 const FIELD_ID: u64 = 0x7001;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,6 +360,7 @@ async fn handle_packet(
                 OBJECT_CLASS_ID => "LObject;",
                 STRING_CLASS_ID => "Ljava/lang/String;",
                 ARRAY_CLASS_ID => "[I",
+                EXCEPTION_CLASS_ID => "Ljava/lang/RuntimeException;",
                 _ => "LObject;",
             };
             w.write_string(sig);
@@ -487,6 +489,10 @@ async fn handle_packet(
                 OBJECT_ID => {
                     w.write_u8(1); // TypeTag.CLASS
                     w.write_reference_type_id(OBJECT_CLASS_ID, sizes);
+                }
+                EXCEPTION_ID => {
+                    w.write_u8(1); // TypeTag.CLASS
+                    w.write_reference_type_id(EXCEPTION_CLASS_ID, sizes);
                 }
                 STRING_OBJECT_ID => {
                     w.write_u8(1); // TypeTag.CLASS

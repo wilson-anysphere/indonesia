@@ -398,3 +398,139 @@ async fn dap_can_expand_object_fields_and_pin_objects() {
 
     server_task.await.unwrap().unwrap();
 }
+
+#[tokio::test]
+async fn dap_exception_info_includes_type_name() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let init_resp = read_response(&mut reader, 1).await;
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert_eq!(
+        init_resp
+            .pointer("/body/supportsExceptionInfoRequest")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+    let initialized = read_next(&mut reader).await;
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    send_request(
+        &mut writer,
+        3,
+        "setExceptionBreakpoints",
+        json!({
+            "filters": ["uncaught"]
+        }),
+    )
+    .await;
+    let exc_bp_resp = read_response(&mut reader, 3).await;
+    assert!(exc_bp_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    send_request(&mut writer, 4, "threads", json!({})).await;
+    let threads_resp = read_response(&mut reader, 4).await;
+    let thread_id = threads_resp
+        .pointer("/body/threads/0/id")
+        .and_then(|v| v.as_i64())
+        .unwrap();
+
+    send_request(
+        &mut writer,
+        5,
+        "continue",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
+
+    let mut cont_resp = None;
+    let mut continued = None;
+    let mut stopped = None;
+
+    for _ in 0..100 {
+        let msg = read_next(&mut reader).await;
+
+        if msg.get("type").and_then(|v| v.as_str()) == Some("response")
+            && msg.get("request_seq").and_then(|v| v.as_i64()) == Some(5)
+        {
+            cont_resp = Some(msg);
+        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("continued")
+        {
+            continued = Some(msg);
+        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
+            && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("exception")
+        {
+            stopped = Some(msg);
+        }
+
+        if cont_resp.is_some() && continued.is_some() && stopped.is_some() {
+            break;
+        }
+    }
+
+    let cont_resp = cont_resp.expect("expected continue response");
+    assert!(cont_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+
+    let stopped = stopped.expect("expected stopped event");
+    assert_eq!(
+        stopped.pointer("/body/reason").and_then(|v| v.as_str()),
+        Some("exception")
+    );
+
+    send_request(&mut writer, 6, "exceptionInfo", json!({ "threadId": thread_id })).await;
+    let exc_info = read_response(&mut reader, 6).await;
+    assert!(exc_info
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
+    assert_eq!(
+        exc_info.pointer("/body/exceptionId").and_then(|v| v.as_str()),
+        Some("java.lang.RuntimeException")
+    );
+    assert_eq!(
+        exc_info.pointer("/body/breakMode").and_then(|v| v.as_str()),
+        Some("unhandled")
+    );
+
+    send_request(&mut writer, 7, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 7).await;
+
+    server_task.await.unwrap().unwrap();
+}

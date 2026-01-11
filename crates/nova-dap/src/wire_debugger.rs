@@ -41,6 +41,13 @@ pub enum StepDepth {
 }
 
 #[derive(Debug, Clone)]
+pub struct ExceptionInfo {
+    pub exception_id: String,
+    pub description: Option<String>,
+    pub break_mode: String,
+}
+
+#[derive(Debug, Clone)]
 struct BreakpointEntry {
     request_id: i32,
 }
@@ -60,6 +67,20 @@ enum VarRef {
 struct HandleTable<T> {
     next: i64,
     map: HashMap<i64, T>,
+}
+
+#[derive(Debug, Clone)]
+struct ExceptionStopContext {
+    exception: ObjectId,
+    throw_location: Location,
+    catch_location: Option<Location>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopReason {
+    Breakpoint,
+    Step,
+    Exception,
 }
 
 impl<T> Default for HandleTable<T> {
@@ -93,6 +114,8 @@ pub struct Debugger {
     class_prepare_request: Option<i32>,
     step_request: Option<i32>,
     exception_requests: Vec<i32>,
+    last_stop_reason: HashMap<ThreadId, StopReason>,
+    exception_stop_context: HashMap<ThreadId, ExceptionStopContext>,
 
     /// Mapping from JDWP `ReferenceType.SourceFile` (usually just `Main.java`) to the
     /// best-effort full path provided by the DAP client.
@@ -123,6 +146,8 @@ impl Debugger {
             class_prepare_request: None,
             step_request: None,
             exception_requests: Vec::new(),
+            last_stop_reason: HashMap::new(),
+            exception_stop_context: HashMap::new(),
             source_paths: HashMap::new(),
             source_cache: HashMap::new(),
             methods_cache: HashMap::new(),
@@ -353,6 +378,38 @@ impl Debugger {
         Ok(())
     }
 
+    pub async fn exception_info(&mut self, dap_thread_id: i64) -> Result<Option<ExceptionInfo>> {
+        let thread: ThreadId = dap_thread_id
+            .try_into()
+            .map_err(|_| DebuggerError::InvalidRequest(format!("invalid threadId {dap_thread_id}")))?;
+
+        if self.last_stop_reason.get(&thread) != Some(&StopReason::Exception) {
+            return Ok(None);
+        }
+
+        let Some(ctx) = self.exception_stop_context.get(&thread).cloned() else {
+            return Ok(None);
+        };
+
+        let exception_id = match self.object_type_name(ctx.exception).await {
+            Ok(Some(name)) => name,
+            Ok(None) => format!("exception@0x{:x}", ctx.exception),
+            Err(_) => format!("exception@0x{:x}", ctx.exception),
+        };
+
+        let break_mode = if ctx.catch_location.is_some() {
+            "always".to_string()
+        } else {
+            "unhandled".to_string()
+        };
+
+        Ok(Some(ExceptionInfo {
+            exception_id,
+            description: None,
+            break_mode,
+        }))
+    }
+
     pub async fn step(&mut self, dap_thread_id: i64, depth: StepDepth) -> Result<()> {
         let thread: ThreadId = dap_thread_id as ThreadId;
 
@@ -414,11 +471,34 @@ impl Debugger {
             } => {
                 let _ = self.on_class_prepare(*ref_type_tag, *type_id).await;
             }
-            JdwpEvent::SingleStep { request_id, .. } => {
+            JdwpEvent::Breakpoint { thread, .. } => {
+                self.last_stop_reason.insert(*thread, StopReason::Breakpoint);
+                self.exception_stop_context.remove(thread);
+            }
+            JdwpEvent::SingleStep { request_id, thread, .. } => {
                 if self.step_request == Some(*request_id) {
                     let _ = self.jdwp.event_request_clear(1, *request_id).await;
                     self.step_request = None;
                 }
+                self.last_stop_reason.insert(*thread, StopReason::Step);
+                self.exception_stop_context.remove(thread);
+            }
+            JdwpEvent::Exception {
+                thread,
+                location,
+                exception,
+                catch_location,
+                ..
+            } => {
+                self.last_stop_reason.insert(*thread, StopReason::Exception);
+                self.exception_stop_context.insert(
+                    *thread,
+                    ExceptionStopContext {
+                        exception: *exception,
+                        throw_location: *location,
+                        catch_location: *catch_location,
+                    },
+                );
             }
             _ => {}
         }
@@ -626,11 +706,16 @@ impl Debugger {
         ))
     }
 
-    async fn location_for_line(
-        &mut self,
-        class: &ClassInfo,
-        line: i32,
-    ) -> Result<Option<Location>> {
+    async fn object_type_name(&mut self, object_id: ObjectId) -> Result<Option<String>> {
+        if object_id == 0 {
+            return Ok(None);
+        }
+        let class_id = self.jdwp.object_reference_reference_type(object_id).await?;
+        let sig = self.jdwp.reference_type_signature(class_id).await?;
+        Ok(signature_to_type_name(&sig))
+    }
+
+    async fn location_for_line(&mut self, class: &ClassInfo, line: i32) -> Result<Option<Location>> {
         let methods = if let Some(methods) = self.methods_cache.get(&class.type_id) {
             methods.clone()
         } else {
@@ -747,6 +832,27 @@ impl Debugger {
         self.objects.unpin(handle);
         Ok(())
     }
+}
+
+fn signature_to_type_name(sig: &str) -> Option<String> {
+    let mut sig = sig.trim();
+    let mut dims = 0;
+    while let Some(rest) = sig.strip_prefix('[') {
+        dims += 1;
+        sig = rest;
+    }
+
+    let base = if let Some(inner) = sig.strip_prefix('L').and_then(|s| s.strip_suffix(';')) {
+        inner.replace('/', ".")
+    } else {
+        return None;
+    };
+
+    let mut out = base;
+    for _ in 0..dims {
+        out.push_str("[]");
+    }
+    Some(out)
 }
 
 fn is_identifier(s: &str) -> bool {
