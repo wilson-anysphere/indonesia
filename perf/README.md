@@ -1,7 +1,8 @@
 # Nova performance regression guard
 
 Nova treats performance as a feature. This directory contains the configuration used by CI to
-detect benchmark regressions in critical paths.
+detect benchmark regressions across editor-critical paths (core critical paths, syntax parsing,
+formatting, refactors, and classpath indexing).
 
 ## Running benchmarks locally
 
