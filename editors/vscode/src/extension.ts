@@ -9,6 +9,7 @@ import { buildNovaLspArgs, resolveNovaConfigPath } from './lspArgs';
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
 let ensureClientStarted: ((opts?: { promptForInstall?: boolean }) => Promise<void>) | undefined;
+let setSafeModeEnabled: ((enabled: boolean) => void) | undefined;
 let testOutput: vscode.OutputChannel | undefined;
 let testController: vscode.TestController | undefined;
 const vscodeTestItemsById = new Map<string, vscode.TestItem>();
@@ -665,6 +666,7 @@ export async function activate(context: vscode.ExtensionContext) {
       safeModeStatusItem.hide();
     }
   };
+  setSafeModeEnabled = updateSafeModeStatus;
 
   const updateMemoryStatus = async (payload: unknown) => {
     const report = (payload as MemoryStatusResponse | undefined)?.report;
@@ -759,7 +761,10 @@ export async function activate(context: vscode.ExtensionContext) {
         try {
           const payload = await languageClient.sendRequest('nova/memoryStatus');
           await updateMemoryStatus(payload);
-        } catch {
+        } catch (err) {
+          if (isSafeModeError(err)) {
+            updateSafeModeStatus(true);
+          }
         }
       })
       .catch(() => {});
@@ -774,8 +779,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       try {
-        const c = await requireClient();
-        await c.sendRequest('nova/java/organizeImports', {
+        await sendNovaRequest('nova/java/organizeImports', {
           uri: editor.document.uri.toString(),
         });
       } catch (err) {
@@ -797,10 +801,9 @@ export async function activate(context: vscode.ExtensionContext) {
       channel.show(true);
 
       try {
-        const c = await requireClient();
-        const resp = (await c.sendRequest('nova/test/discover', {
+        const resp = await sendNovaRequest<DiscoverResponse>('nova/test/discover', {
           projectRoot: workspace.uri.fsPath,
-        })) as DiscoverResponse;
+        });
 
         await refreshTests(resp);
 
@@ -828,11 +831,9 @@ export async function activate(context: vscode.ExtensionContext) {
       channel.show(true);
 
       try {
-        const c = await requireClient();
-        const discover =
-          (await c.sendRequest('nova/test/discover', {
-            projectRoot: workspace.uri.fsPath,
-          })) as DiscoverResponse;
+        const discover = await sendNovaRequest<DiscoverResponse>('nova/test/discover', {
+          projectRoot: workspace.uri.fsPath,
+        });
 
         const candidates = flattenTests(discover.tests).filter((t) => t.kind === 'test');
         if (candidates.length === 0) {
@@ -848,11 +849,11 @@ export async function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        const resp = (await c.sendRequest('nova/test/run', {
+        const resp = await sendNovaRequest<RunResponse>('nova/test/run', {
           projectRoot: workspace.uri.fsPath,
           buildTool: 'auto',
           tests: [picked.testId],
-        })) as RunResponse;
+        });
 
         channel.appendLine(`\n=== Run ${picked.testId} (${resp.tool}) ===`);
         channel.appendLine(
@@ -949,6 +950,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate(): Thenable<void> | undefined {
   ensureClientStarted = undefined;
+  setSafeModeEnabled = undefined;
   if (!client) {
     return undefined;
   }
@@ -967,6 +969,23 @@ async function requireClient(): Promise<LanguageClient> {
   return client;
 }
 
+async function sendNovaRequest<R>(method: string, params?: unknown): Promise<R> {
+  const c = await requireClient();
+  try {
+    const result =
+      typeof params === 'undefined' ? await c.sendRequest<R>(method) : await c.sendRequest<R>(method, params);
+    if (method.startsWith('nova/') && method !== 'nova/bugReport') {
+      setSafeModeEnabled?.(false);
+    }
+    return result;
+  } catch (err) {
+    if (isSafeModeError(err)) {
+      setSafeModeEnabled?.(true);
+    }
+    throw err;
+  }
+}
+
 async function refreshTests(discovered?: DiscoverResponse): Promise<void> {
   if (!testController) {
     return;
@@ -978,11 +997,7 @@ async function refreshTests(discovered?: DiscoverResponse): Promise<void> {
   }
 
   const projectRoot = workspace.uri.fsPath;
-  const resp =
-    discovered ??
-    ((await (await requireClient()).sendRequest('nova/test/discover', {
-      projectRoot,
-    })) as DiscoverResponse);
+  const resp = discovered ?? (await sendNovaRequest<DiscoverResponse>('nova/test/discover', { projectRoot }));
 
   vscodeTestItemsById.clear();
   testController.items.replace([]);
@@ -1049,11 +1064,11 @@ async function runTestsFromTestExplorer(
       return;
     }
 
-    const resp = (await (await requireClient()).sendRequest('nova/test/run', {
+    const resp = await sendNovaRequest<RunResponse>('nova/test/run', {
       projectRoot: workspace.uri.fsPath,
       buildTool: 'auto',
       tests: ids,
-    })) as RunResponse;
+    });
 
     if (resp.stdout) {
       run.appendOutput(resp.stdout);
@@ -1325,4 +1340,9 @@ function isMethodNotFoundError(err: unknown): boolean {
 
   const message = (err as { message?: unknown }).message;
   return typeof message === 'string' && message.toLowerCase().includes('method not found');
+}
+
+function isSafeModeError(err: unknown): boolean {
+  const message = formatError(err).toLowerCase();
+  return message.includes('safe-mode') || message.includes('safe mode');
 }
