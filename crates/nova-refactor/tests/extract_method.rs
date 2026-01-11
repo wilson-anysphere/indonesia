@@ -11,28 +11,14 @@ fn apply_single_file(file: &str, source: &str, edits: &[nova_refactor::TextEdit]
 }
 
 fn assert_no_overlaps(edits: &[nova_refactor::TextEdit]) {
-    let mut by_file: BTreeMap<&str, Vec<&nova_refactor::TextEdit>> = BTreeMap::new();
-    for edit in edits {
-        by_file.entry(&edit.file).or_default().push(edit);
-    }
-
-    for (_file, mut edits) in by_file {
-        edits.sort_by(|a, b| {
-            a.range
-                .start
-                .cmp(&b.range.start)
-                .then_with(|| a.range.end.cmp(&b.range.end))
-        });
-        let mut last_end = 0;
-        for edit in edits {
-            assert!(
-                edit.range.start >= last_end,
-                "edits overlap at {:?}",
-                edit.range
-            );
-            last_end = last_end.max(edit.range.end);
-        }
-    }
+    let mut edit = nova_refactor::WorkspaceEdit::new(
+        edits
+            .iter()
+            .cloned()
+            .map(nova_refactor::WorkspaceTextEdit::from)
+            .collect(),
+    );
+    edit.normalize().expect("edits should normalize without overlaps");
 }
 
 #[test]
