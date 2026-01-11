@@ -116,6 +116,69 @@ impl Default for LoggingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiFeaturesConfig {
+    /// Enables AI-assisted completion re-ranking.
+    #[serde(default)]
+    pub completion_ranking: bool,
+
+    /// Enables semantic search-based features.
+    #[serde(default)]
+    pub semantic_search: bool,
+
+    /// Enables multi-token completion suggestions.
+    #[serde(default)]
+    pub multi_token_completion: bool,
+}
+
+impl Default for AiFeaturesConfig {
+    fn default() -> Self {
+        Self {
+            completion_ranking: false,
+            semantic_search: false,
+            multi_token_completion: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiTimeoutsConfig {
+    /// Timeout for completion ranking requests.
+    #[serde(default = "default_completion_ranking_timeout_ms")]
+    pub completion_ranking_ms: u64,
+
+    /// Timeout for multi-token completion requests.
+    #[serde(default = "default_multi_token_completion_timeout_ms")]
+    pub multi_token_completion_ms: u64,
+}
+
+fn default_completion_ranking_timeout_ms() -> u64 {
+    20
+}
+
+fn default_multi_token_completion_timeout_ms() -> u64 {
+    250
+}
+
+impl Default for AiTimeoutsConfig {
+    fn default() -> Self {
+        Self {
+            completion_ranking_ms: default_completion_ranking_timeout_ms(),
+            multi_token_completion_ms: default_multi_token_completion_timeout_ms(),
+        }
+    }
+}
+
+impl AiTimeoutsConfig {
+    pub fn completion_ranking(&self) -> Duration {
+        Duration::from_millis(self.completion_ranking_ms)
+    }
+
+    pub fn multi_token_completion(&self) -> Duration {
+        Duration::from_millis(self.multi_token_completion_ms)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
     #[serde(default)]
     pub provider: AiProviderConfig,
@@ -134,6 +197,14 @@ pub struct AiConfig {
 
     #[serde(default)]
     pub audit_log: AuditLogConfig,
+
+    /// Local augmentation features and their individual toggles.
+    #[serde(default)]
+    pub features: AiFeaturesConfig,
+
+    /// Timeouts for latency-sensitive AI operations.
+    #[serde(default)]
+    pub timeouts: AiTimeoutsConfig,
 }
 
 impl Default for AiConfig {
@@ -144,6 +215,8 @@ impl Default for AiConfig {
             enabled: false,
             api_key: None,
             audit_log: AuditLogConfig::default(),
+            features: AiFeaturesConfig::default(),
+            timeouts: AiTimeoutsConfig::default(),
         }
     }
 }
@@ -534,5 +607,31 @@ impl Default for EffectiveConfig {
         Self {
             enable_indexing: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ai_config_features_and_timeouts_roundtrip_toml() {
+        let mut config = AiConfig::default();
+        config.enabled = true;
+        config.features.completion_ranking = true;
+        config.features.semantic_search = true;
+        config.features.multi_token_completion = true;
+        config.timeouts.completion_ranking_ms = 123;
+        config.timeouts.multi_token_completion_ms = 456;
+
+        let text = toml::to_string(&config).expect("serialize AiConfig");
+        let decoded: AiConfig = toml::from_str(&text).expect("deserialize AiConfig");
+
+        assert!(decoded.enabled);
+        assert!(decoded.features.completion_ranking);
+        assert!(decoded.features.semantic_search);
+        assert!(decoded.features.multi_token_completion);
+        assert_eq!(decoded.timeouts.completion_ranking_ms, 123);
+        assert_eq!(decoded.timeouts.multi_token_completion_ms, 456);
     }
 }

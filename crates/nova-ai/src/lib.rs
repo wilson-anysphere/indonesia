@@ -12,7 +12,6 @@ mod completion;
 mod completion_provider;
 mod completion_context;
 mod completion_ranking;
-mod config;
 mod error;
 mod features;
 mod llm_privacy;
@@ -41,9 +40,6 @@ pub use completion_context::{CompletionContextBuilder, MultiTokenCompletionConte
 pub use completion_ranking::{
     maybe_rank_completions, rank_completions_with_timeout, BaselineCompletionRanker,
     CompletionRanker,
-};
-pub use config::{
-    AiConfig, AiFeatures, AiTimeouts, CloudConfig, CloudProvider, LocalModelConfig, PrivacyConfig,
 };
 pub use error::AiError;
 pub use features::NovaAi;
@@ -145,7 +141,7 @@ mod tests {
 
     #[test]
     fn ranking_gracefully_degrades_when_disabled() {
-        let config = AiConfig::disabled();
+        let config = nova_config::AiConfig::default();
         let ranker = BaselineCompletionRanker;
         let ctx = CompletionContext::new("pri", "");
 

@@ -271,7 +271,7 @@ pub async fn completion_with_ai(
     db: &dyn nova_db::Database,
     file: nova_db::FileId,
     position: lsp_types::Position,
-    config: &nova_ai::AiConfig,
+    config: &nova_config::AiConfig,
 ) -> Vec<lsp_types::CompletionItem> {
     nova_ide::completions_with_ai(db, file, position, config).await
 }

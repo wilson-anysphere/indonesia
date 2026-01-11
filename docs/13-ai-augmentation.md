@@ -418,54 +418,25 @@ impl CodeReviewer {
 
 ### Model Configuration
 
-```rust
-pub struct AiConfig {
-    /// Local models configuration
-    pub local: LocalModelConfig,
-    
-    /// Cloud provider configuration
-    pub cloud: Option<CloudConfig>,
-    
-    /// Privacy settings
-    pub privacy: PrivacyConfig,
-    
-    /// Feature toggles
-    pub features: AiFeatures,
-}
+Nova uses a single source of truth for AI settings: `nova_config::AiConfig` (available as
+`nova_config::NovaConfig::ai`). The same struct is used for both:
 
-pub struct LocalModelConfig {
-    /// Path to local models
-    pub model_dir: PathBuf,
-    
-    /// Use GPU if available
-    pub use_gpu: bool,
-    
-    /// Maximum memory for models
-    pub max_memory: usize,
-}
+- Local augmentation (completion re-ranking, semantic search, etc.)
+- LLM-backed actions (provider selection, privacy controls, audit logging)
 
-pub struct CloudConfig {
-    pub provider: CloudProvider,
-    pub api_key: Secret<String>,
-    pub endpoint: Option<Url>,
-    pub model: String,
-    pub max_tokens: usize,
-    pub timeout: Duration,
-}
+Feature flags and latency budgets are configured under `ai.features` and `ai.timeouts`:
 
-pub struct PrivacyConfig {
-    /// Never send code to cloud
-    pub local_only: bool,
-    
-    /// Anonymize identifiers before sending
-    pub anonymize_code: bool,
-    
-    /// Exclude certain paths
-    pub excluded_paths: Vec<PathBuf>,
-    
-    /// Log all AI interactions
-    pub audit_logging: bool,
-}
+```toml
+[ai]
+enabled = true
+
+[ai.features]
+completion_ranking = true
+semantic_search = true
+
+[ai.timeouts]
+completion_ranking_ms = 20
+multi_token_completion_ms = 250
 ```
 
 ---

@@ -4,10 +4,10 @@ use std::time::Duration;
 use futures::future::{BoxFuture, FutureExt};
 
 use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
+use nova_config::AiConfig;
 use nova_fuzzy::{FuzzyMatcher, MatchScore};
 
 use crate::util;
-use crate::AiConfig;
 
 /// Async-friendly interface for completion ranking.
 ///
@@ -114,9 +114,9 @@ pub async fn maybe_rank_completions<R: CompletionRanker>(
     ctx: &CompletionContext,
     items: Vec<CompletionItem>,
 ) -> Vec<CompletionItem> {
-    if !config.features.completion_ranking {
+    if !(config.enabled && config.features.completion_ranking) {
         return items;
     }
 
-    rank_completions_with_timeout(ranker, ctx, items, config.timeouts.completion_ranking).await
+    rank_completions_with_timeout(ranker, ctx, items, config.timeouts.completion_ranking()).await
 }

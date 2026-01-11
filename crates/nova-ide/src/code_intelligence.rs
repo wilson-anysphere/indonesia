@@ -26,7 +26,9 @@ use nova_types::{Diagnostic, Severity, Span};
 use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
 
 #[cfg(feature = "ai")]
-use nova_ai::{maybe_rank_completions, AiConfig, BaselineCompletionRanker};
+use nova_ai::{maybe_rank_completions, BaselineCompletionRanker};
+#[cfg(feature = "ai")]
+use nova_config::AiConfig;
 #[cfg(feature = "ai")]
 use nova_core::{
     CompletionContext as AiCompletionContext, CompletionItem as AiCompletionItem,
@@ -240,7 +242,7 @@ pub async fn completions_with_ai(
     config: &AiConfig,
 ) -> Vec<CompletionItem> {
     let baseline = completions(db, file, position);
-    if !config.features.completion_ranking {
+    if !(config.enabled && config.features.completion_ranking) {
         return baseline;
     }
 
