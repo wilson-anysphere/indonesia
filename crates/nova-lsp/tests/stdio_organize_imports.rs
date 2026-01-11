@@ -49,6 +49,10 @@ fn stdio_server_supports_java_organize_imports_request() {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let uri = "file:///test/Foo.java";
     let source = r#"package com.example;

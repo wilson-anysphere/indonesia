@@ -53,6 +53,10 @@ public class CalculatorTest {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -146,6 +150,10 @@ public class Main {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -270,6 +278,10 @@ public class CalculatorTest {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,

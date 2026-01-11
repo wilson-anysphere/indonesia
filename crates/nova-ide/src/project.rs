@@ -249,7 +249,12 @@ impl Project {
 fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), ProjectDiscoveryError> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            // Some project models include conventional generated source roots even when the
+            // corresponding directories have not been created yet. Treat missing directories as
+            // empty rather than failing discovery (used by e.g. debug configuration scanning).
+            return Ok(());
+        }
         Err(source) => {
             return Err(ProjectDiscoveryError::ReadDir {
                 path: dir.to_path_buf(),

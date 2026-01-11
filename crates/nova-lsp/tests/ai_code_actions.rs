@@ -47,6 +47,10 @@ fn stdio_server_handles_ai_explain_error_code_action() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) open a document so the server can attach code snippets.
     write_jsonrpc_message(
@@ -216,6 +220,10 @@ fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let uri = "file:///Test.java";
     let text = "class Test { void run() { String s = \"😀\"; } }\n";
@@ -333,6 +341,10 @@ fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let uri = "file:///Test.java";
     let text = "class Test { String s = \"😀\"; }\n";

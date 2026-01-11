@@ -49,6 +49,8 @@ nova-vfs = { path = "../nova-vfs", features = ["lsp"] }
 nova-bugreport = { path = "../nova-bugreport" }
 tracing = { workspace = true }
 lsp-types = "0.97"
+lsp-server = "0.7"
+crossbeam-channel = "0.5"
 nova-workspace = { path = "../nova-workspace" }
 schemars = "0.8"
 serde = { version = "1.0", features = ["derive"] }

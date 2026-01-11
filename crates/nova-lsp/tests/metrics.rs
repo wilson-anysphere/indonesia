@@ -26,6 +26,10 @@ fn stdio_server_exposes_metrics_snapshot() {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // Trigger a couple more methods so the snapshot isn't empty.
     let uri = "file:///test/Foo.java";

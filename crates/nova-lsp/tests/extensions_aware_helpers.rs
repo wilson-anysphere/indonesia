@@ -1,5 +1,5 @@
 use nova_config::NovaConfig;
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use nova_ide::extensions::IdeExtensions;
 use nova_scheduler::CancellationToken;
 use pretty_assertions::assert_eq;
@@ -55,7 +55,7 @@ impl DiagnosticProvider<dyn nova_db::Database + Send + Sync> for TestDiagnosticP
 
 #[test]
 fn completion_with_extensions_merges_results_in_deterministic_order() {
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(PathBuf::from("/completion.java"));
     db.set_file_text(
         file,
@@ -113,7 +113,7 @@ class A {
 
 #[test]
 fn diagnostics_with_extensions_merges_results_in_deterministic_order() {
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let file = db.file_id_for_path(PathBuf::from("/diagnostics.java"));
     db.set_file_text(
         file,

@@ -363,37 +363,35 @@ fn parse_receiver_expression(text: &str, ident_start: usize) -> Receiver {
         return Receiver::Unknown;
     }
 
-    // Handle `new Foo().bar()` / `foo().bar()` by skipping the trailing call suffix so we can
-    // capture the identifier before the argument list.
+    // If the receiver ends with a call expression (e.g. `new Foo()` or `factory()`),
+    // walk back to the identifier preceding the `(` so `new Foo().bar()` resolves to `Foo`.
     if bytes.get(end - 1) == Some(&b')') {
-        let mut depth = 0usize;
-        let mut j = end;
-        while j > 0 {
-            j -= 1;
-            match bytes[j] {
-                b')' => depth += 1,
+        let mut depth: usize = 1;
+        let mut pos = end - 1;
+        while pos > 0 {
+            pos -= 1;
+            match bytes[pos] {
+                b')' => depth = depth.saturating_add(1),
                 b'(' => {
+                    depth = depth.saturating_sub(1);
                     if depth == 0 {
-                        break;
-                    }
-                    depth -= 1;
-                    if depth == 0 {
-                        end = j;
+                        end = pos;
+                        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                            end -= 1;
+                        }
                         break;
                     }
                 }
                 _ => {}
             }
         }
-        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-            end -= 1;
-        }
         if end == 0 {
             return Receiver::Unknown;
         }
     }
 
-    // Find start of the receiver identifier by scanning back through identifier chars.
+    // Handle `new Foo()`
+    // Find start of the receiver expression by scanning back through identifier chars.
     let mut start = end;
     while start > 0 && is_ident_continue(bytes[start - 1]) {
         start -= 1;

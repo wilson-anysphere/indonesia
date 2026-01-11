@@ -56,6 +56,10 @@ fn stdio_server_resolves_extract_constant_code_action() {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) didOpen (so resolution can read the in-memory snapshot)
     write_jsonrpc_message(
@@ -242,6 +246,10 @@ fn stdio_server_resolves_extract_field_code_action() {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -417,6 +425,10 @@ public final /* 😀 */ class Point {\n\
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -536,6 +548,10 @@ fn stdio_server_resolves_extract_variable_code_action() {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) didOpen (so resolution can read the in-memory snapshot)
     write_jsonrpc_message(
@@ -696,6 +712,10 @@ fn stdio_server_offers_inline_variable_code_actions() {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) didOpen
     write_jsonrpc_message(

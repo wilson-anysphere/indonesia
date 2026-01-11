@@ -100,6 +100,15 @@ impl NovaCompletionService {
         Self::with_config(engine, CompletionMoreConfig::default())
     }
 
+    /// Allocate a fresh completion context identifier.
+    ///
+    /// This is useful for LSP servers that want to tag completion items with a stable
+    /// `completion_context_id` even when AI completions are disabled (the follow-up
+    /// `nova/completion/more` request will simply return an empty result in that case).
+    pub fn allocate_context_id(&self) -> CompletionContextId {
+        CompletionContextId(self.next_id.fetch_add(1, Ordering::Relaxed))
+    }
+
     pub fn with_config(engine: CompletionEngine, config: CompletionMoreConfig) -> Self {
         let ai_concurrency = config.ai_concurrency.max(1);
         Self {

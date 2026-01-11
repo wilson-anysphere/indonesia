@@ -67,6 +67,10 @@ fn stdio_server_handles_implementation_declaration_and_type_definition_requests(
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     for (uri, text) in [
         (&iface_uri, iface_text),

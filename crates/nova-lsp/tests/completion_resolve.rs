@@ -70,6 +70,10 @@ fn stdio_server_completion_replaces_prefix_and_supports_resolve() {
         }),
     );
     let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) open document
     let uri = "file:///test/Main.java";

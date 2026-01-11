@@ -179,9 +179,18 @@ pub fn run_with_watchdog(
     params: serde_json::Value,
     handler: fn(serde_json::Value) -> Result<serde_json::Value>,
 ) -> Result<serde_json::Value> {
+    run_with_watchdog_cancelable(method, params, CancellationToken::new(), handler)
+}
+
+pub fn run_with_watchdog_cancelable(
+    method: &str,
+    params: serde_json::Value,
+    cancel: CancellationToken,
+    handler: fn(serde_json::Value) -> Result<serde_json::Value>,
+) -> Result<serde_json::Value> {
     let deadline = deadline_for_method(method);
     let watchdog = watchdog();
-    let cancel = CancellationToken::new();
+    let cancel = cancel.child_token();
 
     match watchdog.run_with_deadline(deadline, cancel, move |_token| handler(params)) {
         Ok(Ok(value)) => Ok(value),

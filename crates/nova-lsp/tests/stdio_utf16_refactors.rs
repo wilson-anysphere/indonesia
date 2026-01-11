@@ -84,6 +84,10 @@ class C {
         }),
     );
     let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) open document (CRLF + surrogate pair)
     write_jsonrpc_message(
@@ -195,6 +199,10 @@ fn stdio_server_rename_does_not_touch_type_arguments_or_annotations() {
         }),
     );
     let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) open document
     write_jsonrpc_message(
@@ -297,6 +305,10 @@ fn stdio_server_rejects_field_rename() {
         }),
     );
     let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) open document
     write_jsonrpc_message(
@@ -409,6 +421,10 @@ class C {
         }),
     );
     let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) open document (CRLF + surrogate pair)
     write_jsonrpc_message(

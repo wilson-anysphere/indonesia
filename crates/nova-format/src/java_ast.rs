@@ -818,6 +818,9 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
     if matches!(last.text(), "(" | "[" | "<" | "." | "@" | "::") {
         return false;
     }
+    if next_text == "=" || last.text() == "=" {
+        return true;
+    }
     if next_text == "@" {
         return true;
     }

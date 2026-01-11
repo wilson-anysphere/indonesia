@@ -148,6 +148,10 @@ fn did_change_watched_files_updates_cached_analysis_state() {
         }),
     );
     let _initialize_resp = read_jsonrpc_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 1) Request diagnostics for a file that doesn't exist. The server should cache "missing".
     write_jsonrpc_message(

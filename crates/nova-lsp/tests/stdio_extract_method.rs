@@ -63,6 +63,10 @@ class C {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) request code actions
     write_jsonrpc_message(

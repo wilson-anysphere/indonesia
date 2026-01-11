@@ -112,6 +112,10 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // ---------------------------------------------------------------------
     // nova/projectConfiguration

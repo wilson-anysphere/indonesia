@@ -64,6 +64,10 @@ class A {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) open document (required for safe delete symbol IDs to be stable in the stdio server)
     let uri: Uri = "file:///test/A.java".parse().unwrap();

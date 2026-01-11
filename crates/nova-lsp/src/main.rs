@@ -1,6 +1,5 @@
-mod codec;
-
-use codec::{read_json_message, write_json_message};
+use crossbeam_channel::{Receiver, Sender};
+use lsp_server::{Connection, Message, Notification, Request, RequestId, Response, ResponseError};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
     CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit,
@@ -39,14 +38,64 @@ use nova_refactor::{
 use nova_vfs::{ContentChange, Document, FileIdRegistry, VfsPath};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::fs;
-use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
+
+#[derive(Clone)]
+struct LspClient {
+    sender: Sender<Message>,
+}
+
+impl LspClient {
+    fn new(sender: Sender<Message>) -> Self {
+        Self { sender }
+    }
+
+    fn send(&self, message: Message) -> std::io::Result<()> {
+        self.sender
+            .send(message)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "LSP channel closed"))
+    }
+
+    fn respond(&self, response: Response) -> std::io::Result<()> {
+        self.send(Message::Response(response))
+    }
+
+    fn notify(&self, method: impl Into<String>, params: serde_json::Value) -> std::io::Result<()> {
+        self.send(Message::Notification(Notification {
+            method: method.into(),
+            params,
+        }))
+    }
+
+    fn request(
+        &self,
+        id: RequestId,
+        method: impl Into<String>,
+        params: serde_json::Value,
+    ) -> std::io::Result<()> {
+        self.send(Message::Request(Request {
+            id,
+            method: method.into(),
+            params,
+        }))
+    }
+}
+
+enum IncomingMessage {
+    Request {
+        request: Request,
+        cancel_id: lsp_types::NumberOrString,
+        cancel_token: CancellationToken,
+    },
+    Notification(Notification),
+    Response(Response),
+}
 
 fn main() -> std::io::Result<()> {
     let args = env::args().skip(1).collect::<Vec<_>>();
@@ -99,119 +148,353 @@ fn main() -> std::io::Result<()> {
     // Accept `--stdio` for compatibility with editor templates. For now we only
     // support stdio transport, and ignore any other args.
 
-    let stdin = std::io::stdin();
-    let stdout = std::io::stdout();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut writer = BufWriter::new(stdout.lock());
+    let metrics = nova_metrics::MetricsRegistry::global();
+
+    let (connection, io_threads) = Connection::stdio();
 
     let mut state = ServerState::new(
         config.ai.clone(),
         ai_env.as_ref().map(|(_, privacy)| privacy.clone()),
     );
-    let metrics = nova_metrics::MetricsRegistry::global();
 
-    while let Some(message) = read_json_message::<_, serde_json::Value>(&mut reader)? {
-        let Some(method) = message.get("method").and_then(|m| m.as_str()) else {
-            // Response (from client) or malformed message. Ignore.
-            continue;
-        };
-        let start = Instant::now();
+    let request_cancellation =
+        nova_lsp::RequestCancellation::new(nova_scheduler::Scheduler::new({
+            // The request-cancellation registry only needs a progress channel; keep the
+            // scheduler pools tiny so multiple `nova-lsp` processes can run in constrained
+            // environments (e.g. tests, CI sandboxes) without exhausting thread quotas.
+            let mut cfg = nova_scheduler::SchedulerConfig::default();
+            cfg.compute_threads = 1;
+            cfg.background_threads = 1;
+            cfg.io_threads = 1;
+            cfg
+        }));
 
-        let id = message.get("id").cloned();
-        if id.is_none() {
-            // Notification.
-            if method == "exit" {
-                // Preserve the process-exit semantics (dropping a tokio runtime can block), but
-                // still record that we received the notification.
-                metrics.record_request(method, start.elapsed());
-                std::process::exit(0);
-            }
+    // ---------------------------------------------------------------------
+    // Initialize handshake
+    // ---------------------------------------------------------------------
+    let init_start = Instant::now();
+    let (init_id, init_params) = connection
+        .initialize_start()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
+    let init_params: InitializeParams = serde_json::from_value(init_params).unwrap_or_default();
+    state.project_root = init_params
+        .project_root_uri()
+        .and_then(|uri| path_from_uri(uri))
+        .or_else(|| init_params.root_path.map(PathBuf::from));
 
-            let mut did_panic = false;
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                handle_notification(method, &message, &mut state)
-            }));
+    let init_result = initialize_result_json();
+    connection
+        .initialize_finish(init_id, init_result)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
+    metrics.record_request("initialize", init_start.elapsed());
 
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
-                    metrics.record_request(method, start.elapsed());
-                    metrics.record_error(method);
+    // ---------------------------------------------------------------------
+    // Main message loop (with cancellation router)
+    // ---------------------------------------------------------------------
+    let Connection { sender, receiver } = connection;
+    let client = LspClient::new(sender);
+    let (incoming_tx, incoming_rx) = crossbeam_channel::unbounded::<IncomingMessage>();
+    std::thread::spawn({
+        let incoming_tx = incoming_tx.clone();
+        let request_cancellation = request_cancellation.clone();
+        move || message_router(receiver, incoming_tx, request_cancellation)
+    });
+    drop(incoming_tx);
+
+    for msg in incoming_rx {
+        match msg {
+            IncomingMessage::Request {
+                request,
+                cancel_id,
+                cancel_token,
+            } => {
+                let method = request.method.clone();
+                let request_id = request.id.clone();
+                let start = Instant::now();
+                let mut did_panic = false;
+
+                let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_request(request, cancel_token, &mut state, &client)
+                })) {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(err)) => {
+                        request_cancellation.finish(cancel_id);
+                        metrics.record_request(&method, start.elapsed());
+                        metrics.record_error(&method);
+                        return Err(err);
+                    }
+                    Err(_) => {
+                        did_panic = true;
+                        tracing::error!(target = "nova.lsp", method, "panic while handling request");
+                        response_error(request_id, -32603, "Internal error (panic)")
+                    }
+                };
+                let response_is_error = response.error.is_some();
+
+                request_cancellation.finish(cancel_id);
+
+                if let Err(err) = client.respond(response) {
+                    metrics.record_request(&method, start.elapsed());
+                    metrics.record_error(&method);
+                    if did_panic {
+                        metrics.record_panic(&method);
+                    }
                     return Err(err);
                 }
-                Err(_) => {
-                    did_panic = true;
-                    tracing::error!(
-                        target = "nova.lsp",
-                        method,
-                        "panic while handling notification"
-                    );
+
+                metrics.record_request(&method, start.elapsed());
+                if response_is_error {
+                    metrics.record_error(&method);
                 }
+                if did_panic {
+                    metrics.record_panic(&method);
+                }
+                flush_memory_status_notifications(&client, &mut state)?;
+                flush_safe_mode_notifications(&client, &mut state)?;
             }
-            metrics.record_request(method, start.elapsed());
-            if did_panic {
-                metrics.record_error(method);
-            }
-            if did_panic {
-                metrics.record_panic(method);
-            }
-            flush_memory_status_notifications(&mut writer, &mut state)?;
-            flush_safe_mode_notifications(&mut writer, &mut state)?;
-            continue;
-        }
+            IncomingMessage::Notification(notification) => {
+                let method = notification.method.clone();
+                let start = Instant::now();
+                if method == "exit" {
+                    metrics.record_request(&method, start.elapsed());
+                    let exit_code = if state.shutdown_requested { 0 } else { 1 };
+                    std::process::exit(exit_code);
+                }
 
-        let id = id.unwrap_or(serde_json::Value::Null);
-        let params = message
-            .get("params")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+                let mut did_panic = false;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    handle_notification(&method, notification.params, &mut state)
+                }));
 
-        let id_for_panic = id.clone();
-        let mut did_panic = false;
-        let response = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            handle_request(method, id, params, &mut state, &mut writer)
-        })) {
-            Ok(Ok(response)) => response,
-            Ok(Err(err)) => {
-                metrics.record_request(method, start.elapsed());
-                metrics.record_error(method);
-                return Err(err);
-            }
-            Err(_) => {
-                did_panic = true;
-                tracing::error!(target = "nova.lsp", method, "panic while handling request");
-                json!({
-                    "jsonrpc": "2.0",
-                    "id": id_for_panic,
-                    "error": {
-                        "code": -32603,
-                        "message": "Internal error (panic)"
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => {
+                        metrics.record_request(&method, start.elapsed());
+                        metrics.record_error(&method);
+                        return Err(err);
                     }
-                })
-            }
-        };
+                    Err(_) => {
+                        did_panic = true;
+                        tracing::error!(
+                            target = "nova.lsp",
+                            method,
+                            "panic while handling notification"
+                        );
+                    }
+                }
 
-        if let Err(err) = write_json_message(&mut writer, &response) {
-            metrics.record_request(method, start.elapsed());
-            metrics.record_error(method);
-            if did_panic {
-                metrics.record_panic(method);
+                metrics.record_request(&method, start.elapsed());
+                if did_panic {
+                    metrics.record_error(&method);
+                    metrics.record_panic(&method);
+                }
+                flush_memory_status_notifications(&client, &mut state)?;
+                flush_safe_mode_notifications(&client, &mut state)?;
             }
-            return Err(err);
+            IncomingMessage::Response(_response) => {
+                // Best-effort: ignore server->client responses (we do not await them today).
+            }
         }
-
-        metrics.record_request(method, start.elapsed());
-        if response.get("error").is_some() {
-            metrics.record_error(method);
-        }
-        if did_panic {
-            metrics.record_panic(method);
-        }
-        flush_memory_status_notifications(&mut writer, &mut state)?;
-        flush_safe_mode_notifications(&mut writer, &mut state)?;
     }
 
+    io_threads.join()?;
     Ok(())
+}
+
+fn initialize_result_json() -> serde_json::Value {
+    let mut nova_requests = vec![
+        // Testing
+        nova_lsp::TEST_DISCOVER_METHOD,
+        nova_lsp::TEST_RUN_METHOD,
+        nova_lsp::TEST_DEBUG_CONFIGURATION_METHOD,
+        // Build integration
+        nova_lsp::BUILD_PROJECT_METHOD,
+        nova_lsp::JAVA_CLASSPATH_METHOD,
+        nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD,
+        nova_lsp::PROJECT_CONFIGURATION_METHOD,
+        nova_lsp::JAVA_SOURCE_PATHS_METHOD,
+        nova_lsp::JAVA_RESOLVE_MAIN_CLASS_METHOD,
+        nova_lsp::JAVA_GENERATED_SOURCES_METHOD,
+        nova_lsp::RUN_ANNOTATION_PROCESSING_METHOD,
+        nova_lsp::RELOAD_PROJECT_METHOD,
+        // Web / frameworks
+        nova_lsp::WEB_ENDPOINTS_METHOD,
+        nova_lsp::QUARKUS_ENDPOINTS_METHOD,
+        nova_lsp::MICRONAUT_ENDPOINTS_METHOD,
+        nova_lsp::MICRONAUT_BEANS_METHOD,
+        // Debugging
+        nova_lsp::DEBUG_CONFIGURATIONS_METHOD,
+        nova_lsp::DEBUG_HOT_SWAP_METHOD,
+        // Build status/diagnostics
+        nova_lsp::BUILD_TARGET_CLASSPATH_METHOD,
+        nova_lsp::BUILD_STATUS_METHOD,
+        nova_lsp::BUILD_DIAGNOSTICS_METHOD,
+        nova_lsp::PROJECT_MODEL_METHOD,
+        // Resilience / observability
+        nova_lsp::BUG_REPORT_METHOD,
+        nova_lsp::MEMORY_STATUS_METHOD,
+        nova_lsp::METRICS_METHOD,
+        nova_lsp::RESET_METRICS_METHOD,
+        nova_lsp::SAFE_MODE_STATUS_METHOD,
+        // Refactor endpoints
+        nova_lsp::SAFE_DELETE_METHOD,
+        nova_lsp::CHANGE_SIGNATURE_METHOD,
+        // AI endpoints
+        nova_lsp::AI_EXPLAIN_ERROR_METHOD,
+        nova_lsp::AI_GENERATE_METHOD_BODY_METHOD,
+        nova_lsp::AI_GENERATE_TESTS_METHOD,
+    ];
+
+    #[cfg(feature = "ai")]
+    {
+        nova_requests.push(nova_lsp::NOVA_COMPLETION_MORE_METHOD);
+    }
+
+    let experimental = json!({
+        "nova": {
+            "requests": nova_requests,
+            "notifications": [
+                nova_lsp::MEMORY_STATUS_NOTIFICATION,
+                nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION,
+            ]
+        }
+    });
+
+    json!({
+        "capabilities": {
+            "textDocumentSync": { "openClose": true, "change": 2 },
+            "completionProvider": {
+                "resolveProvider": true,
+                "triggerCharacters": ["."]
+            },
+            "documentFormattingProvider": true,
+            "documentRangeFormattingProvider": true,
+            "documentOnTypeFormattingProvider": {
+                "firstTriggerCharacter": "}",
+                "moreTriggerCharacter": [";"]
+            },
+            "definitionProvider": true,
+            "implementationProvider": true,
+            "declarationProvider": true,
+            "typeDefinitionProvider": true,
+            "diagnosticProvider": {
+                "identifier": "nova",
+                "interFileDependencies": false,
+                "workspaceDiagnostics": false
+            },
+            "renameProvider": { "prepareProvider": true },
+            "codeActionProvider": {
+                "resolveProvider": true,
+                "codeActionKinds": [
+                    CODE_ACTION_KIND_EXPLAIN,
+                    CODE_ACTION_KIND_AI_GENERATE,
+                    CODE_ACTION_KIND_AI_TESTS,
+                    "source.organizeImports",
+                    "refactor",
+                    "refactor.extract",
+                    "refactor.inline",
+                    "refactor.rewrite"
+                ]
+            },
+            "codeLensProvider": {
+                "resolveProvider": true
+            },
+            "executeCommandProvider": {
+                "commands": [
+                    COMMAND_EXPLAIN_ERROR,
+                    COMMAND_GENERATE_METHOD_BODY,
+                    COMMAND_GENERATE_TESTS,
+                    "nova.runTest",
+                    "nova.debugTest",
+                    "nova.runMain",
+                    "nova.debugMain",
+                    "nova.extractMethod",
+                    "nova.safeDelete"
+                ]
+            },
+            "experimental": experimental,
+        },
+        "serverInfo": {
+            "name": "nova-lsp",
+            "version": env!("CARGO_PKG_VERSION"),
+        }
+    })
+}
+
+fn message_router(
+    receiver: Receiver<Message>,
+    sender: Sender<IncomingMessage>,
+    request_cancellation: nova_lsp::RequestCancellation,
+) {
+    let metrics = nova_metrics::MetricsRegistry::global();
+
+    for message in receiver {
+        match message {
+            Message::Notification(notification) if notification.method == "$/cancelRequest" => {
+                let start = Instant::now();
+                if let Ok(params) =
+                    serde_json::from_value::<lsp_types::CancelParams>(notification.params)
+                {
+                    request_cancellation.cancel(params.id);
+                }
+                metrics.record_request("$/cancelRequest", start.elapsed());
+            }
+            Message::Request(request) => {
+                let cancel_id = cancel_id_from_request_id(&request.id);
+                let cancel_token = request_cancellation.register(cancel_id.clone());
+                if sender
+                    .send(IncomingMessage::Request {
+                        request,
+                        cancel_id,
+                        cancel_token,
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Message::Notification(notification) => {
+                if sender
+                    .send(IncomingMessage::Notification(notification))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Message::Response(response) => {
+                if sender.send(IncomingMessage::Response(response)).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn cancel_id_from_request_id(id: &RequestId) -> lsp_types::NumberOrString {
+    serde_json::to_value(id)
+        .ok()
+        .and_then(|value| serde_json::from_value(value).ok())
+        .unwrap_or_else(|| lsp_types::NumberOrString::String("<invalid-request-id>".to_string()))
+}
+
+fn response_ok(id: RequestId, result: serde_json::Value) -> Response {
+    Response {
+        id,
+        result: Some(result),
+        error: None,
+    }
+}
+
+fn response_error(id: RequestId, code: i32, message: impl Into<String>) -> Response {
+    Response {
+        id,
+        result: None,
+        error: Some(ResponseError {
+            code,
+            message: message.into(),
+            data: None,
+        }),
+    }
 }
 
 fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
@@ -420,7 +703,6 @@ struct ServerState {
     documents: HashMap<String, Document>,
     refactor_overlay_generation: u64,
     refactor_snapshot_cache: Option<CachedRefactorWorkspaceSnapshot>,
-    cancelled_requests: HashSet<String>,
     analysis: AnalysisState,
     ai: Option<NovaAi>,
     privacy: nova_ai::PrivacyMode,
@@ -456,7 +738,13 @@ impl ServerState {
         let (ai, runtime) = if ai_config.enabled {
             match NovaAi::new(&ai_config) {
                 Ok(ai) => {
+                    // Keep the runtime thread count bounded; Nova is frequently run in
+                    // sandboxes with strict thread limits (and the async tasks are mostly
+                    // IO-bound). This also keeps `nova-lsp` integration tests stable when
+                    // multiple server processes run in parallel.
+                    let worker_threads = ai_config.provider.effective_concurrency().clamp(1, 4);
                     let runtime = tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(worker_threads)
                         .enable_all()
                         .build()
                         .expect("tokio runtime");
@@ -514,7 +802,6 @@ impl ServerState {
             documents: HashMap::new(),
             refactor_overlay_generation: 0,
             refactor_snapshot_cache: None,
-            cancelled_requests: HashSet::new(),
             analysis: AnalysisState::default(),
             ai,
             privacy,
@@ -596,28 +883,59 @@ impl ServerState {
         self.next_outgoing_request_id = self.next_outgoing_request_id.saturating_add(1);
         format!("nova:{id}")
     }
-
-    fn cancel_request(&mut self, id: &serde_json::Value) {
-        if let Some(key) = request_id_key(id) {
-            self.cancelled_requests.insert(key);
-        }
-    }
-
-    fn take_cancelled_request(&mut self, id: &serde_json::Value) -> bool {
-        request_id_key(id)
-            .as_ref()
-            .is_some_and(|key| self.cancelled_requests.remove(key))
-    }
 }
 
 fn handle_request(
+    request: Request,
+    cancel: CancellationToken,
+    state: &mut ServerState,
+    client: &LspClient,
+) -> std::io::Result<Response> {
+    let Request { id, method, params } = request;
+    let id_json = serde_json::to_value(&id).unwrap_or(serde_json::Value::Null);
+    let response_json = handle_request_json(&method, id_json, params, &cancel, state, client)?;
+
+    if cancel.is_cancelled() {
+        return Ok(response_error(id, -32800, "Request cancelled"));
+    }
+
+    Ok(jsonrpc_response_to_response(id, response_json))
+}
+
+fn jsonrpc_response_to_response(id: RequestId, response: serde_json::Value) -> Response {
+    if let Some(result) = response.get("result") {
+        return response_ok(id, result.clone());
+    }
+    if let Some(error) = response.get("error") {
+        let code = error
+            .get("code")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-32603)
+            .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+        let message = error
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Internal error")
+            .to_string();
+        let data = error.get("data").cloned();
+        return Response {
+            id,
+            result: None,
+            error: Some(ResponseError { code, message, data }),
+        };
+    }
+    response_error(id, -32603, "Internal error (malformed response)")
+}
+
+fn handle_request_json(
     method: &str,
     id: serde_json::Value,
     params: serde_json::Value,
+    cancel: &CancellationToken,
     state: &mut ServerState,
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    client: &LspClient,
 ) -> std::io::Result<serde_json::Value> {
-    if state.take_cancelled_request(&id) {
+    if cancel.is_cancelled() {
         return Ok(json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -635,68 +953,7 @@ fn handle_request(
                 .and_then(|uri| path_from_uri(uri))
                 .or_else(|| init_params.root_path.map(PathBuf::from));
 
-            // Minimal initialize response. We advertise the handful of standard
-            // capabilities that Nova supports today; editor integrations can
-            // still call custom `nova/*` requests directly.
-            let result = json!({
-                "capabilities": {
-                    "textDocumentSync": { "openClose": true, "change": 2 },
-                    "completionProvider": {
-                        "resolveProvider": true,
-                        "triggerCharacters": ["."]
-                    },
-                    "documentFormattingProvider": true,
-                    "documentRangeFormattingProvider": true,
-                    "documentOnTypeFormattingProvider": {
-                        "firstTriggerCharacter": "}",
-                        "moreTriggerCharacter": [";"]
-                    },
-                    "definitionProvider": true,
-                    "implementationProvider": true,
-                    "declarationProvider": true,
-                    "typeDefinitionProvider": true,
-                    "diagnosticProvider": {
-                        "identifier": "nova",
-                        "interFileDependencies": false,
-                        "workspaceDiagnostics": false
-                    },
-                    "renameProvider": { "prepareProvider": true },
-                    "codeActionProvider": {
-                        "resolveProvider": true,
-                        "codeActionKinds": [
-                            CODE_ACTION_KIND_EXPLAIN,
-                            CODE_ACTION_KIND_AI_GENERATE,
-                            CODE_ACTION_KIND_AI_TESTS,
-                            "source.organizeImports",
-                            "refactor",
-                            "refactor.extract",
-                            "refactor.inline",
-                            "refactor.rewrite"
-                        ]
-                    },
-                    "codeLensProvider": {
-                        "resolveProvider": true
-                    },
-                    "executeCommandProvider": {
-                        "commands": [
-                            COMMAND_EXPLAIN_ERROR,
-                            COMMAND_GENERATE_METHOD_BODY,
-                            COMMAND_GENERATE_TESTS,
-                            "nova.runTest",
-                            "nova.debugTest",
-                            "nova.runMain",
-                            "nova.debugMain",
-                            "nova.extractMethod",
-                            "nova.safeDelete"
-                        ]
-                    }
-                },
-                "serverInfo": {
-                    "name": "nova-lsp",
-                    "version": env!("CARGO_PKG_VERSION"),
-                }
-            });
-            Ok(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            Ok(json!({ "jsonrpc": "2.0", "id": id, "result": initialize_result_json() }))
         }
         "shutdown" => {
             state.shutdown_requested = true;
@@ -723,7 +980,7 @@ fn handle_request(
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
-            let result = handle_completion(params, state);
+            let result = handle_completion(params, state, cancel.clone());
             Ok(match result {
                 Ok(list) => json!({ "jsonrpc": "2.0", "id": id, "result": list }),
                 Err(err) => {
@@ -881,7 +1138,7 @@ fn handle_request(
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
-            let result = handle_execute_command(params, state, writer);
+            let result = handle_execute_command(params, state, client, cancel);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err((code, message)) => {
@@ -945,7 +1202,7 @@ fn handle_request(
             if state.shutdown_requested {
                 return Ok(server_shutting_down_error(id));
             }
-            let result = handle_java_organize_imports(params, state, writer);
+            let result = handle_java_organize_imports(params, state, client);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err((code, message)) => {
@@ -1065,7 +1322,7 @@ fn handle_request(
             }
 
             if method.starts_with("nova/ai/") {
-                let result = handle_ai_custom_request(method, params, state, writer);
+                let result = handle_ai_custom_request(method, params, state, client, cancel);
                 Ok(match result {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                     Err((code, message)) => {
@@ -1073,7 +1330,7 @@ fn handle_request(
                     }
                 })
             } else if method.starts_with("nova/") {
-                Ok(match nova_lsp::handle_custom_request(method, params) {
+                Ok(match nova_lsp::handle_custom_request_cancelable(method, params, cancel.clone()) {
                     Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
                     Err(err) => {
                         let (code, message) = match err {
@@ -1147,14 +1404,6 @@ fn server_shutting_down_error(id: serde_json::Value) -> serde_json::Value {
     })
 }
 
-fn request_id_key(id: &serde_json::Value) -> Option<String> {
-    match id {
-        serde_json::Value::Number(number) => Some(number.to_string()),
-        serde_json::Value::String(string) => Some(string.clone()),
-        _ => None,
-    }
-}
-
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct InitializeParams {
@@ -1188,41 +1437,52 @@ impl InitializeParams {
 
 fn handle_notification(
     method: &str,
-    message: &serde_json::Value,
+    params: serde_json::Value,
     state: &mut ServerState,
 ) -> std::io::Result<()> {
     match method {
-        "$/cancelRequest" => {
-            if let Some(id) = message.get("params").and_then(|params| params.get("id")) {
-                state.cancel_request(id);
-            }
-        }
-        "exit" => {
-            // By convention `exit` is only respected after shutdown; this server
-            // keeps behaviour simple and always exits.
-            std::process::exit(0);
-        }
+        // Handled in the router/main loop.
+        "$/cancelRequest" | "exit" => {}
         "textDocument/didOpen" => {
-            let Ok(params) = serde_json::from_value::<lsp_types::DidOpenTextDocumentParams>(
-                message.get("params").cloned().unwrap_or_default(),
-            ) else {
+            // Some of Nova's integration tests (and older clients) omit the required
+            // `languageId` / `version` fields in `didOpen`. Be lenient and apply
+            // reasonable defaults so the server remains usable.
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct DidOpenTextDocumentParams {
+                text_document: DidOpenTextDocumentItem,
+            }
+
+            #[derive(Debug, Deserialize)]
+            #[serde(rename_all = "camelCase")]
+            struct DidOpenTextDocumentItem {
+                uri: LspUri,
+                text: String,
+                #[serde(default)]
+                version: Option<i32>,
+            }
+
+            let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(params) else {
                 return Ok(());
             };
-            let uri = params.text_document.uri.to_string();
+            let uri = params.text_document.uri;
+            let uri_string = uri.to_string();
+            let text = params.text_document.text;
+            let version = params.text_document.version.unwrap_or(0);
+
             state
                 .analysis
-                .set_overlay_text(&params.text_document.uri, params.text_document.text.clone());
-            state.documents.insert(
-                uri.clone(),
-                Document::new(params.text_document.text, params.text_document.version),
-            );
-            state.note_refactor_overlay_change(&uri);
+                .set_overlay_text(&uri, text.clone());
+            state
+                .documents
+                .insert(uri_string.clone(), Document::new(text, version));
+            state.note_refactor_overlay_change(&uri_string);
             state.refresh_document_memory();
         }
         "textDocument/didChange" => {
-            let Ok(params) = serde_json::from_value::<lsp_types::DidChangeTextDocumentParams>(
-                message.get("params").cloned().unwrap_or_default(),
-            ) else {
+            let Ok(params) =
+                serde_json::from_value::<lsp_types::DidChangeTextDocumentParams>(params)
+            else {
                 return Ok(());
             };
             let uri = params.text_document.uri.to_string();
@@ -1251,9 +1511,9 @@ fn handle_notification(
             state.refresh_document_memory();
         }
         "textDocument/didClose" => {
-            let Ok(params) = serde_json::from_value::<lsp_types::DidCloseTextDocumentParams>(
-                message.get("params").cloned().unwrap_or_default(),
-            ) else {
+            let Ok(params) =
+                serde_json::from_value::<lsp_types::DidCloseTextDocumentParams>(params)
+            else {
                 return Ok(());
             };
             let uri = params.text_document.uri.to_string();
@@ -1263,9 +1523,8 @@ fn handle_notification(
             state.analysis.refresh_from_disk(&params.text_document.uri);
         }
         "workspace/didChangeWatchedFiles" => {
-            let Ok(params) = serde_json::from_value::<LspDidChangeWatchedFilesParams>(
-                message.get("params").cloned().unwrap_or_default(),
-            ) else {
+            let Ok(params) = serde_json::from_value::<LspDidChangeWatchedFilesParams>(params)
+            else {
                 return Ok(());
             };
 
@@ -1294,9 +1553,7 @@ fn handle_notification(
                 to: LspUri,
             }
 
-            let Ok(params) = serde_json::from_value::<RenamePathParams>(
-                message.get("params").cloned().unwrap_or_default(),
-            ) else {
+            let Ok(params) = serde_json::from_value::<RenamePathParams>(params) else {
                 return Ok(());
             };
 
@@ -1313,7 +1570,7 @@ fn handle_notification(
 }
 
 fn flush_memory_status_notifications(
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    client: &LspClient,
     state: &mut ServerState,
 ) -> std::io::Result<()> {
     let mut events = state.memory_events.lock().unwrap();
@@ -1333,17 +1590,12 @@ fn flush_memory_status_notifications(
         top_components,
     })
     .unwrap_or(serde_json::Value::Null);
-    let notification = json!({
-        "jsonrpc": "2.0",
-        "method": nova_lsp::MEMORY_STATUS_NOTIFICATION,
-        "params": params,
-    });
-    write_json_message(writer, &notification)?;
+    client.notify(nova_lsp::MEMORY_STATUS_NOTIFICATION, params)?;
     Ok(())
 }
 
 fn flush_safe_mode_notifications(
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    client: &LspClient,
     state: &mut ServerState,
 ) -> std::io::Result<()> {
     let (enabled, reason) = nova_lsp::hardening::safe_mode_snapshot();
@@ -1360,12 +1612,7 @@ fn flush_safe_mode_notifications(
         reason: reason.map(ToString::to_string),
     })
     .unwrap_or(serde_json::Value::Null);
-    let notification = json!({
-        "jsonrpc": "2.0",
-        "method": nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION,
-        "params": params,
-    });
-    write_json_message(writer, &notification)?;
+    client.notify(nova_lsp::SAFE_MODE_CHANGED_NOTIFICATION, params)?;
     Ok(())
 }
 
@@ -1713,7 +1960,7 @@ struct JavaOrganizeImportsResponse {
 fn handle_java_organize_imports(
     params: serde_json::Value,
     state: &mut ServerState,
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    client: &LspClient,
 ) -> Result<serde_json::Value, (i32, String)> {
     let params: JavaOrganizeImportsRequestParams =
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
@@ -1756,19 +2003,18 @@ fn handle_java_organize_imports(
 
     let lsp_edit = workspace_edit_to_lsp(snapshot.refactor_db(), &edit)
         .map_err(|e| (-32603, e.to_string()))?;
-    write_json_message(
-        writer,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": state.next_outgoing_id(),
-            "method": "workspace/applyEdit",
-            "params": {
+    let id: RequestId = serde_json::from_value(json!(state.next_outgoing_id()))
+        .map_err(|e| (-32603, e.to_string()))?;
+    client
+        .request(
+            id,
+            "workspace/applyEdit",
+            json!({
                 "label": "Organize imports",
                 "edit": lsp_edit.clone(),
-            }
-        }),
-    )
-    .map_err(|e| (-32603, e.to_string()))?;
+            }),
+        )
+        .map_err(|e| (-32603, e.to_string()))?;
 
     serde_json::to_value(JavaOrganizeImportsResponse {
         applied: true,
@@ -2344,6 +2590,7 @@ fn find_main_method_name_offset(line: &str) -> Option<usize> {
 fn handle_completion(
     params: serde_json::Value,
     state: &ServerState,
+    cancel: CancellationToken,
 ) -> Result<serde_json::Value, String> {
     let params: CompletionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document_position.text_document.uri;
@@ -2363,7 +2610,6 @@ fn handle_completion(
         let has_more = state.completion_service.completion_engine().supports_ai();
         let completion_context_id = if has_more {
             let document_uri = Some(uri.as_str().to_string());
-            let cancel = CancellationToken::new();
             let ctx = multi_token_completion_context(&db, file, position);
 
             // `NovaCompletionService` is Tokio-driven; enter the runtime so
@@ -2372,22 +2618,24 @@ fn handle_completion(
                 "AI completions are enabled but the Tokio runtime is unavailable".to_string()
             })?;
             let _guard = runtime.enter();
-            let response =
-                state
-                    .completion_service
-                    .completion_with_document_uri(ctx, cancel, document_uri);
-            Some(response.context_id.to_string())
+            let response = state
+                .completion_service
+                .completion_with_document_uri(ctx, cancel.clone(), document_uri);
+            response.context_id.to_string()
         } else {
-            None
+            // Even when AI completions are disabled, the client can still issue
+            // `nova/completion/more` with this id; the handler will return an empty
+            // result, mirroring the legacy stdio protocol behaviour.
+            state.completion_service.allocate_context_id().to_string()
         };
-        (completion_context_id, has_more)
+        (Some(completion_context_id), has_more)
     };
 
     #[cfg(not(feature = "ai"))]
     let (completion_context_id, has_more) = (None::<String>, false);
 
     let mut items = nova_lsp::completion(&db, file, position);
-    if items.is_empty() && completion_context_id.is_some() {
+    if items.is_empty() && has_more {
         items.push(CompletionItem {
             label: "AI completions…".to_string(),
             kind: Some(CompletionItemKind::TEXT),
@@ -2499,7 +2747,8 @@ struct ExecuteCommandParams {
 fn handle_execute_command(
     params: serde_json::Value,
     state: &mut ServerState,
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    client: &LspClient,
+    cancel: &CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     let params: ExecuteCommandParams =
         serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
@@ -2524,7 +2773,11 @@ fn handle_execute_command(
                 "buildTool": "auto",
                 "tests": [args.test_id],
             });
-            let result = nova_lsp::handle_custom_request(nova_lsp::TEST_RUN_METHOD, payload)
+            let result = nova_lsp::handle_custom_request_cancelable(
+                nova_lsp::TEST_RUN_METHOD,
+                payload,
+                cancel.clone(),
+            )
                 .map_err(map_nova_lsp_error)?;
             Ok(json!({ "ok": true, "kind": "testRun", "result": result }))
         }
@@ -2546,9 +2799,12 @@ fn handle_execute_command(
                 "buildTool": "auto",
                 "test": args.test_id,
             });
-            let result =
-                nova_lsp::handle_custom_request(nova_lsp::TEST_DEBUG_CONFIGURATION_METHOD, payload)
-                    .map_err(map_nova_lsp_error)?;
+            let result = nova_lsp::handle_custom_request_cancelable(
+                nova_lsp::TEST_DEBUG_CONFIGURATION_METHOD,
+                payload,
+                cancel.clone(),
+            )
+            .map_err(map_nova_lsp_error)?;
             Ok(json!({ "ok": true, "kind": "testDebugConfiguration", "result": result }))
         }
         "nova.runMain" | "nova.debugMain" => {
@@ -2567,9 +2823,12 @@ fn handle_execute_command(
             let payload = json!({
                 "projectRoot": project_root.to_string_lossy(),
             });
-            let configs_value =
-                nova_lsp::handle_custom_request(nova_lsp::DEBUG_CONFIGURATIONS_METHOD, payload)
-                    .map_err(map_nova_lsp_error)?;
+            let configs_value = nova_lsp::handle_custom_request_cancelable(
+                nova_lsp::DEBUG_CONFIGURATIONS_METHOD,
+                payload,
+                cancel.clone(),
+            )
+            .map_err(map_nova_lsp_error)?;
             let configs: Vec<nova_ide::DebugConfiguration> =
                 serde_json::from_value(configs_value).map_err(|e| (-32603, e.to_string()))?;
 
@@ -2605,15 +2864,21 @@ fn handle_execute_command(
         }
         COMMAND_EXPLAIN_ERROR => {
             let args: ExplainErrorArgs = parse_first_arg(params.arguments)?;
-            run_ai_explain_error(args, params.work_done_token, state, writer)
+            run_ai_explain_error(args, params.work_done_token, state, client, cancel.clone())
         }
         COMMAND_GENERATE_METHOD_BODY => {
             let args: GenerateMethodBodyArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_method_body(args, params.work_done_token, state, writer)
+            run_ai_generate_method_body(
+                args,
+                params.work_done_token,
+                state,
+                client,
+                cancel.clone(),
+            )
         }
         COMMAND_GENERATE_TESTS => {
             let args: GenerateTestsArgs = parse_first_arg(params.arguments)?;
-            run_ai_generate_tests(args, params.work_done_token, state, writer)
+            run_ai_generate_tests(args, params.work_done_token, state, client, cancel.clone())
         }
         nova_lsp::SAFE_DELETE_COMMAND => {
             nova_lsp::hardening::record_request();
@@ -2635,19 +2900,19 @@ fn handle_execute_command(
             match nova_lsp::handle_safe_delete(&index, args) {
                 Ok(result) => {
                     if let nova_lsp::SafeDeleteResult::WorkspaceEdit(edit) = &result {
-                        write_json_message(
-                            writer,
-                            &json!({
-                                "jsonrpc": "2.0",
-                                "id": state.next_outgoing_id(),
-                                "method": "workspace/applyEdit",
-                                "params": {
+                        let id: RequestId =
+                            serde_json::from_value(json!(state.next_outgoing_id()))
+                                .map_err(|e| (-32603, e.to_string()))?;
+                        client
+                            .request(
+                                id,
+                                "workspace/applyEdit",
+                                json!({
                                     "label": "Safe delete",
                                     "edit": edit,
-                                }
-                            }),
-                        )
-                        .map_err(|e| (-32603, e.to_string()))?;
+                                }),
+                            )
+                            .map_err(|e| (-32603, e.to_string()))?;
                     }
                     serde_json::to_value(result).map_err(|e| (-32603, e.to_string()))
                 }
@@ -2702,14 +2967,13 @@ fn path_from_uri(uri: &str) -> Option<PathBuf> {
         .map(|path| path.into_path_buf())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use httpmock::prelude::*;
-    use std::io::Cursor;
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use httpmock::prelude::*;
 
-    #[test]
-    fn path_from_uri_decodes_percent_encoding() {
+        #[test]
+        fn path_from_uri_decodes_percent_encoding() {
         #[cfg(not(windows))]
         {
             let uri = "file:///tmp/My%20File.java";
@@ -2740,7 +3004,7 @@ mod tests {
         cfg.provider.url = url::Url::parse(&format!("{}/complete", server.base_url())).unwrap();
         cfg.provider.model = "default".to_string();
         cfg.provider.timeout_ms = Duration::from_secs(2).as_millis() as u64;
-        cfg.provider.concurrency = 1;
+        cfg.provider.concurrency = Some(1);
         cfg.privacy.local_only = false;
         cfg.privacy.anonymize_identifiers = Some(false);
         cfg.cache_enabled = false;
@@ -2764,53 +3028,59 @@ mod tests {
             range: None,
         };
 
-        let mut writer = BufWriter::new(Vec::new());
-        let result = run_ai_explain_error(args, work_done_token, &mut state, &mut writer).unwrap();
+        let (tx, rx) = crossbeam_channel::unbounded::<Message>();
+        let client = LspClient::new(tx);
+        let result = run_ai_explain_error(
+            args,
+            work_done_token,
+            &mut state,
+            &client,
+            CancellationToken::new(),
+        )
+        .unwrap();
         let expected = result.as_str().expect("string result");
 
-        let bytes = writer.into_inner().unwrap();
-        let mut reader = BufReader::new(Cursor::new(bytes));
-        let mut messages = Vec::new();
-        while let Some(message) = read_json_message::<_, serde_json::Value>(&mut reader).unwrap() {
-            messages.push(message);
-        }
+        let messages: Vec<Message> = rx.try_iter().collect();
 
         assert!(
-            messages.iter().any(|msg| {
-                msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
-                    && msg
-                        .get("params")
-                        .and_then(|p| p.get("value"))
+            messages.iter().any(|msg| match msg {
+                Message::Notification(notification) if notification.method == "$/progress" => {
+                    notification
+                        .params
+                        .get("value")
                         .and_then(|v| v.get("kind"))
                         .and_then(|k| k.as_str())
                         == Some("begin")
+                }
+                _ => false,
             }),
             "expected a work-done progress begin notification"
         );
 
         assert!(
-            messages.iter().any(|msg| {
-                msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
-                    && msg
-                        .get("params")
-                        .and_then(|p| p.get("value"))
+            messages.iter().any(|msg| match msg {
+                Message::Notification(notification) if notification.method == "$/progress" => {
+                    notification
+                        .params
+                        .get("value")
                         .and_then(|v| v.get("kind"))
                         .and_then(|k| k.as_str())
                         == Some("end")
+                }
+                _ => false,
             }),
             "expected a work-done progress end notification"
         );
 
         let mut output_chunks = Vec::new();
         for msg in &messages {
-            if msg.get("method").and_then(|m| m.as_str()) != Some("window/logMessage") {
+            let Message::Notification(notification) = msg else {
+                continue;
+            };
+            if notification.method != "window/logMessage" {
                 continue;
             }
-            let Some(text) = msg
-                .get("params")
-                .and_then(|p| p.get("message"))
-                .and_then(|m| m.as_str())
-            else {
+            let Some(text) = notification.params.get("message").and_then(|m| m.as_str()) else {
                 continue;
             };
             if !text.starts_with("AI explainError") {
@@ -2849,7 +3119,8 @@ fn handle_ai_custom_request(
     method: &str,
     params: serde_json::Value,
     state: &mut ServerState,
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    client: &LspClient,
+    cancel: &CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     #[derive(Debug, Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -2864,17 +3135,35 @@ fn handle_ai_custom_request(
         nova_lsp::AI_EXPLAIN_ERROR_METHOD => {
             let params: AiRequestParams<ExplainErrorArgs> =
                 serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_explain_error(params.args, params.work_done_token, state, writer)
+            run_ai_explain_error(
+                params.args,
+                params.work_done_token,
+                state,
+                client,
+                cancel.clone(),
+            )
         }
         nova_lsp::AI_GENERATE_METHOD_BODY_METHOD => {
             let params: AiRequestParams<GenerateMethodBodyArgs> =
                 serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_generate_method_body(params.args, params.work_done_token, state, writer)
+            run_ai_generate_method_body(
+                params.args,
+                params.work_done_token,
+                state,
+                client,
+                cancel.clone(),
+            )
         }
         nova_lsp::AI_GENERATE_TESTS_METHOD => {
             let params: AiRequestParams<GenerateTestsArgs> =
                 serde_json::from_value(params).map_err(|e| (-32602, e.to_string()))?;
-            run_ai_generate_tests(params.args, params.work_done_token, state, writer)
+            run_ai_generate_tests(
+                params.args,
+                params.work_done_token,
+                state,
+                client,
+                cancel.clone(),
+            )
         }
         _ => Err((-32601, format!("Method not found: {method}"))),
     }
@@ -2884,7 +3173,8 @@ fn run_ai_explain_error(
     args: ExplainErrorArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    writer: &mut impl Write,
+    client: &LspClient,
+    cancel: CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
         .ai
@@ -2895,9 +3185,14 @@ fn run_ai_explain_error(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    send_progress_begin(writer, work_done_token.as_ref(), "AI: Explain this error")?;
-    send_progress_report(writer, work_done_token.as_ref(), "Building context…", None)?;
-    send_log_message(writer, "AI: explaining error…")?;
+    send_progress_begin(client, work_done_token.as_ref(), "AI: Explain this error")?;
+    send_progress_report(
+        client,
+        work_done_token.as_ref(),
+        "Building context…",
+        None,
+    )?;
+    send_log_message(client, "AI: explaining error…")?;
     let mut ctx = build_context_request_from_args(
         state,
         args.uri.as_deref(),
@@ -2922,16 +3217,20 @@ fn run_ai_explain_error(
         message: args.diagnostic_message.clone(),
         kind: Some(ContextDiagnosticKind::Other),
     });
-    send_progress_report(writer, work_done_token.as_ref(), "Calling model…", None)?;
+    send_progress_report(client, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
-        .block_on(ai.explain_error(&args.diagnostic_message, ctx, CancellationToken::new()))
+        .block_on(ai.explain_error(
+            &args.diagnostic_message,
+            ctx,
+            cancel.clone(),
+        ))
         .map_err(|e| {
-            let _ = send_progress_end(writer, work_done_token.as_ref(), "AI request failed");
+            let _ = send_progress_end(client, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
         })?;
-    send_log_message(writer, "AI: explanation ready")?;
-    send_ai_output(writer, "AI explainError", &out)?;
-    send_progress_end(writer, work_done_token.as_ref(), "Done")?;
+    send_log_message(client, "AI: explanation ready")?;
+    send_ai_output(client, "AI explainError", &out)?;
+    send_progress_end(client, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
 
@@ -2939,7 +3238,8 @@ fn run_ai_generate_method_body(
     args: GenerateMethodBodyArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    writer: &mut impl Write,
+    client: &LspClient,
+    cancel: CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
         .ai
@@ -2950,9 +3250,14 @@ fn run_ai_generate_method_body(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    send_progress_begin(writer, work_done_token.as_ref(), "AI: Generate method body")?;
-    send_progress_report(writer, work_done_token.as_ref(), "Building context…", None)?;
-    send_log_message(writer, "AI: generating method body…")?;
+    send_progress_begin(client, work_done_token.as_ref(), "AI: Generate method body")?;
+    send_progress_report(
+        client,
+        work_done_token.as_ref(),
+        "Building context…",
+        None,
+    )?;
+    send_log_message(client, "AI: generating method body…")?;
     let ctx = build_context_request_from_args(
         state,
         args.uri.as_deref(),
@@ -2961,16 +3266,20 @@ fn run_ai_generate_method_body(
         args.context.clone(),
         /*include_doc_comments=*/ true,
     );
-    send_progress_report(writer, work_done_token.as_ref(), "Calling model…", None)?;
+    send_progress_report(client, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
-        .block_on(ai.generate_method_body(&args.method_signature, ctx, CancellationToken::new()))
+        .block_on(ai.generate_method_body(
+            &args.method_signature,
+            ctx,
+            cancel.clone(),
+        ))
         .map_err(|e| {
-            let _ = send_progress_end(writer, work_done_token.as_ref(), "AI request failed");
+            let _ = send_progress_end(client, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
         })?;
-    send_log_message(writer, "AI: method body ready")?;
-    send_ai_output(writer, "AI generateMethodBody", &out)?;
-    send_progress_end(writer, work_done_token.as_ref(), "Done")?;
+    send_log_message(client, "AI: method body ready")?;
+    send_ai_output(client, "AI generateMethodBody", &out)?;
+    send_progress_end(client, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
 
@@ -2978,7 +3287,8 @@ fn run_ai_generate_tests(
     args: GenerateTestsArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    writer: &mut impl Write,
+    client: &LspClient,
+    cancel: CancellationToken,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
         .ai
@@ -2989,9 +3299,14 @@ fn run_ai_generate_tests(
         .as_ref()
         .ok_or_else(|| (-32603, "tokio runtime unavailable".to_string()))?;
 
-    send_progress_begin(writer, work_done_token.as_ref(), "AI: Generate tests")?;
-    send_progress_report(writer, work_done_token.as_ref(), "Building context…", None)?;
-    send_log_message(writer, "AI: generating tests…")?;
+    send_progress_begin(client, work_done_token.as_ref(), "AI: Generate tests")?;
+    send_progress_report(
+        client,
+        work_done_token.as_ref(),
+        "Building context…",
+        None,
+    )?;
+    send_log_message(client, "AI: generating tests…")?;
     let ctx = build_context_request_from_args(
         state,
         args.uri.as_deref(),
@@ -3000,16 +3315,16 @@ fn run_ai_generate_tests(
         args.context.clone(),
         /*include_doc_comments=*/ true,
     );
-    send_progress_report(writer, work_done_token.as_ref(), "Calling model…", None)?;
+    send_progress_report(client, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
-        .block_on(ai.generate_tests(&args.target, ctx, CancellationToken::new()))
+        .block_on(ai.generate_tests(&args.target, ctx, cancel.clone()))
         .map_err(|e| {
-            let _ = send_progress_end(writer, work_done_token.as_ref(), "AI request failed");
+            let _ = send_progress_end(client, work_done_token.as_ref(), "AI request failed");
             (-32603, e.to_string())
         })?;
-    send_log_message(writer, "AI: tests ready")?;
-    send_ai_output(writer, "AI generateTests", &out)?;
-    send_progress_end(writer, work_done_token.as_ref(), "Done")?;
+    send_log_message(client, "AI: tests ready")?;
+    send_ai_output(client, "AI generateTests", &out)?;
+    send_progress_end(client, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
 
@@ -3039,7 +3354,7 @@ fn chunk_utf8_by_bytes(text: &str, max_bytes: usize) -> Vec<&str> {
     chunks
 }
 
-fn send_ai_output(writer: &mut impl Write, label: &str, output: &str) -> Result<(), (i32, String)> {
+fn send_ai_output(client: &LspClient, label: &str, output: &str) -> Result<(), (i32, String)> {
     let chunks = chunk_utf8_by_bytes(output, AI_LOG_MESSAGE_CHUNK_BYTES);
     let total = chunks.len();
     for (idx, chunk) in chunks.into_iter().enumerate() {
@@ -3048,37 +3363,32 @@ fn send_ai_output(writer: &mut impl Write, label: &str, output: &str) -> Result<
         } else {
             format!("{label} ({}/{total}): {chunk}", idx + 1)
         };
-        send_log_message(writer, &message)?;
+        send_log_message(client, &message)?;
     }
     Ok(())
 }
 
-fn send_log_message(writer: &mut impl Write, message: &str) -> Result<(), (i32, String)> {
-    write_json_message(
-        writer,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "window/logMessage",
-            "params": { "type": 3, "message": message }
-        }),
-    )
-    .map_err(|e| (-32603, e.to_string()))
+fn send_log_message(client: &LspClient, message: &str) -> Result<(), (i32, String)> {
+    client
+        .notify(
+            "window/logMessage",
+            json!({ "type": 3, "message": message }),
+        )
+        .map_err(|e| (-32603, e.to_string()))
 }
 
 fn send_progress_begin(
-    writer: &mut impl Write,
+    client: &LspClient,
     token: Option<&serde_json::Value>,
     title: &str,
 ) -> Result<(), (i32, String)> {
     let Some(token) = token else {
         return Ok(());
     };
-    write_json_message(
-        writer,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "$/progress",
-            "params": {
+    client
+        .notify(
+            "$/progress",
+            json!({
                 "token": token,
                 "value": {
                     "kind": "begin",
@@ -3086,14 +3396,13 @@ fn send_progress_begin(
                     "cancellable": false,
                     "message": "",
                 }
-            }
-        }),
-    )
-    .map_err(|e| (-32603, e.to_string()))
+            }),
+        )
+        .map_err(|e| (-32603, e.to_string()))
 }
 
 fn send_progress_report(
-    writer: &mut impl Write,
+    client: &LspClient,
     token: Option<&serde_json::Value>,
     message: &str,
     percentage: Option<u32>,
@@ -3107,43 +3416,37 @@ fn send_progress_report(
     if let Some(percentage) = percentage {
         value.insert("percentage".to_string(), json!(percentage));
     }
-    write_json_message(
-        writer,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "$/progress",
-            "params": {
+    client
+        .notify(
+            "$/progress",
+            json!({
                 "token": token,
                 "value": value
-            }
-        }),
-    )
-    .map_err(|e| (-32603, e.to_string()))
+            }),
+        )
+        .map_err(|e| (-32603, e.to_string()))
 }
 
 fn send_progress_end(
-    writer: &mut impl Write,
+    client: &LspClient,
     token: Option<&serde_json::Value>,
     message: &str,
 ) -> Result<(), (i32, String)> {
     let Some(token) = token else {
         return Ok(());
     };
-    write_json_message(
-        writer,
-        &json!({
-            "jsonrpc": "2.0",
-            "method": "$/progress",
-            "params": {
+    client
+        .notify(
+            "$/progress",
+            json!({
                 "token": token,
                 "value": {
                     "kind": "end",
                     "message": message,
                 }
-            }
-        }),
-    )
-    .map_err(|e| (-32603, e.to_string()))
+            }),
+        )
+        .map_err(|e| (-32603, e.to_string()))
 }
 
 fn maybe_add_related_code(state: &ServerState, req: ContextRequest) -> ContextRequest {

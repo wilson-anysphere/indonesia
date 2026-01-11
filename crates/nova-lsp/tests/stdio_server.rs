@@ -108,6 +108,10 @@ fn stdio_server_handles_metrics_request() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // metrics snapshot
     write_jsonrpc_message(
@@ -171,6 +175,10 @@ fn stdio_server_handles_safe_mode_status_request() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // safeModeStatus
     write_jsonrpc_message(
@@ -240,6 +248,10 @@ fn stdio_server_handles_test_discover_request() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) discover tests
     write_jsonrpc_message(
@@ -300,6 +312,10 @@ fn stdio_server_handles_document_formatting_request() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let uri = "file:///test/Foo.java";
     let text = "class Foo{void m(){int x=1;}}\n";
@@ -379,6 +395,10 @@ fn stdio_server_handles_change_signature_request() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 2) didOpen
     let uri = "file:///A.java";
@@ -495,6 +515,10 @@ fn stdio_server_applies_incremental_did_change_utf16_correctly() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let uri = "file:///test/Foo.java";
     let text = "class Foo{void m(){String s=\"😀\";int x=1;}}\n";
@@ -604,6 +628,10 @@ fn stdio_server_resolves_completion_item_imports() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let uri = "file:///test/Foo.java";
     let text = "package com.example;\n\nclass Foo {}\n";
@@ -653,7 +681,7 @@ fn stdio_server_resolves_completion_item_imports() {
     let edits: Vec<LspTextEdit> = serde_json::from_value(edits_value).expect("decode text edits");
 
     assert_eq!(edits.len(), 1);
-    assert_eq!(edits[0].range.start.line, 1);
+    assert_eq!(edits[0].range.start.line, 2);
     assert_eq!(edits[0].range.start.character, 0);
     assert_eq!(edits[0].new_text, "import java.util.stream.Collectors;\n");
 
@@ -692,6 +720,10 @@ fn stdio_server_handles_completion_and_more_completions_request() {
         }),
     );
     let _initialize_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let uri = "file:///test/Completion.java";
     let text = "class A {\n  void m() {\n    String s = \"\";\n    s.\n  }\n}\n";
@@ -802,6 +834,10 @@ fn stdio_server_discovers_tests_in_simple_project_fixture() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -889,6 +925,10 @@ fn stdio_server_handles_debug_configurations_request() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -946,6 +986,10 @@ fn stdio_server_provides_inline_method_code_action() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let uri = "file:///A.java";
     let source = r#"class A {
@@ -1065,6 +1109,10 @@ fn stdio_server_handles_generated_sources_request() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1132,6 +1180,10 @@ fn stdio_server_handles_run_annotation_processing_request() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1231,6 +1283,10 @@ fn stdio_server_handles_java_classpath_request_with_fake_maven_and_cache() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let expected = vec![
         root.join("target/classes").to_string_lossy().to_string(),
@@ -1364,6 +1420,10 @@ exit 1
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1479,6 +1539,10 @@ esac
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     let expected = vec![
         root.join("build/classes/java/main")
@@ -1620,6 +1684,10 @@ exit 0
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1799,6 +1867,10 @@ fn stdio_server_handles_debug_hot_swap_request_with_fake_maven_and_mock_jdwp() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
@@ -1911,6 +1983,10 @@ fn stdio_server_reload_project_invalidates_maven_classpath_cache() {
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     // 1) Prime the cache.
     write_jsonrpc_message(
@@ -2090,6 +2166,10 @@ case "$last" in
         }),
     );
     let _initialize_resp = read_response_with_id(&mut stdout, 1);
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,

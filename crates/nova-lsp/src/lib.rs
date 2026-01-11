@@ -168,12 +168,26 @@ pub const DOCUMENT_ON_TYPE_FORMATTING_METHOD: &str = "textDocument/onTypeFormatt
 /// (e.g. `lsp-server`, `tower-lsp`). It only supports stateless endpoints.
 pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
     hardening::record_request();
-    handle_custom_request_inner(method, params)
+    handle_custom_request_inner_cancelable(method, params, CancellationToken::new())
 }
 
-fn handle_custom_request_inner(
+/// Dispatch a Nova custom request (`nova/*`) by method name with request-scoped cancellation.
+///
+/// This is the preferred entrypoint for LSP transports that implement `$/cancelRequest` by
+/// associating a cancellation token with each in-flight request (see ADR 0003).
+pub fn handle_custom_request_cancelable(
     method: &str,
     params: serde_json::Value,
+    cancel: CancellationToken,
+) -> Result<serde_json::Value> {
+    hardening::record_request();
+    handle_custom_request_inner_cancelable(method, params, cancel)
+}
+
+fn handle_custom_request_inner_cancelable(
+    method: &str,
+    params: serde_json::Value,
+    cancel: CancellationToken,
 ) -> Result<serde_json::Value> {
     hardening::guard_method(method)?;
 
@@ -195,76 +209,82 @@ fn handle_custom_request_inner(
             Ok(serde_json::json!({ "ok": true }))
         }
         TEST_DISCOVER_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::test::handle_discover)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::test::handle_discover)
         }
         TEST_RUN_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::test::handle_run)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::test::handle_run)
         }
         WEB_ENDPOINTS_METHOD | QUARKUS_ENDPOINTS_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::web::handle_endpoints)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::web::handle_endpoints)
         }
-        TEST_DEBUG_CONFIGURATION_METHOD => hardening::run_with_watchdog(
+        TEST_DEBUG_CONFIGURATION_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
+            cancel,
             extensions::test::handle_debug_configuration,
         ),
         BUILD_PROJECT_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::build::handle_build_project)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_build_project)
         }
         JAVA_CLASSPATH_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::build::handle_java_classpath)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_java_classpath)
         }
-        PROJECT_CONFIGURATION_METHOD => hardening::run_with_watchdog(
+        PROJECT_CONFIGURATION_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
+            cancel,
             extensions::project::handle_project_configuration,
         ),
         JAVA_SOURCE_PATHS_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::java::handle_source_paths)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::java::handle_source_paths)
         }
-        JAVA_RESOLVE_MAIN_CLASS_METHOD => hardening::run_with_watchdog(
+        JAVA_RESOLVE_MAIN_CLASS_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
+            cancel,
             extensions::java::handle_resolve_main_class,
         ),
         JAVA_GENERATED_SOURCES_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::apt::handle_generated_sources)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::apt::handle_generated_sources)
         }
-        RUN_ANNOTATION_PROCESSING_METHOD => hardening::run_with_watchdog(
+        RUN_ANNOTATION_PROCESSING_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
+            cancel,
             extensions::apt::handle_run_annotation_processing,
         ),
         RELOAD_PROJECT_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::build::handle_reload_project)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_reload_project)
         }
-        DEBUG_CONFIGURATIONS_METHOD => hardening::run_with_watchdog(
+        DEBUG_CONFIGURATIONS_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
+            cancel,
             extensions::debug::handle_debug_configurations,
         ),
         DEBUG_HOT_SWAP_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::debug::handle_hot_swap)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::debug::handle_hot_swap)
         }
         BUILD_TARGET_CLASSPATH_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::build::handle_target_classpath)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_target_classpath)
         }
         BUILD_STATUS_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::build::handle_build_status)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_build_status)
         }
-        BUILD_DIAGNOSTICS_METHOD => hardening::run_with_watchdog(
+        BUILD_DIAGNOSTICS_METHOD => hardening::run_with_watchdog_cancelable(
             method,
             params,
+            cancel,
             extensions::build::handle_build_diagnostics,
         ),
         PROJECT_MODEL_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::build::handle_project_model)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::build::handle_project_model)
         }
         MICRONAUT_ENDPOINTS_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::micronaut::handle_endpoints)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::micronaut::handle_endpoints)
         }
         MICRONAUT_BEANS_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::micronaut::handle_beans)
+            hardening::run_with_watchdog_cancelable(method, params, cancel, extensions::micronaut::handle_beans)
         }
         _ => Err(NovaLspError::InvalidParams(format!(
             "unknown (stateless) method: {method}"
@@ -317,7 +337,7 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
             serde_json::to_value(server.hot_swap(hot_swap, params))
                 .map_err(|err| NovaLspError::Internal(err.to_string()))
         }
-        _ => handle_custom_request_inner(method, params),
+        _ => handle_custom_request_inner_cancelable(method, params, CancellationToken::new()),
     }
 }
 
@@ -582,6 +602,11 @@ fn looks_like_project_root(root: &Path) -> bool {
     ]
     .iter()
     .any(|marker| root.join(marker).exists())
+        // Some users open ad-hoc folders without build files, but still with a conventional Java
+        // source layout. Allow those roots to be treated as safe for scanning without accepting a
+        // broad `src/` marker that may match too many non-project directories.
+        || root.join("src").join("main").join("java").is_dir()
+        || root.join("src").join("test").join("java").is_dir()
 }
 
 fn uri_from_file_path(path: &Path) -> Option<lsp_types::Uri> {

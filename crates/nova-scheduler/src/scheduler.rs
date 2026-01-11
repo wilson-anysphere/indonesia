@@ -9,6 +9,52 @@ use crate::{
     RequestContext, TaskError,
 };
 
+fn build_rayon_pool(name_prefix: &'static str, threads: usize) -> ThreadPool {
+    // Thread creation can fail in constrained CI/sandbox environments (e.g. low RLIMIT_NPROC). Nova
+    // should degrade gracefully rather than crashing during startup.
+    let requested = threads.max(1);
+    let mut desired = requested;
+    loop {
+        match rayon::ThreadPoolBuilder::new()
+            .num_threads(desired)
+            .thread_name(move |idx| format!("{name_prefix}-{idx}"))
+            .build()
+        {
+            Ok(pool) => return pool,
+            Err(err) if desired > 1 => {
+                desired = desired / 2;
+                continue;
+            }
+            Err(err) => panic!(
+                "failed to build {name_prefix} pool (requested {requested} thread(s)): {err}"
+            ),
+        }
+    }
+}
+
+fn build_io_runtime(threads: usize) -> Runtime {
+    let requested = threads.max(1);
+    let mut desired = requested;
+    loop {
+        match tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(desired)
+            .enable_io()
+            .enable_time()
+            .thread_name("nova-io")
+            .build()
+        {
+            Ok(runtime) => return runtime,
+            Err(err) if desired > 1 => {
+                desired = desired / 2;
+                continue;
+            }
+            Err(err) => panic!(
+                "failed to build IO runtime (requested {requested} thread(s)): {err}"
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolKind {
     Compute,
@@ -29,6 +75,8 @@ impl Default for SchedulerConfig {
             .map(|n| n.get())
             .unwrap_or(1);
         Self {
+            // In containers, `available_parallelism()` can report the host CPU count even when the
+            // process is constrained by thread limits. Cap the default to keep startup reliable.
             compute_threads: available.saturating_sub(1).clamp(1, 16),
             background_threads: available.clamp(1, 4),
             io_threads: 2,
@@ -52,25 +100,10 @@ struct SchedulerInner {
 
 impl Scheduler {
     pub fn new(config: SchedulerConfig) -> Self {
-        let compute_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(config.compute_threads.max(1))
-            .thread_name(|idx| format!("nova-compute-{idx}"))
-            .build()
-            .expect("failed to build compute pool");
+        let compute_pool = build_rayon_pool("nova-compute", config.compute_threads);
+        let background_pool = build_rayon_pool("nova-background", config.background_threads);
 
-        let background_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(config.background_threads.max(1))
-            .thread_name(|idx| format!("nova-background-{idx}"))
-            .build()
-            .expect("failed to build background pool");
-
-        let io_runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(config.io_threads.max(1))
-            .enable_io()
-            .enable_time()
-            .thread_name("nova-io")
-            .build()
-            .expect("failed to build IO runtime");
+        let io_runtime = build_io_runtime(config.io_threads);
         let io_handle = io_runtime.handle().clone();
 
         let (progress_tx, _) = broadcast::channel(config.progress_channel_capacity.max(1));
@@ -93,17 +126,8 @@ impl Scheduler {
     /// a `#[tokio::main]` binary) and we want to avoid spawning an extra
     /// `nova-io` runtime.
     pub fn new_with_io_handle(config: SchedulerConfig, io_handle: tokio::runtime::Handle) -> Self {
-        let compute_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(config.compute_threads.max(1))
-            .thread_name(|idx| format!("nova-compute-{idx}"))
-            .build()
-            .expect("failed to build compute pool");
-
-        let background_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(config.background_threads.max(1))
-            .thread_name(|idx| format!("nova-background-{idx}"))
-            .build()
-            .expect("failed to build background pool");
+        let compute_pool = build_rayon_pool("nova-compute", config.compute_threads);
+        let background_pool = build_rayon_pool("nova-background", config.background_threads);
 
         let (progress_tx, _) = broadcast::channel(config.progress_channel_capacity.max(1));
         let progress = ProgressSender::new(progress_tx);

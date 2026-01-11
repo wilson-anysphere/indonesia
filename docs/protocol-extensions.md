@@ -14,9 +14,13 @@ Source of truth for method names:
 
 ## Capability gating (how clients detect support)
 
-Today, `nova-lsp` does **not** advertise a structured list of custom methods in
-`initializeResult.capabilities.experimental`. As a result, clients should gate features using one
-or more of:
+`nova-lsp` advertises its custom protocol surface in `initializeResult.capabilities.experimental`:
+
+- `experimental.nova.requests`: array of supported `nova/*` request method strings
+- `experimental.nova.notifications`: array of supported `nova/*` notification method strings
+
+Clients should still gate features defensively because older Nova versions may omit this list (or
+may not include newly-added methods). Use one or more of:
 
 1. **Optimistic call + graceful fallback**: send the request and treat JSON-RPC `-32601` “Method
    not found” **or** `-32602` with an “unknown … method” message as “server doesn’t support this
@@ -41,6 +45,7 @@ Nova uses standard JSON-RPC/LSP error codes:
   returns `-32602` for **unknown `nova/*` methods** (because it attempts to dispatch all `nova/*`
   through `nova_lsp::handle_custom_request()`).
 - `-32603` — internal error
+- `-32800` — request cancelled
 
 ### Watchdog timeouts + safe-mode
 
@@ -73,8 +78,7 @@ Nova’s watchdog has a cancellation mechanism (via `nova-scheduler`), but most 
 synchronous and **do not yet poll cancellation tokens**. Clients should treat cancellation as
 best-effort:
 
-- If the server honours cancellation, the request may fail with `-32603` and a message like
-  “`{method}` was cancelled”.
+- If the server honours cancellation, the request fails with LSP `-32800` (“RequestCancelled”).
 - Otherwise, the request will complete normally or hit its timeout budget.
 
 ## Method catalog

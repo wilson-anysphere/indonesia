@@ -34,6 +34,10 @@ fn stdio_server_loads_config_from_flag_and_initializes() {
     );
     let initialize_resp = read_jsonrpc_message(&mut stdout);
     assert_eq!(initialize_resp.get("id").and_then(|v| v.as_i64()), Some(1));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
 
     write_jsonrpc_message(
         &mut stdin,
