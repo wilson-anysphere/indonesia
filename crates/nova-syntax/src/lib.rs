@@ -1,10 +1,13 @@
 //! Syntax tree and parsing primitives.
 //!
-//! This crate provides two complementary entry points:
+//! This crate provides three complementary entry points:
 //! - [`parse`]: produces a small, serializable green tree used by Nova's on-disk
 //!   cache layer (`nova-cache`). Tokens store byte ranges into the source text.
 //! - [`parse_java`]: produces a full-fidelity rowan-based syntax tree suitable
 //!   for interactive IDE features and semantic analysis.
+//! - [`parse_expression`]: parses a single Java expression (not a full compilation
+//!   unit) into a rowan syntax tree. This is primarily used by debugger
+//!   integrations for watch/evaluate expressions.
 
 mod ast;
 mod feature_gate;
