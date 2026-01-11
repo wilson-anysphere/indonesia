@@ -296,7 +296,7 @@ impl Client {
                 request_id,
                 request_type,
                 status,
-                error_code,
+                error_code = ?error_code,
                 latency_ms = elapsed.as_secs_f64() * 1000.0
             );
         }
@@ -470,20 +470,78 @@ impl Inner {
             uncompressed_bytes = uncompressed.len()
         );
 
-        let frame = WireFrame::Packet {
+        let mut writer = self.writer.lock().await;
+        if self.negotiated.capabilities.supports_chunking
+            && !packet_fits_in_single_frame(&wire_bytes, self.negotiated.capabilities.max_frame_len)
+        {
+            write_packet_chunked(
+                &mut *writer,
+                self.negotiated.capabilities.max_frame_len,
+                request_id,
+                compression,
+                wire_bytes,
+            )
+            .await
+        } else {
+            let frame = WireFrame::Packet {
+                id: request_id,
+                compression,
+                data: wire_bytes,
+            };
+            write_wire_frame(&mut *writer, self.negotiated.capabilities.max_frame_len, &frame).await
+        }
+    }
+}
+
+fn packet_fits_in_single_frame(data: &[u8], max_frame_len: u32) -> bool {
+    // We're encoding `WireFrame` as CBOR and then prefixing with a u32 length.
+    // The CBOR overhead is small compared to typical payload sizes; we use a
+    // conservative margin to decide whether to try the single-frame path.
+    const WIRE_FRAME_OVERHEAD: usize = 256;
+    data.len() + WIRE_FRAME_OVERHEAD <= max_frame_len as usize
+}
+
+async fn write_packet_chunked(
+    stream: &mut (impl AsyncWrite + Unpin),
+    max_frame_len: u32,
+    request_id: RequestId,
+    compression: CompressionAlgo,
+    data: Vec<u8>,
+) -> Result<()> {
+    let empty = WireFrame::PacketChunk {
+        id: request_id,
+        compression,
+        seq: 0,
+        last: false,
+        data: Vec::new(),
+    };
+    let empty_encoded = v3::encode_wire_frame(&empty).context("encode empty packet chunk")?;
+    // Account for CBOR byte-string length header growth.
+    let chunk_budget = max_frame_len
+        .saturating_sub(empty_encoded.len().try_into().unwrap_or(u32::MAX))
+        .saturating_sub(16) as usize;
+
+    anyhow::ensure!(
+        chunk_budget > 0,
+        "max_frame_len too small for chunked packets: {max_frame_len}"
+    );
+
+    let chunks = data.chunks(chunk_budget);
+    let total_chunks = chunks.len();
+    for (idx, chunk) in chunks.enumerate() {
+        let seq: u32 = idx.try_into().unwrap_or(u32::MAX);
+        let last = idx + 1 == total_chunks;
+        let frame = WireFrame::PacketChunk {
             id: request_id,
             compression,
-            data: wire_bytes,
+            seq,
+            last,
+            data: chunk.to_vec(),
         };
-
-        let mut writer = self.writer.lock().await;
-        write_wire_frame(
-            &mut *writer,
-            self.negotiated.capabilities.max_frame_len,
-            &frame,
-        )
-        .await
+        write_wire_frame(stream, max_frame_len, &frame).await?;
     }
+
+    Ok(())
 }
 
 async fn client_handshake(
@@ -824,6 +882,14 @@ async fn write_wire_frame(
     frame: &WireFrame,
 ) -> Result<()> {
     let payload = v3::encode_wire_frame(frame).context("encode wire frame")?;
+    write_wire_frame_bytes(stream, max_frame_len, &payload).await
+}
+
+async fn write_wire_frame_bytes(
+    stream: &mut (impl AsyncWrite + Unpin),
+    max_frame_len: u32,
+    payload: &[u8],
+) -> Result<()> {
     let len: u32 = payload
         .len()
         .try_into()
@@ -953,6 +1019,13 @@ async fn read_loop(
     inner: Arc<Inner>,
     incoming_tx: Option<mpsc::UnboundedSender<IncomingRequest>>,
 ) {
+    struct ChunkState {
+        compression: CompressionAlgo,
+        next_seq: u32,
+        data: Vec<u8>,
+    }
+
+    let mut chunked: HashMap<RequestId, ChunkState> = HashMap::new();
     loop {
         let frame =
             match read_wire_frame(&mut reader, inner.negotiated.capabilities.max_frame_len).await {
@@ -977,15 +1050,73 @@ async fn read_loop(
                 compression,
                 data,
             } => (id, compression, data),
-            WireFrame::PacketChunk { id, .. } => {
-                tracing::debug!(
-                    target: TRACE_TARGET,
-                    event = "unsupported_chunk",
-                    worker_id = inner.worker_id,
-                    shard_id = inner.shard_id,
-                    request_id = id
-                );
-                continue;
+            WireFrame::PacketChunk {
+                id,
+                compression,
+                seq,
+                last,
+                data,
+            } => {
+                if !inner.negotiated.capabilities.supports_chunking {
+                    tracing::debug!(
+                        target: TRACE_TARGET,
+                        event = "unsupported_chunk",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
+                        request_id = id
+                    );
+                    continue;
+                }
+
+                let max_packet_len = inner.negotiated.capabilities.max_packet_len as usize;
+                let entry = chunked.entry(id).or_insert_with(|| ChunkState {
+                    compression,
+                    next_seq: 0,
+                    data: Vec::new(),
+                });
+
+                if entry.compression != compression || entry.next_seq != seq {
+                    tracing::debug!(
+                        target: TRACE_TARGET,
+                        event = "chunk_out_of_order",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
+                        request_id = id,
+                        expected_seq = entry.next_seq,
+                        got_seq = seq
+                    );
+                    chunked.remove(&id);
+                    let mut pending = inner.pending.lock().await;
+                    pending.clear();
+                    break;
+                }
+                entry.next_seq = entry.next_seq.saturating_add(1);
+
+                if entry.data.len() + data.len() > max_packet_len {
+                    tracing::debug!(
+                        target: TRACE_TARGET,
+                        event = "chunk_too_large",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
+                        request_id = id,
+                        current = entry.data.len(),
+                        incoming = data.len(),
+                        max_packet_len
+                    );
+                    chunked.remove(&id);
+                    let mut pending = inner.pending.lock().await;
+                    pending.clear();
+                    break;
+                }
+
+                entry.data.extend_from_slice(&data);
+
+                if !last {
+                    continue;
+                }
+
+                let entry = chunked.remove(&id).expect("entry exists");
+                (id, entry.compression, entry.data)
             }
             other => {
                 tracing::trace!(
@@ -1012,7 +1143,9 @@ async fn read_loop(
                         request_id,
                         error = %err
                     );
-                    continue;
+                    let mut pending = inner.pending.lock().await;
+                    pending.clear();
+                    break;
                 }
             };
 
@@ -1027,7 +1160,9 @@ async fn read_loop(
                     request_id,
                     error = %err
                 );
-                continue;
+                let mut pending = inner.pending.lock().await;
+                pending.clear();
+                break;
             }
         };
 
