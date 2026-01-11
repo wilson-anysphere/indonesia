@@ -2,7 +2,7 @@ use lsp_types::{
     CodeAction, CodeActionDisabled, CodeActionKind, CodeActionOrCommand, Position, Range, Uri,
     WorkspaceEdit,
 };
-use nova_core::{LineIndex, Position as CorePosition};
+use crate::text_pos::TextPos;
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
@@ -202,12 +202,14 @@ pub fn extract_variable_code_actions(
         return Vec::new();
     }
 
-    let Some(expr_range) = lsp_range_to_workspace_text_range(source, selection) else {
+    let pos = TextPos::new(source);
+    let Some(expr_range) = pos.byte_range(selection) else {
         return Vec::new();
     };
     if expr_range.len() == 0 {
         return Vec::new();
     }
+    let expr_range = WorkspaceTextRange::new(expr_range.start, expr_range.end);
 
     let selected = source
         .get(expr_range.start..expr_range.end)
@@ -341,7 +343,7 @@ pub fn inline_variable_code_actions(
         return Vec::new();
     }
 
-    let Some(offset) = lsp_position_to_offset(source, position) else {
+    let Some(offset) = TextPos::new(source).byte_offset(position) else {
         return Vec::new();
     };
 
@@ -409,10 +411,7 @@ pub fn convert_to_record_code_action(
     source: &str,
     position: Position,
 ) -> Option<CodeActionOrCommand> {
-    let line_index = LineIndex::new(source);
-    let offset = line_index
-        .offset_of_position(source, CorePosition::new(position.line, position.character))?;
-    let offset: usize = u32::from(offset) as usize;
+    let offset = TextPos::new(source).byte_offset(position)?;
 
     let file = uri.to_string();
     match convert_to_record(&file, source, offset, ConvertToRecordOptions::default()) {
@@ -444,29 +443,6 @@ pub fn convert_to_record_code_action(
     }
 }
 
-fn lsp_position_to_offset(text: &str, position: Position) -> Option<usize> {
-    let index = LineIndex::new(text);
-    let offset =
-        index.offset_of_position(text, CorePosition::new(position.line, position.character))?;
-    Some(u32::from(offset) as usize)
-}
-
-fn lsp_range_to_workspace_text_range(text: &str, range: Range) -> Option<WorkspaceTextRange> {
-    let index = LineIndex::new(text);
-    let start = index.offset_of_position(
-        text,
-        CorePosition::new(range.start.line, range.start.character),
-    )?;
-    let end =
-        index.offset_of_position(text, CorePosition::new(range.end.line, range.end.character))?;
-    let start = u32::from(start) as usize;
-    let end = u32::from(end) as usize;
-    if start > end {
-        return None;
-    }
-    Some(WorkspaceTextRange::new(start, end))
-}
-
 fn is_java_uri(uri: &Uri) -> bool {
     uri.as_str().ends_with(".java")
 }
@@ -494,6 +470,7 @@ pub fn handle_safe_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nova_core::{LineIndex, Position as CorePosition};
     use std::collections::BTreeMap;
 
     fn position_utf16(text: &str, offset: usize) -> Position {

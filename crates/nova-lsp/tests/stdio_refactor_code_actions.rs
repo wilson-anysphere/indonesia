@@ -490,6 +490,283 @@ public final /* 😀 */ class Point {\n\
     assert!(status.success());
 }
 
+#[test]
+fn stdio_server_resolves_extract_variable_code_action() {
+    let temp = TempDir::new().expect("tempdir");
+    let file_path = temp.path().join("Test.java");
+
+    let source = "class C {\n    void m() {\n        int x = /* 😀 */ 1 + 2;\n        System.out.println(x);\n    }\n}\n";
+    fs::write(&file_path, source).expect("write file");
+
+    let uri: Uri = Url::from_file_path(&file_path)
+        .expect("uri")
+        .to_string()
+        .parse()
+        .expect("uri");
+
+    let expr_start = source.find("1 + 2").expect("expression start");
+    let expr_end = expr_start + "1 + 2".len();
+    let index = LineIndex::new(source);
+    let start = index.position(source, TextSize::from(expr_start as u32));
+    let end = index.position(source, TextSize::from(expr_end as u32));
+    let range = Range::new(
+        Position::new(start.line, start.character),
+        Position::new(end.line, end.character),
+    );
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    // 2) didOpen (so resolution can read the in-memory snapshot)
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // 3) request code actions for the expression selection
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": range,
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let code_action_resp = read_jsonrpc_message(&mut stdout);
+    let actions = code_action_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+    let extract_variable = actions
+        .iter()
+        .find(|action| action.get("title").and_then(|v| v.as_str()) == Some("Extract variable…"))
+        .expect("extract variable action");
+
+    assert!(
+        extract_variable.get("data").is_some(),
+        "expected extract variable to carry `data`"
+    );
+    let uri_string = uri.to_string();
+    assert_eq!(
+        extract_variable
+            .get("data")
+            .and_then(|data| data.get("uri"))
+            .and_then(|uri| uri.as_str()),
+        Some(uri_string.as_str()),
+        "expected extract variable `data.uri` to round-trip for codeAction/resolve"
+    );
+    assert!(
+        extract_variable.get("edit").is_none(),
+        "expected extract variable to be unresolved (no `edit`)"
+    );
+
+    // 4) resolve, supplying a name through `data.name`.
+    let mut extract_variable = extract_variable.clone();
+    if let Some(data) = extract_variable.get_mut("data") {
+        if let Some(obj) = data.as_object_mut() {
+            obj.insert("name".to_string(), serde_json::Value::String("sum".to_string()));
+        }
+    }
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "codeAction/resolve",
+            "params": extract_variable
+        }),
+    );
+
+    let resolve_resp = read_jsonrpc_message(&mut stdout);
+    let resolved: CodeAction =
+        serde_json::from_value(resolve_resp.get("result").cloned().expect("result"))
+            .expect("decode resolved CodeAction");
+
+    assert_eq!(
+        resolved
+            .data
+            .as_ref()
+            .and_then(|data| data.get("uri"))
+            .and_then(|uri| uri.as_str()),
+        Some(uri_string.as_str()),
+        "expected resolved extract variable action to retain `data.uri`"
+    );
+
+    let edit = resolved.edit.expect("resolved edit");
+    let changes = edit.changes.expect("changes");
+    let edits = changes.get(&uri).expect("edits for file");
+    let updated = apply_lsp_text_edits(source, edits);
+
+    let expected = "class C {\n    void m() {\n        var sum = 1 + 2;\n        int x = /* 😀 */ sum;\n        System.out.println(x);\n    }\n}\n";
+    assert_eq!(updated, expected);
+
+    // 5) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_offers_inline_variable_code_actions() {
+    let temp = TempDir::new().expect("tempdir");
+    let file_path = temp.path().join("Test.java");
+
+    let source = "class C {\n    void m() {\n        int a = 1 + 2;\n        System.out.println(a);\n    }\n}\n";
+    fs::write(&file_path, source).expect("write file");
+
+    let uri: Uri = Url::from_file_path(&file_path)
+        .expect("uri")
+        .to_string()
+        .parse()
+        .expect("uri");
+
+    let cursor_offset = source
+        .find("println(a)")
+        .expect("println call")
+        + "println(".len();
+    let index = LineIndex::new(source);
+    let cursor_pos = index.position(source, TextSize::from(cursor_offset as u32));
+    let cursor = Position::new(cursor_pos.line, cursor_pos.character);
+    let range = Range::new(cursor, cursor);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // 1) initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_jsonrpc_message(&mut stdout);
+
+    // 2) didOpen
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": source
+                }
+            }
+        }),
+    );
+
+    // 3) request code actions at cursor
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": range,
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let code_action_resp = read_jsonrpc_message(&mut stdout);
+    let actions = code_action_resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    assert!(
+        actions.iter().any(|action| action.get("title").and_then(|v| v.as_str()) == Some("Inline variable")),
+        "expected Inline variable action"
+    );
+
+    let inline_all = actions
+        .iter()
+        .find(|action| action.get("title").and_then(|v| v.as_str()) == Some("Inline variable (all usages)"))
+        .expect("inline all usages action");
+
+    let inline_all: CodeAction = serde_json::from_value(inline_all.clone()).expect("decode CodeAction");
+    let edit = inline_all.edit.expect("edit");
+    let changes = edit.changes.expect("changes");
+    let edits = changes.get(&uri).expect("edits for file");
+    let updated = apply_lsp_text_edits(source, edits);
+
+    let expected = "class C {\n    void m() {\n        System.out.println((1 + 2));\n    }\n}\n";
+    assert_eq!(updated, expected);
+
+    // 4) shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_jsonrpc_message(&mut stdout);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
 fn apply_lsp_text_edits(original: &str, edits: &[lsp_types::TextEdit]) -> String {
     if edits.is_empty() {
         return original.to_string();

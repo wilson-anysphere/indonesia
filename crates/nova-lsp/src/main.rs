@@ -1387,6 +1387,9 @@ fn handle_code_action(
                 for action in nova_ide::refactor::inline_method_code_actions(&uri, text, cursor) {
                     actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
                 }
+                for action in nova_lsp::refactor::inline_variable_code_actions(&uri, text, cursor) {
+                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                }
                 if let Some(action) =
                     nova_lsp::refactor::convert_to_record_code_action(uri.clone(), text, cursor)
                 {
@@ -1449,6 +1452,23 @@ fn handle_code_action(
                 }
             } else {
                 let uri_string = uri.to_string();
+                for mut action in
+                    nova_lsp::refactor::extract_variable_code_actions(&uri, text, range.clone())
+                {
+                    if let lsp_types::CodeActionOrCommand::CodeAction(code_action) = &mut action {
+                        if let Some(data) = code_action.data.as_mut() {
+                            if let Some(obj) = data.as_object_mut() {
+                                if !obj.contains_key("uri") {
+                                    obj.insert(
+                                        "uri".to_string(),
+                                        serde_json::Value::String(uri_string.clone()),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                }
                 for mut action in nova_ide::refactor::extract_member_code_actions(&uri, text, range)
                 {
                     if let lsp_types::CodeActionOrCommand::CodeAction(code_action) = &mut action {
@@ -1537,11 +1557,8 @@ fn handle_code_action_resolve(
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
 
-    let is_extract_member = data
-        .get("type")
-        .and_then(|v| v.as_str())
-        .is_some_and(|t| t == "ExtractMember");
-    if !is_extract_member {
+    let action_type = data.get("type").and_then(|v| v.as_str());
+    if !matches!(action_type, Some("ExtractMember" | "ExtractVariable")) {
         return serde_json::to_value(action).map_err(|e| e.to_string());
     }
 
@@ -1564,8 +1581,20 @@ fn handle_code_action_resolve(
     }
     action.data = Some(data_without_uri);
 
-    nova_ide::refactor::resolve_extract_member_code_action(&uri, &source, &mut action, None)
-        .map_err(|e| e.to_string())?;
+    match action_type {
+        Some("ExtractMember") => nova_ide::refactor::resolve_extract_member_code_action(
+            &uri,
+            &source,
+            &mut action,
+            None,
+        )
+        .map_err(|e| e.to_string())?,
+        Some("ExtractVariable") => {
+            nova_lsp::refactor::resolve_extract_variable_code_action(&uri, &source, &mut action, None)
+                .map_err(|e| e.to_string())?
+        }
+        _ => {}
+    }
 
     // Restore the original payload (including the injected `uri`) so clients can re-resolve if
     // needed and so downstream tooling can introspect the origin of the action.
