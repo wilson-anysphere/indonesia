@@ -32,11 +32,22 @@ use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 /// `None` for directories because class directories are treated as belonging to
 /// the classpath "unnamed module" by default.
 pub fn derive_automatic_module_name_from_path(path: &Path) -> Option<ModuleName> {
+    // Prefer filesystem metadata when available (handles directory entries that
+    // happen to end with `.jar`, etc). When the path does not exist yet, fall
+    // back to inspecting the extension so dotted directory names like
+    // `com.example.app` do not get truncated by `Path::file_stem()`.
     if path.is_dir() {
         let stem = path.file_name()?.to_string_lossy();
-        module_name::derive_automatic_module_name_from_jar_stem(&stem).map(ModuleName::new)
-    } else {
+        return module_name::derive_automatic_module_name_from_jar_stem(&stem).map(ModuleName::new);
+    }
+
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let is_archive = ext.eq_ignore_ascii_case("jar") || ext.eq_ignore_ascii_case("jmod");
+    if is_archive {
         module_name::derive_automatic_module_name_from_jar_path(path).map(ModuleName::new)
+    } else {
+        let stem = path.file_name()?.to_string_lossy();
+        module_name::derive_automatic_module_name_from_jar_stem(&stem).map(ModuleName::new)
     }
 }
 
@@ -1193,6 +1204,17 @@ mod tests {
 
         let name = derive_automatic_module_name_from_path(&dir).expect("expected derived name");
         assert_eq!(name.as_str(), "foo.bar");
+    }
+
+    #[test]
+    fn derives_automatic_module_name_for_missing_dotted_directories() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path().join("com.example.app");
+        // Intentionally do not create `dir` to exercise the non-existent-path
+        // behavior (where `Path::is_dir()` returns false).
+
+        let name = derive_automatic_module_name_from_path(&dir).expect("expected derived name");
+        assert_eq!(name.as_str(), "com.example.app");
     }
 
     #[test]
