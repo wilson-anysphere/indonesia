@@ -2644,3 +2644,130 @@ fn fragment_node_range_in_file_adds_offset() {
         offset + u32::from(node.text_range().start())
     );
 }
+
+fn expression_from_snippet(result: &crate::JavaParseResult) -> crate::SyntaxNode {
+    let root = result.syntax();
+    assert_eq!(root.kind(), SyntaxKind::ExpressionRoot);
+
+    let mut nodes = root.children();
+    let expr = nodes.next().expect("expected an expression node");
+    assert!(
+        nodes.next().is_none(),
+        "expected ExpressionRoot to contain exactly one expression node"
+    );
+    expr
+}
+
+#[test]
+fn parse_java_expression_precedence() {
+    let result = parse_java_expression("1 + 2 * 3");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::BinaryExpression);
+
+    let plus = expr
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == SyntaxKind::Plus)
+        .expect("expected `+` token");
+    assert_eq!(plus.text(), "+");
+
+    let children: Vec<_> = expr.children().collect();
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0].kind(), SyntaxKind::LiteralExpression);
+    assert_eq!(children[1].kind(), SyntaxKind::BinaryExpression);
+
+    let one = children[0]
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == SyntaxKind::IntLiteral)
+        .expect("expected literal token");
+    assert_eq!(one.text(), "1");
+
+    let rhs = &children[1];
+    let star = rhs
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == SyntaxKind::Star)
+        .expect("expected `*` token");
+    assert_eq!(star.text(), "*");
+
+    let rhs_children: Vec<_> = rhs.children().collect();
+    assert_eq!(rhs_children.len(), 2);
+    let two = rhs_children[0]
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == SyntaxKind::IntLiteral)
+        .expect("expected literal token");
+    let three = rhs_children[1]
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind() == SyntaxKind::IntLiteral)
+        .expect("expected literal token");
+    assert_eq!(two.text(), "2");
+    assert_eq!(three.text(), "3");
+}
+
+#[test]
+fn parse_java_expression_ternary() {
+    let result = parse_java_expression("a ? b : c");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::ConditionalExpression);
+}
+
+#[test]
+fn parse_java_expression_cast() {
+    let result = parse_java_expression("(int) x");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::CastExpression);
+}
+
+#[test]
+fn parse_java_expression_method_call_with_dotted_name() {
+    let result = parse_java_expression("foo.bar(1,2)");
+    assert_eq!(result.errors, Vec::new());
+
+    let expr = expression_from_snippet(&result);
+    assert_eq!(expr.kind(), SyntaxKind::MethodCallExpression);
+
+    let arg_list = expr
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::ArgumentList)
+        .expect("expected ArgumentList");
+
+    let arg_expr_count = arg_list.children().count();
+    assert_eq!(arg_expr_count, 2);
+}
+
+#[test]
+fn parse_java_expression_optional_semicolon() {
+    let result = parse_java_expression("x;");
+    assert_eq!(result.errors, Vec::new());
+
+    let root = result.syntax();
+    assert_eq!(root.kind(), SyntaxKind::ExpressionRoot);
+
+    let has_semicolon = root
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .any(|t| t.kind() == SyntaxKind::Semicolon);
+    assert!(has_semicolon);
+}
+
+#[test]
+fn parse_java_expression_reports_trailing_tokens() {
+    let result = parse_java_expression("x y");
+    assert_eq!(result.errors.len(), 1);
+    assert!(
+        result.errors[0]
+            .message
+            .starts_with("unexpected token after expression"),
+        "unexpected error message: {}",
+        result.errors[0].message
+    );
+}
