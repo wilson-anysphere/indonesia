@@ -120,6 +120,72 @@ impl Default for ExtensionsConfig {
     }
 }
 
+impl ExtensionsConfig {
+    /// Returns `true` if an extension with the given id is permitted to load
+    /// according to this config.
+    ///
+    /// Matching follows the extension ADR semantics:
+    /// - `enabled = false` disables all extensions
+    /// - `allow = Some([...])` restricts to extension ids matching *any* pattern
+    /// - `deny = [...]` always blocks extension ids matching *any* pattern (deny overrides allow)
+    ///
+    /// Pattern syntax:
+    /// - `*` matches any substring (including empty)
+    /// - if the pattern contains no `*`, it is treated as an exact match
+    /// - matching is case-sensitive
+    pub fn is_extension_allowed(&self, id: &str) -> bool {
+        if !self.enabled {
+            return false;
+        }
+
+        if self.deny.iter().any(|pattern| matches_simple_glob(pattern, id)) {
+            return false;
+        }
+
+        match &self.allow {
+            Some(patterns) => patterns.iter().any(|pattern| matches_simple_glob(pattern, id)),
+            None => true,
+        }
+    }
+}
+
+fn matches_simple_glob(pattern: &str, text: &str) -> bool {
+    if !pattern.contains('*') {
+        return pattern == text;
+    }
+
+    let pattern = pattern.as_bytes();
+    let text = text.as_bytes();
+
+    let mut p_idx = 0usize;
+    let mut t_idx = 0usize;
+    let mut star_idx: Option<usize> = None;
+    let mut match_idx = 0usize;
+
+    while t_idx < text.len() {
+        if p_idx < pattern.len() && pattern[p_idx] == text[t_idx] {
+            p_idx += 1;
+            t_idx += 1;
+        } else if p_idx < pattern.len() && pattern[p_idx] == b'*' {
+            star_idx = Some(p_idx);
+            match_idx = t_idx;
+            p_idx += 1;
+        } else if let Some(star) = star_idx {
+            p_idx = star + 1;
+            match_idx += 1;
+            t_idx = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while p_idx < pattern.len() && pattern[p_idx] == b'*' {
+        p_idx += 1;
+    }
+
+    p_idx == pattern.len()
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 /// Top-level Nova configuration loaded from TOML.
@@ -1586,5 +1652,77 @@ wasm_paths = ["extensions"]
         assert!(config.extensions.deny.is_empty());
         assert!(config.extensions.wasm_memory_limit_bytes.is_none());
         assert!(config.extensions.wasm_timeout_ms.is_none());
+    }
+
+    #[test]
+    fn extensions_config_allow_none_means_no_allow_restriction() {
+        let mut config = ExtensionsConfig::default();
+        config.allow = None;
+        config.deny = vec!["com.evil.*".to_owned()];
+
+        assert!(config.is_extension_allowed("com.example.one"));
+        assert!(!config.is_extension_allowed("com.evil.rules"));
+    }
+
+    #[test]
+    fn extensions_config_exact_allow_and_deny() {
+        let mut config = ExtensionsConfig::default();
+        config.allow = Some(vec!["com.good.one".to_owned()]);
+        config.deny = vec!["com.good.two".to_owned()];
+
+        assert!(config.is_extension_allowed("com.good.one"));
+        assert!(!config.is_extension_allowed("com.good.one.extra"));
+        assert!(!config.is_extension_allowed("com.good.two"));
+    }
+
+    #[test]
+    fn extensions_config_wildcards_at_beginning_middle_end() {
+        let mut config = ExtensionsConfig::default();
+        config.allow = Some(vec!["*.rules".to_owned()]);
+        assert!(config.is_extension_allowed("com.mycorp.rules"));
+        assert!(!config.is_extension_allowed("com.mycorp.rule"));
+
+        config.allow = Some(vec!["com.*.rules".to_owned()]);
+        assert!(config.is_extension_allowed("com.mycorp.rules"));
+        assert!(config.is_extension_allowed("com.mycorp.internal.rules"));
+        assert!(!config.is_extension_allowed("org.mycorp.rules"));
+
+        config.allow = Some(vec!["com.mycorp.*".to_owned()]);
+        assert!(config.is_extension_allowed("com.mycorp.rules"));
+        assert!(!config.is_extension_allowed("com.mycorpish.rules"));
+    }
+
+    #[test]
+    fn extensions_config_multiple_wildcards_match() {
+        let mut config = ExtensionsConfig::default();
+        config.allow = Some(vec!["com.*rules*beta".to_owned()]);
+
+        assert!(config.is_extension_allowed("com.acme.rules.v1.beta"));
+        assert!(!config.is_extension_allowed("com.acme.rules.v1.betas"));
+
+        config.allow = Some(vec!["com.**.beta".to_owned()]);
+        assert!(config.is_extension_allowed("com.acme.beta"));
+        assert!(config.is_extension_allowed("com.acme.internal.beta"));
+    }
+
+    #[test]
+    fn extensions_config_deny_overrides_allow() {
+        let mut config = ExtensionsConfig::default();
+        config.allow = Some(vec!["com.*".to_owned()]);
+        config.deny = vec!["com.evil.*".to_owned()];
+
+        assert!(config.is_extension_allowed("com.good.one"));
+        assert!(!config.is_extension_allowed("com.evil.one"));
+    }
+
+    #[test]
+    fn extensions_config_disabled_disables_all() {
+        let mut config = ExtensionsConfig::default();
+        config.enabled = false;
+        config.allow = None;
+        config.deny = vec!["*".to_owned()];
+
+        assert!(!config.is_extension_allowed("com.good.one"));
+        assert!(!config.is_extension_allowed("com.evil.one"));
     }
 }
