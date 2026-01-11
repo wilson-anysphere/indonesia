@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::io::BufRead;
 
@@ -229,79 +230,86 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
         }
     }
 
-    fn apply_argument(&mut self, arg: &str) {
-        if let Some(pending) = self.pending.take() {
-            match pending {
-                PendingJavacArg::Classpath => {
-                    self.info.classpath = split_path_list(arg);
+}
+
+fn apply_javac_argument(
+    pending: &mut Option<PendingJavacArg>,
+    info: &mut JavaCompileInfo,
+    sourcepath_roots: &mut BTreeSet<String>,
+    java_file_roots: &mut BTreeSet<String>,
+    arg: &str,
+) {
+    if let Some(pending) = pending.take() {
+        match pending {
+            PendingJavacArg::Classpath => {
+                info.classpath = split_path_list(arg);
+            }
+            PendingJavacArg::ModulePath => {
+                info.module_path = split_path_list(arg);
+            }
+            PendingJavacArg::Release => {
+                let release = arg.to_string();
+                info.release = Some(release.clone());
+                info.source = Some(release.clone());
+                info.target = Some(release);
+            }
+            PendingJavacArg::Source => {
+                if info.release.is_none() {
+                    info.source = Some(arg.to_string());
                 }
-                PendingJavacArg::ModulePath => {
-                    self.info.module_path = split_path_list(arg);
+            }
+            PendingJavacArg::Target => {
+                if info.release.is_none() {
+                    info.target = Some(arg.to_string());
                 }
-                PendingJavacArg::Release => {
-                    let release = arg.to_string();
-                    self.info.release = Some(release.clone());
-                    self.info.source = Some(release.clone());
-                    self.info.target = Some(release);
-                }
-                PendingJavacArg::Source => {
-                    if self.info.release.is_none() {
-                        self.info.source = Some(arg.to_string());
-                    }
-                }
-                PendingJavacArg::Target => {
-                    if self.info.release.is_none() {
-                        self.info.target = Some(arg.to_string());
-                    }
-                }
-                PendingJavacArg::OutputDir => {
-                    self.info.output_dir = Some(arg.to_string());
-                }
-                PendingJavacArg::SourcePath => {
-                    for root in split_path_list(arg) {
-                        if !root.is_empty() {
-                            self.sourcepath_roots.insert(root);
-                        }
+            }
+            PendingJavacArg::OutputDir => {
+                info.output_dir = Some(arg.to_string());
+            }
+            PendingJavacArg::SourcePath => {
+                for root in split_path_list(arg) {
+                    if !root.is_empty() {
+                        sourcepath_roots.insert(root);
                     }
                 }
             }
-            return;
         }
+        return;
+    }
 
-        match arg {
-            "-classpath" | "--class-path" => self.pending = Some(PendingJavacArg::Classpath),
-            "--module-path" => self.pending = Some(PendingJavacArg::ModulePath),
-            "--release" => self.pending = Some(PendingJavacArg::Release),
-            "--source" | "-source" => self.pending = Some(PendingJavacArg::Source),
-            "--target" | "-target" => self.pending = Some(PendingJavacArg::Target),
-            "-d" => self.pending = Some(PendingJavacArg::OutputDir),
-            "--enable-preview" => {
-                self.info.preview = true;
+    match arg {
+        "-classpath" | "--class-path" => *pending = Some(PendingJavacArg::Classpath),
+        "--module-path" => *pending = Some(PendingJavacArg::ModulePath),
+        "--release" => *pending = Some(PendingJavacArg::Release),
+        "--source" | "-source" => *pending = Some(PendingJavacArg::Source),
+        "--target" | "-target" => *pending = Some(PendingJavacArg::Target),
+        "-d" => *pending = Some(PendingJavacArg::OutputDir),
+        "--enable-preview" => {
+            info.preview = true;
+        }
+        "-sourcepath" | "--source-path" => *pending = Some(PendingJavacArg::SourcePath),
+        other => {
+            if let Some(release) = other.strip_prefix("--release=") {
+                let release = release.to_string();
+                info.release = Some(release.clone());
+                info.source = Some(release.clone());
+                info.target = Some(release);
+                return;
             }
-            "-sourcepath" | "--source-path" => self.pending = Some(PendingJavacArg::SourcePath),
-            other => {
-                if let Some(release) = other.strip_prefix("--release=") {
-                    let release = release.to_string();
-                    self.info.release = Some(release.clone());
-                    self.info.source = Some(release.clone());
-                    self.info.target = Some(release);
-                    return;
-                }
 
-                if let Some(output_dir) = other.strip_prefix("-d=") {
-                    self.info.output_dir = Some(output_dir.to_string());
-                    return;
-                }
+            if let Some(output_dir) = other.strip_prefix("-d=") {
+                info.output_dir = Some(output_dir.to_string());
+                return;
+            }
 
-                if other.ends_with(".java") {
-                    if let Some(parent) = other.rsplit_once('/') {
-                        if !self.java_file_roots.contains(parent.0) {
-                            self.java_file_roots.insert(parent.0.to_string());
-                        }
-                    } else if let Some(parent) = other.rsplit_once('\\') {
-                        if !self.java_file_roots.contains(parent.0) {
-                            self.java_file_roots.insert(parent.0.to_string());
-                        }
+            if other.ends_with(".java") {
+                if let Some(parent) = other.rsplit_once('/') {
+                    if !java_file_roots.contains(parent.0) {
+                        java_file_roots.insert(parent.0.to_string());
+                    }
+                } else if let Some(parent) = other.rsplit_once('\\') {
+                    if !java_file_roots.contains(parent.0) {
+                        java_file_roots.insert(parent.0.to_string());
                     }
                 }
             }
@@ -379,13 +387,24 @@ impl<R: BufRead> Iterator for AqueryTextprotoStreamingJavacInfoParser<R> {
                     if self.is_javac != Some(false) {
                         self.owner = Some(value);
                     }
-                } else if let Some(value) = parse_quoted_field(trimmed, "arguments:") {
+                } else if let Some(raw) = parse_quoted_field_raw(trimmed, "arguments:") {
                     // Don't spend time parsing arguments for non-Javac actions, but allow arguments
                     // before we've seen the mnemonic.
                     if self.is_javac == Some(false) {
                         // skip
                     } else {
-                        self.apply_argument(&value);
+                        let value = if raw.contains('\\') {
+                            Cow::Owned(unescape_textproto(raw))
+                        } else {
+                            Cow::Borrowed(raw)
+                        };
+                        apply_javac_argument(
+                            &mut self.pending,
+                            &mut self.info,
+                            &mut self.sourcepath_roots,
+                            &mut self.java_file_roots,
+                            value.as_ref(),
+                        );
                     }
                 }
             }
