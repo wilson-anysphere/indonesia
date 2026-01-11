@@ -54,7 +54,7 @@ jobs:
           # fixture directories exist so the `test-projects/*/` glob matches.
           if [[ -f test-projects/pins.toml ]]; then
             awk '
-            /^\s*\[[^]]+\]\s*$/ {
+            /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
               name = $0
               sub(/^[[:space:]]*\[/, "", name)
               sub(/\][[:space:]]*$/, "", name)
