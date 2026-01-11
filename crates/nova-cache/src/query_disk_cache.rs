@@ -94,6 +94,9 @@ impl QueryDiskCache {
         if bytes.len() > BINCODE_PAYLOAD_LIMIT_BYTES {
             return Ok(());
         }
+        if bytes.len() as u64 > self.policy.max_bytes {
+            return Ok(());
+        }
         atomic_write(&path, &bytes)?;
         self.maybe_gc();
         Ok(())

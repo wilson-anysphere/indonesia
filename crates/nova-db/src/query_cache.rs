@@ -622,6 +622,27 @@ mod disk_cache_tests {
     }
 
     #[test]
+    fn disk_cache_skips_entries_larger_than_policy_max_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new_with_policy(
+            tmp.path(),
+            QueryDiskCachePolicy {
+                ttl_millis: u64::MAX,
+                max_bytes: 1,
+                gc_interval_millis: u64::MAX,
+            },
+        )
+        .unwrap();
+
+        cache.store("key", b"value").unwrap();
+        assert_eq!(cache.load("key").unwrap(), None);
+
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn disk_cache_gc_expires_entries_by_saved_at_millis() {
         let tmp = TempDir::new().unwrap();
         let cache = QueryDiskCache::new_with_policy(
