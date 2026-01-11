@@ -780,7 +780,7 @@ describe('ServerManager install flow', () => {
     ).rejects.toThrow(/Checksum mismatch/);
   });
 
-  it('installs when checksums are missing (falls back to version validation)', async () => {
+  it('refuses to install when no published SHA-256 checksum exists', async () => {
     const { Volume, createFsFromVolume } = await import('memfs');
     const vol = new Volume();
     const memfs = createFsFromVolume(vol) as typeof import('node:fs');
@@ -790,8 +790,6 @@ describe('ServerManager install flow', () => {
 
     const { ServerManager } = await import('./serverManager');
     const archiveName = 'nova-lsp-x86_64-unknown-linux-gnu.tar.xz';
-    const archive = Buffer.from('archive-without-checksum');
-    const archiveBytes = archive.buffer.slice(archive.byteOffset, archive.byteOffset + archive.byteLength);
 
     const release = {
       tag_name: 'v0.1.0',
@@ -802,35 +800,24 @@ describe('ServerManager install flow', () => {
       if (url.endsWith(`/releases/tags/${encodeURIComponent('v0.1.0')}`)) {
         return { ok: true, status: 200, json: async () => release } as unknown as Response;
       }
-      if (url === 'https://example.invalid/archive') {
-        return { ok: true, status: 200, arrayBuffer: async () => archiveBytes } as unknown as Response;
-      }
       throw new Error(`Unexpected fetch url: ${url}`);
     });
-
-    const extractor = {
-      extractBinaryFromArchive: vi.fn(async ({ outputPath }: { outputPath: string }) => {
-        await memfs.promises.writeFile(outputPath, 'binary');
-      }),
-    };
 
     const manager = new ServerManager('/storage', undefined, {
       fetch: fetchMock as unknown as typeof fetch,
       platform: 'linux',
       arch: 'x64',
-      extractor,
+      extractor: { extractBinaryFromArchive: vi.fn() },
     });
 
-    const result = await manager.installOrUpdate({
-      path: null,
-      autoDownload: true,
-      releaseChannel: 'stable',
-      version: 'v0.1.0',
-      releaseUrl: 'wilson-anysphere/indonesia',
-    });
-
-    expect(result.version).toBe('v0.1.0');
-    expect(await memfs.promises.readFile('/storage/server/nova-lsp', 'utf8')).toBe('binary');
-    expect(extractor.extractBinaryFromArchive).toHaveBeenCalled();
+    await expect(
+      manager.installOrUpdate({
+        path: null,
+        autoDownload: true,
+        releaseChannel: 'stable',
+        version: 'v0.1.0',
+        releaseUrl: 'wilson-anysphere/indonesia',
+      }),
+    ).rejects.toThrow(/No published SHA-256 checksums found/);
   });
 });

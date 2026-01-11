@@ -199,6 +199,7 @@ export class ServerManager {
       fetchImpl: this.fetchImpl,
       release,
       archiveName,
+      binaryId: opts.binaryId,
     });
 
     const tmpId = randomBytes(8).toString('hex');
@@ -213,14 +214,10 @@ export class ServerManager {
 
     try {
       const actualSha256 = await downloadToFileAndSha256(this.fetchImpl, archiveAsset.browser_download_url, tmpArchivePath);
-      if (expectedSha256) {
-        if (!sha256Equal(actualSha256, expectedSha256)) {
-          throw new Error(
-            `Checksum mismatch for ${archiveName}: expected ${expectedSha256}, got ${actualSha256}. Refusing to install.`,
-          );
-        }
-      } else {
-        this.log(`No published SHA-256 checksum found for ${archiveName}; proceeding without checksum verification.`);
+      if (!sha256Equal(actualSha256, expectedSha256)) {
+        throw new Error(
+          `Checksum mismatch for ${archiveName}: expected ${expectedSha256}, got ${actualSha256}. Refusing to install.`,
+        );
       }
 
       await this.extractor.extractBinaryFromArchive({
@@ -579,7 +576,8 @@ async function fetchPublishedSha256(opts: {
   fetchImpl: typeof fetch;
   release: GitHubRelease;
   archiveName: string;
-}): Promise<string | undefined> {
+  binaryId: 'nova-lsp' | 'nova-dap';
+}): Promise<string> {
   const sha256AssetNames = [`${opts.archiveName}.sha256`, `${opts.archiveName}.sha256.txt`];
   for (const candidate of sha256AssetNames) {
     const asset = opts.release.assets.find((a) => a.name === candidate);
@@ -607,7 +605,11 @@ async function fetchPublishedSha256(opts: {
     }
   }
 
-  return undefined;
+  const settingKey = opts.binaryId === 'nova-lsp' ? 'nova.server.path' : 'nova.dap.path';
+  throw new Error(
+    `No published SHA-256 checksums found for ${opts.archiveName}. Refusing to install. ` +
+      `If you're using a custom build, set ${settingKey} to a local ${opts.binaryId} executable instead.`,
+  );
 }
 
 async function fetchText(fetchImpl: typeof fetch, url: string): Promise<string> {
