@@ -189,7 +189,7 @@ peer as potentially untrusted.
 
 ## Alternatives considered
 
-1. **Keep v2 `bincode` enum and add more variants**
+1. **Keep the legacy lockstep protocol and add more variants**
    - Rejected: does not address multiplexing, negotiation, streaming, compression, or safe
      evolution.
 2. **JSON for envelopes**
