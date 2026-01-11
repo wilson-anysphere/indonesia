@@ -283,6 +283,17 @@ impl WasmPlugin {
         &self.config
     }
 
+    fn config_for_ctx<DB: ?Sized + Send + Sync>(&self, ctx: &ExtensionContext<DB>) -> WasmPluginConfig {
+        let mut config = self.config.clone();
+        if let Some(timeout_ms) = ctx.config.extensions.wasm_timeout_ms {
+            config.timeout = Duration::from_millis(timeout_ms);
+        }
+        if let Some(max_bytes) = ctx.config.extensions.wasm_memory_limit_bytes {
+            config.max_memory_bytes = max_bytes;
+        }
+        config
+    }
+
     /// Register all implemented capabilities with an [`ExtensionRegistry`].
     pub fn register<DB>(
         self: &std::sync::Arc<Self>,
@@ -321,6 +332,7 @@ impl WasmPlugin {
 
     fn call_vec<Req, Out>(
         &self,
+        config: &WasmPluginConfig,
         export: &'static str,
         request: &Req,
     ) -> Result<Vec<Out>, WasmCallError>
@@ -330,14 +342,14 @@ impl WasmPlugin {
     {
         let req_bytes =
             serde_json::to_vec(request).map_err(|e| WasmCallError::Json(e.to_string()))?;
-        if req_bytes.len() > self.config.max_request_bytes {
+        if req_bytes.len() > config.max_request_bytes {
             return Err(WasmCallError::RequestTooLarge {
                 len: req_bytes.len(),
-                max: self.config.max_request_bytes,
+                max: config.max_request_bytes,
             });
         }
 
-        let mut store = new_store(&self.config);
+        let mut store = new_store(config);
         let instance = instantiate(&mut store, &self.module)
             .map_err(|e| WasmCallError::Instantiate(e.to_string()))?;
 
@@ -378,10 +390,10 @@ impl WasmPlugin {
         }
 
         let resp_len_usize = usize::try_from(resp_len).unwrap_or(usize::MAX);
-        if resp_len_usize > self.config.max_response_bytes {
+        if resp_len_usize > config.max_response_bytes {
             return Err(WasmCallError::ResponseTooLarge {
                 len: resp_len_usize,
-                max: self.config.max_response_bytes,
+                max: config.max_response_bytes,
             });
         }
 
@@ -405,37 +417,42 @@ impl WasmPlugin {
 
     fn call_diagnostics_v1(
         &self,
+        config: &WasmPluginConfig,
         req: DiagnosticsRequestV1,
     ) -> Result<Vec<DiagnosticV1>, WasmCallError> {
-        self.call_vec(EXPORT_DIAGNOSTICS, &req)
+        self.call_vec(config, EXPORT_DIAGNOSTICS, &req)
     }
 
     fn call_completions_v1(
         &self,
+        config: &WasmPluginConfig,
         req: CompletionsRequestV1,
     ) -> Result<Vec<CompletionItemV1>, WasmCallError> {
-        self.call_vec(EXPORT_COMPLETIONS, &req)
+        self.call_vec(config, EXPORT_COMPLETIONS, &req)
     }
 
     fn call_code_actions_v1(
         &self,
+        config: &WasmPluginConfig,
         req: CodeActionsRequestV1,
     ) -> Result<Vec<CodeActionV1>, WasmCallError> {
-        self.call_vec(EXPORT_CODE_ACTIONS, &req)
+        self.call_vec(config, EXPORT_CODE_ACTIONS, &req)
     }
 
     fn call_navigation_v1(
         &self,
+        config: &WasmPluginConfig,
         req: NavigationRequestV1,
     ) -> Result<Vec<NavigationTargetV1>, WasmCallError> {
-        self.call_vec(EXPORT_NAVIGATION, &req)
+        self.call_vec(config, EXPORT_NAVIGATION, &req)
     }
 
     fn call_inlay_hints_v1(
         &self,
+        config: &WasmPluginConfig,
         req: InlayHintsRequestV1,
     ) -> Result<Vec<InlayHintV1>, WasmCallError> {
-        self.call_vec(EXPORT_INLAY_HINTS, &req)
+        self.call_vec(config, EXPORT_INLAY_HINTS, &req)
     }
 }
 
@@ -581,7 +598,8 @@ where
             text: ctx.db.file_text(params.file).to_string(),
         };
 
-        match self.call_diagnostics_v1(req) {
+        let config = self.config_for_ctx(&ctx);
+        match self.call_diagnostics_v1(&config, req) {
             Ok(diags) => diags
                 .into_iter()
                 .map(|diag| Diagnostic {
@@ -628,7 +646,8 @@ where
             text: ctx.db.file_text(params.file).to_string(),
         };
 
-        match self.call_completions_v1(req) {
+        let config = self.config_for_ctx(&ctx);
+        match self.call_completions_v1(&config, req) {
             Ok(items) => items
                 .into_iter()
                 .map(|item| CompletionItem {
@@ -673,7 +692,8 @@ where
             text: ctx.db.file_text(params.file).to_string(),
         };
 
-        match self.call_code_actions_v1(req) {
+        let config = self.config_for_ctx(&ctx);
+        match self.call_code_actions_v1(&config, req) {
             Ok(actions) => actions
                 .into_iter()
                 .map(|action| CodeAction {
@@ -716,7 +736,8 @@ where
             symbol: symbol_to_v1(params.symbol),
         };
 
-        match self.call_navigation_v1(req) {
+        let config = self.config_for_ctx(&ctx);
+        match self.call_navigation_v1(&config, req) {
             Ok(targets) => targets
                 .into_iter()
                 .map(|target| NavigationTarget {
@@ -761,7 +782,8 @@ where
             text: ctx.db.file_text(params.file).to_string(),
         };
 
-        match self.call_inlay_hints_v1(req) {
+        let config = self.config_for_ctx(&ctx);
+        match self.call_inlay_hints_v1(&config, req) {
             Ok(hints) => hints
                 .into_iter()
                 .map(|hint| InlayHint {
