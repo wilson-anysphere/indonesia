@@ -31,6 +31,7 @@ pub const DECOMPILER_SCHEMA_VERSION: u32 = 1;
 /// This pre-dates ADR0006 and does **not** incorporate a content hash. It is
 /// retained for backwards compatibility with downstream crates.
 pub const DECOMPILE_URI_SCHEME: &str = "nova-decompile";
+const DECOMPILE_QUERY_SCHEMA_VERSION: u32 = 1;
 
 pub type Result<T> = std::result::Result<T, DecompileError>;
 
@@ -92,13 +93,24 @@ fn decompile_impl(bytes: &[u8], cache: Option<&DerivedArtifactCache>) -> Result<
         let mut inputs = BTreeMap::new();
         inputs.insert("classfile".to_string(), fingerprint.clone());
 
-        if let Some(hit) = cache.load::<CachedDecompile>("nova-decompile", &args, &inputs)? {
+        if let Some(hit) = cache.load::<CachedDecompile>(
+            "nova-decompile",
+            DECOMPILE_QUERY_SCHEMA_VERSION,
+            &args,
+            &inputs,
+        )? {
             return Ok(hit.into_decompiled(true));
         }
 
         let fresh = decompile_uncached(bytes)?;
         let cached = CachedDecompile::from_decompiled(&fresh);
-        cache.store("nova-decompile", &args, &inputs, &cached)?;
+        cache.store(
+            "nova-decompile",
+            DECOMPILE_QUERY_SCHEMA_VERSION,
+            &args,
+            &inputs,
+            &cached,
+        )?;
         return Ok(cached.into_decompiled(false));
     }
 

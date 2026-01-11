@@ -312,6 +312,7 @@ impl Persistence {
     pub fn load_derived<T: DeserializeOwned>(
         &self,
         query_name: &str,
+        query_schema_version: u32,
         args: &impl Serialize,
         input_fingerprints: &BTreeMap<String, Fingerprint>,
     ) -> Option<T> {
@@ -327,7 +328,7 @@ impl Persistence {
         };
 
         match cache
-            .load(query_name, args, input_fingerprints)
+            .load(query_name, query_schema_version, args, input_fingerprints)
             .ok()
             .flatten()
         {
@@ -352,6 +353,7 @@ impl Persistence {
     pub fn store_derived<T: Serialize>(
         &self,
         query_name: &str,
+        query_schema_version: u32,
         args: &impl Serialize,
         input_fingerprints: &BTreeMap<String, Fingerprint>,
         value: &T,
@@ -367,7 +369,7 @@ impl Persistence {
             return;
         };
 
-        match cache.store(query_name, args, input_fingerprints, value) {
+        match cache.store(query_name, query_schema_version, args, input_fingerprints, value) {
             Ok(()) => {
                 self.inner
                     .stats
@@ -381,6 +383,41 @@ impl Persistence {
                     .fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    /// Load a persisted derived query value or compute and (best-effort) persist it.
+    ///
+    /// Disk persistence must never affect semantic query results, so this helper is intentionally
+    /// best-effort:
+    /// - Any read error or incompatibility becomes a cache miss.
+    /// - Any write error is ignored.
+    pub fn get_or_compute_derived<T, Args, F>(
+        &self,
+        query_name: &str,
+        query_schema_version: u32,
+        args: &Args,
+        input_fingerprints: &BTreeMap<String, Fingerprint>,
+        compute: F,
+    ) -> T
+    where
+        T: Serialize + DeserializeOwned,
+        Args: Serialize,
+        F: FnOnce() -> T,
+    {
+        if let Some(hit) = self.load_derived(query_name, query_schema_version, args, input_fingerprints)
+        {
+            return hit;
+        }
+
+        let value = compute();
+        self.store_derived(
+            query_name,
+            query_schema_version,
+            args,
+            input_fingerprints,
+            &value,
+        );
+        value
     }
 }
 

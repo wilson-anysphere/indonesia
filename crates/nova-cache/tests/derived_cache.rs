@@ -23,6 +23,7 @@ struct Value {
 fn derived_artifact_cache_roundtrip_and_invalidation() {
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
+    let query_schema_version = 1;
 
     let mut inputs = BTreeMap::new();
     inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
@@ -33,15 +34,19 @@ fn derived_artifact_cache_roundtrip_and_invalidation() {
     let value = Value { answer: 42 };
 
     cache
-        .store("type_of", &args, &inputs, &value)
+        .store("type_of", query_schema_version, &args, &inputs, &value)
         .expect("store");
 
-    let loaded: Option<Value> = cache.load("type_of", &args, &inputs).expect("load");
+    let loaded: Option<Value> = cache
+        .load("type_of", query_schema_version, &args, &inputs)
+        .expect("load");
     assert_eq!(loaded, Some(value));
 
     // Change inputs; should miss.
     inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v2"));
-    let loaded: Option<Value> = cache.load("type_of", &args, &inputs).expect("load");
+    let loaded: Option<Value> = cache
+        .load("type_of", query_schema_version, &args, &inputs)
+        .expect("load");
     assert_eq!(loaded, None);
 }
 
@@ -49,6 +54,7 @@ fn derived_artifact_cache_roundtrip_and_invalidation() {
 fn derived_artifact_cache_corruption_is_cache_miss() {
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
+    let query_schema_version = 1;
 
     let mut inputs = BTreeMap::new();
     inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
@@ -59,7 +65,7 @@ fn derived_artifact_cache_corruption_is_cache_miss() {
     let value = Value { answer: 42 };
 
     cache
-        .store("type_of", &args, &inputs, &value)
+        .store("type_of", query_schema_version, &args, &inputs, &value)
         .expect("store");
 
     let query_dir = temp.path().join("type_of");
@@ -71,12 +77,14 @@ fn derived_artifact_cache_corruption_is_cache_miss() {
         .expect("bin entry");
     std::fs::write(&entry_path, b"not a valid bincode payload").unwrap();
 
-    let loaded: Option<Value> = cache.load("type_of", &args, &inputs).expect("load");
+    let loaded: Option<Value> = cache
+        .load("type_of", query_schema_version, &args, &inputs)
+        .expect("load");
     assert_eq!(loaded, None);
 }
 
 #[test]
-fn derived_artifact_cache_oversized_payload_is_cache_miss() {
+fn derived_artifact_cache_query_schema_version_is_part_of_key() {
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
 
@@ -89,7 +97,32 @@ fn derived_artifact_cache_oversized_payload_is_cache_miss() {
     let value = Value { answer: 42 };
 
     cache
-        .store("type_of", &args, &inputs, &value)
+        .store("type_of", 1, &args, &inputs, &value)
+        .expect("store");
+
+    let loaded: Option<Value> = cache.load("type_of", 2, &args, &inputs).expect("load");
+    assert_eq!(
+        loaded, None,
+        "changing query_schema_version should cause a clean cache miss"
+    );
+}
+
+#[test]
+fn derived_artifact_cache_oversized_payload_is_cache_miss() {
+    let temp = tempfile::tempdir().unwrap();
+    let cache = DerivedArtifactCache::new(temp.path());
+    let query_schema_version = 1;
+
+    let mut inputs = BTreeMap::new();
+    inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
+
+    let args = Args {
+        file: "Main.java".to_string(),
+    };
+    let value = Value { answer: 42 };
+
+    cache
+        .store("type_of", query_schema_version, &args, &inputs, &value)
         .expect("store");
 
     let query_dir = temp.path().join("type_of");
@@ -104,7 +137,9 @@ fn derived_artifact_cache_oversized_payload_is_cache_miss() {
     file.set_len((nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES + 1) as u64)
         .unwrap();
 
-    let loaded: Option<Value> = cache.load("type_of", &args, &inputs).expect("load");
+    let loaded: Option<Value> = cache
+        .load("type_of", query_schema_version, &args, &inputs)
+        .expect("load");
     assert_eq!(loaded, None);
 }
 

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-pub const DERIVED_CACHE_SCHEMA_VERSION: u32 = 1;
+pub const DERIVED_CACHE_SCHEMA_VERSION: u32 = 2;
 const DERIVED_CACHE_INDEX_SCHEMA_VERSION: u32 = 1;
 const DERIVED_CACHE_INDEX_FILE_NAME: &str = "index.json";
 
@@ -46,8 +46,8 @@ pub struct DerivedCacheGcReport {
 /// A best-effort persistent cache for "derived artifacts" (query results).
 ///
 /// This is intentionally separate from any salsa-backed query system; callers
-/// provide the query name, arguments, and input fingerprints that should drive
-/// invalidation.
+/// provide the query name, per-query schema version, arguments, and input
+/// fingerprints that should drive invalidation.
 ///
 /// Note: Any file paths that participate in cache keys should be normalized
 /// (see [`crate::normalize_rel_path`]) to avoid duplicate entries across
@@ -71,6 +71,7 @@ impl DerivedArtifactCache {
     /// share a consistent key with the on-disk [`DerivedArtifactCache`].
     pub fn key_fingerprint(
         query_name: &str,
+        query_schema_version: u32,
         args: &impl Serialize,
         input_fingerprints: &BTreeMap<String, Fingerprint>,
     ) -> Result<Fingerprint, CacheError> {
@@ -80,6 +81,8 @@ impl DerivedArtifactCache {
 
         let mut key_bytes = Vec::new();
         key_bytes.extend_from_slice(query_name.as_bytes());
+        key_bytes.push(0);
+        key_bytes.extend_from_slice(&query_schema_version.to_le_bytes());
         key_bytes.push(0);
         key_bytes.extend_from_slice(&args_json);
         key_bytes.push(0);
@@ -91,14 +94,17 @@ impl DerivedArtifactCache {
     pub fn store<T: Serialize>(
         &self,
         query_name: &str,
+        query_schema_version: u32,
         args: &impl Serialize,
         input_fingerprints: &BTreeMap<String, Fingerprint>,
         value: &T,
     ) -> Result<(), CacheError> {
-        let (path, key_fingerprint) = self.entry_path(query_name, args, input_fingerprints)?;
+        let (path, key_fingerprint) =
+            self.entry_path(query_name, query_schema_version, args, input_fingerprints)?;
         let saved_at_millis = now_millis();
         let persisted = PersistedDerivedValue {
             schema_version: DERIVED_CACHE_SCHEMA_VERSION,
+            query_schema_version,
             nova_version: nova_core::NOVA_VERSION.to_string(),
             saved_at_millis,
             query_name: query_name.to_string(),
@@ -117,10 +123,12 @@ impl DerivedArtifactCache {
     pub fn load<T: DeserializeOwned>(
         &self,
         query_name: &str,
+        query_schema_version: u32,
         args: &impl Serialize,
         input_fingerprints: &BTreeMap<String, Fingerprint>,
     ) -> Result<Option<T>, CacheError> {
-        let (path, key_fingerprint) = self.entry_path(query_name, args, input_fingerprints)?;
+        let (path, key_fingerprint) =
+            self.entry_path(query_name, query_schema_version, args, input_fingerprints)?;
         if !path.exists() {
             return Ok(None);
         }
@@ -135,6 +143,9 @@ impl DerivedArtifactCache {
         };
 
         if persisted.schema_version != DERIVED_CACHE_SCHEMA_VERSION {
+            return Ok(None);
+        }
+        if persisted.query_schema_version != query_schema_version {
             return Ok(None);
         }
         if persisted.nova_version != nova_core::NOVA_VERSION {
@@ -296,6 +307,7 @@ impl DerivedArtifactCache {
     fn entry_path(
         &self,
         query_name: &str,
+        query_schema_version: u32,
         args: &impl Serialize,
         input_fingerprints: &BTreeMap<String, Fingerprint>,
     ) -> Result<(PathBuf, Fingerprint), CacheError> {
@@ -303,7 +315,8 @@ impl DerivedArtifactCache {
         let query_dir = self.root.join(safe_query);
         std::fs::create_dir_all(&query_dir)?;
 
-        let fingerprint = Self::key_fingerprint(query_name, args, input_fingerprints)?;
+        let fingerprint =
+            Self::key_fingerprint(query_name, query_schema_version, args, input_fingerprints)?;
         let path = query_dir.join(format!("{}.bin", fingerprint.as_str()));
         Ok((path, fingerprint))
     }
@@ -528,6 +541,7 @@ impl DerivedArtifactCache {
 #[derive(Debug, Serialize)]
 struct PersistedDerivedValue<'a, T: Serialize> {
     schema_version: u32,
+    query_schema_version: u32,
     nova_version: String,
     saved_at_millis: u64,
     query_name: String,
@@ -538,6 +552,7 @@ struct PersistedDerivedValue<'a, T: Serialize> {
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedDerivedValueOwned<T> {
     schema_version: u32,
+    query_schema_version: u32,
     nova_version: String,
     saved_at_millis: u64,
     query_name: String,
@@ -622,7 +637,7 @@ fn read_saved_at_millis(path: &Path) -> Option<u64> {
 
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
-    let (schema_version, nova_version, saved_at_millis): (u32, String, u64) =
+    let (schema_version, _query_schema_version, nova_version, saved_at_millis): (u32, u32, String, u64) =
         bincode_options_limited()
             .deserialize_from(&mut reader)
             .ok()?;

@@ -21,9 +21,10 @@
 
 use nova_cache::{CacheDir, DerivedArtifactCache, Fingerprint, QueryDiskCache};
 use nova_memory::{EvictionRequest, EvictionResult, MemoryCategory, MemoryEvictor, MemoryManager};
+use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 /// Two-tier query cache with a hot LRU and warm clock (second-chance) policy.
@@ -359,21 +360,26 @@ impl ClockTier {
 /// to be read back on a compatible platform).
 #[derive(Clone, Debug)]
 pub struct PersistentQueryCache {
-    memory: Arc<QueryCache>,
+    memory: Option<Arc<QueryCache>>,
     derived: Option<DerivedArtifactCache>,
-}
-
-#[derive(Serialize)]
-struct VersionedArgs<'a, T: Serialize> {
-    schema_version: u32,
-    args: &'a T,
 }
 
 impl PersistentQueryCache {
     pub fn new(manager: &MemoryManager, cache_dir: Option<&CacheDir>) -> Self {
         Self {
-            memory: QueryCache::new(manager),
+            memory: Some(QueryCache::new(manager)),
             derived: cache_dir.map(|dir| DerivedArtifactCache::new(dir.queries_dir())),
+        }
+    }
+
+    /// Create a cache that only persists to disk (no in-memory tier).
+    ///
+    /// This is convenient for Salsa queries, which already memoize results in
+    /// memory but can benefit from a warm-start disk cache.
+    pub fn new_derived(root: impl AsRef<Path>) -> Self {
+        Self {
+            memory: None,
+            derived: Some(DerivedArtifactCache::new(root)),
         }
     }
 
@@ -385,20 +391,20 @@ impl PersistentQueryCache {
         input_fingerprints: &BTreeMap<String, Fingerprint>,
     ) -> Option<Arc<Vec<u8>>> {
         let cache_key = cache_key(query_name, query_schema_version, args, input_fingerprints)?;
-        if let Some(value) = self.memory.get(&cache_key) {
-            return Some(value);
+        if let Some(memory) = &self.memory {
+            if let Some(value) = memory.get(&cache_key) {
+                return Some(value);
+            }
         }
 
         let derived = self.derived.as_ref()?;
-        let key_args = VersionedArgs {
-            schema_version: query_schema_version,
-            args,
-        };
         let bytes: Vec<u8> = derived
-            .load(query_name, &key_args, input_fingerprints)
+            .load(query_name, query_schema_version, args, input_fingerprints)
             .ok()??;
         let value = Arc::new(bytes);
-        self.memory.insert(cache_key, value.clone());
+        if let Some(memory) = &self.memory {
+            memory.insert(cache_key, value.clone());
+        }
         Some(value)
     }
 
@@ -415,16 +421,57 @@ impl PersistentQueryCache {
             return;
         };
 
-        self.memory.insert(cache_key, value.clone());
+        if let Some(memory) = &self.memory {
+            memory.insert(cache_key, value.clone());
+        }
 
         let Some(derived) = self.derived.as_ref() else {
             return;
         };
-        let key_args = VersionedArgs {
-            schema_version: query_schema_version,
+        let _ = derived.store(
+            query_name,
+            query_schema_version,
             args,
+            input_fingerprints,
+            &*value,
+        );
+    }
+
+    /// Load a memoized value from disk or compute + persist it.
+    ///
+    /// Persistence is best-effort:
+    /// - Load failures are treated as cache misses.
+    /// - Store failures are ignored.
+    pub fn get_or_compute<T, Args, F>(
+        &self,
+        query_name: &str,
+        query_schema_version: u32,
+        args: &Args,
+        input_fingerprints: &BTreeMap<String, Fingerprint>,
+        compute: F,
+    ) -> T
+    where
+        T: Serialize + DeserializeOwned,
+        Args: Serialize,
+        F: FnOnce() -> T,
+    {
+        let Some(derived) = self.derived.as_ref() else {
+            return compute();
         };
-        let _ = derived.store(query_name, &key_args, input_fingerprints, &*value);
+
+        if let Ok(Some(value)) = derived.load(query_name, query_schema_version, args, input_fingerprints) {
+            return value;
+        }
+
+        let value = compute();
+        let _ = derived.store(
+            query_name,
+            query_schema_version,
+            args,
+            input_fingerprints,
+            &value,
+        );
+        value
     }
 }
 
@@ -434,12 +481,13 @@ fn cache_key<T: Serialize>(
     args: &T,
     input_fingerprints: &BTreeMap<String, Fingerprint>,
 ) -> Option<String> {
-    let key_args = VersionedArgs {
-        schema_version: query_schema_version,
+    let fingerprint = DerivedArtifactCache::key_fingerprint(
+        query_name,
+        query_schema_version,
         args,
-    };
-    let fingerprint =
-        DerivedArtifactCache::key_fingerprint(query_name, &key_args, input_fingerprints).ok()?;
+        input_fingerprints,
+    )
+    .ok()?;
     Some(fingerprint.as_str().to_string())
 }
 
@@ -874,6 +922,7 @@ mod tests {
     #[derive(Debug, Serialize, Deserialize)]
     struct PersistedDerivedValueOwned<T> {
         schema_version: u32,
+        query_schema_version: u32,
         nova_version: String,
         saved_at_millis: u64,
         query_name: String,
@@ -1007,7 +1056,11 @@ mod tests {
         );
 
         // Ensure we load from disk by clearing the in-memory cache.
-        let _ = cache1.memory.evict(EvictionRequest {
+        let _ = cache1
+            .memory
+            .as_ref()
+            .expect("cache1 created with memory tier")
+            .evict(EvictionRequest {
             pressure: nova_memory::MemoryPressure::Critical,
             target_bytes: 0,
         });
@@ -1041,7 +1094,11 @@ mod tests {
             Arc::new(b"answer:42".to_vec()),
         );
 
-        let _ = cache1.memory.evict(EvictionRequest {
+        let _ = cache1
+            .memory
+            .as_ref()
+            .expect("cache1 created with memory tier")
+            .evict(EvictionRequest {
             pressure: nova_memory::MemoryPressure::Critical,
             target_bytes: 0,
         });
@@ -1075,7 +1132,11 @@ mod tests {
             Arc::new(b"answer:42".to_vec()),
         );
 
-        let _ = cache1.memory.evict(EvictionRequest {
+        let _ = cache1
+            .memory
+            .as_ref()
+            .expect("cache1 created with memory tier")
+            .evict(EvictionRequest {
             pressure: nova_memory::MemoryPressure::Critical,
             target_bytes: 0,
         });

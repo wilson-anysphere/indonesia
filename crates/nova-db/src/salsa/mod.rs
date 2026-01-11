@@ -318,7 +318,6 @@ where
     // written so that any such unwind results in a benign cache miss on retry.
     ra_salsa::Cancelled::catch(std::panic::AssertUnwindSafe(f))
 }
-
 /// Read-only snapshot type for concurrent query execution.
 pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
 
@@ -396,7 +395,6 @@ impl RootDatabase {
     pub fn persistence_stats(&self) -> crate::PersistenceStats {
         self.persistence.stats()
     }
-
     /// Request cancellation for in-flight queries.
     ///
     /// Salsa's cancellation is driven by pending writes: this triggers a
@@ -940,9 +938,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nova_cache::CacheConfig;
     use nova_hir::hir::{Body, Expr, ExprId};
     use nova_memory::{MemoryBudget, MemoryPressure};
+    use nova_cache::{CacheConfig, Fingerprint};
+    use std::collections::BTreeMap;
+    use std::sync::atomic::Ordering;
     use tempfile::TempDir;
 
     fn stat(db: &RootDatabase, query_name: &str) -> QueryStat {
@@ -1809,5 +1809,120 @@ class Foo {
             stats.ast_load_misses > 0 && stats.ast_store_success > 0,
             "expected corruption to be treated as miss + recompute: {stats:?}"
         );
+    }
+
+    #[test]
+    fn persistent_derived_query_roundtrip_and_invalidation() {
+        ide::UPPERCASED_FILE_WORDS_COMPUTE_COUNT.store(0, Ordering::SeqCst);
+
+        let tmp = TempDir::new().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let cache_root = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let cache_cfg = CacheConfig {
+            cache_root_override: Some(cache_root),
+        };
+
+        let file = FileId::from_raw(1);
+        let file_path = "src/Foo.java";
+
+        // First run: compute + persist.
+        {
+            let mut db = RootDatabase::new_with_persistence(
+                &project_root,
+                PersistenceConfig {
+                    mode: crate::PersistenceMode::ReadWrite,
+                    cache: cache_cfg.clone(),
+                },
+            );
+            db.set_file_exists(file, true);
+            db.set_file_path(file, file_path);
+            db.set_file_content(file, Arc::new("hello world".to_string()));
+
+            let words = db.uppercased_file_words(file);
+            assert_eq!(words, vec!["HELLO".to_string(), "WORLD".to_string()]);
+            assert_eq!(
+                ide::UPPERCASED_FILE_WORDS_COMPUTE_COUNT.load(Ordering::SeqCst),
+                1
+            );
+        }
+
+        // Second run: same inputs should load without recomputing.
+        let mut db = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: cache_cfg.clone(),
+            },
+        );
+        db.set_file_exists(file, true);
+        db.set_file_path(file, file_path);
+        db.set_file_content(file, Arc::new("hello world".to_string()));
+
+        let words = db.uppercased_file_words(file);
+        assert_eq!(words, vec!["HELLO".to_string(), "WORLD".to_string()]);
+        assert_eq!(
+            ide::UPPERCASED_FILE_WORDS_COMPUTE_COUNT.load(Ordering::SeqCst),
+            1,
+            "expected persistent derived cache hit"
+        );
+
+        // Input change: should invalidate and recompute.
+        db.set_file_content(file, Arc::new("hello nova".to_string()));
+        let words = db.uppercased_file_words(file);
+        assert_eq!(words, vec!["HELLO".to_string(), "NOVA".to_string()]);
+        assert_eq!(
+            ide::UPPERCASED_FILE_WORDS_COMPUTE_COUNT.load(Ordering::SeqCst),
+            2
+        );
+    }
+
+    #[test]
+    fn persistence_derived_query_schema_version_is_cache_miss() {
+        let tmp = TempDir::new().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let cache_root = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let persistence = Persistence::new(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: CacheConfig {
+                    cache_root_override: Some(cache_root),
+                },
+            },
+        );
+
+        let args = (1_u32,);
+        let mut inputs = BTreeMap::new();
+        inputs.insert("file_content".to_string(), Fingerprint::from_bytes("v1"));
+
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+
+        let first: u32 = persistence.get_or_compute_derived("demo", 1, &args, &inputs, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            42
+        });
+        assert_eq!(first, 42);
+
+        let second: u32 = persistence.get_or_compute_derived("demo", 1, &args, &inputs, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            43
+        });
+        assert_eq!(second, 42, "same schema version should hit");
+
+        let third: u32 = persistence.get_or_compute_derived("demo", 2, &args, &inputs, || {
+            calls.fetch_add(1, Ordering::SeqCst);
+            44
+        });
+        assert_eq!(third, 44, "new schema version should miss and recompute");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
