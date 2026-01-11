@@ -1118,7 +1118,18 @@ async fn read_loop(
                     continue;
                 }
 
-                let entry = chunked_packets.remove(&id).expect("entry exists");
+                let Some(entry) = chunked_packets.remove(&id) else {
+                    tracing::debug!(
+                        target: TRACE_TARGET,
+                        event = "chunk_state_missing",
+                        worker_id = inner.worker_id,
+                        shard_id = inner.shard_id,
+                        request_id = id
+                    );
+                    let mut pending = inner.pending.lock().await;
+                    pending.clear();
+                    break;
+                };
                 (id, entry.compression, entry.data, true)
             }
             other => {
