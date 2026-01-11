@@ -6,9 +6,9 @@ use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
-    change_signature as refactor_change_signature, convert_to_record, safe_delete, workspace_edit_to_lsp,
-    ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId, InMemoryJavaDatabase,
-    SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
+    change_signature as refactor_change_signature, convert_to_record, safe_delete,
+    workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId,
+    InMemoryJavaDatabase, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -83,7 +83,10 @@ pub fn change_signature_schema() -> RootSchema {
 /// The refactoring itself returns Nova's canonical [`nova_refactor::WorkspaceEdit`], which stores
 /// edits as byte offsets. This helper uses the shared `workspace_edit_to_lsp` conversion to map
 /// byte offsets to UTF-16 LSP positions.
-pub fn change_signature_workspace_edit(index: &Index, change: &ChangeSignature) -> Result<WorkspaceEdit, String> {
+pub fn change_signature_workspace_edit(
+    index: &Index,
+    change: &ChangeSignature,
+) -> Result<WorkspaceEdit, String> {
     let edit = refactor_change_signature(index, change).map_err(|err| err.to_string())?;
 
     // `workspace_edit_to_lsp` needs file contents to map byte offsets to LSP UTF-16 positions.
@@ -235,7 +238,9 @@ pub fn handle_safe_delete(
 
     match outcome {
         SafeDeleteOutcome::Preview { report } => {
-            Ok(SafeDeleteResult::Preview(RefactorResponse::Preview { report }))
+            Ok(SafeDeleteResult::Preview(RefactorResponse::Preview {
+                report,
+            }))
         }
         SafeDeleteOutcome::Applied { edits } => Ok(SafeDeleteResult::WorkspaceEdit(
             workspace_edit_from_safe_delete(index, &edits)?,
@@ -261,8 +266,9 @@ fn workspace_edit_from_safe_delete(
         let start = u32::try_from(edit.range.start).map_err(|_| {
             crate::NovaLspError::InvalidParams("edit range start out of bounds".into())
         })?;
-        let end = u32::try_from(edit.range.end)
-            .map_err(|_| crate::NovaLspError::InvalidParams("edit range end out of bounds".into()))?;
+        let end = u32::try_from(edit.range.end).map_err(|_| {
+            crate::NovaLspError::InvalidParams("edit range end out of bounds".into())
+        })?;
 
         let line_index = LineIndex::new(text);
         let start = line_index.position(text, TextSize::from(start));
@@ -300,6 +306,23 @@ fn workspace_edit_from_safe_delete(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn apply_lsp_edits(text: &str, edits: &[lsp_types::TextEdit]) -> String {
+        let index = LineIndex::new(text);
+        let core_edits: Vec<nova_core::TextEdit> = edits
+            .iter()
+            .map(|edit| {
+                let range = nova_core::Range::new(
+                    CorePosition::new(edit.range.start.line, edit.range.start.character),
+                    CorePosition::new(edit.range.end.line, edit.range.end.character),
+                );
+                let range = index.text_range(text, range).expect("valid range");
+                nova_core::TextEdit::new(range, edit.new_text.clone())
+            })
+            .collect();
+
+        nova_core::apply_text_edits(text, &core_edits).expect("apply edits")
+    }
 
     #[test]
     fn offers_convert_to_record_action() {
@@ -397,5 +420,48 @@ class A {
             .expect("usage delete edit");
         assert_eq!(usage_edit.range.start.character, expected_character_utf16);
         assert_ne!(usage_edit.range.start.character, expected_character_bytes);
+    }
+
+    #[test]
+    fn safe_delete_request_applies_workspace_edit_when_unused() {
+        let mut files = std::collections::BTreeMap::new();
+        let uri: Uri = "file:///A.java".parse().unwrap();
+        let source = r#"
+class A {
+    public void unused() {
+    }
+
+    public void entry() {
+    }
+}
+"#;
+        files.insert(uri.to_string(), source.to_string());
+        let index = Index::new(files);
+        let target = index.find_method("A", "unused").expect("method exists").id;
+
+        let result = handle_safe_delete(
+            &index,
+            SafeDeleteParams {
+                target: SafeDeleteTargetParam::Target(SafeDeleteTarget::Symbol(target)),
+                mode: SafeDeleteMode::Safe,
+            },
+        )
+        .expect("safe delete apply");
+        let edit = match result {
+            SafeDeleteResult::WorkspaceEdit(edit) => edit,
+            other => panic!("expected workspace edit result, got {other:?}"),
+        };
+
+        let Some(changes) = edit.changes else {
+            panic!("expected changes map");
+        };
+        let edits = changes.get(&uri).expect("expected edits for A.java");
+        let updated = apply_lsp_edits(source, edits);
+
+        assert!(!updated.contains("unused()"), "method should be removed");
+        assert!(
+            updated.contains("void entry()"),
+            "other methods should remain"
+        );
     }
 }
