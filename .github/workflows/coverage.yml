@@ -103,13 +103,14 @@ jobs:
             print("::warning::TOTAL line not found in coverage-report.txt; skipping coverage gate")
             sys.exit(0)
 
-          # llvm-cov prints multiple percentages; the final one corresponds to line coverage.
+          # llvm-cov's text report prints multiple percentages (Lines/Functions/Regions).
+          # The first percentage corresponds to total line coverage.
           matches = re.findall(r"([0-9]+(?:\.[0-9]+)?)%", total_line)
           if not matches:
             print(f"::warning::Could not parse coverage percentage from TOTAL line: {total_line}")
             sys.exit(0)
 
-          line_cov = float(matches[-1])
+          line_cov = float(matches[0])
           if line_cov < min_cov:
             print(
               f"::warning::Total line coverage {line_cov:.2f}% is below configured threshold {min_cov:.2f}%"
