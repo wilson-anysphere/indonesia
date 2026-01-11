@@ -69,7 +69,7 @@ pub struct ShardIndexInfo {
     pub symbol_count: u32,
 }
 
-/// Legacy v2 protocol (length-delimited binary encoding, no request IDs/multiplexing).
+/// Legacy bincode protocol (`legacy_v2` module; length-delimited binary encoding, no request IDs/multiplexing).
 pub mod legacy_v2;
 
 /// v3 protocol: CBOR wire frames + request IDs/multiplexing, capabilities, errors.
