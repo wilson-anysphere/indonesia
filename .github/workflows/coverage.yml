@@ -1,0 +1,67 @@
+name: Coverage
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Weekly run to track coverage drift on `main` without slowing down PR CI.
+    - cron: "0 3 * * 0"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+          components: llvm-tools-preview
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate lcov.info
+        run: |
+          set -euxo pipefail
+          cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide \
+            --lcov --output-path lcov.info
+
+      - name: Generate HTML report
+        run: |
+          set -euxo pipefail
+          cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html
+
+      - name: Coverage summary
+        run: |
+          set -euxo pipefail
+          {
+            echo "## Test coverage"
+            echo
+            echo '```text'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          if-no-files-found: error
+          path: |
+            lcov.info
+            target/llvm-cov/html
