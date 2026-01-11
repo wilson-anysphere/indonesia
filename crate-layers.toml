@@ -34,6 +34,10 @@ forbid_upward_to = ["protocol"]
 from = "nova-project"
 to = "nova-workspace"
 
+[[policy.dev.allowlist]]
+from = "nova-syntax"
+to = "xtask"
+
 [crates]
 # core (foundation)
 nova-config = "core"
@@ -58,7 +62,6 @@ nova-vfs = "vfs"
 # syntax + file formats
 nova-properties = "syntax"
 nova-syntax = "syntax"
-xtask = "syntax"
 nova-yaml = "syntax"
 
 # semantic + project model
@@ -112,3 +115,4 @@ nova-router = "protocol"
 nova-stream-debug = "protocol"
 nova-worker = "protocol"
 nova-workspace = "protocol"
+xtask = "protocol"
