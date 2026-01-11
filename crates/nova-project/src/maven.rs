@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -16,12 +16,6 @@ pub(crate) fn load_maven_project(
     let root_pom_path = root.join("pom.xml");
     let root_pom = parse_pom(&root_pom_path)?;
 
-    let module_names = if root_pom.modules.is_empty() {
-        vec![".".to_string()]
-    } else {
-        root_pom.modules.clone()
-    };
-
     let mut modules = Vec::new();
     let mut source_roots = Vec::new();
     let mut output_dirs = Vec::new();
@@ -29,7 +23,10 @@ pub(crate) fn load_maven_project(
     let mut classpath = Vec::new();
     let mut module_path = Vec::new();
 
-    let parent_effective = EffectivePom::from_raw(&root_pom, None);
+    let root_effective = EffectivePom::from_raw(&root_pom, None);
+    let mut discovered_modules = discover_modules_recursive(root, &root_pom, &root_effective)?;
+    discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
+    discovered_modules.dedup_by(|a, b| a.root == b.root);
 
     let maven_repo = options
         .maven_repo
@@ -37,32 +34,25 @@ pub(crate) fn load_maven_project(
         .or_else(default_maven_repo)
         .unwrap_or_else(|| PathBuf::from(".m2/repository"));
 
-    for module_name in module_names {
-        let module_root = if module_name == "." {
-            root.to_path_buf()
-        } else {
-            root.join(&module_name)
-        };
-
-        let module_pom_path = module_root.join("pom.xml");
-        let module_pom = if module_pom_path.is_file() {
-            parse_pom(&module_pom_path)?
-        } else {
-            RawPom::default()
-        };
-
-        let effective = EffectivePom::from_raw(&module_pom, Some(&parent_effective));
+    for module in &discovered_modules {
+        let module_root = &module.root;
+        let effective = &module.effective;
         let module_java = effective
             .java
-            .unwrap_or(parent_effective.java.unwrap_or_default());
+            .unwrap_or(root_effective.java.unwrap_or_default());
 
-        let module_display_name = if module_name == "." {
-            root_pom
+        let module_display_name = if module_root == root {
+            module
+                .raw_pom
                 .artifact_id
                 .clone()
                 .unwrap_or_else(|| "root".to_string())
         } else {
-            module_name.clone()
+            module_root
+                .strip_prefix(root)
+                .unwrap_or(module_root)
+                .to_string_lossy()
+                .to_string()
         };
 
         modules.push(Module {
@@ -111,7 +101,7 @@ pub(crate) fn load_maven_project(
         });
 
         // Dependencies.
-        for dep in effective.dependencies {
+        for dep in &effective.dependencies {
             if dep.group_id.is_empty() || dep.artifact_id.is_empty() {
                 continue;
             }
@@ -134,9 +124,10 @@ pub(crate) fn load_maven_project(
     // Compute workspace Java config:
     // - prefer explicit root config
     // - otherwise default (17)
-    let java = parent_effective.java.unwrap_or_default();
+    let java = root_effective.java.unwrap_or_default();
 
     // Sort/dedup for stability.
+    sort_dedup_modules(&mut modules);
     sort_dedup_source_roots(&mut source_roots);
     sort_dedup_output_dirs(&mut output_dirs);
     sort_dedup_classpath(&mut module_path);
@@ -157,6 +148,74 @@ pub(crate) fn load_maven_project(
         output_dirs,
         dependencies,
     })
+}
+
+#[derive(Debug, Clone)]
+struct DiscoveredModule {
+    root: PathBuf,
+    raw_pom: RawPom,
+    effective: EffectivePom,
+}
+
+fn discover_modules_recursive(
+    workspace_root: &Path,
+    root_pom: &RawPom,
+    root_effective: &EffectivePom,
+) -> Result<Vec<DiscoveredModule>, ProjectError> {
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    // `workspace_root` is canonicalized by `load_project_with_options`.
+    visited.insert(workspace_root.to_path_buf());
+
+    if root_pom.modules.is_empty() {
+        return Ok(vec![DiscoveredModule {
+            root: workspace_root.to_path_buf(),
+            raw_pom: root_pom.clone(),
+            effective: root_effective.clone(),
+        }]);
+    }
+
+    let mut out = Vec::new();
+    let mut queue: VecDeque<(PathBuf, EffectivePom)> = VecDeque::new();
+
+    let mut root_modules = root_pom.modules.clone();
+    root_modules.sort();
+    for module in root_modules {
+        queue.push_back((workspace_root.join(module), root_effective.clone()));
+    }
+
+    while let Some((module_root, parent_effective)) = queue.pop_front() {
+        let module_root = canonicalize_or_fallback(&module_root);
+        if !visited.insert(module_root.clone()) {
+            continue;
+        }
+
+        let module_pom_path = module_root.join("pom.xml");
+        let raw_pom = if module_pom_path.is_file() {
+            parse_pom(&module_pom_path)?
+        } else {
+            RawPom::default()
+        };
+
+        let effective = EffectivePom::from_raw(&raw_pom, Some(&parent_effective));
+
+        let mut child_modules = raw_pom.modules.clone();
+        child_modules.sort();
+        for child in child_modules {
+            queue.push_back((module_root.join(child), effective.clone()));
+        }
+
+        out.push(DiscoveredModule {
+            root: module_root,
+            raw_pom,
+            effective,
+        });
+    }
+
+    Ok(out)
+}
+
+fn canonicalize_or_fallback(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[derive(Debug, Default, Clone)]
@@ -461,6 +520,11 @@ fn push_source_root(
             path,
         });
     }
+}
+
+fn sort_dedup_modules(modules: &mut Vec<Module>) {
+    modules.sort_by(|a, b| a.root.cmp(&b.root).then(a.name.cmp(&b.name)));
+    modules.dedup_by(|a, b| a.root == b.root);
 }
 
 fn sort_dedup_source_roots(roots: &mut Vec<SourceRoot>) {

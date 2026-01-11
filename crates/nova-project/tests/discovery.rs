@@ -60,6 +60,30 @@ fn loads_maven_multi_module_workspace() {
 }
 
 #[test]
+fn loads_maven_nested_multi_module_workspace() {
+    let root = testdata_path("maven-nested");
+    let config = load_project(&root).expect("load maven project");
+
+    let module_roots: BTreeSet<_> = config
+        .modules
+        .iter()
+        .map(|m| m.root.strip_prefix(&config.workspace_root).unwrap().to_path_buf())
+        .collect();
+    assert!(module_roots.contains(&PathBuf::from("parent-a")));
+    assert!(module_roots.contains(&PathBuf::from("parent-a/child-a1")));
+
+    let roots: BTreeSet<_> = config
+        .source_roots
+        .iter()
+        .map(|sr| (sr.kind, sr.path.strip_prefix(&config.workspace_root).unwrap().to_path_buf()))
+        .collect();
+    assert!(roots.contains(&(
+        SourceRootKind::Main,
+        PathBuf::from("parent-a/child-a1/src/main/java")
+    )));
+}
+
+#[test]
 fn loads_gradle_multi_module_workspace() {
     let root = testdata_path("gradle-multi");
     let config = load_project(&root).expect("load gradle project");
@@ -89,4 +113,3 @@ fn loads_gradle_multi_module_workspace() {
     let config2 = load_project(&root).expect("load gradle project again");
     assert_eq!(config, config2);
 }
-
