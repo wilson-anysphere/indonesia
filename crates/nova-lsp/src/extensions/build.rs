@@ -47,8 +47,44 @@ pub enum BuildTool {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NovaClasspathResponse {
     pub classpath: Vec<String>,
+    #[serde(default)]
+    pub module_path: Vec<String>,
+    #[serde(default)]
+    pub source_roots: Vec<String>,
+    #[serde(default)]
+    pub generated_source_roots: Vec<String>,
+    pub language_level: LanguageLevel,
+    pub output_dirs: OutputDirs,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LanguageLevel {
+    pub major: u16,
+    #[serde(default)]
+    pub preview: bool,
+}
+
+impl Default for LanguageLevel {
+    fn default() -> Self {
+        Self {
+            // Nova's default language level elsewhere is Java 17.
+            major: 17,
+            preview: false,
+        }
+    }
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputDirs {
+    #[serde(default)]
+    pub main: Vec<String>,
+    #[serde(default)]
+    pub test: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -133,12 +169,18 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
     let params = parse_params(params)?;
     let manager = build_manager(&params);
     let cp = run_classpath(&manager, &params)?;
+    let metadata = load_build_metadata(&params);
     let resp = NovaClasspathResponse {
         classpath: cp
             .entries
             .into_iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
+        module_path: metadata.module_path,
+        source_roots: metadata.source_roots,
+        generated_source_roots: metadata.generated_source_roots,
+        language_level: metadata.language_level,
+        output_dirs: metadata.output_dirs,
     };
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
@@ -223,6 +265,127 @@ fn auto_detect_kind(root: &Path) -> Result<BuildKind> {
         "unsupported project root {}",
         root.display()
     )))
+}
+
+#[derive(Debug, Default)]
+struct BuildMetadata {
+    module_path: Vec<String>,
+    source_roots: Vec<String>,
+    generated_source_roots: Vec<String>,
+    language_level: LanguageLevel,
+    output_dirs: OutputDirs,
+}
+
+fn load_build_metadata(params: &NovaProjectParams) -> BuildMetadata {
+    let root = PathBuf::from(&params.project_root);
+    let kind = match detect_kind(&root, params.build_tool) {
+        Ok(kind) => kind,
+        Err(_) => return BuildMetadata::default(),
+    };
+
+    let nova_config = load_workspace_config(&root);
+    let mut options = LoadOptions::default();
+    options.nova_config = nova_config;
+    let Ok(project) = load_project_with_options(&root, &options) else {
+        return BuildMetadata::default();
+    };
+
+    let module_roots = match kind {
+        BuildKind::Maven => {
+            if let Some(module) = params.module.as_deref().filter(|m| !m.trim().is_empty()) {
+                let module = module.trim();
+                if module == "." {
+                    vec![project.workspace_root.clone()]
+                } else {
+                    vec![project.workspace_root.join(module)]
+                }
+            } else {
+                project.modules.iter().map(|m| m.root.clone()).collect()
+            }
+        }
+        BuildKind::Gradle => {
+            if let Some(project_path) = params
+                .project_path
+                .as_deref()
+                .filter(|p| !p.trim().is_empty())
+            {
+                let rel = gradle_project_path_to_dir(project_path);
+                vec![project.workspace_root.join(rel)]
+            } else {
+                project.modules.iter().map(|m| m.root.clone()).collect()
+            }
+        }
+    };
+
+    let source_roots = project
+        .source_roots
+        .iter()
+        .filter(|root| root.origin == nova_project::SourceRootOrigin::Source)
+        .filter(|root| {
+            module_roots
+                .iter()
+                .any(|module_root| root.path.starts_with(module_root))
+        })
+        .map(|root| root.path.to_string_lossy().to_string())
+        .collect();
+
+    let generated_source_roots = project
+        .source_roots
+        .iter()
+        .filter(|root| root.origin == nova_project::SourceRootOrigin::Generated)
+        .filter(|root| {
+            module_roots
+                .iter()
+                .any(|module_root| root.path.starts_with(module_root))
+        })
+        .map(|root| root.path.to_string_lossy().to_string())
+        .collect();
+
+    let mut output_dirs = OutputDirs::default();
+    for dir in &project.output_dirs {
+        if !module_roots
+            .iter()
+            .any(|module_root| dir.path.starts_with(module_root))
+        {
+            continue;
+        }
+        match dir.kind {
+            nova_project::OutputDirKind::Main => {
+                output_dirs
+                    .main
+                    .push(dir.path.to_string_lossy().to_string());
+            }
+            nova_project::OutputDirKind::Test => {
+                output_dirs
+                    .test
+                    .push(dir.path.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    BuildMetadata {
+        module_path: project
+            .module_path
+            .iter()
+            .map(|entry| entry.path.to_string_lossy().to_string())
+            .collect(),
+        source_roots,
+        generated_source_roots,
+        language_level: LanguageLevel {
+            major: project.java.source.0,
+            preview: false,
+        },
+        output_dirs,
+    }
+}
+
+fn gradle_project_path_to_dir(project_path: &str) -> PathBuf {
+    let trimmed = project_path.trim_matches(':');
+    let mut rel = PathBuf::new();
+    for part in trimmed.split(':').filter(|p| !p.is_empty()) {
+        rel.push(part);
+    }
+    rel
 }
 
 // -----------------------------------------------------------------------------
@@ -869,6 +1032,47 @@ mod tests {
         assert_eq!(params.project_root, "/tmp/project");
         assert_eq!(params.build_tool, Some(BuildTool::Maven));
         assert_eq!(params.project_path.as_deref(), Some(":app"));
+    }
+
+    #[test]
+    fn classpath_response_is_backwards_compatible() {
+        let resp = NovaClasspathResponse {
+            classpath: vec!["/tmp/classes".to_string()],
+            module_path: Vec::new(),
+            source_roots: Vec::new(),
+            generated_source_roots: Vec::new(),
+            language_level: LanguageLevel::default(),
+            output_dirs: OutputDirs::default(),
+        };
+
+        let value = serde_json::to_value(resp).unwrap();
+        assert_eq!(
+            value
+                .get("classpath")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(value.get("modulePath").is_some());
+        assert!(value.get("sourceRoots").is_some());
+        assert!(value.get("generatedSourceRoots").is_some());
+        assert!(value.get("languageLevel").is_some());
+        assert!(value.get("outputDirs").is_some());
+    }
+
+    #[test]
+    fn target_classpath_requires_target_for_bazel_projects() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("WORKSPACE"), "").unwrap();
+
+        let err = handle_target_classpath(serde_json::json!({
+            "projectRoot": tmp.path().to_string_lossy(),
+        }))
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("`target` must be provided for Bazel projects"));
     }
 
     #[test]
