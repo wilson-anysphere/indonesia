@@ -9,9 +9,11 @@ Transport security requirements (TLS, secret handling, shard-scoped authorizatio
 [ADR 0008](0008-distributed-mode-security.md). This ADR focuses on the **RPC framing and wire-format**
 needed to support v3 distributed-mode features.
 
-The current RPC transport (`nova-remote-proto` v2) is intentionally minimal:
+The current router↔worker RPC transport (the legacy lockstep protocol, implemented in
+`nova_remote_proto::legacy_v2`) is intentionally minimal:
 
-- each message is a `bincode`-encoded Rust `enum` (`RpcMessage`),
+- each message is a length-delimited binary encoding of a Rust `enum` (`RpcMessage`) with explicit
+  hard limits (to avoid allocation bombs on untrusted inputs),
 - the stream is framed by a `u32` length prefix,
 - the router sends a request and then synchronously waits for exactly one response.
 
@@ -24,8 +26,8 @@ This v2 approach is insufficient for the v3 distributed-mode goals:
    - The protocol assumes router and worker are built from the same code and offers no principled
      way to evolve (feature flags, optional fields, compression support, etc.).
 3. **Schema-fragile wire format**
-   - `bincode` couples the wire format to Rust type layout (enum variant order, field ordering),
-     making forward/backward evolution brittle.
+   - The legacy codec couples the wire format to Rust type layout (enum variant IDs and field
+     ordering), making forward/backward evolution brittle.
    - Unknown fields/variants cannot be safely ignored.
 4. **Unsafe framing for untrusted inputs**
    - A length-prefixed “read into `Vec<u8>`” approach can trivially cause large allocations (OOM)
@@ -113,6 +115,10 @@ Rationale:
   safe decoding and evolution.
 
 ### Why not `bincode` (v2 approach)?
+
+Note: early versions of the legacy lockstep protocol used `bincode`. The implementation has since
+moved to a custom binary codec for DoS-hardening, but `bincode` is still not a good fit for a
+network protocol for the reasons below.
 
 `bincode` is great for **trusted, tightly coupled** persistence and intra-version caches, but it is
 a poor fit for a network protocol:
