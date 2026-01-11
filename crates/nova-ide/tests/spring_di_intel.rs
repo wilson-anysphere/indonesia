@@ -28,15 +28,13 @@ fn fixture_multi(
     extra_files: Vec<(PathBuf, String)>,
 ) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
     let caret = "<|>";
-    let (primary_text, pos) = if let Some(caret_offset) = primary_text_with_caret.find(caret) {
-        let primary_text = primary_text_with_caret.replace(caret, "");
-        let pos = offset_to_position(&primary_text, caret_offset);
-        (primary_text, pos)
-    } else {
-        (
-            primary_text_with_caret.to_string(),
-            lsp_types::Position::new(0, 0),
-        )
+    let (primary_text, pos) = match primary_text_with_caret.find(caret) {
+        Some(caret_offset) => {
+            let primary_text = primary_text_with_caret.replace(caret, "");
+            let pos = offset_to_position(&primary_text, caret_offset);
+            (primary_text, pos)
+        }
+        None => (primary_text_with_caret.to_string(), lsp_types::Position::new(0, 0)),
     };
 
     let mut db = InMemoryFileStore::new();

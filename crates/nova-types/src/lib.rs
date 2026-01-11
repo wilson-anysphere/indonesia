@@ -556,6 +556,7 @@ impl ClasspathTypes for () {}
 pub struct TypeStore {
     classes: Vec<ClassDef>,
     class_by_name: HashMap<String, ClassId>,
+    tombstones: HashMap<String, ClassId>,
     type_params: Vec<TypeParamDef>,
     well_known: Option<WellKnownTypes>,
 }
@@ -777,7 +778,7 @@ impl TypeStore {
     pub fn with_minimal_jdk_and_classpath(classpath: &dyn ClasspathTypes) -> Self {
         let mut store = TypeStore::with_minimal_jdk();
         for class in classpath.classes() {
-            store.add_class(class);
+            store.upsert_class(class);
         }
         store
     }
@@ -849,6 +850,11 @@ impl TypeStore {
             return id;
         }
 
+        if let Some(id) = self.tombstones.remove(binary_name) {
+            self.class_by_name.insert(binary_name.to_string(), id);
+            return id;
+        }
+
         self.add_class(ClassDef {
             name: binary_name.to_string(),
             kind: ClassKind::Class,
@@ -894,34 +900,68 @@ impl TypeStore {
 
         *slot = def;
     }
-    /// Add a new class definition, overwriting an existing one if present.
-    ///
-    /// This is useful when importing types from external sources (classpath/JDK stubs),
-    /// where the same binary name may be encountered multiple times at different
-    /// fidelity levels (e.g. a minimal stub first, followed by a fully parsed class).
-    ///
-    /// Returns the stable [`ClassId`] for the class.
-    pub fn upsert_class(&mut self, def: ClassDef) -> ClassId {
-        if let Some(id) = self.class_by_name.get(&def.name).copied() {
-            self.define_class(id, def);
-            id
-        } else {
-            self.add_class(def)
-        }
-    }
-    pub fn add_class(&mut self, mut def: ClassDef) -> ClassId {
+    pub fn add_class(&mut self, def: ClassDef) -> ClassId {
         let id = ClassId::from_raw(self.classes.len() as u32);
-        if self.class_by_name.contains_key(&def.name) {
+        if self.class_by_name.contains_key(&def.name) || self.tombstones.contains_key(&def.name) {
             // Avoid silently creating two ids for the same class.
             // This is a programmer error in tests/builders.
             panic!("duplicate class definition for {}", def.name);
         }
         self.class_by_name.insert(def.name.clone(), id);
-        if def.methods.is_empty() {
-            def.methods = Vec::new();
-        }
         self.classes.push(def);
         id
+    }
+
+    /// Insert or replace a class definition.
+    ///
+    /// This is primarily used for incremental updates where types may originate
+    /// from multiple sources (classpath stubs, source code, generated overlays).
+    /// The `ClassId` is stable for a given binary name as long as the store lives.
+    pub fn upsert_class(&mut self, def: ClassDef) -> ClassId {
+        if let Some(id) = self.class_by_name.get(&def.name).copied() {
+            self.define_class(id, def);
+            return id;
+        }
+
+        if let Some(id) = self.tombstones.remove(&def.name) {
+            self.class_by_name.insert(def.name.clone(), id);
+            self.define_class(id, def);
+            return id;
+        }
+
+        self.add_class(def)
+    }
+
+    /// Remove a class by binary name.
+    ///
+    /// The removed slot is kept as an inert placeholder so existing `ClassId`s
+    /// remain stable. Lookups by name will no longer find the class until it is
+    /// re-inserted via [`TypeStore::upsert_class`].
+    pub fn remove_class(&mut self, name: &str) -> Option<ClassId> {
+        let id = self.class_by_name.remove(name)?;
+        self.tombstones.insert(name.to_string(), id);
+
+        if let Some(class_def) = self.classes.get_mut(id.to_raw() as usize) {
+            class_def.type_params.clear();
+            class_def.interfaces.clear();
+            class_def.fields.clear();
+            class_def.constructors.clear();
+            class_def.methods.clear();
+
+            // Ensure basic subtyping queries still behave sensibly for stale
+            // references to a deleted class.
+            match class_def.kind {
+                ClassKind::Interface => class_def.super_class = None,
+                ClassKind::Class => {
+                    class_def.super_class = self
+                        .well_known
+                        .as_ref()
+                        .map(|wk| Type::class(wk.object, vec![]))
+                }
+            }
+        }
+
+        Some(id)
     }
     pub fn class_id(&self, name: &str) -> Option<ClassId> {
         self.lookup_class(name)
@@ -1038,7 +1078,7 @@ impl TypeStore {
             .map(|id| Type::class(id, vec![]))
             .collect();
 
-        let id = self.add_class(ClassDef {
+        let id = self.upsert_class(ClassDef {
             name: stub.binary_name,
             kind,
             type_params: vec![],

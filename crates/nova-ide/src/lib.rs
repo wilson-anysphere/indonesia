@@ -13,6 +13,7 @@ pub mod diagnostics;
 pub mod extensions;
 pub mod format;
 pub mod framework_cache;
+pub mod java_semantics;
 pub mod semantics;
 
 pub mod code_intelligence;
