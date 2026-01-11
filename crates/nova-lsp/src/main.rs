@@ -1011,7 +1011,7 @@ fn handle_code_action(
                                 if let lsp_types::CodeActionOrCommand::CodeAction(code_action) =
                                     &mut action
                                 {
-                                    if code_action.edit.is_none() {
+                                    if code_action.edit.is_none() && code_action.command.is_none() {
                                         code_action.command = Some(lsp_types::Command {
                                             title: code_action.title.clone(),
                                             command: nova_lsp::SAFE_DELETE_COMMAND.to_string(),
