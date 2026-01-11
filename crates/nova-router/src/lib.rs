@@ -348,11 +348,12 @@ impl InProcessRouter {
         let mut indexes = HashMap::new();
         for (shard_id, root) in self.layout.source_roots.iter().enumerate() {
             let files = collect_java_files(&root.path).await?;
+            let shard_id = shard_id as ShardId;
             let task = self
                 .scheduler
                 .spawn_background_with_token(token.clone(), move |token| {
                     Cancelled::check(&token)?;
-                    let symbols = index_for_files(&files);
+                    let symbols = index_for_files(shard_id, files);
                     Cancelled::check(&token)?;
                     Ok(symbols)
                 });
@@ -417,7 +418,7 @@ impl InProcessRouter {
             .scheduler
             .spawn_background_with_token(token.clone(), move |token| {
                 Cancelled::check(&token)?;
-                let symbols = index_for_files(&shard_files);
+                let symbols = index_for_files(shard_id, shard_files);
                 Cancelled::check(&token)?;
                 Ok(symbols)
             });
@@ -1820,20 +1821,39 @@ where
     }
 }
 
-fn index_for_files(files: &[FileText]) -> Vec<Symbol> {
-    let mut map = std::collections::BTreeMap::new();
-    for file in files {
-        map.insert(file.path.clone(), file.text.clone());
+fn index_for_files(shard_id: ShardId, mut files: Vec<FileText>) -> Vec<Symbol> {
+    use nova_db::salsa::NovaSyntax;
+    use nova_db::{FileId, SalsaDatabase, SourceRootId};
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let db = SalsaDatabase::new();
+    let root = SourceRootId::from_raw(shard_id);
+    let mut file_ids = Vec::with_capacity(files.len());
+
+    for (idx, file) in files.into_iter().enumerate() {
+        let file_id = FileId::from_raw(idx as u32);
+        db.set_file_exists(file_id, true);
+        db.set_source_root(file_id, root);
+        db.set_file_content(file_id, Arc::new(file.text));
+        file_ids.push((file_id, file.path));
     }
-    let index = nova_index::Index::new(map);
-    index
-        .symbols()
-        .iter()
-        .map(|sym| Symbol {
-            name: sym.name.clone(),
-            path: sym.file.clone(),
-        })
-        .collect()
+
+    let snap = db.snapshot();
+    let mut symbols = Vec::new();
+    for (file_id, path) in file_ids {
+        let summary = snap.symbol_summary(file_id);
+        for name in &summary.names {
+            symbols.push(Symbol {
+                name: name.clone(),
+                path: path.clone(),
+            });
+        }
+    }
+
+    symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
+    symbols.dedup();
+    symbols
 }
 
 fn build_global_symbols<'a>(

@@ -21,8 +21,8 @@ tracing.workspace = true
 nova-cache = { path = "../nova-cache" }
 nova-bugreport = { path = "../nova-bugreport" }
 nova-config = { path = "../nova-config" }
+nova-db = { path = "../nova-db" }
 nova-fuzzy = { path = "../nova-fuzzy" }
-nova-index = { path = "../nova-index" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 
 tokio-rustls = { version = "0.26.0", optional = true }

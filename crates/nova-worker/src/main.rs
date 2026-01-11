@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -7,9 +7,12 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
+use nova_db::salsa::{Database as SalsaDatabase, NovaSyntax};
+use nova_db::{FileId, SourceRootId};
 use nova_fuzzy::{FuzzyMatcher, MatchKind, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
-    RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo, SymbolRankKey, WorkerStats,
+    FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo, SymbolRankKey,
+    WorkerStats,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -444,7 +447,10 @@ struct WorkerState {
     cache_dir: PathBuf,
     revision: u64,
     index_generation: u64,
-    files: HashMap<String, String>,
+    db: SalsaDatabase,
+    next_file_id: u32,
+    path_to_file_id: HashMap<String, FileId>,
+    files: BTreeMap<String, FileId>,
     symbol_index: Option<ShardSymbolSearchIndex>,
 }
 
@@ -464,7 +470,10 @@ impl WorkerState {
             cache_dir,
             revision: 0,
             index_generation,
-            files: HashMap::new(),
+            db: SalsaDatabase::new(),
+            next_file_id: 0,
+            path_to_file_id: HashMap::new(),
+            files: BTreeMap::new(),
             symbol_index,
         }
     }
@@ -478,18 +487,18 @@ impl WorkerState {
             match msg {
                 RpcMessage::IndexShard { revision, files } => {
                     self.revision = revision;
-                    self.files = files.into_iter().map(|f| (f.path, f.text)).collect();
+                    self.apply_file_snapshot(files);
                     let info = self.build_index().await?;
                     write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
                 }
                 RpcMessage::LoadFiles { revision, files } => {
                     self.revision = revision;
-                    self.files = files.into_iter().map(|f| (f.path, f.text)).collect();
+                    self.apply_file_snapshot(files);
                     write_message(stream, &RpcMessage::Ack).await?;
                 }
                 RpcMessage::UpdateFile { revision, file } => {
                     self.revision = revision;
-                    self.files.insert(file.path, file.text);
+                    self.apply_file_update(file);
                     let info = self.build_index().await?;
                     write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
                 }
@@ -525,51 +534,108 @@ impl WorkerState {
         }
     }
 
-    async fn build_index(&mut self) -> Result<ShardIndexInfo> {
-        self.index_generation += 1;
-        let mut files = std::collections::BTreeMap::new();
-        for (path, text) in &self.files {
-            files.insert(path.clone(), text.clone());
-        }
-        let index = nova_index::Index::new(files);
-        let mut symbols: Vec<nova_remote_proto::Symbol> = index
-            .symbols()
+    fn apply_file_snapshot(&mut self, files: Vec<FileText>) {
+        let root = SourceRootId::from_raw(self.shard_id);
+        let old_files: Vec<(String, FileId)> = self
+            .files
             .iter()
-            .map(|sym| nova_remote_proto::Symbol {
-                name: sym.name.clone(),
-                path: sym.file.clone(),
-            })
+            .map(|(path, file_id)| (path.clone(), *file_id))
             .collect();
 
-        symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
-        symbols.dedup();
+        let mut new_files = BTreeMap::new();
+        for file in files {
+            let file_id = self.file_id_for_path(&file.path);
+            self.db.set_file_exists(file_id, true);
+            self.db.set_source_root(file_id, root);
+            self.db.set_file_content(file_id, Arc::new(file.text));
+            new_files.insert(file.path, file_id);
+        }
 
-        let symbol_count = symbols.len();
-        let index = Arc::new(ShardIndex {
-            shard_id: self.shard_id,
-            revision: self.revision,
-            index_generation: self.index_generation,
-            symbols,
-        });
+        for (path, file_id) in old_files {
+            if !new_files.contains_key(&path) {
+                self.db.set_file_exists(file_id, false);
+                self.db.set_file_content(file_id, Arc::new(String::new()));
+            }
+        }
 
-        self.symbol_index = Some(ShardSymbolSearchIndex::new(index.clone()));
+        self.files = new_files;
+    }
 
+    fn apply_file_update(&mut self, file: FileText) {
+        let root = SourceRootId::from_raw(self.shard_id);
+        let file_id = self.file_id_for_path(&file.path);
+        self.db.set_file_exists(file_id, true);
+        self.db.set_source_root(file_id, root);
+        self.db.set_file_content(file_id, Arc::new(file.text));
+        self.files.insert(file.path, file_id);
+    }
+
+    fn file_id_for_path(&mut self, path: &str) -> FileId {
+        if let Some(file_id) = self.path_to_file_id.get(path) {
+            return *file_id;
+        }
+
+        let file_id = FileId::from_raw(self.next_file_id);
+        self.next_file_id = self.next_file_id.saturating_add(1);
+        self.path_to_file_id.insert(path.to_string(), file_id);
+        file_id
+    }
+
+    async fn build_index(&mut self) -> Result<ShardIndexInfo> {
+        self.index_generation += 1;
+        let shard_id = self.shard_id;
+        let revision = self.revision;
+        let index_generation = self.index_generation;
         let cache_dir = self.cache_dir.clone();
-        let index_clone = index.clone();
-        tokio::task::spawn_blocking(move || {
-            nova_cache::save_shard_index(&cache_dir, index_clone.as_ref())
+        let db = self.db.clone();
+        let files: Vec<(String, FileId)> = self
+            .files
+            .iter()
+            .map(|(path, file_id)| (path.clone(), *file_id))
+            .collect();
+
+        let (symbol_index, symbol_count) = tokio::task::spawn_blocking(move || {
+            let symbols = build_symbols(&db, &files);
+            let symbol_count = symbols.len();
+            let index = Arc::new(ShardIndex {
+                shard_id,
+                revision,
+                index_generation,
+                symbols,
+            });
+            nova_cache::save_shard_index(&cache_dir, index.as_ref())
+                .context("write shard cache")?;
+            Ok::<_, anyhow::Error>((ShardSymbolSearchIndex::new(index), symbol_count))
         })
         .await
-        .context("join shard cache write")?
-        .context("write shard cache")?;
+        .context("join shard index task")??;
+
+        self.symbol_index = Some(symbol_index);
 
         Ok(ShardIndexInfo {
-            shard_id: self.shard_id,
-            revision: self.revision,
-            index_generation: self.index_generation,
+            shard_id,
+            revision,
+            index_generation,
             symbol_count: symbol_count.try_into().unwrap_or(u32::MAX),
         })
     }
+}
+
+fn build_symbols(db: &SalsaDatabase, files: &[(String, FileId)]) -> Vec<nova_remote_proto::Symbol> {
+    let snap = db.snapshot();
+    let mut symbols = Vec::new();
+    for (path, file_id) in files {
+        let summary = snap.symbol_summary(*file_id);
+        for name in &summary.names {
+            symbols.push(nova_remote_proto::Symbol {
+                name: name.clone(),
+                path: path.clone(),
+            });
+        }
+    }
+    symbols.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.path.cmp(&b.path)));
+    symbols.dedup();
+    symbols
 }
 
 struct ShardSymbolSearchIndex {
@@ -773,4 +839,56 @@ async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessag
         .await
         .context("read message payload")?;
     nova_remote_proto::decode_message(&buf).context("decode message")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn parse_executions(db: &SalsaDatabase) -> u64 {
+        db.query_stats()
+            .by_query
+            .get("parse")
+            .map(|stat| stat.executions)
+            .unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn indexing_reuses_salsa_results_across_file_updates() -> Result<()> {
+        let tmp = TempDir::new().context("create temp dir")?;
+        let mut state = WorkerState::new(0, tmp.path().to_path_buf(), None);
+
+        state.revision = 1;
+        state.apply_file_snapshot(vec![
+            FileText {
+                path: "A.java".into(),
+                text: "class Alpha {}".into(),
+            },
+            FileText {
+                path: "B.java".into(),
+                text: "class Beta {}".into(),
+            },
+        ]);
+
+        let _ = state.build_index().await?;
+        let first_parse = parse_executions(&state.db);
+        assert_eq!(first_parse, 2, "expected initial index to parse both files");
+
+        state.revision = 2;
+        state.apply_file_update(FileText {
+            path: "A.java".into(),
+            text: "class Alpha { int x; }".into(),
+        });
+        let _ = state.build_index().await?;
+
+        let second_parse = parse_executions(&state.db);
+        assert_eq!(
+            second_parse,
+            first_parse + 1,
+            "expected only the updated file to reparse"
+        );
+
+        Ok(())
+    }
 }

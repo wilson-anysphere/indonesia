@@ -22,8 +22,8 @@ getrandom = "0.2"
 nova-cache = { path = "../nova-cache" }
 nova-bugreport = { path = "../nova-bugreport" }
 nova-config = { path = "../nova-config" }
+nova-db = { path = "../nova-db" }
 nova-fuzzy = { path = "../nova-fuzzy" }
-nova-index = { path = "../nova-index" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 nova-scheduler = { path = "../nova-scheduler" }
 
