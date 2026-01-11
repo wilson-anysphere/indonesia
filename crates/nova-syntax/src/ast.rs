@@ -88,6 +88,7 @@ impl SwitchLabel {
 
 ast_node!(ModuleDeclaration, SyntaxKind::ModuleDeclaration);
 ast_node!(ModuleBody, SyntaxKind::ModuleBody);
+ast_node!(ModuleDirective, SyntaxKind::ModuleDirective);
 ast_node!(RequiresDirective, SyntaxKind::RequiresDirective);
 ast_node!(ExportsDirective, SyntaxKind::ExportsDirective);
 ast_node!(OpensDirective, SyntaxKind::OpensDirective);
@@ -145,6 +146,10 @@ impl ModuleDeclaration {
 }
 
 impl ModuleBody {
+    pub fn directive_items(&self) -> impl Iterator<Item = ModuleDirective> + '_ {
+        support::children::<ModuleDirective>(self.syntax())
+    }
+
     pub fn directives(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
         self.syntax().children().filter_map(|n| {
             if n.kind() == SyntaxKind::ModuleDirective {
@@ -169,6 +174,28 @@ impl ModuleBody {
                 _ => None,
             }
         })
+    }
+}
+
+impl ModuleDirective {
+    pub fn requires(&self) -> Option<RequiresDirective> {
+        support::child::<RequiresDirective>(self.syntax())
+    }
+
+    pub fn exports(&self) -> Option<ExportsDirective> {
+        support::child::<ExportsDirective>(self.syntax())
+    }
+
+    pub fn opens(&self) -> Option<OpensDirective> {
+        support::child::<OpensDirective>(self.syntax())
+    }
+
+    pub fn uses(&self) -> Option<UsesDirective> {
+        support::child::<UsesDirective>(self.syntax())
+    }
+
+    pub fn provides(&self) -> Option<ProvidesDirective> {
+        support::child::<ProvidesDirective>(self.syntax())
     }
 }
 
