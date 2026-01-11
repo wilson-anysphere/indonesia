@@ -591,6 +591,8 @@ ExpressionRoot {
   expression: Expression?
 }
 
+Error {}
+
 ModuleDeclaration {
   modifiers: Modifiers?
   open_kw: Token(OpenKw)?

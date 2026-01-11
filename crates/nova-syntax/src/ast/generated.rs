@@ -3088,6 +3088,25 @@ impl ExpressionRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Error {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for Error {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Error
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModuleDeclaration {
     syntax: SyntaxNode,
 }
