@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_types::{
-    resolve_method_call, CallKind, ChainTypeProvider, ClassKind, MethodCall, MethodResolution,
+    is_subtype, resolve_method_call, CallKind, ChainTypeProvider, ClassKind, MethodCall, MethodResolution,
     PrimitiveType, Type, TypeEnv, TypeStore, TypeStoreLoader,
 };
 
@@ -27,9 +27,9 @@ fn type_store_loader_bridge_from_classpath_index() {
     let mut loader = TypeStoreLoader::new(&mut store, &provider);
     loader.bootstrap_well_known().unwrap();
 
-    let (object_id, string_id) = {
+    let (object_id, string_id, integer_id) = {
         let wk = loader.store().well_known();
-        (wk.object, wk.string)
+        (wk.object, wk.string, wk.integer)
     };
 
     // --- Load java.util.List --------------------------------------------------
@@ -77,6 +77,10 @@ fn type_store_loader_bridge_from_classpath_index() {
     let foo_id = loader.ensure_class("com.example.dep.Foo").unwrap();
     {
         let foo_def = loader.store().class(foo_id).unwrap();
+        assert!(
+            foo_def.methods.iter().all(|m| !m.name.starts_with('<')),
+            "constructors/static initializers should not appear in ClassDef.methods"
+        );
 
         let strings = foo_def
             .methods
@@ -97,7 +101,45 @@ fn type_store_loader_bridge_from_classpath_index() {
         let t = id_method.type_params[0];
         assert_eq!(id_method.params, vec![Type::TypeVar(t)]);
         assert_eq!(id_method.return_type, Type::TypeVar(t));
+
+        let nums = foo_def
+            .fields
+            .iter()
+            .find(|f| f.name == "nums")
+            .expect("com.example.dep.Foo.nums");
+        assert_eq!(
+            nums.ty,
+            Type::class(list_id, vec![Type::class(integer_id, vec![])])
+        );
+
+        assert!(
+            foo_def
+                .constructors
+                .iter()
+                .any(|c| c.params.is_empty() && c.is_accessible),
+            "expected an accessible no-arg constructor on Foo"
+        );
     }
+
+    // --- Load nested class Foo$Inner -----------------------------------------
+    let inner_id = loader.ensure_class("com.example.dep.Foo$Inner").unwrap();
+    {
+        let inner_def = loader.store().class(inner_id).unwrap();
+        let value = inner_def
+            .methods
+            .iter()
+            .find(|m| m.name == "value" && m.params.is_empty())
+            .expect("com.example.dep.Foo$Inner.value()");
+        assert_eq!(value.return_type, Type::class(string_id, vec![]));
+    }
+
+    // --- Load subclass Bar extends Foo ---------------------------------------
+    let bar_id = loader.ensure_class("com.example.dep.Bar").unwrap();
+    assert!(is_subtype(
+        loader.store(),
+        &Type::class(bar_id, vec![]),
+        &Type::class(foo_id, vec![])
+    ));
 
     // --- Optional: method inference sanity check -----------------------------
     let call = MethodCall {

@@ -2,13 +2,14 @@ use std::collections::HashMap;
 use std::fmt;
 
 use nova_classfile::{
-    parse_class_signature, parse_method_descriptor, parse_method_signature, BaseType,
-    ClassTypeSignature, FieldType, ReturnType, TypeArgument, TypeParameter, TypeSignature,
+    parse_class_signature, parse_field_descriptor, parse_field_signature, parse_method_descriptor,
+    parse_method_signature, BaseType, ClassTypeSignature, FieldType, ReturnType, TypeArgument, TypeParameter,
+    TypeSignature,
 };
 
 use crate::{
-    ClassDef, ClassId, ClassKind, MethodDef, MethodStub, PrimitiveType, Type, TypeDefStub, TypeEnv,
-    TypeProvider, TypeStore, TypeVarId, WellKnownTypes, WildcardBound,
+    ClassDef, ClassId, ClassKind, ConstructorDef, FieldDef, FieldStub, MethodDef, MethodStub, PrimitiveType,
+    Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore, TypeVarId, WellKnownTypes, WildcardBound,
 };
 
 #[derive(Debug)]
@@ -85,16 +86,8 @@ impl<'a> TypeStoreLoader<'a> {
             ClassKind::Class,
             Some(object_ty.clone()),
         );
-        let cloneable = self.ensure_builtin_class(
-            "java.lang.Cloneable",
-            ClassKind::Interface,
-            Some(object_ty.clone()),
-        );
-        let serializable = self.ensure_builtin_class(
-            "java.io.Serializable",
-            ClassKind::Interface,
-            Some(object_ty),
-        );
+        let cloneable = self.ensure_builtin_class("java.lang.Cloneable", ClassKind::Interface, None);
+        let serializable = self.ensure_builtin_class("java.io.Serializable", ClassKind::Interface, None);
 
         self.store.well_known = Some(WellKnownTypes {
             object,
@@ -200,7 +193,10 @@ impl<'a> TypeStoreLoader<'a> {
                 }
             }
 
-            let super_class = Some(self.class_sig_to_type(&sig.super_class, &type_vars)?);
+            let super_class = match kind {
+                ClassKind::Interface => None,
+                ClassKind::Class => Some(self.class_sig_to_type(&sig.super_class, &type_vars)?),
+            };
             let interfaces = sig
                 .interfaces
                 .iter()
@@ -208,11 +204,14 @@ impl<'a> TypeStoreLoader<'a> {
                 .collect::<Result<Vec<_>, _>>()?;
             (super_class, interfaces)
         } else {
-            let super_class = stub
-                .super_binary_name
-                .as_deref()
-                .map(|name| self.class_name_to_type(name, vec![]))
-                .transpose()?;
+            let super_class = match kind {
+                ClassKind::Interface => None,
+                ClassKind::Class => stub
+                    .super_binary_name
+                    .as_deref()
+                    .map(|name| self.class_name_to_type(name, vec![]))
+                    .transpose()?,
+            };
 
             let interfaces = stub
                 .interfaces
@@ -223,11 +222,21 @@ impl<'a> TypeStoreLoader<'a> {
             (super_class, interfaces)
         };
 
-        let methods = stub
-            .methods
+        let fields = stub
+            .fields
             .iter()
-            .map(|m| self.build_method_def(m, &type_vars))
+            .map(|f| self.build_field_def(f, &type_vars))
             .collect::<Result<Vec<_>, _>>()?;
+
+        let mut constructors = Vec::new();
+        let mut methods = Vec::new();
+        for m in &stub.methods {
+            match m.name.as_str() {
+                "<clinit>" => continue,
+                "<init>" => constructors.push(self.build_constructor_def(m, &type_vars)?),
+                _ => methods.push(self.build_method_def(m, &type_vars)?),
+            }
+        }
 
         Ok(ClassDef {
             name: binary_name.to_string(),
@@ -235,9 +244,80 @@ impl<'a> TypeStoreLoader<'a> {
             type_params,
             super_class,
             interfaces,
-            fields: vec![],
-            constructors: vec![],
+            fields,
+            constructors,
             methods,
+        })
+    }
+
+    fn build_field_def(&mut self, stub: &FieldStub, type_vars: &HashMap<String, TypeVarId>) -> Result<FieldDef, TypeLoadError> {
+        const ACC_STATIC: u16 = 0x0008;
+        const ACC_FINAL: u16 = 0x0010;
+
+        let ty = if let Some(sig) = stub.signature.as_deref() {
+            let sig = parse_field_signature(sig)?;
+            self.type_sig_to_type(&sig, type_vars)?
+        } else {
+            let desc = parse_field_descriptor(&stub.descriptor)?;
+            self.field_type_to_type(&desc)?
+        };
+
+        Ok(FieldDef {
+            name: stub.name.clone(),
+            ty,
+            is_static: stub.access_flags & ACC_STATIC != 0,
+            is_final: stub.access_flags & ACC_FINAL != 0,
+        })
+    }
+
+    fn build_constructor_def(
+        &mut self,
+        stub: &MethodStub,
+        class_type_vars: &HashMap<String, TypeVarId>,
+    ) -> Result<ConstructorDef, TypeLoadError> {
+        const ACC_PRIVATE: u16 = 0x0002;
+        const ACC_VARARGS: u16 = 0x0080;
+
+        let is_varargs = stub.access_flags & ACC_VARARGS != 0;
+        let is_accessible = stub.access_flags & ACC_PRIVATE == 0;
+
+        let params = if let Some(sig) = stub.signature.as_deref() {
+            let sig = parse_method_signature(sig)?;
+
+            let object = self.object_type()?;
+            let mut type_vars = class_type_vars.clone();
+
+            for tp in &sig.type_parameters {
+                let id = self.store.add_type_param(tp.name.clone(), vec![object.clone()]);
+                type_vars.insert(tp.name.clone(), id);
+            }
+            for tp in &sig.type_parameters {
+                let id = type_vars
+                    .get(&tp.name)
+                    .copied()
+                    .expect("constructor type vars just inserted");
+                let bounds = self.bounds_for_type_parameter(tp, &type_vars)?;
+                if let Some(slot) = self.store.type_params.get_mut(id.0 as usize) {
+                    slot.upper_bounds = bounds;
+                }
+            }
+
+            sig.parameters
+                .iter()
+                .map(|p| self.type_sig_to_type(p, &type_vars))
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            let desc = parse_method_descriptor(&stub.descriptor)?;
+            desc.params
+                .iter()
+                .map(|p| self.field_type_to_type(p))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+
+        Ok(ConstructorDef {
+            params,
+            is_varargs,
+            is_accessible,
         })
     }
 
