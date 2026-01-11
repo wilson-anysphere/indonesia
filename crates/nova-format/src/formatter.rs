@@ -575,7 +575,9 @@ impl<'a> FormatState<'a> {
                 WordKind::Other | WordKind::Switch | WordKind::For | WordKind::Try => {
                     info.type_like
                 }
-                WordKind::Case | WordKind::Default | WordKind::Control | WordKind::ExprStart => false,
+                WordKind::Case | WordKind::Default | WordKind::Control | WordKind::ExprStart => {
+                    false
+                }
             },
             Some(SigToken::Punct(p)) => matches!(
                 p,
@@ -2027,7 +2029,12 @@ fn should_space_before_unary(prev: Option<SigToken>) -> bool {
         Some(SigToken::Punct(p)) => {
             !(p.is_opening_delim() || p.is_chain_separator() || p == Punct::At)
         }
-        Some(SigToken::Word(_) | SigToken::Literal | SigToken::GenericClose { .. } | SigToken::Comment) => true,
+        Some(
+            SigToken::Word(_)
+            | SigToken::Literal
+            | SigToken::GenericClose { .. }
+            | SigToken::Comment,
+        ) => true,
     }
 }
 
