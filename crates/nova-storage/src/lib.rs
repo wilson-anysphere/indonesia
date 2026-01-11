@@ -48,7 +48,7 @@ pub use write::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::io::{Seek, SeekFrom, Write};
     use std::sync::{Arc, Barrier, Mutex};
 
@@ -60,7 +60,7 @@ mod tests {
     }
 
     impl EnvVarGuard {
-        fn set(key: &'static str, value: &str) -> Self {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
             let prev = std::env::var_os(key);
             std::env::set_var(key, value);
             Self { key, prev }

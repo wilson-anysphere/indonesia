@@ -146,6 +146,7 @@ fn derived_artifact_cache_oversized_payload_is_cache_miss() {
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedDerivedValueOwned<T> {
     schema_version: u32,
+    query_schema_version: u32,
     nova_version: String,
     saved_at_millis: u64,
     query_name: String,
@@ -157,6 +158,7 @@ struct PersistedDerivedValueOwned<T> {
 fn derived_artifact_cache_gc_respects_global_max_bytes() {
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
+    let query_schema_version = 1;
 
     #[derive(Debug, Serialize)]
     struct BigValue {
@@ -175,7 +177,9 @@ fn derived_artifact_cache_gc_respects_global_max_bytes() {
             let args = Args {
                 file: format!("{query}-{i}.java"),
             };
-            cache.store(query, &args, &inputs, &value).unwrap();
+            cache
+                .store(query, query_schema_version, &args, &inputs, &value)
+                .unwrap();
         }
     }
 
@@ -196,6 +200,7 @@ fn derived_artifact_cache_gc_respects_global_max_bytes() {
 fn derived_artifact_cache_gc_respects_ttl() {
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
+    let query_schema_version = 1;
 
     let mut inputs = BTreeMap::new();
     inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
@@ -208,10 +213,10 @@ fn derived_artifact_cache_gc_respects_ttl() {
     };
 
     cache
-        .store("ttl_query", &args1, &inputs, &Value { answer: 1 })
+        .store("ttl_query", query_schema_version, &args1, &inputs, &Value { answer: 1 })
         .unwrap();
     cache
-        .store("ttl_query", &args2, &inputs, &Value { answer: 2 })
+        .store("ttl_query", query_schema_version, &args2, &inputs, &Value { answer: 2 })
         .unwrap();
 
     let query_dir = temp.path().join("ttl_query");
@@ -232,6 +237,17 @@ fn derived_artifact_cache_gc_respects_ttl() {
     persisted.saved_at_millis = 0;
     let bytes = bincode_options().serialize(&persisted).unwrap();
     std::fs::write(old_path, bytes).unwrap();
+
+    // Ensure the other entry always looks fresh regardless of wall-clock skew
+    // (e.g. if the system clock jumps forward between `store()` and `gc()`).
+    let fresh_path = &entries[1];
+    let bytes = std::fs::read(fresh_path).unwrap();
+    let mut persisted: PersistedDerivedValueOwned<Value> =
+        bincode_options().deserialize(&bytes).unwrap();
+    persisted.saved_at_millis = u64::MAX;
+    let bytes = bincode_options().serialize(&persisted).unwrap();
+    std::fs::write(fresh_path, bytes).unwrap();
+
     let _ = std::fs::remove_file(query_dir.join("index.json"));
 
     let policy = DerivedCachePolicy {
@@ -250,6 +266,7 @@ fn derived_artifact_cache_gc_respects_ttl() {
 fn derived_artifact_cache_gc_survives_corrupt_index() {
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
+    let query_schema_version = 1;
 
     let mut inputs = BTreeMap::new();
     inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
@@ -259,7 +276,13 @@ fn derived_artifact_cache_gc_survives_corrupt_index() {
             file: format!("Main{i}.java"),
         };
         cache
-            .store("corrupt_index", &args, &inputs, &Value { answer: i })
+            .store(
+                "corrupt_index",
+                query_schema_version,
+                &args,
+                &inputs,
+                &Value { answer: i },
+            )
             .unwrap();
     }
 

@@ -161,7 +161,7 @@ fn prune_ast(
 
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy().to_string();
-        if file_name == "metadata.bin" || file_name == "metadata.lock" {
+        if file_name == "metadata.bin" || file_name == ".lock" || file_name == "metadata.lock" {
             continue;
         }
 
@@ -544,7 +544,7 @@ fn gather_ast_candidates(
         }
 
         let file_name = entry.file_name().to_string_lossy().to_string();
-        if file_name == "metadata.bin" || file_name == "metadata.lock" {
+        if file_name == "metadata.bin" || file_name == ".lock" || file_name == "metadata.lock" {
             continue;
         }
 
@@ -866,8 +866,11 @@ fn derived_entry_saved_at_millis(path: &Path, report: &mut PruneReport) -> Optio
         }
     };
 
+    // Derived cache entries are bincode-serialized with Nova's shared options
+    // (fixed-int, little-endian). Use the same config here; mixing bincode
+    // encodings can lead to bogus lengths and OOMs on corrupted data.
     let mut reader = std::io::BufReader::new(file);
-    let (schema_version, nova_version, saved_at_millis): (u32, String, u64) =
+    let (schema_version, _query_schema_version, nova_version, saved_at_millis): (u32, u32, String, u64) =
         match bincode_options_limited().deserialize_from(&mut reader) {
             Ok(value) => value,
             Err(err) => {

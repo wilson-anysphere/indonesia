@@ -63,15 +63,16 @@ fn rewrite_query_saved_at<T: Serialize + for<'de> Deserialize<'de>>(
 ) {
     let bytes = std::fs::read(entry_path).unwrap();
     let mut persisted: PersistedDerivedValueOwned<T> =
-        ast_bincode_options().deserialize(&bytes).unwrap();
+        derived_bincode_options().deserialize(&bytes).unwrap();
     persisted.saved_at_millis = saved_at_millis;
-    let bytes = ast_bincode_options().serialize(&persisted).unwrap();
+    let bytes = derived_bincode_options().serialize(&persisted).unwrap();
     std::fs::write(entry_path, bytes).unwrap();
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedDerivedValueOwned<T> {
     schema_version: u32,
+    query_schema_version: u32,
     nova_version: String,
     saved_at_millis: u64,
     query_name: String,
@@ -96,6 +97,13 @@ struct TestAstCacheFileEntry {
 }
 
 fn ast_bincode_options() -> impl bincode::Options {
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_little_endian()
+        .with_no_limit()
+}
+
+fn derived_bincode_options() -> impl bincode::Options {
     bincode::DefaultOptions::new()
         .with_fixint_encoding()
         .with_little_endian()
@@ -155,6 +163,7 @@ fn prunes_referenced_ast_artifacts_older_than_max_age() {
 fn prunes_query_entries_older_than_max_age() {
     let (_tmp, cache_dir) = new_cache_dir();
     let cache = DerivedArtifactCache::new(cache_dir.queries_dir());
+    let query_schema_version = 1;
 
     let mut inputs = BTreeMap::new();
     inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
@@ -162,21 +171,25 @@ fn prunes_query_entries_older_than_max_age() {
     let args1 = Args {
         file: "Main.java".to_string(),
     };
-    cache.store("type_of", &args1, &inputs, &42u32).unwrap();
+    cache
+        .store("type_of", query_schema_version, &args1, &inputs, &42u32)
+        .unwrap();
 
     let query_dir = cache_dir.queries_dir().join("type_of");
     let old_path = std::fs::read_dir(&query_dir)
         .unwrap()
-        .next()
-        .unwrap()
-        .unwrap()
-        .path();
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("bin"))
+        .unwrap();
     rewrite_query_saved_at::<u32>(&old_path, 0);
 
     let args2 = Args {
         file: "Other.java".to_string(),
     };
-    cache.store("type_of", &args2, &inputs, &43u32).unwrap();
+    cache
+        .store("type_of", query_schema_version, &args2, &inputs, &43u32)
+        .unwrap();
 
     let report = prune_cache(
         &cache_dir,
@@ -228,6 +241,7 @@ fn dry_run_does_not_delete() {
 fn max_total_bytes_evicts_oldest_first() {
     let (_tmp, cache_dir) = new_cache_dir();
     let cache = DerivedArtifactCache::new(cache_dir.queries_dir());
+    let query_schema_version = 1;
 
     let mut inputs = BTreeMap::new();
     inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
@@ -235,27 +249,31 @@ fn max_total_bytes_evicts_oldest_first() {
     let args1 = Args {
         file: "Main.java".to_string(),
     };
-    cache.store("type_of", &args1, &inputs, &1u32).unwrap();
+    cache
+        .store("type_of", query_schema_version, &args1, &inputs, &1u32)
+        .unwrap();
 
     let query_dir = cache_dir.queries_dir().join("type_of");
     let old_path = std::fs::read_dir(&query_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .find(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .find(|p| p.extension().and_then(|ext| ext.to_str()) == Some("bin"))
         .unwrap();
     rewrite_query_saved_at::<u32>(&old_path, 1);
 
     let args2 = Args {
         file: "Other.java".to_string(),
     };
-    cache.store("type_of", &args2, &inputs, &2u32).unwrap();
+    cache
+        .store("type_of", query_schema_version, &args2, &inputs, &2u32)
+        .unwrap();
 
     let mut entries: Vec<_> = std::fs::read_dir(&query_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("bin"))
+        .filter(|p| p.extension().and_then(|ext| ext.to_str()) == Some("bin"))
         .collect();
     entries.sort();
     assert_eq!(entries.len(), 2);

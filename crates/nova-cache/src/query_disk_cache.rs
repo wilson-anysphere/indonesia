@@ -5,8 +5,7 @@ use crate::util::{
     BINCODE_PAYLOAD_LIMIT_BYTES,
 };
 use bincode::Options;
-use serde::de::IgnoredAny;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -351,15 +350,6 @@ struct PersistedQueryValueHeader {
     key_fingerprint: Fingerprint,
 }
 
-#[derive(Debug, Deserialize)]
-struct PersistedQueryValueHeaderRaw {
-    schema_version: u32,
-    nova_version: String,
-    saved_at_millis: u64,
-    key: IgnoredAny,
-    key_fingerprint: Fingerprint,
-}
-
 fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if meta.file_type().is_symlink() || !meta.is_file() {
@@ -375,12 +365,17 @@ fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
 
     // We intentionally stop before the `value` payload so GC doesn't need to
     // read the full cached value into memory.
-    let raw: PersistedQueryValueHeaderRaw = opts.deserialize_from(&mut reader).ok()?;
+    let schema_version: u32 = opts.deserialize_from(&mut reader).ok()?;
+    let nova_version: String = opts.deserialize_from(&mut reader).ok()?;
+    let saved_at_millis: u64 = opts.deserialize_from(&mut reader).ok()?;
+    // Skip the stored `key` (GC only needs the fingerprint).
+    let _: String = opts.deserialize_from(&mut reader).ok()?;
+    let key_fingerprint: Fingerprint = opts.deserialize_from(&mut reader).ok()?;
 
     Some(PersistedQueryValueHeader {
-        schema_version: raw.schema_version,
-        nova_version: raw.nova_version,
-        saved_at_millis: raw.saved_at_millis,
-        key_fingerprint: raw.key_fingerprint,
+        schema_version,
+        nova_version,
+        saved_at_millis,
+        key_fingerprint,
     })
 }

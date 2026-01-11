@@ -648,7 +648,6 @@ fn read_saved_at_millis(path: &Path) -> Option<u64> {
     if nova_version != nova_core::NOVA_VERSION {
         return None;
     }
-
     Some(saved_at_millis)
 }
 
