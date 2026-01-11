@@ -64,6 +64,7 @@ const WORKER_RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(50);
 const WORKER_RESTART_BACKOFF_MAX: Duration = Duration::from_secs(5);
 const WORKER_SESSION_RESET_BACKOFF_AFTER: Duration = Duration::from_secs(10);
 const WORKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const WORKER_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
 const WORKER_KILL_TIMEOUT: Duration = Duration::from_secs(2);
 const WORKER_RESTART_JITTER_DIVISOR: u32 = 4;
 
@@ -877,8 +878,7 @@ fn scored_symbol_cmp(a: &ScoredSymbol, b: &ScoredSymbol) -> std::cmp::Ordering {
 }
 
 async fn wait_for_worker(state: Arc<RouterState>, shard_id: ShardId) -> Result<WorkerHandle> {
-    let deadline = Duration::from_secs(10);
-    timeout(deadline, async {
+    timeout(WORKER_WAIT_TIMEOUT, async {
         loop {
             if let Some(worker) = {
                 let guard = state.shards.lock().await;
