@@ -248,7 +248,7 @@ impl Client {
 
         let request_type = request_type(&request);
 
-        let start = tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG)
+        let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG)
             .then(Instant::now);
 
         let span = tracing::debug_span!(
@@ -288,8 +288,8 @@ impl Client {
             let status = rpc_result_status(&response);
             let error_code = rpc_result_error_code_str(&response);
             tracing::debug!(
-                parent: &parent_span,
                 target: TRACE_TARGET,
+                parent: &parent_span,
                 event = "call_complete",
                 worker_id = self.inner.worker_id,
                 shard_id = self.inner.shard_id,
@@ -358,7 +358,7 @@ impl Server {
 
         let request_type = request_type(&request);
 
-        let start = tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG)
+        let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG)
             .then(Instant::now);
 
         let span = tracing::debug_span!(
@@ -398,8 +398,8 @@ impl Server {
             let status = rpc_result_status(&response);
             let error_code = rpc_result_error_code_str(&response);
             tracing::debug!(
-                parent: &parent_span,
                 target: TRACE_TARGET,
+                parent: &parent_span,
                 event = "call_complete",
                 worker_id = self.inner.worker_id,
                 shard_id = self.inner.shard_id,
@@ -491,7 +491,7 @@ async fn client_handshake(
     config: &ClientConfig,
 ) -> Result<RouterWelcome> {
     let start =
-        tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG).then(Instant::now);
+        tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
 
     tracing::debug!(
         target: TRACE_TARGET,
@@ -602,7 +602,7 @@ async fn server_handshake(
     config: &ServerConfig,
 ) -> Result<(RouterWelcome, ShardId, bool)> {
     let start =
-        tracing::enabled!(target: TRACE_TARGET, level: tracing::Level::DEBUG).then(Instant::now);
+        tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
 
     tracing::debug!(
         target: TRACE_TARGET,
@@ -854,7 +854,13 @@ async fn read_wire_frame(
         ));
     }
 
-    let mut buf = vec![0u8; len as usize];
+    // Use fallible reservation so allocation failure surfaces as an error rather than aborting the
+    // process.
+    let len_usize = len as usize;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(len_usize)
+        .with_context(|| format!("allocate frame buffer ({len} bytes)"))?;
+    buf.resize(len_usize, 0);
     stream
         .read_exact(&mut buf)
         .await
@@ -909,7 +915,11 @@ fn maybe_decompress(
                     max_packet_len
                 ));
             }
-            Ok(data.to_vec())
+            let mut out = Vec::new();
+            out.try_reserve_exact(data.len())
+                .context("allocate packet buffer")?;
+            out.extend_from_slice(data);
+            Ok(out)
         }
         CompressionAlgo::Zstd => decompress_zstd_with_limit(data, max_packet_len),
         CompressionAlgo::Unknown => Err(anyhow!("unsupported compression algorithm: unknown")),
@@ -932,6 +942,7 @@ fn decompress_zstd_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>> {
                 limit
             ));
         }
+        out.try_reserve(n).context("allocate decompression buffer")?;
         out.extend_from_slice(&buf[..n]);
     }
     Ok(out)
@@ -1295,6 +1306,7 @@ mod tests {
             .with_writer(writer)
             .with_ansi(false)
             .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
 
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
 
@@ -1306,18 +1318,13 @@ mod tests {
         let mut server_cfg = ServerConfig::default();
         server_cfg.expected_auth_token = Some(secret.clone());
 
-        let fut = tracing::subscriber::with_default(subscriber, || async move {
-            let server_task = tokio::spawn(async move {
-                let _server = Server::accept(server_stream, server_cfg).await?;
-                Ok::<_, anyhow::Error>(())
-            });
-
-            let _client = Client::connect(client_stream, client_cfg).await?;
-            server_task.await??;
+        let server_task = tokio::spawn(async move {
+            let _server = Server::accept(server_stream, server_cfg).await?;
             Ok::<_, anyhow::Error>(())
         });
 
-        fut.await?;
+        let _client = Client::connect(client_stream, client_cfg).await?;
+        server_task.await??;
 
         let output = String::from_utf8(buf.lock().unwrap().clone()).context("decode output")?;
         assert!(
@@ -1338,6 +1345,7 @@ mod tests {
             .with_writer(writer)
             .with_ansi(false)
             .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
 
         let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
 
@@ -1356,30 +1364,25 @@ mod tests {
             }],
         };
 
-        let fut = tracing::subscriber::with_default(subscriber, || async move {
-            let server_task = tokio::spawn(async move {
-                let mut server = Server::accept(server_stream, server_cfg).await?;
-                let req = server
-                    .recv_request()
-                    .await
-                    .ok_or_else(|| anyhow!("missing request"))?;
-                assert!(matches!(req.request, Request::LoadFiles { .. }));
-                server.respond_ok(req.request_id, Response::Ack).await?;
-                Ok::<_, anyhow::Error>(())
-            });
-
-            let client = Client::connect(client_stream, client_cfg).await?;
-            let resp = client.call(request).await?;
-            match resp {
-                RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
-                other => return Err(anyhow!("unexpected response: {other:?}")),
-            }
-
-            server_task.await??;
+        let server_task = tokio::spawn(async move {
+            let mut server = Server::accept(server_stream, server_cfg).await?;
+            let req = server
+                .recv_request()
+                .await
+                .ok_or_else(|| anyhow!("missing request"))?;
+            assert!(matches!(req.request, Request::LoadFiles { .. }));
+            server.respond_ok(req.request_id, Response::Ack).await?;
             Ok::<_, anyhow::Error>(())
         });
 
-        fut.await?;
+        let client = Client::connect(client_stream, client_cfg).await?;
+        let resp = client.call(request).await?;
+        match resp {
+            RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
+            other => return Err(anyhow!("unexpected response: {other:?}")),
+        }
+
+        server_task.await??;
 
         let output = String::from_utf8(buf.lock().unwrap().clone()).context("decode output")?;
         assert!(
