@@ -97,7 +97,7 @@ fn validate_architecture_map(
         );
     }
 
-    let quick_link_diags = validate_quick_links(doc, repo_root, doc_path);
+    let quick_link_diags = validate_quick_links(doc, repo_root, doc_path, workspace_crates);
     diagnostics.extend(quick_link_diags);
 
     if strict {
@@ -189,7 +189,12 @@ fn missing_required_bullets(section: &CrateSection) -> Vec<&'static str> {
     missing
 }
 
-fn validate_quick_links(doc: &str, repo_root: &Path, doc_path: &Path) -> Vec<Diagnostic> {
+fn validate_quick_links(
+    doc: &str,
+    repo_root: &Path,
+    doc_path: &Path,
+    workspace_crates: &BTreeSet<String>,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut in_section = false;
 
@@ -251,6 +256,18 @@ fn validate_quick_links(doc: &str, repo_root: &Path, doc_path: &Path) -> Vec<Dia
                 continue;
             }
 
+            if looks_like_crate_ref(&span) && !workspace_crates.contains(&span) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "stale-quick-link-crate",
+                        format!("quick-link references unknown crate `{}`", span),
+                    )
+                    .with_file(doc_path.display().to_string())
+                    .with_line(line_no),
+                );
+                continue;
+            }
+
             if let Some(base_dir) = base.as_ref() {
                 if !looks_like_path(&span) {
                     continue;
@@ -295,6 +312,12 @@ fn trim_glob(span: &str) -> &str {
 
 fn looks_like_path(span: &str) -> bool {
     span.contains('/') || span.contains('.') || span.contains('*')
+}
+
+fn looks_like_crate_ref(span: &str) -> bool {
+    // We only validate things that look like workspace crates to avoid flagging documentation
+    // terms like `nova/*` method names.
+    span == "xtask" || span.starts_with("nova-")
 }
 
 fn glob_exists(repo_root: &Path, pattern: &str) -> bool {
@@ -487,5 +510,39 @@ mod tests {
             diags.iter().all(|d| d.level != DiagnosticLevel::Error),
             "unexpected errors: {diags:#?}"
         );
+    }
+
+    #[test]
+    fn quick_links_validate_nova_crate_references() {
+        let doc = r#"
+# Architecture map
+
+## If you're looking for...
+- Something: `crates/crate-a/` (wired into `nova-missing`)
+
+## Crate-by-crate map (alphabetical)
+
+### `crate-a`
+- **Purpose:** example
+- **Key entry points:** `crates/crate-a/src/lib.rs`
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - none
+"#;
+
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("crates/crate-a/src")).unwrap();
+        fs::write(tmp.path().join("crates/crate-a/src/lib.rs"), "").unwrap();
+
+        let workspace = BTreeSet::from(["crate-a".to_string()]);
+        let diags = validate_architecture_map(
+            doc,
+            tmp.path(),
+            Path::new("docs/architecture-map.md"),
+            &workspace,
+            false,
+        );
+
+        assert!(diags.iter().any(|d| d.code == "stale-quick-link-crate"));
     }
 }

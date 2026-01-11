@@ -26,7 +26,7 @@ jobs:
         run: |
           cargo run -p nova-devtools -- check-deps
           cargo run -p nova-devtools -- check-layers
-          cargo run -p nova-devtools -- check-architecture-map
+          cargo run -p nova-devtools -- check-architecture-map --strict
       - name: clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
