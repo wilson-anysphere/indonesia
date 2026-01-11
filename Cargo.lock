@@ -3991,6 +3991,7 @@ dependencies = [
  "nova-hir",
  "nova-modules",
  "nova-syntax",
+ "nova-workspace",
  "regex",
  "roxmltree",
  "serde",

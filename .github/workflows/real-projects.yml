@@ -27,7 +27,10 @@ jobs:
       CARGO_TERM_COLOR: never
       RUST_BACKTRACE: "1"
       RUST_TEST_THREADS: "1"
+      # The test suite uses `NOVA_TEST_PROJECTS` (and `NOVA_REAL_PROJECT` as an alias)
+      # to skip fixtures when iterating.
       NOVA_TEST_PROJECTS: ${{ github.event.inputs.only || '' }}
+      NOVA_REAL_PROJECT: ${{ github.event.inputs.only || '' }}
 
     steps:
       - name: Checkout
@@ -240,3 +243,4 @@ jobs:
           path: |
             real-project-logs/*.log
             test-projects/pins.toml
+

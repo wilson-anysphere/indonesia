@@ -24,3 +24,4 @@ nova-build-bazel = { path = "../nova-build-bazel", optional = true }
 [dev-dependencies]
 anyhow = "1"
 tempfile = "3.10.1"
+nova-workspace = { path = "../nova-workspace" }

@@ -10,6 +10,7 @@ use crate::{
     WorkspaceModuleBuildId, WorkspaceModuleConfig, WorkspaceProjectModel,
 };
 use regex::Regex;
+use walkdir::WalkDir;
 
 pub(crate) fn load_maven_project(
     root: &Path,
@@ -84,18 +85,39 @@ pub(crate) fn load_maven_project(
         });
 
         // Maven standard source layout.
-        push_source_root(
+        let main_standard = push_source_root(
             &mut source_roots,
             &module_root,
             SourceRootKind::Main,
             "src/main/java",
         );
-        push_source_root(
+        let test_standard = push_source_root(
             &mut source_roots,
             &module_root,
             SourceRootKind::Test,
             "src/test/java",
         );
+
+        // Some large OSS projects (e.g. Guava) still use a legacy "src/" + "test/"
+        // layout in Maven modules. Fall back to those roots when the standard
+        // Maven conventions are not present.
+        if !main_standard {
+            push_source_root_if_has_java(
+                &mut source_roots,
+                &module_root,
+                SourceRootKind::Main,
+                "src",
+            );
+        }
+        if !test_standard {
+            push_source_root_if_has_java(
+                &mut source_roots,
+                &module_root,
+                SourceRootKind::Test,
+                "test",
+            );
+        }
+
         crate::generated::append_generated_source_roots(
             &mut source_roots,
             &module_root,
@@ -734,7 +756,7 @@ fn push_source_root(
     module_root: &Path,
     kind: SourceRootKind,
     rel: &str,
-) {
+) -> bool {
     let path = module_root.join(rel);
     if path.is_dir() {
         out.push(SourceRoot {
@@ -742,7 +764,45 @@ fn push_source_root(
             origin: SourceRootOrigin::Source,
             path,
         });
+        return true;
     }
+    false
+}
+
+fn push_source_root_if_has_java(
+    out: &mut Vec<SourceRoot>,
+    module_root: &Path,
+    kind: SourceRootKind,
+    rel: &str,
+) -> bool {
+    let path = module_root.join(rel);
+    if !path.is_dir() {
+        return false;
+    }
+
+    let has_java = WalkDir::new(&path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .any(|entry| {
+            entry.file_type().is_file()
+                && entry
+                    .path()
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("java"))
+        });
+
+    if has_java {
+        out.push(SourceRoot {
+            kind,
+            origin: SourceRootOrigin::Source,
+            path,
+        });
+        return true;
+    }
+
+    false
 }
 
 fn sort_dedup_modules(modules: &mut Vec<Module>) {

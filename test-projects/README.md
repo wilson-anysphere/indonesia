@@ -23,6 +23,9 @@ To focus on a subset of fixtures (matches `clone-test-projects.sh`):
 
 # or:
 NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/run-real-project-tests.sh
+
+# or (alias):
+NOVA_REAL_PROJECT=guava,spring-petclinic ./scripts/run-real-project-tests.sh
 ```
 
 Best-effort helper to compile the fixtures with their build toolchain (sanity-check your local JDK/Maven):
