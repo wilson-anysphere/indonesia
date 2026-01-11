@@ -583,7 +583,24 @@ fn is_build_file(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return false;
     };
-    name == "pom.xml" || name.starts_with("build.gradle") || name.starts_with("settings.gradle")
+
+    if name == "pom.xml" || name.starts_with("build.gradle") || name.starts_with("settings.gradle") {
+        return true;
+    }
+
+    match name {
+        "gradle.properties" | "gradlew" | "gradlew.bat" => true,
+        "gradle-wrapper.properties" => {
+            path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties"))
+        }
+        "mvnw" | "mvnw.cmd" => true,
+        "maven-wrapper.properties" => {
+            path.ends_with(Path::new(".mvn/wrapper/maven-wrapper.properties"))
+        }
+        "extensions.xml" => path.ends_with(Path::new(".mvn/extensions.xml")),
+        "maven.config" => path.ends_with(Path::new(".mvn/maven.config")),
+        _ => false,
+    }
 }
 
 struct EventNormalizer {
@@ -742,6 +759,41 @@ mod tests {
 
         assert_eq!(normalizer.push(create, t0), vec![NormalizedEvent::Created(p.clone())]);
         assert_eq!(normalizer.push(remove, t0), vec![NormalizedEvent::Deleted(p)]);
+    }
+
+    #[test]
+    fn build_file_changes_are_categorized_as_build() {
+        let root = PathBuf::from("/tmp/workspace");
+        let config = WorkspaceConfig::new(root.clone(), vec![], vec![], vec![]);
+
+        let build_files = [
+            root.join("pom.xml"),
+            root.join("build.gradle"),
+            root.join("build.gradle.kts"),
+            root.join("settings.gradle"),
+            root.join("settings.gradle.kts"),
+            root.join("gradle.properties"),
+            root.join("gradlew"),
+            root.join("gradlew.bat"),
+            root.join("gradle").join("wrapper").join("gradle-wrapper.properties"),
+            root.join("mvnw"),
+            root.join("mvnw.cmd"),
+            root.join(".mvn")
+                .join("wrapper")
+                .join("maven-wrapper.properties"),
+            root.join(".mvn").join("extensions.xml"),
+            root.join(".mvn").join("maven.config"),
+        ];
+
+        for path in build_files {
+            let event = NormalizedEvent::Modified(path.clone());
+            assert_eq!(
+                categorize_event(&config, &event),
+                Some(ChangeCategory::Build),
+                "expected {} to be categorized as Build",
+                path.display()
+            );
+        }
     }
 
     #[derive(Default)]
