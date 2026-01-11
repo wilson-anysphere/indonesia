@@ -1,7 +1,5 @@
 use crate::{JavaLanguage, SyntaxKind, SyntaxNode, SyntaxToken};
-
 use crate::ast::AstNode;
-
 use super::support;
 
 impl super::ImportDeclaration {
@@ -68,9 +66,28 @@ impl super::FieldDeclaration {
 
 impl super::SwitchStatement {
     pub fn labels(&self) -> impl Iterator<Item = super::SwitchLabel> + '_ {
-        self.block()
-            .into_iter()
-            .flat_map(|b| b.labels().collect::<Vec<_>>())
+        let mut out = Vec::new();
+        let Some(block) = self.block() else {
+            return out.into_iter();
+        };
+
+        // `parse_switch_block` currently wraps labels inside `SwitchGroup`/`SwitchRule` nodes, so
+        // `SwitchLabel` is not a direct child of the `SwitchBlock`.
+        for child in block.syntax().children() {
+            match child.kind() {
+                SyntaxKind::SwitchGroup | SyntaxKind::SwitchRule => {
+                    out.extend(child.children().filter_map(super::SwitchLabel::cast));
+                }
+                SyntaxKind::SwitchLabel => {
+                    if let Some(label) = super::SwitchLabel::cast(child) {
+                        out.push(label);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        out.into_iter()
     }
 }
 

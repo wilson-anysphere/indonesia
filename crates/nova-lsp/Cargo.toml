@@ -44,7 +44,6 @@ nova-build-bazel = { path = "../nova-build-bazel", features = ["bsp"] }
 nova-framework-micronaut = { path = "../nova-framework-micronaut" }
 nova-framework-mapstruct = { path = "../nova-framework-mapstruct" }
 nova-vfs = { path = "../nova-vfs", features = ["lsp"] }
-nova-ext = { path = "../nova-ext" }
 
 # Hardening / crash recovery support.
 nova-bugreport = { path = "../nova-bugreport" }

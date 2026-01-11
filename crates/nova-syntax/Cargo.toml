@@ -13,7 +13,6 @@ nova-memory = { path = "../nova-memory" }
 nova-vfs = { path = "../nova-vfs" }
 rowan = "0.15.17"
 text-size = "1.1.1"
-thiserror = { workspace = true }
 unicode-ident = "1"
 
 [dev-dependencies]
