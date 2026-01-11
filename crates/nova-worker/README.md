@@ -17,10 +17,35 @@ the “secure remote mode” requirements in
 - use TLS for all TCP traffic (`tcp+tls:`),
 - authenticate workers (mTLS recommended; bearer token over TLS acceptable),
 - authorize workers for specific shard(s),
-- do not pass secrets via `argv` or write them to logs (prefer token files / env vars).
+- do not pass secrets via `argv` or write them to logs.
 
 ⚠️ Plaintext `tcp:` is not secure and should only be used with an explicit “insecure” opt-in in
 isolated dev setups.
+
+## Protocol (nova remote RPC v3)
+
+Nova is migrating the router↔worker transport from the legacy lockstep protocol
+(`nova_remote_proto::legacy_v2`, bincode-encoded, no request IDs) to **nova remote RPC v3** (see
+[`docs/17-remote-rpc-protocol.md`](../../docs/17-remote-rpc-protocol.md)).
+
+At a high level, v3 adds:
+
+- **Version & capability negotiation** during an initial `Hello → Welcome/Reject` handshake.
+- **Multiplexing**: multiple concurrent in-flight RPCs on a single connection.
+- **Request IDs** (`request_id: u64`) for correlation:
+  - router-initiated IDs are **even** (`2, 4, 6, ...`),
+  - worker-initiated IDs are **odd** (`1, 3, 5, ...`).
+- **Chunking** for large messages via `PacketChunk` (bounded reassembly).
+- Optional negotiated **compression** (`none` / `zstd`) on a per-packet basis.
+
+v3 is a framed stream (a `u32` little-endian length prefix followed by a CBOR `WireFrame` payload).
+
+### Configuration knobs (defaults)
+
+The v3 handshake carries capability and limit negotiation (frame/payload size bounds, compression
+algorithms, etc.). `nova-worker` does not currently expose v3-specific CLI flags for tuning these;
+it uses built-in defaults and the router chooses the final negotiated settings. Transport-level
+timeouts/keepalive (when enabled) are likewise internal defaults rather than CLI-configurable knobs.
 
 ## Usage
 
@@ -40,17 +65,19 @@ nova-worker \
   - Remote (TLS, feature-gated): `tcp+tls:127.0.0.1:9000`
 - `--shard-id <id>`: numeric shard identifier (assigned by the router).
 - `--cache-dir <dir>`: directory used to persist the shard index across restarts.
-- Authentication (remote mode)
-  - **Preferred:** `--auth-token-file <path>` (read a shard-scoped bearer token from a file)
-  - Alternative: `--auth-token-env <VAR>` (read the token from an environment variable)
-  - Legacy/insecure: `--auth-token <token>` (discouraged; secrets must not be passed via `argv`)
+- `--auth-token <token>`: optional bearer token used during the initial handshake (router must be
+  configured with the same token).
+  - ⚠️ The token is sent in cleartext unless the transport is encrypted (use `tcp+tls:` for remote
+    connections).
+  - ⚠️ Secrets on the command line may be visible to other same-host users via process listings.
+    Prefer mTLS for production deployments.
 
 ### TLS (optional)
 
 When built with the `tls` feature, workers can connect via TLS. For secure remote mode, TLS is
 required.
 
-Bearer token over TLS (token read from a file; do not pass tokens via `argv`):
+Bearer token over TLS:
 
 ```bash
 nova-worker \
@@ -59,7 +86,7 @@ nova-worker \
   --tls-domain router.example.com \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache \
-  --auth-token-file ./shard-0.token
+  --auth-token <token>
 ```
 
 mTLS is the recommended long-term authentication mechanism for production remote deployments (see
@@ -77,3 +104,24 @@ nova-worker \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache
 ```
+
+## Troubleshooting
+
+### Handshake rejected (v3)
+
+In v3, the router may reject the initial handshake with `Reject { code, message }`. Common causes:
+
+- `unsupported_version`: router and worker could not negotiate a mutually supported v3 version.
+  Upgrade/downgrade one side so their supported version ranges overlap.
+- `unauthorized`: authentication failed (missing/invalid `--auth-token`, or worker is not authorized
+  for the claimed `--shard-id`).
+- `invalid_request`: protocol mismatch (e.g. trying to connect a legacy v2 worker to a v3 router, or
+  vice versa), malformed frames, or invalid capability values.
+
+### TLS connect errors
+
+- Ensure both router and worker are built with the `tls` feature.
+- Verify `--tls-ca-cert` is the CA that signed the router certificate and `--tls-domain` matches a
+  SAN on the router certificate.
+- For mTLS, ensure `--tls-client-cert` / `--tls-client-key` are valid and the router trusts the
+  client CA (and any shard-scoping policy allows the worker identity).

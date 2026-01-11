@@ -7,11 +7,14 @@ It is an MVP of the “distributed queries” direction described in
 [`docs/04-incremental-computation.md`](04-incremental-computation.md), but it also calls out the
 correctness and security guardrails that matter for real usage.
 
-**Protocol note:** the original MVP used a simple lockstep, bincode-based protocol
-(`nova_remote_proto::legacy_v2`). New work should target **nova remote RPC v3**, which adds explicit
+**Protocol note:** the current distributed mode uses a simple lockstep, bincode-based protocol
+(`nova_remote_proto::legacy_v2`). Work is underway to migrate to **nova remote RPC v3**, which adds
+explicit
 `request_id: u64` (**router even**, **worker odd**), multiplexing, chunking (`PacketChunk`), and
-negotiated compression/cancellation. See
+negotiated compression/cancellation. See the on-the-wire spec in
 [`docs/17-remote-rpc-protocol.md`](17-remote-rpc-protocol.md).
+
+v3 is not wire-compatible with `legacy_v2`; mixed router/worker versions will fail the handshake.
 
 ## Scope (what exists today)
 
@@ -40,8 +43,8 @@ parallelization, etc.) should be treated as **future work** and is documented se
   - Calls into the router for shard indexing and workspace symbol search.
 - **Router (`nova-router`)**
   - Owns the *sharding layout* (source roots → shard IDs).
-  - Listens for worker connections over the nova remote RPC transport (legacy bincode today; v3 is the
-    intended long-term protocol).
+  - Listens for worker connections over the nova remote RPC transport (legacy bincode today; v3 is
+    the intended long-term protocol).
   - Optionally spawns and supervises local `nova-worker` processes (one per shard).
   - Answers workspace symbol queries by requesting top-k matches from shard workers
     (`SearchSymbols`) and merging results.
@@ -87,8 +90,8 @@ still trigger a real `index_workspace` to refresh results when correctness matte
 
 ### Worker restart behavior (“rehydration”)
 
-When a worker connects, it advertises whether it has a cached shard index (and, in the v3
-protocol, the cached index’s metadata).
+When a worker connects, it advertises whether it has a cached shard index and includes cached
+index metadata in the v3 `Hello` handshake.
 
 If a worker reports a cached index, the router will then send `LoadFiles` with a full on-disk
 snapshot of the shard’s files to **rehydrate** the worker’s in-memory file map.
@@ -167,8 +170,9 @@ nova-worker \
 ### Remote mode (optional, not hardened)
 
 The router can listen on TCP and accept workers connecting from other machines. An authentication
-token is supported as a stub (a shared secret sent by the worker during the initial `WorkerHello`
-handshake).
+token is supported as a stub (a shared secret sent by the worker during the initial handshake).
+Because the token is sent on the wire, remote TCP deployments MUST use TLS (`tcp+tls:`) to avoid
+leaking it.
 
 This mode is best thought of as: **router stays close to the filesystem; workers are compute-only**.
 Workers do not need direct access to the project checkout because the router sends full file
@@ -182,7 +186,7 @@ reduction), prefer **mutual TLS (mTLS)** + explicit shard authorization (see
 
 When configured for mTLS, the router can enforce shard-scoped authorization by checking the SHA-256
 fingerprint of the presented client certificate. This prevents a valid-but-mis-scoped worker (still
-signed by the CA) from claiming an arbitrary `shard_id` via `WorkerHello`.
+signed by the CA) from claiming an arbitrary `shard_id` via the initial `Hello` handshake.
 
 #### Fingerprint allowlists (mTLS)
 
@@ -224,7 +228,7 @@ nova-worker \
   --tls-domain router.example.com \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache \
-  --auth-token secret-token
+  --auth-token <token>
 ```
 
 For the intended “secure remote mode” requirements (TLS + authentication + shard-scoped
@@ -241,9 +245,9 @@ Distributed mode currently prioritizes correctness and simplicity over throughpu
 - **Full shard rebuilds.** `UpdateFile` triggers a full rebuild of the shard index (not an
   incremental update).
 - **Large payloads / memory spikes.** The router and worker both hold full file texts in memory.
-  The current transport has no chunking, so very large shards can cause high peak memory usage.
-  The v3 protocol is intended to add chunking/reassembly and negotiated size limits, but it is not
-  yet wired into `nova-router`/`nova-worker`.
+  Very large shards can cause high peak memory usage. The v3 transport mitigates this with
+  negotiated frame/payload size limits and optional `PacketChunk` chunking (and, optionally,
+  compression) to avoid unbounded allocations.
 - **Sequential indexing.** `index_workspace` currently indexes shards in a straightforward loop,
   rather than aggressively parallelizing shard RPCs.
 
@@ -255,7 +259,7 @@ into more shards (more source roots) to bound per-message and per-worker memory.
 Remote mode is **not hardened** and should not be exposed to untrusted networks.
 
 - The `--auth-token` is a **shared secret** and is sent by the worker during the initial handshake
-  (`WorkerHello`).
+  (`Hello.auth_token`).
   **Do not send it over plaintext TCP.**
 - Plain `tcp:` also sends **full file contents** in cleartext. Use TLS for any remote deployment.
 - TLS support exists behind the `tls` Cargo feature for both router and worker (see the worker
@@ -263,9 +267,10 @@ Remote mode is **not hardened** and should not be exposed to untrusted networks.
   feature enabled.
 - For stronger authentication/authorization guarantees, configure **mTLS** (client certificate
   verification) and shard-scoped authorization (e.g. the router’s client-cert fingerprint allowlist).
-- Even with TLS/mTLS enabled, the current protocol is still missing key DoS hardening (maximum frame
-  size enforcement, handshake/hello timeouts, connection limits, rate limiting). Treat it as “trusted
-  network / VPN only” unless you add those guardrails.
+- Even with TLS/mTLS enabled, remote deployments still need DoS hardening (connection limits, rate
+  limiting, etc.). The v3 transport provides hooks for this (negotiated max frame/payload sizes,
+  handshake timeouts, keepalive/idle timeouts), but it is not a substitute for network-level
+  controls.
 
 ## Future work (not implemented yet)
 
