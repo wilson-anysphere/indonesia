@@ -184,7 +184,8 @@ fn resolved_method_collapses_varargs_patterns_for_display() {
         explicit_type_args: vec![],
     };
 
-    let MethodResolution::Found(resolved) = resolve_method_call(&mut env, &call) else {
+    let mut ctx = nova_types::java::env::TyContext::new(&env);
+    let MethodResolution::Found(resolved) = resolve_method_call(&mut ctx, &call) else {
         panic!("expected method resolution success");
     };
     assert!(
