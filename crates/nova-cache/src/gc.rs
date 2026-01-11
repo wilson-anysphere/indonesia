@@ -82,13 +82,19 @@ pub fn enumerate_project_caches(
 
     let mut caches = Vec::new();
     for entry in std::fs::read_dir(cache_root)? {
-        let entry = entry?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
         let name_os = entry.file_name();
         if name_os == "deps" {
             continue;
         }
 
-        let file_type = entry.file_type()?;
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => continue,
+        };
         if !(file_type.is_dir() || file_type.is_symlink()) {
             continue;
         }
@@ -316,7 +322,11 @@ fn is_stale(last_updated_millis: Option<u64>, now_millis: u64, max_age_ms: u64) 
 fn delete_cache_dir(cache_root: &Path, cache: &ProjectCacheInfo) -> Result<(), CacheError> {
     validate_under_root(cache_root, &cache.path)?;
 
-    let meta = std::fs::symlink_metadata(&cache.path)?;
+    let meta = match std::fs::symlink_metadata(&cache.path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+    };
     if meta.file_type().is_symlink() {
         // Best-effort: remove the symlink itself, never follow it.
         remove_symlink_best_effort(&cache.path)?;
@@ -339,11 +349,16 @@ fn delete_cache_dir(cache_root: &Path, cache: &ProjectCacheInfo) -> Result<(), C
     match std::fs::rename(&cache.path, &trash) {
         Ok(()) => match remove_dir_all_nofollow(&trash) {
             Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(CacheError::Io(err)),
         },
         Err(_) => {
             // Fall back to removing in place if the rename fails (e.g. Windows file locks).
-            remove_dir_all_nofollow(&cache.path).map_err(CacheError::Io)
+            match remove_dir_all_nofollow(&cache.path) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(CacheError::Io(err)),
+            }
         }
     }
 }
@@ -435,6 +450,7 @@ fn remove_symlink_best_effort(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::IsADirectory => std::fs::remove_dir(path),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
 }
