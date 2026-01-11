@@ -31,7 +31,7 @@ All commands below are run from the repository root.
 ### Parse Java (syntax)
 
 ```bash
-cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60
+cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 ```
 
 This target runs both `nova_syntax::parse` and `nova_syntax::parse_java` on the input.
@@ -39,7 +39,7 @@ This target runs both `nova_syntax::parse` and `nova_syntax::parse_java` on the 
 ### Format Java
 
 ```bash
-cargo +nightly fuzz run fuzz_format -- -max_total_time=60
+cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_len=262144
 ```
 
 This target exercises `nova_format::format_java` and edit generation (`edits_for_formatting`).
@@ -47,7 +47,7 @@ This target exercises `nova_format::format_java` and edit generation (`edits_for
 ### Parse JVM classfiles
 
 ```bash
-cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60
+cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
 ```
 
 This target feeds arbitrary bytes into `nova_classfile::ClassFile::parse`.
@@ -57,9 +57,9 @@ This target feeds arbitrary bytes into `nova_classfile::ClassFile::parse`.
 Nova also has additional fuzz targets for deeper invariants / higher-level smoke tests:
 
 ```bash
-cargo +nightly fuzz run parse_java -- -max_total_time=60
-cargo +nightly fuzz run format_java -- -max_total_time=60
-cargo +nightly fuzz run --features refactor refactor_smoke -- -max_total_time=60
+cargo +nightly fuzz run parse_java -- -max_total_time=60 -max_len=262144
+cargo +nightly fuzz run format_java -- -max_total_time=60 -max_len=262144
+cargo +nightly fuzz run --features refactor refactor_smoke -- -max_total_time=60 -max_len=262144
 ```
 
 - `format_java` asserts formatter idempotence (`format(format(x)) == format(x)`).

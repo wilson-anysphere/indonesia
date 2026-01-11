@@ -322,9 +322,9 @@ CI runs short, time-boxed fuzz jobs in `.github/workflows/fuzz.yml` (scheduled +
 rustup toolchain install nightly --component llvm-tools-preview
 cargo +nightly install cargo-fuzz --locked
 
-RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60
-RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60
-RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60 -max_len=262144
+RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60 -max_len=262144
 ```
 
 There are additional targets (e.g. `parse_java`, `format_java`, and `refactor_smoke` which requires

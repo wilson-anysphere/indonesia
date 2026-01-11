@@ -32,13 +32,13 @@ jobs:
         run: cargo install cargo-fuzz --locked
 
       - name: fuzz_syntax_parse
-        run: cargo fuzz run fuzz_syntax_parse --codegen-units 16 -- -max_total_time=60
+        run: cargo fuzz run fuzz_syntax_parse --codegen-units 16 -- -max_total_time=60 -max_len=262144
 
       - name: fuzz_format
-        run: cargo fuzz run fuzz_format --codegen-units 16 -- -max_total_time=60
+        run: cargo fuzz run fuzz_format --codegen-units 16 -- -max_total_time=60 -max_len=262144
 
       - name: fuzz_classfile
-        run: cargo fuzz run fuzz_classfile --codegen-units 16 -- -max_total_time=60
+        run: cargo fuzz run fuzz_classfile --codegen-units 16 -- -max_total_time=60 -max_len=262144
 
       - name: Upload fuzz artifacts
         if: failure()
