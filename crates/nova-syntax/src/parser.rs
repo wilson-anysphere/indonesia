@@ -106,6 +106,17 @@ const TYPE_DECL_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Eof,
 ]);
 
+const MODULE_DIRECTIVE_RECOVERY: TokenSet = TokenSet::new(&[
+    SyntaxKind::Semicolon,
+    SyntaxKind::RBrace,
+    SyntaxKind::RequiresKw,
+    SyntaxKind::ExportsKw,
+    SyntaxKind::OpensKw,
+    SyntaxKind::UsesKw,
+    SyntaxKind::ProvidesKw,
+    SyntaxKind::Eof,
+]);
+
 const MEMBER_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Semicolon,
     SyntaxKind::RBrace,
@@ -269,6 +280,10 @@ impl<'a> Parser<'a> {
             self.parse_import_decl();
         }
 
+        if self.at_module_decl_start() {
+            self.parse_module_declaration();
+        }
+
         while !self.at(SyntaxKind::Eof) {
             let before = self.tokens.len();
             if self.at_type_decl_start() {
@@ -321,6 +336,147 @@ impl<'a> Parser<'a> {
             SyntaxKind::Semicolon,
             "expected `;` after import declaration",
         );
+        self.builder.finish_node();
+    }
+
+    fn parse_module_declaration(&mut self) {
+        self.builder
+            .start_node(SyntaxKind::ModuleDeclaration.into());
+
+        // `module-info.java` supports annotations on the module declaration.
+        while self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw) {
+            self.parse_annotation();
+        }
+
+        // `open module ... { ... }`
+        if self.at(SyntaxKind::OpenKw) && self.nth(1) == Some(SyntaxKind::ModuleKw) {
+            self.bump(); // `open`
+        }
+
+        self.expect(SyntaxKind::ModuleKw, "expected `module`");
+        self.parse_name();
+
+        self.builder.start_node(SyntaxKind::ModuleBody.into());
+        self.expect(SyntaxKind::LBrace, "expected `{` for module body");
+        while !self.at(SyntaxKind::RBrace) && !self.at(SyntaxKind::Eof) {
+            self.parse_module_directive();
+        }
+        self.expect(SyntaxKind::RBrace, "expected `}` to close module body");
+        self.builder.finish_node(); // ModuleBody
+
+        self.builder.finish_node(); // ModuleDeclaration
+    }
+
+    fn parse_module_directive(&mut self) {
+        let checkpoint = self.builder.checkpoint();
+        match self.current() {
+            SyntaxKind::RequiresKw => self.parse_requires_directive(checkpoint),
+            SyntaxKind::ExportsKw => self.parse_exports_directive(checkpoint),
+            SyntaxKind::OpensKw => self.parse_opens_directive(checkpoint),
+            SyntaxKind::UsesKw => self.parse_uses_directive(checkpoint),
+            SyntaxKind::ProvidesKw => self.parse_provides_directive(checkpoint),
+            SyntaxKind::Semicolon => {
+                self.builder.start_node_at(checkpoint, SyntaxKind::Error.into());
+                self.error_here("unexpected `;` in module body");
+                self.bump();
+                self.builder.finish_node();
+            }
+            _ => {
+                self.builder.start_node_at(checkpoint, SyntaxKind::Error.into());
+                self.error_here("expected module directive");
+                self.recover_to_module_directive_boundary();
+                self.builder.finish_node();
+            }
+        }
+    }
+
+    fn parse_requires_directive(&mut self, checkpoint: rowan::Checkpoint) {
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::RequiresDirective.into());
+        self.expect(SyntaxKind::RequiresKw, "expected `requires`");
+
+        // `requires transitive static foo.bar;`
+        while matches!(self.current(), SyntaxKind::TransitiveKw | SyntaxKind::StaticKw) {
+            self.bump();
+        }
+
+        self.parse_name();
+        if !self.expect(SyntaxKind::Semicolon, "expected `;` after requires directive") {
+            self.recover_to_module_directive_boundary();
+        }
+        self.builder.finish_node();
+    }
+
+    fn parse_exports_directive(&mut self, checkpoint: rowan::Checkpoint) {
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::ExportsDirective.into());
+        self.expect(SyntaxKind::ExportsKw, "expected `exports`");
+        self.parse_name();
+
+        if self.at(SyntaxKind::ToKw) {
+            self.bump();
+            self.parse_name();
+            while self.at(SyntaxKind::Comma) {
+                self.bump();
+                self.parse_name();
+            }
+        }
+
+        if !self.expect(SyntaxKind::Semicolon, "expected `;` after exports directive") {
+            self.recover_to_module_directive_boundary();
+        }
+        self.builder.finish_node();
+    }
+
+    fn parse_opens_directive(&mut self, checkpoint: rowan::Checkpoint) {
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::OpensDirective.into());
+        self.expect(SyntaxKind::OpensKw, "expected `opens`");
+        self.parse_name();
+
+        if self.at(SyntaxKind::ToKw) {
+            self.bump();
+            self.parse_name();
+            while self.at(SyntaxKind::Comma) {
+                self.bump();
+                self.parse_name();
+            }
+        }
+
+        if !self.expect(SyntaxKind::Semicolon, "expected `;` after opens directive") {
+            self.recover_to_module_directive_boundary();
+        }
+        self.builder.finish_node();
+    }
+
+    fn parse_uses_directive(&mut self, checkpoint: rowan::Checkpoint) {
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::UsesDirective.into());
+        self.expect(SyntaxKind::UsesKw, "expected `uses`");
+        self.parse_name();
+        if !self.expect(SyntaxKind::Semicolon, "expected `;` after uses directive") {
+            self.recover_to_module_directive_boundary();
+        }
+        self.builder.finish_node();
+    }
+
+    fn parse_provides_directive(&mut self, checkpoint: rowan::Checkpoint) {
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::ProvidesDirective.into());
+        self.expect(SyntaxKind::ProvidesKw, "expected `provides`");
+        self.parse_name();
+        self.expect(SyntaxKind::WithKw, "expected `with` in provides directive");
+        self.parse_name();
+        while self.at(SyntaxKind::Comma) {
+            self.bump();
+            self.parse_name();
+        }
+        if !self.expect(
+            SyntaxKind::Semicolon,
+            "expected `;` after provides directive",
+        ) {
+            self.recover_to_module_directive_boundary();
+        }
         self.builder.finish_node();
     }
 
@@ -2273,6 +2429,14 @@ impl<'a> Parser<'a> {
         self.recover_to(MEMBER_RECOVERY);
     }
 
+    fn recover_to_module_directive_boundary(&mut self) {
+        self.recover_to(MODULE_DIRECTIVE_RECOVERY);
+        // If we stopped at `;`, consume it to avoid loops.
+        if self.at(SyntaxKind::Semicolon) {
+            self.bump();
+        }
+    }
+
     fn recover_to(&mut self, recovery: TokenSet) {
         self.recover_to_inner(recovery, false);
     }
@@ -2316,6 +2480,39 @@ impl<'a> Parser<'a> {
                 | SyntaxKind::StrictfpKw
                 | SyntaxKind::Semicolon
         )
+    }
+
+    fn at_module_decl_start(&mut self) -> bool {
+        let mut i = skip_trivia(&self.tokens, 0);
+
+        // Skip leading annotations. We treat `@interface` as an annotation type
+        // declaration, not a module annotation.
+        loop {
+            if self.tokens.get(i).map(|t| t.kind) != Some(SyntaxKind::At) {
+                break;
+            }
+
+            if self.tokens.get(skip_trivia(&self.tokens, i + 1)).map(|t| t.kind)
+                == Some(SyntaxKind::InterfaceKw)
+            {
+                return false;
+            }
+
+            let next = skip_annotation(&self.tokens, i);
+            if next <= i {
+                break;
+            }
+            i = skip_trivia(&self.tokens, next);
+        }
+
+        match self.tokens.get(i).map(|t| t.kind) {
+            Some(SyntaxKind::OpenKw) => {
+                let j = skip_trivia(&self.tokens, i + 1);
+                self.tokens.get(j).map(|t| t.kind) == Some(SyntaxKind::ModuleKw)
+            }
+            Some(SyntaxKind::ModuleKw) => true,
+            _ => false,
+        }
     }
 
     fn at_annotated_package_decl_start(&mut self) -> bool {

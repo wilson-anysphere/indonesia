@@ -312,11 +312,3 @@ pub fn parse(text: &str) -> ParseResult {
 pub mod java;
 #[cfg(test)]
 mod tests;
-
-pub mod module_info;
-
-pub use module_info::{
-    parse_module_info, parse_module_info_lossy, parse_module_info_with_errors, DirectiveName,
-    ExportsDecl, ModuleDecl, ModuleDirective, ModuleInfoParseError, ModuleInfoParseResult, Name,
-    OpensDecl, ProvidesDecl, RequiresDecl, UsesDecl,
-};

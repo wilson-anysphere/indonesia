@@ -282,6 +282,15 @@ pub enum SyntaxKind {
     MissingRBracket,
     MissingGreater,
 
+    // --- JPMS module declarations (module-info.java) ---
+    ModuleDeclaration,
+    ModuleBody,
+    RequiresDirective,
+    ExportsDirective,
+    OpensDirective,
+    UsesDirective,
+    ProvidesDirective,
+
     __Last,
 }
 

@@ -1,8 +1,9 @@
 use pretty_assertions::assert_eq;
 
 use crate::{
-    lex, lex_with_errors, parse_java, parse_java_with_options, JavaLanguageLevel, ParseOptions,
-    SyntaxKind,
+    lex, lex_with_errors, parse_java, parse_java_with_options, AstNode, CompilationUnit,
+    ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions, ProvidesDirective,
+    RequiresDirective, UsesDirective, SyntaxKind,
 };
 
 fn bless_enabled() -> bool {
@@ -1298,4 +1299,144 @@ class Bar {}
             crate::parser::debug_dump(&root),
         );
     }
+}
+
+fn jpms_module_name(src: &str) -> Option<String> {
+    let parse = parse_java(src);
+    let unit = CompilationUnit::cast(parse.syntax())?;
+    unit.module_declaration()?.name().map(|n| n.text())
+}
+
+#[test]
+fn parse_module_info_directives() {
+    let input = r#"
+@Deprecated
+open module com.example.mod {
+  requires transitive java.base;
+  requires static java.sql;
+  exports com.example.api;
+  exports com.example.internal to java.base, java.logging;
+  opens com.example.internal to java.base;
+  uses com.example.spi.Service;
+  provides com.example.spi.Service with com.example.impl.ServiceImpl, com.example.impl.OtherImpl;
+}
+"#;
+
+    let parse = parse_java(input);
+    assert_eq!(parse.errors, Vec::new());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let module = unit.module_declaration().unwrap();
+    assert!(module.is_open());
+    assert_eq!(module.name().unwrap().text(), "com.example.mod");
+
+    let body = module.body().unwrap();
+    let directives: Vec<_> = body.directives().collect();
+    assert_eq!(directives.len(), 7);
+
+    let requires: Vec<_> = directives
+        .iter()
+        .filter(|n| n.kind() == SyntaxKind::RequiresDirective)
+        .cloned()
+        .map(|n| RequiresDirective::cast(n).unwrap())
+        .map(|req| {
+            (
+                req.module().unwrap().text(),
+                req.is_transitive(),
+                req.is_static(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        requires,
+        vec![
+            ("java.base".to_string(), true, false),
+            ("java.sql".to_string(), false, true),
+        ]
+    );
+
+    let exports: Vec<_> = directives
+        .iter()
+        .filter(|n| n.kind() == SyntaxKind::ExportsDirective)
+        .cloned()
+        .map(|n| ExportsDirective::cast(n).unwrap())
+        .map(|exports| {
+            (
+                exports.package().unwrap().text(),
+                exports.to_modules().map(|n| n.text()).collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        exports,
+        vec![
+            ("com.example.api".to_string(), Vec::<String>::new()),
+            (
+                "com.example.internal".to_string(),
+                vec!["java.base".to_string(), "java.logging".to_string()]
+            ),
+        ]
+    );
+
+    let opens: Vec<_> = directives
+        .iter()
+        .filter(|n| n.kind() == SyntaxKind::OpensDirective)
+        .cloned()
+        .map(|n| OpensDirective::cast(n).unwrap())
+        .map(|opens| {
+            (
+                opens.package().unwrap().text(),
+                opens.to_modules().map(|n| n.text()).collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        opens,
+        vec![(
+            "com.example.internal".to_string(),
+            vec!["java.base".to_string()]
+        )]
+    );
+
+    let uses: Vec<_> = directives
+        .iter()
+        .filter(|n| n.kind() == SyntaxKind::UsesDirective)
+        .cloned()
+        .map(|n| UsesDirective::cast(n).unwrap())
+        .map(|uses| uses.service().unwrap().text())
+        .collect();
+    assert_eq!(uses, vec!["com.example.spi.Service".to_string()]);
+
+    let provides: Vec<_> = directives
+        .iter()
+        .filter(|n| n.kind() == SyntaxKind::ProvidesDirective)
+        .cloned()
+        .map(|n| ProvidesDirective::cast(n).unwrap())
+        .map(|provides| {
+            (
+                provides.service().unwrap().text(),
+                provides
+                    .implementations()
+                    .map(|n| n.text())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        provides,
+        vec![(
+            "com.example.spi.Service".to_string(),
+            vec![
+                "com.example.impl.ServiceImpl".to_string(),
+                "com.example.impl.OtherImpl".to_string()
+            ]
+        )]
+    );
+}
+
+#[test]
+fn jpms_module_name_recovers_from_syntax_errors() {
+    // Missing trailing semicolon after `requires`.
+    let input = "module com.example.mod { requires java.base }";
+    assert_eq!(jpms_module_name(input), Some("com.example.mod".to_string()));
 }
