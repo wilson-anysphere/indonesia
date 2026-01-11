@@ -21,10 +21,12 @@ fn metadata_roundtrip() {
     .unwrap();
 
     let metadata = CacheMetadata::new(&snapshot);
+    assert!(metadata
+        .file_metadata_fingerprints
+        .contains_key("Main.java"));
     metadata.save(cache_dir.metadata_path()).unwrap();
 
     let loaded = CacheMetadata::load(cache_dir.metadata_path()).unwrap();
     assert_eq!(metadata, loaded);
     loaded.ensure_compatible().unwrap();
 }
-

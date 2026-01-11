@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-pub const CACHE_METADATA_SCHEMA_VERSION: u32 = 1;
+pub const CACHE_METADATA_SCHEMA_VERSION: u32 = 2;
 
 /// Versioned, per-project cache metadata stored on disk as JSON.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,6 +17,8 @@ pub struct CacheMetadata {
     pub last_updated_millis: u64,
     pub project_hash: Fingerprint,
     pub file_fingerprints: BTreeMap<String, Fingerprint>,
+    #[serde(default)]
+    pub file_metadata_fingerprints: BTreeMap<String, Fingerprint>,
 }
 
 impl CacheMetadata {
@@ -29,6 +31,7 @@ impl CacheMetadata {
             last_updated_millis: now,
             project_hash: snapshot.project_hash().clone(),
             file_fingerprints: snapshot.file_fingerprints().clone(),
+            file_metadata_fingerprints: compute_metadata_fingerprints(snapshot),
         }
     }
 
@@ -36,6 +39,7 @@ impl CacheMetadata {
         self.last_updated_millis = now_millis();
         self.project_hash = snapshot.project_hash().clone();
         self.file_fingerprints = snapshot.file_fingerprints().clone();
+        self.file_metadata_fingerprints = compute_metadata_fingerprints(snapshot);
     }
 
     /// Compute the set of files that should be invalidated when moving from this
@@ -59,6 +63,33 @@ impl CacheMetadata {
 
         for path in self.file_fingerprints.keys() {
             if !snapshot.file_fingerprints().contains_key(path) {
+                invalidated.insert(path.clone());
+            }
+        }
+
+        invalidated.into_iter().collect()
+    }
+
+    /// Compute the set of files that should be invalidated using "fast"
+    /// fingerprints based on file metadata (size + mtime).
+    ///
+    /// This is intended for warm-start cache validation when callers want to
+    /// avoid reading the full contents of every file. It is best-effort:
+    /// modifications that preserve both file size and mtime may be missed.
+    pub fn diff_files_fast(&self, fast_snapshot: &ProjectSnapshot) -> Vec<String> {
+        let mut invalidated = BTreeSet::new();
+
+        for (path, current_fp) in fast_snapshot.file_fingerprints() {
+            match self.file_metadata_fingerprints.get(path) {
+                Some(previous_fp) if previous_fp == current_fp => {}
+                _ => {
+                    invalidated.insert(path.clone());
+                }
+            }
+        }
+
+        for path in self.file_metadata_fingerprints.keys() {
+            if !fast_snapshot.file_fingerprints().contains_key(path) {
                 invalidated.insert(path.clone());
             }
         }
@@ -100,3 +131,13 @@ impl CacheMetadata {
     }
 }
 
+fn compute_metadata_fingerprints(snapshot: &ProjectSnapshot) -> BTreeMap<String, Fingerprint> {
+    let mut fingerprints = BTreeMap::new();
+    for path in snapshot.file_fingerprints().keys() {
+        let full_path = snapshot.project_root().join(path);
+        if let Ok(fp) = Fingerprint::from_file_metadata(full_path) {
+            fingerprints.insert(path.clone(), fp);
+        }
+    }
+    fingerprints
+}

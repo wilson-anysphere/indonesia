@@ -4,7 +4,7 @@ use crate::indexes::{
 };
 use nova_cache::{CacheDir, CacheMetadata, ProjectSnapshot};
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const INDEX_SCHEMA_VERSION: u32 = 1;
 
@@ -159,7 +159,9 @@ pub fn save_indexes(
 
     let metadata_path = cache_dir.metadata_path();
     let mut metadata = match CacheMetadata::load(&metadata_path) {
-        Ok(existing) if existing.is_compatible() && &existing.project_hash == snapshot.project_hash() => {
+        Ok(existing)
+            if existing.is_compatible() && &existing.project_hash == snapshot.project_hash() =>
+        {
             existing
         }
         _ => CacheMetadata::new(snapshot),
@@ -225,6 +227,80 @@ pub fn load_index_archives(
     };
 
     let invalidated = metadata.diff_files(current_snapshot);
+
+    Ok(Some(LoadedIndexArchives {
+        symbols,
+        references,
+        inheritance,
+        annotations,
+        invalidated_files: invalidated,
+    }))
+}
+
+/// Loads indexes as validated `rkyv` archives backed by an mmap when possible,
+/// using a fast per-file fingerprint based on file metadata (size + mtime).
+///
+/// This avoids hashing full file contents before deciding whether persisted
+/// indexes are reusable. It is best-effort: modifications that preserve both
+/// file size and mtime may be missed.
+pub fn load_index_archives_fast(
+    cache_dir: &CacheDir,
+    project_root: impl AsRef<Path>,
+    files: Vec<PathBuf>,
+) -> Result<Option<LoadedIndexArchives>, IndexPersistenceError> {
+    let metadata_path = cache_dir.metadata_path();
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let metadata = match CacheMetadata::load(metadata_path) {
+        Ok(metadata) => metadata,
+        Err(_) => return Ok(None),
+    };
+    if !metadata.is_compatible() {
+        return Ok(None);
+    }
+
+    let current_snapshot = match ProjectSnapshot::new_fast(project_root, files) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+
+    if &metadata.project_hash != current_snapshot.project_hash() {
+        return Ok(None);
+    }
+
+    let indexes_dir = cache_dir.indexes_dir();
+
+    let symbols = match open_index_file::<SymbolIndex>(
+        indexes_dir.join("symbols.idx"),
+        nova_storage::ArtifactKind::SymbolIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let references = match open_index_file::<ReferenceIndex>(
+        indexes_dir.join("references.idx"),
+        nova_storage::ArtifactKind::ReferenceIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let inheritance = match open_index_file::<InheritanceIndex>(
+        indexes_dir.join("inheritance.idx"),
+        nova_storage::ArtifactKind::InheritanceIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let annotations = match open_index_file::<AnnotationIndex>(
+        indexes_dir.join("annotations.idx"),
+        nova_storage::ArtifactKind::AnnotationIndex,
+    ) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+
+    let invalidated = metadata.diff_files_fast(&current_snapshot);
 
     Ok(Some(LoadedIndexArchives {
         symbols,
@@ -305,6 +381,49 @@ pub fn load_index_view(
     }))
 }
 
+pub fn load_indexes_fast(
+    cache_dir: &CacheDir,
+    project_root: impl AsRef<Path>,
+    files: Vec<PathBuf>,
+) -> Result<Option<LoadedIndexes>, IndexPersistenceError> {
+    let Some(archives) = load_index_archives_fast(cache_dir, project_root, files)? else {
+        return Ok(None);
+    };
+
+    let symbols = match archives.symbols.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let references = match archives.references.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let inheritance = match archives.inheritance.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    let annotations = match archives.annotations.to_owned() {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+
+    let mut indexes = ProjectIndexes {
+        symbols,
+        references,
+        inheritance,
+        annotations,
+    };
+
+    for file in &archives.invalidated_files {
+        indexes.invalidate_file(file);
+    }
+
+    Ok(Some(LoadedIndexes {
+        indexes,
+        invalidated_files: archives.invalidated_files,
+    }))
+}
+
 fn write_index_file<T>(
     path: PathBuf,
     kind: nova_storage::ArtifactKind,
@@ -323,7 +442,10 @@ where
     Ok(())
 }
 
-fn open_index_file<T>(path: PathBuf, kind: nova_storage::ArtifactKind) -> Option<nova_storage::PersistedArchive<T>>
+fn open_index_file<T>(
+    path: PathBuf,
+    kind: nova_storage::ArtifactKind,
+) -> Option<nova_storage::PersistedArchive<T>>
 where
     T: rkyv::Archive,
     rkyv::Archived<T>: nova_storage::CheckableArchived,

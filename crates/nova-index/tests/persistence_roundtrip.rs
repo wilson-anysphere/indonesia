@@ -1,7 +1,7 @@
-use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
+use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
 use nova_index::{
-    load_indexes, save_indexes, AnnotationLocation, ProjectIndexes, ReferenceLocation,
-    SymbolLocation, InheritanceEdge,
+    load_indexes, load_indexes_fast, save_indexes, AnnotationLocation, InheritanceEdge,
+    ProjectIndexes, ReferenceLocation, SymbolLocation,
 };
 use std::path::PathBuf;
 
@@ -83,11 +83,7 @@ fn indexes_roundtrip_and_invalidation() {
     let loaded_v2 = load_indexes(&cache_dir, &snapshot_v2).unwrap().unwrap();
     assert_eq!(loaded_v2.invalidated_files, vec!["A.java".to_string()]);
     assert!(!loaded_v2.indexes.symbols.symbols.contains_key("A"));
-    assert!(loaded_v2
-        .indexes
-        .references
-        .references
-        .contains_key("A"));
+    assert!(loaded_v2.indexes.references.references.contains_key("A"));
     assert!(loaded_v2
         .indexes
         .references
@@ -167,7 +163,11 @@ fn indexes_invalidate_new_files() {
     std::fs::write(&c, "class C {}").unwrap();
     let snapshot_v2 = ProjectSnapshot::new(
         &project_root,
-        vec![PathBuf::from("A.java"), PathBuf::from("B.java"), PathBuf::from("C.java")],
+        vec![
+            PathBuf::from("A.java"),
+            PathBuf::from("B.java"),
+            PathBuf::from("C.java"),
+        ],
     )
     .unwrap();
 
@@ -266,5 +266,157 @@ fn corrupt_metadata_is_cache_miss() {
     std::fs::write(cache_dir.metadata_path(), "this is not json").unwrap();
 
     let loaded = load_indexes(&cache_dir, &snapshot).unwrap();
+    assert!(loaded.is_none());
+}
+
+#[test]
+fn load_indexes_fast_detects_mtime_or_size_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    let b = project_root.join("B.java");
+    std::fs::write(&a, "class A {}").unwrap();
+    std::fs::write(&b, "class B {}").unwrap();
+
+    let snapshot_v1 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from("A.java"), PathBuf::from("B.java")],
+    )
+    .unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut indexes = ProjectIndexes::default();
+    indexes.symbols.insert(
+        "A",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+
+    // Modify A.java in a way that changes its size so the fast fingerprint must change even if
+    // the filesystem has coarse mtime resolution.
+    std::fs::write(&a, "class A { void m() {} }").unwrap();
+
+    let loaded = load_indexes_fast(
+        &cache_dir,
+        &project_root,
+        vec![PathBuf::from("A.java"), PathBuf::from("B.java")],
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(loaded.invalidated_files, vec!["A.java".to_string()]);
+}
+
+#[test]
+fn load_indexes_fast_does_not_read_project_file_contents() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    std::fs::write(&a, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut indexes = ProjectIndexes::default();
+    indexes.symbols.insert(
+        "A",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+
+    // Replace the file with a directory. Reading contents would now fail, but metadata access
+    // should still work.
+    std::fs::remove_file(&a).unwrap();
+    std::fs::create_dir_all(&a).unwrap();
+    assert!(std::fs::read(&a).is_err());
+
+    let loaded =
+        load_indexes_fast(&cache_dir, &project_root, vec![PathBuf::from("A.java")]).unwrap();
+
+    assert!(loaded.is_some());
+}
+
+#[test]
+fn load_indexes_fast_schema_mismatch_is_cache_miss() {
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    std::fs::write(&a, "class A {}").unwrap();
+
+    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("A.java")]).unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut indexes = ProjectIndexes::default();
+    indexes.symbols.insert(
+        "A",
+        SymbolLocation {
+            file: "A.java".to_string(),
+            line: 1,
+            column: 1,
+        },
+    );
+    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+
+    // Sanity check: the cache is readable through the fast path.
+    assert!(
+        load_indexes_fast(&cache_dir, &project_root, vec![PathBuf::from("A.java")])
+            .unwrap()
+            .is_some()
+    );
+
+    // Overwrite metadata.json with a v1 schema payload that lacks the new fast fingerprint field.
+    let metadata = CacheMetadata::load(cache_dir.metadata_path()).unwrap();
+    let file_fps = metadata
+        .file_fingerprints
+        .iter()
+        .map(|(path, fp)| format!("\"{path}\":\"{}\"", fp.as_str()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let old_schema_json = format!(
+        "{{\"schema_version\":1,\"nova_version\":\"{}\",\"created_at_millis\":{},\"last_updated_millis\":{},\"project_hash\":\"{}\",\"file_fingerprints\":{{{file_fps}}}}}",
+        metadata.nova_version,
+        metadata.created_at_millis,
+        metadata.last_updated_millis,
+        metadata.project_hash.as_str()
+    );
+    std::fs::write(cache_dir.metadata_path(), old_schema_json).unwrap();
+
+    let loaded =
+        load_indexes_fast(&cache_dir, &project_root, vec![PathBuf::from("A.java")]).unwrap();
     assert!(loaded.is_none());
 }
