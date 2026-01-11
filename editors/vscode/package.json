@@ -94,30 +94,6 @@
           },
           "description": "Arguments passed to nova-lsp. Defaults to [\"--stdio\"]."
         },
-        "nova.server.autoDownload": {
-          "type": "boolean",
-          "default": true,
-          "description": "Prompt to download the Nova server automatically when it is missing."
-        },
-        "nova.server.releaseChannel": {
-          "type": "string",
-          "enum": [
-            "stable",
-            "prerelease"
-          ],
-          "default": "stable",
-          "description": "Which GitHub release channel to use when nova.server.version is \"latest\"."
-        },
-        "nova.server.version": {
-          "type": "string",
-          "default": "latest",
-          "description": "The nova-lsp version to install (e.g. \"0.1.0\" or \"v0.1.0\") or \"latest\"."
-        },
-        "nova.server.releaseUrl": {
-          "type": "string",
-          "default": "https://github.com/wilson-anysphere/indonesia",
-          "description": "GitHub repository URL (or \"owner/repo\") to download nova-lsp releases from."
-        },
         "nova.dap.path": {
           "type": [
             "string",

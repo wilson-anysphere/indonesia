@@ -138,12 +138,6 @@ Nova adds a **Debug** run profile alongside **Run**. Debugging a test will:
 
 - `nova.server.path` (string | null): override the `nova-lsp` binary path (disables managed downloads). Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder.
 - `nova.server.args` (string[]): arguments passed to `nova-lsp` (default: `["--stdio"]`).
-- `nova.server.autoDownload` (boolean): prompt to download the server when missing (default: true).
-- `nova.server.releaseChannel` ("stable" | "prerelease"): which channel to use when resolving `latest`.
-- `nova.server.version` (string | "latest"): version to install (default: "latest").
-- `nova.server.releaseUrl` (string): GitHub repository URL (or "owner/repo") to download releases from.
-- If you hit GitHub rate limits in the VS Code extension host, you can set `GITHUB_TOKEN`/`GH_TOKEN` (for public GitHub) or `NOVA_GITHUB_TOKEN` (for custom hosts) in the environment before launching VS Code.
-  - Accepted `releaseUrl` formats include `owner/repo`, `https://github.com/owner/repo`, `git@github.com:owner/repo.git`, and GitHub API base URLs like `https://api.github.com/repos/owner/repo` (or GHES equivalents).
 
 ### Download
 
@@ -154,6 +148,8 @@ These settings control managed downloads for both `nova-lsp` and `nova-dap`:
 - `nova.download.baseUrl` (string): base URL for release assets (default: this repo’s GitHub releases).
 - `nova.download.allowPrerelease` (boolean): allow selecting pre-releases when `releaseTag` is `latest`.
 - `nova.download.allowVersionMismatch` (boolean): allow binaries whose `--version` output doesn’t match the extension version.
+
+If you hit GitHub rate limits in the VS Code extension host, you can set `GITHUB_TOKEN`/`GH_TOKEN` before launching VS Code so Nova can fetch release metadata and checksums.
 
 ### LSP
 

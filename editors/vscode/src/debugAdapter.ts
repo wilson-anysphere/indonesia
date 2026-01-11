@@ -66,12 +66,12 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
   private readDapSettings(config: vscode.WorkspaceConfiguration): NovaServerSettings {
     const downloadMode = this.readDownloadMode(config);
     const allowPrerelease = config.get<boolean>('download.allowPrerelease', false);
-    const rawTag = config.get<string>('download.releaseTag', config.get<string>('server.version', 'latest'));
+    const rawTag = config.get<string>('download.releaseTag', 'latest');
     const rawBaseUrl = config.get<string>(
       'download.baseUrl',
       'https://github.com/wilson-anysphere/indonesia/releases/download',
     );
-    const fallbackReleaseUrl = config.get<string>('server.releaseUrl', 'https://github.com/wilson-anysphere/indonesia');
+    const fallbackReleaseUrl = 'https://github.com/wilson-anysphere/indonesia';
 
     const derivedReleaseUrl = (() => {
       const trimmed = rawBaseUrl.trim().replace(/\/+$/, '');

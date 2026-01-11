@@ -412,7 +412,7 @@ async function resolveTag(opts: {
       const message = err instanceof Error ? err.message : String(err);
       if (message.includes('/releases/latest') && /\(404\b/.test(message)) {
         throw new Error(
-          `No stable releases found for ${opts.repo.owner}/${opts.repo.repo}. If you meant to use prereleases, set nova.server.releaseChannel to \"prerelease\".`,
+          `No stable releases found for ${opts.repo.owner}/${opts.repo.repo}. If you meant to use prereleases, set nova.download.allowPrerelease to true.`,
         );
       }
       throw err;

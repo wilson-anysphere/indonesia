@@ -210,12 +210,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const downloadMode = cfg.get<DownloadMode>('download.mode', 'prompt');
     const allowPrerelease = cfg.get<boolean>('download.allowPrerelease', false);
-    const rawTag = cfg.get<string>('download.releaseTag', cfg.get<string>('server.version', 'latest'));
+    const rawTag = cfg.get<string>('download.releaseTag', 'latest');
     const rawBaseUrl = cfg.get<string>(
       'download.baseUrl',
       'https://github.com/wilson-anysphere/indonesia/releases/download',
     );
-    const fallbackReleaseUrl = cfg.get<string>('server.releaseUrl', 'https://github.com/wilson-anysphere/indonesia');
+    const fallbackReleaseUrl = 'https://github.com/wilson-anysphere/indonesia';
 
     const derivedReleaseUrl = (() => {
       const trimmed = rawBaseUrl.trim().replace(/\/+$/, '');
