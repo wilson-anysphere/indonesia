@@ -1292,6 +1292,8 @@ async fn dap_emits_thread_start_and_death_events() {
     .expect("timed out waiting for thread events");
 
     assert_eq!(started_thread_id, exited_thread_id);
+    assert_eq!(jdwp.vm_resume_calls(), 1);
+    assert_eq!(jdwp.thread_resume_calls(), 0);
 
     send_request(&mut writer, 4, "disconnect", json!({})).await;
     let _disc_resp = read_response(&mut reader, 4).await;
