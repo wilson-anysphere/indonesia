@@ -70,39 +70,17 @@ pub fn parse_java_with_options(text: &str, opts: ParseOptions) -> JavaParse {
 /// Parse a `module-info.java` file.
 ///
 /// Nova's Java parser accepts a modern superset grammar, but callers sometimes want to
-/// specifically assert that a given source is a module declaration (e.g. for fixtures).
+/// specifically assert that a given source is a *module-info* compilation unit. In addition to
+/// requiring a module declaration, this rejects package/import/type declarations.
 pub fn parse_module_info(text: &str) -> Result<JavaParseResult, Vec<ParseError>> {
     let result = parse_java(text);
     if !result.errors.is_empty() {
         return Err(result.errors);
     }
 
-    let is_module_info = result
-        .syntax()
-        .children()
-        .any(|n| n.kind() == SyntaxKind::ModuleDeclaration);
+    let unit = CompilationUnit::cast(result.syntax()).expect("root node is a compilation unit");
 
-    if is_module_info {
-        Ok(result)
-    } else {
-        Err(vec![ParseError {
-            message: "expected module declaration".to_string(),
-            range: TextRange { start: 0, end: 0 },
-        }])
-    }
-}
-
-/// Parse a `module-info.java` file and return the module declaration node.
-///
-/// Unlike [`parse_java`], this performs additional validation on the compilation unit shape:
-/// `module-info.java` must not contain a package declaration, import declarations, or type
-/// declarations.
-pub fn parse_module_info(text: &str) -> Result<ModuleDeclaration, Vec<ParseError>> {
-    let parsed = parse_java(text);
-    let root = parsed.syntax();
-    let mut errors = parsed.errors;
-
-    let unit = CompilationUnit::cast(root).expect("root node is a compilation unit");
+    let mut errors = Vec::new();
 
     if let Some(pkg) = unit.package() {
         errors.push(ParseError {
@@ -125,19 +103,15 @@ pub fn parse_module_info(text: &str) -> Result<ModuleDeclaration, Vec<ParseError
         });
     }
 
-    let decl = match unit.module_declaration() {
-        Some(decl) => decl,
-        None => {
-            errors.push(ParseError {
-                message: "module-info.java is missing a module declaration".to_string(),
-                range: TextRange { start: 0, end: 0 },
-            });
-            return Err(errors);
-        }
-    };
+    if unit.module_declaration().is_none() {
+        errors.push(ParseError {
+            message: "module-info.java is missing a module declaration".to_string(),
+            range: TextRange { start: 0, end: 0 },
+        });
+    }
 
     if errors.is_empty() {
-        Ok(decl)
+        Ok(result)
     } else {
         Err(errors)
     }
