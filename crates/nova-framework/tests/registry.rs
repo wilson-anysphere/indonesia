@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use nova_core::ProjectId;
 use nova_framework::{
     AnalyzerRegistry, CompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer,
@@ -213,4 +215,27 @@ fn analyzers_can_read_file_text_via_database() {
     let diags = registry.framework_diagnostics(&db, file);
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "len=3");
+}
+
+#[test]
+fn memory_database_tracks_file_paths_and_all_files() {
+    let mut db = MemoryDatabase::new();
+    let project_a = db.add_project();
+    let project_b = db.add_project();
+
+    let file_a1 = db.add_file_with_path(project_a, "src/A.java");
+    let file_a2 = db.add_file(project_a);
+    let file_b1 = db.add_file_with_path(project_b, "src/B.java");
+
+    assert_eq!(db.file_path(file_a1), Some(Path::new("src/A.java")));
+    assert_eq!(db.file_id(Path::new("src/A.java")), Some(file_a1));
+
+    // Files without paths should behave like "no path info available".
+    assert_eq!(db.file_path(file_a2), None);
+
+    let files_a = db.all_files(project_a);
+    assert_eq!(files_a, vec![file_a1, file_a2]);
+
+    let files_b = db.all_files(project_b);
+    assert_eq!(files_b, vec![file_b1]);
 }

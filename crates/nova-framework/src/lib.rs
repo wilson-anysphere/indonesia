@@ -2,9 +2,18 @@
 //!
 //! Framework analyzers (Spring, Lombok, etc.) augment core resolution by
 //! providing additional members and metadata that are generated at compile time.
+//!
+//! The [`Database`] abstraction intentionally provides only a small set of queries.
+//! Implementations may optionally expose file paths and project-wide enumeration
+//! via [`Database::file_path`], [`Database::file_id`], and [`Database::all_files`].
+//!
+//! Framework analyzers should gracefully degrade when this information is not
+//! available (e.g. `all_files` returning an empty list) by skipping cross-file
+//! scanning and returning no project-wide diagnostics.
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use nova_core::ProjectId;
 use nova_hir::framework::ClassData;
@@ -44,6 +53,32 @@ pub trait Database {
         None
     }
 
+    /// Returns the on-disk path for `file` if available.
+    fn file_path(&self, _file: FileId) -> Option<&Path> {
+        None
+    }
+
+    /// Returns the file id corresponding to `path` if available.
+    fn file_id(&self, _path: &Path) -> Option<FileId> {
+        None
+    }
+
+    /// Returns all known files for `project`.
+    ///
+    /// Implementations that do not support project-wide enumeration should
+    /// return an empty vector.
+    fn all_files(&self, _project: ProjectId) -> Vec<FileId> {
+        Vec::new()
+    }
+
+    /// Returns all known classes for `project`.
+    ///
+    /// Implementations that do not support project-wide enumeration should
+    /// return an empty vector.
+    fn all_classes(&self, _project: ProjectId) -> Vec<ClassId> {
+        Vec::new()
+    }
+
     fn has_dependency(&self, project: ProjectId, group: &str, artifact: &str) -> bool;
     fn has_class_on_classpath(&self, project: ProjectId, binary_name: &str) -> bool;
     fn has_class_on_classpath_prefix(&self, project: ProjectId, prefix: &str) -> bool;
@@ -58,6 +93,8 @@ pub struct MemoryDatabase {
     class_data: HashMap<ClassId, ClassData>,
     class_project: HashMap<ClassId, ProjectId>,
     file_project: HashMap<FileId, ProjectId>,
+    file_path: HashMap<FileId, PathBuf>,
+    path_file: HashMap<PathBuf, FileId>,
     file_text: HashMap<FileId, String>,
     dependencies: HashMap<ProjectId, HashSet<DependencyCoordinate>>,
     classpath_classes: HashMap<ProjectId, HashSet<String>>,
@@ -78,6 +115,37 @@ impl MemoryDatabase {
         let id = FileId::from_raw(self.next_file);
         self.next_file += 1;
         self.file_project.insert(id, project);
+        id
+    }
+
+    pub fn add_file_with_path(&mut self, project: ProjectId, path: impl Into<PathBuf>) -> FileId {
+        let path = path.into();
+        if let Some(&existing) = self.path_file.get(&path) {
+            let existing_project = *self
+                .file_project
+                .get(&existing)
+                .expect("path_file points at unknown FileId");
+            assert_eq!(
+                existing_project, project,
+                "attempted to intern the same path into two different projects"
+            );
+            return existing;
+        }
+
+        let id = self.add_file(project);
+        self.file_path.insert(id, path.clone());
+        self.path_file.insert(path, id);
+        id
+    }
+
+    pub fn add_file_with_path_and_text(
+        &mut self,
+        project: ProjectId,
+        path: impl Into<PathBuf>,
+        text: impl Into<String>,
+    ) -> FileId {
+        let id = self.add_file_with_path(project, path);
+        self.set_file_text(id, text);
         id
     }
 
@@ -137,6 +205,34 @@ impl Database for MemoryDatabase {
 
     fn file_text(&self, file: FileId) -> Option<&str> {
         self.file_text.get(&file).map(String::as_str)
+    }
+
+    fn file_path(&self, file: FileId) -> Option<&Path> {
+        self.file_path.get(&file).map(PathBuf::as_path)
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        self.path_file.get(path).copied()
+    }
+
+    fn all_files(&self, project: ProjectId) -> Vec<FileId> {
+        let mut out: Vec<_> = self
+            .file_project
+            .iter()
+            .filter_map(|(&file, &file_project)| (file_project == project).then_some(file))
+            .collect();
+        out.sort();
+        out
+    }
+
+    fn all_classes(&self, project: ProjectId) -> Vec<ClassId> {
+        let mut out: Vec<_> = self
+            .class_project
+            .iter()
+            .filter_map(|(&class, &class_project)| (class_project == project).then_some(class))
+            .collect();
+        out.sort();
+        out
     }
 
     fn has_dependency(&self, project: ProjectId, group: &str, artifact: &str) -> bool {
