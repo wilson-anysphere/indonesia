@@ -10,16 +10,17 @@ use std::str::FromStr;
 
 use lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, CompletionItem,
-    CompletionItemKind, DiagnosticSeverity, DocumentSymbol, Hover, HoverContents, InlayHint,
-    InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
+    CompletionItemKind, CompletionTextEdit, DiagnosticSeverity, DocumentSymbol, Hover, HoverContents,
+    InlayHint, InlayHintKind, Location, MarkupContent, MarkupKind, NumberOrString, Position, Range,
     SemanticToken, SemanticTokenType, SemanticTokensLegend, SignatureHelp, SignatureInformation,
-    SymbolKind, TypeHierarchyItem,
+    SymbolKind, TextEdit, TypeHierarchyItem,
 };
 
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_fuzzy::FuzzyMatcher;
 use nova_types::{Diagnostic, Severity, Span};
+use serde_json::json;
 
 use crate::lombok_intel;
 use crate::micronaut_intel;
@@ -327,19 +328,20 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
     let Some(offset) = position_to_offset(text, position) else {
         return Vec::new();
     };
+    let (prefix_start, prefix) = identifier_prefix(text, offset);
 
     if let Some(path) = db.file_path(file) {
         if is_spring_properties_file(path) {
             let index = spring_workspace_index(db);
             let items =
                 nova_framework_spring::completions_for_properties_file(path, text, offset, &index);
-            return spring_completions_to_lsp(items);
+            return decorate_completions(text, prefix_start, offset, spring_completions_to_lsp(items));
         }
         if is_spring_yaml_file(path) {
             let index = spring_workspace_index(db);
             let items =
                 nova_framework_spring::completions_for_yaml_file(path, text, offset, &index);
-            return spring_completions_to_lsp(items);
+            return decorate_completions(text, prefix_start, offset, spring_completions_to_lsp(items));
         }
     }
 
@@ -380,7 +382,12 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                 let items =
                     nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
                 if !items.is_empty() {
-                    return spring_completions_to_lsp(items);
+                    return decorate_completions(
+                        text,
+                        prefix_start,
+                        offset,
+                        spring_completions_to_lsp(items),
+                    );
                 }
             }
 
@@ -392,7 +399,12 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     &analysis.config_keys,
                 );
                 if !items.is_empty() {
-                    return spring_completions_to_lsp(items);
+                    return decorate_completions(
+                        text,
+                        prefix_start,
+                        offset,
+                        spring_completions_to_lsp(items),
+                    );
                 }
             }
         }
@@ -412,21 +424,57 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
                     &analysis.model,
                 );
                 if !items.is_empty() {
-                    return jpa_completions_to_lsp(items);
+                    return decorate_completions(text, prefix_start, offset, jpa_completions_to_lsp(items));
                 }
             }
         }
     }
 
-    let (prefix_start, prefix) = identifier_prefix(text, offset);
-
     let before = skip_whitespace_backwards(text, prefix_start);
     if before > 0 && text.as_bytes()[before - 1] == b'.' {
         let receiver = receiver_before_dot(text, before - 1);
-        return member_completions(db, file, &receiver, &prefix);
+        return decorate_completions(
+            text,
+            prefix_start,
+            offset,
+            member_completions(db, file, &receiver, &prefix),
+        );
     }
 
-    general_completions(db, file, &prefix)
+    decorate_completions(text, prefix_start, offset, general_completions(db, file, &prefix))
+}
+
+fn decorate_completions(
+    text: &str,
+    prefix_start: usize,
+    offset: usize,
+    mut items: Vec<CompletionItem>,
+) -> Vec<CompletionItem> {
+    let replace_range = Range::new(offset_to_position(text, prefix_start), offset_to_position(text, offset));
+
+    for item in &mut items {
+        if item.text_edit.is_none() {
+            let new_text = item
+                .insert_text
+                .clone()
+                .unwrap_or_else(|| item.label.clone());
+            item.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
+                range: replace_range,
+                new_text,
+            }));
+        }
+
+        let needs_nova_tag = item
+            .data
+            .as_ref()
+            .and_then(|data| data.get("nova"))
+            .is_none();
+        if needs_nova_tag {
+            item.data = Some(json!({ "nova": { "origin": "code_intelligence" } }));
+        }
+    }
+
+    items
 }
 
 /// Completion with optional AI re-ranking.
@@ -1990,9 +2038,8 @@ fn is_field_modifier(ident: &str) -> bool {
 }
 
 // -----------------------------------------------------------------------------
-// Text coordinate helpers
+// Completion prefix helpers
 // -----------------------------------------------------------------------------
-
 fn span_contains(span: Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
 }

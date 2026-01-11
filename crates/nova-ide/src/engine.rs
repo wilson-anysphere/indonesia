@@ -89,10 +89,12 @@ impl CompletionEngine {
                     Err(nova_ai::AiProviderError::Timeout)
                 }
             },
-            _ = cancel.cancelled() => match time::timeout(std::time::Duration::from_millis(250), &mut request).await {
-                Ok(res) => res,
-                Err(_) => Err(nova_ai::AiProviderError::Cancelled),
-            },
+            _ = cancel.cancelled() => {
+                match time::timeout(std::time::Duration::from_millis(250), &mut request).await {
+                    Ok(res) => res,
+                    Err(_) => Err(nova_ai::AiProviderError::Cancelled),
+                }
+            }
         } {
             Ok(suggestions) => suggestions,
             Err(_err) => return Vec::new(),

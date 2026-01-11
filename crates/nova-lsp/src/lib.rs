@@ -363,6 +363,7 @@ pub fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(true),
+            trigger_characters: Some(vec![".".to_string()]),
             ..CompletionOptions::default()
         }),
         document_formatting_provider: Some(lsp_types::OneOf::Left(true)),

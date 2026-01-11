@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 
-use lsp_types::{CompletionItem, TextEdit};
+use lsp_types::{CompletionItem, Documentation, MarkupContent, MarkupKind, TextEdit};
 
 use crate::imports::java_import_text_edit;
 
@@ -12,6 +12,26 @@ use crate::imports::java_import_text_edit;
 /// based on the current document text.
 #[must_use]
 pub fn resolve_completion_item(mut item: CompletionItem, document_text: &str) -> CompletionItem {
+    let is_nova_item = item
+        .data
+        .as_ref()
+        .and_then(|data| data.get("nova"))
+        .is_some();
+    if !is_nova_item {
+        return item;
+    }
+
+    if item.detail.is_none() {
+        item.detail = Some("Nova completion".to_string());
+    }
+
+    if item.documentation.is_none() {
+        item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("Nova completion item for `{}`.", item.label),
+        }));
+    }
+
     let imports = import_paths_from_item_data(&item);
     if imports.is_empty() {
         return item;

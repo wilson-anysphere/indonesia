@@ -2,8 +2,9 @@ mod codec;
 
 use codec::{read_json_message, write_json_message};
 use lsp_types::{
-    CodeAction, CodeActionKind, Position as LspTypesPosition, Range as LspTypesRange,
-    RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
+    CodeAction, CodeActionKind, CompletionItem, CompletionList, CompletionParams,
+    Position as LspTypesPosition, Range as LspTypesRange, RenameParams as LspRenameParams,
+    TextDocumentPositionParams, Uri as LspUri,
     WorkspaceEdit as LspWorkspaceEdit,
 };
 use nova_ai::context::ContextRequest;
@@ -344,7 +345,10 @@ fn handle_request(
             let result = json!({
                 "capabilities": {
                     "textDocumentSync": { "openClose": true, "change": 2 },
-                    "completionProvider": { "resolveProvider": true },
+                    "completionProvider": {
+                        "resolveProvider": true,
+                        "triggerCharacters": ["."]
+                    },
                     "documentFormattingProvider": true,
                     "documentRangeFormattingProvider": true,
                     "documentOnTypeFormattingProvider": {
@@ -444,6 +448,26 @@ fn handle_request(
                 Err(err) => {
                     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
                 }
+            })
+        }
+        "textDocument/completion" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_completion(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+            })
+        }
+        "completionItem/resolve" => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+            let result = handle_completion_item_resolve(params, state);
+            Ok(match result {
+                Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
             })
         }
         "workspace/executeCommand" => {
@@ -1187,6 +1211,60 @@ fn handle_rename(
     })?;
 
     workspace_edit_to_lsp(&db, &edit).map_err(|e| e.to_string())
+}
+
+fn handle_completion(params: serde_json::Value, state: &ServerState) -> Result<serde_json::Value, String> {
+    let params: CompletionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let uri = params.text_document_position.text_document.uri;
+    let position = params.text_document_position.position;
+
+    let Some(text) = load_document_text(state, uri.as_str()) else {
+        return Err(format!("missing document text for `{}`", uri.as_str()));
+    };
+
+    let path = path_from_uri(uri.as_str()).unwrap_or_else(|| PathBuf::from(uri.as_str()));
+    let mut db = nova_db::InMemoryFileStore::new();
+    let file = db.file_id_for_path(&path);
+    db.set_file_text(file, text);
+
+    let mut items = nova_lsp::completion(&db, file, position);
+    for item in &mut items {
+        if item.data.is_none() {
+            item.data = Some(json!({}));
+        }
+        let Some(data) = item.data.as_mut().filter(|data| data.is_object()) else {
+            item.data = Some(json!({}));
+            continue;
+        };
+        if !data.get("nova").is_some_and(|nova| nova.is_object()) {
+            data["nova"] = json!({});
+        }
+        data["nova"]["uri"] = json!(uri.as_str());
+    }
+    let list = CompletionList {
+        is_incomplete: false,
+        items,
+        ..CompletionList::default()
+    };
+
+    serde_json::to_value(list).map_err(|e| e.to_string())
+}
+
+fn handle_completion_item_resolve(
+    params: serde_json::Value,
+    state: &ServerState,
+) -> Result<serde_json::Value, String> {
+    let item: CompletionItem = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let document_text = item
+        .data
+        .as_ref()
+        .and_then(|data| data.get("nova"))
+        .and_then(|nova| nova.get("uri"))
+        .and_then(|uri| uri.as_str())
+        .and_then(|uri| load_document_text(state, uri))
+        .unwrap_or_default();
+    serde_json::to_value(nova_lsp::resolve_completion_item(item, &document_text))
+        .map_err(|e| e.to_string())
 }
 
 fn position_to_offset_utf16(text: &str, position: lsp_types::Position) -> Option<usize> {

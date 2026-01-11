@@ -13,7 +13,7 @@ use std::thread;
 use tempfile::TempDir;
 
 mod support;
-use support::{read_response_with_id, write_jsonrpc_message};
+use support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
 
 #[derive(Debug, Clone, Deserialize)]
 struct LspPosition {
@@ -1185,9 +1185,13 @@ esac
         .collect::<Vec<_>>();
     assert_eq!(classpath, expected);
 
-    // Remove the wrapper script; subsequent requests should still succeed via
-    // the on-disk cache without invoking Gradle.
-    fs::remove_file(&gradlew_path).expect("remove fake gradlew");
+    // Make the wrapper script non-executable; subsequent requests should still
+    // succeed via the on-disk cache without invoking Gradle.
+    let mut perms = fs::metadata(&gradlew_path)
+        .expect("stat gradlew")
+        .permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&gradlew_path, perms).expect("chmod gradlew (disable exec)");
 
     write_jsonrpc_message(
         &mut stdin,
