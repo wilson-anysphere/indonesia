@@ -7,15 +7,15 @@ use std::sync::{Arc, Mutex, Once, OnceLock};
 use std::time::Duration;
 
 use thiserror::Error;
-use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::fmt::writer::{BoxMakeWriter, MakeWriterExt};
+use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::prelude::*;
 use url::Url;
 
 /// Tracing target used for AI audit events (prompts / model output).
 pub const AI_AUDIT_TARGET: &str = "nova.ai.audit";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GeneratedSourcesConfig {
     /// Whether generated sources should be indexed and participate in resolution.
     #[serde(default = "default_generated_sources_enabled")]
@@ -28,7 +28,7 @@ pub struct GeneratedSourcesConfig {
     pub override_roots: Option<Vec<PathBuf>>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 pub struct JdkConfig {
     /// Optional override for the JDK installation to use.
     ///
@@ -52,7 +52,7 @@ impl Default for GeneratedSourcesConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ExtensionsConfig {
     /// Whether extensions are enabled.
     #[serde(default = "default_extensions_enabled")]
@@ -91,7 +91,7 @@ impl Default for ExtensionsConfig {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Top-level Nova configuration loaded from TOML.
 ///
 /// Extensions can be configured via the `[extensions]` table:
@@ -137,7 +137,7 @@ impl Default for NovaConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoggingConfig {
     /// Logging level for all Nova crates.
     #[serde(default = "LoggingConfig::default_level")]
@@ -248,7 +248,7 @@ impl Default for LoggingConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiFeaturesConfig {
     /// Enables AI-assisted completion re-ranking.
     #[serde(default)]
@@ -274,7 +274,7 @@ impl Default for AiFeaturesConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiTimeoutsConfig {
     /// Timeout for completion ranking requests.
     #[serde(default = "default_completion_ranking_timeout_ms")]
@@ -312,7 +312,7 @@ impl AiTimeoutsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiConfig {
     #[serde(default)]
     pub provider: AiProviderConfig,
@@ -385,7 +385,7 @@ fn default_ai_cache_ttl_secs() -> u64 {
     300
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiEmbeddingsConfig {
     /// Enable local embeddings for semantic search and context building.
     #[serde(default)]
@@ -427,7 +427,7 @@ impl Default for AiEmbeddingsConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AuditLogConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -464,7 +464,7 @@ impl Default for AiProviderKind {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiProviderConfig {
     /// Which backend implementation to use.
     #[serde(default)]
@@ -546,7 +546,7 @@ impl AiProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InProcessLlamaConfig {
     /// Path to a GGUF model file on disk.
     pub model_path: PathBuf,
@@ -590,7 +590,7 @@ fn default_in_process_llama_top_p() -> f32 {
     0.95
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AiPrivacyConfig {
     /// If true, Nova will not use any cloud providers. This is the recommended
     /// setting for privacy-sensitive environments.
@@ -690,40 +690,63 @@ impl NovaConfig {
     }
 }
 
-/// Load Nova configuration for a workspace.
+pub const NOVA_CONFIG_ENV_VAR: &str = "NOVA_CONFIG_PATH";
+
+/// Discover the Nova configuration file for a workspace root.
 ///
-/// Discovery order (first match wins):
-///
-/// 1) `NOVA_CONFIG_PATH` env var (if set)
-/// 2) Walk up from `root` (or `root.parent()` when `root` is a file) and look for:
-///    - `.nova/config.toml`
-///    - `nova.toml` (legacy fallback)
-/// 3) fallback [`NovaConfig::default`]
-pub fn load_for_workspace(root: impl AsRef<Path>) -> Result<NovaConfig, ConfigError> {
-    if let Some(path) = std::env::var_os("NOVA_CONFIG_PATH") {
-        return NovaConfig::load_from_path(PathBuf::from(path));
+/// Search order:
+/// 1) `NOVA_CONFIG_PATH` (absolute or relative to `workspace_root`)
+/// 2) `nova.toml` in `workspace_root`
+/// 3) `.nova.toml` in `workspace_root`
+/// 4) `nova.config.toml` in `workspace_root`
+pub fn discover_config_path(workspace_root: &Path) -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os(NOVA_CONFIG_ENV_VAR) {
+        let candidate = PathBuf::from(value);
+        let path = if candidate.is_absolute() {
+            candidate
+        } else {
+            workspace_root.join(candidate)
+        };
+        return Some(path.canonicalize().unwrap_or(path));
     }
 
-    let root = root.as_ref();
-    let start = if root.is_file() {
-        root.parent().unwrap_or(root)
-    } else {
-        root
+    let candidates = [
+        "nova.toml",
+        ".nova.toml",
+        "nova.config.toml",
+        // Legacy workspace-local config (kept for backwards compatibility).
+        ".nova/config.toml",
+    ];
+    candidates
+        .into_iter()
+        .map(|name| workspace_root.join(name))
+        .find(|path| path.is_file())
+        .map(|path| path.canonicalize().unwrap_or(path))
+}
+
+/// Load the Nova configuration for a workspace root.
+///
+/// If no config is present, returns [`NovaConfig::default`] and `None`.
+pub fn load_for_workspace(
+    workspace_root: &Path,
+) -> Result<(NovaConfig, Option<PathBuf>), ConfigError> {
+    let Some(path) = discover_config_path(workspace_root) else {
+        return Ok((NovaConfig::default(), None));
     };
 
-    for dir in start.ancestors() {
-        for candidate in [dir.join(".nova").join("config.toml"), dir.join("nova.toml")] {
-            match NovaConfig::load_from_path(&candidate) {
-                Ok(config) => return Ok(config),
-                Err(ConfigError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-                    continue;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-    }
+    let config = NovaConfig::load_from_path(&path)?;
+    Ok((config, Some(path)))
+}
 
-    Ok(NovaConfig::default())
+/// Reload the Nova configuration for a workspace root and report whether it changed.
+pub fn reload_for_workspace(
+    workspace_root: &Path,
+    previous: &NovaConfig,
+    previous_path: Option<&Path>,
+) -> Result<(NovaConfig, Option<PathBuf>, bool), ConfigError> {
+    let (config, path) = load_for_workspace(workspace_root)?;
+    let changed = path.as_deref() != previous_path || &config != previous;
+    Ok((config, path, changed))
 }
 
 /// Ring buffer of formatted log lines for bug reports.
@@ -991,15 +1014,13 @@ mod toml_tests {
 
         let filter = logging.config_env_filter();
         let buffer = Arc::new(LogBuffer::new(64));
-        let subscriber = tracing_subscriber::registry()
-            .with(filter)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_writer(LogBufferMakeWriter {
-                        buffer: buffer.clone(),
-                    })
-                    .with_ansi(false),
-            );
+        let subscriber = tracing_subscriber::registry().with(filter).with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(LogBufferMakeWriter {
+                    buffer: buffer.clone(),
+                })
+                .with_ansi(false),
+        );
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::trace!("not visible");
@@ -1018,15 +1039,13 @@ mod toml_tests {
 
         let filter = logging.config_env_filter();
         let buffer = Arc::new(LogBuffer::new(64));
-        let subscriber = tracing_subscriber::registry()
-            .with(filter)
-            .with(
-                tracing_subscriber::fmt::layer()
-                    .with_writer(LogBufferMakeWriter {
-                        buffer: buffer.clone(),
-                    })
-                    .with_ansi(false),
-            );
+        let subscriber = tracing_subscriber::registry().with(filter).with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(LogBufferMakeWriter {
+                    buffer: buffer.clone(),
+                })
+                .with_ansi(false),
+        );
 
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(target: "other_target", "not visible");

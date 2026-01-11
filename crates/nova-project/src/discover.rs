@@ -18,6 +18,12 @@ pub struct LoadOptions {
     /// Nova-specific configuration (e.g. generated source roots).
     pub nova_config: NovaConfig,
 
+    /// Path to the on-disk config used to populate `nova_config`, if any.
+    ///
+    /// This is tracked so callers can cheaply determine whether a config reload
+    /// is needed when a file watcher reports changes.
+    pub nova_config_path: Option<PathBuf>,
+
     /// Bazel-specific loader configuration.
     ///
     /// By default Nova uses a heuristic (treat BUILD directories as source roots) to
@@ -85,16 +91,18 @@ pub enum ProjectError {
 }
 
 pub fn load_project(root: impl AsRef<Path>) -> Result<ProjectConfig, ProjectError> {
-    load_project_with_options(root, &LoadOptions::default())
+    load_project_with_workspace_config(root)
 }
 
 pub fn load_project_with_workspace_config(
     root: impl AsRef<Path>,
 ) -> Result<ProjectConfig, ProjectError> {
     let workspace_root = crate::workspace_config::canonicalize_workspace_root(root)?;
-    let nova_config = crate::workspace_config::load_nova_config(&workspace_root)?;
+    let (nova_config, nova_config_path) =
+        crate::workspace_config::load_nova_config(&workspace_root)?;
     let options = LoadOptions {
         nova_config,
+        nova_config_path,
         ..LoadOptions::default()
     };
 
@@ -111,10 +119,32 @@ pub fn load_project_with_options(
 
 pub fn reload_project(
     config: &ProjectConfig,
-    _changed_files: &[PathBuf],
+    options: &mut LoadOptions,
+    changed_files: &[PathBuf],
 ) -> Result<ProjectConfig, ProjectError> {
+    let workspace_root = &config.workspace_root;
+
+    let discovered_path = nova_config::discover_config_path(workspace_root);
+    let reload_config = changed_files.iter().any(|changed| {
+        options
+            .nova_config_path
+            .as_ref()
+            .is_some_and(|p| p == changed)
+            || discovered_path.as_ref().is_some_and(|p| p == changed)
+    });
+
+    if reload_config {
+        let (new_config, new_path, _changed) = nova_config::reload_for_workspace(
+            workspace_root,
+            &options.nova_config,
+            options.nova_config_path.as_deref(),
+        )?;
+        options.nova_config = new_config;
+        options.nova_config_path = new_path;
+    }
+
     // Naive implementation: re-scan the workspace root.
-    load_project_with_workspace_config(&config.workspace_root)
+    load_project_from_workspace_root(workspace_root, options)
 }
 
 fn load_project_from_workspace_root(

@@ -207,7 +207,7 @@ fn discovery_supports_workspace_config_override() -> Result<(), Box<dyn std::err
     let _nova_config_path = EnvVarGuard::unset("NOVA_CONFIG_PATH");
     let _java_home = EnvVarGuard::set("JAVA_HOME", &workspace_root.join("bogus-java-home"));
 
-    let nova_config: NovaConfig = nova_config::load_for_workspace(workspace_root)?;
+    let (nova_config, _config_path) = nova_config::load_for_workspace(workspace_root)?;
     // `nova-config` is the source of truth for on-disk settings; `nova-core`
     // exposes a lightweight config used by JDK discovery.
     let jdk_config: JdkConfig = nova_config.jdk_config();

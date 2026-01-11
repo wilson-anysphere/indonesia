@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::build::NovaDiagnostic;
-use super::config::load_workspace_config;
+use super::config::load_workspace_config_with_path;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,10 +176,12 @@ fn parse_params(value: serde_json::Value) -> Result<NovaGeneratedSourcesParams> 
 fn load_project_with_workspace_config(
     root: &Path,
 ) -> Result<(nova_project::ProjectConfig, NovaConfig)> {
-    let config = load_workspace_config(root);
+    let workspace_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let (config, config_path) = load_workspace_config_with_path(&workspace_root);
     let mut options = LoadOptions::default();
     options.nova_config = config.clone();
-    let project = load_project_with_options(root, &options)
+    options.nova_config_path = config_path;
+    let project = load_project_with_options(&workspace_root, &options)
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
     Ok((project, config))
 }
@@ -442,5 +444,38 @@ mod tests {
             target: None,
         };
         assert_eq!(selected_module_root(&project, &params), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_workspace_config_instead_of_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/Hello.java"), "class Hello {}").unwrap();
+        let generated = dir.path().join("target/generated-sources/annotations");
+        std::fs::create_dir_all(&generated).unwrap();
+        std::fs::write(
+            dir.path().join("nova.toml"),
+            "[generated_sources]\nenabled = false\n",
+        )
+        .unwrap();
+
+        let (project, config) = load_project_with_workspace_config(dir.path()).unwrap();
+
+        assert!(
+            !config.generated_sources.enabled,
+            "expected config to be loaded from nova.toml"
+        );
+        assert!(
+            !project
+                .source_roots
+                .iter()
+                .any(|root| root.path == generated),
+            "expected generated source roots to be excluded when disabled via config"
+        );
     }
 }

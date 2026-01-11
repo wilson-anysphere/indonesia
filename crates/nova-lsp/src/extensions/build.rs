@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use super::config::load_workspace_config;
+use super::config::load_workspace_config_with_path;
 
 /// Parameters accepted by Nova's build-related extension requests.
 ///
@@ -419,9 +419,10 @@ fn load_build_metadata(params: &NovaProjectParams) -> BuildMetadata {
         Err(_) => return BuildMetadata::default(),
     };
 
-    let nova_config = load_workspace_config(&root);
+    let (nova_config, nova_config_path) = load_workspace_config_with_path(&root);
     let mut options = LoadOptions::default();
     options.nova_config = nova_config;
+    options.nova_config_path = nova_config_path;
     let Ok(project) = load_project_with_options(&root, &options) else {
         return BuildMetadata::default();
     };
@@ -608,9 +609,10 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         };
         serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
     } else {
-        let nova_config = load_workspace_config(&requested_root);
+        let (nova_config, nova_config_path) = load_workspace_config_with_path(&requested_root);
         let mut options = LoadOptions::default();
         options.nova_config = nova_config;
+        options.nova_config_path = nova_config_path;
         let config = load_project_with_options(&requested_root, &options)
             .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
@@ -1413,6 +1415,37 @@ mod tests {
         assert!(
             result.classpath.iter().any(|p| p == &fake_jar_str),
             "classpath should include entry from mocked `gradle`"
+        );
+    }
+
+    #[test]
+    fn target_classpath_respects_workspace_config() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/Hello.java"), "class Hello {}").unwrap();
+        let generated = tmp.path().join("target/generated-sources/annotations");
+        std::fs::create_dir_all(&generated).unwrap();
+        std::fs::write(
+            tmp.path().join("nova.toml"),
+            "[generated_sources]\nenabled = false\n",
+        )
+        .unwrap();
+
+        let response = handle_target_classpath(serde_json::json!({
+            "projectRoot": tmp.path().to_string_lossy(),
+        }))
+        .unwrap();
+
+        let roots = response
+            .get("sourceRoots")
+            .and_then(|value| value.as_array())
+            .expect("sourceRoots should be present");
+        let generated_text = generated.to_string_lossy();
+        assert!(
+            !roots
+                .iter()
+                .any(|root| root.as_str() == Some(generated_text.as_ref())),
+            "expected generated sources to be excluded when disabled via nova.toml"
         );
     }
 }
