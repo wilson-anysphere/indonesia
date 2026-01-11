@@ -9,6 +9,7 @@
 //! - structured remote errors (`nova_remote_proto::v3::RpcError`) and cancellation packets
 
 use std::collections::HashMap;
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -134,11 +135,26 @@ impl RequestContext {
 }
 
 /// Worker-side (client) transport configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WorkerConfig {
     pub hello: WorkerHello,
     pub pre_handshake_max_frame_len: u32,
     pub compression_threshold: usize,
+}
+
+impl fmt::Debug for WorkerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerConfig")
+            .field("shard_id", &self.hello.shard_id)
+            .field("hello_auth_present", &self.hello.auth_token.is_some())
+            .field("supported_versions", &self.hello.supported_versions)
+            .field("capabilities", &self.hello.capabilities)
+            .field("cached_index_info", &self.hello.cached_index_info)
+            .field("worker_build", &self.hello.worker_build)
+            .field("pre_handshake_max_frame_len", &self.pre_handshake_max_frame_len)
+            .field("compression_threshold", &self.compression_threshold)
+            .finish()
+    }
 }
 
 impl WorkerConfig {
@@ -158,7 +174,7 @@ impl Default for WorkerConfig {
 }
 
 /// Router-side (server) transport configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RouterConfig {
     pub supported_versions: SupportedVersions,
     pub capabilities: Capabilities,
@@ -167,6 +183,20 @@ pub struct RouterConfig {
     pub worker_id: WorkerId,
     pub revision: Revision,
     pub expected_auth_token: Option<String>,
+}
+
+impl fmt::Debug for RouterConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RouterConfig")
+            .field("supported_versions", &self.supported_versions)
+            .field("capabilities", &self.capabilities)
+            .field("pre_handshake_max_frame_len", &self.pre_handshake_max_frame_len)
+            .field("compression_threshold", &self.compression_threshold)
+            .field("worker_id", &self.worker_id)
+            .field("revision", &self.revision)
+            .field("expected_auth_present", &self.expected_auth_token.is_some())
+            .finish()
+    }
 }
 
 impl Default for RouterConfig {
@@ -1330,6 +1360,44 @@ fn wire_frame_type(frame: &WireFrame) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_config_debug_does_not_expose_auth_token() {
+        let token = "super-secret-token";
+        let mut hello = default_worker_hello();
+        hello.auth_token = Some(token.to_string());
+
+        let cfg = WorkerConfig::new(hello);
+        let output = format!("{cfg:?}");
+
+        assert!(
+            !output.contains(token),
+            "WorkerConfig debug output leaked auth token: {output}"
+        );
+        assert!(
+            output.contains("hello_auth_present"),
+            "WorkerConfig debug output should include auth presence indicator: {output}"
+        );
+    }
+
+    #[test]
+    fn router_config_debug_does_not_expose_expected_auth_token() {
+        let token = "super-secret-token";
+        let cfg = RouterConfig {
+            expected_auth_token: Some(token.to_string()),
+            ..RouterConfig::default()
+        };
+        let output = format!("{cfg:?}");
+
+        assert!(
+            !output.contains(token),
+            "RouterConfig debug output leaked auth token: {output}"
+        );
+        assert!(
+            output.contains("expected_auth_present"),
+            "RouterConfig debug output should include auth presence indicator: {output}"
+        );
+    }
 
     #[test]
     fn read_wire_frame_rejects_oversize_len_prefix_without_allocating() {

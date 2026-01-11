@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{FileText, Revision, ShardId, ShardIndex, WorkerId, WorkerStats, MAX_MESSAGE_BYTES};
@@ -87,7 +89,7 @@ impl CachedIndexInfo {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkerHello {
     pub shard_id: ShardId,
     pub auth_token: Option<String>,
@@ -95,6 +97,19 @@ pub struct WorkerHello {
     pub capabilities: Capabilities,
     pub cached_index_info: Option<CachedIndexInfo>,
     pub worker_build: Option<String>,
+}
+
+impl fmt::Debug for WorkerHello {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WorkerHello")
+            .field("shard_id", &self.shard_id)
+            .field("auth_present", &self.auth_token.is_some())
+            .field("supported_versions", &self.supported_versions)
+            .field("capabilities", &self.capabilities)
+            .field("cached_index_info", &self.cached_index_info)
+            .field("worker_build", &self.worker_build)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -314,4 +329,35 @@ pub fn decode_rpc_payload(bytes: &[u8]) -> anyhow::Result<RpcPayload> {
     );
     crate::validate_cbor::validate_cbor(bytes)?;
     Ok(serde_cbor::from_slice(bytes)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn worker_hello_debug_does_not_expose_auth_token() {
+        let token = "super-secret-token";
+        let hello = WorkerHello {
+            shard_id: 1,
+            auth_token: Some(token.to_string()),
+            supported_versions: SupportedVersions {
+                min: ProtocolVersion::CURRENT,
+                max: ProtocolVersion::CURRENT,
+            },
+            capabilities: Capabilities::default(),
+            cached_index_info: None,
+            worker_build: None,
+        };
+
+        let output = format!("{hello:?}");
+        assert!(
+            !output.contains(token),
+            "WorkerHello debug output leaked auth token: {output}"
+        );
+        assert!(
+            output.contains("auth_present"),
+            "WorkerHello debug output should include auth presence indicator: {output}"
+        );
+    }
 }
