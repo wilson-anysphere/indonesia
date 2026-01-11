@@ -194,24 +194,38 @@ export function parseGitHubRepo(input: string): GitHubRepo | undefined {
   const repoMatch = /^(?<owner>[^/]+)\/(?<repo>[^/]+)$/.exec(trimmed);
   if (repoMatch?.groups?.owner && repoMatch.groups.repo) {
     const owner = repoMatch.groups.owner;
-    const repo = repoMatch.groups.repo;
+    const repo = stripDotGit(repoMatch.groups.repo);
     return { owner, repo, apiBaseUrl: `https://api.github.com/repos/${owner}/${repo}` };
   }
 
   try {
     const url = new URL(trimmed);
-    if (url.hostname !== 'github.com') {
-      return undefined;
-    }
     const parts = url.pathname.replace(/^\//, '').split('/').filter(Boolean);
-    if (parts.length < 2) {
-      return undefined;
+    if (url.hostname === 'github.com') {
+      if (parts.length < 2) {
+        return undefined;
+      }
+      const [owner, rawRepo] = parts;
+      const repo = stripDotGit(rawRepo);
+      return { owner, repo, apiBaseUrl: `https://api.github.com/repos/${owner}/${repo}` };
     }
-    const [owner, repo] = parts;
-    return { owner, repo, apiBaseUrl: `https://api.github.com/repos/${owner}/${repo}` };
+
+    const reposIndex = parts.indexOf('repos');
+    if (reposIndex >= 0 && parts.length >= reposIndex + 3) {
+      const owner = parts[reposIndex + 1];
+      const repo = stripDotGit(parts[reposIndex + 2]);
+      const apiBase = `${url.origin}/${parts.slice(0, reposIndex + 3).join('/')}`;
+      return { owner, repo, apiBaseUrl: apiBase };
+    }
+
+    return undefined;
   } catch {
     return undefined;
   }
+}
+
+function stripDotGit(repo: string): string {
+  return repo.endsWith('.git') ? repo.slice(0, -4) : repo;
 }
 
 export function detectNovaTarget(info: { platform: NodeJS.Platform; arch: string }): string {

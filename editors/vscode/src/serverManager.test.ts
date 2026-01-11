@@ -20,6 +20,18 @@ describe('serverManager helpers', () => {
       repo: 'indonesia',
       apiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
     });
+
+    expect(parseGitHubRepo('https://github.com/wilson-anysphere/indonesia.git')).toEqual({
+      owner: 'wilson-anysphere',
+      repo: 'indonesia',
+      apiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
+    });
+
+    expect(parseGitHubRepo('https://api.github.com/repos/wilson-anysphere/indonesia')).toEqual({
+      owner: 'wilson-anysphere',
+      repo: 'indonesia',
+      apiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
+    });
   });
 
   it('detects supported targets', async () => {
@@ -172,4 +184,3 @@ describe('ServerManager install flow', () => {
     ).rejects.toThrow(/Checksum mismatch/);
   });
 });
-
