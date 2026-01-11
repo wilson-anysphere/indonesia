@@ -26,7 +26,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -934,12 +934,121 @@ fn path_from_uri(uri: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::prelude::*;
+    use std::io::Cursor;
 
     #[test]
     fn path_from_uri_decodes_percent_encoding() {
         let uri = "file:///tmp/My%20File.java";
         let path = path_from_uri(uri).expect("path");
         assert_eq!(path, PathBuf::from("/tmp/My File.java"));
+    }
+
+    #[test]
+    fn run_ai_explain_error_emits_chunked_log_messages_and_progress() {
+        let server = MockServer::start();
+        let long = "Nova AI output ".repeat((AI_LOG_MESSAGE_CHUNK_BYTES * 2) / 14 + 32);
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/complete");
+            then.status(200).json_body(json!({ "completion": long }));
+        });
+
+        let cfg = CloudLlmConfig {
+            provider: ProviderKind::Http,
+            endpoint: url::Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+            api_key: None,
+            model: "default".to_string(),
+            timeout: Duration::from_secs(2),
+            retry: RetryConfig {
+                max_retries: 0,
+                ..RetryConfig::default()
+            },
+            audit_logging: false,
+        };
+        let client = CloudLlmClient::new(cfg).unwrap();
+        let ai = AiService::new(client);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let mut state = ServerState::new();
+        state.ai = Some(ai);
+        state.runtime = Some(runtime);
+
+        let work_done_token = Some(json!("token"));
+        let args = ExplainErrorArgs {
+            diagnostic_message: "cannot find symbol".to_string(),
+            code: Some("class Foo {}".to_string()),
+            uri: None,
+            range: None,
+        };
+
+        let mut writer = BufWriter::new(Vec::new());
+        let result =
+            run_ai_explain_error(args, work_done_token, &mut state, &mut writer).unwrap();
+        let expected = result.as_str().expect("string result");
+
+        let bytes = writer.into_inner().unwrap();
+        let mut reader = BufReader::new(Cursor::new(bytes));
+        let mut messages = Vec::new();
+        while let Some(message) = read_json_message::<_, serde_json::Value>(&mut reader).unwrap() {
+            messages.push(message);
+        }
+
+        assert!(
+            messages.iter().any(|msg| {
+                msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
+                    && msg.get("params")
+                        .and_then(|p| p.get("value"))
+                        .and_then(|v| v.get("kind"))
+                        .and_then(|k| k.as_str())
+                        == Some("begin")
+            }),
+            "expected a work-done progress begin notification"
+        );
+
+        assert!(
+            messages.iter().any(|msg| {
+                msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
+                    && msg.get("params")
+                        .and_then(|p| p.get("value"))
+                        .and_then(|v| v.get("kind"))
+                        .and_then(|k| k.as_str())
+                        == Some("end")
+            }),
+            "expected a work-done progress end notification"
+        );
+
+        let mut output_chunks = Vec::new();
+        for msg in &messages {
+            if msg.get("method").and_then(|m| m.as_str()) != Some("window/logMessage") {
+                continue;
+            }
+            let Some(text) = msg
+                .get("params")
+                .and_then(|p| p.get("message"))
+                .and_then(|m| m.as_str())
+            else {
+                continue;
+            };
+            if !text.starts_with("AI explainError") {
+                continue;
+            }
+            let (_, chunk) = text
+                .split_once(": ")
+                .expect("chunk messages should contain ': ' delimiter");
+            output_chunks.push(chunk.to_string());
+        }
+
+        assert!(
+            output_chunks.len() > 1,
+            "expected output to be chunked into multiple logMessage notifications"
+        );
+        assert_eq!(output_chunks.join(""), expected);
+
+        mock.assert();
     }
 }
 
@@ -995,7 +1104,7 @@ fn run_ai_explain_error(
     args: ExplainErrorArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    writer: &mut impl Write,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
         .ai
@@ -1025,6 +1134,7 @@ fn run_ai_explain_error(
             (-32603, e.to_string())
         })?;
     send_log_message(writer, "AI: explanation ready")?;
+    send_ai_output(writer, "AI explainError", &out)?;
     send_progress_end(writer, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
@@ -1033,7 +1143,7 @@ fn run_ai_generate_method_body(
     args: GenerateMethodBodyArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    writer: &mut impl Write,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
         .ai
@@ -1063,6 +1173,7 @@ fn run_ai_generate_method_body(
             (-32603, e.to_string())
         })?;
     send_log_message(writer, "AI: method body ready")?;
+    send_ai_output(writer, "AI generateMethodBody", &out)?;
     send_progress_end(writer, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
@@ -1071,7 +1182,7 @@ fn run_ai_generate_tests(
     args: GenerateTestsArgs,
     work_done_token: Option<serde_json::Value>,
     state: &mut ServerState,
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    writer: &mut impl Write,
 ) -> Result<serde_json::Value, (i32, String)> {
     let ai = state
         .ai
@@ -1101,12 +1212,53 @@ fn run_ai_generate_tests(
             (-32603, e.to_string())
         })?;
     send_log_message(writer, "AI: tests ready")?;
+    send_ai_output(writer, "AI generateTests", &out)?;
     send_progress_end(writer, work_done_token.as_ref(), "Done")?;
     Ok(serde_json::Value::String(out))
 }
 
+const AI_LOG_MESSAGE_CHUNK_BYTES: usize = 6 * 1024;
+
+fn chunk_utf8_by_bytes(text: &str, max_bytes: usize) -> Vec<&str> {
+    if text.as_bytes().len() <= max_bytes {
+        return vec![text];
+    }
+
+    let mut chunks = Vec::new();
+    let mut start = 0usize;
+    while start < text.len() {
+        let mut end = (start + max_bytes).min(text.len());
+        while end > start && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            end = (start + 1).min(text.len());
+            while end < text.len() && !text.is_char_boundary(end) {
+                end += 1;
+            }
+        }
+        chunks.push(&text[start..end]);
+        start = end;
+    }
+    chunks
+}
+
+fn send_ai_output(writer: &mut impl Write, label: &str, output: &str) -> Result<(), (i32, String)> {
+    let chunks = chunk_utf8_by_bytes(output, AI_LOG_MESSAGE_CHUNK_BYTES);
+    let total = chunks.len();
+    for (idx, chunk) in chunks.into_iter().enumerate() {
+        let message = if total == 1 {
+            format!("{label}: {chunk}")
+        } else {
+            format!("{label} ({}/{total}): {chunk}", idx + 1)
+        };
+        send_log_message(writer, &message)?;
+    }
+    Ok(())
+}
+
 fn send_log_message(
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    writer: &mut impl Write,
     message: &str,
 ) -> Result<(), (i32, String)> {
     write_json_message(
@@ -1121,7 +1273,7 @@ fn send_log_message(
 }
 
 fn send_progress_begin(
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    writer: &mut impl Write,
     token: Option<&serde_json::Value>,
     title: &str,
 ) -> Result<(), (i32, String)> {
@@ -1148,7 +1300,7 @@ fn send_progress_begin(
 }
 
 fn send_progress_report(
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    writer: &mut impl Write,
     token: Option<&serde_json::Value>,
     message: &str,
     percentage: Option<u32>,
@@ -1177,7 +1329,7 @@ fn send_progress_report(
 }
 
 fn send_progress_end(
-    writer: &mut BufWriter<std::io::StdoutLock<'_>>,
+    writer: &mut impl Write,
     token: Option<&serde_json::Value>,
     message: &str,
 ) -> Result<(), (i32, String)> {
