@@ -120,17 +120,53 @@ fn gate_switch_expressions(root: &SyntaxNode, level: JavaLanguageLevel, out: &mu
         return;
     }
 
-    // We only gate `->` *in a switch label*. (Plain lambdas are Java 8.)
+    // Switch expressions can use either `case ... ->` rules or legacy `case ...:` groups with
+    // `yield`. Gate any parsed `SwitchExpression` nodes so colon-form switch expressions are
+    // diagnosed as well.
+    for node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::SwitchExpression)
+    {
+        let Some(tok) = first_token(&node) else {
+            continue;
+        };
+        out.push(feature_error(level, JavaFeature::SwitchExpressions, &tok));
+    }
+
+    // Arrow switch labels (`case ... ->`) are also part of the switch expressions feature, and can
+    // appear in statement position. Only gate `->` that terminates a switch label (plain lambdas
+    // are Java 8).
     for tok in root
         .descendants_with_tokens()
         .filter_map(|e| e.into_token())
         .filter(|t| t.kind() == SyntaxKind::Arrow)
     {
-        if tok
+        if !tok
             .parent()
             .map_or(false, |p| p.kind() == SyntaxKind::SwitchLabel)
         {
-            out.push(feature_error(level, JavaFeature::SwitchExpressions, &tok));
+            continue;
+        }
+
+        // Avoid duplicate diagnostics for `->` tokens inside `switch` *expressions*; those are
+        // already covered by the `SwitchExpression` pass above. We only want to diagnose arrow
+        // labels in switch statements here.
+        // Decide based on the *nearest* switch construct ancestor: a `SwitchLabel` can appear in
+        // both statements and expressions, and switch statements can also be nested inside switch
+        // expression rule blocks.
+        let mut cursor = tok.parent();
+        while let Some(node) = cursor {
+            match node.kind() {
+                SyntaxKind::SwitchStatement => {
+                    out.push(feature_error(level, JavaFeature::SwitchExpressions, &tok));
+                    break;
+                }
+                SyntaxKind::SwitchExpression => {
+                    // Already covered by the `SwitchExpression` pass above.
+                    break;
+                }
+                _ => cursor = node.parent(),
+            }
         }
     }
 }

@@ -441,7 +441,8 @@ fn lexer_string_literal_escape_sequences() {
 
 #[test]
 fn lexer_reports_invalid_string_escape_sequences() {
-    let input = "\"\\\\q\"";
+    // `\q` is not a valid Java string escape.
+    let input = "\"\\q\"";
     let (tokens, errors) = lex_with_errors(input);
 
     let tokens: Vec<_> = tokens
@@ -453,7 +454,7 @@ fn lexer_reports_invalid_string_escape_sequences() {
     assert_eq!(
         tokens,
         vec![
-            (SyntaxKind::StringLiteral, "\"\\\\q\"".into()),
+            (SyntaxKind::StringLiteral, "\"\\q\"".into()),
             (SyntaxKind::Eof, "".into()),
         ]
     );
@@ -1142,6 +1143,54 @@ fn feature_gate_switch_expressions_version_matrix() {
     );
     assert_eq!(java14.result.errors, Vec::new());
     assert!(java14.diagnostics.is_empty());
+}
+
+#[test]
+fn feature_gate_switch_expression_colon_yield_is_gated() {
+    let input = "class Foo { int m(int n) { int x = switch (n) { case 1: yield 1; default: yield 2; }; return x; } }";
+
+    let java11 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_11,
+        },
+    );
+    assert_eq!(java11.result.errors, Vec::new());
+    assert_eq!(
+        java11
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_SWITCH_EXPRESSIONS"]
+    );
+
+    let java21 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21,
+        },
+    );
+    assert_eq!(java21.result.errors, Vec::new());
+    assert!(java21.diagnostics.is_empty());
+
+    let statement_input =
+        "class Foo { void m(int n) { switch (n) { case 1: break; default: break; } } }";
+    let stmt_java11 = parse_java_with_options(
+        statement_input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_11,
+        },
+    );
+    assert_eq!(stmt_java11.result.errors, Vec::new());
+    assert!(
+        !stmt_java11
+            .diagnostics
+            .iter()
+            .any(|d| d.code.as_ref() == "JAVA_FEATURE_SWITCH_EXPRESSIONS"),
+        "unexpected switch expression diagnostic: {:?}",
+        stmt_java11.diagnostics
+    );
 }
 
 #[test]
