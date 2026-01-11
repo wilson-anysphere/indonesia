@@ -1,0 +1,37 @@
+[package]
+name = "nova-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nova-format = { path = "../crates/nova-format" }
+nova-refactor = { path = "../crates/nova-refactor" }
+nova-syntax = { path = "../crates/nova-syntax" }
+
+[[bin]]
+name = "parse_java"
+path = "fuzz_targets/parse_java.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "format_java"
+path = "fuzz_targets/format_java.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "refactor_smoke"
+path = "fuzz_targets/refactor_smoke.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

@@ -1,0 +1,10 @@
+# cargo-fuzz output
+artifacts/
+corpus/
+
+# cargo output (also covered by repo-level **/target/)
+target/
+
+# Local-only lockfile (depends on local toolchain + platform)
+Cargo.lock
+

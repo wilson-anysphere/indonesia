@@ -106,12 +106,8 @@ cargo bench
 
 ## Fuzzing
 
-If/when fuzz targets are added, install `cargo-fuzz` and run:
-
-```bash
-cargo install cargo-fuzz
-cargo fuzz run <target>
-```
+Nova ships `cargo-fuzz` targets under `fuzz/` (parser / formatter / refactoring smoke tests).
+See [`docs/fuzzing.md`](docs/fuzzing.md) for prerequisites and usage.
 
 ## VS Code extension development
 

@@ -1,0 +1,35 @@
+name: Fuzz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz --locked
+
+      - name: Fuzz parse_java
+        run: cargo +nightly fuzz run parse_java -- -max_total_time=30
+
+      - name: Fuzz format_java
+        run: cargo +nightly fuzz run format_java -- -max_total_time=30
+
+      - name: Fuzz refactor_smoke
+        run: cargo +nightly fuzz run refactor_smoke -- -max_total_time=30
+
