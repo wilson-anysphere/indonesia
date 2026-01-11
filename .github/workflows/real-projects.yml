@@ -77,6 +77,23 @@ jobs:
           mkdir -p real-project-logs
           ./scripts/run-real-project-tests.sh 2>&1 | tee real-project-logs/run-real-project-tests.log
 
+      - name: Record fixture revisions
+        if: always()
+        run: |
+          set -euxo pipefail
+          mkdir -p real-project-logs
+          {
+            echo "fixture head"
+            shopt -s nullglob
+            for repo_dir in test-projects/*; do
+              if [[ -d "$repo_dir/.git" ]]; then
+                repo="$(basename "$repo_dir")"
+                sha="$(git -C "$repo_dir" rev-parse HEAD)"
+                echo "$repo $sha"
+              fi
+            done
+          } | tee real-project-logs/fixture-revisions.log
+
       - name: javac validate (best-effort)
         if: always()
         continue-on-error: true
