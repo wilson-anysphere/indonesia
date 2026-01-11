@@ -104,6 +104,10 @@ fn loads_maven_nested_multi_module_workspace() {
         SourceRootKind::Main,
         PathBuf::from("parent-a/child-a1/src/main/java")
     )));
+
+    // Ensure config is deterministic.
+    let config2 = load_project(&root).expect("load maven project again");
+    assert_eq!(config, config2);
 }
 
 #[test]
