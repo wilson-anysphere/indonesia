@@ -25,7 +25,8 @@ isolated dev setups.
 ## Protocol (nova remote RPC v3)
 
 Nova is migrating the router↔worker transport from the legacy lockstep protocol
-(`nova_remote_proto::legacy_v2`, bincode-encoded, no request IDs) to **nova remote RPC v3** (see
+(`nova_remote_proto::legacy_v2`, length-delimited binary encoding, no request IDs/multiplexing) to
+**nova remote RPC v3** (see
 [`docs/17-remote-rpc-protocol.md`](../../docs/17-remote-rpc-protocol.md)).
 
 At a high level, v3 adds:
@@ -46,6 +47,10 @@ The v3 handshake carries capability and limit negotiation (frame/payload size bo
 algorithms, etc.). `nova-worker` does not currently expose v3-specific CLI flags for tuning these;
 it uses built-in defaults and the router chooses the final negotiated settings. Transport-level
 timeouts/keepalive (when enabled) are likewise internal defaults rather than CLI-configurable knobs.
+
+The current legacy protocol also enforces fixed hard limits to prevent OOM on untrusted inputs (for
+example: ~64MiB max RPC payload, ~8MiB max file text). If indexing fails with a “too large” style
+error, split large source roots into smaller shards.
 
 ## Usage
 
@@ -119,6 +124,18 @@ nova-worker \
 ```
 
 ## Troubleshooting
+
+### Handshake errors (legacy lockstep protocol)
+
+Until the v3 transport is wired end-to-end, `nova-worker` uses the legacy lockstep handshake
+(`WorkerHello → RouterHello`).
+
+Common failures:
+
+- **Authentication failed**: if the router expects an auth token and the worker’s `--auth-token`
+  does not match, the router will send an `Error` and close the connection.
+- **Version mismatch**: if the worker and router are built from incompatible versions, the worker
+  may fail with an `unexpected router hello` message (protocol version mismatch).
 
 ### Handshake rejected (v3)
 

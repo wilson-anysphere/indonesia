@@ -7,9 +7,9 @@ It is an MVP of the “distributed queries” direction described in
 [`docs/04-incremental-computation.md`](04-incremental-computation.md), but it also calls out the
 correctness and security guardrails that matter for real usage.
 
-**Protocol note:** the current distributed mode uses a simple lockstep, bincode-based protocol
-(`nova_remote_proto::legacy_v2`). Work is underway to migrate to **nova remote RPC v3**, which adds
-explicit
+**Protocol note:** the current distributed mode uses a simple lockstep, length-delimited binary
+protocol (`nova_remote_proto::legacy_v2`, no request IDs/multiplexing). Work is underway to migrate
+to **nova remote RPC v3**, which adds explicit
 `request_id: u64` (**router even**, **worker odd**), multiplexing, chunking (`PacketChunk`), and
 negotiated compression/cancellation. See the on-the-wire spec in
 [`docs/17-remote-rpc-protocol.md`](17-remote-rpc-protocol.md).
@@ -43,7 +43,7 @@ parallelization, etc.) should be treated as **future work** and is documented se
   - Calls into the router for shard indexing and workspace symbol search.
 - **Router (`nova-router`)**
   - Owns the *sharding layout* (source roots → shard IDs).
-  - Listens for worker connections over the nova remote RPC transport (legacy bincode today; v3 is
+  - Listens for worker connections over the nova remote RPC transport (legacy lockstep today; v3 is
     the intended long-term protocol).
   - Optionally spawns and supervises local `nova-worker` processes (one per shard).
   - Answers workspace symbol queries by requesting top-k matches from shard workers
@@ -90,8 +90,10 @@ still trigger a real `index_workspace` to refresh results when correctness matte
 
 ### Worker restart behavior (“rehydration”)
 
-When a worker connects, it advertises whether it has a cached shard index and includes cached
-index metadata in the v3 `Hello` handshake.
+When a worker connects, it advertises whether it has a cached shard index:
+
+- Legacy lockstep protocol: `WorkerHello.has_cached_index`
+- v3 protocol: `Hello.cached_index_info`
 
 If a worker reports a cached index, the router will then send `LoadFiles` with a full on-disk
 snapshot of the shard’s files to **rehydrate** the worker’s in-memory file map.
@@ -193,7 +195,7 @@ reduction), prefer **mutual TLS (mTLS)** + explicit shard authorization (see
 
 When configured for mTLS, the router can enforce shard-scoped authorization by checking the SHA-256
 fingerprint of the presented client certificate. This prevents a valid-but-mis-scoped worker (still
-signed by the CA) from claiming an arbitrary `shard_id` via the initial `Hello` handshake.
+signed by the CA) from claiming an arbitrary `shard_id` via the initial handshake.
 
 #### Fingerprint allowlists (mTLS)
 
@@ -273,6 +275,9 @@ Distributed mode currently prioritizes correctness and simplicity over throughpu
   mitigate this with negotiated frame/payload size limits and optional `PacketChunk` chunking (and
   compression) to avoid unbounded allocations, but it is not yet wired into
   `nova-router`/`nova-worker`.
+- **Hard message size limits.** The current legacy protocol enforces defensive hard limits to avoid
+  OOM on untrusted inputs (e.g. max ~64MiB per RPC payload and max ~8MiB per file text). If a shard
+  snapshot exceeds these limits, indexing will fail; split large source roots into smaller shards.
 - **Sequential indexing.** `index_workspace` currently indexes shards in a straightforward loop,
   rather than aggressively parallelizing shard RPCs.
 
@@ -284,7 +289,7 @@ into more shards (more source roots) to bound per-message and per-worker memory.
 Remote mode is **not hardened** and should not be exposed to untrusted networks.
 
 - The `--auth-token` is a **shared secret** and is sent by the worker during the initial handshake
-  (`WorkerHello.auth_token`).
+  (`WorkerHello.auth_token` in the legacy protocol; v3 uses `Hello.auth_token`).
   **Do not send it over plaintext TCP.**
 - Plain `tcp:` also sends **full file contents** in cleartext. Use TLS for any remote deployment.
 - TLS support exists behind the `tls` Cargo feature for both router and worker (see the worker
@@ -293,9 +298,11 @@ Remote mode is **not hardened** and should not be exposed to untrusted networks.
 - For stronger authentication/authorization guarantees, configure **mTLS** (client certificate
   verification) and shard-scoped authorization (e.g. the router’s client-cert fingerprint allowlist).
 - Even with TLS/mTLS enabled, remote deployments still need DoS hardening (connection limits, rate
-  limiting, etc.). The planned v3 transport is intended to help via negotiated max frame/payload
-  sizes (see `docs/17-remote-rpc-protocol.md`) and strict handshake framing, but it is not a
-  substitute for network-level controls.
+  limiting, etc.). Nova’s RPC stack enforces some basic size limits to avoid OOM, and the local
+  worker supervisor uses a handshake timeout when spawning workers. The planned v3 transport is
+  intended to help further via negotiated max frame/payload sizes (see
+  `docs/17-remote-rpc-protocol.md`) and stricter handshake framing, but it is not a substitute for
+  network-level controls.
 
 ## Future work (not implemented yet)
 
