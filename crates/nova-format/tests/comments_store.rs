@@ -161,3 +161,24 @@ fn blank_line_metadata_is_detected() {
 
     store.assert_drained();
 }
+
+#[test]
+fn blank_line_metadata_ignores_adjacent_comment_lines() {
+    let input = "class Foo { void m() { int x=1;\n// c1\n// c2\nint y=2; } }";
+    let parsed = parse_java(input);
+    let root = parsed.syntax();
+
+    let tokens = collect_tokens(&root);
+    let next_int = nth_token(&tokens, SyntaxKind::IntKw, 1);
+
+    let mut store = CommentStore::new(&root, input);
+    let leading = store.take_leading(TokenKey::from(&next_int));
+
+    assert_eq!(leading.len(), 2);
+    for comment in &leading {
+        assert!(!comment.blank_line_before);
+        assert!(!comment.blank_line_after);
+    }
+
+    store.assert_drained();
+}

@@ -8,12 +8,14 @@
 
 pub mod comment_printer;
 pub mod comments;
+mod java_comments;
 
 use nova_core::{Position, Range, TextEdit, TextRange, TextSize};
 use nova_syntax::{SyntaxKind, SyntaxTree};
 use thiserror::Error;
 
 pub use comments::{Comment, CommentKind, CommentStore, TokenKey};
+pub use java_comments::JavaComments;
 pub use nova_core::LineIndex;
 
 mod formatter;

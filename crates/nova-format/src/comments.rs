@@ -160,6 +160,10 @@ impl CommentStore {
 
             let line_breaks_before = count_line_breaks_between(source, prev_end, tok.range.start());
             let line_breaks_after = count_line_breaks_between(source, tok.range.end(), next_start);
+            let blank_line_before =
+                has_blank_line_between(source, prev_end, tok.range.start());
+            let blank_line_after =
+                has_blank_line_between(source, tok.range.end(), next_start);
 
             let is_inline_with_prev = prev_sig.is_some() && line_breaks_before == 0;
             let is_inline_with_next = next_sig.is_some() && line_breaks_after == 0;
@@ -169,8 +173,8 @@ impl CommentStore {
                 text_range: tok.range,
                 is_inline_with_prev,
                 is_inline_with_next,
-                blank_line_before: line_breaks_before >= 2,
-                blank_line_after: line_breaks_after >= 2,
+                blank_line_before,
+                blank_line_after,
                 force_own_line_after,
             };
 
@@ -256,4 +260,47 @@ fn count_line_breaks_between(source: &str, start: TextSize, end: TextSize) -> u3
         }
     }
     count
+}
+
+fn has_blank_line_between(source: &str, start: TextSize, end: TextSize) -> bool {
+    let len = source.len();
+    let mut start = u32::from(start) as usize;
+    let mut end = u32::from(end) as usize;
+
+    start = start.min(len);
+    end = end.min(len);
+    if start > end {
+        std::mem::swap(&mut start, &mut end);
+    }
+
+    let bytes = &source.as_bytes()[start..end];
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' => i += 1,
+            b'\r' => {
+                i += 1;
+                if i < bytes.len() && bytes[i] == b'\n' {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+                continue;
+            }
+        }
+
+        // After a line break, a "blank line" means we encounter another line break with only
+        // horizontal whitespace (` ` / `\t`) in between.
+        let mut j = i;
+        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t') {
+            j += 1;
+        }
+        if j < bytes.len() && matches!(bytes[j], b'\n' | b'\r') {
+            return true;
+        }
+        i = j;
+    }
+
+    false
 }

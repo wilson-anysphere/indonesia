@@ -532,7 +532,9 @@ fn fits_flat<'a>(mut remaining_width: isize, docs: &[Doc<'a>]) -> bool {
                 LineKind::Soft => {}
                 LineKind::Hard => return false,
             },
-            DocKind::LineSuffix(inner) => stack.push(inner.clone()),
+            // Line suffix docs are ignored for fitting. This matches Prettier's behavior where
+            // long trailing comments should not force the surrounding code to wrap.
+            DocKind::LineSuffix(_inner) => {}
             DocKind::BreakParent => return false,
             DocKind::Fill(parts) => {
                 for part in parts.iter().rev() {
@@ -549,7 +551,7 @@ fn fits_flat<'a>(mut remaining_width: isize, docs: &[Doc<'a>]) -> bool {
 fn fits<'a>(
     mut remaining_width: isize,
     base_stack: &[Command<'a>],
-    initial_line_suffixes: &[Command<'a>],
+    _initial_line_suffixes: &[Command<'a>],
     lookahead: &[Command<'a>],
     config: PrintConfig,
 ) -> bool {
@@ -564,7 +566,10 @@ fn fits<'a>(
 
     let mut idx = base_stack.len();
     let mut stack: Vec<Command<'a>> = lookahead.to_vec();
-    let mut line_suffixes: Vec<Command<'a>> = initial_line_suffixes.to_vec();
+    // Like Prettier, `lineSuffix` should not affect line-fitting decisions. In particular,
+    // trailing `//` comments may be arbitrarily long and must not force surrounding groups to
+    // choose a broken layout.
+    let mut line_suffixes: Vec<Command<'a>> = Vec::new();
 
     while remaining_width >= 0 {
         if steps >= MAX_STEPS {
@@ -631,12 +636,8 @@ fn fits<'a>(
                         return true;
                     }
                 },
-                DocKind::LineSuffix(inner) => {
-                    line_suffixes.push(Command::Doc {
-                        indent,
-                        mode,
-                        doc: inner.clone(),
-                    });
+                DocKind::LineSuffix(_inner) => {
+                    // Line suffixes do not participate in fitting calculations.
                 }
                 DocKind::BreakParent => {
                     if mode == Mode::Flat {
