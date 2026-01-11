@@ -304,7 +304,8 @@ async fn dap_can_hot_swap_a_class() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -312,7 +313,10 @@ async fn dap_can_hot_swap_a_class() {
 
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let init_resp = read_response(&mut reader, 1).await;
-    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
     let _initialized = read_next(&mut reader).await;
 
     send_request(
@@ -326,7 +330,10 @@ async fn dap_can_hot_swap_a_class() {
     )
     .await;
     let attach_resp = read_response(&mut reader, 2).await;
-    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     let bytecode = vec![0xCA, 0xFE];
     let bytecode_base64 = general_purpose::STANDARD.encode(&bytecode);
@@ -343,13 +350,20 @@ async fn dap_can_hot_swap_a_class() {
     )
     .await;
     let hot_swap_resp = read_response(&mut reader, 3).await;
-    assert!(hot_swap_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(hot_swap_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
     assert_eq!(
-        hot_swap_resp.pointer("/body/results/0/status").and_then(|v| v.as_str()),
+        hot_swap_resp
+            .pointer("/body/results/0/status")
+            .and_then(|v| v.as_str()),
         Some("success")
     );
     assert_eq!(
-        hot_swap_resp.pointer("/body/results/0/file").and_then(|v| v.as_str()),
+        hot_swap_resp
+            .pointer("/body/results/0/file")
+            .and_then(|v| v.as_str()),
         Some("Main.java")
     );
 
@@ -374,7 +388,8 @@ async fn dap_hot_swap_reports_schema_change() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -395,7 +410,10 @@ async fn dap_hot_swap_reports_schema_change() {
     )
     .await;
     let attach_resp = read_response(&mut reader, 2).await;
-    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     let bytecode_base64 = general_purpose::STANDARD.encode([0u8; 4]);
     send_request(
@@ -411,9 +429,14 @@ async fn dap_hot_swap_reports_schema_change() {
     )
     .await;
     let hot_swap_resp = read_response(&mut reader, 3).await;
-    assert!(hot_swap_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(hot_swap_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
     assert_eq!(
-        hot_swap_resp.pointer("/body/results/0/status").and_then(|v| v.as_str()),
+        hot_swap_resp
+            .pointer("/body/results/0/status")
+            .and_then(|v| v.as_str()),
         Some("schema_change")
     );
     let msg = hot_swap_resp

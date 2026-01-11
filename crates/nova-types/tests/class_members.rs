@@ -148,8 +148,7 @@ fn resolves_constructor_overloads_from_loaded_stub_class() {
     assert_eq!(res.params, vec![]);
     assert!(!res.is_varargs);
 
-    let MethodResolution::Found(res) =
-        resolve_constructor_call(&env, class, &[Type::int()], None)
+    let MethodResolution::Found(res) = resolve_constructor_call(&env, class, &[Type::int()], None)
     else {
         panic!("expected constructor resolution");
     };

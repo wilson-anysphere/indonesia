@@ -1725,10 +1725,13 @@ async fn handle_request_inner(
                     files
                         .iter()
                         .map(|file| {
-                            self.outputs.get(file).cloned().unwrap_or_else(|| CompileOutput {
-                                file: file.clone(),
-                                result: Err(CompileError::new("no bytecode provided")),
-                            })
+                            self.outputs
+                                .get(file)
+                                .cloned()
+                                .unwrap_or_else(|| CompileOutput {
+                                    file: file.clone(),
+                                    result: Err(CompileError::new("no bytecode provided")),
+                                })
                         })
                         .collect()
                 }
@@ -1817,8 +1820,8 @@ async fn handle_request_inner(
             let mut outputs = HashMap::<PathBuf, CompileOutput>::new();
 
             if !args.classes.is_empty() {
-                let use_changed_files =
-                    !args.changed_files.is_empty() && args.changed_files.len() == args.classes.len();
+                let use_changed_files = !args.changed_files.is_empty()
+                    && args.changed_files.len() == args.classes.len();
                 for (idx, class) in args.classes.into_iter().enumerate() {
                     let file = if use_changed_files {
                         args.changed_files[idx].clone()

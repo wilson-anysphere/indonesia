@@ -353,12 +353,18 @@ mod tests {
 
     #[test]
     fn class_name_to_signature_converts_dots() {
-        assert_eq!(class_name_to_signature("com.example.Foo"), "Lcom/example/Foo;");
+        assert_eq!(
+            class_name_to_signature("com.example.Foo"),
+            "Lcom/example/Foo;"
+        );
         assert_eq!(class_name_to_signature("Foo"), "LFoo;");
     }
 
     #[test]
     fn class_name_to_signature_passes_through_signatures() {
-        assert_eq!(class_name_to_signature("Ljava/lang/String;"), "Ljava/lang/String;");
+        assert_eq!(
+            class_name_to_signature("Ljava/lang/String;"),
+            "Ljava/lang/String;"
+        );
     }
 }

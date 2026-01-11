@@ -1,5 +1,5 @@
-use std::sync::mpsc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 

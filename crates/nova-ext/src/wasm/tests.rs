@@ -568,7 +568,8 @@ fn all_provider_kinds_roundtrip() {
         })
     );
     assert_eq!(
-        registry.register_code_action_provider(Arc::new(DummyCodeActionProvider { id: id.clone() })),
+        registry
+            .register_code_action_provider(Arc::new(DummyCodeActionProvider { id: id.clone() })),
         Err(RegisterError::DuplicateId {
             kind: "code_action",
             id: id.clone()

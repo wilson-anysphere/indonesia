@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 
-use nova_jdwp::{JdwpError as NovaJdwpError, TcpJdwpClient};
 use nova_jdwp::wire::{JdwpClient as WireJdwpClient, JdwpError as WireJdwpError};
+use nova_jdwp::{JdwpError as NovaJdwpError, TcpJdwpClient};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -83,11 +83,19 @@ impl JdwpRedefiner for TcpJdwpClient {
 
 /// Minimal JDWP integration required for hot swapping (async).
 pub trait AsyncJdwpRedefiner {
-    fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> impl Future<Output = Result<(), JdwpError>> + Send + '_;
+    fn redefine_class(
+        &mut self,
+        class_name: &str,
+        bytecode: &[u8],
+    ) -> impl Future<Output = Result<(), JdwpError>> + Send + '_;
 }
 
 impl AsyncJdwpRedefiner for WireJdwpClient {
-    fn redefine_class(&mut self, class_name: &str, bytecode: &[u8]) -> impl Future<Output = Result<(), JdwpError>> + Send + '_ {
+    fn redefine_class(
+        &mut self,
+        class_name: &str,
+        bytecode: &[u8],
+    ) -> impl Future<Output = Result<(), JdwpError>> + Send + '_ {
         async move {
             WireJdwpClient::redefine_class_by_name(self, class_name, bytecode)
                 .await
@@ -107,9 +115,9 @@ fn map_tcp_jdwp_error(err: NovaJdwpError) -> JdwpError {
 
 fn map_wire_jdwp_error(err: WireJdwpError) -> JdwpError {
     match err {
-        WireJdwpError::VmError(error_code) if is_schema_change(error_code) => JdwpError::SchemaChange(format!(
-            "HotSwap rejected by JVM (JDWP error {error_code})"
-        )),
+        WireJdwpError::VmError(error_code) if is_schema_change(error_code) => {
+            JdwpError::SchemaChange(format!("HotSwap rejected by JVM (JDWP error {error_code})"))
+        }
         other => JdwpError::Other(other.to_string()),
     }
 }
