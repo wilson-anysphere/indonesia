@@ -374,12 +374,47 @@ pub const EVENT_KIND_BREAKPOINT: u8 = 2;
 pub const EVENT_KIND_EXCEPTION: u8 = 4;
 /// EventKind: ClassPrepare (8)
 pub const EVENT_KIND_CLASS_PREPARE: u8 = 8;
+/// EventKind: ClassUnload (9)
+pub const EVENT_KIND_CLASS_UNLOAD: u8 = 9;
+/// EventKind: FieldAccess (20)
+pub const EVENT_KIND_FIELD_ACCESS: u8 = 20;
+/// EventKind: FieldModification (21)
+pub const EVENT_KIND_FIELD_MODIFICATION: u8 = 21;
 /// EventKind: MethodExitWithReturnValue (42)
 pub const EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE: u8 = 42;
 /// EventKind: VMStart (90)
 pub const EVENT_KIND_VM_START: u8 = 90;
 /// EventKind: VMDeath (99)
 pub const EVENT_KIND_VM_DEATH: u8 = 99;
+/// EventKind: VMDisconnect (100)
+pub const EVENT_KIND_VM_DISCONNECT: u8 = 100;
+
+// --- JDWP EventRequest modifier kinds ---------------------------------------
+//
+// See: https://docs.oracle.com/javase/8/docs/platform/jpda/jdwp/jdwp-protocol.html#JDWP_EventRequest
+
+/// EventRequest modifier: Count (1)
+pub const EVENT_MODIFIER_KIND_COUNT: u8 = 1;
+/// EventRequest modifier: ThreadOnly (3)
+pub const EVENT_MODIFIER_KIND_THREAD_ONLY: u8 = 3;
+/// EventRequest modifier: ClassOnly (4)
+pub const EVENT_MODIFIER_KIND_CLASS_ONLY: u8 = 4;
+/// EventRequest modifier: ClassMatch (5)
+pub const EVENT_MODIFIER_KIND_CLASS_MATCH: u8 = 5;
+/// EventRequest modifier: ClassExclude (6)
+pub const EVENT_MODIFIER_KIND_CLASS_EXCLUDE: u8 = 6;
+/// EventRequest modifier: LocationOnly (7)
+pub const EVENT_MODIFIER_KIND_LOCATION_ONLY: u8 = 7;
+/// EventRequest modifier: ExceptionOnly (8)
+pub const EVENT_MODIFIER_KIND_EXCEPTION_ONLY: u8 = 8;
+/// EventRequest modifier: FieldOnly (9)
+pub const EVENT_MODIFIER_KIND_FIELD_ONLY: u8 = 9;
+/// EventRequest modifier: Step (10)
+pub const EVENT_MODIFIER_KIND_STEP: u8 = 10;
+/// EventRequest modifier: InstanceOnly (11)
+pub const EVENT_MODIFIER_KIND_INSTANCE_ONLY: u8 = 11;
+/// EventRequest modifier: SourceNameMatch (12)
+pub const EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH: u8 = 12;
 
 // --- JDWP suspend policies ---------------------------------------------------
 //
@@ -454,7 +489,33 @@ pub enum JdwpEvent {
         signature: String,
         status: u32,
     },
+    ClassUnload {
+        request_id: i32,
+        signature: String,
+    },
+    FieldAccess {
+        request_id: i32,
+        thread: ThreadId,
+        location: Location,
+        ref_type_tag: u8,
+        type_id: ReferenceTypeId,
+        field_id: FieldId,
+        object: ObjectId,
+        value: JdwpValue,
+    },
+    FieldModification {
+        request_id: i32,
+        thread: ThreadId,
+        location: Location,
+        ref_type_tag: u8,
+        type_id: ReferenceTypeId,
+        field_id: FieldId,
+        object: ObjectId,
+        value_current: Option<JdwpValue>,
+        value_to_be: JdwpValue,
+    },
     VmDeath,
+    VmDisconnect,
 }
 
 /// Wrapper that preserves the composite event packet's suspend policy alongside the parsed event.

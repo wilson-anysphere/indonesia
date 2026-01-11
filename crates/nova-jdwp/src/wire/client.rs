@@ -24,7 +24,15 @@ use super::{
         ClassInfo, FieldId, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError,
         JdwpEvent, JdwpEventEnvelope, JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location,
         MethodId, MethodInfo, MonitorInfo, ObjectId, ReferenceTypeId, Result, ThreadId,
-        VariableInfo, VmClassPaths,
+        VariableInfo, VmClassPaths, EVENT_KIND_BREAKPOINT, EVENT_KIND_CLASS_PREPARE,
+        EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION, EVENT_KIND_FIELD_ACCESS,
+        EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
+        EVENT_KIND_SINGLE_STEP, EVENT_KIND_VM_DEATH, EVENT_KIND_VM_DISCONNECT, EVENT_KIND_VM_START,
+        EVENT_MODIFIER_KIND_CLASS_EXCLUDE, EVENT_MODIFIER_KIND_CLASS_MATCH,
+        EVENT_MODIFIER_KIND_CLASS_ONLY, EVENT_MODIFIER_KIND_COUNT, EVENT_MODIFIER_KIND_EXCEPTION_ONLY,
+        EVENT_MODIFIER_KIND_FIELD_ONLY, EVENT_MODIFIER_KIND_INSTANCE_ONLY,
+        EVENT_MODIFIER_KIND_LOCATION_ONLY, EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH,
+        EVENT_MODIFIER_KIND_STEP, EVENT_MODIFIER_KIND_THREAD_ONLY,
     },
 };
 
@@ -1048,7 +1056,19 @@ pub enum EventModifier {
     ThreadOnly {
         thread: ThreadId,
     },
+    /// JDWP `EventRequest` modifier kind 4.
+    ///
+    /// Limit the event to a specific reference type.
+    ClassOnly {
+        class_id: ReferenceTypeId,
+    },
     ClassMatch {
+        pattern: String,
+    },
+    /// JDWP `EventRequest` modifier kind 6.
+    ///
+    /// Exclude reference types that match the given class name pattern.
+    ClassExclude {
         pattern: String,
     },
     LocationOnly {
@@ -1059,10 +1079,29 @@ pub enum EventModifier {
         caught: bool,
         uncaught: bool,
     },
+    /// JDWP `EventRequest` modifier kind 9.
+    ///
+    /// Limit the event to accesses/modifications of a specific field.
+    FieldOnly {
+        class_id: ReferenceTypeId,
+        field_id: FieldId,
+    },
     Step {
         thread: ThreadId,
         size: u32,
         depth: u32,
+    },
+    /// JDWP `EventRequest` modifier kind 11.
+    ///
+    /// Limit the event to a specific object instance.
+    InstanceOnly {
+        object_id: ObjectId,
+    },
+    /// JDWP `EventRequest` modifier kind 12.
+    ///
+    /// Limit the event to a source file name pattern.
+    SourceNameMatch {
+        pattern: String,
     },
 }
 
@@ -1070,19 +1109,27 @@ impl EventModifier {
     fn encode(self, w: &mut JdwpWriter, sizes: &JdwpIdSizes) {
         match self {
             EventModifier::Count { count } => {
-                w.write_u8(1);
+                w.write_u8(EVENT_MODIFIER_KIND_COUNT);
                 w.write_u32(count);
             }
             EventModifier::ThreadOnly { thread } => {
-                w.write_u8(3);
+                w.write_u8(EVENT_MODIFIER_KIND_THREAD_ONLY);
                 w.write_object_id(thread, sizes);
             }
+            EventModifier::ClassOnly { class_id } => {
+                w.write_u8(EVENT_MODIFIER_KIND_CLASS_ONLY);
+                w.write_reference_type_id(class_id, sizes);
+            }
             EventModifier::ClassMatch { pattern } => {
-                w.write_u8(5);
+                w.write_u8(EVENT_MODIFIER_KIND_CLASS_MATCH);
+                w.write_string(&pattern);
+            }
+            EventModifier::ClassExclude { pattern } => {
+                w.write_u8(EVENT_MODIFIER_KIND_CLASS_EXCLUDE);
                 w.write_string(&pattern);
             }
             EventModifier::LocationOnly { location } => {
-                w.write_u8(7);
+                w.write_u8(EVENT_MODIFIER_KIND_LOCATION_ONLY);
                 w.write_location(&location, sizes);
             }
             EventModifier::ExceptionOnly {
@@ -1090,20 +1137,33 @@ impl EventModifier {
                 caught,
                 uncaught,
             } => {
-                w.write_u8(8);
+                w.write_u8(EVENT_MODIFIER_KIND_EXCEPTION_ONLY);
                 w.write_reference_type_id(exception_or_null, sizes);
                 w.write_bool(caught);
                 w.write_bool(uncaught);
+            }
+            EventModifier::FieldOnly { class_id, field_id } => {
+                w.write_u8(EVENT_MODIFIER_KIND_FIELD_ONLY);
+                w.write_reference_type_id(class_id, sizes);
+                w.write_id(field_id, sizes.field_id);
             }
             EventModifier::Step {
                 thread,
                 size,
                 depth,
             } => {
-                w.write_u8(10);
+                w.write_u8(EVENT_MODIFIER_KIND_STEP);
                 w.write_object_id(thread, sizes);
                 w.write_u32(size);
                 w.write_u32(depth);
+            }
+            EventModifier::InstanceOnly { object_id } => {
+                w.write_u8(EVENT_MODIFIER_KIND_INSTANCE_ONLY);
+                w.write_object_id(object_id, sizes);
+            }
+            EventModifier::SourceNameMatch { pattern } => {
+                w.write_u8(EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH);
+                w.write_string(&pattern);
             }
         }
     }
@@ -1205,6 +1265,8 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
             JdwpEvent::SingleStep { .. }
                 | JdwpEvent::Breakpoint { .. }
                 | JdwpEvent::Exception { .. }
+                | JdwpEvent::FieldAccess { .. }
+                | JdwpEvent::FieldModification { .. }
         )
     }
 
@@ -1213,7 +1275,7 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
         let request_id = r.read_i32()?;
 
         let event = match kind {
-            1 => {
+            EVENT_KIND_SINGLE_STEP => {
                 let thread = r.read_object_id(&sizes)?;
                 let location = r.read_location(&sizes)?;
                 Some(JdwpEvent::SingleStep {
@@ -1222,7 +1284,7 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                     location,
                 })
             }
-            2 => {
+            EVENT_KIND_BREAKPOINT => {
                 let thread = r.read_object_id(&sizes)?;
                 let location = r.read_location(&sizes)?;
                 Some(JdwpEvent::Breakpoint {
@@ -1231,7 +1293,7 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                     location,
                 })
             }
-            4 => {
+            EVENT_KIND_EXCEPTION => {
                 let thread = r.read_object_id(&sizes)?;
                 let location = r.read_location(&sizes)?;
                 let exception = r.read_object_id(&sizes)?;
@@ -1263,7 +1325,7 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                 let thread = r.read_object_id(&sizes)?;
                 Some(JdwpEvent::ThreadDeath { request_id, thread })
             }
-            8 => {
+            EVENT_KIND_CLASS_PREPARE => {
                 let thread = r.read_object_id(&sizes)?;
                 let ref_type_tag = r.read_u8()?;
                 let type_id = r.read_reference_type_id(&sizes)?;
@@ -1278,7 +1340,55 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                     status,
                 })
             }
-            42 => {
+            EVENT_KIND_CLASS_UNLOAD => {
+                let signature = r.read_string()?;
+                Some(JdwpEvent::ClassUnload {
+                    request_id,
+                    signature,
+                })
+            }
+            EVENT_KIND_FIELD_ACCESS => {
+                let thread = r.read_object_id(&sizes)?;
+                let location = r.read_location(&sizes)?;
+                let ref_type_tag = r.read_u8()?;
+                let type_id = r.read_reference_type_id(&sizes)?;
+                let field_id = r.read_id(sizes.field_id)?;
+                let object = r.read_object_id(&sizes)?;
+                let tag = r.read_u8()?;
+                let value = r.read_value(tag, &sizes)?;
+                Some(JdwpEvent::FieldAccess {
+                    request_id,
+                    thread,
+                    location,
+                    ref_type_tag,
+                    type_id,
+                    field_id,
+                    object,
+                    value,
+                })
+            }
+            EVENT_KIND_FIELD_MODIFICATION => {
+                let thread = r.read_object_id(&sizes)?;
+                let location = r.read_location(&sizes)?;
+                let ref_type_tag = r.read_u8()?;
+                let type_id = r.read_reference_type_id(&sizes)?;
+                let field_id = r.read_id(sizes.field_id)?;
+                let object = r.read_object_id(&sizes)?;
+                let tag = r.read_u8()?;
+                let value_to_be = r.read_value(tag, &sizes)?;
+                Some(JdwpEvent::FieldModification {
+                    request_id,
+                    thread,
+                    location,
+                    ref_type_tag,
+                    type_id,
+                    field_id,
+                    object,
+                    value_current: None,
+                    value_to_be,
+                })
+            }
+            EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE => {
                 let thread = r.read_object_id(&sizes)?;
                 let location = r.read_location(&sizes)?;
                 let tag = r.read_u8()?;
@@ -1290,13 +1400,18 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                     value,
                 })
             }
-            90 => {
+            EVENT_KIND_VM_START => {
                 let thread = r.read_object_id(&sizes)?;
                 Some(JdwpEvent::VmStart { request_id, thread })
             }
-            99 => {
+            EVENT_KIND_VM_DEATH => {
                 let _ = request_id;
                 Some(JdwpEvent::VmDeath)
+            }
+            EVENT_KIND_VM_DISCONNECT => {
+                let _ = request_id;
+                inner.shutdown.cancel();
+                Some(JdwpEvent::VmDisconnect)
             }
             _ => {
                 // Unknown event kind: ignore the remainder of this composite packet.
@@ -1336,12 +1451,14 @@ mod tests {
     use std::time::Duration;
 
     use super::{EventModifier, JdwpClient, JdwpClientConfig};
-    use crate::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
+    use crate::wire::mock::{DelayedReply, MockEventRequestModifier, MockJdwpServer, MockJdwpServerConfig};
     use crate::wire::types::{
-        EVENT_KIND_BREAKPOINT, EVENT_KIND_EXCEPTION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
+        EVENT_KIND_BREAKPOINT, EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_EXCEPTION, EVENT_KIND_FIELD_ACCESS,
+        EVENT_KIND_FIELD_MODIFICATION, EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, EVENT_KIND_VM_DISCONNECT,
         JdwpCapabilitiesNew, JdwpError, JdwpEvent, JdwpIdSizes, Location, SUSPEND_POLICY_ALL,
         SUSPEND_POLICY_EVENT_THREAD, SUSPEND_POLICY_NONE,
     };
+    use crate::wire::JdwpValue;
 
     fn monitor_capabilities() -> Vec<bool> {
         let mut caps = vec![false; 32];
@@ -1691,4 +1808,203 @@ mod tests {
             other => panic!("expected Breakpoint third, got {other:?}"),
         }
     }
+
+
+    #[tokio::test]
+    async fn event_request_set_encodes_new_event_modifiers() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let class_id = 0x1111_u64;
+        let field_id = 0x2222_u64;
+        let object_id = 0x3333_u64;
+
+        let _request_id = client
+            .event_request_set(
+                EVENT_KIND_BREAKPOINT,
+                SUSPEND_POLICY_NONE,
+                vec![
+                    EventModifier::ClassOnly { class_id },
+                    EventModifier::ClassExclude {
+                        pattern: "java.*".to_string(),
+                    },
+                    EventModifier::FieldOnly { class_id, field_id },
+                    EventModifier::InstanceOnly { object_id },
+                    EventModifier::SourceNameMatch {
+                        pattern: "Main.java".to_string(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let requests = server.event_requests().await;
+        let last = requests.last().cloned().expect("no EventRequest.Set observed");
+
+        assert_eq!(
+            last.modifiers,
+            vec![
+                MockEventRequestModifier::ClassOnly { class_id },
+                MockEventRequestModifier::ClassExclude {
+                    pattern: "java.*".to_string()
+                },
+                MockEventRequestModifier::FieldOnly { class_id, field_id },
+                MockEventRequestModifier::InstanceOnly { object_id },
+                MockEventRequestModifier::SourceNameMatch {
+                    pattern: "Main.java".to_string()
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn parses_watchpoint_and_class_unload_events() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            field_access_events: 1,
+            field_modification_events: 1,
+            class_unload_events: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let mut events = client.subscribe_events();
+
+        let thread = client.all_threads().await.unwrap()[0];
+        let class_id = client.all_classes().await.unwrap()[0].type_id;
+        let field_id = 0x7777_u64;
+        let object_id = 0x8888_u64;
+
+        let class_unload_request = client
+            .event_request_set(EVENT_KIND_CLASS_UNLOAD, SUSPEND_POLICY_NONE, Vec::new())
+            .await
+            .unwrap();
+        let field_access_request = client
+            .event_request_set(
+                EVENT_KIND_FIELD_ACCESS,
+                SUSPEND_POLICY_NONE,
+                vec![
+                    EventModifier::FieldOnly { class_id, field_id },
+                    EventModifier::InstanceOnly { object_id },
+                ],
+            )
+            .await
+            .unwrap();
+        let field_modification_request = client
+            .event_request_set(
+                EVENT_KIND_FIELD_MODIFICATION,
+                SUSPEND_POLICY_NONE,
+                vec![
+                    EventModifier::FieldOnly { class_id, field_id },
+                    EventModifier::InstanceOnly { object_id },
+                ],
+            )
+            .await
+            .unwrap();
+
+        client.vm_resume().await.unwrap();
+
+        let class_unload = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("timed out waiting for ClassUnload")
+            .unwrap();
+        match class_unload {
+            JdwpEvent::ClassUnload {
+                request_id,
+                signature,
+            } => {
+                assert_eq!(request_id, class_unload_request);
+                assert_eq!(signature, "LMain;");
+            }
+            other => panic!("expected ClassUnload, got {other:?}"),
+        }
+
+        let field_access = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("timed out waiting for FieldAccess")
+            .unwrap();
+        match field_access {
+            JdwpEvent::FieldAccess {
+                request_id,
+                thread: event_thread,
+                location,
+                ref_type_tag,
+                type_id,
+                field_id: event_field_id,
+                object,
+                value,
+            } => {
+                assert_eq!(request_id, field_access_request);
+                assert_eq!(event_thread, thread);
+                assert_eq!(location.class_id, class_id);
+                assert_eq!(ref_type_tag, 1);
+                assert_eq!(type_id, class_id);
+                assert_eq!(event_field_id, field_id);
+                assert_eq!(object, object_id);
+                assert_eq!(value, JdwpValue::Int(7));
+            }
+            other => panic!("expected FieldAccess, got {other:?}"),
+        }
+
+        let field_modification = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("timed out waiting for FieldModification")
+            .unwrap();
+        match field_modification {
+            JdwpEvent::FieldModification {
+                request_id,
+                thread: event_thread,
+                location,
+                ref_type_tag,
+                type_id,
+                field_id: event_field_id,
+                object,
+                value_current,
+                value_to_be,
+            } => {
+                assert_eq!(request_id, field_modification_request);
+                assert_eq!(event_thread, thread);
+                assert_eq!(location.class_id, class_id);
+                assert_eq!(ref_type_tag, 1);
+                assert_eq!(type_id, class_id);
+                assert_eq!(event_field_id, field_id);
+                assert_eq!(object, object_id);
+                assert_eq!(value_current, None);
+                assert_eq!(value_to_be, JdwpValue::Int(8));
+            }
+            other => panic!("expected FieldModification, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn vm_disconnect_event_cancels_shutdown_token() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            vm_disconnect_events: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+        let token = client.shutdown_token();
+        let mut events = client.subscribe_events();
+
+        let _request_id = client
+            .event_request_set(EVENT_KIND_VM_DISCONNECT, SUSPEND_POLICY_NONE, Vec::new())
+            .await
+            .unwrap();
+        client.vm_resume().await.unwrap();
+
+        let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("timed out waiting for VmDisconnect")
+            .unwrap();
+        assert!(matches!(event, JdwpEvent::VmDisconnect));
+
+        tokio::time::timeout(Duration::from_secs(2), token.cancelled())
+            .await
+            .expect("shutdown token was not cancelled after VmDisconnect");
+    }
 }
+

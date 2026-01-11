@@ -16,7 +16,15 @@ use tokio_util::sync::CancellationToken;
 
 use super::{
     codec::{encode_command, encode_reply, JdwpReader, JdwpWriter, HANDSHAKE, HEADER_LEN},
-    types::{JdwpIdSizes, JdwpValue, Location, ObjectId, ReferenceTypeId},
+    types::{
+        FieldId, JdwpIdSizes, JdwpValue, Location, ObjectId, ReferenceTypeId, ThreadId,
+        EVENT_KIND_CLASS_UNLOAD, EVENT_KIND_FIELD_ACCESS, EVENT_KIND_FIELD_MODIFICATION,
+        EVENT_KIND_VM_DISCONNECT, EVENT_MODIFIER_KIND_CLASS_EXCLUDE, EVENT_MODIFIER_KIND_CLASS_MATCH,
+        EVENT_MODIFIER_KIND_CLASS_ONLY, EVENT_MODIFIER_KIND_COUNT, EVENT_MODIFIER_KIND_EXCEPTION_ONLY,
+        EVENT_MODIFIER_KIND_FIELD_ONLY, EVENT_MODIFIER_KIND_INSTANCE_ONLY,
+        EVENT_MODIFIER_KIND_LOCATION_ONLY, EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH,
+        EVENT_MODIFIER_KIND_STEP, EVENT_MODIFIER_KIND_THREAD_ONLY,
+    },
 };
 
 /// A tiny JDWP server used for unit/integration testing.
@@ -77,6 +85,17 @@ pub struct MockJdwpServerConfig {
     /// This is useful for testing stop-event ordering semantics in the client without
     /// introducing unbounded resume/stop loops.
     pub emit_exception_breakpoint_method_exit_composite: bool,
+    /// Maximum number of field-access watchpoint events to emit after a resume.
+    pub field_access_events: usize,
+    /// Maximum number of field-modification watchpoint events to emit after a resume.
+    pub field_modification_events: usize,
+    /// Maximum number of `ClassUnload` events to emit after a resume.
+    pub class_unload_events: usize,
+    /// Maximum number of `VmDisconnect` events to emit after a resume.
+    ///
+    /// When a disconnect event is emitted, the mock closes the underlying socket to
+    /// simulate a debuggee terminating unexpectedly.
+    pub vm_disconnect_events: usize,
 }
 
 impl Default for MockJdwpServerConfig {
@@ -94,6 +113,10 @@ impl Default for MockJdwpServerConfig {
             breakpoint_events: usize::MAX,
             step_events: usize::MAX,
             emit_exception_breakpoint_method_exit_composite: false,
+            field_access_events: 0,
+            field_modification_events: 0,
+            class_unload_events: 0,
+            vm_disconnect_events: 0,
         }
     }
 }
@@ -103,6 +126,70 @@ pub struct DelayedReply {
     pub command_set: u8,
     pub command: u8,
     pub delay: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MockEventRequest {
+    pub event_kind: u8,
+    pub suspend_policy: u8,
+    pub request_id: i32,
+    pub modifiers: Vec<MockEventRequestModifier>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MockEventRequestModifier {
+    Count {
+        count: u32,
+    },
+    ThreadOnly {
+        thread: ThreadId,
+    },
+    ClassOnly {
+        class_id: ReferenceTypeId,
+    },
+    ClassMatch {
+        pattern: String,
+    },
+    ClassExclude {
+        pattern: String,
+    },
+    LocationOnly {
+        location: Location,
+    },
+    ExceptionOnly {
+        exception_or_null: ReferenceTypeId,
+        caught: bool,
+        uncaught: bool,
+    },
+    FieldOnly {
+        class_id: ReferenceTypeId,
+        field_id: FieldId,
+    },
+    Step {
+        thread: ThreadId,
+        size: u32,
+        depth: u32,
+    },
+    InstanceOnly {
+        object_id: ObjectId,
+    },
+    SourceNameMatch {
+        pattern: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MockSimpleEventRequest {
+    request_id: i32,
+    suspend_policy: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MockWatchpointRequest {
+    request_id: i32,
+    suspend_policy: u8,
+    field_only: Option<(ReferenceTypeId, FieldId)>,
+    instance_only: Option<ObjectId>,
 }
 
 impl MockJdwpServer {
@@ -165,6 +252,10 @@ impl MockJdwpServer {
 
     pub async fn breakpoint_count_modifier(&self) -> Option<u32> {
         *self.state.breakpoint_count_modifier.lock().await
+    }
+
+    pub async fn event_requests(&self) -> Vec<MockEventRequest> {
+        self.state.event_requests.lock().await.clone()
     }
 
     pub async fn step_suspend_policy(&self) -> Option<u8> {
@@ -233,10 +324,15 @@ struct State {
     method_exit_request: tokio::sync::Mutex<Option<i32>>,
     thread_start_request: tokio::sync::Mutex<Option<i32>>,
     thread_death_request: tokio::sync::Mutex<Option<i32>>,
+    class_unload_request: tokio::sync::Mutex<Option<MockSimpleEventRequest>>,
+    field_access_request: tokio::sync::Mutex<Option<MockWatchpointRequest>>,
+    field_modification_request: tokio::sync::Mutex<Option<MockWatchpointRequest>>,
+    vm_disconnect_request: tokio::sync::Mutex<Option<MockSimpleEventRequest>>,
     threads: tokio::sync::Mutex<Vec<u64>>,
     exception_request: tokio::sync::Mutex<Option<MockExceptionRequest>>,
     breakpoint_suspend_policy: tokio::sync::Mutex<Option<u8>>,
     step_suspend_policy: tokio::sync::Mutex<Option<u8>>,
+    event_requests: tokio::sync::Mutex<Vec<MockEventRequest>>,
     redefine_classes_error_code: AtomicU16,
     redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
     pinned_object_ids: tokio::sync::Mutex<BTreeSet<ObjectId>>,
@@ -245,6 +341,10 @@ struct State {
     capabilities: Vec<bool>,
     breakpoint_events_remaining: AtomicUsize,
     step_events_remaining: AtomicUsize,
+    field_access_events_remaining: AtomicUsize,
+    field_modification_events_remaining: AtomicUsize,
+    class_unload_events_remaining: AtomicUsize,
+    vm_disconnect_events_remaining: AtomicUsize,
 }
 
 impl Default for State {
@@ -257,6 +357,10 @@ impl State {
     fn new(config: MockJdwpServerConfig) -> Self {
         let breakpoint_events = config.breakpoint_events;
         let step_events = config.step_events;
+        let field_access_events = config.field_access_events;
+        let field_modification_events = config.field_modification_events;
+        let class_unload_events = config.class_unload_events;
+        let vm_disconnect_events = config.vm_disconnect_events;
 
         let mut delayed_replies = HashMap::new();
         for entry in &config.delayed_replies {
@@ -280,10 +384,15 @@ impl State {
             method_exit_request: tokio::sync::Mutex::new(None),
             thread_start_request: tokio::sync::Mutex::new(None),
             thread_death_request: tokio::sync::Mutex::new(None),
+            class_unload_request: tokio::sync::Mutex::new(None),
+            field_access_request: tokio::sync::Mutex::new(None),
+            field_modification_request: tokio::sync::Mutex::new(None),
+            vm_disconnect_request: tokio::sync::Mutex::new(None),
             threads: tokio::sync::Mutex::new(vec![THREAD_ID]),
             exception_request: tokio::sync::Mutex::new(None),
             breakpoint_suspend_policy: tokio::sync::Mutex::new(None),
             step_suspend_policy: tokio::sync::Mutex::new(None),
+            event_requests: tokio::sync::Mutex::new(Vec::new()),
             redefine_classes_error_code: AtomicU16::new(0),
             redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
             pinned_object_ids: tokio::sync::Mutex::new(BTreeSet::new()),
@@ -292,6 +401,10 @@ impl State {
             capabilities,
             breakpoint_events_remaining: AtomicUsize::new(breakpoint_events),
             step_events_remaining: AtomicUsize::new(step_events),
+            field_access_events_remaining: AtomicUsize::new(field_access_events),
+            field_modification_events_remaining: AtomicUsize::new(field_modification_events),
+            class_unload_events_remaining: AtomicUsize::new(class_unload_events),
+            vm_disconnect_events_remaining: AtomicUsize::new(vm_disconnect_events),
         }
     }
 
@@ -317,6 +430,38 @@ impl State {
 
     fn take_step_event(&self) -> bool {
         self.step_events_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    fn take_field_access_event(&self) -> bool {
+        self.field_access_events_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    fn take_field_modification_event(&self) -> bool {
+        self.field_modification_events_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    fn take_class_unload_event(&self) -> bool {
+        self.class_unload_events_remaining
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    fn take_vm_disconnect_event(&self) -> bool {
+        self.vm_disconnect_events_remaining
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
                 remaining.checked_sub(1)
             })
@@ -1273,39 +1418,87 @@ async fn handle_packet(
         (15, 1) => {
             let event_kind = r.read_u8().unwrap_or(0);
             let suspend_policy = r.read_u8().unwrap_or(0);
-            let modifiers = r.read_u32().unwrap_or(0) as usize;
+            let modifier_count = r.read_u32().unwrap_or(0) as usize;
             let mut count_modifier: Option<u32> = None;
             let mut exception_caught = false;
             let mut exception_uncaught = false;
-            for _ in 0..modifiers {
+            let mut field_only: Option<(ReferenceTypeId, FieldId)> = None;
+            let mut instance_only: Option<ObjectId> = None;
+            let mut modifiers = Vec::with_capacity(modifier_count);
+            for _ in 0..modifier_count {
                 let mod_kind = r.read_u8().unwrap_or(0);
                 match mod_kind {
-                    1 => {
-                        count_modifier = Some(r.read_u32().unwrap_or(0));
+                    EVENT_MODIFIER_KIND_COUNT => {
+                        let count = r.read_u32().unwrap_or(0);
+                        count_modifier = Some(count);
+                        modifiers.push(MockEventRequestModifier::Count { count });
                     }
-                    3 => {
-                        let _thread = r.read_object_id(sizes).unwrap_or(0);
+                    EVENT_MODIFIER_KIND_THREAD_ONLY => {
+                        let thread = r.read_object_id(sizes).unwrap_or(0);
+                        modifiers.push(MockEventRequestModifier::ThreadOnly { thread });
                     }
-                    5 => {
-                        let _pattern = r.read_string().unwrap_or_default();
+                    EVENT_MODIFIER_KIND_CLASS_ONLY => {
+                        let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
+                        modifiers.push(MockEventRequestModifier::ClassOnly { class_id });
                     }
-                    7 => {
-                        let _ = r.read_location(sizes);
+                    EVENT_MODIFIER_KIND_CLASS_MATCH => {
+                        let pattern = r.read_string().unwrap_or_default();
+                        modifiers.push(MockEventRequestModifier::ClassMatch { pattern });
                     }
-                    8 => {
-                        let _ = r.read_reference_type_id(sizes);
+                    EVENT_MODIFIER_KIND_CLASS_EXCLUDE => {
+                        let pattern = r.read_string().unwrap_or_default();
+                        modifiers.push(MockEventRequestModifier::ClassExclude { pattern });
+                    }
+                    EVENT_MODIFIER_KIND_LOCATION_ONLY => {
+                        let location =
+                            r.read_location(sizes).unwrap_or_else(|_| default_location());
+                        modifiers.push(MockEventRequestModifier::LocationOnly { location });
+                    }
+                    EVENT_MODIFIER_KIND_EXCEPTION_ONLY => {
+                        let exception_or_null = r.read_reference_type_id(sizes).unwrap_or(0);
                         exception_caught = r.read_bool().unwrap_or(false);
                         exception_uncaught = r.read_bool().unwrap_or(false);
+                        modifiers.push(MockEventRequestModifier::ExceptionOnly {
+                            exception_or_null,
+                            caught: exception_caught,
+                            uncaught: exception_uncaught,
+                        });
                     }
-                    10 => {
-                        let _ = r.read_object_id(sizes);
-                        let _ = r.read_u32();
-                        let _ = r.read_u32();
+                    EVENT_MODIFIER_KIND_FIELD_ONLY => {
+                        let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
+                        let field_id = r.read_id(sizes.field_id).unwrap_or(0);
+                        field_only = Some((class_id, field_id));
+                        modifiers.push(MockEventRequestModifier::FieldOnly { class_id, field_id });
+                    }
+                    EVENT_MODIFIER_KIND_STEP => {
+                        let thread = r.read_object_id(sizes).unwrap_or(0);
+                        let size = r.read_u32().unwrap_or(0);
+                        let depth = r.read_u32().unwrap_or(0);
+                        modifiers.push(MockEventRequestModifier::Step {
+                            thread,
+                            size,
+                            depth,
+                        });
+                    }
+                    EVENT_MODIFIER_KIND_INSTANCE_ONLY => {
+                        let object_id = r.read_object_id(sizes).unwrap_or(0);
+                        instance_only = Some(object_id);
+                        modifiers.push(MockEventRequestModifier::InstanceOnly { object_id });
+                    }
+                    EVENT_MODIFIER_KIND_SOURCE_NAME_MATCH => {
+                        let pattern = r.read_string().unwrap_or_default();
+                        modifiers.push(MockEventRequestModifier::SourceNameMatch { pattern });
                     }
                     _ => {}
                 }
             }
             let request_id = state.alloc_request_id();
+            state.event_requests.lock().await.push(MockEventRequest {
+                event_kind,
+                suspend_policy,
+                request_id,
+                modifiers,
+            });
             match event_kind {
                 1 => {
                     *state.step_request.lock().await = Some(request_id);
@@ -1326,6 +1519,34 @@ async fn handle_packet(
                 6 => *state.thread_start_request.lock().await = Some(request_id),
                 7 => *state.thread_death_request.lock().await = Some(request_id),
                 42 => *state.method_exit_request.lock().await = Some(request_id),
+                EVENT_KIND_CLASS_UNLOAD => {
+                    *state.class_unload_request.lock().await = Some(MockSimpleEventRequest {
+                        request_id,
+                        suspend_policy,
+                    })
+                }
+                EVENT_KIND_FIELD_ACCESS => {
+                    *state.field_access_request.lock().await = Some(MockWatchpointRequest {
+                        request_id,
+                        suspend_policy,
+                        field_only,
+                        instance_only,
+                    })
+                }
+                EVENT_KIND_FIELD_MODIFICATION => {
+                    *state.field_modification_request.lock().await = Some(MockWatchpointRequest {
+                        request_id,
+                        suspend_policy,
+                        field_only,
+                        instance_only,
+                    })
+                }
+                EVENT_KIND_VM_DISCONNECT => {
+                    *state.vm_disconnect_request.lock().await = Some(MockSimpleEventRequest {
+                        request_id,
+                        suspend_policy,
+                    })
+                }
                 _ => {}
             }
             let mut w = JdwpWriter::new();
@@ -1373,6 +1594,42 @@ async fn handle_packet(
                         *guard = None;
                     }
                 }
+                EVENT_KIND_CLASS_UNLOAD => {
+                    let mut guard = state.class_unload_request.lock().await;
+                    if guard
+                        .map(|v| v.request_id == request_id)
+                        .unwrap_or(false)
+                    {
+                        *guard = None;
+                    }
+                }
+                EVENT_KIND_FIELD_ACCESS => {
+                    let mut guard = state.field_access_request.lock().await;
+                    if guard
+                        .map(|v| v.request_id == request_id)
+                        .unwrap_or(false)
+                    {
+                        *guard = None;
+                    }
+                }
+                EVENT_KIND_FIELD_MODIFICATION => {
+                    let mut guard = state.field_modification_request.lock().await;
+                    if guard
+                        .map(|v| v.request_id == request_id)
+                        .unwrap_or(false)
+                    {
+                        *guard = None;
+                    }
+                }
+                EVENT_KIND_VM_DISCONNECT => {
+                    let mut guard = state.vm_disconnect_request.lock().await;
+                    if guard
+                        .map(|v| v.request_id == request_id)
+                        .unwrap_or(false)
+                    {
+                        *guard = None;
+                    }
+                }
                 _ => {}
             }
             (0, Vec::new())
@@ -1387,12 +1644,13 @@ async fn handle_packet(
                 None,
                 state.reply_delay(packet.command_set, packet.command),
                 shutdown,
+                false,
             )
             .await;
         }
     };
 
-    let follow_up = if reply_error_code == 0
+    let (follow_up, close_after) = if reply_error_code == 0
         && ((packet.command_set == 1 && packet.command == 9)
             || (packet.command_set == 11 && packet.command == 3))
     {
@@ -1405,8 +1663,13 @@ async fn handle_packet(
         let exception_request = { *state.exception_request.lock().await };
         let thread_start_request = { *state.thread_start_request.lock().await };
         let thread_death_request = { *state.thread_death_request.lock().await };
+        let class_unload_request = { *state.class_unload_request.lock().await };
+        let field_access_request = { *state.field_access_request.lock().await };
+        let field_modification_request = { *state.field_modification_request.lock().await };
+        let vm_disconnect_request = { *state.vm_disconnect_request.lock().await };
 
         let mut follow_up = Vec::new();
+        let mut close_after = false;
 
         if let Some(request_id) = thread_start_request {
             {
@@ -1435,7 +1698,31 @@ async fn handle_packet(
                 7,
                 request_id,
                 WORKER_THREAD_ID,
-            ));
+                ));
+        }
+
+        if let Some(request) = class_unload_request {
+            if state.take_class_unload_event() {
+                follow_up.extend(make_class_unload_event_packet(
+                    state,
+                    id_sizes,
+                    request.suspend_policy,
+                    request.request_id,
+                    &state.config.class_signature,
+                ));
+            }
+        }
+
+        if let Some(request) = field_access_request {
+            if state.take_field_access_event() {
+                follow_up.extend(make_field_access_event_packet(state, id_sizes, request));
+            }
+        }
+
+        if let Some(request) = field_modification_request {
+            if state.take_field_modification_event() {
+                follow_up.extend(make_field_modification_event_packet(state, id_sizes, request));
+            }
         }
 
         if let Some(stop_packet) = make_stop_event_packet(
@@ -1451,13 +1738,26 @@ async fn handle_packet(
             follow_up.extend(stop_packet);
         }
 
-        if follow_up.is_empty() {
+        if let Some(request) = vm_disconnect_request {
+            if state.take_vm_disconnect_event() {
+                follow_up.extend(make_vm_disconnect_event_packet(
+                    state,
+                    id_sizes,
+                    request.suspend_policy,
+                    request.request_id,
+                ));
+                close_after = true;
+            }
+        }
+
+        let follow_up = if follow_up.is_empty() {
             None
         } else {
             Some(follow_up)
-        }
+        };
+        (follow_up, close_after)
     } else {
-        None
+        (None, false)
     };
 
     write_reply(
@@ -1466,6 +1766,7 @@ async fn handle_packet(
         follow_up,
         state.reply_delay(packet.command_set, packet.command),
         shutdown,
+        close_after,
     )
     .await
 }
@@ -1476,6 +1777,7 @@ async fn write_reply(
     follow_up: Option<Vec<u8>>,
     delay: Option<Duration>,
     shutdown: CancellationToken,
+    close_after: bool,
 ) -> std::io::Result<()> {
     let delay = delay.filter(|d| !d.is_zero());
     if let Some(delay) = delay {
@@ -1489,6 +1791,11 @@ async fn write_reply(
                     if let Some(follow_up) = follow_up {
                         let _ = guard.write_all(&follow_up).await;
                     }
+
+                    if close_after {
+                        let _ = guard.shutdown().await;
+                        shutdown.cancel();
+                    }
                 }
             }
         });
@@ -1500,6 +1807,12 @@ async fn write_reply(
     if let Some(follow_up) = follow_up {
         guard.write_all(&follow_up).await?;
     }
+
+    if close_after {
+        guard.shutdown().await?;
+        shutdown.cancel();
+    }
+
     Ok(())
 }
 
@@ -1516,6 +1829,114 @@ fn make_thread_event_packet(
     w.write_u8(event_kind);
     w.write_i32(request_id);
     w.write_object_id(thread_id, id_sizes);
+    let payload = w.into_vec();
+    let packet_id = state.alloc_packet_id();
+    encode_command(packet_id, 64, 100, &payload)
+}
+
+fn make_class_unload_event_packet(
+    state: &State,
+    _id_sizes: &JdwpIdSizes,
+    suspend_policy: u8,
+    request_id: i32,
+    signature: &str,
+) -> Vec<u8> {
+    let mut w = JdwpWriter::new();
+    w.write_u8(suspend_policy);
+    w.write_u32(1); // event count
+    w.write_u8(EVENT_KIND_CLASS_UNLOAD);
+    w.write_i32(request_id);
+    w.write_string(signature);
+
+    let payload = w.into_vec();
+    let packet_id = state.alloc_packet_id();
+    encode_command(packet_id, 64, 100, &payload)
+}
+
+fn make_field_access_event_packet(
+    state: &State,
+    id_sizes: &JdwpIdSizes,
+    request: MockWatchpointRequest,
+) -> Vec<u8> {
+    let (type_id, field_id) = request
+        .field_only
+        .unwrap_or((CLASS_ID, FIELD_ID));
+    let object_id = request.instance_only.unwrap_or(OBJECT_ID);
+    let location = Location {
+        type_tag: 1,
+        class_id: type_id,
+        method_id: METHOD_ID,
+        index: 0,
+    };
+
+    let mut w = JdwpWriter::new();
+    w.write_u8(request.suspend_policy);
+    w.write_u32(1); // event count
+    w.write_u8(EVENT_KIND_FIELD_ACCESS);
+    w.write_i32(request.request_id);
+    w.write_object_id(THREAD_ID, id_sizes);
+    w.write_location(&location, id_sizes);
+    w.write_u8(1); // TypeTag.CLASS
+    w.write_reference_type_id(type_id, id_sizes);
+    w.write_id(field_id, id_sizes.field_id);
+    w.write_object_id(object_id, id_sizes);
+    // Value being accessed.
+    w.write_u8(b'I');
+    w.write_i32(7);
+
+    let payload = w.into_vec();
+    let packet_id = state.alloc_packet_id();
+    encode_command(packet_id, 64, 100, &payload)
+}
+
+fn make_field_modification_event_packet(
+    state: &State,
+    id_sizes: &JdwpIdSizes,
+    request: MockWatchpointRequest,
+) -> Vec<u8> {
+    let (type_id, field_id) = request
+        .field_only
+        .unwrap_or((CLASS_ID, FIELD_ID));
+    let object_id = request.instance_only.unwrap_or(OBJECT_ID);
+    let location = Location {
+        type_tag: 1,
+        class_id: type_id,
+        method_id: METHOD_ID,
+        index: 0,
+    };
+
+    let mut w = JdwpWriter::new();
+    w.write_u8(request.suspend_policy);
+    w.write_u32(1); // event count
+    w.write_u8(EVENT_KIND_FIELD_MODIFICATION);
+    w.write_i32(request.request_id);
+    w.write_object_id(THREAD_ID, id_sizes);
+    w.write_location(&location, id_sizes);
+    w.write_u8(1); // TypeTag.CLASS
+    w.write_reference_type_id(type_id, id_sizes);
+    w.write_id(field_id, id_sizes.field_id);
+    w.write_object_id(object_id, id_sizes);
+    // Value about to be written.
+    w.write_u8(b'I');
+    w.write_i32(8);
+
+    let payload = w.into_vec();
+    let packet_id = state.alloc_packet_id();
+    encode_command(packet_id, 64, 100, &payload)
+}
+
+fn make_vm_disconnect_event_packet(
+    state: &State,
+    _id_sizes: &JdwpIdSizes,
+    suspend_policy: u8,
+    request_id: i32,
+) -> Vec<u8> {
+    let mut w = JdwpWriter::new();
+    w.write_u8(suspend_policy);
+    w.write_u32(1); // event count
+    w.write_u8(EVENT_KIND_VM_DISCONNECT);
+    w.write_i32(request_id);
+
     let payload = w.into_vec();
     let packet_id = state.alloc_packet_id();
     encode_command(packet_id, 64, 100, &payload)
