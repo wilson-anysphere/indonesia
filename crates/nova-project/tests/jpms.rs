@@ -79,9 +79,11 @@ fn module_info_parse_errors_are_best_effort() {
     let root = testdata_path("jpms-invalid");
     let config = load_project(&root).expect("load workspace with invalid module-info");
 
-    assert!(
-        config.jpms_modules.is_empty(),
-        "expected invalid module-info.java to be ignored"
-    );
+    let invalid = ModuleName::new("com.example.invalid");
+    let module = config
+        .jpms_modules
+        .iter()
+        .find(|m| m.name == invalid)
+        .expect("expected module name to be recovered from invalid module-info");
+    assert_eq!(module.info.name, invalid);
 }
-

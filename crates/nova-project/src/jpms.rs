@@ -32,7 +32,7 @@ fn discover_jpms_module_root(module_root: &Path) -> Option<JpmsModuleRoot> {
 
     let module_info_path = candidates.into_iter().find(|p| p.is_file())?;
     let src = std::fs::read_to_string(&module_info_path).ok()?;
-    let info = lower_module_info_source(&src).ok()?;
+    let info = lower_module_info_source(&src).info?;
 
     Some(JpmsModuleRoot {
         name: info.name.clone(),

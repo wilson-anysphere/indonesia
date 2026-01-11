@@ -1,16 +1,37 @@
 //! Lowering support for `module-info.java`.
 
 use nova_modules::{Exports, ModuleInfo, ModuleKind, ModuleName, Opens, Provides, Requires, Uses};
-use nova_syntax::{parse_module_info, ModuleDecl, ModuleDirective, ModuleInfoParseError};
+use nova_syntax::{
+    parse_module_info, parse_module_info_lossy, ModuleDecl, ModuleDirective, ModuleInfoParseError,
+};
 use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ModuleInfoLowerError {
     #[error(transparent)]
     Parse(#[from] ModuleInfoParseError),
 }
 
-pub fn lower_module_info_source(src: &str) -> Result<ModuleInfo, ModuleInfoLowerError> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleInfoLowerResult {
+    pub info: Option<ModuleInfo>,
+    pub errors: Vec<ModuleInfoLowerError>,
+}
+
+/// Lower a `module-info.java` source string into a best-effort [`ModuleInfo`].
+///
+/// This never fails: parse errors are returned alongside the lowered structure so IDE
+/// features can continue operating on partially-correct code.
+pub fn lower_module_info_source(src: &str) -> ModuleInfoLowerResult {
+    let (decl, errors) = parse_module_info_lossy(src);
+    ModuleInfoLowerResult {
+        info: decl.as_ref().map(lower_module_decl),
+        errors: errors.into_iter().map(ModuleInfoLowerError::from).collect(),
+    }
+}
+
+/// Strict lowering wrapper that returns the first parse error.
+pub fn lower_module_info_source_strict(src: &str) -> Result<ModuleInfo, ModuleInfoLowerError> {
     let decl = parse_module_info(src)?;
     Ok(lower_module_decl(&decl))
 }
