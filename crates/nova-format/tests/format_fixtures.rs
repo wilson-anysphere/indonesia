@@ -117,6 +117,24 @@ fn snapshot_control_flow_constructs() {
 }
 
 #[test]
+fn snapshot_wildcards_and_varargs() {
+    let input = include_str!("fixtures/wildcards_and_varargs.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("wildcards_and_varargs", formatted);
+    assert_idempotent("wildcards_and_varargs", input, &config);
+}
+
+#[test]
+fn snapshot_switch_case_comments() {
+    let input = include_str!("fixtures/switch_case_comment.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("switch_case_comment", formatted);
+    assert_idempotent("switch_case_comment", input, &config);
+}
+
+#[test]
 fn on_type_formatting_triggers_inside_argument_lists() {
     let input = "class A {\n    void m() {\nfoo(1,2);\n    }\n}\n";
     let tree = parse(input);

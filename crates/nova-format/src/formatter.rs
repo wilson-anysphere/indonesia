@@ -1363,6 +1363,24 @@ fn write_token(
                 state.line_len += punct.len();
                 state.last_sig = Some(SigToken::Punct(*punct));
             }
+            Punct::Ellipsis => {
+                state.write_indent();
+                punct.push_to(&mut state.out);
+                state.line_len += punct.len();
+                if matches!(
+                    next,
+                    Some(
+                        Token::Word(_)
+                            | Token::Number(_)
+                            | Token::StringLiteral(_)
+                            | Token::CharLiteral(_)
+                            | Token::Punct(Punct::At)
+                    )
+                ) {
+                    state.ensure_space();
+                }
+                state.last_sig = Some(SigToken::Punct(Punct::Ellipsis));
+            }
             Punct::At => {
                 state.write_indent();
                 let sig = SigToken::Punct(Punct::At);
@@ -1456,6 +1474,10 @@ fn write_token(
                     }
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
+                    if matches!(next, Some(Token::Word(_) | Token::Punct(Punct::At))) {
+                        // `? extends` / `? super` / `? @Ann`.
+                        state.ensure_space();
+                    }
                 } else {
                     if state.needs_space_before(state.last_sig, sig, tok) {
                         state.ensure_space();
@@ -1472,7 +1494,10 @@ fn write_token(
                 if state.pending_case_label {
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
-                    state.ensure_newline();
+                    let next_is_line_comment = matches!(next, Some(Token::LineComment(_)));
+                    if !next_is_line_comment {
+                        state.ensure_newline();
+                    }
                     state.pending_case_label = false;
                     if let Some(ctx) = state.switch_stack.last_mut() {
                         if state.brace_stack.len() == ctx.brace_depth && !ctx.in_case_body {
@@ -1480,7 +1505,11 @@ fn write_token(
                             ctx.in_case_body = true;
                         }
                     }
-                    state.last_sig = None;
+                    state.last_sig = if next_is_line_comment {
+                        Some(SigToken::Punct(Punct::Colon))
+                    } else {
+                        None
+                    };
                 } else {
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
