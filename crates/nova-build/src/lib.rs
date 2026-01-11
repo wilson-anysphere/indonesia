@@ -8,6 +8,7 @@ mod cache;
 mod gradle;
 mod javac;
 mod maven;
+mod module_graph;
 
 pub use cache::{BuildCache, BuildFileFingerprint};
 pub use gradle::{
@@ -18,6 +19,7 @@ pub use maven::{
     collect_maven_build_files, parse_maven_classpath_output, parse_maven_evaluate_scalar_output,
     MavenBuild, MavenConfig,
 };
+pub use module_graph::{infer_module_graph, ModuleBuildInfo, ModuleGraph, ModuleId};
 
 use nova_core::Diagnostic;
 use std::path::{Path, PathBuf};
