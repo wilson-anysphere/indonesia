@@ -377,11 +377,11 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ### `nova-remote-rpc`
 - **Purpose:** async negotiated RPC transport for distributed mode (v3 handshake, request/response framing, optional zstd compression).
-- **Key entry points:** `crates/nova-remote-rpc/src/lib.rs` (`Client`, `Server`, `ClientConfig`, `ServerConfig`, `PROTOCOL_VERSION`).
+- **Key entry points:** `crates/nova-remote-rpc/src/lib.rs` (`Client`, `Server`, `ClientConfig`, `ServerConfig`, `Negotiated`, `RequestId`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Not yet wired into the `nova-router`/`nova-worker` binaries (distributed mode is still not editor-facing).
-  - Protocol types are still being reconciled with `nova-remote-proto`’s v3 CBOR envelope.
+  - Does not yet implement `PacketChunk` reassembly or `Cancel` handling end-to-end (capabilities default them off).
 
 ### `nova-resolve`
 - **Purpose:** name resolution + scope building (currently based on simplified `nova-hir`).
