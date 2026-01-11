@@ -1,3 +1,29 @@
+//! v3 router ↔ worker remote RPC transport.
+//!
+//! This crate implements the `nova_remote_proto::v3` wire format:
+//! length-prefixed frames (`u32_le` size + CBOR payload) carrying `WireFrame`s.
+//!
+//! # Tracing / telemetry
+//!
+//! Tracing is emitted under the `nova.remote_rpc` target:
+//!
+//! - `DEBUG` includes handshake start/end (negotiated version + capabilities) and per-call
+//!   completion events (latency, status).
+//! - `TRACE` includes per-packet send/recv events (request id, kind, compression/chunking flags,
+//!   byte sizes).
+//!
+//! Sensitive data is intentionally **never** logged:
+//! - auth tokens are redacted (only presence is recorded),
+//! - packet payload bytes are not recorded in tracing fields.
+//!
+//! To enable detailed logs:
+//!
+//! ```text
+//! RUST_LOG=nova.remote_rpc=trace
+//! ```
+//!
+//! (or use `nova.remote_rpc=debug` for lower volume).
+
 use std::collections::HashMap;
 use std::fmt;
 use std::io::Read;
