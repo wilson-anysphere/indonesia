@@ -86,6 +86,7 @@ pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
 pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
 
 use nova_dap::hot_swap::{BuildSystem, JdwpRedefiner};
+use nova_scheduler::CancellationToken;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use thiserror::Error;
@@ -308,6 +309,20 @@ pub fn completion(
     nova_ide::completions(db, file, position)
 }
 
+/// Delegate completion requests to `nova-ide`, merging built-in items with registered extension items.
+///
+/// Ordering is deterministic:
+/// - built-in items first
+/// - then extension items in provider-id order (see `nova_ext::ExtensionRegistry`)
+pub fn completion_with_extensions(
+    extensions: &nova_ide::extensions::IdeExtensions<dyn nova_db::Database + Send + Sync>,
+    cancel: CancellationToken,
+    file: nova_db::FileId,
+    position: lsp_types::Position,
+) -> Vec<lsp_types::CompletionItem> {
+    extensions.completions_lsp(cancel, file, position)
+}
+
 /// Delegate completion requests to `nova-ide` with optional AI re-ranking.
 ///
 /// This is behind the `ai` Cargo feature so Nova remains fully usable without AI
@@ -402,6 +417,42 @@ pub fn diagnostics(
     file: nova_db::FileId,
 ) -> Vec<lsp_types::Diagnostic> {
     nova_ide::file_diagnostics_lsp(db, file)
+}
+
+/// Delegate diagnostics requests to `nova-ide`, merging built-in diagnostics with registered extension diagnostics.
+///
+/// Ordering is deterministic:
+/// - built-in diagnostics first
+/// - then extension diagnostics in provider-id order (see `nova_ext::ExtensionRegistry`)
+pub fn diagnostics_with_extensions(
+    extensions: &nova_ide::extensions::IdeExtensions<dyn nova_db::Database + Send + Sync>,
+    cancel: CancellationToken,
+    file: nova_db::FileId,
+) -> Vec<lsp_types::Diagnostic> {
+    let db = extensions.db();
+    let mut diagnostics = nova_ide::file_diagnostics_lsp(db.as_ref(), file);
+
+    let text = db.file_content(file);
+    let extension_diagnostics = extensions.diagnostics(cancel, file).into_iter().map(|d| {
+        lsp_types::Diagnostic {
+            range: d
+                .span
+                .map(|span| span_to_lsp_range(text, span.start, span.end))
+                .unwrap_or_else(zero_range),
+            severity: Some(match d.severity {
+                nova_ext::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
+                nova_ext::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+                nova_ext::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
+            }),
+            code: Some(lsp_types::NumberOrString::String(d.code.to_string())),
+            source: Some("nova".into()),
+            message: d.message,
+            ..lsp_types::Diagnostic::default()
+        }
+    });
+
+    diagnostics.extend(extension_diagnostics);
+    diagnostics
 }
 
 use lsp_types::{
