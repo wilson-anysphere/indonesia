@@ -264,10 +264,22 @@ fn ensure_workspace_is_mapped(
 
 fn load_workspace_graph(manifest_path: Option<&Path>) -> anyhow::Result<WorkspaceGraph> {
     let mut cmd = Command::new("cargo");
-    cmd.args(["metadata", "--format-version=1", "--no-deps"]);
+    cmd.args(["metadata", "--format-version=1", "--no-deps", "--locked"]);
     if let Some(path) = manifest_path {
         cmd.arg("--manifest-path").arg(path);
     }
+
+    // This tool is commonly executed via `cargo run -p nova-devtools -- check-deps`.
+    //
+    // `cargo run` holds an exclusive file lock on the default target directory for the duration of
+    // the run (including while the compiled binary executes). If we were to spawn a nested
+    // `cargo metadata` using the same target dir, it would block forever waiting on that lock.
+    //
+    // Use a dedicated target dir for the metadata subprocess to avoid deadlocking ourselves.
+    cmd.env(
+        "CARGO_TARGET_DIR",
+        metadata_target_dir(manifest_path)?.as_os_str(),
+    );
 
     let output = cmd.output().context("failed to run `cargo metadata`")?;
     if !output.status.success() {
@@ -304,6 +316,23 @@ fn load_workspace_graph(manifest_path: Option<&Path>) -> anyhow::Result<Workspac
     }
 
     Ok(WorkspaceGraph { packages, edges })
+}
+
+fn metadata_target_dir(manifest_path: Option<&Path>) -> anyhow::Result<PathBuf> {
+    let workspace_root = match manifest_path {
+        Some(path) => path
+            .parent()
+            .ok_or_else(|| {
+                anyhow!(
+                    "--manifest-path has no parent directory: {}",
+                    path.display()
+                )
+            })?
+            .to_path_buf(),
+        None => std::env::current_dir().context("failed to determine current directory")?,
+    };
+
+    Ok(workspace_root.join("target").join("nova-devtools-metadata"))
 }
 
 fn validate(graph: &WorkspaceGraph, config: &LayerMapConfig) -> Vec<Violation> {
@@ -530,5 +559,14 @@ mod tests {
         });
         let violations = validate(&graph, &config);
         assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn metadata_target_dir_is_scoped_under_workspace_root() {
+        let path = Path::new("/workspace/Cargo.toml");
+        assert_eq!(
+            metadata_target_dir(Some(path)).unwrap(),
+            PathBuf::from("/workspace/target/nova-devtools-metadata")
+        );
     }
 }
