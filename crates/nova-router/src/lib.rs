@@ -1122,41 +1122,44 @@ async fn handle_new_connection(
         }
     }
 
-    #[derive(Debug)]
-    enum ShardCheckFailure {
-        UnknownShard,
-        AlreadyHasWorker,
-    }
-    let shard_check = {
-        let guard = state.shards.lock().await;
-        match guard.get(&shard_id) {
-            None => Some(ShardCheckFailure::UnknownShard),
-            Some(shard) if shard.worker.is_some() => Some(ShardCheckFailure::AlreadyHasWorker),
-            Some(_) => None,
-        }
-    };
-    if let Some(failure) = shard_check {
-        let (message, err) = match failure {
-            ShardCheckFailure::UnknownShard => (
-                format!("unknown shard {shard_id}"),
-                anyhow!("worker connected for unknown shard {shard_id}"),
-            ),
-            ShardCheckFailure::AlreadyHasWorker => (
-                format!("shard {shard_id} already has a connected worker"),
-                anyhow!("worker already connected for shard {shard_id}"),
-            ),
+    let worker_id: WorkerId = state.next_worker_id.fetch_add(1, Ordering::SeqCst);
+    let (tx, rx) = mpsc::unbounded_channel::<WorkerRequest>();
+    let handle = WorkerHandle { worker_id, tx };
+
+    // Atomically register this worker for the shard before acknowledging it. This prevents a race
+    // where two concurrent connections could both pass the "no worker" check and the later one
+    // would silently replace the earlier worker.
+    {
+        let mut guard = state.shards.lock().await;
+        let shard = match guard.get_mut(&shard_id) {
+            Some(shard) => shard,
+            None => {
+                let message = format!("unknown shard {shard_id}");
+                timeout(
+                    WORKER_HANDSHAKE_TIMEOUT,
+                    write_message(&mut stream, &RpcMessage::Error { message }),
+                )
+                .await
+                .ok();
+                return Err(anyhow!("worker connected for unknown shard {shard_id}"));
+            }
         };
-        timeout(
-            WORKER_HANDSHAKE_TIMEOUT,
-            write_message(&mut stream, &RpcMessage::Error { message }),
-        )
-        .await
-        .ok();
-        return Err(err);
+
+        if shard.worker.is_some() {
+            let message = format!("shard {shard_id} already has a connected worker");
+            timeout(
+                WORKER_HANDSHAKE_TIMEOUT,
+                write_message(&mut stream, &RpcMessage::Error { message }),
+            )
+            .await
+            .ok();
+            return Err(anyhow!("worker already connected for shard {shard_id}"));
+        }
+
+        shard.worker = Some(handle.clone());
     }
 
-    let worker_id: WorkerId = state.next_worker_id.fetch_add(1, Ordering::SeqCst);
-    timeout(
+    let send_hello = timeout(
         WORKER_HANDSHAKE_TIMEOUT,
         write_message(
             &mut stream,
@@ -1168,21 +1171,42 @@ async fn handle_new_connection(
             },
         ),
     )
-    .await
-    .context("timed out sending RouterHello")??;
+    .await;
+
+    let send_hello = match send_hello {
+        Ok(res) => res,
+        Err(_) => {
+            let mut guard = state.shards.lock().await;
+            if let Some(shard) = guard.get_mut(&shard_id) {
+                if shard
+                    .worker
+                    .as_ref()
+                    .is_some_and(|w| w.worker_id == worker_id)
+                {
+                    shard.worker = None;
+                }
+            }
+            state.notify.notify_waiters();
+            return Err(anyhow!("timed out sending RouterHello"));
+        }
+    };
+
+    if let Err(err) = send_hello {
+        let mut guard = state.shards.lock().await;
+        if let Some(shard) = guard.get_mut(&shard_id) {
+            if shard
+                .worker
+                .as_ref()
+                .is_some_and(|w| w.worker_id == worker_id)
+            {
+                shard.worker = None;
+            }
+        }
+        state.notify.notify_waiters();
+        return Err(err);
+    }
 
     info!(shard_id, worker_id, has_cached_index, "worker connected");
-
-    let (tx, rx) = mpsc::unbounded_channel::<WorkerRequest>();
-    let handle = WorkerHandle { worker_id, tx };
-
-    {
-        let mut guard = state.shards.lock().await;
-        let shard = guard
-            .get_mut(&shard_id)
-            .ok_or_else(|| anyhow!("worker connected for unknown shard {shard_id}"))?;
-        shard.worker = Some(handle.clone());
-    }
 
     let cleanup_state = state.clone();
     tokio::spawn(async move {
