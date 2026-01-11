@@ -108,6 +108,45 @@ fn derived_artifact_cache_query_schema_version_is_part_of_key() {
 }
 
 #[test]
+fn derived_artifact_cache_persisted_query_schema_version_mismatch_is_cache_miss() {
+    use bincode::Options;
+
+    let temp = tempfile::tempdir().unwrap();
+    let cache = DerivedArtifactCache::new(temp.path());
+
+    let mut inputs = BTreeMap::new();
+    inputs.insert("Main.java".to_string(), Fingerprint::from_bytes("v1"));
+
+    let args = Args {
+        file: "Main.java".to_string(),
+    };
+    let value = Value { answer: 42 };
+
+    cache.store("type_of", 1, &args, &inputs, &value).unwrap();
+
+    let query_dir = temp.path().join("type_of");
+    let entry_path = std::fs::read_dir(&query_dir)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+
+    let bytes = std::fs::read(&entry_path).unwrap();
+    let mut persisted: PersistedDerivedValueOwned<Value> =
+        bincode_options().deserialize(&bytes).unwrap();
+    persisted.query_schema_version = 2;
+    let mutated = bincode_options().serialize(&persisted).unwrap();
+    std::fs::write(&entry_path, mutated).unwrap();
+
+    let loaded: Option<Value> = cache.load("type_of", 1, &args, &inputs).unwrap();
+    assert_eq!(
+        loaded, None,
+        "query_schema_version is validated in the persisted payload"
+    );
+}
+
+#[test]
 fn derived_artifact_cache_oversized_payload_is_cache_miss() {
     let temp = tempfile::tempdir().unwrap();
     let cache = DerivedArtifactCache::new(temp.path());
@@ -141,6 +180,26 @@ fn derived_artifact_cache_oversized_payload_is_cache_miss() {
         .load("type_of", query_schema_version, &args, &inputs)
         .expect("load");
     assert_eq!(loaded, None);
+}
+
+fn bincode_options() -> impl bincode::Options {
+    use bincode::Options;
+
+    bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .with_little_endian()
+        .with_no_limit()
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct PersistedDerivedValueOwned<T> {
+    schema_version: u32,
+    query_schema_version: u32,
+    nova_version: String,
+    saved_at_millis: u64,
+    query_name: String,
+    key_fingerprint: Fingerprint,
+    value: T,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
