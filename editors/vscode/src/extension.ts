@@ -168,6 +168,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
   let installTask: Promise<{ path: string; version: string }> | undefined;
   let currentServerCommand: string | undefined;
+  let missingServerPrompted = false;
 
   async function stopLanguageClient(): Promise<void> {
     if (!client) {
@@ -229,6 +230,11 @@ export async function activate(context: vscode.ExtensionContext) {
           if (installTask) {
             return await installTask;
           }
+          // On Windows, updating the managed binary while it's running will fail due to file locks.
+          // Even on Unix, stopping ensures the updated binary is picked up immediately.
+          if (settings.path === null && client) {
+            await stopLanguageClient();
+          }
           installTask = serverManager.installOrUpdate({ ...settings, path: null });
           try {
             return await installTask;
@@ -239,6 +245,7 @@ export async function activate(context: vscode.ExtensionContext) {
       );
       vscode.window.showInformationMessage(`Nova: Installed nova-lsp ${installed.version}.`);
       await ensureLanguageClientStarted({ promptForInstall: false });
+      missingServerPrompted = false;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       serverOutput.appendLine(`Install failed: ${message}`);
@@ -304,11 +311,16 @@ export async function activate(context: vscode.ExtensionContext) {
     const settings = readServerSettings();
     const resolved = await serverManager.resolveServerPath({ path: settings.path });
     if (resolved) {
+      missingServerPrompted = false;
       if (client && currentServerCommand === resolved) {
         return;
       }
-      await stopLanguageClient();
-      await startLanguageClient(resolved);
+      if (client && currentServerCommand !== resolved) {
+        await stopLanguageClient();
+      }
+      if (!client) {
+        await startLanguageClient(resolved);
+      }
       return;
     }
 
@@ -332,10 +344,32 @@ export async function activate(context: vscode.ExtensionContext) {
       return;
     }
 
-    if (!opts?.promptForInstall || !settings.autoDownload) {
+    if (!opts?.promptForInstall) {
       return;
     }
 
+    if (!settings.autoDownload) {
+      if (missingServerPrompted) {
+        return;
+      }
+      missingServerPrompted = true;
+      const action = await vscode.window.showErrorMessage(
+        'Nova: nova-lsp is not installed. Set nova.server.path or run Nova: Install/Update Server.',
+        'Install/Update Server',
+        'Use Local Server Binary...',
+      );
+      if (action === 'Install/Update Server') {
+        await installOrUpdateServer();
+      } else if (action === 'Use Local Server Binary...') {
+        await useLocalServerBinary();
+      }
+      return;
+    }
+
+    if (missingServerPrompted) {
+      return;
+    }
+    missingServerPrompted = true;
     const installChoice = await vscode.window.showInformationMessage(
       'Nova: nova-lsp is not installed. Install it now?',
       'Install',
@@ -343,13 +377,9 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     if (installChoice === 'Use Local Server Binary...') {
       await useLocalServerBinary();
-      return;
+    } else if (installChoice === 'Install') {
+      await installOrUpdateServer();
     }
-    if (installChoice !== 'Install') {
-      return;
-    }
-
-    await installOrUpdateServer();
   }
 
   context.subscriptions.push(vscode.commands.registerCommand('nova.installOrUpdateServer', installOrUpdateServer));
