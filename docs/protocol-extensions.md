@@ -51,9 +51,14 @@ watchdog (see `crates/nova-lsp/src/hardening.rs`):
 - If the handler **panics**, the request fails with `-32603`.
 - Some watchdog failures may temporarily put the server into **safe-mode**.
 
-When in safe-mode, **all methods except `nova/bugReport`** fail with `-32603` and a message like:
+When in safe-mode, **all methods dispatched through** `nova_lsp::handle_custom_request()` **except
+`nova/bugReport`** fail with `-32603` and a message like:
 
 > “Nova is running in safe-mode … Only `nova/bugReport` is available for now.”
+
+Note: the stdio server also special-cases `nova/memoryStatus` / `nova/metrics` in
+`crates/nova-lsp/src/main.rs`, so those endpoints may remain available even while safe-mode is
+active.
 
 Safe-mode windows:
 
@@ -808,6 +813,15 @@ No params are required; clients should send `{}` or omit params.
 Notes:
 
 - This payload uses **snake_case** for many nested fields (it is a direct `serde` encoding of `nova-memory` types).
+
+---
+
+### `nova/metrics` (legacy alias)
+
+- **Kind:** request
+- **Stability:** experimental (deprecated name; prefer `nova/memoryStatus`)
+- **Implemented in:** `crates/nova-lsp/src/main.rs`
+- **Behavior:** identical to `nova/memoryStatus` (same params and response payload).
 
 ---
 
