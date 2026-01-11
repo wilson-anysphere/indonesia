@@ -56,20 +56,23 @@ Statement =
   | EmptyStatement
 
 Expression =
-     LiteralExpression
-  | NameExpression
-  | ThisExpression
-  | SuperExpression
-  | ParenthesizedExpression
-  | NewExpression
-  | MethodCallExpression
-  | FieldAccessExpression
-  | ArrayAccessExpression
-  | UnaryExpression
-  | BinaryExpression
-  | InstanceofExpression
-  | AssignmentExpression
-  | ConditionalExpression
+      LiteralExpression
+   | NameExpression
+   | ThisExpression
+   | SuperExpression
+   | ParenthesizedExpression
+   | NewExpression
+   | MethodCallExpression
+   | FieldAccessExpression
+   | ArrayAccessExpression
+   | ClassLiteralExpression
+   | MethodReferenceExpression
+   | ConstructorReferenceExpression
+   | UnaryExpression
+   | BinaryExpression
+   | InstanceofExpression
+   | AssignmentExpression
+   | ConditionalExpression
   | LambdaExpression
   | CastExpression
 
@@ -415,6 +418,19 @@ MethodCallExpression {
 FieldAccessExpression {
   expression: Expression?
   name_token: Ident?
+}
+
+ClassLiteralExpression {
+  expression: Expression?
+}
+
+MethodReferenceExpression {
+  expression: Expression?
+  name_token: Ident?
+}
+
+ConstructorReferenceExpression {
+  expression: Expression?
 }
 
 ArrayAccessExpression {

@@ -1,2 +1,1 @@
-1:35: expected `;` after local variable declaration, found DoubleColon `::`
-1:35: expected expression, found DoubleColon `::`
+1:37: expected method name after `::`, found Semicolon `;`

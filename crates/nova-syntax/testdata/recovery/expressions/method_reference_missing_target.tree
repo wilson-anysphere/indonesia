@@ -32,12 +32,11 @@ CompilationUnit
                 Whitespace " "
                 Eq "="
                 Whitespace " "
-                NameExpression
-                  Identifier "Foo"
-            MissingSemicolon ""
-          ExpressionStatement
-            Error
-              DoubleColon "::"
+                MethodReferenceExpression
+                  NameExpression
+                    Identifier "Foo"
+                  DoubleColon "::"
+                  Error
             Semicolon ";"
           Whitespace " "
           RBrace "}"

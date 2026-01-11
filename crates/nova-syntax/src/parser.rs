@@ -2589,6 +2589,19 @@ impl<'a> Parser<'a> {
                     self.builder.finish_node();
                 }
             }
+            kind if (is_primitive_type(kind) || kind == SyntaxKind::VoidKw)
+                && self.at_primitive_class_literal_start() =>
+            {
+                // `int.class` / `int[].class` class literals are valid Java expressions, but
+                // primitive type keywords are not normally accepted as expression primaries.
+                // Treat them as a name expression when followed by a class-literal suffix so the
+                // postfix parser can build a `ClassLiteralExpression` node without producing
+                // spurious parse errors.
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::NameExpression.into());
+                self.bump();
+                self.builder.finish_node();
+            }
             _ => {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::Error.into());
@@ -2628,18 +2641,21 @@ impl<'a> Parser<'a> {
                     if min_bp > 120 {
                         break;
                     }
-                    // Java class literals (`Foo.class`) use the reserved keyword `class` after the
-                    // dot. Treat it like an identifier for the purpose of best-effort parsing so
-                    // downstream consumers can reliably read annotation arguments such as
-                    // `targetEntity = Foo.class`.
-                    if self
-                        .nth(1)
-                        .is_some_and(|k| k.is_identifier_like() || k == SyntaxKind::ClassKw)
-                    {
+                    if self.nth(1) == Some(SyntaxKind::ClassKw) {
+                        self.builder.start_node_at(
+                            checkpoint,
+                            SyntaxKind::ClassLiteralExpression.into(),
+                        );
+                        self.bump(); // .
+                        self.bump(); // class
+                        self.builder.finish_node();
+                        continue;
+                    }
+                    if self.nth(1).is_some_and(|k| k.is_identifier_like()) {
                         self.builder
                             .start_node_at(checkpoint, SyntaxKind::FieldAccessExpression.into());
-                        self.bump();
-                        self.bump();
+                        self.bump(); // .
+                        self.bump(); // identifier
                         self.builder.finish_node();
                         continue;
                     }
@@ -2649,18 +2665,35 @@ impl<'a> Parser<'a> {
                     if min_bp > 120 {
                         break;
                     }
-                    if matches!(self.nth(1), Some(k) if k.is_identifier_like() || k == SyntaxKind::NewKw) {
-                        // Method reference (`Foo::bar`, `Foo::new`). We represent this using
-                        // `FieldAccessExpression` for now; downstream passes can distinguish
-                        // the punctuator token.
-                        self.builder
-                            .start_node_at(checkpoint, SyntaxKind::FieldAccessExpression.into());
-                        self.bump(); // ::
-                        self.bump(); // identifier / `new`
+                    let is_constructor_ref = self.nth(1) == Some(SyntaxKind::NewKw);
+                    let kind = if is_constructor_ref {
+                        SyntaxKind::ConstructorReferenceExpression
+                    } else {
+                        SyntaxKind::MethodReferenceExpression
+                    };
+                    self.builder.start_node_at(checkpoint, kind.into());
+                    self.bump(); // ::
+
+                    if is_constructor_ref {
+                        if self.at(SyntaxKind::NewKw) {
+                            self.bump();
+                        } else {
+                            self.builder.start_node(SyntaxKind::Error.into());
+                            self.error_here("expected `new` after `::`");
+                            self.builder.finish_node();
+                        }
+                    } else if self.at_ident_like() {
+                        self.bump();
+                    } else {
+                        // Keep the parse lossless and avoid consuming arbitrary tokens. This
+                        // commonly happens while typing (`Foo::`).
+                        self.builder.start_node(SyntaxKind::Error.into());
+                        self.error_here("expected method name after `::`");
                         self.builder.finish_node();
-                        continue;
                     }
-                    break;
+
+                    self.builder.finish_node();
+                    continue;
                 }
                 SyntaxKind::LBracket => {
                     if min_bp > 120 {
@@ -2733,6 +2766,15 @@ impl<'a> Parser<'a> {
 
             break;
         }
+    }
+
+    fn at_primitive_class_literal_start(&mut self) -> bool {
+        let mut offset = 1usize;
+        while self.nth(offset) == Some(SyntaxKind::LBracket) && self.nth(offset + 1) == Some(SyntaxKind::RBracket)
+        {
+            offset += 2;
+        }
+        self.nth(offset) == Some(SyntaxKind::Dot) && self.nth(offset + 1) == Some(SyntaxKind::ClassKw)
     }
 
     fn parse_instanceof_type_or_pattern(&mut self) {

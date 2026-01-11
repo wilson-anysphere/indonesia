@@ -32,7 +32,7 @@ CompilationUnit
                 Whitespace " "
                 Eq "="
                 Whitespace " "
-                FieldAccessExpression
+                MethodReferenceExpression
                   NameExpression
                     Identifier "Foo"
                   DoubleColon "::"

@@ -1,6 +1,6 @@
 use crate::ast::{
-    AstNode, ClassDeclaration, ClassMember, CompilationUnit, ModuleDirectiveKind, Statement,
-    TypeDeclaration,
+    AstNode, ClassDeclaration, ClassMember, CompilationUnit, Expression, ModuleDirectiveKind,
+    Statement, TypeDeclaration,
 };
 use crate::parse_java;
 use crate::SyntaxKind;
@@ -188,5 +188,125 @@ fn module_directive_extraction() {
             assert_eq!(impls, vec!["com.example.impl.ServiceImpl"]);
         }
         other => panic!("expected provides, got {other:?}"),
+    }
+}
+
+#[test]
+fn method_reference_and_class_literal_accessors() {
+    let src = "class Foo { void m() { var r = String::valueOf; var c = Foo::new; var k = Foo.class; var p = int.class; } }";
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let class = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::ClassDeclaration(class) => Some(class),
+            _ => None,
+        })
+        .unwrap();
+    let method = class
+        .body()
+        .unwrap()
+        .members()
+        .find_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .unwrap();
+
+    let decls: Vec<_> = method
+        .body()
+        .unwrap()
+        .statements()
+        .filter_map(|stmt| match stmt {
+            Statement::LocalVariableDeclarationStatement(stmt) => Some(stmt),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(decls.len(), 4);
+
+    let init = decls[0]
+        .declarator_list()
+        .unwrap()
+        .declarators()
+        .next()
+        .unwrap()
+        .initializer()
+        .unwrap();
+    match init {
+        Expression::MethodReferenceExpression(expr) => {
+            assert_eq!(expr.name_token().unwrap().text(), "valueOf");
+        }
+        other => panic!("expected method reference, got {other:?}"),
+    }
+
+    let init = decls[1]
+        .declarator_list()
+        .unwrap()
+        .declarators()
+        .next()
+        .unwrap()
+        .initializer()
+        .unwrap();
+    match init {
+        Expression::ConstructorReferenceExpression(expr) => {
+            assert_eq!(
+                expr.expression()
+                    .unwrap()
+                    .syntax()
+                    .first_token()
+                    .unwrap()
+                    .text(),
+                "Foo"
+            );
+        }
+        other => panic!("expected constructor reference, got {other:?}"),
+    }
+
+    let init = decls[2]
+        .declarator_list()
+        .unwrap()
+        .declarators()
+        .next()
+        .unwrap()
+        .initializer()
+        .unwrap();
+    match init {
+        Expression::ClassLiteralExpression(expr) => {
+            assert_eq!(
+                expr.expression()
+                    .unwrap()
+                    .syntax()
+                    .first_token()
+                    .unwrap()
+                    .text(),
+                "Foo"
+            );
+        }
+        other => panic!("expected class literal, got {other:?}"),
+    }
+
+    let init = decls[3]
+        .declarator_list()
+        .unwrap()
+        .declarators()
+        .next()
+        .unwrap()
+        .initializer()
+        .unwrap();
+    match init {
+        Expression::ClassLiteralExpression(expr) => {
+            assert_eq!(
+                expr.expression()
+                    .unwrap()
+                    .syntax()
+                    .first_token()
+                    .unwrap()
+                    .text(),
+                "int"
+            );
+        }
+        other => panic!("expected class literal, got {other:?}"),
     }
 }

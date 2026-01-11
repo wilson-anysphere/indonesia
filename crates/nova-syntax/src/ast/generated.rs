@@ -2070,6 +2070,88 @@ impl FieldAccessExpression {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassLiteralExpression {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ClassLiteralExpression {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ClassLiteralExpression
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ClassLiteralExpression {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodReferenceExpression {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for MethodReferenceExpression {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::MethodReferenceExpression
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl MethodReferenceExpression {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::ident_token(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstructorReferenceExpression {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ConstructorReferenceExpression {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ConstructorReferenceExpression
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ConstructorReferenceExpression {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArrayAccessExpression {
     syntax: SyntaxNode,
 }
@@ -2987,6 +3069,9 @@ pub enum Expression {
     MethodCallExpression(MethodCallExpression),
     FieldAccessExpression(FieldAccessExpression),
     ArrayAccessExpression(ArrayAccessExpression),
+    ClassLiteralExpression(ClassLiteralExpression),
+    MethodReferenceExpression(MethodReferenceExpression),
+    ConstructorReferenceExpression(ConstructorReferenceExpression),
     UnaryExpression(UnaryExpression),
     BinaryExpression(BinaryExpression),
     InstanceofExpression(InstanceofExpression),
@@ -3007,6 +3092,9 @@ impl AstNode for Expression {
             || MethodCallExpression::can_cast(kind)
             || FieldAccessExpression::can_cast(kind)
             || ArrayAccessExpression::can_cast(kind)
+            || ClassLiteralExpression::can_cast(kind)
+            || MethodReferenceExpression::can_cast(kind)
+            || ConstructorReferenceExpression::can_cast(kind)
             || UnaryExpression::can_cast(kind)
             || BinaryExpression::can_cast(kind)
             || InstanceofExpression::can_cast(kind)
@@ -3031,6 +3119,9 @@ impl AstNode for Expression {
         if let Some(it) = MethodCallExpression::cast(syntax.clone()) { return Some(Self::MethodCallExpression(it)); }
         if let Some(it) = FieldAccessExpression::cast(syntax.clone()) { return Some(Self::FieldAccessExpression(it)); }
         if let Some(it) = ArrayAccessExpression::cast(syntax.clone()) { return Some(Self::ArrayAccessExpression(it)); }
+        if let Some(it) = ClassLiteralExpression::cast(syntax.clone()) { return Some(Self::ClassLiteralExpression(it)); }
+        if let Some(it) = MethodReferenceExpression::cast(syntax.clone()) { return Some(Self::MethodReferenceExpression(it)); }
+        if let Some(it) = ConstructorReferenceExpression::cast(syntax.clone()) { return Some(Self::ConstructorReferenceExpression(it)); }
         if let Some(it) = UnaryExpression::cast(syntax.clone()) { return Some(Self::UnaryExpression(it)); }
         if let Some(it) = BinaryExpression::cast(syntax.clone()) { return Some(Self::BinaryExpression(it)); }
         if let Some(it) = InstanceofExpression::cast(syntax.clone()) { return Some(Self::InstanceofExpression(it)); }
@@ -3053,6 +3144,9 @@ impl AstNode for Expression {
             Self::MethodCallExpression(it) => it.syntax(),
             Self::FieldAccessExpression(it) => it.syntax(),
             Self::ArrayAccessExpression(it) => it.syntax(),
+            Self::ClassLiteralExpression(it) => it.syntax(),
+            Self::MethodReferenceExpression(it) => it.syntax(),
+            Self::ConstructorReferenceExpression(it) => it.syntax(),
             Self::UnaryExpression(it) => it.syntax(),
             Self::BinaryExpression(it) => it.syntax(),
             Self::InstanceofExpression(it) => it.syntax(),

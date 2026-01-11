@@ -28,15 +28,34 @@ CompilationUnit
                 Whitespace " "
             VariableDeclaratorList
               VariableDeclarator
-                Identifier "r"
+                Identifier "c"
                 Whitespace " "
                 Eq "="
                 Whitespace " "
-                ConstructorReferenceExpression
+                ClassLiteralExpression
                   NameExpression
                     Identifier "Foo"
-                  DoubleColon "::"
-                  NewKw "new"
+                  Dot "."
+                  ClassKw "class"
+            Semicolon ";"
+          Whitespace " "
+          LocalVariableDeclarationStatement
+            Modifiers
+            Type
+              NamedType
+                VarKw "var"
+                Whitespace " "
+            VariableDeclaratorList
+              VariableDeclarator
+                Identifier "p"
+                Whitespace " "
+                Eq "="
+                Whitespace " "
+                ClassLiteralExpression
+                  NameExpression
+                    IntKw "int"
+                  Dot "."
+                  ClassKw "class"
             Semicolon ";"
           Whitespace " "
           RBrace "}"
