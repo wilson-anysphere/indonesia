@@ -295,7 +295,7 @@ impl WorkspaceEdit {
     }
 
     fn rename_mapping(&self) -> Result<BTreeMap<FileId, FileId>, EditError> {
-        let mut mapping = BTreeMap::new();
+        let mut mapping: BTreeMap<FileId, FileId> = BTreeMap::new();
         for op in &self.file_ops {
             let FileOp::Rename { from, to } = op else {
                 continue;

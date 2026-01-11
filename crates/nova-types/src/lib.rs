@@ -1477,6 +1477,10 @@ pub enum UncheckedReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeWarning {
     Unchecked(UncheckedReason),
+    /// A static member was accessed via an instance expression (e.g. `obj.f()`).
+    ///
+    /// Java allows this but compilers typically warn because it is misleading.
+    StaticAccessViaInstance,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2529,6 +2533,7 @@ pub fn resolve_field(
 #[derive(Debug, Clone)]
 pub struct MethodCall<'a> {
     pub receiver: Type,
+    pub call_kind: CallKind,
     pub name: &'a str,
     pub args: Vec<Type>,
     pub expected_return: Option<Type>,
@@ -2542,23 +2547,90 @@ pub struct ResolvedMethod {
     pub params: Vec<Type>,
     pub return_type: Type,
     pub is_varargs: bool,
+    pub is_static: bool,
+    pub conversions: Vec<Conversion>,
     pub inferred_type_args: Vec<Type>,
     pub warnings: Vec<TypeWarning>,
     pub used_varargs: bool,
+    pub phase: MethodSearchPhase,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodCandidate {
+    pub owner: ClassId,
+    pub name: String,
+    pub params: Vec<Type>,
+    pub return_type: Type,
+    pub is_static: bool,
+    pub is_varargs: bool,
+    pub type_param_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MethodSearchPhase {
+    Strict,
+    Loose,
+    Varargs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MethodCandidateFailureReason {
+    WrongCallKind {
+        call_kind: CallKind,
+    },
+    WrongArity {
+        expected: usize,
+        found: usize,
+        is_varargs: bool,
+    },
+    ExplicitTypeArgCountMismatch {
+        expected: usize,
+        found: usize,
+    },
+    TypeArgOutOfBounds {
+        type_param: TypeVarId,
+        type_arg: Type,
+        upper_bound: Type,
+    },
+    ArgumentConversion {
+        arg_index: usize,
+        from: Type,
+        to: Type,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MethodCandidateFailure {
+    pub phase: MethodSearchPhase,
+    pub reason: MethodCandidateFailureReason,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodCandidateDiagnostics {
+    pub candidate: MethodCandidate,
+    pub failures: Vec<MethodCandidateFailure>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodNotFound {
+    pub receiver: Type,
+    pub name: String,
+    pub args: Vec<Type>,
+    pub candidates: Vec<MethodCandidateDiagnostics>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodAmbiguity {
+    pub phase: MethodSearchPhase,
+    /// Applicable candidates for the selected phase, sorted from "best" to "worst".
+    pub candidates: Vec<ResolvedMethod>,
 }
 
 #[derive(Debug, Clone)]
 pub enum MethodResolution {
     Found(ResolvedMethod),
-    NotFound,
-    Ambiguous(Vec<ResolvedMethod>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MethodPhase {
-    Strict,
-    Loose,
-    Varargs,
+    NotFound(MethodNotFound),
+    Ambiguous(MethodAmbiguity),
 }
 
 pub fn resolve_method_call(env: &mut TypeStore, call: &MethodCall<'_>) -> MethodResolution {
@@ -2574,30 +2646,85 @@ pub fn resolve_method_call(env: &mut TypeStore, call: &MethodCall<'_>) -> Method
     let candidates = collect_method_candidates(env_ro, &receiver, call.name);
 
     if candidates.is_empty() {
-        return MethodResolution::NotFound;
+        return MethodResolution::NotFound(MethodNotFound {
+            receiver,
+            name: call.name.to_string(),
+            args: call.args.clone(),
+            candidates: Vec::new(),
+        });
     }
 
+    let mut diagnostics: Vec<MethodCandidateDiagnostics> = candidates
+        .iter()
+        .map(|cand| {
+            let base_params = cand
+                .method
+                .params
+                .iter()
+                .map(|t| substitute(t, &cand.class_subst))
+                .collect::<Vec<_>>();
+            let base_return = substitute(&cand.method.return_type, &cand.class_subst);
+            MethodCandidateDiagnostics {
+                candidate: MethodCandidate {
+                    owner: cand.owner,
+                    name: cand.method.name.clone(),
+                    params: base_params,
+                    return_type: base_return,
+                    is_static: cand.method.is_static,
+                    is_varargs: cand.method.is_varargs,
+                    type_param_count: cand.method.type_params.len(),
+                },
+                failures: Vec::new(),
+            }
+        })
+        .collect();
+
     for phase in [
-        MethodPhase::Strict,
-        MethodPhase::Loose,
-        MethodPhase::Varargs,
+        MethodSearchPhase::Strict,
+        MethodSearchPhase::Loose,
+        MethodSearchPhase::Varargs,
     ] {
-        let applicable: Vec<ResolvedMethod> = candidates
-            .iter()
-            .filter_map(|cand| check_applicability(env_ro, cand, call, phase))
-            .collect();
+        let mut applicable: Vec<ResolvedMethod> = Vec::new();
+        for (idx, cand) in candidates.iter().enumerate() {
+            if call.call_kind == CallKind::Static && !cand.method.is_static {
+                diagnostics[idx].failures.push(MethodCandidateFailure {
+                    phase,
+                    reason: MethodCandidateFailureReason::WrongCallKind {
+                        call_kind: call.call_kind,
+                    },
+                });
+                continue;
+            }
+
+            match check_applicability(env_ro, cand, call, phase) {
+                Ok(resolved) => applicable.push(resolved),
+                Err(reason) => diagnostics[idx]
+                    .failures
+                    .push(MethodCandidateFailure { phase, reason }),
+            }
+        }
 
         if applicable.is_empty() {
             continue;
         }
 
-        return match most_specific(env_ro, &applicable, call.args.len()) {
-            Some(best) => MethodResolution::Found(best.clone()),
-            None => MethodResolution::Ambiguous(applicable),
+        let mut ranked = applicable;
+        rank_resolved_methods(env_ro, call, &mut ranked);
+        return match pick_best_method(env_ro, call, &ranked, call.args.len()) {
+            Some(best_idx) => MethodResolution::Found(ranked.swap_remove(best_idx)),
+            None => MethodResolution::Ambiguous(MethodAmbiguity {
+                phase,
+                candidates: ranked,
+            }),
         };
     }
 
-    MethodResolution::NotFound
+    MethodResolution::NotFound(MethodNotFound {
+        receiver,
+        name: call.name.to_string(),
+        args: call.args.clone(),
+        candidates: diagnostics,
+    })
 }
 
 pub fn resolve_constructor_call(
@@ -2620,6 +2747,7 @@ pub fn resolve_constructor_call(
 
     let call = MethodCall {
         receiver,
+        call_kind: CallKind::Instance,
         name: "<init>",
         args: args.to_vec(),
         expected_return: expected.cloned(),
@@ -2628,7 +2756,12 @@ pub fn resolve_constructor_call(
 
     let env_ro: &TypeStore = &*env;
     let Some(class_def) = env_ro.class(class) else {
-        return MethodResolution::NotFound;
+        return MethodResolution::NotFound(MethodNotFound {
+            receiver: call.receiver.clone(),
+            name: call.name.to_string(),
+            args: call.args.clone(),
+            candidates: Vec::new(),
+        });
     };
 
     let class_subst = class_def
@@ -2658,30 +2791,76 @@ pub fn resolve_constructor_call(
         .collect();
 
     if candidates.is_empty() {
-        return MethodResolution::NotFound;
+        return MethodResolution::NotFound(MethodNotFound {
+            receiver: call.receiver.clone(),
+            name: call.name.to_string(),
+            args: call.args.clone(),
+            candidates: Vec::new(),
+        });
     }
 
+    let mut diagnostics: Vec<MethodCandidateDiagnostics> = candidates
+        .iter()
+        .map(|cand| {
+            let base_params = cand
+                .method
+                .params
+                .iter()
+                .map(|t| substitute(t, &cand.class_subst))
+                .collect::<Vec<_>>();
+            let base_return = substitute(&cand.method.return_type, &cand.class_subst);
+            MethodCandidateDiagnostics {
+                candidate: MethodCandidate {
+                    owner: cand.owner,
+                    name: cand.method.name.clone(),
+                    params: base_params,
+                    return_type: base_return,
+                    is_static: cand.method.is_static,
+                    is_varargs: cand.method.is_varargs,
+                    type_param_count: cand.method.type_params.len(),
+                },
+                failures: Vec::new(),
+            }
+        })
+        .collect();
+
     for phase in [
-        MethodPhase::Strict,
-        MethodPhase::Loose,
-        MethodPhase::Varargs,
+        MethodSearchPhase::Strict,
+        MethodSearchPhase::Loose,
+        MethodSearchPhase::Varargs,
     ] {
-        let applicable: Vec<ResolvedMethod> = candidates
-            .iter()
-            .filter_map(|cand| check_applicability(env_ro, cand, &call, phase))
-            .collect();
+        let mut applicable: Vec<ResolvedMethod> = Vec::new();
+
+        for (idx, cand) in candidates.iter().enumerate() {
+            match check_applicability(env_ro, cand, &call, phase) {
+                Ok(resolved) => applicable.push(resolved),
+                Err(reason) => diagnostics[idx]
+                    .failures
+                    .push(MethodCandidateFailure { phase, reason }),
+            }
+        }
 
         if applicable.is_empty() {
             continue;
         }
 
-        return match most_specific(env_ro, &applicable, call.args.len()) {
-            Some(best) => MethodResolution::Found(best.clone()),
-            None => MethodResolution::Ambiguous(applicable),
+        let mut ranked = applicable;
+        rank_resolved_methods(env_ro, &call, &mut ranked);
+        return match pick_best_method(env_ro, &call, &ranked, call.args.len()) {
+            Some(best_idx) => MethodResolution::Found(ranked.swap_remove(best_idx)),
+            None => MethodResolution::Ambiguous(MethodAmbiguity {
+                phase,
+                candidates: ranked,
+            }),
         };
     }
 
-    MethodResolution::NotFound
+    MethodResolution::NotFound(MethodNotFound {
+        receiver: call.receiver.clone(),
+        name: call.name.to_string(),
+        args: call.args.clone(),
+        candidates: diagnostics,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2697,6 +2876,7 @@ fn collect_method_candidates(
     name: &str,
 ) -> Vec<CandidateMethod> {
     let mut out = Vec::new();
+    let mut seen_sigs: HashSet<(bool, Vec<Type>)> = HashSet::new();
 
     let start = match receiver {
         Type::Class(_) => receiver.clone(),
@@ -2728,6 +2908,18 @@ fn collect_method_candidates(
 
         for method in &class_def.methods {
             if method.name == name {
+                // Best-effort override/hiding handling:
+                // if we've already seen a method with the same erased signature, keep the
+                // most specific declaration (we traverse from receiver -> supertypes).
+                let erased_params = method
+                    .params
+                    .iter()
+                    .map(|t| erasure(env, &substitute(t, &subst)))
+                    .collect::<Vec<_>>();
+                let sig_key = (method.is_static, erased_params);
+                if !seen_sigs.insert(sig_key) {
+                    continue;
+                }
                 out.push(CandidateMethod {
                     owner: def,
                     method: method.clone(),
@@ -2751,18 +2943,37 @@ fn check_applicability(
     env: &dyn TypeEnv,
     cand: &CandidateMethod,
     call: &MethodCall<'_>,
-    phase: MethodPhase,
-) -> Option<ResolvedMethod> {
+    phase: MethodSearchPhase,
+) -> Result<ResolvedMethod, MethodCandidateFailureReason> {
     let method = &cand.method;
     let arity = call.args.len();
 
     // Arity precheck.
     match (method.is_varargs, phase) {
-        (false, _) if arity != method.params.len() => return None,
-        (true, MethodPhase::Strict | MethodPhase::Loose) if arity != method.params.len() => {
-            return None
+        (false, _) if arity != method.params.len() => {
+            return Err(MethodCandidateFailureReason::WrongArity {
+                expected: method.params.len(),
+                found: arity,
+                is_varargs: false,
+            });
         }
-        (true, MethodPhase::Varargs) if arity + 1 < method.params.len() => return None,
+        (true, MethodSearchPhase::Strict | MethodSearchPhase::Loose)
+            if arity != method.params.len() =>
+        {
+            return Err(MethodCandidateFailureReason::WrongArity {
+                expected: method.params.len(),
+                found: arity,
+                is_varargs: true,
+            });
+        }
+        // Variable-arity invocation needs at least `fixed` arguments.
+        (true, MethodSearchPhase::Varargs) if arity + 1 < method.params.len() => {
+            return Err(MethodCandidateFailureReason::WrongArity {
+                expected: method.params.len().saturating_sub(1),
+                found: arity,
+                is_varargs: true,
+            });
+        }
         _ => {}
     }
 
@@ -2775,21 +2986,23 @@ fn check_applicability(
     let base_return_type = substitute(&method.return_type, &cand.class_subst);
 
     // Try a fixed-arity invocation first (including varargs methods invoked with an array).
-    if let Some(res) = try_method_invocation(
-        env,
-        cand.owner,
-        method,
-        &base_params,
-        &base_return_type,
-        call,
-        phase,
-        false,
-    ) {
-        return Some(res);
+    if !(method.is_varargs && phase == MethodSearchPhase::Varargs && arity != base_params.len()) {
+        if let Ok(res) = try_method_invocation(
+            env,
+            cand.owner,
+            method,
+            &base_params,
+            &base_return_type,
+            call,
+            phase,
+            false,
+        ) {
+            return Ok(res);
+        }
     }
 
     // Varargs phase can also use variable-arity invocation.
-    if method.is_varargs && phase == MethodPhase::Varargs {
+    if method.is_varargs && phase == MethodSearchPhase::Varargs {
         return try_method_invocation(
             env,
             cand.owner,
@@ -2802,7 +3015,16 @@ fn check_applicability(
         );
     }
 
-    None
+    try_method_invocation(
+        env,
+        cand.owner,
+        method,
+        &base_params,
+        &base_return_type,
+        call,
+        phase,
+        false,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2813,40 +3035,64 @@ fn try_method_invocation(
     base_params: &[Type],
     base_return_type: &Type,
     call: &MethodCall<'_>,
-    phase: MethodPhase,
+    phase: MethodSearchPhase,
     force_varargs: bool,
-) -> Option<ResolvedMethod> {
+) -> Result<ResolvedMethod, MethodCandidateFailureReason> {
     let arity = call.args.len();
 
-    let (pattern_params, used_varargs) = if method.is_varargs && (phase == MethodPhase::Varargs) {
-        if force_varargs {
-            (expand_varargs_pattern(base_params, arity)?, true)
-        } else {
-            // Fixed-arity invocation (last param is the array type).
+    let (pattern_params, used_varargs) =
+        if method.is_varargs && (phase == MethodSearchPhase::Varargs) {
+            if force_varargs {
+                (
+                    expand_varargs_pattern(base_params, arity).ok_or(
+                        MethodCandidateFailureReason::WrongArity {
+                            expected: base_params.len().saturating_sub(1),
+                            found: arity,
+                            is_varargs: true,
+                        },
+                    )?,
+                    true,
+                )
+            } else {
+                // Fixed-arity invocation (last param is the array type).
+                if arity != base_params.len() {
+                    return Err(MethodCandidateFailureReason::WrongArity {
+                        expected: base_params.len(),
+                        found: arity,
+                        is_varargs: true,
+                    });
+                }
+                (base_params.to_vec(), false)
+            }
+        } else if method.is_varargs {
+            // Strict/loose: only fixed-arity invocation allowed.
             if arity != base_params.len() {
-                return None;
+                return Err(MethodCandidateFailureReason::WrongArity {
+                    expected: base_params.len(),
+                    found: arity,
+                    is_varargs: true,
+                });
             }
             (base_params.to_vec(), false)
-        }
-    } else if method.is_varargs {
-        // Strict/loose: only fixed-arity invocation allowed.
-        if arity != base_params.len() {
-            return None;
-        }
-        (base_params.to_vec(), false)
-    } else {
-        (base_params.to_vec(), false)
-    };
+        } else {
+            (base_params.to_vec(), false)
+        };
 
     // Infer (or apply explicit) method type arguments using the effective parameter pattern.
-    let inferred_type_args = if !method.type_params.is_empty() {
+    let inferred_type_args = if method.type_params.is_empty() {
+        Vec::new()
+    } else {
         if !call.explicit_type_args.is_empty() {
+            if call.explicit_type_args.len() != method.type_params.len() {
+                return Err(MethodCandidateFailureReason::ExplicitTypeArgCountMismatch {
+                    expected: method.type_params.len(),
+                    found: call.explicit_type_args.len(),
+                });
+            }
             call.explicit_type_args.clone()
         } else {
             infer_type_arguments_from_call(env, method, &pattern_params, base_return_type, call)
         }
-    } else {
-        Vec::new()
     };
 
     let method_subst: HashMap<TypeVarId, Type> = method
@@ -2856,35 +3102,84 @@ fn try_method_invocation(
         .zip(inferred_type_args.iter().cloned())
         .collect();
 
+    // Validate inferred/explicit type arguments against the declared bounds.
+    let object = Type::class(env.well_known().object, vec![]);
+    for (tv, ty_arg) in method
+        .type_params
+        .iter()
+        .copied()
+        .zip(inferred_type_args.iter())
+    {
+        let upper_bounds = env
+            .type_param(tv)
+            .and_then(|tp| {
+                if tp.upper_bounds.is_empty() {
+                    None
+                } else {
+                    Some(tp.upper_bounds.clone())
+                }
+            })
+            .unwrap_or_else(|| vec![object.clone()]);
+
+        for ub in upper_bounds {
+            let ub = substitute(&ub, &method_subst);
+            if !is_subtype(env, ty_arg, &ub) {
+                return Err(MethodCandidateFailureReason::TypeArgOutOfBounds {
+                    type_param: tv,
+                    type_arg: ty_arg.clone(),
+                    upper_bound: ub,
+                });
+            }
+        }
+    }
+
     let effective_params: Vec<Type> = pattern_params
         .iter()
         .map(|t| substitute(t, &method_subst))
         .collect();
     if effective_params.len() != arity {
-        return None;
+        return Err(MethodCandidateFailureReason::WrongArity {
+            expected: effective_params.len(),
+            found: arity,
+            is_varargs: method.is_varargs,
+        });
     }
     let return_type = substitute(base_return_type, &method_subst);
 
     let mut warnings = Vec::new();
+    let mut conversions = Vec::with_capacity(arity);
     for (arg, param) in call.args.iter().zip(&effective_params) {
         let conv = match phase {
-            MethodPhase::Strict => strict_method_invocation_conversion(env, arg, param)?,
-            MethodPhase::Loose | MethodPhase::Varargs => {
-                method_invocation_conversion(env, arg, param)?
+            MethodSearchPhase::Strict => strict_method_invocation_conversion(env, arg, param),
+            MethodSearchPhase::Loose | MethodSearchPhase::Varargs => {
+                method_invocation_conversion(env, arg, param)
             }
-        };
-        warnings.extend(conv.warnings);
+        }
+        .ok_or_else(|| MethodCandidateFailureReason::ArgumentConversion {
+            arg_index: conversions.len(),
+            from: arg.clone(),
+            to: param.clone(),
+        })?;
+        warnings.extend(conv.warnings.iter().cloned());
+        conversions.push(conv);
     }
 
-    Some(ResolvedMethod {
+    if call.call_kind == CallKind::Instance && method.is_static {
+        warnings.push(TypeWarning::StaticAccessViaInstance);
+    }
+
+    Ok(ResolvedMethod {
         owner,
         name: method.name.clone(),
         params: effective_params,
         return_type,
         is_varargs: method.is_varargs,
+        is_static: method.is_static,
+        conversions,
         inferred_type_args,
         warnings,
         used_varargs,
+        phase,
     })
 }
 
@@ -3248,63 +3543,42 @@ fn is_placeholder_type_for_inference(ty: &Type) -> bool {
     matches!(ty, Type::Unknown | Type::Error | Type::Null)
 }
 
-fn most_specific<'a>(
-    env: &dyn TypeEnv,
-    methods: &'a [ResolvedMethod],
-    arity: usize,
-) -> Option<&'a ResolvedMethod> {
-    if methods.is_empty() {
-        return None;
-    }
-
-    let mut maximals = Vec::new();
-    'outer: for m in methods {
-        for other in methods {
-            if std::ptr::eq(m, other) {
-                continue;
-            }
-            if !is_more_specific(env, m, other, arity) {
-                continue 'outer;
-            }
-        }
-        maximals.push(m);
-    }
-
-    if maximals.len() == 1 {
-        return Some(maximals[0]);
-    }
-
-    if maximals.is_empty() {
-        return None;
-    }
-
-    // Tie-breakers (best-effort):
-    // 1. Prefer fixed-arity invocations over varargs expansion.
-    // 2. Prefer non-generic methods over generic ones when parameter types tie.
-    // 3. Prefer fewer unchecked/raw warnings.
-    let mut scored: Vec<(&ResolvedMethod, (u8, u8, usize))> = maximals
-        .into_iter()
-        .map(|m| {
-            (
-                m,
-                (
-                    u8::from(m.used_varargs),
-                    u8::from(!m.inferred_type_args.is_empty()),
-                    m.warnings.len(),
-                ),
-            )
-        })
-        .collect();
-
-    scored.sort_by(|a, b| a.1.cmp(&b.1));
-    let (best, best_score) = scored.first().copied().unwrap();
-    if scored.iter().skip(1).all(|(_, score)| score != &best_score) {
-        Some(best)
-    } else {
-        None
-    }
+fn conversion_score(conv: &Conversion) -> u32 {
+    let tier = match conversion_cost(conv) {
+        ConversionCost::Identity => 0,
+        ConversionCost::Widening => 1,
+        ConversionCost::Boxing => 2,
+        ConversionCost::Unchecked => 3,
+        ConversionCost::Narrowing => 4,
+    };
+    tier * 10 + conv.steps.len() as u32
 }
 
+fn total_conversion_score(method: &ResolvedMethod) -> u32 {
+    method.conversions.iter().map(conversion_score).sum()
+}
+
+fn rank_resolved_methods(_env: &dyn TypeEnv, call: &MethodCall<'_>, methods: &mut Vec<ResolvedMethod>) {
+    methods.sort_by(|a, b| {
+        let ka = (
+            u8::from(call.call_kind == CallKind::Instance && a.is_static),
+            u8::from(a.is_varargs),
+            u8::from(a.used_varargs),
+            total_conversion_score(a),
+            u8::from(!a.inferred_type_args.is_empty()),
+            a.warnings.len(),
+        );
+        let kb = (
+            u8::from(call.call_kind == CallKind::Instance && b.is_static),
+            u8::from(b.is_varargs),
+            u8::from(b.used_varargs),
+            total_conversion_score(b),
+            u8::from(!b.inferred_type_args.is_empty()),
+            b.warnings.len(),
+        );
+        ka.cmp(&kb)
+    });
+}
 fn is_more_specific(
     env: &dyn TypeEnv,
     a: &ResolvedMethod,
@@ -3315,6 +3589,10 @@ fn is_more_specific(
         return !a.used_varargs && b.used_varargs;
     }
 
+    if a.is_varargs != b.is_varargs {
+        return !a.is_varargs && b.is_varargs;
+    }
+
     if a.params.len() != arity || b.params.len() != arity {
         return false;
     }
@@ -3323,6 +3601,174 @@ fn is_more_specific(
         .iter()
         .zip(&b.params)
         .all(|(a_ty, b_ty)| is_subtype(env, a_ty, b_ty))
+}
+
+fn is_more_specific_instantiation(
+    env: &dyn TypeEnv,
+    a: &ResolvedMethod,
+    b: &ResolvedMethod,
+) -> bool {
+    if a.inferred_type_args.is_empty()
+        || b.inferred_type_args.is_empty()
+        || a.inferred_type_args.len() != b.inferred_type_args.len()
+    {
+        return false;
+    }
+
+    let mut strictly = false;
+    for (a_arg, b_arg) in a.inferred_type_args.iter().zip(&b.inferred_type_args) {
+        if !is_subtype(env, a_arg, b_arg) {
+            return false;
+        }
+        strictly |= a_arg != b_arg;
+    }
+    strictly
+}
+
+fn pick_best_method(
+    env: &dyn TypeEnv,
+    call: &MethodCall<'_>,
+    methods: &[ResolvedMethod],
+    arity: usize,
+) -> Option<usize> {
+    if methods.is_empty() {
+        return None;
+    }
+
+    // First, keep methods that are not strictly less specific than another (JLS-inspired).
+    let mut maximal: Vec<usize> = Vec::new();
+    'outer: for (idx, m) in methods.iter().enumerate() {
+        for (other_idx, other) in methods.iter().enumerate() {
+            if idx == other_idx {
+                continue;
+            }
+            if is_more_specific(env, other, m, arity) && !is_more_specific(env, m, other, arity) {
+                continue 'outer;
+            }
+        }
+        maximal.push(idx);
+    }
+
+    if maximal.len() == 1 {
+        return Some(maximal[0]);
+    }
+    if maximal.is_empty() {
+        return None;
+    }
+
+    let mut candidates = maximal;
+
+    // Instance calls: prefer instance methods, but keep static ones for best-effort behavior.
+    if call.call_kind == CallKind::Instance && candidates.iter().any(|&i| !methods[i].is_static) {
+        candidates.retain(|&i| !methods[i].is_static);
+        if candidates.len() == 1 {
+            return Some(candidates[0]);
+        }
+    }
+
+    // Prefer declarations in a more specific type when the invocation signature ties.
+    // This is primarily for override/bridge duplicates that survive candidate collection.
+    let mut filtered = Vec::new();
+    'keep: for &i in &candidates {
+        for &j in &candidates {
+            if i == j {
+                continue;
+            }
+            let mi = &methods[i];
+            let mj = &methods[j];
+            if mi.params == mj.params
+                && mi.is_static == mj.is_static
+                && mi.is_varargs == mj.is_varargs
+            {
+                let ti = Type::class(mi.owner, vec![]);
+                let tj = Type::class(mj.owner, vec![]);
+                if is_subtype(env, &tj, &ti) && !is_subtype(env, &ti, &tj) {
+                    continue 'keep;
+                }
+            }
+        }
+        filtered.push(i);
+    }
+    candidates = filtered;
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+
+    // Prefer non-varargs methods over varargs methods.
+    if candidates.iter().any(|&i| !methods[i].is_varargs) {
+        candidates.retain(|&i| !methods[i].is_varargs);
+        if candidates.len() == 1 {
+            return Some(candidates[0]);
+        }
+    }
+
+    // Prefer fixed-arity invocation over varargs expansion.
+    if candidates.iter().any(|&i| !methods[i].used_varargs) {
+        candidates.retain(|&i| !methods[i].used_varargs);
+        if candidates.len() == 1 {
+            return Some(candidates[0]);
+        }
+    }
+
+    // Prefer cheaper conversions.
+    let min_cost = candidates
+        .iter()
+        .map(|&i| total_conversion_score(&methods[i]))
+        .min()
+        .unwrap_or(u32::MAX);
+    candidates.retain(|&i| total_conversion_score(&methods[i]) == min_cost);
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+
+    // Prefer more specific generic instantiations when comparing generic methods.
+    if candidates
+        .iter()
+        .all(|&i| !methods[i].inferred_type_args.is_empty())
+    {
+        let mut inst_max: Vec<usize> = Vec::new();
+        'inst: for &i in &candidates {
+            for &j in &candidates {
+                if i == j {
+                    continue;
+                }
+                if is_more_specific_instantiation(env, &methods[j], &methods[i]) {
+                    continue 'inst;
+                }
+            }
+            inst_max.push(i);
+        }
+        if inst_max.len() == 1 {
+            return Some(inst_max[0]);
+        }
+        if !inst_max.is_empty() && inst_max.len() < candidates.len() {
+            candidates = inst_max;
+        }
+    }
+
+    // Prefer non-generic methods when parameter types tie.
+    if candidates
+        .iter()
+        .any(|&i| methods[i].inferred_type_args.is_empty())
+    {
+        candidates.retain(|&i| methods[i].inferred_type_args.is_empty());
+        if candidates.len() == 1 {
+            return Some(candidates[0]);
+        }
+    }
+
+    // Prefer fewer warnings (unchecked/raw conversions, static access via instance).
+    let min_warnings = candidates
+        .iter()
+        .map(|&i| methods[i].warnings.len())
+        .min()
+        .unwrap_or(usize::MAX);
+    candidates.retain(|&i| methods[i].warnings.len() == min_warnings);
+    if candidates.len() == 1 {
+        return Some(candidates[0]);
+    }
+
+    None
 }
 
 // === Inference helpers =======================================================
@@ -3626,6 +4072,7 @@ pub fn type_of(env: &mut TypeStore, expr: &Expr) -> Type {
             let arg_tys = args.iter().map(|a| type_of(env, a)).collect::<Vec<_>>();
             let call = MethodCall {
                 receiver: recv_ty,
+                call_kind: CallKind::Instance,
                 name,
                 args: arg_tys,
                 expected_return: expected_return.clone(),
@@ -3754,6 +4201,7 @@ mod tests {
 
         let call = MethodCall {
             receiver: Type::class(foo, vec![]),
+            call_kind: CallKind::Instance,
             name: "m",
             args: vec![Type::class(string, vec![])],
             expected_return: None,
@@ -3829,6 +4277,7 @@ mod tests {
 
         let call = MethodCall {
             receiver: Type::class(util, vec![]),
+            call_kind: CallKind::Static,
             name: "id",
             args: vec![string.clone()],
             expected_return: None,
@@ -3867,6 +4316,7 @@ mod tests {
 
         let call = MethodCall {
             receiver: Type::class(util, vec![]),
+            call_kind: CallKind::Static,
             name: "id",
             args: vec![Type::Unknown],
             expected_return: Some(string.clone()),

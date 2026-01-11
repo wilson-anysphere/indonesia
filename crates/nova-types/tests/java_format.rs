@@ -1,6 +1,6 @@
 use nova_types::{
     format_method_signature, format_resolved_method, format_type, ClassDef, ClassKind, MethodDef,
-    ResolvedMethod, Type, TypeStore, WildcardBound,
+    MethodSearchPhase, ResolvedMethod, Type, TypeEnv, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -32,6 +32,8 @@ fn formats_intersection_types() {
         type_params: vec![],
         super_class: None,
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![],
     });
 
@@ -52,6 +54,8 @@ fn formats_nested_class_names() {
         type_params: vec![],
         super_class: None,
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![],
     });
 
@@ -70,6 +74,8 @@ fn formats_varargs_and_generic_methods() {
         type_params: vec![],
         super_class: None,
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![],
     });
 
@@ -79,6 +85,8 @@ fn formats_varargs_and_generic_methods() {
         type_params: vec![],
         super_class: Some(Type::class(object, vec![])),
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![],
     });
 
@@ -127,9 +135,12 @@ fn formats_varargs_and_generic_methods() {
         params: vec![Type::class(string, vec![]), Type::class(string, vec![])],
         return_type: Type::class(string, vec![]),
         is_varargs: false,
+        is_static: true,
+        conversions: vec![],
         inferred_type_args: vec![Type::class(string, vec![])],
         warnings: vec![],
         used_varargs: false,
+        phase: MethodSearchPhase::Strict,
     };
 
     assert_eq!(
@@ -137,4 +148,3 @@ fn formats_varargs_and_generic_methods() {
         "String max(String, String)"
     );
 }
-

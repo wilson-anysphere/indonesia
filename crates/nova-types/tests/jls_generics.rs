@@ -65,6 +65,7 @@ fn method_resolution_applies_capture_conversion_for_extends_wildcard() {
 
     let call = MethodCall {
         receiver,
+        call_kind: nova_types::CallKind::Instance,
         name: "get",
         args: vec![Type::int()],
         expected_return: None,
@@ -110,6 +111,7 @@ fn method_resolution_applies_capture_conversion_for_super_wildcard() {
     // `List<? super String>.add(String)` should be applicable (via capture conversion + lower bound).
     let call_ok = MethodCall {
         receiver: receiver.clone(),
+        call_kind: nova_types::CallKind::Instance,
         name: "add",
         args: vec![Type::class(string, vec![])],
         expected_return: None,
@@ -131,6 +133,7 @@ fn method_resolution_applies_capture_conversion_for_super_wildcard() {
     // But `List<? super String>.add(Object)` should not type-check.
     let call_bad = MethodCall {
         receiver,
+        call_kind: nova_types::CallKind::Instance,
         name: "add",
         args: vec![Type::class(object, vec![])],
         expected_return: None,
@@ -138,7 +141,7 @@ fn method_resolution_applies_capture_conversion_for_super_wildcard() {
     };
     assert!(matches!(
         resolve_method_call(&mut env, &call_bad),
-        MethodResolution::NotFound | MethodResolution::Ambiguous(_)
+        MethodResolution::NotFound(_) | MethodResolution::Ambiguous(_)
     ));
 }
 

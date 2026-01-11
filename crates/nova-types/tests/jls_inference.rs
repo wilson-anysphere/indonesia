@@ -33,6 +33,7 @@ fn infer_simple_identity() {
 
     let call = MethodCall {
         receiver: Type::class(test, vec![]),
+        call_kind: nova_types::CallKind::Static,
         name: "id",
         args: vec![Type::class(string, vec![])],
         expected_return: None,
@@ -76,6 +77,7 @@ fn infer_from_return_context() {
     let expected = Type::class(list, vec![Type::class(string, vec![])]);
     let call = MethodCall {
         receiver: Type::class(test, vec![]),
+        call_kind: nova_types::CallKind::Static,
         name: "empty",
         args: vec![],
         expected_return: Some(expected.clone()),
@@ -117,6 +119,7 @@ fn inferred_type_respects_bounds() {
 
     let call = MethodCall {
         receiver: Type::class(test, vec![]),
+        call_kind: nova_types::CallKind::Static,
         name: "m",
         args: vec![Type::class(integer, vec![])],
         expected_return: None,

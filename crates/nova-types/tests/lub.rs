@@ -1,6 +1,6 @@
 use nova_types::{
-    lub, resolve_method_call, ClassDef, ClassKind, MethodCall, MethodDef, MethodResolution, Type,
-    TypeEnv, TypeStore, WildcardBound,
+    lub, resolve_method_call, CallKind, ClassDef, ClassKind, MethodCall, MethodDef,
+    MethodResolution, Type, TypeEnv, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -83,6 +83,7 @@ fn inference_uses_lub_for_generic_instances() {
 
     let call = MethodCall {
         receiver: Type::class(util, vec![]),
+        call_kind: CallKind::Static,
         name: "pick",
         args: vec![list_string, list_integer],
         expected_return: None,

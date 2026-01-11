@@ -1275,6 +1275,58 @@ fn build_workspace_edit(edits: Vec<(String, TextRange, String)>) -> Result<Works
             file,
             context: "edit out of bounds",
         },
+        EditError::UnknownFile(FileId(file)) => ChangeSignatureConflict::ParseError {
+            file,
+            context: "unknown file referenced by edit",
+        },
+        EditError::FileAlreadyExists(FileId(file)) => ChangeSignatureConflict::ParseError {
+            file,
+            context: "file already exists",
+        },
+        EditError::InvalidRename { from: FileId(file), .. } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "invalid rename operation",
+        },
+        EditError::DuplicateCreate { file: FileId(file) } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "duplicate create operation",
+        },
+        EditError::DuplicateRenameSource { from: FileId(file), .. } => {
+            ChangeSignatureConflict::ParseError {
+                file,
+                context: "duplicate rename source",
+            }
+        }
+        EditError::DuplicateRenameDestination { to: FileId(file), .. } => {
+            ChangeSignatureConflict::ParseError {
+                file,
+                context: "duplicate rename destination",
+            }
+        }
+        EditError::RenameCycle { file: FileId(file) } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "rename cycle detected",
+        },
+        EditError::CreateDeleteConflict { file: FileId(file) } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "file is both created and deleted",
+        },
+        EditError::FileOpCollision { file: FileId(file), .. } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "conflicting file operation",
+        },
+        EditError::TextEditTargetsRenamedFile { file: FileId(file), .. } => {
+            ChangeSignatureConflict::ParseError {
+                file,
+                context: "text edit targets renamed file",
+            }
+        }
+        EditError::TextEditTargetsDeletedFile { file: FileId(file) } => {
+            ChangeSignatureConflict::ParseError {
+                file,
+                context: "text edit targets deleted file",
+            }
+        }
     })?;
     Ok(edit)
 }

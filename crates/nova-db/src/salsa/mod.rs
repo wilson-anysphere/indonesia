@@ -322,6 +322,7 @@ impl RootDatabase {
                 },
                 modules: Vec::new(),
                 jpms_modules: Vec::new(),
+                jpms_workspace: None,
                 source_roots: Vec::new(),
                 module_path: Vec::new(),
                 classpath: Vec::new(),
