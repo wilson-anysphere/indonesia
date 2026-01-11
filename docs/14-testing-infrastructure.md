@@ -311,6 +311,12 @@ cargo test -p nova-project --test real_projects -- --include-ignored
 cargo test -p nova-cli --test real_projects -- --include-ignored
 ```
 
+For CI-like behavior (and to reduce peak memory), consider running with a single test thread:
+
+```bash
+RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
+```
+
 To focus on a subset of fixtures/tests:
 
 ```bash
