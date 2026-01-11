@@ -111,6 +111,38 @@ class UserRepository {
 }
 
 #[test]
+fn jpql_completions_include_entity_names_in_from_clause() {
+    let user_path = PathBuf::from("/workspace/src/main/java/com/example/User.java");
+    let post_path = PathBuf::from("/workspace/src/main/java/com/example/Post.java");
+    let repo_path = PathBuf::from("/workspace/src/main/java/com/example/UserRepository.java");
+
+    let repo_text = r#"package com.example;
+import org.springframework.data.jpa.repository.Query;
+
+class UserRepository {
+  @Query("SELECT u FROM <|>")
+  void m();
+}
+"#;
+
+    let (db, file, pos, _repo_text) = fixture_multi(
+        repo_path,
+        repo_text,
+        vec![
+            (user_path, user_entity_source()),
+            (post_path, post_entity_source()),
+        ],
+    );
+
+    let items = completions(&db, file, pos);
+    let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+    assert!(
+        labels.contains(&"User"),
+        "expected JPQL completion list to contain entity name `User`; got {labels:?}"
+    );
+}
+
+#[test]
 fn jpql_unknown_entity_diagnostic_has_span_on_identifier() {
     let user_path = PathBuf::from("/workspace/src/main/java/com/example/User.java");
     let repo_path = PathBuf::from("/workspace/src/main/java/com/example/UserRepository.java");
