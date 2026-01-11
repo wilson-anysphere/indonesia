@@ -1,12 +1,12 @@
 use std::collections::{HashMap, HashSet};
 
+use nova_syntax::{SyntaxKind, SyntaxNode};
 use nova_types::{Diagnostic, Span};
-use tree_sitter::Node;
 
 use crate::parse::{
-    clean_type, collect_annotations, find_named_child, infer_field_type_node,
-    infer_param_type_node, modifier_node, node_text, parse_java, simple_name, visit_nodes,
-    ParsedAnnotation,
+    clean_type, collect_annotations, find_named_child, first_identifier_token, infer_field_type_node,
+    infer_param_type_node, modifier_node, node_span, node_text, parse_java, simple_name,
+    token_span, visit_nodes, ParsedAnnotation,
 };
 use crate::FileDiagnostic;
 use crate::JavaSource;
@@ -67,18 +67,18 @@ pub fn analyze_beans(sources: &[JavaSource]) -> BeanAnalysis {
     let mut beans = Vec::new();
 
     for src in sources {
-        if let Ok(tree) = parse_java(&src.text) {
-            let root = tree.root_node();
-            visit_nodes(root, &mut |node| {
-                if node.kind() == "class_declaration" {
-                    if let Some(mut discovered) =
-                        discover_beans_in_class(node, src, &qualifier_annotations)
-                    {
-                        beans.append(&mut discovered);
-                    }
+        let Ok(parsed) = parse_java(&src.text) else {
+            continue;
+        };
+        let root = parsed.syntax();
+        visit_nodes(root, &mut |node| {
+            if node.kind() == SyntaxKind::ClassDeclaration {
+                if let Some(mut discovered) = discover_beans_in_class(node, src, &qualifier_annotations)
+                {
+                    beans.append(&mut discovered);
                 }
-            });
-        }
+            }
+        });
     }
 
     // Compute assignable types for each bean.
@@ -150,28 +150,25 @@ pub fn analyze_beans(sources: &[JavaSource]) -> BeanAnalysis {
 fn discover_custom_qualifiers(sources: &[JavaSource]) -> HashSet<String> {
     let mut out = HashSet::new();
     for src in sources {
-        let Ok(tree) = parse_java(&src.text) else {
+        let Ok(parsed) = parse_java(&src.text) else {
             continue;
         };
-        let root = tree.root_node();
+        let root = parsed.syntax();
         visit_nodes(root, &mut |node| {
-            if node.kind() != "annotation_type_declaration" {
+            if node.kind() != SyntaxKind::AnnotationTypeDeclaration {
                 return;
             }
-            let Some(modifiers) = modifier_node(node) else {
+            let Some(modifiers) = modifier_node(&node) else {
                 return;
             };
             let anns = collect_annotations(modifiers, &src.text);
             if !anns.iter().any(|a| a.simple_name == "Qualifier") {
                 return;
             }
-            let name_node = node
-                .child_by_field_name("name")
-                .or_else(|| find_named_child(node, "identifier"));
-            let Some(name_node) = name_node else {
+            let Some(name_token) = first_identifier_token(&node) else {
                 return;
             };
-            out.insert(node_text(&src.text, name_node).to_string());
+            out.insert(name_token.text().to_string());
         });
     }
     out
@@ -181,27 +178,29 @@ fn build_type_hierarchy(sources: &[JavaSource]) -> HashMap<String, Vec<String>> 
     let mut parents: HashMap<String, Vec<String>> = HashMap::new();
 
     for src in sources {
-        let Ok(tree) = parse_java(&src.text) else {
+        let Ok(parsed) = parse_java(&src.text) else {
             continue;
         };
-        let root = tree.root_node();
+        let root = parsed.syntax();
         visit_nodes(root, &mut |node| match node.kind() {
-            "class_declaration" | "interface_declaration" => {
-                let Some(name_node) = node
-                    .child_by_field_name("name")
-                    .or_else(|| find_named_child(node, "identifier"))
-                else {
+            SyntaxKind::ClassDeclaration | SyntaxKind::InterfaceDeclaration => {
+                let Some(name_token) = first_identifier_token(&node) else {
                     return;
                 };
-                let name = node_text(&src.text, name_node).to_string();
-                let body = node
-                    .child_by_field_name("body")
-                    .or_else(|| find_named_child(node, "class_body"))
-                    .or_else(|| find_named_child(node, "interface_body"));
-                let Some(body) = body else {
+                let name = name_token.text().to_string();
+
+                let body_kind = match node.kind() {
+                    SyntaxKind::ClassDeclaration => SyntaxKind::ClassBody,
+                    SyntaxKind::InterfaceDeclaration => SyntaxKind::InterfaceBody,
+                    _ => return,
+                };
+                let Some(body) = find_named_child(&node, body_kind) else {
                     return;
                 };
-                let header = &src.text[node.start_byte()..body.start_byte()];
+
+                let node_start = node_span(&node).start;
+                let body_start = node_span(&body).start;
+                let header = &src.text[node_start..body_start];
                 let supers = parse_supertypes(header);
                 if !supers.is_empty() {
                     parents.insert(name, supers);
@@ -274,11 +273,11 @@ fn collect_assignable_types(
 }
 
 fn discover_beans_in_class(
-    node: Node<'_>,
+    node: SyntaxNode,
     src: &JavaSource,
     qualifier_annotations: &HashSet<String>,
 ) -> Option<Vec<Bean>> {
-    let modifiers = modifier_node(node);
+    let modifiers = modifier_node(&node);
     let class_annotations = modifiers
         .map(|m| collect_annotations(m, &src.text))
         .unwrap_or_default();
@@ -295,24 +294,24 @@ fn discover_beans_in_class(
         return None;
     }
 
-    let name_node = node
-        .child_by_field_name("name")
-        .or_else(|| find_named_child(node, "identifier"))?;
-    let class_name = node_text(&src.text, name_node).to_string();
+    let name_token = first_identifier_token(&node)?;
+    let class_name = name_token.text().to_string();
 
-    let class_span = Span::new(node.start_byte(), node.end_byte());
+    let class_span = node_span(&node);
     let class_qualifiers = extract_qualifiers(&class_annotations, qualifier_annotations);
     let class_named = extract_named(&class_annotations);
 
-    let body = node
-        .child_by_field_name("body")
-        .or_else(|| find_named_child(node, "class_body"))?;
+    let body = find_named_child(&node, SyntaxKind::ClassBody)?;
 
     let mut beans = Vec::new();
 
     if is_class_bean {
-        let injection_points =
-            discover_injection_points_in_class_body(&class_name, body, src, qualifier_annotations);
+        let injection_points = discover_injection_points_in_class_body(
+            &class_name,
+            &body,
+            src,
+            qualifier_annotations,
+        );
 
         let bean_name = class_named
             .clone()
@@ -338,11 +337,7 @@ fn discover_beans_in_class(
     }
 
     if is_factory {
-        let mut cursor = body.walk();
-        for child in body.named_children(&mut cursor) {
-            if child.kind() != "method_declaration" {
-                continue;
-            }
+        for child in body.children().filter(|c| c.kind() == SyntaxKind::MethodDeclaration) {
             if let Some(bean) = discover_factory_method_bean(
                 &class_name,
                 child,
@@ -360,27 +355,25 @@ fn discover_beans_in_class(
 
 fn discover_injection_points_in_class_body(
     class_name: &str,
-    body: Node<'_>,
+    body: &SyntaxNode,
     src: &JavaSource,
     qualifier_annotations: &HashSet<String>,
 ) -> Vec<InjectionPoint> {
     let mut points = Vec::new();
 
     // Field injection.
-    let mut cursor = body.walk();
-    for child in body.named_children(&mut cursor) {
-        if child.kind() == "field_declaration" {
+    for child in body.children() {
+        if child.kind() == SyntaxKind::FieldDeclaration {
             points.extend(discover_field_injections(child, src, qualifier_annotations));
         }
     }
 
     // Constructor injection: best-effort, first @Inject constructor wins.
-    let mut cursor = body.walk();
-    for child in body.named_children(&mut cursor) {
-        if child.kind() != "constructor_declaration" {
+    for child in body.children() {
+        if child.kind() != SyntaxKind::ConstructorDeclaration {
             continue;
         }
-        let Some(modifiers) = modifier_node(child) else {
+        let Some(modifiers) = modifier_node(&child) else {
             continue;
         };
         let anns = collect_annotations(modifiers, &src.text);
@@ -390,7 +383,7 @@ fn discover_injection_points_in_class_body(
 
         points.extend(discover_callable_params_as_injections(
             class_name,
-            child,
+            &child,
             src,
             qualifier_annotations,
             true,
@@ -402,11 +395,11 @@ fn discover_injection_points_in_class_body(
 }
 
 fn discover_field_injections(
-    node: Node<'_>,
+    node: SyntaxNode,
     src: &JavaSource,
     qualifier_annotations: &HashSet<String>,
 ) -> Vec<InjectionPoint> {
-    let Some(modifiers) = modifier_node(node) else {
+    let Some(modifiers) = modifier_node(&node) else {
         return Vec::new();
     };
     let anns = collect_annotations(modifiers, &src.text);
@@ -414,36 +407,30 @@ fn discover_field_injections(
         return Vec::new();
     }
 
-    let ty_node = node
-        .child_by_field_name("type")
-        .or_else(|| infer_field_type_node(node));
+    let ty_node = infer_field_type_node(&node);
     let ty = ty_node
-        .map(|n| simple_name(&clean_type(node_text(&src.text, n))))
+        .map(|n| simple_name(&clean_type(node_text(&src.text, &n))))
         .unwrap_or_default();
 
     let qualifiers = extract_qualifiers(&anns, qualifier_annotations);
 
     let mut out = Vec::new();
-    let mut cursor = node.walk();
-    for declarator in node.named_children(&mut cursor) {
-        if declarator.kind() != "variable_declarator" {
-            continue;
-        }
-        let name_node = declarator
-            .child_by_field_name("name")
-            .or_else(|| find_named_child(declarator, "identifier"));
-        let Some(name_node) = name_node else {
+    let Some(declarators) = find_named_child(&node, SyntaxKind::VariableDeclaratorList) else {
+        return Vec::new();
+    };
+    for declarator in declarators
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::VariableDeclarator)
+    {
+        let Some(name_token) = first_identifier_token(&declarator) else {
             continue;
         };
-        let name = node_text(&src.text, name_node).to_string();
-        let span = Span::new(name_node.start_byte(), name_node.end_byte());
-
         out.push(InjectionPoint {
-            label: name,
+            label: name_token.text().to_string(),
             ty: ty.clone(),
             qualifiers: qualifiers.clone(),
             file: src.path.clone(),
-            span,
+            span: token_span(&name_token),
         });
     }
 
@@ -452,12 +439,12 @@ fn discover_field_injections(
 
 fn discover_factory_method_bean(
     factory_class: &str,
-    node: Node<'_>,
+    node: SyntaxNode,
     src: &JavaSource,
     qualifier_annotations: &HashSet<String>,
     factory_qualifiers: &[Qualifier],
 ) -> Option<Bean> {
-    let modifiers = modifier_node(node);
+    let modifiers = modifier_node(&node);
     let annotations = modifiers
         .map(|m| collect_annotations(m, &src.text))
         .unwrap_or_default();
@@ -465,15 +452,13 @@ fn discover_factory_method_bean(
         return None;
     }
 
-    let name_node = node
-        .child_by_field_name("name")
-        .or_else(|| find_named_child(node, "identifier"))?;
-    let method_name = node_text(&src.text, name_node).to_string();
-    let span = Span::new(node.start_byte(), node.end_byte());
+    let name_token = first_identifier_token(&node)?;
+    let method_name = name_token.text().to_string();
+    let span = node_span(&node);
 
-    let return_ty_node = node.child_by_field_name("type");
+    let return_ty_node = find_named_child(&node, SyntaxKind::Type);
     let return_ty = return_ty_node
-        .map(|n| simple_name(&clean_type(node_text(&src.text, n))))
+        .map(|n| simple_name(&clean_type(node_text(&src.text, &n))))
         .unwrap_or_default();
 
     let method_named = extract_named(&annotations);
@@ -489,7 +474,7 @@ fn discover_factory_method_bean(
 
     let injection_points = discover_callable_params_as_injections(
         factory_class,
-        node,
+        &node,
         src,
         qualifier_annotations,
         false,
@@ -510,7 +495,7 @@ fn discover_factory_method_bean(
 
 fn discover_callable_params_as_injections(
     _owner: &str,
-    node: Node<'_>,
+    node: &SyntaxNode,
     src: &JavaSource,
     qualifier_annotations: &HashSet<String>,
     require_inject: bool,
@@ -519,36 +504,21 @@ fn discover_callable_params_as_injections(
         // `require_inject` is handled by the caller for constructors (annotations already checked).
     }
 
-    let params = node
-        .child_by_field_name("parameters")
-        .or_else(|| find_named_child(node, "formal_parameters"));
-    let Some(params) = params else {
+    let Some(params) = find_named_child(node, SyntaxKind::ParameterList) else {
         return Vec::new();
     };
 
     let mut out = Vec::new();
-    let mut cursor = params.walk();
-    for child in params.named_children(&mut cursor) {
-        if child.kind() != "formal_parameter" {
-            continue;
-        }
-        let name_node = child
-            .child_by_field_name("name")
-            .or_else(|| find_named_child(child, "identifier"));
-        let Some(name_node) = name_node else {
+    for child in params.children().filter(|c| c.kind() == SyntaxKind::Parameter) {
+        let Some(name_token) = first_identifier_token(&child) else {
             continue;
         };
-        let name = node_text(&src.text, name_node).to_string();
-        let span = Span::new(name_node.start_byte(), name_node.end_byte());
 
-        let type_node = child
-            .child_by_field_name("type")
-            .or_else(|| infer_param_type_node(child));
-        let ty = type_node
-            .map(|n| simple_name(&clean_type(node_text(&src.text, n))))
+        let ty = infer_param_type_node(&child)
+            .map(|n| simple_name(&clean_type(node_text(&src.text, &n))))
             .unwrap_or_default();
 
-        let qualifiers = modifier_node(child)
+        let qualifiers = modifier_node(&child)
             .map(|m| {
                 let anns = collect_annotations(m, &src.text);
                 extract_qualifiers(&anns, qualifier_annotations)
@@ -556,11 +526,11 @@ fn discover_callable_params_as_injections(
             .unwrap_or_default();
 
         out.push(InjectionPoint {
-            label: name,
+            label: name_token.text().to_string(),
             ty,
             qualifiers,
             file: src.path.clone(),
-            span,
+            span: token_span(&name_token),
         });
     }
 

@@ -1,11 +1,11 @@
 use crate::parse::{
-    clean_type, collect_annotations, infer_field_type_node, infer_param_type_node, modifier_node,
-    node_text, parse_java, simple_name, visit_nodes,
+    clean_type, collect_annotations, infer_field_type_node, infer_param_type_node,
+    modifier_node, node_text, parse_java, simple_name, visit_nodes,
 };
 use crate::FileDiagnostic;
 use crate::JavaSource;
+use nova_syntax::{SyntaxKind, SyntaxNode};
 use nova_types::{Diagnostic, Severity};
-use tree_sitter::Node;
 
 pub const MICRONAUT_VALIDATION_PRIMITIVE_NONNULL: &str = "MICRONAUT_VALIDATION_PRIMITIVE_NONNULL";
 pub const MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH: &str =
@@ -26,14 +26,14 @@ pub(crate) fn validation_file_diagnostics(sources: &[JavaSource]) -> Vec<FileDia
     let mut diags = Vec::new();
 
     for src in sources {
-        let Ok(tree) = parse_java(&src.text) else {
+        let Ok(parsed) = parse_java(&src.text) else {
             continue;
         };
-        let root = tree.root_node();
+        let root = parsed.syntax();
 
         visit_nodes(root, &mut |node| match node.kind() {
-            "field_declaration" => validate_field_declaration(node, src, &mut diags),
-            "formal_parameter" => validate_formal_parameter(node, src, &mut diags),
+            SyntaxKind::FieldDeclaration => validate_field_declaration(node, src, &mut diags),
+            SyntaxKind::Parameter => validate_formal_parameter(node, src, &mut diags),
             _ => {}
         });
     }
@@ -41,8 +41,8 @@ pub(crate) fn validation_file_diagnostics(sources: &[JavaSource]) -> Vec<FileDia
     diags
 }
 
-fn validate_field_declaration(node: Node<'_>, src: &JavaSource, out: &mut Vec<FileDiagnostic>) {
-    let Some(modifiers) = modifier_node(node) else {
+fn validate_field_declaration(node: SyntaxNode, src: &JavaSource, out: &mut Vec<FileDiagnostic>) {
+    let Some(modifiers) = modifier_node(&node) else {
         return;
     };
 
@@ -51,13 +51,10 @@ fn validate_field_declaration(node: Node<'_>, src: &JavaSource, out: &mut Vec<Fi
         return;
     }
 
-    let ty_node = node
-        .child_by_field_name("type")
-        .or_else(|| infer_field_type_node(node));
-    let Some(ty_node) = ty_node else {
+    let Some(ty_node) = infer_field_type_node(&node) else {
         return;
     };
-    let ty = simple_name(&clean_type(node_text(&src.text, ty_node)));
+    let ty = simple_name(&clean_type(node_text(&src.text, &ty_node)));
 
     let mut local = Vec::new();
     validate_constraints(&ty, &annotations, &mut local);
@@ -68,8 +65,8 @@ fn validate_field_declaration(node: Node<'_>, src: &JavaSource, out: &mut Vec<Fi
     );
 }
 
-fn validate_formal_parameter(node: Node<'_>, src: &JavaSource, out: &mut Vec<FileDiagnostic>) {
-    let Some(modifiers) = modifier_node(node) else {
+fn validate_formal_parameter(node: SyntaxNode, src: &JavaSource, out: &mut Vec<FileDiagnostic>) {
+    let Some(modifiers) = modifier_node(&node) else {
         return;
     };
 
@@ -78,13 +75,10 @@ fn validate_formal_parameter(node: Node<'_>, src: &JavaSource, out: &mut Vec<Fil
         return;
     }
 
-    let type_node = node
-        .child_by_field_name("type")
-        .or_else(|| infer_param_type_node(node));
-    let Some(type_node) = type_node else {
+    let Some(type_node) = infer_param_type_node(&node) else {
         return;
     };
-    let ty = simple_name(&clean_type(node_text(&src.text, type_node)));
+    let ty = simple_name(&clean_type(node_text(&src.text, &type_node)));
 
     let mut local = Vec::new();
     validate_constraints(&ty, &annotations, &mut local);

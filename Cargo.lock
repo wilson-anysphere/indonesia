@@ -3725,15 +3725,14 @@ version = "0.1.0"
 dependencies = [
  "nova-core",
  "nova-framework",
- "nova-framework-parse",
  "nova-hir",
  "nova-index",
  "nova-properties",
  "nova-resolve",
+ "nova-syntax",
  "nova-types",
  "nova-yaml",
  "pretty_assertions",
- "tree-sitter",
  "zip 0.6.6",
 ]
 

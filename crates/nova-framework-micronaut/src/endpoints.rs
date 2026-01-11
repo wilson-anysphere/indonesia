@@ -1,8 +1,9 @@
 use nova_types::Span;
-use tree_sitter::Node;
+use nova_syntax::{SyntaxKind, SyntaxNode};
 
 use crate::parse::{
-    collect_annotations, find_named_child, modifier_node, node_text, parse_java, visit_nodes,
+    collect_annotations, find_named_child, first_identifier_token, modifier_node, parse_java,
+    token_span, visit_nodes,
 };
 use crate::JavaSource;
 
@@ -25,12 +26,12 @@ pub fn discover_endpoints(sources: &[JavaSource]) -> Vec<Endpoint> {
     let mut endpoints = Vec::new();
 
     for src in sources {
-        let Ok(tree) = parse_java(&src.text) else {
+        let Ok(parsed) = parse_java(&src.text) else {
             continue;
         };
-        let root = tree.root_node();
+        let root = parsed.syntax();
         visit_nodes(root, &mut |node| {
-            if node.kind() == "class_declaration" {
+            if node.kind() == SyntaxKind::ClassDeclaration {
                 endpoints.extend(discover_endpoints_in_class(node, src));
             }
         });
@@ -40,8 +41,8 @@ pub fn discover_endpoints(sources: &[JavaSource]) -> Vec<Endpoint> {
     endpoints
 }
 
-fn discover_endpoints_in_class(node: Node<'_>, src: &JavaSource) -> Vec<Endpoint> {
-    let modifiers = modifier_node(node);
+fn discover_endpoints_in_class(node: SyntaxNode, src: &JavaSource) -> Vec<Endpoint> {
+    let modifiers = modifier_node(&node);
     let class_annotations = modifiers
         .map(|m| collect_annotations(m, &src.text))
         .unwrap_or_default();
@@ -52,13 +53,10 @@ fn discover_endpoints_in_class(node: Node<'_>, src: &JavaSource) -> Vec<Endpoint
         return Vec::new();
     };
 
-    let name_node = node
-        .child_by_field_name("name")
-        .or_else(|| find_named_child(node, "identifier"));
-    let Some(name_node) = name_node else {
+    let Some(name_token) = first_identifier_token(&node) else {
         return Vec::new();
     };
-    let class_name = node_text(&src.text, name_node).to_string();
+    let class_name = name_token.text().to_string();
 
     let base_path = controller
         .args
@@ -67,19 +65,12 @@ fn discover_endpoints_in_class(node: Node<'_>, src: &JavaSource) -> Vec<Endpoint
         .cloned()
         .unwrap_or_default();
 
-    let body = node
-        .child_by_field_name("body")
-        .or_else(|| find_named_child(node, "class_body"));
-    let Some(body) = body else {
+    let Some(body) = find_named_child(&node, SyntaxKind::ClassBody) else {
         return Vec::new();
     };
 
     let mut out = Vec::new();
-    let mut cursor = body.walk();
-    for child in body.named_children(&mut cursor) {
-        if child.kind() != "method_declaration" {
-            continue;
-        }
+    for child in body.children().filter(|c| c.kind() == SyntaxKind::MethodDeclaration) {
         out.extend(discover_endpoints_in_method(
             &class_name,
             &base_path,
@@ -94,22 +85,19 @@ fn discover_endpoints_in_class(node: Node<'_>, src: &JavaSource) -> Vec<Endpoint
 fn discover_endpoints_in_method(
     class_name: &str,
     base_path: &str,
-    node: Node<'_>,
+    node: SyntaxNode,
     src: &JavaSource,
 ) -> Vec<Endpoint> {
-    let Some(modifiers) = modifier_node(node) else {
+    let Some(modifiers) = modifier_node(&node) else {
         return Vec::new();
     };
     let annotations = collect_annotations(modifiers, &src.text);
 
-    let name_node = node
-        .child_by_field_name("name")
-        .or_else(|| find_named_child(node, "identifier"));
-    let Some(name_node) = name_node else {
+    let Some(name_token) = first_identifier_token(&node) else {
         return Vec::new();
     };
-    let method_name = node_text(&src.text, name_node).to_string();
-    let span = Span::new(name_node.start_byte(), name_node.end_byte());
+    let method_name = name_token.text().to_string();
+    let span = token_span(&name_token);
 
     let mut out = Vec::new();
     for ann in annotations {

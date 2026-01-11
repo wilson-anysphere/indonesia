@@ -12,9 +12,7 @@ nova-resolve = { path = "../nova-resolve" }
 nova-types = { path = "../nova-types" }
 nova-properties = { path = "../nova-properties" }
 nova-yaml = { path = "../nova-yaml" }
-nova-framework-parse = { path = "../nova-framework-parse" }
-
-tree-sitter = "0.20"
+nova-syntax = { path = "../nova-syntax" }
 zip = "0.6"
 
 [dev-dependencies]
