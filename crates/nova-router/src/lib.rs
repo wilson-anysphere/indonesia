@@ -1439,7 +1439,10 @@ async fn worker_supervisor_loop(
             .arg(&state.config.cache_dir);
 
         if let Some(token) = state.config.auth_token.as_ref() {
-            cmd.arg("--auth-token").arg(token);
+            // Avoid passing secrets via argv. Instead, set the token in the child environment and
+            // instruct the worker to read it.
+            cmd.env("NOVA_WORKER_AUTH_TOKEN", token);
+            cmd.arg("--auth-token-env").arg("NOVA_WORKER_AUTH_TOKEN");
         }
 
         if state.config.allow_insecure_tcp

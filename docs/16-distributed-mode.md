@@ -142,7 +142,8 @@ The router passes each worker:
 - `--connect <ipc-addr>`
 - `--shard-id <id>`
 - `--cache-dir <dir>`
-- optionally `--auth-token <token>` (auto-generated when spawning workers locally if not provided)
+- optionally `--auth-token-env NOVA_WORKER_AUTH_TOKEN` (token value passed via env; auto-generated
+  when spawning workers locally if not provided)
 
 #### Security notes (local IPC)
 
