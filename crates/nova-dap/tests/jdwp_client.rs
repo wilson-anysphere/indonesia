@@ -282,3 +282,92 @@ async fn jdwp_client_reorders_method_exit_with_return_value_before_stop() {
         other => panic!("expected SingleStep, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn stack_frame_this_object_returns_expected_id() {
+    let server = MockJdwpServer::spawn().await.unwrap();
+    let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+    let threads = client.all_threads().await.unwrap();
+    let thread = threads[0];
+    let frames = client.frames(thread, 0, 10).await.unwrap();
+    let frame = frames[0];
+
+    let (_argc, vars) = client
+        .method_variable_table(frame.location.class_id, frame.location.method_id)
+        .await
+        .unwrap();
+    let slots: Vec<(u32, String)> = vars.iter().map(|v| (v.slot, v.signature.clone())).collect();
+    let values = client
+        .stack_frame_get_values(thread, frame.frame_id, &slots)
+        .await
+        .unwrap();
+    let expected_object_id = match values[1] {
+        JdwpValue::Object { id, .. } => id,
+        _ => panic!("expected object value"),
+    };
+
+    let this_object = client
+        .stack_frame_this_object(thread, frame.frame_id)
+        .await
+        .unwrap();
+    assert_eq!(this_object, expected_object_id);
+}
+
+#[tokio::test]
+async fn reference_type_get_values_returns_static_values() {
+    let server = MockJdwpServer::spawn().await.unwrap();
+    let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+    let thread = client.all_threads().await.unwrap()[0];
+    let frame = client.frames(thread, 0, 10).await.unwrap()[0];
+
+    let (_argc, vars) = client
+        .method_variable_table(frame.location.class_id, frame.location.method_id)
+        .await
+        .unwrap();
+    let slots: Vec<(u32, String)> = vars.iter().map(|v| (v.slot, v.signature.clone())).collect();
+    let values = client
+        .stack_frame_get_values(thread, frame.frame_id, &slots)
+        .await
+        .unwrap();
+
+    let object_id = match values[1] {
+        JdwpValue::Object { id, .. } => id,
+        _ => panic!("expected object value"),
+    };
+    let string_id = match values[2] {
+        JdwpValue::Object { id, .. } => id,
+        _ => panic!("expected string object value"),
+    };
+
+    // Static-ish primitive field access on the object's reference type.
+    let (_ref_type_tag, class_id) = client.object_reference_reference_type(object_id).await.unwrap();
+    let fields = client.reference_type_fields(class_id).await.unwrap();
+    let field_ids: Vec<u64> = fields.iter().map(|f| f.field_id).collect();
+
+    let values = client
+        .reference_type_get_values(class_id, &field_ids)
+        .await
+        .unwrap();
+    assert_eq!(values, vec![JdwpValue::Int(7)]);
+
+    // Ensure we handle object-like tags in ReferenceType.GetValues replies.
+    let throwable = client.classes_by_signature("Ljava/lang/Throwable;").await.unwrap();
+    assert_eq!(throwable.len(), 1);
+    let throwable_id = throwable[0].type_id;
+    let throwable_fields = client.reference_type_fields(throwable_id).await.unwrap();
+    assert_eq!(throwable_fields.len(), 1);
+
+    let msg_values = client
+        .reference_type_get_values(throwable_id, &[throwable_fields[0].field_id])
+        .await
+        .unwrap();
+    assert_eq!(
+        msg_values,
+        vec![JdwpValue::Object {
+            tag: b's',
+            id: string_id,
+        }]
+    );
+}

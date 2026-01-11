@@ -88,8 +88,14 @@ fn resolve_one(sites: &[BreakpointSite], requested_line: Line) -> ResolvedBreakp
         requested_line,
         resolved_line: chosen.line,
         verified: true,
-        enclosing_class: chosen.enclosing_class.clone(),
-        enclosing_method: chosen.enclosing_method.clone(),
+        enclosing_class: chosen
+            .enclosing_class
+            .as_deref()
+            .map(|name| name.trim().to_string()),
+        enclosing_method: chosen
+            .enclosing_method
+            .as_deref()
+            .map(|name| name.trim().to_string()),
     }
 }
 

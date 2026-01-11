@@ -700,6 +700,34 @@ async fn handle_packet(
             }
             (0, w.into_vec())
         }
+        // ReferenceType.GetValues (static field access)
+        (2, 6) => {
+            let type_id = r.read_reference_type_id(sizes).unwrap_or(0);
+            let count = r.read_u32().unwrap_or(0) as usize;
+            let mut field_ids = Vec::with_capacity(count);
+            for _ in 0..count {
+                field_ids.push(r.read_id(sizes.field_id).unwrap_or(0));
+            }
+            let mut w = JdwpWriter::new();
+            w.write_u32(field_ids.len() as u32);
+            for field_id in field_ids {
+                match (type_id, field_id) {
+                    (OBJECT_CLASS_ID, FIELD_ID) => {
+                        w.write_u8(b'I');
+                        w.write_i32(7);
+                    }
+                    (THROWABLE_CLASS_ID, DETAIL_MESSAGE_FIELD_ID) => {
+                        // String values are tagged as `s` (JDWP Tag.STRING) in replies.
+                        w.write_u8(b's');
+                        w.write_object_id(STRING_OBJECT_ID, sizes);
+                    }
+                    _ => {
+                        w.write_u8(b'V');
+                    }
+                }
+            }
+            (0, w.into_vec())
+        }
         // Method.LineTable
         (6, 1) => {
             let _class_id = r.read_reference_type_id(sizes).unwrap_or(0);
@@ -787,6 +815,14 @@ async fn handle_packet(
                     }
                 }
             }
+            (0, w.into_vec())
+        }
+        // StackFrame.ThisObject
+        (16, 3) => {
+            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            let _frame_id = r.read_id(sizes.frame_id).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            w.write_object_id(OBJECT_ID, sizes);
             (0, w.into_vec())
         }
         // ObjectReference.ReferenceType

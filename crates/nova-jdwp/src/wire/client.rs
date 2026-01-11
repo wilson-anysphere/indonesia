@@ -21,9 +21,9 @@ use super::{
     },
     inspect::InspectCache,
     types::{
-        ClassInfo, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError, JdwpEvent,
-        JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId, MethodInfo,
-        ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo, VmClassPaths,
+        ClassInfo, FieldId, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError, JdwpEvent,
+        JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId, MethodInfo, ObjectId,
+        ReferenceTypeId, Result, ThreadId, VariableInfo, VmClassPaths,
     },
 };
 
@@ -635,6 +635,19 @@ impl JdwpClient {
         Ok((return_value, exception))
     }
 
+    /// StackFrame.ThisObject (16, 3)
+    ///
+    /// Returns the `this` object for the given stack frame (or 0 if the frame has no `this`).
+    pub async fn stack_frame_this_object(&self, thread: ThreadId, frame_id: FrameId) -> Result<ObjectId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        w.write_id(frame_id, sizes.frame_id);
+        let payload = self.send_command_raw(16, 3, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_object_id(&sizes)
+    }
+
     pub async fn object_reference_reference_type(
         &self,
         object_id: ObjectId,
@@ -712,6 +725,32 @@ impl JdwpClient {
         let mut cache = self.inner.inspect_cache.lock().await;
         cache.fields.insert(class_id, fields.clone());
         Ok(fields)
+    }
+
+    /// ReferenceType.GetValues (2, 6)
+    ///
+    /// Fetches the values of the given (static) fields for a reference type.
+    pub async fn reference_type_get_values(
+        &self,
+        type_id: ReferenceTypeId,
+        field_ids: &[FieldId],
+    ) -> Result<Vec<JdwpValue>> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_reference_type_id(type_id, &sizes);
+        w.write_u32(field_ids.len() as u32);
+        for field_id in field_ids {
+            w.write_id(*field_id, sizes.field_id);
+        }
+        let payload = self.send_command_raw(2, 6, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let count = r.read_u32()? as usize;
+        let mut values = Vec::with_capacity(count);
+        for _ in 0..count {
+            let tag = r.read_u8()?;
+            values.push(r.read_value(tag, &sizes)?);
+        }
+        Ok(values)
     }
 
     pub async fn object_reference_get_values(
