@@ -41,6 +41,7 @@ async fn distributed_indexing_updates_only_one_shard() -> anyhow::Result<()> {
         cache_dir,
         auth_token: None,
         allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
@@ -99,6 +100,7 @@ async fn invalid_hello_doesnt_kill_accept_loop() -> anyhow::Result<()> {
         cache_dir: cache_dir.clone(),
         auth_token: None,
         allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: false,
     };
@@ -150,6 +152,7 @@ async fn oversized_frame_rejected_safely() -> anyhow::Result<()> {
         cache_dir: cache_dir.clone(),
         auth_token: None,
         allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: false,
     };
@@ -205,6 +208,7 @@ async fn worker_restart_rehydrates_shard_files_from_cache() -> anyhow::Result<()
         cache_dir: cache_dir.clone(),
         auth_token: None,
         allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
@@ -220,6 +224,7 @@ async fn worker_restart_rehydrates_shard_files_from_cache() -> anyhow::Result<()
         cache_dir,
         auth_token: None,
         allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
@@ -271,6 +276,7 @@ async fn distributed_workspace_symbols_merges_across_shards_deterministically() 
         cache_dir,
         auth_token: None,
         allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
@@ -322,6 +328,7 @@ async fn distributed_workspace_symbols_prefers_prefix_matches_across_shards() ->
         cache_dir,
         auth_token: None,
         allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
@@ -364,6 +371,7 @@ async fn distributed_workspace_symbols_supports_acronym_queries_across_shards() 
         cache_dir,
         auth_token: None,
         allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };

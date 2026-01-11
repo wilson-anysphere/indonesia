@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use super::config::load_workspace_config_with_path;
+use super::config::{load_workspace_config, load_workspace_config_with_path};
 
 /// Parameters accepted by Nova's build-related extension requests.
 ///
