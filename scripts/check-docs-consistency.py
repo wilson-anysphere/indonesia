@@ -73,26 +73,39 @@ def extract_vscode_methods() -> set[str]:
 def check_protocol_extensions() -> list[str]:
     doc_path = REPO_ROOT / "docs" / "protocol-extensions.md"
     doc = read_text(doc_path)
-    doc_methods = set(re.findall(r"^### `([^`]+)`", doc, flags=re.MULTILINE))
+    doc_methods = {
+        m
+        for m in re.findall(r"^### `([^`]+)`", doc, flags=re.MULTILINE)
+        if m.startswith("nova/")
+    }
 
+    # Collect all `nova/*` method constants exposed by the `nova-lsp` crate.
+    # We scan the whole crate to avoid drifting as files are refactored.
     rust_methods: set[str] = set()
-    for rel in [
-        "crates/nova-lsp/src/lib.rs",
-        "crates/nova-lsp/src/requests.rs",
-        "crates/nova-lsp/src/refactor.rs",
-    ]:
-        rust_methods |= extract_rust_methods(REPO_ROOT / rel)
+    lsp_src = REPO_ROOT / "crates" / "nova-lsp" / "src"
+    for path in lsp_src.rglob("*.rs"):
+        rust_methods |= extract_rust_methods(path)
 
     vscode_methods = extract_vscode_methods()
     needed = rust_methods | vscode_methods
 
+    errors: list[str] = []
+
     missing = sorted(m for m in needed if m not in doc_methods)
     if missing:
-        return [
+        errors.append(
             "docs/protocol-extensions.md is missing method headings for: "
             + ", ".join(missing)
-        ]
-    return []
+        )
+
+    extra = sorted(m for m in doc_methods if m not in needed)
+    if extra:
+        errors.append(
+            "docs/protocol-extensions.md contains method headings not referenced by nova-lsp or the VS Code client: "
+            + ", ".join(extra)
+        )
+
+    return errors
 
 
 def main() -> int:
@@ -111,4 +124,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
