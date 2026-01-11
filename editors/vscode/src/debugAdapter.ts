@@ -492,6 +492,7 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
       { modal: true },
       'Download',
       'Select local binary…',
+      'Open Settings',
       'Open install docs',
     );
     if (choice === 'Download') {
@@ -512,6 +513,9 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
             : 'unavailable';
         void vscode.window.showErrorMessage(`Nova: selected nova-dap is not usable (${suffix}): ${pickedPath}`);
       }
+    }
+    if (choice === 'Open Settings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download');
     }
     if (choice === 'Open install docs') {
       await openInstallDocs(this.context);
