@@ -4,8 +4,7 @@ use codec::{read_json_message, write_json_message};
 use lsp_types::{
     CodeAction, CodeActionKind, CompletionItem, CompletionList, CompletionParams,
     Position as LspTypesPosition, Range as LspTypesRange, RenameParams as LspRenameParams,
-    TextDocumentPositionParams, Uri as LspUri,
-    WorkspaceEdit as LspWorkspaceEdit,
+    TextDocumentPositionParams, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
 };
 use nova_ai::context::ContextRequest;
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
@@ -210,7 +209,7 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
     };
 
     match nova_config::load_for_workspace(&cwd) {
-        Ok(config) => config,
+        Ok((config, _path)) => config,
         Err(err) => {
             eprintln!(
                 "nova-lsp: failed to load workspace config from {}: {err}",
@@ -457,7 +456,9 @@ fn handle_request(
             let result = handle_completion(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         "completionItem/resolve" => {
@@ -467,7 +468,9 @@ fn handle_request(
             let result = handle_completion_item_resolve(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         "workspace/executeCommand" => {
@@ -1213,7 +1216,10 @@ fn handle_rename(
     workspace_edit_to_lsp(&db, &edit).map_err(|e| e.to_string())
 }
 
-fn handle_completion(params: serde_json::Value, state: &ServerState) -> Result<serde_json::Value, String> {
+fn handle_completion(
+    params: serde_json::Value,
+    state: &ServerState,
+) -> Result<serde_json::Value, String> {
     let params: CompletionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document_position.text_document.uri;
     let position = params.text_document_position.position;
