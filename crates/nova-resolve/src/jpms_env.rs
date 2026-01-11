@@ -8,6 +8,8 @@
 
 use std::collections::HashSet;
 
+use std::path::Path;
+
 use anyhow::{anyhow, Context, Result};
 use nova_classpath::ClasspathEntry;
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleKind, ModuleName, JAVA_BASE};
@@ -58,18 +60,21 @@ pub fn build_jpms_environment(
         })? {
             Some(info) => info,
             None => {
-                let (name, _) = entry.module_meta().with_context(|| {
+                let meta = entry.module_meta().with_context(|| {
                     format!(
                         "failed to determine JPMS module name for `{}`",
                         entry.path().display()
                     )
                 })?;
-                let name = name.ok_or_else(|| {
-                    anyhow!(
-                        "failed to determine JPMS module name for `{}`",
-                        entry.path().display()
-                    )
-                })?;
+                let name = meta
+                    .name
+                    .or_else(|| derive_automatic_module_name(entry.path()).map(ModuleName::new))
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "failed to determine JPMS module name for `{}`",
+                            entry.path().display()
+                        )
+                    })?;
                 empty_module(ModuleKind::Automatic, name)
             }
         };
@@ -118,6 +123,81 @@ fn empty_module(kind: ModuleKind, name: ModuleName) -> ModuleInfo {
         uses: Vec::new(),
         provides: Vec::new(),
     }
+}
+
+fn derive_automatic_module_name(path: &Path) -> Option<String> {
+    let stem = if path.is_dir() {
+        path.file_name()?.to_string_lossy()
+    } else {
+        path.file_stem()?.to_string_lossy()
+    };
+    derive_automatic_module_name_from_stem(&stem)
+}
+
+// Keep this logic in sync with the algorithm used by the JDK for automatic
+// modules (and mirrored by `nova-classpath`). This is duplicated here because
+// `nova-classpath` keeps the helper internal for now.
+fn derive_automatic_module_name_from_stem(stem: &str) -> Option<String> {
+    if stem.is_empty() {
+        return None;
+    }
+
+    let stem = strip_version_suffix(stem);
+
+    let mut normalized = String::with_capacity(stem.len());
+    let mut last_was_dot = true;
+    for ch in stem.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch);
+            last_was_dot = false;
+        } else if !last_was_dot {
+            normalized.push('.');
+            last_was_dot = true;
+        }
+    }
+    if normalized.ends_with('.') {
+        normalized.pop();
+    }
+
+    if normalized.is_empty() {
+        return Some("_".to_string());
+    }
+
+    let mut parts_out = Vec::new();
+    for part in normalized.split('.') {
+        if part.is_empty() {
+            continue;
+        }
+        if part.as_bytes().first().is_some_and(|b| b.is_ascii_digit()) {
+            parts_out.push(format!("_{part}"));
+        } else {
+            parts_out.push(part.to_string());
+        }
+    }
+
+    if parts_out.is_empty() {
+        Some("_".to_string())
+    } else {
+        Some(parts_out.join("."))
+    }
+}
+
+fn strip_version_suffix(stem: &str) -> &str {
+    let bytes = stem.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'-' && bytes[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j == bytes.len() || bytes[j] == b'.' {
+                return &stem[..i];
+            }
+        }
+        i += 1;
+    }
+    stem
 }
 
 #[cfg(test)]
