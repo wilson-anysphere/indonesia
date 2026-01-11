@@ -210,16 +210,18 @@ impl WorkspaceEdit {
 
         let renames = order_renames(&renames)?;
 
-        // Deterministic ordering: deletes, renames, creates.
-        self.file_ops = deletes
+        // Deterministic ordering: renames (topologically ordered), creates, deletes.
+        //
+        // Putting deletes last is safer for clients that apply the operations sequentially:
+        // if a later create/rename fails, we avoid having already removed the original file.
+        self.file_ops = renames
             .into_iter()
-            .map(|file| FileOp::Delete { file })
-            .chain(renames.into_iter())
             .chain(
                 creates
                     .into_iter()
                     .map(|(file, contents)| FileOp::Create { file, contents }),
             )
+            .chain(deletes.into_iter().map(|file| FileOp::Delete { file }))
             .collect();
 
         Ok(())
@@ -697,5 +699,34 @@ mod tests {
 
         edit.remap_text_edits_across_renames().unwrap();
         assert_eq!(edit.text_edits[0].file, b);
+    }
+
+    #[test]
+    fn normalize_orders_file_ops_renames_creates_deletes() {
+        let a = FileId::new("file:///a");
+        let a2 = FileId::new("file:///a2");
+        let b = FileId::new("file:///b");
+        let c = FileId::new("file:///c");
+
+        let mut edit = WorkspaceEdit {
+            file_ops: vec![
+                FileOp::Delete { file: c.clone() },
+                FileOp::Create {
+                    file: b.clone(),
+                    contents: "b".to_string(),
+                },
+                FileOp::Rename {
+                    from: a.clone(),
+                    to: a2.clone(),
+                },
+            ],
+            text_edits: Vec::new(),
+        };
+
+        edit.normalize().unwrap();
+
+        assert!(matches!(edit.file_ops.get(0), Some(FileOp::Rename { .. })));
+        assert!(matches!(edit.file_ops.get(1), Some(FileOp::Create { .. })));
+        assert!(matches!(edit.file_ops.get(2), Some(FileOp::Delete { .. })));
     }
 }
