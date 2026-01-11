@@ -95,6 +95,10 @@ pub enum ScopeKind {
         owner: BodyOwner,
         stmt: hir::StmtId,
     },
+    Lambda {
+        owner: BodyOwner,
+        expr: hir::ExprId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,21 +471,204 @@ impl<'a> ScopeBuilder<'a> {
                 );
 
                 if let Some(expr) = initializer {
-                    self.record_expr_scopes(parent, body, *expr);
+                    self.record_expr_scopes(parent, owner, body, *expr);
                 }
 
                 parent
             }
             hir::Stmt::Expr { expr, .. } => {
                 self.stmt_scopes.insert(stmt_id, parent);
-                self.record_expr_scopes(parent, body, *expr);
+                self.record_expr_scopes(parent, owner, body, *expr);
                 parent
             }
             hir::Stmt::Return { expr, .. } => {
                 self.stmt_scopes.insert(stmt_id, parent);
                 if let Some(expr) = expr {
-                    self.record_expr_scopes(parent, body, *expr);
+                    self.record_expr_scopes(parent, owner, body, *expr);
                 }
+                parent
+            }
+            hir::Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, parent);
+                self.record_expr_scopes(parent, owner, body, *condition);
+
+                // Ensure any locals introduced by malformed/unsupported statements do not leak
+                // into the parent scope.
+                let then_scope = self.alloc_scope(
+                    Some(parent),
+                    ScopeKind::Block {
+                        owner,
+                        stmt: *then_branch,
+                    },
+                );
+                self.build_stmt_scopes(then_scope, owner, body, *then_branch);
+
+                if let Some(stmt) = else_branch {
+                    let else_scope = self.alloc_scope(
+                        Some(parent),
+                        ScopeKind::Block {
+                            owner,
+                            stmt: *stmt,
+                        },
+                    );
+                    self.build_stmt_scopes(else_scope, owner, body, *stmt);
+                }
+
+                parent
+            }
+            hir::Stmt::While {
+                condition, body: loop_body, ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, parent);
+                self.record_expr_scopes(parent, owner, body, *condition);
+
+                let loop_scope = self.alloc_scope(
+                    Some(parent),
+                    ScopeKind::Block {
+                        owner,
+                        stmt: *loop_body,
+                    },
+                );
+                self.build_stmt_scopes(loop_scope, owner, body, *loop_body);
+                parent
+            }
+            hir::Stmt::For {
+                init,
+                condition,
+                update,
+                body: loop_body,
+                ..
+            } => {
+                // The `for` init variables are scoped to the entire `for` statement (condition,
+                // update and body), but must not leak outside the loop.
+                let for_scope = self.alloc_scope(
+                    Some(parent),
+                    ScopeKind::Block {
+                        owner,
+                        stmt: stmt_id,
+                    },
+                );
+                self.stmt_scopes.insert(stmt_id, for_scope);
+
+                for stmt in init {
+                    self.build_stmt_scopes(for_scope, owner, body, *stmt);
+                }
+
+                if let Some(expr) = condition {
+                    self.record_expr_scopes(for_scope, owner, body, *expr);
+                }
+                for expr in update {
+                    self.record_expr_scopes(for_scope, owner, body, *expr);
+                }
+
+                // The loop body can declare additional locals; keep them nested under `for_scope`
+                // so they do not appear in the header expressions.
+                let body_scope = self.alloc_scope(
+                    Some(for_scope),
+                    ScopeKind::Block {
+                        owner,
+                        stmt: *loop_body,
+                    },
+                );
+                self.build_stmt_scopes(body_scope, owner, body, *loop_body);
+                parent
+            }
+            hir::Stmt::ForEach {
+                local,
+                iterable,
+                body: loop_body,
+                ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, parent);
+                // The foreach variable is not in scope for the iterable expression.
+                self.record_expr_scopes(parent, owner, body, *iterable);
+
+                let loop_scope = self.alloc_scope(
+                    Some(parent),
+                    ScopeKind::Block {
+                        owner,
+                        stmt: stmt_id,
+                    },
+                );
+
+                let local_data = &body.locals[*local];
+                self.scopes[loop_scope].values.insert(
+                    Name::from(local_data.name.clone()),
+                    Resolution::Local(LocalRef {
+                        owner,
+                        local: *local,
+                    }),
+                );
+
+                self.build_stmt_scopes(loop_scope, owner, body, *loop_body);
+                parent
+            }
+            hir::Stmt::Switch {
+                selector, body: switch_body, ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, parent);
+                self.record_expr_scopes(parent, owner, body, *selector);
+
+                let switch_scope = self.alloc_scope(
+                    Some(parent),
+                    ScopeKind::Block {
+                        owner,
+                        stmt: *switch_body,
+                    },
+                );
+                self.build_stmt_scopes(switch_scope, owner, body, *switch_body);
+                parent
+            }
+            hir::Stmt::Try {
+                body: try_body,
+                catches,
+                finally,
+                ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, parent);
+
+                // The try body is a block statement in well-formed Java.
+                self.build_stmt_scopes(parent, owner, body, *try_body);
+
+                for clause in catches {
+                    let catch_scope = self.alloc_scope(
+                        Some(parent),
+                        ScopeKind::Block {
+                            owner,
+                            stmt: clause.body,
+                        },
+                    );
+
+                    let local_data = &body.locals[clause.param];
+                    self.scopes[catch_scope].values.insert(
+                        Name::from(local_data.name.clone()),
+                        Resolution::Local(LocalRef {
+                            owner,
+                            local: clause.param,
+                        }),
+                    );
+
+                    self.build_stmt_scopes(catch_scope, owner, body, clause.body);
+                }
+
+                if let Some(stmt) = finally {
+                    self.build_stmt_scopes(parent, owner, body, *stmt);
+                }
+
+                parent
+            }
+            hir::Stmt::Throw { expr, .. } => {
+                self.stmt_scopes.insert(stmt_id, parent);
+                self.record_expr_scopes(parent, owner, body, *expr);
+                parent
+            }
+            hir::Stmt::Break { .. } | hir::Stmt::Continue { .. } => {
+                self.stmt_scopes.insert(stmt_id, parent);
                 parent
             }
             hir::Stmt::Empty { .. } => {
@@ -491,30 +678,90 @@ impl<'a> ScopeBuilder<'a> {
         }
     }
 
-    fn record_expr_scopes(&mut self, scope: ScopeId, body: &hir::Body, expr_id: hir::ExprId) {
+    fn record_expr_scopes(
+        &mut self,
+        scope: ScopeId,
+        owner: BodyOwner,
+        body: &hir::Body,
+        expr_id: hir::ExprId,
+    ) {
         self.expr_scopes.insert(expr_id, scope);
 
         match &body.exprs[expr_id] {
-            hir::Expr::Name { .. } | hir::Expr::Literal { .. } | hir::Expr::Missing { .. } => {}
+            hir::Expr::Name { .. }
+            | hir::Expr::Literal { .. }
+            | hir::Expr::Null { .. }
+            | hir::Expr::This { .. }
+            | hir::Expr::Super { .. }
+            | hir::Expr::Missing { .. } => {}
             hir::Expr::FieldAccess { receiver, .. } => {
-                self.record_expr_scopes(scope, body, *receiver);
+                self.record_expr_scopes(scope, owner, body, *receiver);
             }
             hir::Expr::MethodReference { receiver, .. }
             | hir::Expr::ConstructorReference { receiver, .. } => {
-                self.record_expr_scopes(scope, body, *receiver);
+                self.record_expr_scopes(scope, owner, body, *receiver);
             }
             hir::Expr::ClassLiteral { ty, .. } => {
-                self.record_expr_scopes(scope, body, *ty);
+                self.record_expr_scopes(scope, owner, body, *ty);
             }
             hir::Expr::Call { callee, args, .. } => {
-                self.record_expr_scopes(scope, body, *callee);
+                self.record_expr_scopes(scope, owner, body, *callee);
                 for arg in args {
-                    self.record_expr_scopes(scope, body, *arg);
+                    self.record_expr_scopes(scope, owner, body, *arg);
                 }
             }
+            hir::Expr::New { args, .. } => {
+                for arg in args {
+                    self.record_expr_scopes(scope, owner, body, *arg);
+                }
+            }
+            hir::Expr::Unary { expr, .. } => {
+                self.record_expr_scopes(scope, owner, body, *expr);
+            }
             hir::Expr::Binary { lhs, rhs, .. } => {
-                self.record_expr_scopes(scope, body, *lhs);
-                self.record_expr_scopes(scope, body, *rhs);
+                self.record_expr_scopes(scope, owner, body, *lhs);
+                self.record_expr_scopes(scope, owner, body, *rhs);
+            }
+            hir::Expr::Assign { lhs, rhs, .. } => {
+                self.record_expr_scopes(scope, owner, body, *lhs);
+                self.record_expr_scopes(scope, owner, body, *rhs);
+            }
+            hir::Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                self.record_expr_scopes(scope, owner, body, *condition);
+                self.record_expr_scopes(scope, owner, body, *then_expr);
+                self.record_expr_scopes(scope, owner, body, *else_expr);
+            }
+            hir::Expr::Lambda { params, body: lambda_body, .. } => {
+                let lambda_scope = self.alloc_scope(
+                    Some(scope),
+                    ScopeKind::Lambda {
+                        owner,
+                        expr: expr_id,
+                    },
+                );
+
+                for param in params {
+                    let local = param.local;
+                    let local_data = &body.locals[local];
+                    self.scopes[lambda_scope].values.insert(
+                        Name::from(local_data.name.clone()),
+                        Resolution::Local(LocalRef { owner, local }),
+                    );
+                }
+
+                match lambda_body {
+                    hir::LambdaBody::Expr(expr) => {
+                        self.record_expr_scopes(lambda_scope, owner, body, *expr);
+                    }
+                    hir::LambdaBody::Block(stmt) => {
+                        self.build_stmt_scopes(lambda_scope, owner, body, *stmt);
+                    }
+                }
             }
         }
     }

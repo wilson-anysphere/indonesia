@@ -217,7 +217,7 @@ class Foo {
 }
 
 #[test]
-fn lower_enum_skips_constants_and_parses_members() {
+fn lower_enum_constants_and_members() {
     let source = r#"
 enum E {
     A, B;
@@ -244,9 +244,21 @@ enum E {
     };
     assert_eq!(tree.enum_(enum_id).name, "E");
 
-    // Enum constants should not be mis-lowered as fields.
-    assert_eq!(tree.fields.len(), 1);
-    assert_eq!(tree.fields.values().next().expect("field").name, "field");
+    let constants: Vec<_> = tree
+        .fields
+        .values()
+        .filter(|field| field.kind == nova_hir::item_tree::FieldKind::EnumConstant)
+        .map(|field| field.name.as_str())
+        .collect();
+    assert_eq!(constants, vec!["A", "B"]);
+
+    let fields: Vec<_> = tree
+        .fields
+        .values()
+        .filter(|field| field.kind == nova_hir::item_tree::FieldKind::Field)
+        .map(|field| field.name.as_str())
+        .collect();
+    assert_eq!(fields, vec!["field"]);
 
     assert_eq!(tree.methods.len(), 1);
     assert_eq!(tree.methods.values().next().expect("method").name, "m");
@@ -393,6 +405,7 @@ class Foo {
             match kind {
                 LiteralKind::Int => int_literal = Some(value.clone()),
                 LiteralKind::String => string_literal = Some(value.clone()),
+                LiteralKind::Bool => {}
             }
         }
     }
@@ -455,7 +468,9 @@ fn lower_non_sealed_class() {
         nova_hir::item_tree::Item::Class(id) => id,
         _ => panic!("expected class item"),
     };
-    assert_eq!(tree.class(class_id).name, "Foo");
+    let class = tree.class(class_id);
+    assert_eq!(class.name, "Foo");
+    assert_ne!(class.modifiers.raw & nova_hir::item_tree::Modifiers::NON_SEALED, 0);
 }
 
 fn method_id_by_name(
@@ -607,4 +622,176 @@ fn hir_lowering_preserves_method_references_and_class_literals() {
         },
         other => panic!("expected class literal, got {other:?}"),
     }
+}
+
+#[test]
+fn ids_are_stable_for_multi_declarator_fields_under_whitespace_edits() {
+    let v1 = r#"
+class Foo {
+    int a, b;
+}
+"#;
+
+    let v2 = r#"
+class Foo {
+    int a ,   b;
+}
+"#;
+
+    let file = FileId::from_raw(0);
+
+    let tree1 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v1)],
+        },
+        file,
+    );
+    let tree2 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v2)],
+        },
+        file,
+    );
+
+    assert_eq!(tree1.fields.len(), 2);
+    assert_eq!(tree2.fields.len(), 2);
+
+    let a1 = field_id_by_name(&tree1, file, "a");
+    let b1 = field_id_by_name(&tree1, file, "b");
+    assert_ne!(a1, b1);
+
+    assert_eq!(a1, field_id_by_name(&tree2, file, "a"));
+    assert_eq!(b1, field_id_by_name(&tree2, file, "b"));
+}
+
+#[test]
+fn lower_module_declaration_and_directives() {
+    use nova_hir::item_tree::ModuleDirective;
+
+    let source = r#"
+open module com.example.mod {
+    requires transitive java.sql;
+    requires static java.desktop;
+    exports com.example.api to other.mod, another.mod;
+    opens com.example.internal;
+    uses com.example.Service;
+    provides com.example.Service with com.example.impl.ServiceImpl;
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    let module = tree.module.as_ref().expect("expected module declaration");
+    assert_eq!(module.name, "com.example.mod");
+    assert!(module.is_open);
+
+    let exports_to = vec!["other.mod".to_string(), "another.mod".to_string()];
+    let provides_impls = vec!["com.example.impl.ServiceImpl".to_string()];
+
+    assert!(module.directives.iter().any(|directive| matches!(
+        directive,
+        ModuleDirective::Requires { module, is_transitive: true, is_static: false, .. } if module == "java.sql"
+    )));
+    assert!(module.directives.iter().any(|directive| matches!(
+        directive,
+        ModuleDirective::Requires { module, is_transitive: false, is_static: true, .. } if module == "java.desktop"
+    )));
+    assert!(module.directives.iter().any(|directive| matches!(
+        directive,
+        ModuleDirective::Exports { package, to, .. } if package == "com.example.api" && to == &exports_to
+    )));
+    assert!(module.directives.iter().any(|directive| matches!(
+        directive,
+        ModuleDirective::Opens { package, .. } if package == "com.example.internal"
+    )));
+    assert!(module.directives.iter().any(|directive| matches!(
+        directive,
+        ModuleDirective::Uses { service, .. } if service == "com.example.Service"
+    )));
+    assert!(module.directives.iter().any(|directive| matches!(
+        directive,
+        ModuleDirective::Provides { service, implementations, .. } if service == "com.example.Service" && implementations == &provides_impls
+    )));
+}
+
+#[test]
+fn lower_control_flow_and_lambda_constructs() {
+    let source = r#"
+class Foo {
+    void m(int x, Object items) {
+        for (int i = 0; i < 10; i = i + 1) {
+            if (i == 5) continue;
+            if (i == 7) break;
+        }
+        for (String s : items) { System.out.println(s); }
+        switch (x) { }
+        try { throw new RuntimeException(); } catch (Exception e) { System.out.println(e); } finally { }
+        Object f = (p) -> p;
+        Object o = new Foo();
+    }
+}
+"#;
+
+    let db = TestDb {
+        files: vec![Arc::from(source)],
+    };
+    let file = FileId::from_raw(0);
+
+    let tree = item_tree(&db, file);
+    let method_id = method_id_by_name(&tree, file, "m");
+    let lowered = body(&db, method_id);
+
+    assert!(lowered
+        .stmts
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, Stmt::For { .. })));
+    assert!(lowered
+        .stmts
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, Stmt::ForEach { .. })));
+    assert!(lowered
+        .stmts
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, Stmt::If { .. })));
+    assert!(lowered
+        .stmts
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, Stmt::Switch { .. })));
+    assert!(lowered
+        .stmts
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, Stmt::Try { .. })));
+    assert!(lowered
+        .stmts
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, Stmt::Throw { .. })));
+    assert!(lowered
+        .stmts
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, Stmt::Break { .. })));
+    assert!(lowered
+        .stmts
+        .iter()
+        .any(|(_, stmt)| matches!(stmt, Stmt::Continue { .. })));
+
+    assert!(lowered
+        .exprs
+        .iter()
+        .any(|(_, expr)| matches!(expr, Expr::Lambda { .. })));
+    assert!(lowered
+        .exprs
+        .iter()
+        .any(|(_, expr)| matches!(expr, Expr::New { .. })));
+
+    let mut locals: Vec<_> = lowered
+        .locals
+        .iter()
+        .map(|(_, local)| local.name.as_str())
+        .collect();
+    locals.sort();
+    assert_eq!(locals, vec!["e", "f", "i", "o", "p", "s"]);
 }

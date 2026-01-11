@@ -163,8 +163,13 @@ fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<Hir
 
     let tree = db.hir_item_tree(constructor.file);
     let data = tree.constructor(constructor);
+    let Some(body_id) = data.body else {
+        let result = Arc::new(HirBody::empty(data.range));
+        db.record_query_stat("hir_constructor_body", start.elapsed());
+        return result;
+    };
     let ast_id_map = db.hir_ast_id_map(constructor.file);
-    let Some(body_range) = ast_id_map.span(data.body) else {
+    let Some(body_range) = ast_id_map.span(body_id) else {
         let result = Arc::new(HirBody::empty(data.range));
         db.record_query_stat("hir_constructor_body", start.elapsed());
         return result;
@@ -206,8 +211,13 @@ fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<Hir
 
     let tree = db.hir_item_tree(initializer.file);
     let data = tree.initializer(initializer);
+    let Some(body_id) = data.body else {
+        let result = Arc::new(HirBody::empty(data.range));
+        db.record_query_stat("hir_initializer_body", start.elapsed());
+        return result;
+    };
     let ast_id_map = db.hir_ast_id_map(initializer.file);
-    let Some(body_range) = ast_id_map.span(data.body) else {
+    let Some(body_range) = ast_id_map.span(body_id) else {
         let result = Arc::new(HirBody::empty(data.range));
         db.record_query_stat("hir_initializer_body", start.elapsed());
         return result;

@@ -111,10 +111,13 @@ fn is_relevant_node(kind: SyntaxKind) -> bool {
             | SyntaxKind::RecordDeclaration
             | SyntaxKind::AnnotationTypeDeclaration
             | SyntaxKind::FieldDeclaration
+            | SyntaxKind::EnumConstant
+            | SyntaxKind::VariableDeclarator
             | SyntaxKind::MethodDeclaration
             | SyntaxKind::ConstructorDeclaration
             | SyntaxKind::InitializerBlock
             | SyntaxKind::Block
+            | SyntaxKind::ModuleDeclaration
     )
 }
 

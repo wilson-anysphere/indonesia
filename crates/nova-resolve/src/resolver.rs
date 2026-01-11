@@ -205,6 +205,15 @@ impl<'a> Resolver<'a> {
             .or_else(|| self.jdk.resolve_type_in_package(package, name))
     }
 
+    fn resolve_type_in_java_lang(&self, name: &Name) -> Option<TypeName> {
+        // `java.lang.*` is implicitly imported by the language. We intentionally only consult the
+        // JDK index here: user/classpath-provided types in `java.lang` are not considered part of
+        // the implicit import set (and would otherwise mask ambiguity diagnostics for star imports
+        // in tests).
+        self.jdk
+            .resolve_type_in_package(&PackageName::from_dotted("java.lang"), name)
+    }
+
     fn package_exists(&self, package: &PackageName) -> bool {
         if is_java_package(package) {
             return self.jdk.package_exists(package);
@@ -320,9 +329,7 @@ impl<'a> Resolver<'a> {
             TypeLookup::NotFound => {}
         }
 
-        if let Some(ty) =
-            self.resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
-        {
+        if let Some(ty) = self.resolve_type_in_java_lang(name) {
             return TypeLookup::Found(ty);
         }
 
@@ -644,10 +651,7 @@ impl<'a> Resolver<'a> {
                 }
                 ScopeKind::Universe => {
                     // `java.lang.*` is always implicitly available.
-                    if let Some(ty) = self
-                        .jdk
-                        .resolve_type_in_package(&PackageName::from_dotted("java.lang"), name)
-                    {
+                    if let Some(ty) = self.resolve_type_in_java_lang(name) {
                         return NameResolution::Resolved(Resolution::Type(
                             self.type_resolution_from_name(ty),
                         ));

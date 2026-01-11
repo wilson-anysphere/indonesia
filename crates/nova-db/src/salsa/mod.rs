@@ -1617,6 +1617,38 @@ class Foo {
     }
 
     #[test]
+    fn request_cancellation_unwinds_hir_body_query() {
+        use std::fmt::Write as _;
+
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+        db.set_file_exists(file, true);
+        db.set_source_root(file, SourceRootId::from_raw(0));
+
+        // Build a body large enough to exceed the HIR lowering cancellation checkpoint interval.
+        let mut source = String::from("class Foo { void m() {");
+        for i in 0..2_000_u32 {
+            let _ = write!(source, "int v{i} = {i};");
+        }
+        source.push_str("} }");
+        db.set_file_content(file, Arc::new(source));
+
+        // Prime `hir_item_tree` (and its dependencies) so the cancellation harness exercises the
+        // method body lowering work in `hir_body`.
+        let tree = db.hir_item_tree(file);
+        let (&method_ast_id, _) = tree
+            .methods
+            .iter()
+            .find(|(_, method)| method.name == "m")
+            .expect("expected Foo.m method");
+        let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
+
+        assert_query_is_cancelled(db, move |snap| {
+            let _ = snap.hir_body(method_id);
+        });
+    }
+
+    #[test]
     fn hir_queries_hit_cancellation_checkpoint() {
         use std::sync::mpsc;
         use std::time::Duration;

@@ -1,12 +1,16 @@
 use crate::ast_id::{span_to_text_range, AstId, AstIdMap};
-use crate::hir::{Arena, BinaryOp, Body, Expr, ExprId, LiteralKind, Local, LocalId, Stmt, StmtId};
+use crate::hir::{
+    Arena, AssignOp, BinaryOp, Body, CatchClause, Expr, ExprId, LambdaBody, LambdaParam,
+    LiteralKind, Local, LocalId, Stmt, StmtId, UnaryOp,
+};
 use crate::ids::{
     AnnotationId, ClassId, ConstructorId, EnumId, FieldId, InitializerId, InterfaceId, MethodId,
     RecordId,
 };
 use crate::item_tree::{
-    Annotation, Class, Constructor, Enum, Field, Import, Initializer, Interface, Item, ItemTree,
-    Member, Method, PackageDecl, Param, Record,
+    Annotation, AnnotationUse, Class, Constructor, Enum, Field, FieldKind, Import, Initializer,
+    Interface, Item, ItemTree, Member, Method, Modifiers, ModuleDecl, ModuleDirective, PackageDecl,
+    Param, Record,
 };
 use nova_syntax::java::ast as syntax;
 use nova_syntax::{JavaParseResult, SyntaxKind};
@@ -77,97 +81,124 @@ impl ItemTreeLower<'_> {
             imports
         };
 
+        self.tree.module = unit.module.as_ref().map(|module| self.lower_module_decl(module));
+
         for decl in &unit.types {
             self.check_cancelled();
-            let item = self.lower_type_decl(decl);
-            self.tree.items.push(item);
+            if let Some(item) = self.lower_type_decl(decl) {
+                self.tree.items.push(item);
+            }
         }
     }
 
-    fn lower_type_decl(&mut self, decl: &syntax::TypeDecl) -> Item {
+    fn lower_type_decl(&mut self, decl: &syntax::TypeDecl) -> Option<Item> {
         self.check_cancelled();
         match decl {
             syntax::TypeDecl::Class(class) => {
                 let members = self.lower_members(&class.members);
-                let ast_id = self.ast_id_for_name(SyntaxKind::ClassDeclaration, class.name_range);
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::ClassDeclaration, class.name_range)?;
                 let id = ClassId::new(self.file, ast_id);
                 self.tree.classes.insert(
                     ast_id,
                     Class {
                         name: class.name.clone(),
                         name_range: class.name_range,
+                        modifiers: lower_modifiers(class.modifiers),
+                        annotations: lower_annotation_uses(&class.annotations),
                         range: class.range,
                         body_range: class.body_range,
                         members,
                     },
                 );
-                Item::Class(id)
+                Some(Item::Class(id))
             }
             syntax::TypeDecl::Interface(interface) => {
                 let members = self.lower_members(&interface.members);
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::InterfaceDeclaration, interface.name_range);
+                let ast_id = self
+                    .ast_id_for_name(SyntaxKind::InterfaceDeclaration, interface.name_range)?;
                 let id = InterfaceId::new(self.file, ast_id);
                 self.tree.interfaces.insert(
                     ast_id,
                     Interface {
                         name: interface.name.clone(),
                         name_range: interface.name_range,
+                        modifiers: lower_modifiers(interface.modifiers),
+                        annotations: lower_annotation_uses(&interface.annotations),
                         range: interface.range,
                         body_range: interface.body_range,
                         members,
                     },
                 );
-                Item::Interface(id)
+                Some(Item::Interface(id))
             }
             syntax::TypeDecl::Enum(enm) => {
-                let members = self.lower_members(&enm.members);
-                let ast_id = self.ast_id_for_name(SyntaxKind::EnumDeclaration, enm.name_range);
+                let mut members = Vec::new();
+
+                for constant in &enm.constants {
+                    self.check_cancelled();
+                    if let Some(member) = self.lower_enum_constant(&enm.name, constant) {
+                        members.push(member);
+                    }
+                }
+
+                members.extend(self.lower_members(&enm.members));
+
+                let ast_id = self.ast_id_for_name(SyntaxKind::EnumDeclaration, enm.name_range)?;
                 let id = EnumId::new(self.file, ast_id);
                 self.tree.enums.insert(
                     ast_id,
                     Enum {
                         name: enm.name.clone(),
                         name_range: enm.name_range,
+                        modifiers: lower_modifiers(enm.modifiers),
+                        annotations: lower_annotation_uses(&enm.annotations),
                         range: enm.range,
                         body_range: enm.body_range,
                         members,
                     },
                 );
-                Item::Enum(id)
+                Some(Item::Enum(id))
             }
             syntax::TypeDecl::Record(record) => {
                 let members = self.lower_members(&record.members);
-                let ast_id = self.ast_id_for_name(SyntaxKind::RecordDeclaration, record.name_range);
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::RecordDeclaration, record.name_range)?;
                 let id = RecordId::new(self.file, ast_id);
                 self.tree.records.insert(
                     ast_id,
                     Record {
                         name: record.name.clone(),
                         name_range: record.name_range,
+                        modifiers: lower_modifiers(record.modifiers),
+                        annotations: lower_annotation_uses(&record.annotations),
                         range: record.range,
                         body_range: record.body_range,
                         members,
                     },
                 );
-                Item::Record(id)
+                Some(Item::Record(id))
             }
             syntax::TypeDecl::Annotation(annotation) => {
                 let members = self.lower_members(&annotation.members);
-                let ast_id = self
-                    .ast_id_for_name(SyntaxKind::AnnotationTypeDeclaration, annotation.name_range);
+                let ast_id = self.ast_id_for_name(
+                    SyntaxKind::AnnotationTypeDeclaration,
+                    annotation.name_range,
+                )?;
                 let id = AnnotationId::new(self.file, ast_id);
                 self.tree.annotations.insert(
                     ast_id,
                     Annotation {
                         name: annotation.name.clone(),
                         name_range: annotation.name_range,
+                        modifiers: lower_modifiers(annotation.modifiers),
+                        annotations: lower_annotation_uses(&annotation.annotations),
                         range: annotation.range,
                         body_range: annotation.body_range,
                         members,
                     },
                 );
-                Item::Annotation(id)
+                Some(Item::Annotation(id))
             }
         }
     }
@@ -187,11 +218,15 @@ impl ItemTreeLower<'_> {
         self.check_cancelled();
         match member {
             syntax::MemberDecl::Field(field) => {
-                let ast_id = self.ast_id_for_name(SyntaxKind::FieldDeclaration, field.name_range);
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::VariableDeclarator, field.name_range)?;
                 let id = FieldId::new(self.file, ast_id);
                 self.tree.fields.insert(
                     ast_id,
                     Field {
+                        kind: FieldKind::Field,
+                        modifiers: lower_modifiers(field.modifiers),
+                        annotations: lower_annotation_uses(&field.annotations),
                         ty: field.ty.text.clone(),
                         name: field.name.clone(),
                         range: field.range,
@@ -201,7 +236,8 @@ impl ItemTreeLower<'_> {
                 Some(Member::Field(id))
             }
             syntax::MemberDecl::Method(method) => {
-                let ast_id = self.ast_id_for_name(SyntaxKind::MethodDeclaration, method.name_range);
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::MethodDeclaration, method.name_range)?;
                 let id = MethodId::new(self.file, ast_id);
                 let params = {
                     let mut params = Vec::with_capacity(method.params.len());
@@ -214,10 +250,12 @@ impl ItemTreeLower<'_> {
                 let body = method
                     .body
                     .as_ref()
-                    .map(|block| self.ast_id_for_range(SyntaxKind::Block, block.range));
+                    .and_then(|block| self.ast_id_for_range(SyntaxKind::Block, block.range));
                 self.tree.methods.insert(
                     ast_id,
                     Method {
+                        modifiers: lower_modifiers(method.modifiers),
+                        annotations: lower_annotation_uses(&method.annotations),
                         return_ty: method.return_ty.text.clone(),
                         name: method.name.clone(),
                         range: method.range,
@@ -229,8 +267,8 @@ impl ItemTreeLower<'_> {
                 Some(Member::Method(id))
             }
             syntax::MemberDecl::Constructor(cons) => {
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range);
+                let ast_id = self
+                    .ast_id_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range)?;
                 let id = ConstructorId::new(self.file, ast_id);
                 let params = {
                     let mut params = Vec::with_capacity(cons.params.len());
@@ -244,6 +282,8 @@ impl ItemTreeLower<'_> {
                 self.tree.constructors.insert(
                     ast_id,
                     Constructor {
+                        modifiers: lower_modifiers(cons.modifiers),
+                        annotations: lower_annotation_uses(&cons.annotations),
                         name: cons.name.clone(),
                         range: cons.range,
                         name_range: cons.name_range,
@@ -254,7 +294,7 @@ impl ItemTreeLower<'_> {
                 Some(Member::Constructor(id))
             }
             syntax::MemberDecl::Initializer(init) => {
-                let ast_id = self.ast_id_for_range(SyntaxKind::InitializerBlock, init.range);
+                let ast_id = self.ast_id_for_range(SyntaxKind::InitializerBlock, init.range)?;
                 let id = InitializerId::new(self.file, ast_id);
                 let body = self.ast_id_for_range(SyntaxKind::Block, init.body.range);
                 self.tree.initializers.insert(
@@ -267,25 +307,67 @@ impl ItemTreeLower<'_> {
                 );
                 Some(Member::Initializer(id))
             }
-            syntax::MemberDecl::Type(decl) => Some(Member::Type(self.lower_type_decl(decl))),
+            syntax::MemberDecl::Type(decl) => self.lower_type_decl(decl).map(Member::Type),
         }
     }
 
-    fn ast_id_for_range(&self, kind: SyntaxKind, range: Span) -> AstId {
+    fn lower_enum_constant(
+        &mut self,
+        enum_name: &str,
+        constant: &syntax::EnumConstantDecl,
+    ) -> Option<Member> {
+        self.check_cancelled();
+        let ast_id = self.ast_id_for_name(SyntaxKind::EnumConstant, constant.name_range)?;
+        let id = FieldId::new(self.file, ast_id);
+        self.tree.fields.insert(
+            ast_id,
+            Field {
+                kind: FieldKind::EnumConstant,
+                modifiers: Modifiers::default(),
+                annotations: Vec::new(),
+                ty: enum_name.to_string(),
+                name: constant.name.clone(),
+                range: constant.range,
+                name_range: constant.name_range,
+            },
+        );
+        Some(Member::Field(id))
+    }
+
+    fn lower_module_decl(&mut self, module: &syntax::ModuleDecl) -> ModuleDecl {
+        self.check_cancelled();
+        let directives = module
+            .directives
+            .iter()
+            .map(|directive| {
+                self.check_cancelled();
+                lower_module_directive(directive)
+            })
+            .collect();
+
+        ModuleDecl {
+            name: module.name.clone(),
+            name_range: module.name_range,
+            is_open: module.is_open,
+            directives,
+            range: module.range,
+            body_range: module.body_range,
+        }
+    }
+
+    fn ast_id_for_range(&self, kind: SyntaxKind, range: Span) -> Option<AstId> {
         let text_range = span_to_text_range(range);
         if let Some(id) = self.ast_id_map.ast_id_for_ptr(kind, text_range) {
-            return id;
+            return Some(id);
         }
 
         let offset = u32::try_from(range.start).expect("range start does not fit in u32");
         self.ast_id_for_offset(kind, offset)
-            .unwrap_or_else(|| panic!("missing AstId for {kind:?} at {text_range:?}"))
     }
 
-    fn ast_id_for_name(&self, kind: SyntaxKind, name_range: Span) -> AstId {
+    fn ast_id_for_name(&self, kind: SyntaxKind, name_range: Span) -> Option<AstId> {
         let offset = u32::try_from(name_range.start).expect("name start does not fit in u32");
         self.ast_id_for_offset(kind, offset)
-            .unwrap_or_else(|| panic!("missing AstId for {kind:?} at offset {offset}"))
     }
 
     fn ast_id_for_offset(&self, kind: SyntaxKind, offset: u32) -> Option<AstId> {
@@ -298,8 +380,64 @@ impl ItemTreeLower<'_> {
     }
 }
 
+fn lower_modifiers(modifiers: syntax::Modifiers) -> Modifiers {
+    Modifiers { raw: modifiers.raw }
+}
+
+fn lower_annotation_uses(annotations: &[syntax::AnnotationUse]) -> Vec<AnnotationUse> {
+    annotations
+        .iter()
+        .map(|annotation| AnnotationUse {
+            name: annotation.name.clone(),
+            range: annotation.range,
+        })
+        .collect()
+}
+
+fn lower_module_directive(directive: &syntax::ModuleDirective) -> ModuleDirective {
+    match directive {
+        syntax::ModuleDirective::Requires {
+            module,
+            is_transitive,
+            is_static,
+            range,
+        } => ModuleDirective::Requires {
+            module: module.clone(),
+            is_transitive: *is_transitive,
+            is_static: *is_static,
+            range: *range,
+        },
+        syntax::ModuleDirective::Exports { package, to, range } => ModuleDirective::Exports {
+            package: package.clone(),
+            to: to.clone(),
+            range: *range,
+        },
+        syntax::ModuleDirective::Opens { package, to, range } => ModuleDirective::Opens {
+            package: package.clone(),
+            to: to.clone(),
+            range: *range,
+        },
+        syntax::ModuleDirective::Uses { service, range } => ModuleDirective::Uses {
+            service: service.clone(),
+            range: *range,
+        },
+        syntax::ModuleDirective::Provides {
+            service,
+            implementations,
+            range,
+        } => ModuleDirective::Provides {
+            service: service.clone(),
+            implementations: implementations.clone(),
+            range: *range,
+        },
+        syntax::ModuleDirective::Unknown { range } => ModuleDirective::Unknown { range: *range },
+    }
+}
+
 fn lower_param(param: &syntax::ParamDecl) -> Param {
     Param {
+        modifiers: lower_modifiers(param.modifiers),
+        annotations: lower_annotation_uses(&param.annotations),
         ty: param.ty.text.clone(),
         name: param.name.clone(),
         range: param.range,
@@ -406,6 +544,132 @@ impl<'a> BodyLower<'a> {
                 }))
             }
             syntax::Stmt::Block(block) => Some(self.lower_block(block)),
+            syntax::Stmt::If(if_stmt) => {
+                let condition = self.lower_expr(&if_stmt.condition);
+                let then_branch = self
+                    .lower_stmt(if_stmt.then_branch.as_ref())
+                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Empty { range: if_stmt.range }));
+                let else_branch = if_stmt
+                    .else_branch
+                    .as_ref()
+                    .and_then(|stmt| self.lower_stmt(stmt.as_ref()));
+                Some(self.alloc_stmt(Stmt::If {
+                    condition,
+                    then_branch,
+                    else_branch,
+                    range: if_stmt.range,
+                }))
+            }
+            syntax::Stmt::While(while_stmt) => {
+                let condition = self.lower_expr(&while_stmt.condition);
+                let body = self
+                    .lower_stmt(while_stmt.body.as_ref())
+                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Empty { range: while_stmt.range }));
+                Some(self.alloc_stmt(Stmt::While {
+                    condition,
+                    body,
+                    range: while_stmt.range,
+                }))
+            }
+            syntax::Stmt::For(for_stmt) => {
+                let mut init = Vec::with_capacity(for_stmt.init.len());
+                for stmt in &for_stmt.init {
+                    self.check_cancelled();
+                    if let Some(stmt) = self.lower_stmt(stmt) {
+                        init.push(stmt);
+                    }
+                }
+
+                let condition = for_stmt
+                    .condition
+                    .as_ref()
+                    .map(|expr| self.lower_expr(expr));
+
+                let mut update = Vec::with_capacity(for_stmt.update.len());
+                for expr in &for_stmt.update {
+                    self.check_cancelled();
+                    update.push(self.lower_expr(expr));
+                }
+
+                let body = self
+                    .lower_stmt(for_stmt.body.as_ref())
+                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Empty { range: for_stmt.range }));
+
+                Some(self.alloc_stmt(Stmt::For {
+                    init,
+                    condition,
+                    update,
+                    body,
+                    range: for_stmt.range,
+                }))
+            }
+            syntax::Stmt::ForEach(for_each) => {
+                let local_id = self.alloc_local(Local {
+                    ty_text: for_each.var.ty.text.clone(),
+                    ty_range: for_each.var.ty.range,
+                    name: for_each.var.name.clone(),
+                    name_range: for_each.var.name_range,
+                    range: for_each.var.range,
+                });
+                let iterable = self.lower_expr(&for_each.iterable);
+                let body = self
+                    .lower_stmt(for_each.body.as_ref())
+                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Empty { range: for_each.range }));
+                Some(self.alloc_stmt(Stmt::ForEach {
+                    local: local_id,
+                    iterable,
+                    body,
+                    range: for_each.range,
+                }))
+            }
+            syntax::Stmt::Switch(switch_stmt) => {
+                let selector = self.lower_expr(&switch_stmt.selector);
+                let body = self.lower_block(&switch_stmt.body);
+                Some(self.alloc_stmt(Stmt::Switch {
+                    selector,
+                    body,
+                    range: switch_stmt.range,
+                }))
+            }
+            syntax::Stmt::Try(try_stmt) => {
+                let body = self.lower_block(&try_stmt.body);
+                let mut catches = Vec::with_capacity(try_stmt.catches.len());
+                for clause in &try_stmt.catches {
+                    self.check_cancelled();
+                    let param = &clause.param;
+                    let local_id = self.alloc_local(Local {
+                        ty_text: param.ty.text.clone(),
+                        ty_range: param.ty.range,
+                        name: param.name.clone(),
+                        name_range: param.name_range,
+                        range: param.range,
+                    });
+                    let body = self.lower_block(&clause.body);
+                    catches.push(CatchClause {
+                        param: local_id,
+                        body,
+                        range: clause.range,
+                    });
+                }
+
+                let finally = try_stmt.finally.as_ref().map(|block| self.lower_block(block));
+
+                Some(self.alloc_stmt(Stmt::Try {
+                    body,
+                    catches,
+                    finally,
+                    range: try_stmt.range,
+                }))
+            }
+            syntax::Stmt::Throw(throw_stmt) => {
+                let expr = self.lower_expr(&throw_stmt.expr);
+                Some(self.alloc_stmt(Stmt::Throw {
+                    expr,
+                    range: throw_stmt.range,
+                }))
+            }
+            syntax::Stmt::Break(range) => Some(self.alloc_stmt(Stmt::Break { range: *range })),
+            syntax::Stmt::Continue(range) => Some(self.alloc_stmt(Stmt::Continue { range: *range })),
             syntax::Stmt::Empty(range) => Some(self.alloc_stmt(Stmt::Empty { range: *range })),
         }
     }
@@ -427,6 +691,14 @@ impl<'a> BodyLower<'a> {
                 value: lit.value.clone(),
                 range: lit.range,
             }),
+            syntax::Expr::BoolLiteral(lit) => self.alloc_expr(Expr::Literal {
+                kind: LiteralKind::Bool,
+                value: lit.value.clone(),
+                range: lit.range,
+            }),
+            syntax::Expr::NullLiteral(range) => self.alloc_expr(Expr::Null { range: *range }),
+            syntax::Expr::This(range) => self.alloc_expr(Expr::This { range: *range }),
+            syntax::Expr::Super(range) => self.alloc_expr(Expr::Super { range: *range }),
             syntax::Expr::FieldAccess(access) => {
                 let receiver = self.lower_expr(&access.receiver);
                 self.alloc_expr(Expr::FieldAccess {
@@ -449,6 +721,37 @@ impl<'a> BodyLower<'a> {
                     range: call.range,
                 })
             }
+            syntax::Expr::New(new_expr) => {
+                let mut args = Vec::with_capacity(new_expr.args.len());
+                for arg in &new_expr.args {
+                    self.check_cancelled();
+                    args.push(self.lower_expr(arg));
+                }
+                self.alloc_expr(Expr::New {
+                    class: new_expr.class.text.clone(),
+                    class_range: new_expr.class.range,
+                    args,
+                    range: new_expr.range,
+                })
+            }
+            syntax::Expr::Unary(unary) => {
+                let expr = self.lower_expr(&unary.expr);
+                let op = match unary.op {
+                    syntax::UnaryOp::Plus => UnaryOp::Plus,
+                    syntax::UnaryOp::Minus => UnaryOp::Minus,
+                    syntax::UnaryOp::Not => UnaryOp::Not,
+                    syntax::UnaryOp::BitNot => UnaryOp::BitNot,
+                    syntax::UnaryOp::PreInc => UnaryOp::PreInc,
+                    syntax::UnaryOp::PreDec => UnaryOp::PreDec,
+                    syntax::UnaryOp::PostInc => UnaryOp::PostInc,
+                    syntax::UnaryOp::PostDec => UnaryOp::PostDec,
+                };
+                self.alloc_expr(Expr::Unary {
+                    op,
+                    expr,
+                    range: unary.range,
+                })
+            }
             syntax::Expr::Binary(binary) => {
                 let lhs = self.lower_expr(&binary.lhs);
                 let rhs = self.lower_expr(&binary.rhs);
@@ -457,6 +760,21 @@ impl<'a> BodyLower<'a> {
                     syntax::BinaryOp::Sub => BinaryOp::Sub,
                     syntax::BinaryOp::Mul => BinaryOp::Mul,
                     syntax::BinaryOp::Div => BinaryOp::Div,
+                    syntax::BinaryOp::Rem => BinaryOp::Rem,
+                    syntax::BinaryOp::EqEq => BinaryOp::EqEq,
+                    syntax::BinaryOp::NotEq => BinaryOp::NotEq,
+                    syntax::BinaryOp::Less => BinaryOp::Less,
+                    syntax::BinaryOp::LessEq => BinaryOp::LessEq,
+                    syntax::BinaryOp::Greater => BinaryOp::Greater,
+                    syntax::BinaryOp::GreaterEq => BinaryOp::GreaterEq,
+                    syntax::BinaryOp::AndAnd => BinaryOp::AndAnd,
+                    syntax::BinaryOp::OrOr => BinaryOp::OrOr,
+                    syntax::BinaryOp::BitAnd => BinaryOp::BitAnd,
+                    syntax::BinaryOp::BitOr => BinaryOp::BitOr,
+                    syntax::BinaryOp::BitXor => BinaryOp::BitXor,
+                    syntax::BinaryOp::Shl => BinaryOp::Shl,
+                    syntax::BinaryOp::Shr => BinaryOp::Shr,
+                    syntax::BinaryOp::UShr => BinaryOp::UShr,
                 };
                 self.alloc_expr(Expr::Binary {
                     op,
@@ -486,6 +804,66 @@ impl<'a> BodyLower<'a> {
                 self.alloc_expr(Expr::ClassLiteral {
                     ty,
                     range: expr.range,
+                })
+            }
+            syntax::Expr::Assign(assign) => {
+                let lhs = self.lower_expr(&assign.lhs);
+                let rhs = self.lower_expr(&assign.rhs);
+                let op = match assign.op {
+                    syntax::AssignOp::Assign => AssignOp::Assign,
+                    syntax::AssignOp::AddAssign => AssignOp::AddAssign,
+                    syntax::AssignOp::SubAssign => AssignOp::SubAssign,
+                    syntax::AssignOp::MulAssign => AssignOp::MulAssign,
+                    syntax::AssignOp::DivAssign => AssignOp::DivAssign,
+                    syntax::AssignOp::RemAssign => AssignOp::RemAssign,
+                    syntax::AssignOp::AndAssign => AssignOp::AndAssign,
+                    syntax::AssignOp::OrAssign => AssignOp::OrAssign,
+                    syntax::AssignOp::XorAssign => AssignOp::XorAssign,
+                    syntax::AssignOp::ShlAssign => AssignOp::ShlAssign,
+                    syntax::AssignOp::ShrAssign => AssignOp::ShrAssign,
+                    syntax::AssignOp::UShrAssign => AssignOp::UShrAssign,
+                };
+                self.alloc_expr(Expr::Assign {
+                    op,
+                    lhs,
+                    rhs,
+                    range: assign.range,
+                })
+            }
+            syntax::Expr::Conditional(cond) => {
+                let condition = self.lower_expr(&cond.condition);
+                let then_expr = self.lower_expr(&cond.then_expr);
+                let else_expr = self.lower_expr(&cond.else_expr);
+                self.alloc_expr(Expr::Conditional {
+                    condition,
+                    then_expr,
+                    else_expr,
+                    range: cond.range,
+                })
+            }
+            syntax::Expr::Lambda(lambda) => {
+                let mut params = Vec::with_capacity(lambda.params.len());
+                for param in &lambda.params {
+                    self.check_cancelled();
+                    let local = self.alloc_local(Local {
+                        ty_text: String::new(),
+                        ty_range: Span::new(param.range.start, param.range.start),
+                        name: param.name.clone(),
+                        name_range: param.range,
+                        range: param.range,
+                    });
+                    params.push(LambdaParam { local });
+                }
+
+                let body = match &lambda.body {
+                    syntax::LambdaBody::Expr(expr) => LambdaBody::Expr(self.lower_expr(expr)),
+                    syntax::LambdaBody::Block(block) => LambdaBody::Block(self.lower_block(block)),
+                };
+
+                self.alloc_expr(Expr::Lambda {
+                    params,
+                    body,
+                    range: lambda.range,
                 })
             }
             syntax::Expr::Missing(range) => self.alloc_expr(Expr::Missing { range: *range }),

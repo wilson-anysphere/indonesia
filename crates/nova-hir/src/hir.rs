@@ -172,15 +172,68 @@ pub enum Stmt {
         expr: Option<ExprId>,
         range: Span,
     },
+    If {
+        condition: ExprId,
+        then_branch: StmtId,
+        else_branch: Option<StmtId>,
+        range: Span,
+    },
+    While {
+        condition: ExprId,
+        body: StmtId,
+        range: Span,
+    },
+    For {
+        init: Vec<StmtId>,
+        condition: Option<ExprId>,
+        update: Vec<ExprId>,
+        body: StmtId,
+        range: Span,
+    },
+    ForEach {
+        local: LocalId,
+        iterable: ExprId,
+        body: StmtId,
+        range: Span,
+    },
+    Switch {
+        selector: ExprId,
+        body: StmtId,
+        range: Span,
+    },
+    Try {
+        body: StmtId,
+        catches: Vec<CatchClause>,
+        finally: Option<StmtId>,
+        range: Span,
+    },
+    Throw {
+        expr: ExprId,
+        range: Span,
+    },
+    Break {
+        range: Span,
+    },
+    Continue {
+        range: Span,
+    },
     Empty {
         range: Span,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatchClause {
+    pub param: LocalId,
+    pub body: StmtId,
+    pub range: Span,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum LiteralKind {
     Int,
     String,
+    Bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +245,15 @@ pub enum Expr {
     Literal {
         kind: LiteralKind,
         value: String,
+        range: Span,
+    },
+    Null {
+        range: Span,
+    },
+    This {
+        range: Span,
+    },
+    Super {
         range: Span,
     },
     FieldAccess {
@@ -219,15 +281,54 @@ pub enum Expr {
         args: Vec<ExprId>,
         range: Span,
     },
+    New {
+        class: String,
+        class_range: Span,
+        args: Vec<ExprId>,
+        range: Span,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: ExprId,
+        range: Span,
+    },
     Binary {
         op: BinaryOp,
         lhs: ExprId,
         rhs: ExprId,
         range: Span,
     },
+    Assign {
+        op: AssignOp,
+        lhs: ExprId,
+        rhs: ExprId,
+        range: Span,
+    },
+    Conditional {
+        condition: ExprId,
+        then_expr: ExprId,
+        else_expr: ExprId,
+        range: Span,
+    },
+    Lambda {
+        params: Vec<LambdaParam>,
+        body: LambdaBody,
+        range: Span,
+    },
     Missing {
         range: Span,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaParam {
+    pub local: LocalId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LambdaBody {
+    Expr(ExprId),
+    Block(StmtId),
 }
 
 impl Expr {
@@ -236,15 +337,35 @@ impl Expr {
         match self {
             Expr::Name { range, .. }
             | Expr::Literal { range, .. }
-            | Expr::Call { range, .. }
-            | Expr::FieldAccess { range, .. }
-            | Expr::MethodReference { range, .. }
-            | Expr::ConstructorReference { range, .. }
-            | Expr::ClassLiteral { range, .. }
-            | Expr::Binary { range, .. }
-            | Expr::Missing { range } => *range,
+             | Expr::Null { range }
+             | Expr::This { range }
+             | Expr::Super { range }
+             | Expr::Call { range, .. }
+             | Expr::FieldAccess { range, .. }
+             | Expr::MethodReference { range, .. }
+             | Expr::ConstructorReference { range, .. }
+             | Expr::ClassLiteral { range, .. }
+             | Expr::New { range, .. }
+             | Expr::Unary { range, .. }
+             | Expr::Binary { range, .. }
+             | Expr::Assign { range, .. }
+             | Expr::Conditional { range, .. }
+             | Expr::Lambda { range, .. }
+             | Expr::Missing { range } => *range,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Plus,
+    Minus,
+    Not,
+    BitNot,
+    PreInc,
+    PreDec,
+    PostInc,
+    PostDec,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,4 +374,35 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Rem,
+    EqEq,
+    NotEq,
+    Less,
+    LessEq,
+    Greater,
+    GreaterEq,
+    AndAnd,
+    OrOr,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    UShr,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AssignOp {
+    Assign,
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    RemAssign,
+    AndAssign,
+    OrAssign,
+    XorAssign,
+    ShlAssign,
+    ShrAssign,
+    UShrAssign,
 }

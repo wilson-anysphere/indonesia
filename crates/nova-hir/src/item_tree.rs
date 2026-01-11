@@ -6,10 +6,158 @@ use crate::ids::{
 use nova_types::Span;
 use std::collections::BTreeMap;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct Modifiers {
+    pub raw: u16,
+}
+
+impl Modifiers {
+    pub const PUBLIC: u16 = 1 << 0;
+    pub const PROTECTED: u16 = 1 << 1;
+    pub const PRIVATE: u16 = 1 << 2;
+    pub const STATIC: u16 = 1 << 3;
+    pub const FINAL: u16 = 1 << 4;
+    pub const ABSTRACT: u16 = 1 << 5;
+    pub const NATIVE: u16 = 1 << 6;
+    pub const SYNCHRONIZED: u16 = 1 << 7;
+    pub const TRANSIENT: u16 = 1 << 8;
+    pub const VOLATILE: u16 = 1 << 9;
+    pub const STRICTFP: u16 = 1 << 10;
+    pub const DEFAULT: u16 = 1 << 11;
+    pub const SEALED: u16 = 1 << 12;
+    pub const NON_SEALED: u16 = 1 << 13;
+}
+
+#[derive(Debug, Clone)]
+pub struct AnnotationUse {
+    pub name: String,
+    pub range: Span,
+}
+
+impl PartialEq for AnnotationUse {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for AnnotationUse {}
+
+#[derive(Debug, Clone)]
+pub struct ModuleDecl {
+    pub name: String,
+    pub name_range: Span,
+    pub is_open: bool,
+    pub directives: Vec<ModuleDirective>,
+    pub range: Span,
+    pub body_range: Span,
+}
+
+impl PartialEq for ModuleDecl {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.is_open == other.is_open && self.directives == other.directives
+    }
+}
+
+impl Eq for ModuleDecl {}
+
+#[derive(Debug, Clone)]
+pub enum ModuleDirective {
+    Requires {
+        module: String,
+        is_transitive: bool,
+        is_static: bool,
+        range: Span,
+    },
+    Exports {
+        package: String,
+        to: Vec<String>,
+        range: Span,
+    },
+    Opens {
+        package: String,
+        to: Vec<String>,
+        range: Span,
+    },
+    Uses {
+        service: String,
+        range: Span,
+    },
+    Provides {
+        service: String,
+        implementations: Vec<String>,
+        range: Span,
+    },
+    Unknown {
+        range: Span,
+    },
+}
+
+impl PartialEq for ModuleDirective {
+    fn eq(&self, other: &Self) -> bool {
+        use ModuleDirective::*;
+        match (self, other) {
+            (
+                Requires {
+                    module,
+                    is_transitive,
+                    is_static,
+                    ..
+                },
+                Requires {
+                    module: other_module,
+                    is_transitive: other_transitive,
+                    is_static: other_static,
+                    ..
+                },
+            ) => module == other_module && is_transitive == other_transitive && is_static == other_static,
+            (
+                Exports { package, to, .. },
+                Exports {
+                    package: other_package,
+                    to: other_to,
+                    ..
+                },
+            ) => package == other_package && to == other_to,
+            (
+                Opens { package, to, .. },
+                Opens {
+                    package: other_package,
+                    to: other_to,
+                    ..
+                },
+            ) => package == other_package && to == other_to,
+            (
+                Uses { service, .. },
+                Uses {
+                    service: other_service,
+                    ..
+                },
+            ) => service == other_service,
+            (
+                Provides {
+                    service,
+                    implementations,
+                    ..
+                },
+                Provides {
+                    service: other_service,
+                    implementations: other_impls,
+                    ..
+                },
+            ) => service == other_service && implementations == other_impls,
+            (Unknown { .. }, Unknown { .. }) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ModuleDirective {}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemTree {
     pub package: Option<PackageDecl>,
     pub imports: Vec<Import>,
+    pub module: Option<ModuleDecl>,
     pub items: Vec<Item>,
 
     pub classes: BTreeMap<AstId, Class>,
@@ -84,6 +232,7 @@ impl Default for ItemTree {
         ItemTree {
             package: None,
             imports: Vec::new(),
+            module: None,
             items: Vec::new(),
             classes: BTreeMap::new(),
             interfaces: BTreeMap::new(),
@@ -143,6 +292,8 @@ pub enum Item {
 pub struct Class {
     pub name: String,
     pub name_range: Span,
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -150,7 +301,10 @@ pub struct Class {
 
 impl PartialEq for Class {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.members == other.members
+        self.name == other.name
+            && self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.members == other.members
     }
 }
 
@@ -160,6 +314,8 @@ impl Eq for Class {}
 pub struct Interface {
     pub name: String,
     pub name_range: Span,
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -167,7 +323,10 @@ pub struct Interface {
 
 impl PartialEq for Interface {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.members == other.members
+        self.name == other.name
+            && self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.members == other.members
     }
 }
 
@@ -177,6 +336,8 @@ impl Eq for Interface {}
 pub struct Enum {
     pub name: String,
     pub name_range: Span,
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -184,7 +345,10 @@ pub struct Enum {
 
 impl PartialEq for Enum {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.members == other.members
+        self.name == other.name
+            && self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.members == other.members
     }
 }
 
@@ -194,6 +358,8 @@ impl Eq for Enum {}
 pub struct Record {
     pub name: String,
     pub name_range: Span,
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -201,7 +367,10 @@ pub struct Record {
 
 impl PartialEq for Record {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.members == other.members
+        self.name == other.name
+            && self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.members == other.members
     }
 }
 
@@ -211,6 +380,8 @@ impl Eq for Record {}
 pub struct Annotation {
     pub name: String,
     pub name_range: Span,
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
@@ -218,7 +389,10 @@ pub struct Annotation {
 
 impl PartialEq for Annotation {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.members == other.members
+        self.name == other.name
+            && self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.members == other.members
     }
 }
 
@@ -233,8 +407,17 @@ pub enum Member {
     Type(Item),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    Field,
+    EnumConstant,
+}
+
 #[derive(Debug, Clone)]
 pub struct Field {
+    pub kind: FieldKind,
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub ty: String,
     pub name: String,
     pub range: Span,
@@ -243,7 +426,11 @@ pub struct Field {
 
 impl PartialEq for Field {
     fn eq(&self, other: &Self) -> bool {
-        self.ty == other.ty && self.name == other.name
+        self.kind == other.kind
+            && self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.ty == other.ty
+            && self.name == other.name
     }
 }
 
@@ -251,6 +438,8 @@ impl Eq for Field {}
 
 #[derive(Debug, Clone)]
 pub struct Param {
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub ty: String,
     pub name: String,
     pub range: Span,
@@ -259,7 +448,10 @@ pub struct Param {
 
 impl PartialEq for Param {
     fn eq(&self, other: &Self) -> bool {
-        self.ty == other.ty && self.name == other.name
+        self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.ty == other.ty
+            && self.name == other.name
     }
 }
 
@@ -267,6 +459,8 @@ impl Eq for Param {}
 
 #[derive(Debug, Clone)]
 pub struct Method {
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub return_ty: String,
     pub name: String,
     pub range: Span,
@@ -277,7 +471,9 @@ pub struct Method {
 
 impl PartialEq for Method {
     fn eq(&self, other: &Self) -> bool {
-        self.return_ty == other.return_ty
+        self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.return_ty == other.return_ty
             && self.name == other.name
             && self.params == other.params
             && self.body.is_some() == other.body.is_some()
@@ -288,16 +484,22 @@ impl Eq for Method {}
 
 #[derive(Debug, Clone)]
 pub struct Constructor {
+    pub modifiers: Modifiers,
+    pub annotations: Vec<AnnotationUse>,
     pub name: String,
     pub range: Span,
     pub name_range: Span,
     pub params: Vec<Param>,
-    pub body: AstId,
+    pub body: Option<AstId>,
 }
 
 impl PartialEq for Constructor {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.params == other.params
+        self.modifiers == other.modifiers
+            && self.annotations == other.annotations
+            && self.name == other.name
+            && self.params == other.params
+            && self.body.is_some() == other.body.is_some()
     }
 }
 
@@ -307,12 +509,12 @@ impl Eq for Constructor {}
 pub struct Initializer {
     pub is_static: bool,
     pub range: Span,
-    pub body: AstId,
+    pub body: Option<AstId>,
 }
 
 impl PartialEq for Initializer {
     fn eq(&self, other: &Self) -> bool {
-        self.is_static == other.is_static
+        self.is_static == other.is_static && self.body.is_some() == other.body.is_some()
     }
 }
 

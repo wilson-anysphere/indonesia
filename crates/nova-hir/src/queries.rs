@@ -62,10 +62,13 @@ pub trait HirDatabase {
     fn hir_constructor_body(&self, constructor: ConstructorId) -> Arc<Body> {
         let tree = self.hir_item_tree(constructor.file);
         let data = tree.constructor(constructor);
+        let Some(body_id) = data.body else {
+            return Arc::new(Body::empty(data.range));
+        };
         let text = self.file_text(constructor.file);
         let parse_java = nova_syntax::parse_java(&text);
         let ast_id_map = AstIdMap::new(&parse_java.syntax());
-        let Some(body_range) = ast_id_map.span(data.body) else {
+        let Some(body_range) = ast_id_map.span(body_id) else {
             return Arc::new(Body::empty(data.range));
         };
 
@@ -82,10 +85,13 @@ pub trait HirDatabase {
     fn hir_initializer_body(&self, initializer: InitializerId) -> Arc<Body> {
         let tree = self.hir_item_tree(initializer.file);
         let data = tree.initializer(initializer);
+        let Some(body_id) = data.body else {
+            return Arc::new(Body::empty(data.range));
+        };
         let text = self.file_text(initializer.file);
         let parse_java = nova_syntax::parse_java(&text);
         let ast_id_map = AstIdMap::new(&parse_java.syntax());
-        let Some(body_range) = ast_id_map.span(data.body) else {
+        let Some(body_range) = ast_id_map.span(body_id) else {
             return Arc::new(Body::empty(data.range));
         };
 

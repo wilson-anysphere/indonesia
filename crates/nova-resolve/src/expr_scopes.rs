@@ -196,6 +196,117 @@ impl Builder {
                 }
                 scope
             }
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                self.visit_expr(body, *condition, scope);
+
+                let then_scope = self.alloc_scope(Some(scope));
+                let _ = self.visit_stmt(body, *then_branch, then_scope);
+
+                if let Some(stmt) = else_branch {
+                    let else_scope = self.alloc_scope(Some(scope));
+                    let _ = self.visit_stmt(body, *stmt, else_scope);
+                }
+
+                scope
+            }
+            Stmt::While { condition, body: b, .. } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                self.visit_expr(body, *condition, scope);
+                let body_scope = self.alloc_scope(Some(scope));
+                let _ = self.visit_stmt(body, *b, body_scope);
+                scope
+            }
+            Stmt::For {
+                init,
+                condition,
+                update,
+                body: b,
+                ..
+            } => {
+                let for_scope = self.alloc_scope(Some(scope));
+                self.stmt_scopes.insert(stmt_id, for_scope);
+
+                let mut current = for_scope;
+                for stmt in init {
+                    current = self.visit_stmt(body, *stmt, current);
+                }
+
+                if let Some(expr) = condition {
+                    self.visit_expr(body, *expr, current);
+                }
+                for expr in update {
+                    self.visit_expr(body, *expr, current);
+                }
+
+                let _ = self.visit_stmt(body, *b, current);
+                scope
+            }
+            Stmt::ForEach {
+                local,
+                iterable,
+                body: b,
+                ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                self.visit_expr(body, *iterable, scope);
+
+                let for_scope = self.alloc_scope(Some(scope));
+                let local_data = &body.locals[*local];
+                self.scopes[for_scope.idx()].entries.insert(
+                    Name::from(local_data.name.as_str()),
+                    ResolvedValue::Local(*local),
+                );
+
+                let _ = self.visit_stmt(body, *b, for_scope);
+                scope
+            }
+            Stmt::Switch { selector, body: b, .. } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                self.visit_expr(body, *selector, scope);
+                let switch_scope = self.alloc_scope(Some(scope));
+                let _ = self.visit_stmt(body, *b, switch_scope);
+                scope
+            }
+            Stmt::Try {
+                body: b,
+                catches,
+                finally,
+                ..
+            } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+
+                let _ = self.visit_stmt(body, *b, scope);
+                for catch in catches {
+                    let catch_scope = self.alloc_scope(Some(scope));
+                    let local_data = &body.locals[catch.param];
+                    self.scopes[catch_scope.idx()].entries.insert(
+                        Name::from(local_data.name.as_str()),
+                        ResolvedValue::Local(catch.param),
+                    );
+                    let _ = self.visit_stmt(body, catch.body, catch_scope);
+                }
+
+                if let Some(stmt) = finally {
+                    let _ = self.visit_stmt(body, *stmt, scope);
+                }
+
+                scope
+            }
+            Stmt::Throw { expr, .. } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                self.visit_expr(body, *expr, scope);
+                scope
+            }
+            Stmt::Break { .. } | Stmt::Continue { .. } => {
+                self.stmt_scopes.insert(stmt_id, scope);
+                scope
+            }
             Stmt::Empty { .. } => {
                 self.stmt_scopes.insert(stmt_id, scope);
                 scope
@@ -207,7 +318,12 @@ impl Builder {
         self.expr_scopes.insert(expr_id, scope);
 
         match &body.exprs[expr_id] {
-            Expr::Name { .. } | Expr::Literal { .. } | Expr::Missing { .. } => {}
+            Expr::Name { .. }
+            | Expr::Literal { .. }
+            | Expr::Null { .. }
+            | Expr::This { .. }
+            | Expr::Super { .. }
+            | Expr::Missing { .. } => {}
             Expr::FieldAccess { receiver, .. } => {
                 self.visit_expr(body, *receiver, scope);
             }
@@ -224,9 +340,50 @@ impl Builder {
                     self.visit_expr(body, arg, scope);
                 }
             }
+            Expr::New { args, .. } => {
+                for &arg in args {
+                    self.visit_expr(body, arg, scope);
+                }
+            }
+            Expr::Unary { expr, .. } => {
+                self.visit_expr(body, *expr, scope);
+            }
             Expr::Binary { lhs, rhs, .. } => {
                 self.visit_expr(body, *lhs, scope);
                 self.visit_expr(body, *rhs, scope);
+            }
+            Expr::Assign { lhs, rhs, .. } => {
+                self.visit_expr(body, *lhs, scope);
+                self.visit_expr(body, *rhs, scope);
+            }
+            Expr::Conditional {
+                condition,
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                self.visit_expr(body, *condition, scope);
+                self.visit_expr(body, *then_expr, scope);
+                self.visit_expr(body, *else_expr, scope);
+            }
+            Expr::Lambda { params, body: b, .. } => {
+                let lambda_scope = self.alloc_scope(Some(scope));
+
+                for param in params {
+                    let local = param.local;
+                    let local_data = &body.locals[local];
+                    self.scopes[lambda_scope.idx()].entries.insert(
+                        Name::from(local_data.name.as_str()),
+                        ResolvedValue::Local(local),
+                    );
+                }
+
+                match b {
+                    nova_hir::hir::LambdaBody::Expr(expr) => self.visit_expr(body, *expr, lambda_scope),
+                    nova_hir::hir::LambdaBody::Block(stmt) => {
+                        let _ = self.visit_stmt(body, *stmt, lambda_scope);
+                    }
+                }
             }
         }
     }

@@ -6,7 +6,7 @@
 
 use nova_types::Span;
 
-use crate::{parse_java, SyntaxKind, SyntaxNode, SyntaxToken};
+use crate::{parse_java, SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken};
 
 pub mod ast {
     use nova_types::Span;
@@ -15,6 +15,7 @@ pub mod ast {
     pub struct CompilationUnit {
         pub package: Option<PackageDecl>,
         pub imports: Vec<ImportDecl>,
+        pub module: Option<ModuleDecl>,
         pub types: Vec<TypeDecl>,
         pub range: Span,
     }
@@ -31,6 +32,76 @@ pub mod ast {
         pub is_star: bool,
         pub path: String,
         pub range: Span,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct Modifiers {
+        pub raw: u16,
+    }
+
+    impl Modifiers {
+        pub const PUBLIC: u16 = 1 << 0;
+        pub const PROTECTED: u16 = 1 << 1;
+        pub const PRIVATE: u16 = 1 << 2;
+        pub const STATIC: u16 = 1 << 3;
+        pub const FINAL: u16 = 1 << 4;
+        pub const ABSTRACT: u16 = 1 << 5;
+        pub const NATIVE: u16 = 1 << 6;
+        pub const SYNCHRONIZED: u16 = 1 << 7;
+        pub const TRANSIENT: u16 = 1 << 8;
+        pub const VOLATILE: u16 = 1 << 9;
+        pub const STRICTFP: u16 = 1 << 10;
+        pub const DEFAULT: u16 = 1 << 11;
+        pub const SEALED: u16 = 1 << 12;
+        pub const NON_SEALED: u16 = 1 << 13;
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct AnnotationUse {
+        pub name: String,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ModuleDecl {
+        pub name: String,
+        pub name_range: Span,
+        pub is_open: bool,
+        pub directives: Vec<ModuleDirective>,
+        pub range: Span,
+        pub body_range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum ModuleDirective {
+        Requires {
+            module: String,
+            is_transitive: bool,
+            is_static: bool,
+            range: Span,
+        },
+        Exports {
+            package: String,
+            to: Vec<String>,
+            range: Span,
+        },
+        Opens {
+            package: String,
+            to: Vec<String>,
+            range: Span,
+        },
+        Uses {
+            service: String,
+            range: Span,
+        },
+        Provides {
+            service: String,
+            implementations: Vec<String>,
+            range: Span,
+        },
+        Unknown {
+            range: Span,
+        },
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +149,8 @@ pub mod ast {
     pub struct ClassDecl {
         pub name: String,
         pub name_range: Span,
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -87,15 +160,27 @@ pub mod ast {
     pub struct InterfaceDecl {
         pub name: String,
         pub name_range: Span,
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EnumConstantDecl {
+        pub name: String,
+        pub name_range: Span,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct EnumDecl {
         pub name: String,
         pub name_range: Span,
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
+        pub constants: Vec<EnumConstantDecl>,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -105,6 +190,8 @@ pub mod ast {
     pub struct RecordDecl {
         pub name: String,
         pub name_range: Span,
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -114,6 +201,8 @@ pub mod ast {
     pub struct AnnotationDecl {
         pub name: String,
         pub name_range: Span,
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub range: Span,
         pub body_range: Span,
         pub members: Vec<MemberDecl>,
@@ -136,6 +225,8 @@ pub mod ast {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct FieldDecl {
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub ty: TypeRef,
         pub name: String,
         pub name_range: Span,
@@ -144,6 +235,8 @@ pub mod ast {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ParamDecl {
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub ty: TypeRef,
         pub name: String,
         pub name_range: Span,
@@ -152,6 +245,8 @@ pub mod ast {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct MethodDecl {
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub return_ty: TypeRef,
         pub name: String,
         pub name_range: Span,
@@ -162,6 +257,8 @@ pub mod ast {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct ConstructorDecl {
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub name: String,
         pub name_range: Span,
         pub params: Vec<ParamDecl>,
@@ -188,11 +285,22 @@ pub mod ast {
         Expr(ExprStmt),
         Return(ReturnStmt),
         Block(Block),
+        If(IfStmt),
+        While(WhileStmt),
+        For(ForStmt),
+        ForEach(ForEachStmt),
+        Switch(SwitchStmt),
+        Try(TryStmt),
+        Throw(ThrowStmt),
+        Break(Span),
+        Continue(Span),
         Empty(Span),
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct LocalVarStmt {
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
         pub ty: TypeRef,
         pub name: String,
         pub name_range: Span,
@@ -213,16 +321,95 @@ pub mod ast {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct IfStmt {
+        pub condition: Expr,
+        pub then_branch: Box<Stmt>,
+        pub else_branch: Option<Box<Stmt>>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct WhileStmt {
+        pub condition: Expr,
+        pub body: Box<Stmt>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ForStmt {
+        pub init: Vec<Stmt>,
+        pub condition: Option<Expr>,
+        pub update: Vec<Expr>,
+        pub body: Box<Stmt>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ForEachStmt {
+        pub var: LocalVarStmt,
+        pub iterable: Expr,
+        pub body: Box<Stmt>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct SwitchStmt {
+        pub selector: Expr,
+        pub body: Block,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct TryStmt {
+        pub body: Block,
+        pub catches: Vec<CatchClause>,
+        pub finally: Option<Block>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CatchClause {
+        pub param: CatchParam,
+        pub body: Block,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CatchParam {
+        pub modifiers: Modifiers,
+        pub annotations: Vec<AnnotationUse>,
+        pub ty: TypeRef,
+        pub name: String,
+        pub name_range: Span,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ThrowStmt {
+        pub expr: Expr,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Expr {
         Name(NameExpr),
         IntLiteral(LiteralExpr),
         StringLiteral(LiteralExpr),
+        BoolLiteral(LiteralExpr),
+        NullLiteral(Span),
+        This(Span),
+        Super(Span),
         Call(CallExpr),
         FieldAccess(FieldAccessExpr),
+        New(NewExpr),
+        Unary(UnaryExpr),
         Binary(BinaryExpr),
         MethodReference(MethodReferenceExpr),
         ConstructorReference(ConstructorReferenceExpr),
         ClassLiteral(ClassLiteralExpr),
+        Assign(AssignExpr),
+        Conditional(ConditionalExpr),
+        Lambda(LambdaExpr),
         Missing(Span),
     }
 
@@ -232,12 +419,20 @@ pub mod ast {
                 Expr::Name(expr) => expr.range,
                 Expr::IntLiteral(expr) => expr.range,
                 Expr::StringLiteral(expr) => expr.range,
+                Expr::BoolLiteral(expr) => expr.range,
+                Expr::NullLiteral(range) => *range,
+                Expr::This(range) | Expr::Super(range) => *range,
                 Expr::Call(expr) => expr.range,
                 Expr::FieldAccess(expr) => expr.range,
+                Expr::New(expr) => expr.range,
+                Expr::Unary(expr) => expr.range,
                 Expr::Binary(expr) => expr.range,
                 Expr::MethodReference(expr) => expr.range,
                 Expr::ConstructorReference(expr) => expr.range,
                 Expr::ClassLiteral(expr) => expr.range,
+                Expr::Assign(expr) => expr.range,
+                Expr::Conditional(expr) => expr.range,
+                Expr::Lambda(expr) => expr.range,
                 Expr::Missing(range) => *range,
             }
         }
@@ -291,11 +486,52 @@ pub mod ast {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct NewExpr {
+        pub class: TypeRef,
+        pub args: Vec<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum UnaryOp {
+        Plus,
+        Minus,
+        Not,
+        BitNot,
+        PreInc,
+        PreDec,
+        PostInc,
+        PostDec,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct UnaryExpr {
+        pub op: UnaryOp,
+        pub expr: Box<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum BinaryOp {
         Add,
         Sub,
         Mul,
         Div,
+        Rem,
+        EqEq,
+        NotEq,
+        Less,
+        LessEq,
+        Greater,
+        GreaterEq,
+        AndAnd,
+        OrOr,
+        BitAnd,
+        BitOr,
+        BitXor,
+        Shl,
+        Shr,
+        UShr,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +539,57 @@ pub mod ast {
         pub op: BinaryOp,
         pub lhs: Box<Expr>,
         pub rhs: Box<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AssignOp {
+        Assign,
+        AddAssign,
+        SubAssign,
+        MulAssign,
+        DivAssign,
+        RemAssign,
+        AndAssign,
+        OrAssign,
+        XorAssign,
+        ShlAssign,
+        ShrAssign,
+        UShrAssign,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct AssignExpr {
+        pub op: AssignOp,
+        pub lhs: Box<Expr>,
+        pub rhs: Box<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ConditionalExpr {
+        pub condition: Box<Expr>,
+        pub then_expr: Box<Expr>,
+        pub else_expr: Box<Expr>,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LambdaParam {
+        pub name: String,
+        pub range: Span,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum LambdaBody {
+        Expr(Box<Expr>),
+        Block(Block),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct LambdaExpr {
+        pub params: Vec<LambdaParam>,
+        pub body: LambdaBody,
         pub range: Span,
     }
 }
@@ -334,22 +621,11 @@ pub fn parse(text: &str) -> Parse {
 /// returned spans are file-relative.
 #[must_use]
 pub fn parse_block(text: &str, offset: usize) -> ast::Block {
-    let prefix = "class __Dummy { void __dummy() ";
-    let suffix = " }";
-    let wrapper = format!("{prefix}{text}{suffix}");
-    let parsed = parse_java(&wrapper);
-    let root = parsed.syntax();
+    let offset_u32 = u32::try_from(offset).unwrap_or(u32::MAX);
+    let parsed = crate::parse_java_block_fragment(text, offset_u32);
+    let root = parsed.parse.syntax();
 
-    let block_node = root
-        .descendants()
-        .find(|node| {
-            node.kind() == SyntaxKind::Block
-                && text_size_to_usize(node.text_range().start()) == prefix.len()
-        })
-        .or_else(|| {
-            root.descendants()
-                .find(|node| node.kind() == SyntaxKind::Block)
-        });
+    let block_node = root.descendants().find(|node| node.kind() == SyntaxKind::Block);
 
     let Some(block_node) = block_node else {
         return ast::Block {
@@ -358,8 +634,7 @@ pub fn parse_block(text: &str, offset: usize) -> ast::Block {
         };
     };
 
-    let base = text_size_to_usize(block_node.text_range().start());
-    let lowerer = Lowerer::new(SpanMapper { base, offset });
+    let lowerer = Lowerer::new(SpanMapper { base: 0, offset });
     lowerer.lower_block(&block_node)
 }
 
@@ -413,6 +688,11 @@ impl Lowerer {
             .map(|node| self.lower_import_decl(&node))
             .collect();
 
+        let module = root
+            .children()
+            .find(|node| node.kind() == SyntaxKind::ModuleDeclaration)
+            .map(|node| self.lower_module_decl(&node));
+
         let types = root
             .children()
             .filter_map(|node| self.lower_type_decl(&node))
@@ -421,6 +701,7 @@ impl Lowerer {
         ast::CompilationUnit {
             package,
             imports,
+            module,
             types,
             range: Span::new(0, file_len),
         }
@@ -467,6 +748,153 @@ impl Lowerer {
         }
     }
 
+    fn lower_module_decl(&self, node: &SyntaxNode) -> ast::ModuleDecl {
+        let body = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::ModuleBody);
+        let range = self.spans.map_node(node);
+        let body_range = body
+            .as_ref()
+            .map(|n| self.spans.map_node(n))
+            .unwrap_or_else(|| Span::new(range.end, range.end));
+
+        let name_node = node.children().find(|child| child.kind() == SyntaxKind::Name);
+        let name = name_node
+            .as_ref()
+            .map(|n| self.collect_non_trivia_text(n))
+            .unwrap_or_default();
+        let name_range = name_node
+            .as_ref()
+            .and_then(|n| self.non_trivia_span(n))
+            .unwrap_or_else(|| Span::new(range.start, range.start));
+
+        let is_open = node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .any(|tok| tok.kind() == SyntaxKind::OpenKw);
+
+        let directives = body
+            .as_ref()
+            .map(|body| self.lower_module_directives(body))
+            .unwrap_or_default();
+
+        ast::ModuleDecl {
+            name,
+            name_range,
+            is_open,
+            directives,
+            range,
+            body_range,
+        }
+    }
+
+    fn lower_module_directives(&self, body: &SyntaxNode) -> Vec<ast::ModuleDirective> {
+        body.children()
+            .filter(|node| node.kind() == SyntaxKind::ModuleDirective)
+            .filter_map(|node| self.lower_module_directive(&node))
+            .collect()
+    }
+
+    fn lower_module_directive(&self, node: &SyntaxNode) -> Option<ast::ModuleDirective> {
+        let directive = node.children().find(|child| {
+            matches!(
+                child.kind(),
+                SyntaxKind::RequiresDirective
+                    | SyntaxKind::ExportsDirective
+                    | SyntaxKind::OpensDirective
+                    | SyntaxKind::UsesDirective
+                    | SyntaxKind::ProvidesDirective
+                    | SyntaxKind::Error
+            )
+        });
+
+        let Some(directive) = directive else {
+            return Some(ast::ModuleDirective::Unknown {
+                range: self.spans.map_node(node),
+            });
+        };
+
+        match directive.kind() {
+            SyntaxKind::RequiresDirective => {
+                let is_transitive = directive
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .any(|tok| tok.kind() == SyntaxKind::TransitiveKw);
+                let is_static = directive
+                    .descendants_with_tokens()
+                    .filter_map(|el| el.into_token())
+                    .any(|tok| tok.kind() == SyntaxKind::StaticKw);
+
+                let module = directive
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::Name)
+                    .as_ref()
+                    .map(|n| self.collect_non_trivia_text(n))
+                    .unwrap_or_default();
+
+                Some(ast::ModuleDirective::Requires {
+                    module,
+                    is_transitive,
+                    is_static,
+                    range: self.spans.map_node(&directive),
+                })
+            }
+            SyntaxKind::ExportsDirective | SyntaxKind::OpensDirective | SyntaxKind::ProvidesDirective => {
+                let names: Vec<_> = directive
+                    .children()
+                    .filter(|child| child.kind() == SyntaxKind::Name)
+                    .collect();
+
+                let head = names
+                    .first()
+                    .map(|n| self.collect_non_trivia_text(n))
+                    .unwrap_or_default();
+                let tail = names
+                    .iter()
+                    .skip(1)
+                    .map(|n| self.collect_non_trivia_text(n))
+                    .collect::<Vec<_>>();
+
+                let range = self.spans.map_node(&directive);
+
+                match directive.kind() {
+                    SyntaxKind::ExportsDirective => Some(ast::ModuleDirective::Exports {
+                        package: head,
+                        to: tail,
+                        range,
+                    }),
+                    SyntaxKind::OpensDirective => Some(ast::ModuleDirective::Opens {
+                        package: head,
+                        to: tail,
+                        range,
+                    }),
+                    SyntaxKind::ProvidesDirective => Some(ast::ModuleDirective::Provides {
+                        service: head,
+                        implementations: tail,
+                        range,
+                    }),
+                    _ => None,
+                }
+            }
+            SyntaxKind::UsesDirective => {
+                let service = directive
+                    .children()
+                    .find(|child| child.kind() == SyntaxKind::Name)
+                    .as_ref()
+                    .map(|n| self.collect_non_trivia_text(n))
+                    .unwrap_or_default();
+
+                Some(ast::ModuleDirective::Uses {
+                    service,
+                    range: self.spans.map_node(&directive),
+                })
+            }
+            _ => Some(ast::ModuleDirective::Unknown {
+                range: self.spans.map_node(&directive),
+            }),
+        }
+    }
+
     fn lower_type_decl(&self, node: &SyntaxNode) -> Option<ast::TypeDecl> {
         let body_kind = match node.kind() {
             SyntaxKind::ClassDeclaration => SyntaxKind::ClassBody,
@@ -484,6 +912,8 @@ impl Lowerer {
             .map(|n| self.spans.map_node(n))
             .unwrap_or_else(|| Span::new(range.end, range.end));
 
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
+
         let name_token = self.last_ident_like_before(node, body_kind);
         let name = name_token
             .as_ref()
@@ -494,15 +924,18 @@ impl Lowerer {
             .map(|tok| self.spans.map_token(tok))
             .unwrap_or_else(|| Span::new(range.start, range.start));
 
-        let members = body
-            .as_ref()
-            .map(|body| self.lower_members(body, &name))
-            .unwrap_or_default();
+        let (constants, members) = match (node.kind(), body.as_ref()) {
+            (SyntaxKind::EnumDeclaration, Some(body)) => self.lower_enum_body(body, &name),
+            (_, Some(body)) => (Vec::new(), self.lower_members(body, &name)),
+            _ => (Vec::new(), Vec::new()),
+        };
 
         Some(match node.kind() {
             SyntaxKind::ClassDeclaration => ast::TypeDecl::Class(ast::ClassDecl {
                 name,
                 name_range,
+                modifiers,
+                annotations,
                 range,
                 body_range,
                 members,
@@ -510,6 +943,8 @@ impl Lowerer {
             SyntaxKind::InterfaceDeclaration => ast::TypeDecl::Interface(ast::InterfaceDecl {
                 name,
                 name_range,
+                modifiers,
+                annotations,
                 range,
                 body_range,
                 members,
@@ -517,6 +952,9 @@ impl Lowerer {
             SyntaxKind::EnumDeclaration => ast::TypeDecl::Enum(ast::EnumDecl {
                 name,
                 name_range,
+                modifiers,
+                annotations,
+                constants,
                 range,
                 body_range,
                 members,
@@ -524,6 +962,8 @@ impl Lowerer {
             SyntaxKind::RecordDeclaration => ast::TypeDecl::Record(ast::RecordDecl {
                 name,
                 name_range,
+                modifiers,
+                annotations,
                 range,
                 body_range,
                 members,
@@ -532,6 +972,8 @@ impl Lowerer {
                 ast::TypeDecl::Annotation(ast::AnnotationDecl {
                     name,
                     name_range,
+                    modifiers,
+                    annotations,
                     range,
                     body_range,
                     members,
@@ -541,46 +983,82 @@ impl Lowerer {
         })
     }
 
-    fn lower_members(&self, body: &SyntaxNode, enclosing_type: &str) -> Vec<ast::MemberDecl> {
-        body.children()
-            .filter_map(|node| match node.kind() {
-                SyntaxKind::EnumConstant => None,
-                _ => self.lower_member_decl(&node, enclosing_type),
-            })
-            .collect()
+    fn lower_enum_body(
+        &self,
+        body: &SyntaxNode,
+        enclosing_type: &str,
+    ) -> (Vec<ast::EnumConstantDecl>, Vec<ast::MemberDecl>) {
+        let mut constants = Vec::new();
+        let mut members = Vec::new();
+        for node in body.children() {
+            match node.kind() {
+                SyntaxKind::EnumConstant => {
+                    if let Some(constant) = self.lower_enum_constant_decl(&node) {
+                        constants.push(constant);
+                    }
+                }
+                _ => members.extend(self.lower_member_decl(&node, enclosing_type)),
+            }
+        }
+        (constants, members)
     }
 
-    fn lower_member_decl(
-        &self,
-        node: &SyntaxNode,
-        enclosing_type: &str,
-    ) -> Option<ast::MemberDecl> {
+    fn lower_enum_constant_decl(&self, node: &SyntaxNode) -> Option<ast::EnumConstantDecl> {
+        let name_token = self.first_ident_like_token(node)?;
+        Some(ast::EnumConstantDecl {
+            name: name_token.text().to_string(),
+            name_range: self.spans.map_token(&name_token),
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_members(&self, body: &SyntaxNode, enclosing_type: &str) -> Vec<ast::MemberDecl> {
+        let mut out = Vec::new();
+        for node in body.children() {
+            if node.kind() == SyntaxKind::EnumConstant {
+                continue;
+            }
+            out.extend(self.lower_member_decl(&node, enclosing_type));
+        }
+        out
+    }
+
+    fn lower_member_decl(&self, node: &SyntaxNode, enclosing_type: &str) -> Vec<ast::MemberDecl> {
         match node.kind() {
-            SyntaxKind::FieldDeclaration => {
-                Some(ast::MemberDecl::Field(self.lower_field_decl(node)))
-            }
-            SyntaxKind::MethodDeclaration => {
-                Some(ast::MemberDecl::Method(self.lower_method_decl(node)))
-            }
+            SyntaxKind::FieldDeclaration => self
+                .lower_field_decl(node)
+                .into_iter()
+                .map(ast::MemberDecl::Field)
+                .collect(),
+            SyntaxKind::MethodDeclaration => vec![ast::MemberDecl::Method(self.lower_method_decl(
+                node,
+            ))],
             SyntaxKind::ConstructorDeclaration => {
                 let decl = self.lower_constructor_decl(node);
-                (decl.name == enclosing_type).then_some(ast::MemberDecl::Constructor(decl))
+                if decl.name == enclosing_type {
+                    vec![ast::MemberDecl::Constructor(decl)]
+                } else {
+                    Vec::new()
+                }
             }
-            SyntaxKind::InitializerBlock => Some(ast::MemberDecl::Initializer(
+            SyntaxKind::InitializerBlock => vec![ast::MemberDecl::Initializer(
                 self.lower_initializer_decl(node),
-            )),
+            )],
             SyntaxKind::ClassDeclaration
             | SyntaxKind::InterfaceDeclaration
             | SyntaxKind::EnumDeclaration
             | SyntaxKind::RecordDeclaration
-            | SyntaxKind::AnnotationTypeDeclaration => {
-                self.lower_type_decl(node).map(ast::MemberDecl::Type)
-            }
-            _ => None,
+            | SyntaxKind::AnnotationTypeDeclaration => self
+                .lower_type_decl(node)
+                .map(ast::MemberDecl::Type)
+                .into_iter()
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
-    fn lower_field_decl(&self, node: &SyntaxNode) -> ast::FieldDecl {
+    fn lower_field_decl(&self, node: &SyntaxNode) -> Vec<ast::FieldDecl> {
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
         let ty_node = node
             .children()
             .find(|child| child.kind() == SyntaxKind::Type);
@@ -592,36 +1070,56 @@ impl Lowerer {
                 range: self.spans.map_node(node),
             });
 
-        let declarator = node
+        let decls: Vec<_> = node
             .children()
             .find(|child| child.kind() == SyntaxKind::VariableDeclaratorList)
-            .and_then(|list| {
+            .into_iter()
+            .flat_map(|list| {
                 list.children()
-                    .find(|c| c.kind() == SyntaxKind::VariableDeclarator)
-            });
+                    .filter(|c| c.kind() == SyntaxKind::VariableDeclarator)
+            })
+            .collect();
 
-        let name_token = declarator
-            .as_ref()
-            .and_then(|decl| self.first_ident_like_token(decl));
+        let range = self.spans.map_node(node);
 
-        let name = name_token
-            .as_ref()
-            .map(|tok| tok.text().to_string())
-            .unwrap_or_default();
-        let name_range = name_token
-            .as_ref()
-            .map(|tok| self.spans.map_token(tok))
-            .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
-
-        ast::FieldDecl {
-            ty,
-            name,
-            name_range,
-            range: self.spans.map_node(node),
+        if decls.is_empty() {
+            return vec![ast::FieldDecl {
+                modifiers,
+                annotations,
+                ty,
+                name: String::new(),
+                name_range: Span::new(range.end, range.end),
+                range,
+            }];
         }
+
+        decls
+            .into_iter()
+            .map(|decl| {
+                let name_token = self.first_ident_like_token(&decl);
+                let name = name_token
+                    .as_ref()
+                    .map(|tok| tok.text().to_string())
+                    .unwrap_or_default();
+                let name_range = name_token
+                    .as_ref()
+                    .map(|tok| self.spans.map_token(tok))
+                    .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
+
+                ast::FieldDecl {
+                    modifiers,
+                    annotations: annotations.clone(),
+                    ty: ty.clone(),
+                    name,
+                    name_range,
+                    range,
+                }
+            })
+            .collect()
     }
 
     fn lower_method_decl(&self, node: &SyntaxNode) -> ast::MethodDecl {
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
         let param_list = node
             .children()
             .find(|child| child.kind() == SyntaxKind::ParameterList);
@@ -673,6 +1171,8 @@ impl Lowerer {
             .map(|block| self.lower_block(&block));
 
         ast::MethodDecl {
+            modifiers,
+            annotations,
             return_ty,
             name,
             name_range,
@@ -683,6 +1183,7 @@ impl Lowerer {
     }
 
     fn lower_constructor_decl(&self, node: &SyntaxNode) -> ast::ConstructorDecl {
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
         let param_list = node
             .children()
             .find(|child| child.kind() == SyntaxKind::ParameterList);
@@ -721,6 +1222,8 @@ impl Lowerer {
             });
 
         ast::ConstructorDecl {
+            modifiers,
+            annotations,
             name,
             name_range,
             params,
@@ -775,6 +1278,7 @@ impl Lowerer {
     }
 
     fn lower_param_decl(&self, node: &SyntaxNode) -> Option<ast::ParamDecl> {
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
         let ty_node = node
             .children()
             .find(|child| child.kind() == SyntaxKind::Type)?;
@@ -804,9 +1308,13 @@ impl Lowerer {
         let name_token = name_token?;
         let name = name_token.text().to_string();
         let name_range = self.spans.map_token(&name_token);
-        let range = Span::new(ty.range.start, name_range.end);
+        let range = self
+            .non_trivia_span(node)
+            .unwrap_or_else(|| Span::new(ty.range.start, name_range.end));
 
         Some(ast::ParamDecl {
+            modifiers,
+            annotations,
             ty,
             name,
             name_range,
@@ -834,12 +1342,23 @@ impl Lowerer {
             SyntaxKind::ExpressionStatement => Some(ast::Stmt::Expr(self.lower_expr_stmt(node))),
             SyntaxKind::ReturnStatement => Some(ast::Stmt::Return(self.lower_return_stmt(node))),
             SyntaxKind::Block => Some(ast::Stmt::Block(self.lower_block(node))),
+            SyntaxKind::IfStatement => Some(ast::Stmt::If(self.lower_if_stmt(node))),
+            SyntaxKind::WhileStatement | SyntaxKind::DoWhileStatement => {
+                Some(ast::Stmt::While(self.lower_while_stmt(node)))
+            }
+            SyntaxKind::ForStatement => Some(self.lower_for_stmt(node)),
+            SyntaxKind::SwitchStatement => Some(ast::Stmt::Switch(self.lower_switch_stmt(node))),
+            SyntaxKind::TryStatement => Some(ast::Stmt::Try(self.lower_try_stmt(node))),
+            SyntaxKind::ThrowStatement => Some(ast::Stmt::Throw(self.lower_throw_stmt(node))),
+            SyntaxKind::BreakStatement => Some(ast::Stmt::Break(self.spans.map_node(node))),
+            SyntaxKind::ContinueStatement => Some(ast::Stmt::Continue(self.spans.map_node(node))),
             SyntaxKind::EmptyStatement => Some(ast::Stmt::Empty(self.spans.map_node(node))),
             _ => None,
         }
     }
 
     fn lower_local_var_stmt(&self, node: &SyntaxNode) -> ast::LocalVarStmt {
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
         let ty_node = node
             .children()
             .find(|child| child.kind() == SyntaxKind::Type);
@@ -877,10 +1396,441 @@ impl Lowerer {
             .map(|expr| self.lower_expr(&expr));
 
         ast::LocalVarStmt {
+            modifiers,
+            annotations,
             ty,
             name,
             name_range,
             initializer,
+            range: self.spans.map_node(node),
+        }
+    }
+
+    fn lower_local_var_decl_in_range(
+        &self,
+        node: &SyntaxNode,
+        range_end: usize,
+    ) -> Option<ast::LocalVarStmt> {
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
+
+        let ty_node = node.descendants().find(|child| {
+            child.kind() == SyntaxKind::Type && self.spans.map_node(child).end <= range_end
+        })?;
+        let ty = self.lower_type_ref(&ty_node);
+        let ty_start = ty.range.start;
+
+        let declarator_list = node.descendants().find(|child| {
+            child.kind() == SyntaxKind::VariableDeclaratorList
+                && self.spans.map_node(child).end <= range_end
+        });
+        let declarator = declarator_list
+            .as_ref()
+            .and_then(|list| {
+                list.children()
+                    .find(|child| child.kind() == SyntaxKind::VariableDeclarator)
+            })
+            .or_else(|| {
+                node.descendants().find(|child| {
+                    child.kind() == SyntaxKind::VariableDeclarator
+                        && self.spans.map_node(child).end <= range_end
+                })
+            })?;
+
+        let name_token = declarator
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| tok.kind().is_identifier_like());
+        let name = name_token
+            .as_ref()
+            .map(|tok| tok.text().to_string())
+            .unwrap_or_default();
+        let name_range = name_token
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok))
+            .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
+
+        let initializer = declarator
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr));
+
+        let end = self.spans.map_node(&declarator).end;
+        Some(ast::LocalVarStmt {
+            modifiers,
+            annotations,
+            ty,
+            name,
+            name_range,
+            initializer,
+            range: Span::new(ty_start, end),
+        })
+    }
+
+    fn lower_if_stmt(&self, node: &SyntaxNode) -> ast::IfStmt {
+        let range = self.spans.map_node(node);
+        let condition = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(range));
+
+        let mut branches = node.children().filter_map(|child| self.lower_stmt(&child));
+        let then_branch = branches
+            .next()
+            .unwrap_or_else(|| ast::Stmt::Empty(range));
+        let else_branch = branches.next().map(Box::new);
+
+        ast::IfStmt {
+            condition,
+            then_branch: Box::new(then_branch),
+            else_branch,
+            range,
+        }
+    }
+
+    fn lower_while_stmt(&self, node: &SyntaxNode) -> ast::WhileStmt {
+        let range = self.spans.map_node(node);
+        let condition = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(range));
+
+        let body = node
+            .children()
+            .filter_map(|child| self.lower_stmt(&child))
+            .next()
+            .unwrap_or_else(|| ast::Stmt::Empty(range));
+
+        ast::WhileStmt {
+            condition,
+            body: Box::new(body),
+            range,
+        }
+    }
+
+    fn lower_for_stmt(&self, node: &SyntaxNode) -> ast::Stmt {
+        let header = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::ForHeader);
+        let range = self.spans.map_node(node);
+
+        let body = node
+            .children()
+            .filter_map(|child| self.lower_stmt(&child))
+            .next()
+            .unwrap_or_else(|| ast::Stmt::Empty(range));
+
+        let Some(header) = header else {
+            return ast::Stmt::For(ast::ForStmt {
+                init: Vec::new(),
+                condition: None,
+                update: Vec::new(),
+                body: Box::new(body),
+                range,
+            });
+        };
+
+        let is_enhanced = header
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .any(|tok| tok.kind() == SyntaxKind::Colon);
+
+        if is_enhanced {
+            let colon = header
+                .descendants_with_tokens()
+                .filter_map(|el| el.into_token())
+                .find(|tok| tok.kind() == SyntaxKind::Colon)
+                .map(|tok| self.spans.map_token(&tok).start)
+                .unwrap_or(range.end);
+
+            let var_node = header.descendants().find(|child| {
+                child.kind() == SyntaxKind::LocalVariableDeclarationStatement
+                    && self.spans.map_node(child).end <= colon
+            });
+            let mut var = var_node
+                .as_ref()
+                .map(|node| self.lower_local_var_stmt(node))
+                .or_else(|| self.lower_local_var_decl_in_range(&header, colon))
+                .unwrap_or_else(|| ast::LocalVarStmt {
+                    modifiers: ast::Modifiers::default(),
+                    annotations: Vec::new(),
+                    ty: ast::TypeRef {
+                        text: String::new(),
+                        range,
+                    },
+                    name: String::new(),
+                    name_range: Span::new(range.start, range.start),
+                    initializer: None,
+                    range: self.spans.map_node(&header),
+                });
+            // The enhanced-for variable cannot have an initializer; ignore any recovered one.
+            var.initializer = None;
+
+            let iterable = header
+                .children()
+                .find(|child| is_expression_kind(child.kind()))
+                .map(|expr| self.lower_expr(&expr))
+                .unwrap_or_else(|| ast::Expr::Missing(range));
+
+            return ast::Stmt::ForEach(ast::ForEachStmt {
+                var,
+                iterable,
+                body: Box::new(body),
+                range,
+            });
+        }
+
+        let semicolons: Vec<_> = header
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| tok.kind() == SyntaxKind::Semicolon)
+            .collect();
+
+        let init_end = semicolons
+            .first()
+            .map(|tok| self.spans.map_token(tok).start)
+            .unwrap_or(range.end);
+        let cond_end = semicolons
+            .get(1)
+            .map(|tok| self.spans.map_token(tok).start)
+            .unwrap_or(range.end);
+
+        let init = {
+            let local_decl = header.descendants().find(|child| {
+                child.kind() == SyntaxKind::LocalVariableDeclarationStatement
+                    && self.spans.map_node(child).end <= init_end
+            });
+            if let Some(local_decl) = local_decl {
+                vec![ast::Stmt::LocalVar(self.lower_local_var_stmt(&local_decl))]
+            } else if let Some(local_decl) = self.lower_local_var_decl_in_range(&header, init_end) {
+                vec![ast::Stmt::LocalVar(local_decl)]
+            } else {
+                header
+                    .descendants()
+                    .filter(|child| {
+                        is_expression_kind(child.kind())
+                            && !is_expression_kind(child.parent().map(|p| p.kind()).unwrap_or(
+                                SyntaxKind::Error,
+                            ))
+                    })
+                    .filter(|expr| {
+                        let span = self.spans.map_node(expr);
+                        span.start < init_end
+                    })
+                    .map(|expr_node| {
+                        let expr = self.lower_expr(&expr_node);
+                        let range = expr.range();
+                        ast::Stmt::Expr(ast::ExprStmt { expr, range })
+                    })
+                    .collect()
+            }
+        };
+
+        let condition = header
+            .descendants()
+            .filter(|child| is_expression_kind(child.kind()))
+            .filter(|expr| {
+                let span = self.spans.map_node(expr);
+                span.start >= init_end && span.end <= cond_end
+            })
+            .filter(|expr| {
+                !is_expression_kind(expr.parent().map(|p| p.kind()).unwrap_or(SyntaxKind::Error))
+            })
+            .next()
+            .map(|expr_node| self.lower_expr(&expr_node));
+
+        let update = header
+            .descendants()
+            .filter(|child| is_expression_kind(child.kind()))
+            .filter(|expr| {
+                let span = self.spans.map_node(expr);
+                span.start >= cond_end
+            })
+            .filter(|expr| {
+                !is_expression_kind(expr.parent().map(|p| p.kind()).unwrap_or(SyntaxKind::Error))
+            })
+            .map(|expr_node| self.lower_expr(&expr_node))
+            .collect();
+
+        ast::Stmt::For(ast::ForStmt {
+            init,
+            condition,
+            update,
+            body: Box::new(body),
+            range,
+        })
+    }
+
+    fn lower_switch_stmt(&self, node: &SyntaxNode) -> ast::SwitchStmt {
+        let range = self.spans.map_node(node);
+        let selector = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(range));
+
+        let switch_block = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::SwitchBlock);
+        let body = switch_block
+            .as_ref()
+            .map(|block| self.lower_switch_block(block))
+            .unwrap_or_else(|| ast::Block {
+                statements: Vec::new(),
+                range: Span::new(range.end, range.end),
+            });
+
+        ast::SwitchStmt {
+            selector,
+            body,
+            range,
+        }
+    }
+
+    fn lower_switch_block(&self, node: &SyntaxNode) -> ast::Block {
+        let mut statements = Vec::new();
+        for child in node.descendants() {
+            if !is_statement_kind(child.kind()) {
+                continue;
+            }
+
+            let has_statement_ancestor = child
+                .ancestors()
+                .skip(1)
+                .take_while(|anc| anc.kind() != SyntaxKind::SwitchBlock)
+                .any(|anc| is_statement_kind(anc.kind()));
+            if has_statement_ancestor {
+                continue;
+            }
+
+            if let Some(stmt) = self.lower_stmt(&child) {
+                statements.push(stmt);
+            }
+        }
+
+        ast::Block {
+            statements,
+            range: self.spans.map_node(node),
+        }
+    }
+
+    fn lower_try_stmt(&self, node: &SyntaxNode) -> ast::TryStmt {
+        let range = self.spans.map_node(node);
+
+        let body_node = node.children().find(|child| child.kind() == SyntaxKind::Block);
+        let body = body_node
+            .as_ref()
+            .map(|block| self.lower_block(block))
+            .unwrap_or_else(|| ast::Block {
+                statements: Vec::new(),
+                range,
+            });
+
+        let catches = node
+            .children()
+            .filter(|child| child.kind() == SyntaxKind::CatchClause)
+            .map(|clause| self.lower_catch_clause(&clause))
+            .collect();
+
+        let finally = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::FinallyClause)
+            .and_then(|clause| clause.children().find(|c| c.kind() == SyntaxKind::Block))
+            .map(|block| self.lower_block(&block));
+
+        ast::TryStmt {
+            body,
+            catches,
+            finally,
+            range,
+        }
+    }
+
+    fn lower_catch_clause(&self, node: &SyntaxNode) -> ast::CatchClause {
+        let range = self.spans.map_node(node);
+        let param_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Parameter);
+        let param_node = param_node.as_ref().unwrap_or(node);
+        let param = self.lower_catch_param(param_node);
+
+        let body_node = node.children().find(|child| child.kind() == SyntaxKind::Block);
+        let body = body_node
+            .as_ref()
+            .map(|block| self.lower_block(block))
+            .unwrap_or_else(|| ast::Block {
+                statements: Vec::new(),
+                range,
+            });
+
+        ast::CatchClause { param, body, range }
+    }
+
+    fn lower_catch_param(&self, node: &SyntaxNode) -> ast::CatchParam {
+        let (modifiers, annotations) = self.lower_decl_modifiers(node);
+        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty = ty_node
+            .as_ref()
+            .map(|n| self.lower_type_ref(n))
+            .unwrap_or_else(|| ast::TypeRef {
+                text: String::new(),
+                range: self.spans.map_node(node),
+            });
+
+        let mut seen_type = false;
+        let mut name_token = None;
+        for child in node.children_with_tokens() {
+            if child
+                .as_node()
+                .is_some_and(|n| n.kind() == SyntaxKind::Type)
+            {
+                seen_type = true;
+                continue;
+            }
+            if !seen_type {
+                continue;
+            }
+            if let Some(tok) = child.as_token().cloned() {
+                if tok.kind().is_identifier_like() {
+                    name_token = Some(tok);
+                    break;
+                }
+            }
+        }
+
+        let name = name_token
+            .as_ref()
+            .map(|tok| tok.text().to_string())
+            .unwrap_or_default();
+        let name_range = name_token
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok))
+            .unwrap_or_else(|| Span::new(ty.range.end, ty.range.end));
+
+        let range = self
+            .non_trivia_span(node)
+            .unwrap_or_else(|| Span::new(ty.range.start, name_range.end));
+
+        ast::CatchParam {
+            modifiers,
+            annotations,
+            ty,
+            name,
+            name_range,
+            range,
+        }
+    }
+
+    fn lower_throw_stmt(&self, node: &SyntaxNode) -> ast::ThrowStmt {
+        let expr = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()))
+            .map(|expr| self.lower_expr(&expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        ast::ThrowStmt {
+            expr,
             range: self.spans.map_node(node),
         }
     }
@@ -914,15 +1864,25 @@ impl Lowerer {
         match node.kind() {
             SyntaxKind::NameExpression => self.lower_name_expr(node),
             SyntaxKind::LiteralExpression => self.lower_literal_expr(node),
+            SyntaxKind::ThisExpression => ast::Expr::This(self.spans.map_node(node)),
+            SyntaxKind::SuperExpression => ast::Expr::Super(self.spans.map_node(node)),
+            SyntaxKind::NewExpression => self.lower_new_expr(node),
             SyntaxKind::MethodCallExpression => self.lower_call_expr(node),
             SyntaxKind::FieldAccessExpression => self.lower_field_access_expr(node),
             SyntaxKind::MethodReferenceExpression => self.lower_method_reference_expr(node),
-            SyntaxKind::ConstructorReferenceExpression => {
-                self.lower_constructor_reference_expr(node)
-            }
+            SyntaxKind::ConstructorReferenceExpression => self.lower_constructor_reference_expr(node),
             SyntaxKind::ClassLiteralExpression => self.lower_class_literal_expr(node),
+            SyntaxKind::UnaryExpression => self.lower_unary_expr(node),
             SyntaxKind::BinaryExpression => self.lower_binary_expr(node),
+            SyntaxKind::AssignmentExpression => self.lower_assign_expr(node),
+            SyntaxKind::ConditionalExpression => self.lower_conditional_expr(node),
+            SyntaxKind::LambdaExpression => self.lower_lambda_expr(node),
             SyntaxKind::ParenthesizedExpression => node
+                .children()
+                .find(|child| is_expression_kind(child.kind()))
+                .map(|expr| self.lower_expr(&expr))
+                .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node))),
+            SyntaxKind::CastExpression => node
                 .children()
                 .find(|child| is_expression_kind(child.kind()))
                 .map(|expr| self.lower_expr(&expr))
@@ -1038,6 +1998,10 @@ impl Lowerer {
             SyntaxKind::StringLiteral => {
                 ast::Expr::StringLiteral(ast::LiteralExpr { value, range })
             }
+            SyntaxKind::TrueKw | SyntaxKind::FalseKw => {
+                ast::Expr::BoolLiteral(ast::LiteralExpr { value, range })
+            }
+            SyntaxKind::NullKw => ast::Expr::NullLiteral(range),
             _ => ast::Expr::Missing(range),
         }
     }
@@ -1121,7 +2085,25 @@ impl Lowerer {
             .find(|tok| {
                 matches!(
                     tok.kind(),
-                    SyntaxKind::Plus | SyntaxKind::Minus | SyntaxKind::Star | SyntaxKind::Slash
+                    SyntaxKind::Plus
+                        | SyntaxKind::Minus
+                        | SyntaxKind::Star
+                        | SyntaxKind::Slash
+                        | SyntaxKind::Percent
+                        | SyntaxKind::EqEq
+                        | SyntaxKind::BangEq
+                        | SyntaxKind::Less
+                        | SyntaxKind::LessEq
+                        | SyntaxKind::Greater
+                        | SyntaxKind::GreaterEq
+                        | SyntaxKind::AmpAmp
+                        | SyntaxKind::PipePipe
+                        | SyntaxKind::Amp
+                        | SyntaxKind::Pipe
+                        | SyntaxKind::Caret
+                        | SyntaxKind::LeftShift
+                        | SyntaxKind::RightShift
+                        | SyntaxKind::UnsignedRightShift
                 )
             });
 
@@ -1134,6 +2116,21 @@ impl Lowerer {
             SyntaxKind::Minus => ast::BinaryOp::Sub,
             SyntaxKind::Star => ast::BinaryOp::Mul,
             SyntaxKind::Slash => ast::BinaryOp::Div,
+            SyntaxKind::Percent => ast::BinaryOp::Rem,
+            SyntaxKind::EqEq => ast::BinaryOp::EqEq,
+            SyntaxKind::BangEq => ast::BinaryOp::NotEq,
+            SyntaxKind::Less => ast::BinaryOp::Less,
+            SyntaxKind::LessEq => ast::BinaryOp::LessEq,
+            SyntaxKind::Greater => ast::BinaryOp::Greater,
+            SyntaxKind::GreaterEq => ast::BinaryOp::GreaterEq,
+            SyntaxKind::AmpAmp => ast::BinaryOp::AndAnd,
+            SyntaxKind::PipePipe => ast::BinaryOp::OrOr,
+            SyntaxKind::Amp => ast::BinaryOp::BitAnd,
+            SyntaxKind::Pipe => ast::BinaryOp::BitOr,
+            SyntaxKind::Caret => ast::BinaryOp::BitXor,
+            SyntaxKind::LeftShift => ast::BinaryOp::Shl,
+            SyntaxKind::RightShift => ast::BinaryOp::Shr,
+            SyntaxKind::UnsignedRightShift => ast::BinaryOp::UShr,
             _ => return ast::Expr::Missing(self.spans.map_token(&op_token)),
         };
 
@@ -1153,6 +2150,285 @@ impl Lowerer {
             op,
             lhs: Box::new(lhs),
             rhs: Box::new(rhs),
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_new_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let class = ty_node
+            .as_ref()
+            .map(|n| self.lower_type_ref(n))
+            .unwrap_or_else(|| ast::TypeRef {
+                text: String::new(),
+                range: self.spans.map_node(node),
+            });
+
+        let arg_list = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::ArgumentList);
+        let args = arg_list
+            .as_ref()
+            .map(|list| {
+                list.children()
+                    .filter(|child| is_expression_kind(child.kind()))
+                    .map(|expr| self.lower_expr(&expr))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        ast::Expr::New(ast::NewExpr {
+            class,
+            args,
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_unary_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let first_token = node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof);
+        let last_token = node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)
+            .last();
+
+        let operand_node = node.children().find(|child| is_expression_kind(child.kind()));
+        let operand = operand_node
+            .as_ref()
+            .map(|expr| self.lower_expr(expr))
+            .unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        let op = match first_token
+            .as_ref()
+            .map(|tok| tok.kind())
+            .unwrap_or(SyntaxKind::Error)
+        {
+            SyntaxKind::Plus => ast::UnaryOp::Plus,
+            SyntaxKind::Minus => ast::UnaryOp::Minus,
+            SyntaxKind::Bang => ast::UnaryOp::Not,
+            SyntaxKind::Tilde => ast::UnaryOp::BitNot,
+            SyntaxKind::PlusPlus => ast::UnaryOp::PreInc,
+            SyntaxKind::MinusMinus => ast::UnaryOp::PreDec,
+            _ => match last_token
+                .as_ref()
+                .map(|tok| tok.kind())
+                .unwrap_or(SyntaxKind::Error)
+            {
+                SyntaxKind::PlusPlus => ast::UnaryOp::PostInc,
+                SyntaxKind::MinusMinus => ast::UnaryOp::PostDec,
+                _ => ast::UnaryOp::Plus,
+            },
+        };
+
+        ast::Expr::Unary(ast::UnaryExpr {
+            op,
+            expr: Box::new(operand),
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_assign_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let op_token = node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| {
+                matches!(
+                    tok.kind(),
+                    SyntaxKind::Eq
+                        | SyntaxKind::PlusEq
+                        | SyntaxKind::MinusEq
+                        | SyntaxKind::StarEq
+                        | SyntaxKind::SlashEq
+                        | SyntaxKind::PercentEq
+                        | SyntaxKind::AmpEq
+                        | SyntaxKind::PipeEq
+                        | SyntaxKind::CaretEq
+                        | SyntaxKind::LeftShiftEq
+                        | SyntaxKind::RightShiftEq
+                        | SyntaxKind::UnsignedRightShiftEq
+                )
+            });
+
+        let op = match op_token.as_ref().map(SyntaxToken::kind) {
+            Some(SyntaxKind::Eq) | None => ast::AssignOp::Assign,
+            Some(SyntaxKind::PlusEq) => ast::AssignOp::AddAssign,
+            Some(SyntaxKind::MinusEq) => ast::AssignOp::SubAssign,
+            Some(SyntaxKind::StarEq) => ast::AssignOp::MulAssign,
+            Some(SyntaxKind::SlashEq) => ast::AssignOp::DivAssign,
+            Some(SyntaxKind::PercentEq) => ast::AssignOp::RemAssign,
+            Some(SyntaxKind::AmpEq) => ast::AssignOp::AndAssign,
+            Some(SyntaxKind::PipeEq) => ast::AssignOp::OrAssign,
+            Some(SyntaxKind::CaretEq) => ast::AssignOp::XorAssign,
+            Some(SyntaxKind::LeftShiftEq) => ast::AssignOp::ShlAssign,
+            Some(SyntaxKind::RightShiftEq) => ast::AssignOp::ShrAssign,
+            Some(SyntaxKind::UnsignedRightShiftEq) => ast::AssignOp::UShrAssign,
+            _ => ast::AssignOp::Assign,
+        };
+
+        let mut exprs = node
+            .children()
+            .filter(|child| is_expression_kind(child.kind()))
+            .take(2);
+        let lhs = exprs.next().map(|n| self.lower_expr(&n));
+        let rhs = exprs.next().map(|n| self.lower_expr(&n));
+
+        let lhs = lhs.unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+        let rhs = rhs.unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        ast::Expr::Assign(ast::AssignExpr {
+            op,
+            lhs: Box::new(lhs),
+            rhs: Box::new(rhs),
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_conditional_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let mut exprs = node
+            .children()
+            .filter(|child| is_expression_kind(child.kind()))
+            .take(3)
+            .map(|child| self.lower_expr(&child));
+        let condition = exprs.next();
+        let then_expr = exprs.next();
+        let else_expr = exprs.next();
+
+        let Some(condition) = condition else {
+            return ast::Expr::Missing(self.spans.map_node(node));
+        };
+        let Some(then_expr) = then_expr else {
+            return ast::Expr::Missing(self.spans.map_node(node));
+        };
+        let else_expr = else_expr.unwrap_or_else(|| ast::Expr::Missing(self.spans.map_node(node)));
+
+        ast::Expr::Conditional(ast::ConditionalExpr {
+            condition: Box::new(condition),
+            then_expr: Box::new(then_expr),
+            else_expr: Box::new(else_expr),
+            range: self.spans.map_node(node),
+        })
+    }
+
+    fn lower_lambda_expr(&self, node: &SyntaxNode) -> ast::Expr {
+        let range = self.spans.map_node(node);
+        let arrow = node
+            .children_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|tok| tok.kind() == SyntaxKind::Arrow);
+        let arrow_start = arrow
+            .as_ref()
+            .map(|tok| self.spans.map_token(tok).start)
+            .unwrap_or(range.end);
+
+        let params_region = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::LambdaParameters)
+            .unwrap_or_else(|| node.clone());
+
+        let mut segments: Vec<Option<SyntaxToken>> = vec![None];
+        for tok in params_region
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+        {
+            if tok.kind().is_trivia() || tok.kind() == SyntaxKind::Eof {
+                continue;
+            }
+            let span = self.spans.map_token(&tok);
+            if span.start >= arrow_start {
+                break;
+            }
+            if tok.kind() == SyntaxKind::Comma {
+                segments.push(None);
+                continue;
+            }
+            if tok.kind().is_identifier_like() {
+                *segments.last_mut().expect("segments not empty") = Some(tok);
+            }
+        }
+
+        let params = segments
+            .into_iter()
+            .filter_map(|tok| tok)
+            .map(|tok| ast::LambdaParam {
+                name: tok.text().to_string(),
+                range: self.spans.map_token(&tok),
+            })
+            .collect();
+
+        let body = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::LambdaBody)
+            .and_then(|body| {
+                if let Some(block) = body.children().find(|c| c.kind() == SyntaxKind::Block) {
+                    Some(ast::LambdaBody::Block(self.lower_block(&block)))
+                } else {
+                    body.children()
+                        .find(|child| is_expression_kind(child.kind()))
+                        .map(|expr| ast::LambdaBody::Expr(Box::new(self.lower_expr(&expr))))
+                }
+            })
+            .unwrap_or_else(|| ast::LambdaBody::Expr(Box::new(ast::Expr::Missing(range))));
+
+        ast::Expr::Lambda(ast::LambdaExpr { params, body, range })
+    }
+
+    fn lower_decl_modifiers(&self, node: &SyntaxNode) -> (ast::Modifiers, Vec<ast::AnnotationUse>) {
+        let Some(mods_node) = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Modifiers)
+        else {
+            return (ast::Modifiers::default(), Vec::new());
+        };
+
+        let mut modifiers = ast::Modifiers::default();
+        let mut annotations = Vec::new();
+
+        for child in mods_node.children_with_tokens() {
+            match child {
+                SyntaxElement::Node(node) => {
+                    if node.kind() == SyntaxKind::Annotation {
+                        if let Some(use_) = self.lower_annotation_use(&node) {
+                            annotations.push(use_);
+                        }
+                    }
+                }
+                SyntaxElement::Token(tok) => {
+                    modifiers.raw |= match tok.kind() {
+                        SyntaxKind::PublicKw => ast::Modifiers::PUBLIC,
+                        SyntaxKind::ProtectedKw => ast::Modifiers::PROTECTED,
+                        SyntaxKind::PrivateKw => ast::Modifiers::PRIVATE,
+                        SyntaxKind::StaticKw => ast::Modifiers::STATIC,
+                        SyntaxKind::FinalKw => ast::Modifiers::FINAL,
+                        SyntaxKind::AbstractKw => ast::Modifiers::ABSTRACT,
+                        SyntaxKind::NativeKw => ast::Modifiers::NATIVE,
+                        SyntaxKind::SynchronizedKw => ast::Modifiers::SYNCHRONIZED,
+                        SyntaxKind::TransientKw => ast::Modifiers::TRANSIENT,
+                        SyntaxKind::VolatileKw => ast::Modifiers::VOLATILE,
+                        SyntaxKind::StrictfpKw => ast::Modifiers::STRICTFP,
+                        SyntaxKind::DefaultKw => ast::Modifiers::DEFAULT,
+                        SyntaxKind::SealedKw => ast::Modifiers::SEALED,
+                        SyntaxKind::NonSealedKw => ast::Modifiers::NON_SEALED,
+                        _ => 0,
+                    };
+                }
+            }
+        }
+
+        (modifiers, annotations)
+    }
+
+    fn lower_annotation_use(&self, node: &SyntaxNode) -> Option<ast::AnnotationUse> {
+        let name_node = node.children().find(|child| child.kind() == SyntaxKind::Name);
+        let name = name_node
+            .as_ref()
+            .map(|n| self.collect_non_trivia_text(n))
+            .unwrap_or_default();
+
+        Some(ast::AnnotationUse {
+            name,
             range: self.spans.map_node(node),
         })
     }
@@ -1265,6 +2541,26 @@ fn is_type_name_token(kind: SyntaxKind) -> bool {
     )
 }
 
+fn is_statement_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::LocalVariableDeclarationStatement
+            | SyntaxKind::ExpressionStatement
+            | SyntaxKind::ReturnStatement
+            | SyntaxKind::Block
+            | SyntaxKind::IfStatement
+            | SyntaxKind::WhileStatement
+            | SyntaxKind::DoWhileStatement
+            | SyntaxKind::ForStatement
+            | SyntaxKind::SwitchStatement
+            | SyntaxKind::TryStatement
+            | SyntaxKind::ThrowStatement
+            | SyntaxKind::BreakStatement
+            | SyntaxKind::ContinueStatement
+            | SyntaxKind::EmptyStatement
+    )
+}
+
 fn text_size_to_usize(size: text_size::TextSize) -> usize {
     u32::from(size) as usize
 }
@@ -1274,7 +2570,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_block_uses_wrapper_and_shifts_spans() {
+    fn parse_block_preserves_file_relative_spans() {
         let text = "{int x=1;foo(x);}";
         let offset = 100;
         let block = parse_block(text, offset);
