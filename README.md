@@ -203,6 +203,9 @@ These tests are ignored by default because they scan large projects.
 # Convenience wrapper (clones fixtures + runs ignored tests)
 ./scripts/run-real-project-tests.sh
 
+# To reduce peak memory / match CI behavior:
+RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
+
 cargo test -p nova-project --test real_projects -- --include-ignored
 cargo test -p nova-cli --test real_projects -- --include-ignored
 ```
