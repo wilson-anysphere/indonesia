@@ -111,6 +111,9 @@ nova-worker \
   - Remote (TLS, feature-gated): `tcp+tls:127.0.0.1:9000`
 - `--shard-id <id>`: numeric shard identifier (assigned by the router).
 - `--cache-dir <dir>`: directory used to persist the shard index across restarts.
+- `--max-rpc-bytes <n>`: cap on the maximum v3 frame/packet size offered by the worker during the
+  handshake (`WorkerHello.capabilities.max_frame_len` / `max_packet_len`). The router will negotiate
+  final limits `<=` this value.
 - `--auth-token-file <path>`: read a bearer auth token (shared secret) from a file.
 - `--auth-token-env <VAR>`: read the token from an environment variable (the router uses
   `NOVA_WORKER_AUTH_TOKEN` when spawning local workers).

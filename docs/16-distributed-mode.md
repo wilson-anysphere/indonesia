@@ -35,7 +35,8 @@ The reference v3 implementation (`crates/nova-remote-rpc`) currently defaults to
   via `RpcPayload::Cancel` + the structured `cancelled` error code
 - Keepalive: no application-level heartbeat yet
 
-These are internal defaults rather than user-facing CLI knobs.
+These are defaults; deployments can further restrict maximum message sizes via the router
+configuration (`DistributedRouterConfig.max_rpc_bytes`) and the worker `--max-rpc-bytes` flag.
 
 ## Scope (what exists today)
 
@@ -109,8 +110,11 @@ a global symbol index from shard indexes it receives from workers:
 - `Response::ShardIndex` for `IndexShard` / `UpdateFile`
 - optionally `Notification::CachedIndex` immediately after worker connect (warm start)
 
-`workspaceSymbols` is therefore **best-effort based on which shard indexes the router currently has**
-(a disconnected shard simply contributes no symbols).
+The router-local symbol index starts empty after a router restart and becomes populated as workers
+connect and send shard indexes.
+
+`workspaceSymbols` is therefore **best-effort based on the shard indexes the router currently has**
+(and may be stale across worker disconnects/restarts until refreshed).
 
 The cache is not validated against the current filesystem state and can be stale; callers should
 still trigger a real `index_workspace` to refresh results when correctness matters.
@@ -171,6 +175,7 @@ The router passes each worker:
 - `--connect <ipc-addr>`
 - `--shard-id <id>`
 - `--cache-dir <dir>`
+- `--max-rpc-bytes <n>` (from `DistributedRouterConfig.max_rpc_bytes`)
 - optionally `--auth-token-env NOVA_WORKER_AUTH_TOKEN` (token value passed via env; auto-generated
   when spawning workers locally if not provided)
 
