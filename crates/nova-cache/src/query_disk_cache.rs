@@ -1,13 +1,13 @@
 use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::util::{
-    atomic_write, bincode_deserialize, bincode_options_limited, bincode_serialize, now_millis,
-    read_file_limited, BINCODE_PAYLOAD_LIMIT_BYTES,
+    atomic_write, bincode_options_limited, bincode_serialize, now_millis,
+    BINCODE_PAYLOAD_LIMIT_BYTES,
 };
 use bincode::Options;
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
-use std::io::Cursor;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -73,7 +73,7 @@ impl QueryDiskCache {
 
     pub fn store(&self, key: &str, value: &[u8]) -> Result<(), CacheError> {
         // Don't bother persisting entries that we won't be willing to deserialize
-        // later (see `read_file_limited` / `bincode_options_limited`).
+        // later (see `BINCODE_PAYLOAD_LIMIT_BYTES` / `bincode_options_limited`).
         if value.len() > BINCODE_PAYLOAD_LIMIT_BYTES {
             return Ok(());
         }
@@ -102,57 +102,90 @@ impl QueryDiskCache {
         let key_fingerprint = Fingerprint::from_bytes(key.as_bytes());
         let path = self.entry_path(&key_fingerprint);
         // Avoid following symlinks out of the cache directory.
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if meta.file_type().is_symlink() => {
-                let _ = std::fs::remove_file(&path);
-                return Ok(None);
-            }
-            Ok(meta) if !meta.is_file() => return Ok(None),
-            Ok(_) => {}
+        let meta = match std::fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(_) => return Ok(None),
         };
-        let bytes = match read_file_limited(&path) {
-            Some(bytes) => bytes,
-            None => {
-                // Corrupted / oversized / unreadable entries are treated as a miss and
-                // cleaned up so they don't permanently occupy disk.
+        if meta.file_type().is_symlink() {
+            let _ = std::fs::remove_file(&path);
+            return Ok(None);
+        }
+        if !meta.is_file() {
+            return Ok(None);
+        }
+        if meta.len() > BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
+            let _ = std::fs::remove_file(&path);
+            return Ok(None);
+        }
+
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Ok(None),
+        };
+        let mut reader = BufReader::new(file);
+
+        let opts = bincode_options_limited();
+        let schema_version: u32 = match opts.deserialize_from(&mut reader) {
+            Ok(v) => v,
+            Err(_) => {
                 let _ = std::fs::remove_file(&path);
                 return Ok(None);
             }
         };
-
-        let persisted: PersistedQueryValueOwned = match bincode_deserialize(&bytes) {
-            Ok(value) => value,
+        let nova_version: String = match opts.deserialize_from(&mut reader) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return Ok(None);
+            }
+        };
+        let _saved_at_millis: u64 = match opts.deserialize_from(&mut reader) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return Ok(None);
+            }
+        };
+        let stored_key: String = match opts.deserialize_from(&mut reader) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return Ok(None);
+            }
+        };
+        let stored_fingerprint: Fingerprint = match opts.deserialize_from(&mut reader) {
+            Ok(v) => v,
             Err(_) => {
                 let _ = std::fs::remove_file(&path);
                 return Ok(None);
             }
         };
 
-        if persisted.schema_version != QUERY_DISK_CACHE_SCHEMA_VERSION
-            || persisted.nova_version != nova_core::NOVA_VERSION
+        if schema_version != QUERY_DISK_CACHE_SCHEMA_VERSION
+            || nova_version != nova_core::NOVA_VERSION
         {
-            // The file exists but is not usable for this version; treat as a miss and
-            // delete it so we don't keep growing stale caches.
             let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
-
-        if persisted.key_fingerprint != key_fingerprint {
-            // The entry doesn't match the file name; treat as corruption and delete it.
+        if stored_fingerprint != key_fingerprint {
             let _ = std::fs::remove_file(&path);
             return Ok(None);
         }
-
-        if persisted.key != key {
-            // Fingerprint collisions should be treated as a miss, but we do **not**
-            // delete the file: in the (extremely unlikely) event of a collision, we
-            // don't want reads for one key to erase the other key's cached value.
+        if stored_key != key {
             return Ok(None);
         }
 
-        Ok(Some(persisted.value))
+        let value: Vec<u8> = match opts.deserialize_from(&mut reader) {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = std::fs::remove_file(&path);
+                return Ok(None);
+            }
+        };
+
+        Ok(Some(value))
     }
 
     fn entry_path(&self, fingerprint: &Fingerprint) -> PathBuf {
@@ -295,16 +328,6 @@ struct PersistedQueryValue<'a> {
     value: &'a [u8],
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct PersistedQueryValueOwned {
-    schema_version: u32,
-    nova_version: String,
-    saved_at_millis: u64,
-    key: String,
-    key_fingerprint: Fingerprint,
-    value: Vec<u8>,
-}
-
 #[derive(Debug, Deserialize)]
 struct PersistedQueryValueHeader {
     schema_version: u32,
@@ -312,14 +335,18 @@ struct PersistedQueryValueHeader {
     saved_at_millis: u64,
     key: IgnoredAny,
     key_fingerprint: Fingerprint,
-    value: IgnoredAny,
 }
 
 fn read_query_cache_header(path: &Path) -> Option<PersistedQueryValueHeader> {
-    let bytes = read_file_limited(path)?;
-    // Use the same bincode options as the writer (and the same size cap as
-    // regular loads) to avoid allocating unbounded amounts of memory if the
-    // file is corrupted.
-    let mut cursor = Cursor::new(bytes);
-    bincode_options_limited().deserialize_from(&mut cursor).ok()
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() {
+        return None;
+    }
+    if meta.len() > BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
+        return None;
+    }
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    bincode_options_limited().deserialize_from(&mut reader).ok()
 }
