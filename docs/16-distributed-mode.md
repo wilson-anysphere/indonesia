@@ -9,8 +9,9 @@ correctness and security guardrails that matter for real usage.
 
 **Protocol note:** the original MVP used a simple lockstep message protocol (legacy `v2` in
 `nova_remote_proto`). New work should target **nova remote RPC v3**, which adds explicit
-`request_id: u64` (odd/even parity), multiplexing, chunking (`PacketChunk`), and negotiated
-compression/cancellation. See [`docs/17-remote-rpc-protocol.md`](17-remote-rpc-protocol.md).
+`request_id: u64` (**router even**, **worker odd**), multiplexing, chunking (`PacketChunk`), and
+negotiated compression/cancellation. See
+[`docs/17-remote-rpc-protocol.md`](17-remote-rpc-protocol.md).
 
 ## Scope (what exists today)
 
@@ -222,8 +223,9 @@ Distributed mode currently prioritizes correctness and simplicity over throughpu
 - **Full shard rebuilds.** `UpdateFile` triggers a full rebuild of the shard index (not an
   incremental update).
 - **Large payloads / memory spikes.** The router and worker both hold full file texts in memory.
-  Even with v3 packet chunking/reassembly and negotiated size limits, very large shards can cause
-  high peak memory usage or hit “packet too large” failures.
+  The current transport has no chunking, so very large shards can cause high peak memory usage.
+  The v3 protocol is intended to add chunking/reassembly and negotiated size limits, but it is not
+  yet wired into `nova-router`/`nova-worker`.
 - **Sequential indexing.** `index_workspace` currently indexes shards in a straightforward loop,
   rather than aggressively parallelizing shard RPCs.
 
