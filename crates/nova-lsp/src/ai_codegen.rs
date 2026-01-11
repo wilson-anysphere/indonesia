@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use nova_ai::cancel::CancellationToken;
 use nova_ai::patch::{parse_structured_patch, Patch, PatchParseError};
 use nova_ai::provider::{AiProvider, AiProviderError};
-use nova_ai::safety::{
-    enforce_no_new_imports, enforce_patch_safety, PatchSafetyConfig, SafetyError,
-};
+use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError};
+use nova_config::AiPrivacyConfig;
+use nova_ai::safety::{enforce_no_new_imports, enforce_patch_safety, PatchSafetyConfig, SafetyError};
 use nova_ai::workspace::{AppliedPatch, PatchApplyError, VirtualWorkspace};
 use nova_core::{LineIndex, TextRange};
 use nova_ide::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
@@ -109,6 +109,8 @@ pub enum CodeGenerationError {
     #[error("operation cancelled")]
     Cancelled,
     #[error(transparent)]
+    Policy(#[from] CodeEditPolicyError),
+    #[error(transparent)]
     Provider(#[from] AiProviderError),
     #[error(transparent)]
     PatchParse(#[from] PatchParseError),
@@ -125,8 +127,11 @@ pub fn run_code_generation(
     workspace: &VirtualWorkspace,
     base_prompt: &str,
     config: &CodeGenerationConfig,
+    privacy: &AiPrivacyConfig,
     cancel: &CancellationToken,
 ) -> Result<CodeGenerationResult, CodeGenerationError> {
+    enforce_code_edit_policy(privacy)?;
+
     let engine = DiagnosticsEngine::new();
     let formatter = Formatter::default();
 

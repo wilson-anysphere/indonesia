@@ -60,6 +60,8 @@ fn openai_config(url: Url) -> AiConfig {
             anonymize: None,
             excluded_paths: vec![],
             redact_patterns: vec![],
+            allow_cloud_code_edits: false,
+            allow_code_edits_without_anonymization: false,
         },
         enabled: true,
         ..AiConfig::default()
@@ -82,6 +84,8 @@ fn ollama_config(url: Url) -> AiConfig {
             anonymize: None,
             excluded_paths: vec![],
             redact_patterns: vec![],
+            allow_cloud_code_edits: false,
+            allow_code_edits_without_anonymization: false,
         },
         enabled: true,
         ..AiConfig::default()

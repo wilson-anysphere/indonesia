@@ -4,6 +4,7 @@ use nova_ai::provider::AiProvider;
 use nova_ai::provider::AiProviderError;
 use nova_ai::workspace::VirtualWorkspace;
 use nova_ai::CancellationToken;
+use nova_config::AiPrivacyConfig;
 use nova_ide::diagnostics::Diagnostic;
 use thiserror::Error;
 
@@ -31,11 +32,20 @@ pub enum CodeActionError {
 pub struct AiCodeActionExecutor<'a> {
     provider: &'a dyn AiProvider,
     config: CodeGenerationConfig,
+    privacy: AiPrivacyConfig,
 }
 
 impl<'a> AiCodeActionExecutor<'a> {
-    pub fn new(provider: &'a dyn AiProvider, config: CodeGenerationConfig) -> Self {
-        Self { provider, config }
+    pub fn new(
+        provider: &'a dyn AiProvider,
+        config: CodeGenerationConfig,
+        privacy: AiPrivacyConfig,
+    ) -> Self {
+        Self {
+            provider,
+            config,
+            privacy,
+        }
     }
 
     pub fn execute(
@@ -61,7 +71,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     workspace,
                 );
                 let result =
-                    run_code_generation(self.provider, workspace, &prompt, &self.config, cancel)?;
+                    run_code_generation(self.provider, workspace, &prompt, &self.config, &self.privacy, cancel)?;
                 Ok(CodeActionOutcome::AppliedEdits(result.formatted_workspace))
             }
             AiCodeAction::GenerateTest { file, insert_range } => {
@@ -72,7 +82,7 @@ impl<'a> AiCodeActionExecutor<'a> {
                     workspace,
                 );
                 let result =
-                    run_code_generation(self.provider, workspace, &prompt, &self.config, cancel)?;
+                    run_code_generation(self.provider, workspace, &prompt, &self.config, &self.privacy, cancel)?;
                 Ok(CodeActionOutcome::AppliedEdits(result.formatted_workspace))
             }
         }
@@ -118,6 +128,7 @@ mod tests {
     use nova_ai::provider::AiProviderError;
     use nova_ai::safety::SafetyError;
     use nova_ai::PatchSafetyConfig;
+    use nova_ai::CodeEditPolicyError;
     use pretty_assertions::assert_eq;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -193,7 +204,7 @@ mod tests {
         config.max_repair_attempts = 2;
         config.allow_repair = true;
 
-        let executor = AiCodeActionExecutor::new(&provider, config);
+        let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
         let workspace = example_workspace();
         let cancel = CancellationToken::default();
 
@@ -247,7 +258,7 @@ mod tests {
         config.max_repair_attempts = 2;
         config.allow_repair = true;
 
-        let executor = AiCodeActionExecutor::new(&provider, config);
+        let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
         let workspace = example_workspace();
         let cancel = CancellationToken::default();
 
@@ -297,7 +308,7 @@ mod tests {
             ..PatchSafetyConfig::default()
         };
 
-        let executor = AiCodeActionExecutor::new(&provider, config);
+        let executor = AiCodeActionExecutor::new(&provider, config, AiPrivacyConfig::default());
         let workspace = VirtualWorkspace::default();
         let cancel = CancellationToken::default();
 
@@ -324,6 +335,104 @@ mod tests {
             })) => {
                 assert_eq!(path, "secret/Config.java");
             }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cloud_mode_refuses_code_edits_without_opt_in() {
+        let provider = MockAiProvider::new(vec![Ok("{}".into())]);
+        let config = CodeGenerationConfig::default();
+        let privacy = AiPrivacyConfig {
+            local_only: false,
+            // Cloud mode defaults to anonymization, but the first refusal reason should
+            // be the missing cloud opt-in flag.
+            anonymize: None,
+            ..AiPrivacyConfig::default()
+        };
+
+        let executor = AiCodeActionExecutor::new(&provider, config, privacy);
+        let workspace = example_workspace();
+        let cancel = CancellationToken::default();
+
+        let action = AiCodeAction::GenerateMethodBody {
+            file: "Example.java".into(),
+            insert_range: Range {
+                start: Position { line: 2, character: 0 },
+                end: Position { line: 3, character: 0 },
+            },
+        };
+
+        let err = executor.execute(action, &workspace, &cancel).unwrap_err();
+        assert_eq!(provider.call_count(), 0);
+        match err {
+            CodeActionError::Codegen(CodeGenerationError::Policy(CodeEditPolicyError::CloudEditsDisabled)) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cloud_mode_refuses_when_anonymization_is_enabled_even_with_cloud_opt_in() {
+        let provider = MockAiProvider::new(vec![Ok("{}".into())]);
+        let config = CodeGenerationConfig::default();
+        let privacy = AiPrivacyConfig {
+            local_only: false,
+            anonymize: Some(true),
+            allow_cloud_code_edits: true,
+            ..AiPrivacyConfig::default()
+        };
+
+        let executor = AiCodeActionExecutor::new(&provider, config, privacy);
+        let workspace = example_workspace();
+        let cancel = CancellationToken::default();
+
+        let action = AiCodeAction::GenerateTest {
+            file: "Example.java".into(),
+            insert_range: Range {
+                start: Position { line: 2, character: 0 },
+                end: Position { line: 3, character: 0 },
+            },
+        };
+
+        let err = executor.execute(action, &workspace, &cancel).unwrap_err();
+        assert_eq!(provider.call_count(), 0);
+        match err {
+            CodeActionError::Codegen(CodeGenerationError::Policy(
+                CodeEditPolicyError::CloudEditsWithAnonymizationEnabled,
+            )) => {}
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cloud_mode_requires_separate_opt_in_when_anonymization_disabled() {
+        let provider = MockAiProvider::new(vec![Ok("{}".into())]);
+        let config = CodeGenerationConfig::default();
+        let privacy = AiPrivacyConfig {
+            local_only: false,
+            anonymize: Some(false),
+            allow_cloud_code_edits: true,
+            ..AiPrivacyConfig::default()
+        };
+
+        let executor = AiCodeActionExecutor::new(&provider, config, privacy);
+        let workspace = example_workspace();
+        let cancel = CancellationToken::default();
+
+        let action = AiCodeAction::GenerateMethodBody {
+            file: "Example.java".into(),
+            insert_range: Range {
+                start: Position { line: 2, character: 0 },
+                end: Position { line: 3, character: 0 },
+            },
+        };
+
+        let err = executor.execute(action, &workspace, &cancel).unwrap_err();
+        assert_eq!(provider.call_count(), 0);
+        match err {
+            CodeActionError::Codegen(CodeGenerationError::Policy(
+                CodeEditPolicyError::CloudEditsWithoutAnonymizationDisabled,
+            )) => {}
             other => panic!("unexpected error: {other:?}"),
         }
     }

@@ -610,6 +610,23 @@ pub struct AiPrivacyConfig {
     /// Regex patterns to redact from any text that will be sent to the LLM.
     #[serde(default)]
     pub redact_patterns: Vec<String>,
+
+    /// Allow AI-assisted code edits (patches / file modifications) when
+    /// `local_only = false` (cloud mode).
+    ///
+    /// This is intentionally opt-in because code-edit prompts typically include
+    /// larger portions of source code and the resulting edits can directly
+    /// modify project files.
+    #[serde(default)]
+    pub allow_cloud_code_edits: bool,
+
+    /// Allow AI-assisted code edits when anonymization is disabled.
+    ///
+    /// In cloud mode (`local_only = false`), disabling anonymization means raw
+    /// source identifiers will be sent to the provider. This flag is an
+    /// additional opt-in to avoid accidental leakage.
+    #[serde(default)]
+    pub allow_code_edits_without_anonymization: bool,
 }
 
 fn default_local_only() -> bool {
@@ -623,6 +640,8 @@ impl Default for AiPrivacyConfig {
             anonymize: None,
             excluded_paths: Vec::new(),
             redact_patterns: Vec::new(),
+            allow_cloud_code_edits: false,
+            allow_code_edits_without_anonymization: false,
         }
     }
 }
