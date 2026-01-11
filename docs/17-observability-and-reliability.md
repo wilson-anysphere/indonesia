@@ -39,7 +39,7 @@ Nova’s logging configuration lives in `nova_config::LoggingConfig`:
 - `logging.include_backtrace` (`bool`) – include backtraces in recorded panic reports
 - `logging.buffer_lines` (`usize`) – size of the in-memory log ring buffer (lines)
 
-Example `config.toml`:
+Example `nova.toml` (workspace root):
 
 ```toml
 [logging]
@@ -51,16 +51,21 @@ buffer_lines = 5000
 
 ### Supplying config (standalone binaries vs embedders)
 
-Nova’s logging “knobs” are part of `NovaConfig`, but the standalone binaries in this repository
-snapshot (`nova-lsp`, `nova-dap`) currently start with `NovaConfig::default()` and do not load a
-TOML config file themselves.
+Nova’s logging “knobs” are part of `NovaConfig`. Nova supports loading config from disk via
+`nova_config::load_for_workspace`:
+
+- preferred: `nova.toml` in the workspace root
+- override: `NOVA_CONFIG_PATH` (absolute or relative to the workspace root)
+- legacy fallback: `.nova/config.toml` (workspace-local; often gitignored)
 
 Practical implications:
 
-- **To change verbosity in the standalone binaries, use `RUST_LOG`.**
-- Settings like `logging.json`, `logging.buffer_lines`, and the file-backed AI audit log generally
-  require an embedding application (editor plugin/host) to construct a `NovaConfig` and call the
-  appropriate init hook (for example `nova_lsp::hardening::init(&config, ...)`).
+- `nova-lsp` and `nova` (CLI) will best-effort load workspace config when starting up, so
+  `logging.json`, `logging.buffer_lines`, and similar settings can be controlled via `nova.toml`.
+- `nova-dap` currently starts with `NovaConfig::default()` (it will still respect `RUST_LOG` for
+  verbosity).
+- Embedding applications (editor plugins/hosts) can still construct a `NovaConfig` directly and call
+  the appropriate init hook (for example `nova_lsp::hardening::init(&config, ...)`).
 
 > Note: `nova-lsp` also has a legacy environment-variable based AI mode (`NOVA_AI_PROVIDER=...`).
 > When `NOVA_AI_AUDIT_LOGGING` is enabled in that mode, `nova-lsp` will best-effort enable the
