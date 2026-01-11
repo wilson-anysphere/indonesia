@@ -179,11 +179,20 @@ export async function activate(context: vscode.ExtensionContext) {
       provideCompletionItem: async (document, position, completionContext, token, next) => {
         const result = await next(document, position, completionContext, token);
 
+        // Always attach the active document URI to Nova completion items so the server can
+        // compute document-context-sensitive edits (e.g. imports) during `completionItem/resolve`.
+        const baseItems = Array.isArray(result) ? result : result?.items;
+        if (baseItems?.length) {
+          const uri = document.uri.toString();
+          for (const item of baseItems) {
+            ensureNovaCompletionItemUri(item, uri);
+          }
+        }
+
         if (!client || aiRefreshInProgress || !isAiEnabled() || !isAiCompletionsEnabled()) {
           return result;
         }
 
-        const baseItems = Array.isArray(result) ? result : result?.items;
         if (!baseItems?.length) {
           return result;
         }
