@@ -188,6 +188,24 @@ fn snapshot_comparison_uppercase_constants() {
 }
 
 #[test]
+fn snapshot_array_initializers() {
+    let input = include_str!("fixtures/array_initializers.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("array_initializers", formatted);
+    assert_idempotent("array_initializers", input, &config);
+}
+
+#[test]
+fn snapshot_annotation_array_values() {
+    let input = include_str!("fixtures/annotation_array_values.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("annotation_array_values", formatted);
+    assert_idempotent("annotation_array_values", input, &config);
+}
+
+#[test]
 fn on_type_formatting_triggers_inside_argument_lists() {
     let input = "class A {\n    void m() {\nfoo(1,2);\n    }\n}\n";
     let tree = parse(input);

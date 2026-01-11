@@ -297,6 +297,7 @@ struct ParenCtx {
 enum BraceKind {
     Normal,
     Switch,
+    Inline,
 }
 
 #[derive(Debug, Clone)]
@@ -331,6 +332,7 @@ struct FormatState<'a> {
 
     pending_for: bool,
     pending_try: bool,
+    pending_new: bool,
     pending_switch: bool,
     pending_case_label: bool,
 }
@@ -357,6 +359,7 @@ impl<'a> FormatState<'a> {
 
             pending_for: false,
             pending_try: false,
+            pending_new: false,
             pending_switch: false,
             pending_case_label: false,
         }
@@ -1201,6 +1204,9 @@ fn write_token(
 
             state.pending_for = kind == WordKind::For;
             state.pending_try = kind == WordKind::Try;
+            if kind == WordKind::New {
+                state.pending_new = true;
+            }
             if kind == WordKind::Switch {
                 state.pending_switch = true;
             }
@@ -1222,6 +1228,7 @@ fn write_token(
         }
         Token::Punct(punct) => match punct {
             Punct::LBrace => {
+                let prev = state.last_sig;
                 state.write_indent();
                 let sig = SigToken::Punct(*punct);
                 if state.needs_space_before(state.last_sig, sig, tok) {
@@ -1229,8 +1236,6 @@ fn write_token(
                 }
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
-                state.ensure_newline();
-                state.indent_level = state.indent_level.saturating_add(1);
 
                 let brace_kind = if state.pending_switch {
                     state.pending_switch = false;
@@ -1240,16 +1245,42 @@ fn write_token(
                     };
                     state.switch_stack.push(ctx);
                     BraceKind::Switch
+                } else if is_inline_brace_open(state, prev) {
+                    BraceKind::Inline
                 } else {
                     BraceKind::Normal
                 };
+
                 state.brace_stack.push(BraceCtx { kind: brace_kind });
-                state.last_sig = None;
+
+                match brace_kind {
+                    BraceKind::Inline => {
+                        state.pending_new = false;
+                        state.last_sig = Some(sig);
+                    }
+                    BraceKind::Normal | BraceKind::Switch => {
+                        state.ensure_newline();
+                        state.indent_level = state.indent_level.saturating_add(1);
+                        state.last_sig = None;
+                    }
+                }
+
                 state.pending_for = false;
             }
             Punct::RBrace => {
-                let closing_switch =
-                    matches!(state.brace_stack.last(), Some(ctx) if ctx.kind == BraceKind::Switch);
+                let brace_kind = state.brace_stack.last().map(|ctx| ctx.kind);
+                if matches!(brace_kind, Some(BraceKind::Inline)) {
+                    state.write_indent();
+                    punct.push_to(&mut state.out);
+                    state.line_len += punct.len();
+                    state.brace_stack.pop();
+                    state.last_sig = Some(SigToken::Punct(Punct::RBrace));
+                    state.pending_for = false;
+                    state.pending_new = false;
+                    return;
+                }
+
+                let closing_switch = matches!(brace_kind, Some(BraceKind::Switch));
                 if closing_switch {
                     if let Some(ctx) = state.switch_stack.last_mut() {
                         if ctx.in_case_body {
@@ -1297,6 +1328,7 @@ fn write_token(
                 state.write_indent();
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
+                state.pending_new = false;
 
                 let in_header = state.paren_stack.last().is_some_and(|ctx| {
                     matches!(ctx.kind, ParenKind::ForHeader | ParenKind::ResourceSpec)
@@ -1324,6 +1356,7 @@ fn write_token(
                 state.write_indent();
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
+                state.pending_new = false;
 
                 let mut broke_line = false;
                 if let Some(ctx) = state.paren_stack.last() {
@@ -1357,6 +1390,9 @@ fn write_token(
 
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
+                if state.pending_new {
+                    state.pending_new = false;
+                }
 
                 let kind = if state.pending_for {
                     state.pending_for = false;
@@ -1410,6 +1446,7 @@ fn write_token(
 
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
+                state.pending_new = false;
 
                 if ctx
                     .as_ref()
@@ -1438,6 +1475,9 @@ fn write_token(
                 state.line_len += punct.len();
                 state.bracket_depth = state.bracket_depth.saturating_sub(1);
                 state.last_sig = Some(SigToken::Punct(Punct::RBracket));
+                if state.pending_new && !matches!(next, Some(Token::Punct(Punct::LBracket | Punct::LBrace))) {
+                    state.pending_new = false;
+                }
             }
             Punct::Dot | Punct::DoubleColon => {
                 // Avoid wrapping decimal literals like `3.14`.
@@ -1689,6 +1729,23 @@ fn is_annotation_args(tokens: &[Token], l_paren_idx: usize) -> bool {
     }
 
     false
+}
+
+fn is_inline_brace_open(state: &FormatState<'_>, prev: Option<SigToken>) -> bool {
+    if state.paren_stack.last().is_some_and(|ctx| ctx.annotation_args) {
+        return true;
+    }
+
+    if state.pending_new && matches!(prev, Some(SigToken::Punct(Punct::RBracket))) {
+        return true;
+    }
+
+    matches!(
+        prev,
+        Some(SigToken::Punct(
+            Punct::Eq | Punct::Comma | Punct::LParen | Punct::LBracket | Punct::LBrace
+        ))
+    )
 }
 
 fn has_generic_close_ahead(tokens: &[Token], l_angle_idx: usize) -> bool {
