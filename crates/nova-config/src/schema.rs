@@ -182,6 +182,9 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
     );
 
     allow_deprecated_aliases(schema);
+
+    // Minor semantic constraints that are easier to express by post-processing the generated schema.
+    set_min_items(schema, "GeneratedSourcesConfig", "override_roots", 1);
 }
 
 fn push_all_of(root: &mut RootSchema, schema: Schema) {
@@ -239,4 +242,25 @@ fn add_deprecated_property(
     object_validation
         .properties
         .insert(property_name.to_string(), property_schema);
+}
+
+fn set_min_items(schema: &mut RootSchema, definition_name: &str, property_name: &str, min_items: u32) {
+    let Some(definition) = schema.definitions.get_mut(definition_name) else {
+        return;
+    };
+
+    let Schema::Object(obj) = definition else {
+        return;
+    };
+
+    let object_validation = obj.object();
+    let Some(prop_schema) = object_validation.properties.get_mut(property_name) else {
+        return;
+    };
+
+    let Schema::Object(prop_obj) = prop_schema else {
+        return;
+    };
+
+    prop_obj.array().min_items = Some(min_items);
 }

@@ -858,7 +858,8 @@ expression: schema
           ],
           "items": {
             "type": "string"
-          }
+          },
+          "minItems": 1
         }
       },
       "additionalProperties": false
