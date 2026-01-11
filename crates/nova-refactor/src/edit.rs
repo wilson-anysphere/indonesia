@@ -117,7 +117,9 @@ impl WorkspaceEdit {
     pub fn remap_text_edits_across_renames(&mut self) -> Result<(), EditError> {
         let mapping = self.rename_mapping()?;
         for edit in &mut self.text_edits {
-            edit.file = resolve_rename_chain(&mapping, &edit.file)?;
+            if let Some(to) = mapping.get(&edit.file) {
+                edit.file = to.clone();
+            }
         }
         Ok(())
     }
@@ -312,10 +314,6 @@ impl WorkspaceEdit {
                 mapping.insert(from.clone(), to.clone());
             }
         }
-        // Detect cycles by attempting to resolve each key.
-        for from in mapping.keys() {
-            let _ = resolve_rename_chain(&mapping, from)?;
-        }
         Ok(mapping)
     }
 
@@ -354,7 +352,10 @@ impl WorkspaceEdit {
 
             if rename_sources.contains(&edit.file) && !rename_dests.contains(&edit.file) {
                 let mapping = self.rename_mapping()?;
-                let renamed_to = resolve_rename_chain(&mapping, &edit.file)?;
+                let renamed_to = mapping
+                    .get(&edit.file)
+                    .expect("rename mapping must contain rename source")
+                    .clone();
                 return Err(EditError::TextEditTargetsRenamedFile {
                     file: edit.file.clone(),
                     renamed_to,
@@ -548,21 +549,6 @@ fn order_renames(renames: &BTreeMap<FileId, FileId>) -> Result<Vec<FileOp>, Edit
     Ok(ordered)
 }
 
-fn resolve_rename_chain(
-    mapping: &BTreeMap<FileId, FileId>,
-    file: &FileId,
-) -> Result<FileId, EditError> {
-    let mut current = file.clone();
-    let mut seen: BTreeSet<FileId> = BTreeSet::new();
-    while let Some(next) = mapping.get(&current) {
-        if !seen.insert(current.clone()) {
-            return Err(EditError::RenameCycle { file: current });
-        }
-        current = next.clone();
-    }
-    Ok(current)
-}
-
 impl From<crate::safe_delete::TextEdit> for TextEdit {
     fn from(edit: crate::safe_delete::TextEdit) -> Self {
         Self {
@@ -657,5 +643,59 @@ mod tests {
 
         let out = apply_workspace_edit(&files, &edit).unwrap();
         assert_eq!(out.get(&created).map(String::as_str), Some("hi!"));
+    }
+
+    #[test]
+    fn normalize_rename_source_error_reports_direct_destination() {
+        let a = FileId::new("file:///a");
+        let b = FileId::new("file:///b");
+        let c = FileId::new("file:///c");
+
+        let mut edit = WorkspaceEdit {
+            file_ops: vec![
+                FileOp::Rename {
+                    from: a.clone(),
+                    to: b.clone(),
+                },
+                FileOp::Rename {
+                    from: b.clone(),
+                    to: c.clone(),
+                },
+            ],
+            text_edits: vec![TextEdit::insert(a.clone(), 0, "x")],
+        };
+
+        let err = edit.normalize().unwrap_err();
+        match err {
+            EditError::TextEditTargetsRenamedFile { file, renamed_to } => {
+                assert_eq!(file, a);
+                assert_eq!(renamed_to, b);
+            }
+            other => panic!("expected TextEditTargetsRenamedFile, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remap_text_edits_maps_sources_directly_not_transitively() {
+        let a = FileId::new("file:///a");
+        let b = FileId::new("file:///b");
+        let c = FileId::new("file:///c");
+
+        let mut edit = WorkspaceEdit {
+            file_ops: vec![
+                FileOp::Rename {
+                    from: a.clone(),
+                    to: b.clone(),
+                },
+                FileOp::Rename {
+                    from: b.clone(),
+                    to: c.clone(),
+                },
+            ],
+            text_edits: vec![TextEdit::insert(a.clone(), 0, "x")],
+        };
+
+        edit.remap_text_edits_across_renames().unwrap();
+        assert_eq!(edit.text_edits[0].file, b);
     }
 }
