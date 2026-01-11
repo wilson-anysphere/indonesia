@@ -99,6 +99,9 @@ jobs:
             echo "perf-base.json already present; skipping baseline bench."
             exit 0
           fi
+          # Ensure we capture *only* baseline results. This also prevents stale criterion output
+          # from a previous CI cache restore from being included in the baseline run.
+          rm -rf "${CARGO_TARGET_DIR}/criterion"
           echo "BASELINE_SOURCE=benched base commit via git worktree" >> "${GITHUB_ENV}"
           git worktree add /tmp/nova-perf-base ${{ github.event.pull_request.base.sha }}
           pushd /tmp/nova-perf-base
