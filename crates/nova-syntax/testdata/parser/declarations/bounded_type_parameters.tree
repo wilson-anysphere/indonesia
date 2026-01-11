@@ -1,0 +1,40 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    TypeParameters
+      Less "<"
+      TypeParameter
+        Identifier "T"
+        Whitespace " "
+        ExtendsKw "extends"
+        Whitespace " "
+        Type
+          NamedType
+            Identifier "java"
+            Dot "."
+            Identifier "io"
+            Dot "."
+            Identifier "Serializable"
+            Whitespace " "
+        Amp "&"
+        Whitespace " "
+        Type
+          NamedType
+            Identifier "Comparable"
+            TypeArguments
+              Less "<"
+              TypeArgument
+                Type
+                  NamedType
+                    Identifier "T"
+              Greater ">"
+      Greater ">"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

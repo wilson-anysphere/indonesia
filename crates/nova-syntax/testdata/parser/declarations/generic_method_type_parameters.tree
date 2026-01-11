@@ -12,7 +12,8 @@ CompilationUnit
         Modifiers
         TypeParameters
           Less "<"
-          Identifier "T"
+          TypeParameter
+            Identifier "T"
           Greater ">"
         Whitespace " "
         Type
@@ -47,7 +48,8 @@ CompilationUnit
         Modifiers
         TypeParameters
           Less "<"
-          Identifier "T"
+          TypeParameter
+            Identifier "T"
           Greater ">"
         Whitespace " "
         Identifier "Foo"

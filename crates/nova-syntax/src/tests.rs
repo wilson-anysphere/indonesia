@@ -1528,6 +1528,37 @@ fn ast_instanceof_expression_type_test_accessors_work() {
 }
 
 #[test]
+fn ast_type_parameters_and_bounds_accessors_work() {
+    use crate::{AstNode, ClassDeclaration};
+
+    let input = "class Foo<T extends java.io.Serializable & Comparable<T>> {}";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let class_decl = result
+        .syntax()
+        .descendants()
+        .find_map(ClassDeclaration::cast)
+        .expect("expected a class declaration");
+
+    let type_parameters = class_decl
+        .type_parameters()
+        .expect("expected parsed type parameters");
+    let params: Vec<_> = type_parameters.type_parameters().collect();
+    assert_eq!(params.len(), 1);
+
+    let param = &params[0];
+    assert_eq!(param.name_token().unwrap().text(), "T");
+
+    let bounds: Vec<_> = param
+        .bounds()
+        .map(|ty| ty.syntax().text().to_string())
+        .map(|text| text.trim().to_string())
+        .collect();
+    assert_eq!(bounds, vec!["java.io.Serializable", "Comparable<T>"]);
+}
+
+#[test]
 fn parse_instanceof_pattern_allows_when_identifier() {
     let input = "class Foo { void m(Object x) { if (x instanceof String when) {} } }";
     let result = parse_java(input);
@@ -1823,6 +1854,28 @@ class Bar {}
         .filter(|n| n.kind() == SyntaxKind::ClassDeclaration)
         .count();
 
+    assert_eq!(class_count, 2);
+}
+
+#[test]
+fn parser_recovers_after_unterminated_type_parameter_list() {
+    let input = r#"
+class Foo<T extends Number {
+}
+class Bar {}
+"#;
+
+    let result = parse_java(input);
+    assert!(
+        !result.errors.is_empty(),
+        "expected at least one error for unterminated type parameters"
+    );
+
+    let class_count = result
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::ClassDeclaration)
+        .count();
     assert_eq!(class_count, 2);
 }
 

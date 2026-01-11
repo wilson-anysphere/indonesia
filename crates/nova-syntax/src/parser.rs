@@ -215,6 +215,19 @@ const TYPE_ARGUMENT_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Eof,
 ]);
 
+const TYPE_PARAMETER_RECOVERY: TokenSet = TokenSet::new(&[
+    SyntaxKind::Comma,
+    SyntaxKind::Greater,
+    SyntaxKind::RightShift,
+    SyntaxKind::UnsignedRightShift,
+    SyntaxKind::LParen,
+    SyntaxKind::LBrace,
+    SyntaxKind::Semicolon,
+    SyntaxKind::RParen,
+    SyntaxKind::RBrace,
+    SyntaxKind::Eof,
+]);
+
 const EXPR_RECOVERY: TokenSet = TokenSet::new(&[
     SyntaxKind::Semicolon,
     SyntaxKind::Comma,
@@ -920,33 +933,98 @@ impl<'a> Parser<'a> {
         self.builder.start_node(SyntaxKind::TypeParameters.into());
         self.expect(SyntaxKind::Less, "expected `<`");
 
-        // Don't attempt to fully parse type parameters yet. Generic member declarations are common
-        // in real-world Java, and downstream semantic lowering prefers a stable tree shape over
-        // detailed correctness. We consume tokens until the outer `>` is matched, keeping nested
-        // `<...>` balanced and splitting `>>` / `>>>` into individual `>` tokens so we don't
-        // over-consume.
-        let mut depth: usize = 1;
-        while depth > 0 {
-            match self.current() {
-                SyntaxKind::Less => {
-                    depth += 1;
-                    self.bump_any();
+        let mut parsed_any = false;
+        while !self.at_type_parameters_end(parsed_any) {
+            let before = self.tokens.len();
+            self.builder.start_node(SyntaxKind::TypeParameter.into());
+            self.eat_trivia();
+
+            if self.at_ident_like() {
+                self.bump();
+                if self.at(SyntaxKind::ExtendsKw) {
+                    self.bump();
+                    self.parse_type_parameter_bound();
+                    while self.at(SyntaxKind::Amp) {
+                        self.bump();
+                        self.parse_type_parameter_bound();
+                    }
                 }
-                SyntaxKind::Greater => {
-                    depth = depth.saturating_sub(1);
-                    self.bump_any();
-                }
-                SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift => {
-                    self.split_shift_as_greater();
-                }
-                SyntaxKind::Eof => break,
-                _ => self.bump_any(),
+            } else {
+                self.builder.start_node(SyntaxKind::Error.into());
+                self.error_here("expected type parameter name");
+                self.recover_to_including_angles(TYPE_PARAMETER_RECOVERY);
+                self.builder.finish_node(); // Error
             }
+
+            self.builder.finish_node(); // TypeParameter
+            parsed_any = true;
+            self.force_progress(before, TYPE_PARAMETER_RECOVERY);
+
+            if self.at(SyntaxKind::Comma) {
+                self.bump();
+                continue;
+            }
+
+            if self.at_type_parameters_end(parsed_any) {
+                break;
+            }
+
+            self.error_here("expected `,` or `>` after type parameter");
         }
-        if depth > 0 {
-            self.error_here("unterminated type parameter list");
-        }
+
+        self.expect_gt();
         self.builder.finish_node(); // TypeParameters
+    }
+
+    fn at_type_parameters_end(&mut self, parsed_any: bool) -> bool {
+        match self.current() {
+            SyntaxKind::Greater
+            | SyntaxKind::RightShift
+            | SyntaxKind::UnsignedRightShift
+            | SyntaxKind::LParen
+            | SyntaxKind::LBrace
+            | SyntaxKind::Semicolon
+            | SyntaxKind::RParen
+            | SyntaxKind::RBrace
+            | SyntaxKind::Eof => true,
+            SyntaxKind::ExtendsKw
+            | SyntaxKind::ImplementsKw
+            | SyntaxKind::PermitsKw
+            | SyntaxKind::VoidKw
+            | SyntaxKind::BooleanKw
+            | SyntaxKind::ByteKw
+            | SyntaxKind::ShortKw
+            | SyntaxKind::IntKw
+            | SyntaxKind::LongKw
+            | SyntaxKind::CharKw
+            | SyntaxKind::FloatKw
+            | SyntaxKind::DoubleKw => parsed_any,
+            _ => false,
+        }
+    }
+
+    fn parse_type_parameter_bound(&mut self) {
+        if self.at_type_start() {
+            self.parse_type();
+            return;
+        }
+
+        self.builder.start_node(SyntaxKind::Error.into());
+        self.error_here("expected type bound");
+        self.recover_to_including_angles(TokenSet::new(&[
+            SyntaxKind::Amp,
+            SyntaxKind::Comma,
+            SyntaxKind::Greater,
+            SyntaxKind::RightShift,
+            SyntaxKind::UnsignedRightShift,
+            SyntaxKind::LParen,
+            SyntaxKind::LBrace,
+            SyntaxKind::Semicolon,
+            SyntaxKind::RParen,
+            SyntaxKind::RBrace,
+            SyntaxKind::Eof,
+        ]));
+        self.builder.finish_node(); // Error
     }
 
     fn parse_extends_clause(&mut self, allow_multiple: bool) {
@@ -1155,10 +1233,9 @@ impl<'a> Parser<'a> {
         self.parse_modifiers();
         self.parse_type_parameters_opt();
 
-        // Generic methods/constructors can start with type parameters: `<T> ...`.
-        // We don't model a dedicated `TypeParameters` node yet, but we still
-        // want to consume the token sequence so we can continue parsing the
-        // member declaration.
+        // After parsing an optional type-parameter list, malformed member declarations can
+        // still contain additional `<...>` sequences. Consume a type-argument list for recovery
+        // so we don't get stuck on nested angle brackets.
         if self.at(SyntaxKind::Less) {
             self.parse_type_arguments();
         }
