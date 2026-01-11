@@ -781,8 +781,7 @@ fn pretty_indents_after_existing_newlines_inside_block() {
     let formatted = apply_text_edits(input, &edits).unwrap();
 
     assert_eq!(
-        formatted,
-        "class Foo {\n    int x;\n    int y;\n}\n",
+        formatted, "class Foo {\n    int x;\n    int y;\n}\n",
         "pretty formatter should indent lines that were separated by real newlines"
     );
 }

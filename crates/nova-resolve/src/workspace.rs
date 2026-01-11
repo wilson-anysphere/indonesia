@@ -79,10 +79,7 @@ impl WorkspaceDefMap {
             self.file_modules.insert(def_map.file(), module);
         }
 
-        let package = def_map
-            .package()
-            .cloned()
-            .unwrap_or_else(PackageName::root);
+        let package = def_map.package().cloned().unwrap_or_else(PackageName::root);
         self.register_package_prefixes(&package);
 
         for (item, def) in def_map.iter_type_defs() {
@@ -120,9 +117,7 @@ impl WorkspaceDefMap {
 impl TypeIndex for WorkspaceDefMap {
     fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
         let key = TypeName::new(name.to_dotted());
-        self.items_by_type_name
-            .contains_key(&key)
-            .then_some(key)
+        self.items_by_type_name.contains_key(&key).then_some(key)
     }
 
     fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
@@ -142,7 +137,11 @@ impl TypeIndex for WorkspaceDefMap {
         let item = self.items_by_type_name.get(owner).copied()?;
         let ty = self.types.get(&item)?;
         if ty.fields.contains_key(name) || ty.methods.contains_key(name) {
-            Some(StaticMemberId::new(format!("{}::{}", owner.as_str(), name.as_str())))
+            Some(StaticMemberId::new(format!(
+                "{}::{}",
+                owner.as_str(),
+                name.as_str()
+            )))
         } else {
             None
         }

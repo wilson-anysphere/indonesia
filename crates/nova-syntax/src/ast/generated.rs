@@ -42,7 +42,6 @@ impl CompilationUnit {
     pub fn type_declarations(&self) -> impl Iterator<Item = TypeDeclaration> + '_ {
         support::children::<TypeDeclaration>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,7 +71,6 @@ impl PackageDeclaration {
     pub fn name(&self) -> Option<Name> {
         support::child::<Name>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,7 +96,6 @@ impl ImportDeclaration {
     pub fn name(&self) -> Option<Name> {
         support::child::<Name>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +121,6 @@ impl Modifiers {
     pub fn annotations(&self) -> impl Iterator<Item = Annotation> + '_ {
         support::children::<Annotation>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,7 +150,6 @@ impl Annotation {
     pub fn arguments(&self) -> Option<AnnotationElementValuePairList> {
         support::child::<AnnotationElementValuePairList>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -184,7 +179,6 @@ impl AnnotationElementValuePairList {
     pub fn value(&self) -> Option<AnnotationElementValue> {
         support::child::<AnnotationElementValue>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,7 +208,6 @@ impl AnnotationElementValuePair {
     pub fn value(&self) -> Option<AnnotationElementValue> {
         support::child::<AnnotationElementValue>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -248,7 +241,6 @@ impl AnnotationElementValue {
     pub fn array_initializer(&self) -> Option<AnnotationElementValueArrayInitializer> {
         support::child::<AnnotationElementValueArrayInitializer>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -274,7 +266,6 @@ impl AnnotationElementValueArrayInitializer {
     pub fn values(&self) -> impl Iterator<Item = AnnotationElementValue> + '_ {
         support::children::<AnnotationElementValue>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,7 +334,6 @@ impl ClassDeclaration {
     pub fn body(&self) -> Option<ClassBody> {
         support::child::<ClassBody>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,7 +383,6 @@ impl InterfaceDeclaration {
     pub fn body(&self) -> Option<InterfaceBody> {
         support::child::<InterfaceBody>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -435,7 +424,6 @@ impl EnumDeclaration {
     pub fn body(&self) -> Option<EnumBody> {
         support::child::<EnumBody>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -485,7 +473,6 @@ impl RecordDeclaration {
     pub fn body(&self) -> Option<RecordBody> {
         support::child::<RecordBody>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -519,7 +506,6 @@ impl AnnotationTypeDeclaration {
     pub fn body(&self) -> Option<AnnotationBody> {
         support::child::<AnnotationBody>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -545,7 +531,6 @@ impl ClassBody {
     pub fn members(&self) -> impl Iterator<Item = ClassMember> + '_ {
         support::children::<ClassMember>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -571,7 +556,6 @@ impl InterfaceBody {
     pub fn members(&self) -> impl Iterator<Item = ClassMember> + '_ {
         support::children::<ClassMember>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -601,7 +585,6 @@ impl EnumBody {
     pub fn members(&self) -> impl Iterator<Item = ClassMember> + '_ {
         support::children::<ClassMember>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -627,7 +610,6 @@ impl RecordBody {
     pub fn members(&self) -> impl Iterator<Item = ClassMember> + '_ {
         support::children::<ClassMember>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -653,7 +635,6 @@ impl AnnotationBody {
     pub fn members(&self) -> impl Iterator<Item = ClassMember> + '_ {
         support::children::<ClassMember>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -683,7 +664,6 @@ impl EnumConstant {
     pub fn arguments(&self) -> Option<ArgumentList> {
         support::child::<ArgumentList>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -721,7 +701,6 @@ impl FieldDeclaration {
     pub fn declarator_list(&self) -> Option<VariableDeclaratorList> {
         support::child::<VariableDeclaratorList>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -767,7 +746,6 @@ impl MethodDeclaration {
     pub fn body(&self) -> Option<Block> {
         support::child::<Block>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -809,7 +787,6 @@ impl ConstructorDeclaration {
     pub fn body(&self) -> Option<Block> {
         support::child::<Block>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -839,7 +816,6 @@ impl InitializerBlock {
     pub fn body(&self) -> Option<Block> {
         support::child::<Block>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -884,7 +860,6 @@ impl ParameterList {
     pub fn parameters(&self) -> impl Iterator<Item = Parameter> + '_ {
         support::children::<Parameter>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -918,7 +893,6 @@ impl Parameter {
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -944,7 +918,6 @@ impl Block {
     pub fn statements(&self) -> impl Iterator<Item = Statement> + '_ {
         support::children::<Statement>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -974,7 +947,6 @@ impl LabeledStatement {
     pub fn statement(&self) -> Option<Statement> {
         support::child::<Statement>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1008,7 +980,6 @@ impl IfStatement {
     pub fn else_branch(&self) -> Option<Statement> {
         support::children::<Statement>(&self.syntax).nth(1)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1038,7 +1009,6 @@ impl SwitchStatement {
     pub fn block(&self) -> Option<SwitchBlock> {
         support::child::<SwitchBlock>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1068,7 +1038,6 @@ impl SwitchExpression {
     pub fn block(&self) -> Option<SwitchBlock> {
         support::child::<SwitchBlock>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1102,7 +1071,6 @@ impl SwitchBlock {
     pub fn statements(&self) -> impl Iterator<Item = Statement> + '_ {
         support::children::<Statement>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1132,7 +1100,6 @@ impl SwitchGroup {
     pub fn statements(&self) -> impl Iterator<Item = Statement> + '_ {
         support::children::<Statement>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1162,7 +1129,6 @@ impl SwitchRule {
     pub fn body(&self) -> Option<SwitchRuleBody> {
         support::child::<SwitchRuleBody>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1204,7 +1170,6 @@ impl SwitchLabel {
     pub fn elements(&self) -> impl Iterator<Item = CaseLabelElement> + '_ {
         support::children::<CaseLabelElement>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1238,7 +1203,6 @@ impl CaseLabelElement {
     pub fn guard(&self) -> Option<Guard> {
         support::child::<Guard>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1264,7 +1228,6 @@ impl Guard {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1298,7 +1261,6 @@ impl Pattern {
     pub fn unnamed_pattern(&self) -> Option<UnnamedPattern> {
         support::child::<UnnamedPattern>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1336,7 +1298,6 @@ impl TypePattern {
     pub fn unnamed_pattern(&self) -> Option<UnnamedPattern> {
         support::child::<UnnamedPattern>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1370,7 +1331,6 @@ impl RecordPattern {
     pub fn components(&self) -> impl Iterator<Item = Pattern> + '_ {
         support::children::<Pattern>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1419,7 +1379,6 @@ impl ForStatement {
     pub fn body(&self) -> Option<Statement> {
         support::child::<Statement>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1468,7 +1427,6 @@ impl WhileStatement {
     pub fn body(&self) -> Option<Statement> {
         support::child::<Statement>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1498,7 +1456,6 @@ impl DoWhileStatement {
     pub fn condition(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1528,7 +1485,6 @@ impl SynchronizedStatement {
     pub fn body(&self) -> Option<Block> {
         support::child::<Block>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1566,7 +1522,6 @@ impl TryStatement {
     pub fn finally_clause(&self) -> Option<FinallyClause> {
         support::child::<FinallyClause>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1592,7 +1547,6 @@ impl ResourceSpecification {
     pub fn resources(&self) -> impl Iterator<Item = Resource> + '_ {
         support::children::<Resource>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1637,7 +1591,6 @@ impl CatchClause {
     pub fn body(&self) -> Option<Block> {
         support::child::<Block>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1663,7 +1616,6 @@ impl FinallyClause {
     pub fn body(&self) -> Option<Block> {
         support::child::<Block>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1693,7 +1645,6 @@ impl AssertStatement {
     pub fn message(&self) -> Option<Expression> {
         support::children::<Expression>(&self.syntax).nth(1)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1719,7 +1670,6 @@ impl YieldStatement {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1745,7 +1695,6 @@ impl ReturnStatement {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1771,7 +1720,6 @@ impl ThrowStatement {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1797,7 +1745,6 @@ impl BreakStatement {
     pub fn label_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1823,7 +1770,6 @@ impl ContinueStatement {
     pub fn label_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1849,7 +1795,6 @@ impl LocalTypeDeclarationStatement {
     pub fn declaration(&self) -> Option<TypeDeclaration> {
         support::child::<TypeDeclaration>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1883,7 +1828,6 @@ impl LocalVariableDeclarationStatement {
     pub fn declarator_list(&self) -> Option<VariableDeclaratorList> {
         support::child::<VariableDeclaratorList>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1909,7 +1853,6 @@ impl ExpressionStatement {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1954,7 +1897,6 @@ impl VariableDeclaratorList {
     pub fn declarators(&self) -> impl Iterator<Item = VariableDeclarator> + '_ {
         support::children::<VariableDeclarator>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1988,7 +1930,6 @@ impl VariableDeclarator {
     pub fn initializer(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2022,7 +1963,6 @@ impl Type {
     pub fn named(&self) -> Option<NamedType> {
         support::child::<NamedType>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2067,7 +2007,6 @@ impl NamedType {
     pub fn type_arguments(&self) -> Option<TypeArguments> {
         support::child::<TypeArguments>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2093,7 +2032,6 @@ impl TypeArguments {
     pub fn arguments(&self) -> impl Iterator<Item = TypeArgument> + '_ {
         support::children::<TypeArgument>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2123,7 +2061,6 @@ impl TypeArgument {
     pub fn wildcard(&self) -> Option<WildcardType> {
         support::child::<WildcardType>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2149,7 +2086,6 @@ impl WildcardType {
     pub fn bound(&self) -> Option<Type> {
         support::child::<Type>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2175,7 +2111,6 @@ impl ArgumentList {
     pub fn arguments(&self) -> impl Iterator<Item = Expression> + '_ {
         support::children::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2277,7 +2212,6 @@ impl ParenthesizedExpression {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2307,7 +2241,6 @@ impl NewExpression {
     pub fn arguments(&self) -> Option<ArgumentList> {
         support::child::<ArgumentList>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2345,7 +2278,6 @@ impl ArrayCreationExpression {
     pub fn initializer(&self) -> Option<ArrayInitializer> {
         support::child::<ArrayInitializer>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2371,7 +2303,6 @@ impl DimExprs {
     pub fn dims(&self) -> impl Iterator<Item = DimExpr> + '_ {
         support::children::<DimExpr>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2397,7 +2328,6 @@ impl DimExpr {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2423,7 +2353,6 @@ impl Dims {
     pub fn dims(&self) -> impl Iterator<Item = Dim> + '_ {
         support::children::<Dim>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2472,7 +2401,6 @@ impl MethodCallExpression {
     pub fn arguments(&self) -> Option<ArgumentList> {
         support::child::<ArgumentList>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2502,7 +2430,6 @@ impl FieldAccessExpression {
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2528,7 +2455,6 @@ impl ClassLiteralExpression {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2562,7 +2488,6 @@ impl MethodReferenceExpression {
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2592,7 +2517,6 @@ impl ConstructorReferenceExpression {
     pub fn type_arguments(&self) -> Option<TypeArguments> {
         support::child::<TypeArguments>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2622,7 +2546,6 @@ impl ArrayAccessExpression {
     pub fn index(&self) -> Option<Expression> {
         support::children::<Expression>(&self.syntax).nth(1)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2648,7 +2571,6 @@ impl UnaryExpression {
     pub fn operand(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2678,7 +2600,6 @@ impl BinaryExpression {
     pub fn rhs(&self) -> Option<Expression> {
         support::children::<Expression>(&self.syntax).nth(1)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2712,7 +2633,6 @@ impl InstanceofExpression {
     pub fn pattern(&self) -> Option<Pattern> {
         support::child::<Pattern>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2742,7 +2662,6 @@ impl AssignmentExpression {
     pub fn rhs(&self) -> Option<Expression> {
         support::children::<Expression>(&self.syntax).nth(1)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2776,7 +2695,6 @@ impl ConditionalExpression {
     pub fn else_branch(&self) -> Option<Expression> {
         support::children::<Expression>(&self.syntax).nth(2)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2802,7 +2720,6 @@ impl LambdaExpression {
     pub fn body(&self) -> Option<LambdaBody> {
         support::child::<LambdaBody>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2832,7 +2749,6 @@ impl CastExpression {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2858,7 +2774,6 @@ impl ArrayInitializer {
     pub fn initializers(&self) -> Option<ArrayInitializerList> {
         support::child::<ArrayInitializerList>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2884,7 +2799,6 @@ impl ArrayInitializerList {
     pub fn initializers(&self) -> impl Iterator<Item = VariableInitializer> + '_ {
         support::children::<VariableInitializer>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2914,7 +2828,6 @@ impl VariableInitializer {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2940,7 +2853,6 @@ impl ExtendsClause {
     pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
         support::children::<Type>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2966,7 +2878,6 @@ impl ImplementsClause {
     pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
         support::children::<Type>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2992,7 +2903,6 @@ impl PermitsClause {
     pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
         support::children::<Type>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3018,7 +2928,6 @@ impl TypeParameters {
     pub fn type_parameters(&self) -> impl Iterator<Item = TypeParameter> + '_ {
         support::children::<TypeParameter>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3048,7 +2957,6 @@ impl TypeParameter {
     pub fn bounds(&self) -> impl Iterator<Item = Type> + '_ {
         support::children::<Type>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3074,7 +2982,6 @@ impl DefaultValue {
     pub fn value(&self) -> Option<AnnotationElementValue> {
         support::child::<AnnotationElementValue>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3100,7 +3007,6 @@ impl ExpressionRoot {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3126,7 +3032,6 @@ impl ExpressionFragment {
     pub fn expression(&self) -> Option<Expression> {
         support::child::<Expression>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3152,7 +3057,6 @@ impl StatementFragment {
     pub fn statement(&self) -> Option<Statement> {
         support::child::<Statement>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3178,7 +3082,6 @@ impl BlockFragment {
     pub fn block(&self) -> Option<Block> {
         support::child::<Block>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3204,7 +3107,6 @@ impl ClassMemberFragment {
     pub fn member(&self) -> Option<ClassMember> {
         support::child::<ClassMember>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3246,7 +3148,6 @@ impl ModuleDeclaration {
     pub fn body(&self) -> Option<ModuleBody> {
         support::child::<ModuleBody>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3272,7 +3173,6 @@ impl ModuleBody {
     pub fn directive_wrappers(&self) -> impl Iterator<Item = ModuleDirective> + '_ {
         support::children::<ModuleDirective>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3298,7 +3198,6 @@ impl ModuleDirective {
     pub fn directive(&self) -> Option<ModuleDirectiveKind> {
         support::child::<ModuleDirectiveKind>(&self.syntax)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3340,7 +3239,6 @@ impl RequiresDirective {
     pub fn semicolon(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, SyntaxKind::Semicolon)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3378,7 +3276,6 @@ impl ExportsDirective {
     pub fn semicolon(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, SyntaxKind::Semicolon)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3416,7 +3313,6 @@ impl OpensDirective {
     pub fn semicolon(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, SyntaxKind::Semicolon)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3450,7 +3346,6 @@ impl UsesDirective {
     pub fn semicolon(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, SyntaxKind::Semicolon)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3488,7 +3383,6 @@ impl ProvidesDirective {
     pub fn semicolon(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, SyntaxKind::Semicolon)
     }
-
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3518,12 +3412,24 @@ impl AstNode for TypeDeclaration {
             return None;
         }
 
-        if let Some(it) = ClassDeclaration::cast(syntax.clone()) { return Some(Self::ClassDeclaration(it)); }
-        if let Some(it) = InterfaceDeclaration::cast(syntax.clone()) { return Some(Self::InterfaceDeclaration(it)); }
-        if let Some(it) = EnumDeclaration::cast(syntax.clone()) { return Some(Self::EnumDeclaration(it)); }
-        if let Some(it) = RecordDeclaration::cast(syntax.clone()) { return Some(Self::RecordDeclaration(it)); }
-        if let Some(it) = AnnotationTypeDeclaration::cast(syntax.clone()) { return Some(Self::AnnotationTypeDeclaration(it)); }
-        if let Some(it) = EmptyDeclaration::cast(syntax.clone()) { return Some(Self::EmptyDeclaration(it)); }
+        if let Some(it) = ClassDeclaration::cast(syntax.clone()) {
+            return Some(Self::ClassDeclaration(it));
+        }
+        if let Some(it) = InterfaceDeclaration::cast(syntax.clone()) {
+            return Some(Self::InterfaceDeclaration(it));
+        }
+        if let Some(it) = EnumDeclaration::cast(syntax.clone()) {
+            return Some(Self::EnumDeclaration(it));
+        }
+        if let Some(it) = RecordDeclaration::cast(syntax.clone()) {
+            return Some(Self::RecordDeclaration(it));
+        }
+        if let Some(it) = AnnotationTypeDeclaration::cast(syntax.clone()) {
+            return Some(Self::AnnotationTypeDeclaration(it));
+        }
+        if let Some(it) = EmptyDeclaration::cast(syntax.clone()) {
+            return Some(Self::EmptyDeclaration(it));
+        }
 
         None
     }
@@ -3575,16 +3481,36 @@ impl AstNode for ClassMember {
             return None;
         }
 
-        if let Some(it) = FieldDeclaration::cast(syntax.clone()) { return Some(Self::FieldDeclaration(it)); }
-        if let Some(it) = MethodDeclaration::cast(syntax.clone()) { return Some(Self::MethodDeclaration(it)); }
-        if let Some(it) = ConstructorDeclaration::cast(syntax.clone()) { return Some(Self::ConstructorDeclaration(it)); }
-        if let Some(it) = InitializerBlock::cast(syntax.clone()) { return Some(Self::InitializerBlock(it)); }
-        if let Some(it) = EmptyDeclaration::cast(syntax.clone()) { return Some(Self::EmptyDeclaration(it)); }
-        if let Some(it) = ClassDeclaration::cast(syntax.clone()) { return Some(Self::ClassDeclaration(it)); }
-        if let Some(it) = InterfaceDeclaration::cast(syntax.clone()) { return Some(Self::InterfaceDeclaration(it)); }
-        if let Some(it) = EnumDeclaration::cast(syntax.clone()) { return Some(Self::EnumDeclaration(it)); }
-        if let Some(it) = RecordDeclaration::cast(syntax.clone()) { return Some(Self::RecordDeclaration(it)); }
-        if let Some(it) = AnnotationTypeDeclaration::cast(syntax.clone()) { return Some(Self::AnnotationTypeDeclaration(it)); }
+        if let Some(it) = FieldDeclaration::cast(syntax.clone()) {
+            return Some(Self::FieldDeclaration(it));
+        }
+        if let Some(it) = MethodDeclaration::cast(syntax.clone()) {
+            return Some(Self::MethodDeclaration(it));
+        }
+        if let Some(it) = ConstructorDeclaration::cast(syntax.clone()) {
+            return Some(Self::ConstructorDeclaration(it));
+        }
+        if let Some(it) = InitializerBlock::cast(syntax.clone()) {
+            return Some(Self::InitializerBlock(it));
+        }
+        if let Some(it) = EmptyDeclaration::cast(syntax.clone()) {
+            return Some(Self::EmptyDeclaration(it));
+        }
+        if let Some(it) = ClassDeclaration::cast(syntax.clone()) {
+            return Some(Self::ClassDeclaration(it));
+        }
+        if let Some(it) = InterfaceDeclaration::cast(syntax.clone()) {
+            return Some(Self::InterfaceDeclaration(it));
+        }
+        if let Some(it) = EnumDeclaration::cast(syntax.clone()) {
+            return Some(Self::EnumDeclaration(it));
+        }
+        if let Some(it) = RecordDeclaration::cast(syntax.clone()) {
+            return Some(Self::RecordDeclaration(it));
+        }
+        if let Some(it) = AnnotationTypeDeclaration::cast(syntax.clone()) {
+            return Some(Self::AnnotationTypeDeclaration(it));
+        }
 
         None
     }
@@ -3658,25 +3584,63 @@ impl AstNode for Statement {
             return None;
         }
 
-        if let Some(it) = Block::cast(syntax.clone()) { return Some(Self::Block(it)); }
-        if let Some(it) = LabeledStatement::cast(syntax.clone()) { return Some(Self::LabeledStatement(it)); }
-        if let Some(it) = IfStatement::cast(syntax.clone()) { return Some(Self::IfStatement(it)); }
-        if let Some(it) = SwitchStatement::cast(syntax.clone()) { return Some(Self::SwitchStatement(it)); }
-        if let Some(it) = YieldStatement::cast(syntax.clone()) { return Some(Self::YieldStatement(it)); }
-        if let Some(it) = ForStatement::cast(syntax.clone()) { return Some(Self::ForStatement(it)); }
-        if let Some(it) = WhileStatement::cast(syntax.clone()) { return Some(Self::WhileStatement(it)); }
-        if let Some(it) = DoWhileStatement::cast(syntax.clone()) { return Some(Self::DoWhileStatement(it)); }
-        if let Some(it) = SynchronizedStatement::cast(syntax.clone()) { return Some(Self::SynchronizedStatement(it)); }
-        if let Some(it) = TryStatement::cast(syntax.clone()) { return Some(Self::TryStatement(it)); }
-        if let Some(it) = AssertStatement::cast(syntax.clone()) { return Some(Self::AssertStatement(it)); }
-        if let Some(it) = ReturnStatement::cast(syntax.clone()) { return Some(Self::ReturnStatement(it)); }
-        if let Some(it) = ThrowStatement::cast(syntax.clone()) { return Some(Self::ThrowStatement(it)); }
-        if let Some(it) = BreakStatement::cast(syntax.clone()) { return Some(Self::BreakStatement(it)); }
-        if let Some(it) = ContinueStatement::cast(syntax.clone()) { return Some(Self::ContinueStatement(it)); }
-        if let Some(it) = LocalTypeDeclarationStatement::cast(syntax.clone()) { return Some(Self::LocalTypeDeclarationStatement(it)); }
-        if let Some(it) = LocalVariableDeclarationStatement::cast(syntax.clone()) { return Some(Self::LocalVariableDeclarationStatement(it)); }
-        if let Some(it) = ExpressionStatement::cast(syntax.clone()) { return Some(Self::ExpressionStatement(it)); }
-        if let Some(it) = EmptyStatement::cast(syntax.clone()) { return Some(Self::EmptyStatement(it)); }
+        if let Some(it) = Block::cast(syntax.clone()) {
+            return Some(Self::Block(it));
+        }
+        if let Some(it) = LabeledStatement::cast(syntax.clone()) {
+            return Some(Self::LabeledStatement(it));
+        }
+        if let Some(it) = IfStatement::cast(syntax.clone()) {
+            return Some(Self::IfStatement(it));
+        }
+        if let Some(it) = SwitchStatement::cast(syntax.clone()) {
+            return Some(Self::SwitchStatement(it));
+        }
+        if let Some(it) = YieldStatement::cast(syntax.clone()) {
+            return Some(Self::YieldStatement(it));
+        }
+        if let Some(it) = ForStatement::cast(syntax.clone()) {
+            return Some(Self::ForStatement(it));
+        }
+        if let Some(it) = WhileStatement::cast(syntax.clone()) {
+            return Some(Self::WhileStatement(it));
+        }
+        if let Some(it) = DoWhileStatement::cast(syntax.clone()) {
+            return Some(Self::DoWhileStatement(it));
+        }
+        if let Some(it) = SynchronizedStatement::cast(syntax.clone()) {
+            return Some(Self::SynchronizedStatement(it));
+        }
+        if let Some(it) = TryStatement::cast(syntax.clone()) {
+            return Some(Self::TryStatement(it));
+        }
+        if let Some(it) = AssertStatement::cast(syntax.clone()) {
+            return Some(Self::AssertStatement(it));
+        }
+        if let Some(it) = ReturnStatement::cast(syntax.clone()) {
+            return Some(Self::ReturnStatement(it));
+        }
+        if let Some(it) = ThrowStatement::cast(syntax.clone()) {
+            return Some(Self::ThrowStatement(it));
+        }
+        if let Some(it) = BreakStatement::cast(syntax.clone()) {
+            return Some(Self::BreakStatement(it));
+        }
+        if let Some(it) = ContinueStatement::cast(syntax.clone()) {
+            return Some(Self::ContinueStatement(it));
+        }
+        if let Some(it) = LocalTypeDeclarationStatement::cast(syntax.clone()) {
+            return Some(Self::LocalTypeDeclarationStatement(it));
+        }
+        if let Some(it) = LocalVariableDeclarationStatement::cast(syntax.clone()) {
+            return Some(Self::LocalVariableDeclarationStatement(it));
+        }
+        if let Some(it) = ExpressionStatement::cast(syntax.clone()) {
+            return Some(Self::ExpressionStatement(it));
+        }
+        if let Some(it) = EmptyStatement::cast(syntax.clone()) {
+            return Some(Self::EmptyStatement(it));
+        }
 
         None
     }
@@ -3765,28 +3729,72 @@ impl AstNode for Expression {
             return None;
         }
 
-        if let Some(it) = LiteralExpression::cast(syntax.clone()) { return Some(Self::LiteralExpression(it)); }
-        if let Some(it) = NameExpression::cast(syntax.clone()) { return Some(Self::NameExpression(it)); }
-        if let Some(it) = ThisExpression::cast(syntax.clone()) { return Some(Self::ThisExpression(it)); }
-        if let Some(it) = SuperExpression::cast(syntax.clone()) { return Some(Self::SuperExpression(it)); }
-        if let Some(it) = ParenthesizedExpression::cast(syntax.clone()) { return Some(Self::ParenthesizedExpression(it)); }
-        if let Some(it) = NewExpression::cast(syntax.clone()) { return Some(Self::NewExpression(it)); }
-        if let Some(it) = ArrayCreationExpression::cast(syntax.clone()) { return Some(Self::ArrayCreationExpression(it)); }
-        if let Some(it) = MethodCallExpression::cast(syntax.clone()) { return Some(Self::MethodCallExpression(it)); }
-        if let Some(it) = FieldAccessExpression::cast(syntax.clone()) { return Some(Self::FieldAccessExpression(it)); }
-        if let Some(it) = ArrayAccessExpression::cast(syntax.clone()) { return Some(Self::ArrayAccessExpression(it)); }
-        if let Some(it) = ClassLiteralExpression::cast(syntax.clone()) { return Some(Self::ClassLiteralExpression(it)); }
-        if let Some(it) = MethodReferenceExpression::cast(syntax.clone()) { return Some(Self::MethodReferenceExpression(it)); }
-        if let Some(it) = ConstructorReferenceExpression::cast(syntax.clone()) { return Some(Self::ConstructorReferenceExpression(it)); }
-        if let Some(it) = UnaryExpression::cast(syntax.clone()) { return Some(Self::UnaryExpression(it)); }
-        if let Some(it) = BinaryExpression::cast(syntax.clone()) { return Some(Self::BinaryExpression(it)); }
-        if let Some(it) = InstanceofExpression::cast(syntax.clone()) { return Some(Self::InstanceofExpression(it)); }
-        if let Some(it) = AssignmentExpression::cast(syntax.clone()) { return Some(Self::AssignmentExpression(it)); }
-        if let Some(it) = ConditionalExpression::cast(syntax.clone()) { return Some(Self::ConditionalExpression(it)); }
-        if let Some(it) = SwitchExpression::cast(syntax.clone()) { return Some(Self::SwitchExpression(it)); }
-        if let Some(it) = LambdaExpression::cast(syntax.clone()) { return Some(Self::LambdaExpression(it)); }
-        if let Some(it) = CastExpression::cast(syntax.clone()) { return Some(Self::CastExpression(it)); }
-        if let Some(it) = ArrayInitializer::cast(syntax.clone()) { return Some(Self::ArrayInitializer(it)); }
+        if let Some(it) = LiteralExpression::cast(syntax.clone()) {
+            return Some(Self::LiteralExpression(it));
+        }
+        if let Some(it) = NameExpression::cast(syntax.clone()) {
+            return Some(Self::NameExpression(it));
+        }
+        if let Some(it) = ThisExpression::cast(syntax.clone()) {
+            return Some(Self::ThisExpression(it));
+        }
+        if let Some(it) = SuperExpression::cast(syntax.clone()) {
+            return Some(Self::SuperExpression(it));
+        }
+        if let Some(it) = ParenthesizedExpression::cast(syntax.clone()) {
+            return Some(Self::ParenthesizedExpression(it));
+        }
+        if let Some(it) = NewExpression::cast(syntax.clone()) {
+            return Some(Self::NewExpression(it));
+        }
+        if let Some(it) = ArrayCreationExpression::cast(syntax.clone()) {
+            return Some(Self::ArrayCreationExpression(it));
+        }
+        if let Some(it) = MethodCallExpression::cast(syntax.clone()) {
+            return Some(Self::MethodCallExpression(it));
+        }
+        if let Some(it) = FieldAccessExpression::cast(syntax.clone()) {
+            return Some(Self::FieldAccessExpression(it));
+        }
+        if let Some(it) = ArrayAccessExpression::cast(syntax.clone()) {
+            return Some(Self::ArrayAccessExpression(it));
+        }
+        if let Some(it) = ClassLiteralExpression::cast(syntax.clone()) {
+            return Some(Self::ClassLiteralExpression(it));
+        }
+        if let Some(it) = MethodReferenceExpression::cast(syntax.clone()) {
+            return Some(Self::MethodReferenceExpression(it));
+        }
+        if let Some(it) = ConstructorReferenceExpression::cast(syntax.clone()) {
+            return Some(Self::ConstructorReferenceExpression(it));
+        }
+        if let Some(it) = UnaryExpression::cast(syntax.clone()) {
+            return Some(Self::UnaryExpression(it));
+        }
+        if let Some(it) = BinaryExpression::cast(syntax.clone()) {
+            return Some(Self::BinaryExpression(it));
+        }
+        if let Some(it) = InstanceofExpression::cast(syntax.clone()) {
+            return Some(Self::InstanceofExpression(it));
+        }
+        if let Some(it) = AssignmentExpression::cast(syntax.clone()) {
+            return Some(Self::AssignmentExpression(it));
+        }
+        if let Some(it) = ConditionalExpression::cast(syntax.clone()) {
+            return Some(Self::ConditionalExpression(it));
+        }
+        if let Some(it) = SwitchExpression::cast(syntax.clone()) {
+            return Some(Self::SwitchExpression(it));
+        }
+        if let Some(it) = LambdaExpression::cast(syntax.clone()) {
+            return Some(Self::LambdaExpression(it));
+        }
+        if let Some(it) = CastExpression::cast(syntax.clone()) {
+            return Some(Self::CastExpression(it));
+        }
+        if let Some(it) = ArrayInitializer::cast(syntax.clone()) {
+            return Some(Self::ArrayInitializer(it));
+        }
 
         None
     }
@@ -3828,8 +3836,7 @@ pub enum LambdaBody {
 
 impl AstNode for LambdaBody {
     fn can_cast(kind: SyntaxKind) -> bool {
-        Block::can_cast(kind)
-            || Expression::can_cast(kind)
+        Block::can_cast(kind) || Expression::can_cast(kind)
     }
 
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -3838,8 +3845,12 @@ impl AstNode for LambdaBody {
             return None;
         }
 
-        if let Some(it) = Block::cast(syntax.clone()) { return Some(Self::Block(it)); }
-        if let Some(it) = Expression::cast(syntax.clone()) { return Some(Self::Expression(it)); }
+        if let Some(it) = Block::cast(syntax.clone()) {
+            return Some(Self::Block(it));
+        }
+        if let Some(it) = Expression::cast(syntax.clone()) {
+            return Some(Self::Expression(it));
+        }
 
         None
     }
@@ -3862,9 +3873,7 @@ pub enum SwitchRuleBody {
 
 impl AstNode for SwitchRuleBody {
     fn can_cast(kind: SyntaxKind) -> bool {
-        Block::can_cast(kind)
-            || Statement::can_cast(kind)
-            || Expression::can_cast(kind)
+        Block::can_cast(kind) || Statement::can_cast(kind) || Expression::can_cast(kind)
     }
 
     fn cast(syntax: SyntaxNode) -> Option<Self> {
@@ -3873,9 +3882,15 @@ impl AstNode for SwitchRuleBody {
             return None;
         }
 
-        if let Some(it) = Block::cast(syntax.clone()) { return Some(Self::Block(it)); }
-        if let Some(it) = Statement::cast(syntax.clone()) { return Some(Self::Statement(it)); }
-        if let Some(it) = Expression::cast(syntax.clone()) { return Some(Self::Expression(it)); }
+        if let Some(it) = Block::cast(syntax.clone()) {
+            return Some(Self::Block(it));
+        }
+        if let Some(it) = Statement::cast(syntax.clone()) {
+            return Some(Self::Statement(it));
+        }
+        if let Some(it) = Expression::cast(syntax.clone()) {
+            return Some(Self::Expression(it));
+        }
 
         None
     }
@@ -3914,11 +3929,21 @@ impl AstNode for ModuleDirectiveKind {
             return None;
         }
 
-        if let Some(it) = RequiresDirective::cast(syntax.clone()) { return Some(Self::RequiresDirective(it)); }
-        if let Some(it) = ExportsDirective::cast(syntax.clone()) { return Some(Self::ExportsDirective(it)); }
-        if let Some(it) = OpensDirective::cast(syntax.clone()) { return Some(Self::OpensDirective(it)); }
-        if let Some(it) = UsesDirective::cast(syntax.clone()) { return Some(Self::UsesDirective(it)); }
-        if let Some(it) = ProvidesDirective::cast(syntax.clone()) { return Some(Self::ProvidesDirective(it)); }
+        if let Some(it) = RequiresDirective::cast(syntax.clone()) {
+            return Some(Self::RequiresDirective(it));
+        }
+        if let Some(it) = ExportsDirective::cast(syntax.clone()) {
+            return Some(Self::ExportsDirective(it));
+        }
+        if let Some(it) = OpensDirective::cast(syntax.clone()) {
+            return Some(Self::OpensDirective(it));
+        }
+        if let Some(it) = UsesDirective::cast(syntax.clone()) {
+            return Some(Self::UsesDirective(it));
+        }
+        if let Some(it) = ProvidesDirective::cast(syntax.clone()) {
+            return Some(Self::ProvidesDirective(it));
+        }
 
         None
     }
@@ -3933,4 +3958,3 @@ impl AstNode for ModuleDirectiveKind {
         }
     }
 }
-

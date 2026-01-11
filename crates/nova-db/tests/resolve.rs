@@ -4,12 +4,12 @@ use std::sync::Arc;
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_core::{Name, TypeName};
 use nova_db::{ArcEq, FileId, NovaInputs, NovaResolve, ProjectId, SalsaRootDatabase, SourceRootId};
-use nova_jdk::JdkIndex;
-use nova_resolve::{Resolution, TypeResolution};
-use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
-use nova_project::JpmsModuleRoot;
-use nova_modules::ModuleName;
 use nova_hir::module_info::lower_module_info_source_strict;
+use nova_jdk::JdkIndex;
+use nova_modules::ModuleName;
+use nova_project::JpmsModuleRoot;
+use nova_project::{BuildSystem, JavaConfig, Module, ProjectConfig};
+use nova_resolve::{Resolution, TypeResolution};
 use tempfile::TempDir;
 
 fn executions(db: &SalsaRootDatabase, query_name: &str) -> u64 {
@@ -67,7 +67,10 @@ fn java_lang_string_is_implicit() {
 
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     db.set_classpath_index(project, None);
-    db.set_project_config(project, Arc::new(base_project_config(tmp.path().to_path_buf())));
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
 
     let file = FileId::from_raw(1);
     set_file(
@@ -102,7 +105,10 @@ fn explicit_import_uses_classpath_index() {
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     let classpath = ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
     db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
-    db.set_project_config(project, Arc::new(base_project_config(tmp.path().to_path_buf())));
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
 
     let file = FileId::from_raw(1);
     set_file(
@@ -140,7 +146,10 @@ fn body_only_edit_does_not_recompute_resolution() {
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     let classpath = ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
     db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
-    db.set_project_config(project, Arc::new(base_project_config(tmp.path().to_path_buf())));
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
 
     let file = FileId::from_raw(1);
     db.set_file_project(file, project);
@@ -217,7 +226,10 @@ fn parameter_shadows_field_via_resolve_name_query() {
 
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     db.set_classpath_index(project, None);
-    db.set_project_config(project, Arc::new(base_project_config(tmp.path().to_path_buf())));
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
 
     let file = FileId::from_raw(1);
     set_file(
@@ -257,7 +269,10 @@ fn workspace_type_is_preferred_over_classpath_type() {
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     let classpath = ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
     db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
-    db.set_project_config(project, Arc::new(base_project_config(tmp.path().to_path_buf())));
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
 
     let foo_file = FileId::from_raw(1);
     let use_file = FileId::from_raw(2);
@@ -308,7 +323,10 @@ fn ambiguous_single_type_imports_produce_diagnostics() {
 
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
     db.set_classpath_index(project, None);
-    db.set_project_config(project, Arc::new(base_project_config(tmp.path().to_path_buf())));
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
 
     let a_file = FileId::from_raw(1);
     let b_file = FileId::from_raw(2);
@@ -429,7 +447,8 @@ class Use {
 
     let diags = db.import_diagnostics(use_file);
     assert!(
-        diags.iter()
+        diags
+            .iter()
             .any(|d| d.code.as_ref() == "unresolved-import" && d.message.contains("Hidden")),
         "expected unresolved-import diagnostic for Hidden, got {diags:?}"
     );

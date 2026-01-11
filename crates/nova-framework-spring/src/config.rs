@@ -960,8 +960,7 @@ fn yaml_value_completion_context(text: &str, offset: usize) -> Option<(String, S
     }
 
     let mut value_rel_start = colon_rel + 1;
-    while value_rel_start < after_indent.len() && after_indent.as_bytes()[value_rel_start] == b' '
-    {
+    while value_rel_start < after_indent.len() && after_indent.as_bytes()[value_rel_start] == b' ' {
         value_rel_start += 1;
     }
 

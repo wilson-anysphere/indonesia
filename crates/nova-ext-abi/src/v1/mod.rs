@@ -64,18 +64,18 @@ pub mod guest {
 
         #[cfg(target_pointer_width = "32")]
         {
-        if len <= 0 {
-            return 0;
-        }
+            if len <= 0 {
+                return 0;
+            }
 
-        let cap = match usize::try_from(len) {
-            Ok(cap) => cap,
-            Err(_) => return 0,
-        };
-        let mut buf = Vec::<u8>::with_capacity(cap);
-        let ptr = buf.as_mut_ptr();
-        core::mem::forget(buf);
-        ptr as i32
+            let cap = match usize::try_from(len) {
+                Ok(cap) => cap,
+                Err(_) => return 0,
+            };
+            let mut buf = Vec::<u8>::with_capacity(cap);
+            let ptr = buf.as_mut_ptr();
+            core::mem::forget(buf);
+            ptr as i32
         }
     }
 
@@ -99,12 +99,12 @@ pub mod guest {
 
         #[cfg(target_pointer_width = "32")]
         {
-        let cap = match usize::try_from(len) {
-            Ok(cap) => cap,
-            Err(_) => return,
-        };
-        // Safety: caller must uphold the contract described above.
-        drop(Vec::<u8>::from_raw_parts(ptr as *mut u8, 0, cap));
+            let cap = match usize::try_from(len) {
+                Ok(cap) => cap,
+                Err(_) => return,
+            };
+            // Safety: caller must uphold the contract described above.
+            drop(Vec::<u8>::from_raw_parts(ptr as *mut u8, 0, cap));
         }
     }
 
@@ -129,12 +129,12 @@ pub mod guest {
 
         #[cfg(target_pointer_width = "32")]
         {
-        let len = match usize::try_from(len) {
-            Ok(len) => len,
-            Err(_) => return &[],
-        };
-        // Safety: caller must uphold pointer validity.
-        core::slice::from_raw_parts(ptr as *const u8, len)
+            let len = match usize::try_from(len) {
+                Ok(len) => len,
+                Err(_) => return &[],
+            };
+            // Safety: caller must uphold pointer validity.
+            core::slice::from_raw_parts(ptr as *const u8, len)
         }
     }
 
@@ -158,20 +158,20 @@ pub mod guest {
 
         #[cfg(target_pointer_width = "32")]
         {
-        let len_i32 = match i32::try_from(bytes.len()) {
-            Ok(len) => len,
-            Err(_) => return (0, 0),
-        };
-        let ptr = alloc(len_i32);
-        if ptr == 0 {
-            return (0, 0);
-        }
+            let len_i32 = match i32::try_from(bytes.len()) {
+                Ok(len) => len,
+                Err(_) => return (0, 0),
+            };
+            let ptr = alloc(len_i32);
+            if ptr == 0 {
+                return (0, 0);
+            }
 
-        // Safety: `alloc` reserves `len` bytes of capacity.
-        unsafe {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
-        }
-        (ptr, len_i32)
+            // Safety: `alloc` reserves `len` bytes of capacity.
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len());
+            }
+            (ptr, len_i32)
         }
     }
 
@@ -366,10 +366,7 @@ mod tests {
     #[test]
     fn ptr_len_pack_unpack_roundtrip() {
         let packed = guest::pack_ptr_len(0xDEAD_BEEF, 0x0123_4567);
-        assert_eq!(
-            guest::unpack_ptr_len(packed),
-            (0xDEAD_BEEF, 0x0123_4567)
-        );
+        assert_eq!(guest::unpack_ptr_len(packed), (0xDEAD_BEEF, 0x0123_4567));
     }
 
     #[cfg(not(target_pointer_width = "32"))]

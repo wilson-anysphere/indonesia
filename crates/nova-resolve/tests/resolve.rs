@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_core::{FileId, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
-use nova_hir::queries::HirDatabase;
 use nova_hir::queries;
+use nova_hir::queries::HirDatabase;
 use nova_jdk::JdkIndex;
 use nova_resolve::{build_scopes, BodyOwner, NameResolution, Resolution, Resolver, TypeResolution};
 
@@ -427,7 +427,10 @@ class C { Foo field; }
         .with_classpath(&workspace)
         .with_workspace(&workspace);
     let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Foo"));
-    assert_eq!(res, Some(Resolution::Type(TypeResolution::Source(foo_item))));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::Source(foo_item)))
+    );
 }
 
 #[test]
@@ -472,5 +475,8 @@ class C { Foo field; }
 
     let scopes = build_scopes(&db, use_file);
     let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Foo"));
-    assert_eq!(res, Some(Resolution::Type(TypeResolution::Source(foo_item))));
+    assert_eq!(
+        res,
+        Some(Resolution::Type(TypeResolution::Source(foo_item)))
+    );
 }

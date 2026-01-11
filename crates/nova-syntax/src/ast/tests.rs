@@ -312,10 +312,7 @@ fn switch_rule_body_expression_variant_is_accessible() {
     };
 
     let block = switch_expr.block().expect("switch expression block");
-    let rule_bodies: Vec<_> = block
-        .rules()
-        .filter_map(|rule| rule.body())
-        .collect();
+    let rule_bodies: Vec<_> = block.rules().filter_map(|rule| rule.body()).collect();
     assert_eq!(rule_bodies.len(), 2);
 
     let texts: Vec<_> = rule_bodies

@@ -282,7 +282,12 @@ fn disallow_alias_collisions(schema: &mut RootSchema) {
     // both forms, deserialization fails with a duplicate-field error. Encode the same constraint in
     // the schema so editor/CI validation can catch it early.
     disallow_both_required(schema, "JdkConfig", "home", "jdk_home");
-    disallow_both_required(schema, "AiPrivacyConfig", "anonymize", "anonymize_identifiers");
+    disallow_both_required(
+        schema,
+        "AiPrivacyConfig",
+        "anonymize",
+        "anonymize_identifiers",
+    );
 }
 
 fn disallow_both_required(schema: &mut RootSchema, definition_name: &str, a: &str, b: &str) {

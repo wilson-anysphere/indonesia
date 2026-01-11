@@ -83,12 +83,7 @@ impl<'a> JavaPrettyFormatter<'a> {
         ])
     }
 
-    fn print_verbatim_tokens(
-        &self,
-        node: &SyntaxNode,
-        start: u32,
-        end: u32,
-    ) -> Option<Doc<'a>> {
+    fn print_verbatim_tokens(&self, node: &SyntaxNode, start: u32, end: u32) -> Option<Doc<'a>> {
         if start >= end {
             return None;
         }

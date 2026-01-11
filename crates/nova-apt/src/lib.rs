@@ -1115,9 +1115,8 @@ mod tests {
     }
 
     fn write_generated_hello(project_root: &Path) {
-        let path = project_root.join(
-            "target/generated-sources/annotations/com/example/generated/GeneratedHello.java",
-        );
+        let path = project_root
+            .join("target/generated-sources/annotations/com/example/generated/GeneratedHello.java");
         std::fs::create_dir_all(path.parent().expect("generated file parent")).unwrap();
         std::fs::write(
             &path,
@@ -1154,9 +1153,10 @@ public class GeneratedHello {
         let generated_root = project
             .workspace_root
             .join("target/generated-sources/annotations");
-        assert!(project.source_roots.iter().any(|sr| {
-            sr.origin == SourceRootOrigin::Generated && sr.path == generated_root
-        }));
+        assert!(project
+            .source_roots
+            .iter()
+            .any(|sr| { sr.origin == SourceRootOrigin::Generated && sr.path == generated_root }));
 
         let index = ClassIndex::build(&project.source_roots).unwrap();
         assert!(index.contains("com.example.generated.GeneratedHello"));
@@ -1203,8 +1203,14 @@ class C {}
         let generated_root = project
             .workspace_root
             .join("target/generated-sources/annotations");
-        assert!(!project.source_roots.iter().any(|sr| sr.origin == SourceRootOrigin::Generated));
-        assert!(!project.source_roots.iter().any(|sr| sr.path == generated_root));
+        assert!(!project
+            .source_roots
+            .iter()
+            .any(|sr| sr.origin == SourceRootOrigin::Generated));
+        assert!(!project
+            .source_roots
+            .iter()
+            .any(|sr| sr.path == generated_root));
 
         let index = ClassIndex::build(&project.source_roots).unwrap();
         assert!(!index.contains("com.example.generated.GeneratedHello"));

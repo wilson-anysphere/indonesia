@@ -90,7 +90,10 @@ fn import_map(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ImportMap
     result
 }
 
-fn workspace_def_map(db: &dyn NovaResolve, project: ProjectId) -> Arc<nova_resolve::WorkspaceDefMap> {
+fn workspace_def_map(
+    db: &dyn NovaResolve,
+    project: ProjectId,
+) -> Arc<nova_resolve::WorkspaceDefMap> {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
@@ -138,9 +141,10 @@ fn jpms_compilation_env(
     }
 
     let jdk = db.jdk_index(project);
-    let env = nova_resolve::jpms_env::build_jpms_compilation_environment_for_project(&*jdk, &cfg, None)
-        .ok()
-        .map(|env| ArcEq::new(Arc::new(env)));
+    let env =
+        nova_resolve::jpms_env::build_jpms_compilation_environment_for_project(&*jdk, &cfg, None)
+            .ok()
+            .map(|env| ArcEq::new(Arc::new(env)));
     db.record_query_stat("jpms_compilation_env", start.elapsed());
     env
 }
@@ -253,9 +257,7 @@ fn resolve_name(
 }
 
 fn jpms_enabled(cfg: &ProjectConfig) -> bool {
-    !cfg.jpms_modules.is_empty()
-        || cfg.jpms_workspace.is_some()
-        || !cfg.module_path.is_empty()
+    !cfg.jpms_modules.is_empty() || cfg.jpms_workspace.is_some() || !cfg.module_path.is_empty()
 }
 
 fn module_for_file(cfg: &ProjectConfig, rel_path: &str) -> ModuleName {
@@ -279,7 +281,8 @@ fn module_for_file(cfg: &ProjectConfig, rel_path: &str) -> ModuleName {
         }
     }
 
-    best.map(|(_, name)| name).unwrap_or_else(ModuleName::unnamed)
+    best.map(|(_, name)| name)
+        .unwrap_or_else(ModuleName::unnamed)
 }
 
 struct WorkspaceFirstIndex<'a> {
@@ -301,7 +304,10 @@ impl nova_core::TypeIndex for WorkspaceFirstIndex<'_> {
     ) -> Option<nova_core::TypeName> {
         self.workspace
             .resolve_type_in_package(package, name)
-            .or_else(|| self.classpath.and_then(|cp| cp.resolve_type_in_package(package, name)))
+            .or_else(|| {
+                self.classpath
+                    .and_then(|cp| cp.resolve_type_in_package(package, name))
+            })
     }
 
     fn package_exists(&self, package: &nova_core::PackageName) -> bool {
@@ -316,7 +322,10 @@ impl nova_core::TypeIndex for WorkspaceFirstIndex<'_> {
     ) -> Option<nova_core::StaticMemberId> {
         self.workspace
             .resolve_static_member(owner, name)
-            .or_else(|| self.classpath.and_then(|cp| cp.resolve_static_member(owner, name)))
+            .or_else(|| {
+                self.classpath
+                    .and_then(|cp| cp.resolve_static_member(owner, name))
+            })
     }
 }
 

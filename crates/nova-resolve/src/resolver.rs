@@ -137,10 +137,10 @@ impl<'a> Resolver<'a> {
     }
 
     fn type_name_for_source(&self, scopes: &ScopeGraph, item: ItemId) -> Option<TypeName> {
-        scopes
-            .type_name(item)
-            .cloned()
-            .or_else(|| self.workspace.and_then(|workspace| workspace.type_name(item).cloned()))
+        scopes.type_name(item).cloned().or_else(|| {
+            self.workspace
+                .and_then(|workspace| workspace.type_name(item).cloned())
+        })
     }
 
     fn static_member_resolution_from_id(&self, member: StaticMemberId) -> StaticMemberResolution {
