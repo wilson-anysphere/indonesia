@@ -124,6 +124,8 @@ enum ConnectAddr {
 struct TlsArgs {
     ca_cert: PathBuf,
     domain: String,
+    client_cert: Option<PathBuf>,
+    client_key: Option<PathBuf>,
 }
 
 impl Args {
@@ -134,6 +136,8 @@ impl Args {
         let mut auth_token = None;
         let mut tls_ca_cert = None;
         let mut tls_domain = None;
+        let mut tls_client_cert = None;
+        let mut tls_client_key = None;
 
         let mut iter = std::env::args().skip(1);
         while let Some(arg) = iter.next() {
@@ -176,6 +180,18 @@ impl Args {
                             .ok_or_else(|| anyhow!("--tls-domain requires value"))?,
                     )
                 }
+                "--tls-client-cert" => {
+                    tls_client_cert =
+                        Some(PathBuf::from(iter.next().ok_or_else(|| {
+                            anyhow!("--tls-client-cert requires value")
+                        })?))
+                }
+                "--tls-client-key" => {
+                    tls_client_key = Some(PathBuf::from(
+                        iter.next()
+                            .ok_or_else(|| anyhow!("--tls-client-key requires value"))?,
+                    ))
+                }
                 _ => return Err(anyhow!("unknown argument: {arg}")),
             }
         }
@@ -185,18 +201,47 @@ impl Args {
         let cache_dir = cache_dir.ok_or_else(|| anyhow!("--cache-dir is required"))?;
 
         #[cfg(not(feature = "tls"))]
-        if tls_ca_cert.is_some() || tls_domain.is_some() {
+        if tls_ca_cert.is_some()
+            || tls_domain.is_some()
+            || tls_client_cert.is_some()
+            || tls_client_key.is_some()
+        {
             return Err(anyhow!(
                 "TLS flags require building nova-worker with `--features tls`"
             ));
         }
 
         #[cfg(feature = "tls")]
+        if tls_ca_cert.is_none() && (tls_client_cert.is_some() || tls_client_key.is_some()) {
+            return Err(anyhow!(
+                "--tls-client-cert/--tls-client-key cannot be used without --tls-ca-cert"
+            ));
+        }
+
+        #[cfg(feature = "tls")]
         let tls = match (tls_ca_cert, tls_domain) {
-            (Some(ca_cert), domain) => Some(TlsArgs {
-                ca_cert,
-                domain: domain.unwrap_or_else(|| "localhost".into()),
-            }),
+            (Some(ca_cert), domain) => {
+                let (client_cert, client_key) = match (tls_client_cert, tls_client_key) {
+                    (None, None) => (None, None),
+                    (Some(cert), Some(key)) => (Some(cert), Some(key)),
+                    (Some(_), None) => {
+                        return Err(anyhow!(
+                            "--tls-client-key is required with --tls-client-cert"
+                        ))
+                    }
+                    (None, Some(_)) => {
+                        return Err(anyhow!(
+                            "--tls-client-cert is required with --tls-client-key"
+                        ))
+                    }
+                };
+                Some(TlsArgs {
+                    ca_cert,
+                    domain: domain.unwrap_or_else(|| "localhost".into()),
+                    client_cert,
+                    client_key,
+                })
+            }
             (None, None) => None,
             _ => return Err(anyhow!("--tls-domain cannot be used without --tls-ca-cert")),
         };

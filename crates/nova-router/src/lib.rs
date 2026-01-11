@@ -21,7 +21,7 @@ use tokio::time::{timeout, Duration};
 use tokio::net::UnixListener;
 
 #[cfg(feature = "tls")]
-mod tls;
+pub mod tls;
 
 pub type Result<T> = anyhow::Result<T>;
 
@@ -79,11 +79,41 @@ pub struct DistributedRouterConfig {
     pub worker_command: PathBuf,
     pub cache_dir: PathBuf,
     pub auth_token: Option<String>,
+    #[cfg(feature = "tls")]
+    pub tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist,
     /// If true, the router spawns `nova-worker` processes locally (multi-process mode).
     ///
     /// If false, workers are expected to be started externally (e.g. on remote machines)
     /// and connect to `listen_addr` via RPC.
     pub spawn_workers: bool,
+}
+
+#[cfg(feature = "tls")]
+#[derive(Clone, Debug, Default)]
+pub struct TlsClientCertFingerprintAllowlist {
+    /// Fingerprints allowed to connect to any shard (handy for operators).
+    pub global: Vec<String>,
+    /// Per-shard allowlists. If a shard is present in this map, connections for that shard are
+    /// rejected unless the client's certificate fingerprint is listed (or present in `global`).
+    pub shards: HashMap<ShardId, Vec<String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum WorkerIdentity {
+    /// No authenticated identity is available (Unix socket, plain TCP, or TLS without client auth).
+    Unauthenticated,
+    #[cfg(feature = "tls")]
+    TlsClientCertFingerprint(String),
+}
+
+#[cfg(feature = "tls")]
+impl WorkerIdentity {
+    fn tls_client_cert_fingerprint(&self) -> Option<&str> {
+        match self {
+            WorkerIdentity::TlsClientCertFingerprint(fp) => Some(fp.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// QueryRouter is the coordination point described in `docs/04-incremental-computation.md`.
@@ -617,7 +647,9 @@ async fn accept_loop_unix(
             res = listener.accept() => {
                 let (stream, _) = res.with_context(|| format!("accept unix socket {path:?}"))?;
                 let boxed: BoxedStream = Box::new(stream);
-                handle_new_connection(state.clone(), boxed).await?;
+                if let Err(err) = handle_new_connection(state.clone(), boxed, WorkerIdentity::Unauthenticated).await {
+                    eprintln!("failed to handle worker connection: {err:?}");
+                }
             }
         }
     }
@@ -647,7 +679,9 @@ async fn accept_loop_named_pipe(
             res = server.connect() => {
                 res.with_context(|| format!("accept named pipe {name}"))?;
                 let stream: BoxedStream = Box::new(server);
-                handle_new_connection(state.clone(), stream).await?;
+                if let Err(err) = handle_new_connection(state.clone(), stream, WorkerIdentity::Unauthenticated).await {
+                    eprintln!("failed to handle worker connection: {err:?}");
+                }
                 server = ServerOptions::new()
                     .create(&name)
                     .with_context(|| format!("create named pipe {name}"))?;
@@ -687,13 +721,27 @@ async fn accept_loop_tcp(
                 }
             }
             res = listener.accept() => {
-                let (stream, _) = res.with_context(|| format!("accept tcp {addr}"))?;
-                let boxed: BoxedStream = match &cfg {
-                    TcpListenAddr::Plain(_) => Box::new(stream),
+                let (stream, peer_addr) = res.with_context(|| format!("accept tcp {addr}"))?;
+                let (boxed, identity): (BoxedStream, WorkerIdentity) = match &cfg {
+                    TcpListenAddr::Plain(_) => (Box::new(stream), WorkerIdentity::Unauthenticated),
                     #[cfg(feature = "tls")]
-                    TcpListenAddr::Tls { config, .. } => Box::new(tls::accept(stream, config.clone()).await?),
+                    TcpListenAddr::Tls { config, .. } => match tls::accept(stream, config.clone()).await {
+                        Ok(accepted) => {
+                            let identity = accepted
+                                .client_cert_fingerprint
+                                .map(WorkerIdentity::TlsClientCertFingerprint)
+                                .unwrap_or(WorkerIdentity::Unauthenticated);
+                            (Box::new(accepted.stream), identity)
+                        }
+                        Err(err) => {
+                            eprintln!("tls accept failed from {peer_addr}: {err:?}");
+                            continue;
+                        }
+                    },
                 };
-                handle_new_connection(state.clone(), boxed).await?;
+                if let Err(err) = handle_new_connection(state.clone(), boxed, identity).await {
+                    eprintln!("failed to handle worker connection from {peer_addr}: {err:?}");
+                }
             }
         }
     }
@@ -704,7 +752,11 @@ type BoxedStream = Box<dyn AsyncReadWrite>;
 trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
-async fn handle_new_connection(state: Arc<RouterState>, mut stream: BoxedStream) -> Result<()> {
+async fn handle_new_connection(
+    state: Arc<RouterState>,
+    mut stream: BoxedStream,
+    identity: WorkerIdentity,
+) -> Result<()> {
     let hello = read_message(&mut stream).await?;
     let (shard_id, auth_token, cached_index) = match hello {
         RpcMessage::WorkerHello {
@@ -728,6 +780,82 @@ async fn handle_new_connection(state: Arc<RouterState>, mut stream: BoxedStream)
             .ok();
             return Err(anyhow!("worker authentication failed"));
         }
+    }
+
+    #[cfg(feature = "tls")]
+    {
+        if let Some(shard_allowlist) = state
+            .config
+            .tls_client_cert_fingerprint_allowlist
+            .shards
+            .get(&shard_id)
+        {
+            let Some(fingerprint) = identity.tls_client_cert_fingerprint() else {
+                write_message(
+                    &mut stream,
+                    &RpcMessage::Error {
+                        message: "mTLS client certificate required".into(),
+                    },
+                )
+                .await
+                .ok();
+                return Err(anyhow!("shard {shard_id} requires mTLS client identity"));
+            };
+
+            let is_allowed = shard_allowlist
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint))
+                || state
+                    .config
+                    .tls_client_cert_fingerprint_allowlist
+                    .global
+                    .iter()
+                    .any(|allowed| allowed.eq_ignore_ascii_case(fingerprint));
+
+            if !is_allowed {
+                write_message(
+                    &mut stream,
+                    &RpcMessage::Error {
+                        message: "shard authorization failed".into(),
+                    },
+                )
+                .await
+                .ok();
+                return Err(anyhow!(
+                    "worker mTLS fingerprint {fingerprint} is not authorized for shard {shard_id}"
+                ));
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    enum ShardCheckFailure {
+        UnknownShard,
+        AlreadyHasWorker,
+    }
+    let shard_check = {
+        let guard = state.shards.lock().await;
+        match guard.get(&shard_id) {
+            None => Some(ShardCheckFailure::UnknownShard),
+            Some(shard) if shard.worker.is_some() => Some(ShardCheckFailure::AlreadyHasWorker),
+            Some(_) => None,
+        }
+    };
+    if let Some(failure) = shard_check {
+        let (message, err) = match failure {
+            ShardCheckFailure::UnknownShard => (
+                format!("unknown shard {shard_id}"),
+                anyhow!("worker connected for unknown shard {shard_id}"),
+            ),
+            ShardCheckFailure::AlreadyHasWorker => (
+                format!("shard {shard_id} already has a connected worker"),
+                anyhow!("worker already connected for shard {shard_id}"),
+            ),
+        };
+        write_message(&mut stream, &RpcMessage::Error { message })
+            .await
+            .ok();
+        return Err(err);
     }
 
     let worker_id: WorkerId = state.next_worker_id.fetch_add(1, Ordering::SeqCst);

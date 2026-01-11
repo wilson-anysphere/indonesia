@@ -147,6 +147,47 @@ This mode is best thought of as: **router stays close to the filesystem; workers
 Workers do not need direct access to the project checkout because the router sends full file
 contents over RPC.
 
+TLS support is feature-gated (`--features tls`) and expects PEM files on both ends.
+
+For remote deployments on untrusted networks (or whenever you want shard-scoped blast-radius
+reduction), prefer **mutual TLS (mTLS)** + explicit shard authorization (see
+[ADR 0008 — Distributed mode security](adr/0008-distributed-mode-security.md)).
+
+When configured for mTLS, the router can enforce shard-scoped authorization by checking the SHA-256
+fingerprint of the presented client certificate. This prevents a valid-but-mis-scoped worker (still
+signed by the CA) from claiming an arbitrary `shard_id` via `WorkerHello`.
+
+#### Fingerprint allowlists (mTLS)
+
+When built with `--features tls`, `nova-router` supports the following policy:
+
+- `shard_id -> allowed client cert fingerprints` (per-shard allowlist)
+- optionally, a `global` allowlist (fingerprints allowed for any shard)
+
+Semantics:
+
+- If a shard appears in the allowlist map, connections claiming that shard are rejected unless the
+  worker’s client certificate fingerprint matches (or matches the global allowlist).
+- If a shard has no allowlist configured, it is accepted (mTLS still limits connections to
+  CA-signed client certificates).
+
+Fingerprints are computed as `sha256(leaf_cert_der)` encoded as a lowercase hex string. You can
+derive a value from a PEM certificate with OpenSSL:
+
+```bash
+openssl x509 -in worker.pem -noout -fingerprint -sha256 \
+  | sed 's/^SHA256 Fingerprint=//' \
+  | tr -d ':' \
+  | tr '[:upper:]' '[:lower:]'
+```
+
+#### Worker flags
+
+Workers connecting via `tcp+tls:` can optionally present a client certificate:
+
+- `--tls-client-cert <path>` (PEM)
+- `--tls-client-key <path>` (PEM)
+
 Example (TLS feature build required; see the worker README for all flags):
 
 ```bash
@@ -192,9 +233,11 @@ Remote mode is **not hardened** and should not be exposed to untrusted networks.
 - TLS support exists behind the `tls` Cargo feature for both router and worker (see the worker
   README for usage). Any host embedding the router must also be built with the router’s `tls`
   feature enabled.
-- Even with an auth token, the current protocol does not provide strong authentication/authorization
-  guarantees (no mTLS, no per-worker identity, no network hardening, no rate limiting). Treat it as
-  “trusted network / VPN only”.
+- For stronger authentication/authorization guarantees, configure **mTLS** (client certificate
+  verification) and shard-scoped authorization (e.g. the router’s client-cert fingerprint allowlist).
+- Even with TLS/mTLS enabled, the current protocol is still missing key DoS hardening (maximum frame
+  size enforcement, handshake/hello timeouts, connection limits, rate limiting). Treat it as “trusted
+  network / VPN only” unless you add those guardrails.
 
 ## Future work (not implemented yet)
 
@@ -206,4 +249,5 @@ Clearly separated from the current behavior above:
 - **Parallel** shard RPC fanout with backpressure/cancellation.
 - **Semantic query routing** (hover/definition/etc. executed on workers).
 - **Multiplexing** multiple shards per worker and dynamic shard assignment.
-- Security hardening for remote deployments (mTLS, per-worker auth, tighter protocol validation).
+- Security hardening for remote deployments (DoS limits, secret handling, tighter protocol
+  validation, rate limiting).

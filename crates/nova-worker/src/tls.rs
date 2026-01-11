@@ -17,7 +17,7 @@ pub async fn connect(
         .as_ref()
         .ok_or_else(|| anyhow!("--tls-ca-cert is required for tcp+tls"))?;
 
-    let client_config = Arc::new(build_config(&cfg.ca_cert)?);
+    let client_config = Arc::new(build_config(cfg)?);
     let connector = TlsConnector::from(client_config);
 
     let server_name = rustls::pki_types::ServerName::try_from(cfg.domain.as_str())
@@ -30,22 +30,43 @@ pub async fn connect(
         .context("tls connect")
 }
 
-fn build_config(ca_cert: &Path) -> Result<rustls::ClientConfig> {
+fn build_config(cfg: &TlsArgs) -> Result<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
-    for cert in load_certs(ca_cert)? {
+    for cert in load_certs(&cfg.ca_cert)? {
         roots.add(cert).context("add root cert")?;
     }
 
-    Ok(rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth())
+    let builder = rustls::ClientConfig::builder().with_root_certificates(roots);
+
+    if let (Some(cert_path), Some(key_path)) = (&cfg.client_cert, &cfg.client_key) {
+        let certs = load_certs(cert_path)?;
+        let key = load_private_key(key_path)?;
+        return builder
+            .with_client_auth_cert(certs, key)
+            .map_err(|err| anyhow!("invalid TLS client config: {err}"));
+    }
+
+    Ok(builder.with_no_client_auth())
 }
 
 fn load_certs(path: &Path) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
-    let file = File::open(path).with_context(|| format!("open ca cert {path:?}"))?;
+    let file = File::open(path).with_context(|| format!("open cert {path:?}"))?;
     let mut reader = BufReader::new(file);
     let certs = rustls_pemfile::certs(&mut reader)
         .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("parse ca cert {path:?}"))?;
+        .with_context(|| format!("parse cert {path:?}"))?;
     Ok(certs)
+}
+
+fn load_private_key(path: &Path) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
+    let file = File::open(path).with_context(|| format!("open key {path:?}"))?;
+    let mut reader = BufReader::new(file);
+
+    if let Some(key) = rustls_pemfile::private_key(&mut reader)
+        .with_context(|| format!("parse private key {path:?}"))?
+    {
+        return Ok(key);
+    }
+
+    Err(anyhow!("no private key found in {path:?}"))
 }

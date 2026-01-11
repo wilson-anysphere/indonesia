@@ -64,3 +64,16 @@ nova-worker \
 
 mTLS is the recommended long-term authentication mechanism for production remote deployments (see
 ADR 0008).
+
+If the router is configured for **mutual TLS**, the worker must also present a client certificate:
+
+```bash
+nova-worker \
+  --connect tcp+tls:router.example.com:9000 \
+  --tls-ca-cert ./ca.pem \
+  --tls-domain router.example.com \
+  --tls-client-cert ./worker.pem \
+  --tls-client-key ./worker.key \
+  --shard-id 0 \
+  --cache-dir /tmp/nova-cache
+```
