@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, ProjectSnapshot};
 use nova_index::{
-    load_indexes, save_indexes, CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol,
-    SymbolLocation, SymbolSearchIndex,
+    load_sharded_index_archives, save_sharded_indexes, shard_id_for_path, CandidateStrategy,
+    ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation, SymbolSearchIndex,
+    DEFAULT_SHARD_COUNT,
 };
 use nova_project::ProjectError;
 use nova_syntax::SyntaxNode;
@@ -171,7 +172,7 @@ impl Workspace {
     }
 
     pub fn index(&self) -> Result<IndexReport> {
-        let (snapshot, cache_dir, _indexes, metrics) = self.build_indexes()?;
+        let (snapshot, cache_dir, _shards, metrics) = self.build_indexes()?;
         Ok(IndexReport {
             root: snapshot.project_root().to_path_buf(),
             project_hash: snapshot.project_hash().as_str().to_string(),
@@ -182,8 +183,10 @@ impl Workspace {
 
     /// Index a project and persist the resulting artifacts into Nova's persistent cache.
     pub fn index_and_write_cache(&self) -> Result<IndexReport> {
-        let (snapshot, cache_dir, mut indexes, metrics) = self.build_indexes()?;
-        save_indexes(&cache_dir, &snapshot, &mut indexes).context("failed to persist indexes")?;
+        let shard_count = DEFAULT_SHARD_COUNT;
+        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes()?;
+        save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
+            .context("failed to persist indexes")?;
         self.write_cache_perf(&cache_dir, &metrics)?;
         Ok(IndexReport {
             root: snapshot.project_root().to_path_buf(),
@@ -193,7 +196,9 @@ impl Workspace {
         })
     }
 
-    fn build_indexes(&self) -> Result<(ProjectSnapshot, CacheDir, ProjectIndexes, PerfMetrics)> {
+    fn build_indexes(
+        &self,
+    ) -> Result<(ProjectSnapshot, CacheDir, Vec<ProjectIndexes>, PerfMetrics)> {
         let start = Instant::now();
 
         let files = self.project_java_files()?;
@@ -206,44 +211,74 @@ impl Workspace {
 
         let cache_dir = self.open_cache_dir()?;
 
-        let loaded =
-            load_indexes(&cache_dir, &snapshot).context("failed to load cached indexes")?;
+        let shard_count = DEFAULT_SHARD_COUNT;
+        let loaded = load_sharded_index_archives(&cache_dir, &snapshot, shard_count)
+            .context("failed to load cached indexes")?;
 
-        let (mut indexes, files_to_index) = match loaded {
-            Some(loaded) => (loaded.indexes, loaded.invalidated_files),
+        let (mut shards, invalidated_files) = match loaded {
+            Some(loaded) => {
+                let nova_index::LoadedShardedIndexArchives {
+                    shards: loaded_shards,
+                    invalidated_files,
+                    ..
+                } = loaded;
+
+                let mut shards = Vec::with_capacity(shard_count as usize);
+                for shard in loaded_shards {
+                    let indexes = match shard {
+                        Some(archives) => ProjectIndexes {
+                            symbols: archives.symbols.to_owned()?,
+                            references: archives.references.to_owned()?,
+                            inheritance: archives.inheritance.to_owned()?,
+                            annotations: archives.annotations.to_owned()?,
+                        },
+                        None => ProjectIndexes::default(),
+                    };
+                    shards.push(indexes);
+                }
+                (shards, invalidated_files)
+            }
             None => (
-                ProjectIndexes::default(),
+                (0..shard_count)
+                    .map(|_| ProjectIndexes::default())
+                    .collect(),
                 snapshot.file_fingerprints().keys().cloned().collect(),
             ),
         };
 
-        // `invalidated_files` may include deleted files (which we already removed
-        // from the loaded indexes). Only re-index files that still exist in the
-        // current snapshot.
-        let files_to_index: Vec<String> = files_to_index
+        // Remove stale results for invalidated (new/modified/deleted) files before re-indexing.
+        for file in &invalidated_files {
+            let shard = shard_id_for_path(file, shard_count) as usize;
+            shards[shard].invalidate_file(file);
+        }
+
+        // `invalidated_files` may include deleted files. Only re-index files that still exist in
+        // the current snapshot.
+        let files_to_index: Vec<String> = invalidated_files
             .into_iter()
             .filter(|path| snapshot.file_fingerprints().contains_key(path))
             .collect();
 
         let (files_indexed, bytes_indexed) =
-            self.index_files(&snapshot, &mut indexes, &files_to_index)?;
+            self.index_files(&snapshot, &mut shards, shard_count, &files_to_index)?;
 
         let metrics = PerfMetrics {
             files_total: snapshot.file_fingerprints().len(),
             files_indexed,
             bytes_indexed,
-            symbols_indexed: count_symbols(&indexes),
+            symbols_indexed: count_symbols(&shards),
             elapsed_ms: start.elapsed().as_millis(),
             rss_bytes: current_rss_bytes(),
         };
 
-        Ok((snapshot, cache_dir, indexes, metrics))
+        Ok((snapshot, cache_dir, shards, metrics))
     }
 
     fn index_files(
         &self,
         snapshot: &ProjectSnapshot,
-        indexes: &mut ProjectIndexes,
+        shards: &mut [ProjectIndexes],
+        shard_count: u32,
         files_to_index: &[String],
     ) -> Result<(usize, u64)> {
         let type_re = Regex::new(
@@ -258,6 +293,8 @@ impl Workspace {
         let mut bytes_indexed = 0u64;
 
         for file in files_to_index {
+            let shard = shard_id_for_path(file, shard_count) as usize;
+            let indexes = &mut shards[shard];
             let full_path = snapshot.project_root().join(file);
             let content = fs::read_to_string(&full_path)
                 .with_context(|| format!("failed to read {}", full_path.display()))?;
@@ -535,13 +572,15 @@ impl Workspace {
     pub fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>> {
         // Keep the symbol index up to date by running the incremental indexer
         // and persisting the updated indexes into the on-disk cache.
-        let (snapshot, cache_dir, mut indexes, metrics) = self.build_indexes()?;
-        save_indexes(&cache_dir, &snapshot, &mut indexes).context("failed to persist indexes")?;
+        let shard_count = DEFAULT_SHARD_COUNT;
+        let (snapshot, cache_dir, mut shards, metrics) = self.build_indexes()?;
+        save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards)
+            .context("failed to persist indexes")?;
         self.write_cache_perf(&cache_dir, &metrics)?;
 
         const WORKSPACE_SYMBOL_LIMIT: usize = 200;
         let (results, _stats) =
-            fuzzy_rank_workspace_symbols(&indexes.symbols, query, WORKSPACE_SYMBOL_LIMIT);
+            fuzzy_rank_workspace_symbols_sharded(&shards, query, WORKSPACE_SYMBOL_LIMIT);
         Ok(results)
     }
 
@@ -577,24 +616,43 @@ impl Workspace {
         };
 
         let mut indexes = Vec::new();
-        for (name, path) in [
-            ("symbols", cache_dir.indexes_dir().join("symbols.idx")),
-            ("references", cache_dir.indexes_dir().join("references.idx")),
-            (
-                "inheritance",
-                cache_dir.indexes_dir().join("inheritance.idx"),
-            ),
-            (
-                "annotations",
-                cache_dir.indexes_dir().join("annotations.idx"),
-            ),
-        ] {
-            let bytes = fs::metadata(&path).ok().map(|m| m.len());
+        let indexes_dir = cache_dir.indexes_dir();
+        let shards_root = indexes_dir.join("shards");
+        let shard_manifest = shards_root.join("manifest.txt");
+        if shard_manifest.is_file() {
+            let bytes = fs::metadata(&shard_manifest).ok().map(|m| m.len());
             indexes.push(CacheArtifact {
-                name: name.to_string(),
-                path,
+                name: "shards_manifest".to_string(),
+                path: shard_manifest,
                 bytes,
             });
+
+            let total_bytes = walkdir::WalkDir::new(&shards_root)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_type().is_file())
+                .filter_map(|entry| entry.metadata().ok().map(|m| m.len()))
+                .sum();
+            indexes.push(CacheArtifact {
+                name: "shards".to_string(),
+                path: shards_root,
+                bytes: Some(total_bytes),
+            });
+        } else {
+            for (name, path) in [
+                ("symbols", indexes_dir.join("symbols.idx")),
+                ("references", indexes_dir.join("references.idx")),
+                ("inheritance", indexes_dir.join("inheritance.idx")),
+                ("annotations", indexes_dir.join("annotations.idx")),
+            ] {
+                let bytes = fs::metadata(&path).ok().map(|m| m.len());
+                indexes.push(CacheArtifact {
+                    name: name.to_string(),
+                    path,
+                    bytes,
+                });
+            }
         }
 
         let perf_path = cache_dir.root().join("perf.json");
@@ -697,6 +755,54 @@ fn fuzzy_rank_workspace_symbols(
                 name,
                 locations: locations.clone(),
             });
+        }
+    }
+
+    (ranked, stats)
+}
+
+fn fuzzy_rank_workspace_symbols_sharded(
+    shards: &[ProjectIndexes],
+    query: &str,
+    limit: usize,
+) -> (Vec<WorkspaceSymbol>, SearchStats) {
+    if query.is_empty() {
+        return (
+            Vec::new(),
+            SearchStats {
+                strategy: CandidateStrategy::FullScan,
+                candidates_considered: 0,
+            },
+        );
+    }
+
+    let mut symbol_names = std::collections::BTreeSet::new();
+    for shard in shards {
+        symbol_names.extend(shard.symbols.symbols.keys().cloned());
+    }
+
+    let search_symbols: Vec<SearchSymbol> = symbol_names
+        .into_iter()
+        .map(|name| SearchSymbol {
+            qualified_name: name.clone(),
+            name,
+        })
+        .collect();
+
+    let search_index = SymbolSearchIndex::build(search_symbols);
+    let (results, stats) = search_index.search_with_stats(query, limit);
+
+    let mut ranked = Vec::with_capacity(results.len());
+    for res in results {
+        let name = res.symbol.name;
+        let mut locations = Vec::new();
+        for shard in shards {
+            if let Some(found) = shard.symbols.symbols.get(name.as_str()) {
+                locations.extend(found.iter().cloned());
+            }
+        }
+        if !locations.is_empty() {
+            ranked.push(WorkspaceSymbol { name, locations });
         }
     }
 
@@ -951,11 +1057,10 @@ fn as_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
 
-fn count_symbols(indexes: &ProjectIndexes) -> usize {
-    indexes
-        .symbols
-        .symbols
-        .values()
+fn count_symbols(shards: &[ProjectIndexes]) -> usize {
+    shards
+        .iter()
+        .flat_map(|indexes| indexes.symbols.symbols.values())
         .map(|locations| locations.len())
         .sum()
 }
