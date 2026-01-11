@@ -19,6 +19,9 @@ mod unix {
             worker_command: PathBuf::from("nova-worker"),
             cache_dir: tmp.path().join("cache"),
             auth_token: None,
+            allow_insecure_tcp: false,
+            #[cfg(feature = "tls")]
+            tls_client_cert_fingerprint_allowlist: Default::default(),
             spawn_workers: false,
         };
 

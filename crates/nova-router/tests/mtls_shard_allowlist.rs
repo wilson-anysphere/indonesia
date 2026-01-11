@@ -192,6 +192,7 @@ async fn mtls_shard_allowlist_scopes_workers_by_cert_fingerprint() -> anyhow::Re
         worker_command: PathBuf::from("unused-worker-bin"),
         cache_dir: dir.join("cache"),
         auth_token: None,
+        allow_insecure_tcp: false,
         tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist {
             global: Vec::new(),
             shards,

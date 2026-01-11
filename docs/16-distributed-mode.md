@@ -169,10 +169,17 @@ nova-worker \
 
 ### Remote mode (optional, not hardened)
 
-The router can listen on TCP and accept workers connecting from other machines. An authentication
-token is supported as a stub (a shared secret sent by the worker during the initial handshake).
-Because the token is sent on the wire, remote TCP deployments MUST use TLS (`tcp+tls:`) to avoid
-leaking it.
+The router can listen on TCP and accept workers connecting from other machines.
+
+An authentication token is supported as a stub (a shared secret sent by the worker during the
+initial handshake). Because the token is sent on the wire, remote TCP deployments MUST use TLS
+(`tcp+tls:`) to avoid leaking it.
+
+**Security note:** Plaintext TCP (`tcp:`) is insecure because it sends shard source code (and, when
+enabled, authentication tokens) in cleartext. By default, the router **refuses** to start with
+plaintext TCP when listening on a non-loopback address. If an authentication token is configured,
+Nova requires TLS for TCP by default (even on loopback) unless explicitly opting in to insecure mode
+for local testing.
 
 This mode is best thought of as: **router stays close to the filesystem; workers are compute-only**.
 Workers do not need direct access to the project checkout because the router sends full file

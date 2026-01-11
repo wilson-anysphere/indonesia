@@ -26,6 +26,27 @@ const FALLBACK_SCAN_LIMIT: usize = 50_000;
 async fn main() -> Result<()> {
     let args = Args::parse()?;
 
+    match (&args.connect, args.auth_token.as_ref()) {
+        (ConnectAddr::Tcp(addr), Some(_)) if !args.allow_insecure => {
+            return Err(anyhow!(
+                "refusing to connect to {addr} via plaintext TCP (`tcp:`) while an auth token is set. \
+This would send the auth token and shard source code in cleartext. \
+Use `tcp+tls:` or pass `--allow-insecure` for local testing."
+            ));
+        }
+        (ConnectAddr::Tcp(addr), Some(_)) => {
+            eprintln!(
+                "WARNING: connecting to {addr} via plaintext TCP with an auth token; this will send the token and shard source code in cleartext."
+            );
+        }
+        (ConnectAddr::Tcp(addr), None) => {
+            eprintln!(
+                "WARNING: connecting to {addr} via plaintext TCP (`tcp:`); traffic is unencrypted. Prefer `tcp+tls:` for remote connections."
+            );
+        }
+        _ => {}
+    }
+
     let mut stream: BoxedStream = match args.connect {
         #[cfg(unix)]
         ConnectAddr::Unix(path) => Box::new(
@@ -111,6 +132,7 @@ struct Args {
     shard_id: ShardId,
     cache_dir: PathBuf,
     auth_token: Option<String>,
+    allow_insecure: bool,
     #[cfg(feature = "tls")]
     tls: Option<TlsArgs>,
 }
@@ -141,6 +163,9 @@ impl Args {
         let mut shard_id = None;
         let mut cache_dir = None;
         let mut auth_token = None;
+        let mut auth_token_file: Option<PathBuf> = None;
+        let mut auth_token_env: Option<String> = None;
+        let mut allow_insecure = false;
         let mut tls_ca_cert = None;
         let mut tls_domain = None;
         let mut tls_client_cert = None;
@@ -149,6 +174,7 @@ impl Args {
         let mut iter = std::env::args().skip(1);
         while let Some(arg) = iter.next() {
             match arg.as_str() {
+                "--allow-insecure" => allow_insecure = true,
                 "--connect" => {
                     connect = Some(
                         iter.next()
@@ -173,6 +199,18 @@ impl Args {
                     auth_token = Some(
                         iter.next()
                             .ok_or_else(|| anyhow!("--auth-token requires value"))?,
+                    )
+                }
+                "--auth-token-file" => {
+                    auth_token_file = Some(PathBuf::from(
+                        iter.next()
+                            .ok_or_else(|| anyhow!("--auth-token-file requires value"))?,
+                    ))
+                }
+                "--auth-token-env" => {
+                    auth_token_env = Some(
+                        iter.next()
+                            .ok_or_else(|| anyhow!("--auth-token-env requires value"))?,
                     )
                 }
                 "--tls-ca-cert" => {
@@ -206,6 +244,34 @@ impl Args {
         let connect = connect.ok_or_else(|| anyhow!("--connect is required"))?;
         let shard_id = shard_id.ok_or_else(|| anyhow!("--shard-id is required"))?;
         let cache_dir = cache_dir.ok_or_else(|| anyhow!("--cache-dir is required"))?;
+
+        let auth_token = match (auth_token, auth_token_file, auth_token_env) {
+            (None, None, None) => None,
+            (Some(token), None, None) => Some(token),
+            (None, Some(path), None) => {
+                let token = std::fs::read_to_string(&path)
+                    .with_context(|| format!("read --auth-token-file {}", path.display()))?;
+                let token = token.trim().to_string();
+                if token.is_empty() {
+                    return Err(anyhow!("--auth-token-file {} was empty", path.display()));
+                }
+                Some(token)
+            }
+            (None, None, Some(var)) => {
+                let token = std::env::var(&var)
+                    .with_context(|| format!("read --auth-token-env {var}"))?;
+                let token = token.trim().to_string();
+                if token.is_empty() {
+                    return Err(anyhow!("--auth-token-env {var} was empty"));
+                }
+                Some(token)
+            }
+            _ => {
+                return Err(anyhow!(
+                    "--auth-token, --auth-token-file, and --auth-token-env are mutually exclusive"
+                ))
+            }
+        };
 
         #[cfg(not(feature = "tls"))]
         if tls_ca_cert.is_some()
@@ -258,6 +324,7 @@ impl Args {
             shard_id,
             cache_dir,
             auth_token,
+            allow_insecure,
             #[cfg(feature = "tls")]
             tls,
         })

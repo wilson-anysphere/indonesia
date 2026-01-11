@@ -33,6 +33,9 @@ async fn worker_supervisor_backs_off_on_crash_loop_and_recovers() -> anyhow::Res
         worker_command: worker_bin,
         cache_dir: cache_dir.clone(),
         auth_token: None,
+        allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
 
@@ -94,6 +97,9 @@ async fn worker_supervisor_enforces_handshake_deadline() -> anyhow::Result<()> {
         worker_command: worker_bin,
         cache_dir: cache_dir.clone(),
         auth_token: None,
+        allow_insecure_tcp: false,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
 

@@ -61,16 +61,20 @@ nova-worker \
 - `--connect <addr>`
   - Local: `unix:/path/to/router.sock`
   - Local (Windows): `pipe:nova-router` (or `pipe:\\\\.\\pipe\\nova-router`)
-  - Remote (insecure/plaintext): `tcp:127.0.0.1:9000`
+  - Remote (insecure/plaintext; local testing only): `tcp:127.0.0.1:9000`
   - Remote (TLS, feature-gated): `tcp+tls:127.0.0.1:9000`
 - `--shard-id <id>`: numeric shard identifier (assigned by the router).
 - `--cache-dir <dir>`: directory used to persist the shard index across restarts.
-- `--auth-token <token>`: optional bearer token used during the initial handshake (router must be
-  configured with the same token).
+- `--auth-token-file <path>`: read a shard-scoped bearer token from a file.
+- `--auth-token-env <VAR>`: read the token from an environment variable.
+- `--auth-token <token>`: legacy/insecure bearer token used during the initial handshake (router must
+  be configured with the same token).
   - ⚠️ The token is sent in cleartext unless the transport is encrypted (use `tcp+tls:` for remote
     connections).
   - ⚠️ Secrets on the command line may be visible to other same-host users via process listings.
     Prefer mTLS for production deployments.
+- `--allow-insecure`: allow plaintext TCP connections (`tcp:`). Required when using auth tokens over
+  plaintext TCP.
 
 ### TLS (optional)
 
@@ -86,7 +90,7 @@ nova-worker \
   --tls-domain router.example.com \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache \
-  --auth-token <token>
+  --auth-token-file ./shard-0.token
 ```
 
 mTLS is the recommended long-term authentication mechanism for production remote deployments (see

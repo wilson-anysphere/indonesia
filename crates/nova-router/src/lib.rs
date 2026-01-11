@@ -92,6 +92,13 @@ pub struct DistributedRouterConfig {
     pub worker_command: PathBuf,
     pub cache_dir: PathBuf,
     pub auth_token: Option<String>,
+    /// Allow binding plaintext TCP sockets / connecting over plaintext TCP.
+    ///
+    /// Plaintext TCP is insecure because it exposes source code and (when enabled) auth tokens to
+    /// the network. Nova defaults to requiring TLS for remote TCP connections.
+    ///
+    /// This flag exists as an explicit escape hatch for local development and tests.
+    pub allow_insecure_tcp: bool,
     #[cfg(feature = "tls")]
     pub tls_client_cert_fingerprint_allowlist: TlsClientCertFingerprintAllowlist,
     /// If true, the router spawns `nova-worker` processes locally (multi-process mode).
@@ -126,6 +133,49 @@ impl WorkerIdentity {
             WorkerIdentity::TlsClientCertFingerprint(fp) => Some(fp.as_str()),
             _ => None,
         }
+    }
+}
+
+impl DistributedRouterConfig {
+    fn validate(&self) -> Result<()> {
+        let ListenAddr::Tcp(tcp) = &self.listen_addr else {
+            return Ok(());
+        };
+
+        let addr = match tcp {
+            TcpListenAddr::Plain(addr) => *addr,
+            #[cfg(feature = "tls")]
+            TcpListenAddr::Tls { addr, .. } => *addr,
+        };
+
+        // If TLS is configured, remote safety is handled by the transport.
+        if !matches!(tcp, TcpListenAddr::Plain(_)) {
+            return Ok(());
+        }
+
+        if self.allow_insecure_tcp {
+            return Ok(());
+        }
+
+        let non_loopback = !addr.ip().is_loopback();
+
+        if self.auth_token.is_some() {
+            return Err(anyhow!(
+                "refusing to start distributed router with plaintext TCP (`tcp:`) while an auth token is configured. \
+Plaintext TCP would expose the auth token and shard source code in cleartext. \
+Use TLS (`tcp+tls:`; build with `--features tls`) or explicitly opt in with `allow_insecure_tcp: true` for local testing."
+            ));
+        }
+
+        if non_loopback {
+            return Err(anyhow!(
+                "refusing to listen on insecure plaintext TCP address {addr}. \
+This address is not loopback, so workers may connect over the network and all RPC traffic (including source code) would be unencrypted. \
+Use TLS (`tcp+tls:`; build with `--features tls`) or explicitly opt in with `allow_insecure_tcp: true` for development/testing."
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -401,6 +451,7 @@ impl DistributedRouter {
             config.auth_token = Some(ipc_security::generate_auth_token()?);
         }
 
+        config.validate()?;
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let mut shards = HashMap::new();
@@ -1049,6 +1100,12 @@ async fn worker_supervisor_loop(
 
         if let Some(token) = state.config.auth_token.as_ref() {
             cmd.arg("--auth-token").arg(token);
+        }
+
+        if state.config.allow_insecure_tcp
+            && matches!(state.config.listen_addr, ListenAddr::Tcp(TcpListenAddr::Plain(_)))
+        {
+            cmd.arg("--allow-insecure");
         }
 
         let mut child = match cmd.spawn() {
