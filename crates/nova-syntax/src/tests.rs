@@ -1,6 +1,6 @@
 use pretty_assertions::assert_eq;
 
-use crate::{lex, parse_java, SyntaxKind};
+use crate::{lex, parse_java, parse_java_with_options, JavaLanguageLevel, ParseOptions, SyntaxKind};
 
 fn dump_tokens(input: &str) -> Vec<(SyntaxKind, String)> {
     lex(input)
@@ -387,4 +387,123 @@ fn generated_ast_is_up_to_date() {
         actual, expected,
         "generated AST is stale; run `cargo xtask codegen`"
     );
+}
+
+#[test]
+fn feature_gate_records_version_matrix() {
+    let input = "public record Point(int x, int y) {}";
+
+    let java11 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_11,
+        },
+    );
+    assert_eq!(java11.result.errors, Vec::new());
+    assert_eq!(
+        java11.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_RECORDS"]
+    );
+
+    let java15_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 15,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java15_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java15_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code)
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_RECORDS"]
+    );
+
+    let java15_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 15,
+                preview: true,
+            },
+        },
+    );
+    assert_eq!(java15_preview.result.errors, Vec::new());
+    assert!(java15_preview.diagnostics.is_empty());
+
+    let java21 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21,
+        },
+    );
+    assert_eq!(java21.result.errors, Vec::new());
+    assert!(java21.diagnostics.is_empty());
+}
+
+#[test]
+fn feature_gate_text_blocks_version_matrix() {
+    let input = r#"class Foo { String s = """hi
+there"""; }"#;
+
+    let java14 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 14,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java14.result.errors, Vec::new());
+    assert_eq!(
+        java14.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_TEXT_BLOCKS"]
+    );
+
+    let java15 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 15,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java15.result.errors, Vec::new());
+    assert!(java15.diagnostics.is_empty());
+}
+
+#[test]
+fn feature_gate_var_local_inference_version_matrix() {
+    let input = "class Foo { void m() { var x = 1; } }";
+
+    let java8 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_8,
+        },
+    );
+    assert_eq!(java8.result.errors, Vec::new());
+    assert_eq!(
+        java8.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_VAR_LOCAL_INFERENCE"]
+    );
+
+    let java10 = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel {
+                major: 10,
+                preview: false,
+            },
+        },
+    );
+    assert_eq!(java10.result.errors, Vec::new());
+    assert!(java10.diagnostics.is_empty());
 }

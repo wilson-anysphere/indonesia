@@ -7,6 +7,8 @@
 //!   for interactive IDE features and semantic analysis.
 
 mod ast;
+mod feature_gate;
+mod language_level;
 mod lexer;
 mod parser;
 mod syntax_kind;
@@ -18,6 +20,36 @@ pub use lexer::{lex, Lexer, Token};
 pub use parser::{parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
 pub use tree_store::SyntaxTreeStore;
+pub use language_level::{FeatureAvailability, JavaFeature, JavaLanguageLevel};
+
+/// Options that influence parsing diagnostics.
+///
+/// The Java parser always accepts a modern (superset) grammar. The language
+/// level only affects *post-parse* feature-gate diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseOptions {
+    pub language_level: JavaLanguageLevel,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        Self {
+            language_level: JavaLanguageLevel::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct JavaParse {
+    pub result: JavaParseResult,
+    pub diagnostics: Vec<nova_types::Diagnostic>,
+}
+
+pub fn parse_java_with_options(text: &str, opts: ParseOptions) -> JavaParse {
+    let result = parser::parse_java(text);
+    let diagnostics = feature_gate::feature_gate_diagnostics(&result.syntax(), opts.language_level);
+    JavaParse { result, diagnostics }
+}
 
 use serde::{Deserialize, Serialize};
 
