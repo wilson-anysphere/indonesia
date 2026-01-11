@@ -43,6 +43,7 @@ const aiRequestsInFlight = new Set<string>();
 const MAX_AI_CONTEXT_IDS = 50;
 
 const BUG_REPORT_COMMAND = 'nova.bugReport';
+const SAFE_DELETE_WITH_PREVIEW_COMMAND = 'nova.safeDeleteWithPreview';
 
 const SAFE_MODE_EXEMPT_REQUESTS = new Set<string>([
   'nova/bugReport',
@@ -180,6 +181,28 @@ type NovaCompletionItemData = {
     uri?: unknown;
   };
 };
+
+type SafeDeletePreviewPayload = {
+  type: 'nova/refactor/preview';
+  report: {
+    target?: { id?: number; name?: string };
+    usages?: Array<{ file?: string }>;
+  };
+};
+
+function isSafeDeletePreviewPayload(value: unknown): value is SafeDeletePreviewPayload {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const v = value as { type?: unknown; report?: unknown };
+  if (v.type !== 'nova/refactor/preview') {
+    return false;
+  }
+  if (!v.report || typeof v.report !== 'object') {
+    return false;
+  }
+  return true;
+}
 
 function ensureNovaCompletionItemUri(item: vscode.CompletionItem, uri: string): void {
   const container = item as unknown as { data?: unknown };
@@ -467,13 +490,43 @@ export async function activate(context: vscode.ExtensionContext) {
       },
       provideCodeActions: async (document, range, context, token, next) => {
         const result = await next(document, range, context, token);
-        if (isAiEnabled() || !Array.isArray(result)) {
+        if (!Array.isArray(result)) {
           return result;
         }
 
-        // Hide AI code actions when AI is disabled in settings, even if the
-        // server is configured to advertise them.
-        return result.filter((item) => !isAiCodeActionOrCommand(item));
+        let out = result;
+        if (!isAiEnabled()) {
+          // Hide AI code actions when AI is disabled in settings, even if the
+          // server is configured to advertise them.
+          out = result.filter((item) => !isAiCodeActionOrCommand(item));
+        }
+
+        for (const item of out) {
+          if (!(item instanceof vscode.CodeAction)) {
+            continue;
+          }
+
+          const data = (item as unknown as { data?: unknown }).data;
+          if (!isSafeDeletePreviewPayload(data)) {
+            continue;
+          }
+
+          const command = item.command;
+          if (!command || command.command !== 'nova.safeDelete') {
+            continue;
+          }
+
+          // The LSP server returns a preview payload in `data` and a `nova.safeDelete` command
+          // (workspace/executeCommand). VS Code's default LSP client does not display that preview,
+          // so we route the command through a VS Code-side handler that can ask for confirmation.
+          item.command = {
+            title: command.title,
+            command: SAFE_DELETE_WITH_PREVIEW_COMMAND,
+            arguments: [data],
+          };
+        }
+
+        return out;
       },
     },
   };
@@ -1440,6 +1493,44 @@ export async function activate(context: vscode.ExtensionContext) {
       } catch (err) {
         const message = formatError(err);
         vscode.window.showErrorMessage(`Nova: organize imports failed: ${message}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(SAFE_DELETE_WITH_PREVIEW_COMMAND, async (payload: unknown) => {
+      if (!isSafeDeletePreviewPayload(payload)) {
+        void vscode.window.showErrorMessage('Nova: Safe delete preview payload was missing.');
+        return;
+      }
+
+      const report = payload.report;
+      const targetId = report.target?.id;
+      if (typeof targetId !== 'number') {
+        void vscode.window.showErrorMessage('Nova: Safe delete preview was missing a target id.');
+        return;
+      }
+
+      const targetName = report.target?.name ?? 'symbol';
+      const usages = Array.isArray(report.usages) ? report.usages : [];
+      const fileCount = new Set(usages.map((u) => u.file).filter((f): f is string => typeof f === 'string')).size;
+      const usageCount = usages.length;
+
+      const message = `Safe delete \`${targetName}\` has ${usageCount} usage(s) in ${fileCount} file(s). Delete anyway?`;
+      const choice = await vscode.window.showWarningMessage(message, { modal: true }, 'Delete anyway');
+      if (choice !== 'Delete anyway') {
+        return;
+      }
+
+      try {
+        const c = await requireClient();
+        await c.sendRequest('workspace/executeCommand', {
+          command: 'nova.safeDelete',
+          arguments: [{ target: targetId, mode: 'deleteAnyway' }],
+        });
+      } catch (err) {
+        const message = formatError(err);
+        void vscode.window.showErrorMessage(`Nova: safe delete failed: ${message}`);
       }
     }),
   );
