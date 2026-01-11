@@ -22,14 +22,15 @@ the “secure remote mode” requirements in
 ⚠️ Plaintext `tcp:` is not secure and should only be used with an explicit “insecure” opt-in in
 isolated dev setups.
 
-## Protocol (legacy lockstep today; nova remote RPC v3 planned)
+## Protocol (nova remote RPC v3; legacy v2 deprecated)
 
-Nova is migrating the router↔worker transport from the legacy lockstep protocol
-(`nova_remote_proto::legacy_v2`, length-delimited binary encoding, no request IDs/multiplexing) to
-**nova remote RPC v3** (see
+Nova’s router↔worker transport uses **nova remote RPC v3** (see
 [`docs/17-remote-rpc-protocol.md`](../../docs/17-remote-rpc-protocol.md)).
 
-At a high level, v3 adds:
+The legacy lockstep protocol (`nova_remote_proto::legacy_v2`) is deprecated, not wire-compatible
+with v3, and is kept primarily for compatibility/tests.
+
+At a high level, v3 provides:
 
 - **Version & capability negotiation** during an initial `Hello → Welcome/Reject` handshake.
 - **Multiplexing**: multiple concurrent in-flight RPCs on a single connection.
@@ -67,13 +68,12 @@ The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
 Transport-level timeouts (handshake/TLS accept, plus per-RPC read/write timeouts) are enforced by
 the router/worker and are not currently user-configurable knobs.
 
-The current legacy protocol also enforces hard limits to prevent OOM on untrusted inputs (for
-example: ~64MiB max framed RPC payload, ~8MiB max file text). If indexing fails with a “too large”
-style error, split large source roots into smaller shards.
+v3 enforces hard limits to prevent OOM on untrusted inputs (negotiated `max_frame_len` /
+`max_packet_len`, plus additional application-level caps like a max file-text size). If indexing
+fails with a “too large” style error, split large source roots into smaller shards.
 
-For debugging and testing, you can further *lower* the framed transport limit by setting
-`NOVA_RPC_MAX_MESSAGE_SIZE` (bytes). The value is read once (on first use) and clamped to the built-in
-64MiB maximum; it cannot raise the limit.
+Note: `NOVA_RPC_MAX_MESSAGE_SIZE` only applies to the deprecated legacy framed transport in
+`nova_remote_proto::transport`; v3 uses negotiated limits and does not read this env var.
 
 On the router, the initial handshake is subject to a short timeout (currently **5s**) and the
 listener caps the number of concurrent pending handshakes (currently **128**). If the worker’s
@@ -171,42 +171,27 @@ nova-worker \
 
 ## Troubleshooting
 
-### Handshake errors (legacy lockstep protocol)
-
-Until the v3 transport is wired end-to-end, `nova-worker` uses the legacy lockstep handshake
-(`WorkerHello → RouterHello`).
-
-Common failures:
-
-- **Authentication failed**: if the router expects an auth token and the worker’s token (provided via
-  `--auth-token`, `--auth-token-file`, or `--auth-token-env`) does not match, the router will send an
-  `Error` and close the connection.
-- **Different OS user (Linux + Unix sockets)**: the router rejects Unix socket connections from a
-  different UID (it checks `SO_PEERCRED`). Run the worker as the same OS user as the router.
-- **mTLS required / shard authorization failed** (remote TLS deployments): if the router is
-  configured to require a client certificate identity and/or uses a shard-scoped certificate
-  allowlist, it may reject the worker with an `Error` message like:
-  - `mTLS client certificate required`
-  - `shard authorization failed`
-- **Unknown shard / duplicate worker**: the router will reject connections for unknown shard IDs or
-  when a shard already has an active worker:
-  - `unknown shard <id>`
-  - `shard <id> already has a connected worker`
-- **Version mismatch**: if the worker and router are built from incompatible versions, the worker
-  may fail with a `router hello protocol version mismatch` error.
-
 ### Handshake rejected (v3)
 
-In v3, the router may reject the initial handshake with `Reject { code, message }`. Common causes:
+The router may reject the initial v3 handshake with `Reject { code, message }` and then close the
+connection. On the worker side this typically surfaces as an error like:
+
+```
+handshake rejected (code=Unauthorized): authentication failed
+```
+
+Common causes:
 
 - `unsupported_version`: router and worker could not negotiate a mutually supported v3 version.
   Upgrade/downgrade one side so their supported version ranges overlap.
-  - If the router is still on the legacy protocol, you may see a message like:
-    `router only supports legacy_v2 protocol`.
-- `unauthorized`: authentication failed (missing/invalid auth token via `--auth-token*`, or worker is
-  not authorized for the claimed `--shard-id`).
-- `invalid_request`: protocol mismatch (e.g. trying to connect a legacy lockstep worker to a v3 router,
-  or vice versa), malformed frames, or invalid capability values.
+- `unauthorized`: authentication failed (missing/invalid auth token via `--auth-token*`), mTLS is
+  required but the worker did not present a client certificate, shard authorization failed, etc.
+- `invalid_request`: malformed frames, invalid capability values, or protocol mismatch (e.g. trying
+  to connect a legacy `legacy_v2` worker to a v3 router).
+- **Different OS user (Linux + Unix sockets)**: the router rejects Unix socket connections from a
+  different UID (it checks `SO_PEERCRED`). Run the worker as the same OS user as the router.
+- **Unknown shard / duplicate worker**: the router rejects connections for unknown shard IDs or when
+  a shard already has an active worker (surface as a `Reject` with a descriptive message).
 
 ### TLS connect errors
 

@@ -2,18 +2,36 @@
 
 Wire format for Nova distributed / multi-process mode messaging (router ⇄ worker).
 
+This crate defines two protocol families:
+
+- **v3 (current):** CBOR `WireFrame` envelopes + typed `Request`/`Response`/`Notification` payloads
+  (`nova_remote_proto::v3`). The Tokio transport/runtime lives in `crates/nova-remote-rpc`.
+  - On-the-wire spec: [`docs/17-remote-rpc-protocol.md`](../../docs/17-remote-rpc-protocol.md)
+- **legacy_v2 (deprecated):** custom binary `legacy_v2::RpcMessage` codec kept for
+  compatibility/tests (not wire-compatible with v3).
+
 ## Transport framing
 
-On the wire, RPC messages are encoded as:
+Both protocols share the same outer framing:
 
 1. `u32` little-endian payload length
-2. legacy `RpcMessage` payload (custom `legacy_v2` codec; intentionally not bincode)
+2. payload bytes
 
-Shared helpers live in `nova_remote_proto::transport`.
+Payload interpretation:
 
-`MAX_FRAME_BYTES` caps the payload length prefix to prevent OOM from a hostile length.
+- v3: CBOR `v3::WireFrame`
+- legacy_v2: `legacy_v2::RpcMessage` (custom codec; intentionally not bincode)
 
-You can further lower the framed transport limit at runtime by setting:
+Shared helpers for the **legacy** framed transport live in `nova_remote_proto::transport`.
+
+## Frame limits
+
+Hard safety limits are enforced during decoding to avoid OOM from hostile inputs:
+
+- `MAX_MESSAGE_BYTES` / `MAX_FRAME_BYTES` (currently 64 MiB)
+
+The legacy framed transport (`nova_remote_proto::transport`) also supports lowering the effective
+max frame size at runtime via:
 
 ```bash
 export NOVA_RPC_MAX_MESSAGE_SIZE=33554432  # 32 MiB
@@ -21,6 +39,8 @@ export NOVA_RPC_MAX_MESSAGE_SIZE=33554432  # 32 MiB
 
 The default framed transport limit is 32 MiB. The value is read once (on first use) and clamped to
 `MAX_FRAME_BYTES`.
+
+Note: v3 uses negotiated `max_frame_len` / `max_packet_len` and does not read this env var.
 
 ## Testing
 
@@ -36,11 +56,15 @@ This crate includes a `cargo fuzz` harness in `crates/nova-remote-proto/fuzz/`.
 cargo install cargo-fuzz
 cd crates/nova-remote-proto
 cargo fuzz run decode_framed_message
+cargo fuzz run decode_v3_wire_frame
+cargo fuzz run decode_v3_rpc_payload
 ```
 
-The `decode_framed_message` target feeds arbitrary bytes into
-`transport::decode_framed_message` and asserts that decoding never panics and never allocates more
-than `MAX_FRAME_BYTES` for a single frame.
+Targets:
+
+- `decode_framed_message`: legacy framed transport (`transport::decode_framed_message`)
+- `decode_v3_wire_frame`: v3 CBOR envelope decoding (`v3::decode_wire_frame`)
+- `decode_v3_rpc_payload`: v3 application payload decoding (`v3::decode_rpc_payload`)
 
 ## Golden vectors
 

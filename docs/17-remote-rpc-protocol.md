@@ -2,7 +2,7 @@
 
 [← Back to Main Document](../AGENTS.md) | [Previous: Distributed / Multi-Process Mode](16-distributed-mode.md)
 
-This document is an **on-the-wire spec** for the next-generation router ↔ worker RPC protocol:
+This document is an **on-the-wire spec** for Nova’s router ↔ worker RPC protocol:
 **“nova remote RPC” v3**.
 
 It is intended to be implementable without reading Nova’s source code. Where words like **MUST**,
@@ -10,16 +10,17 @@ It is intended to be implementable without reading Nova’s source code. Where w
 
 > **Implementation status (important):**
 >
-> - `nova-router` and `nova-worker` currently use the legacy lockstep protocol
->   (`nova_remote_proto::legacy_v2`, length-prefixed binary encoding, lockstep request/response).
-> - The v3 CBOR envelope types/codecs live in `nova_remote_proto::v3`.
-> - A reference v3 transport implementation exists in `crates/nova-remote-rpc` (`RpcConnection`),
->   but `nova-router`/`nova-worker` have not migrated yet.
->   - `PacketChunk` chunking/reassembly is implemented and supported end-to-end.
->   - Best-effort `Cancel` handling is implemented end-to-end (incoming `Cancel` updates a per-RPC
->     cancellation token, and responders may return a structured `cancelled` error).
-> - Request IDs are generated and inbound parity is validated per the parity rule (router even /
->   worker odd) in `crates/nova-remote-rpc`.
+> - `nova-router` and `nova-worker` use v3 for distributed / multi-process mode.
+> - The v3 schema/envelope types live in `nova_remote_proto::v3`.
+> - The Tokio transport/runtime lives in `crates/nova-remote-rpc` (`RpcConnection`):
+>   - request ID allocation + parity enforcement (router even / worker odd),
+>   - multiplexing (multiple concurrent in-flight requests),
+>   - `PacketChunk` chunking/reassembly,
+>   - best-effort `Cancel` handling (incoming `Cancel` updates a per-RPC cancellation token; responders
+>     may return a structured `cancelled` error),
+>   - optional negotiated compression (feature-gated `zstd`).
+> - The legacy lockstep protocol (`nova_remote_proto::legacy_v2`) is deprecated and not
+>   wire-compatible with v3; mixed router/worker versions fail the handshake.
 
 ## Design background
 
@@ -347,6 +348,14 @@ Default values in `nova_remote_proto::v3` (informative):
 - If there is no overlap, the router MUST respond with `Reject(code="unsupported_version", ...)`
   and close the connection.
 
+Versioning notes (informative):
+
+- `ProtocolVersion` is `{ major, minor }`.
+- A change in `major` is assumed to be wire-incompatible.
+- `minor` versions are intended for backward-compatible evolution within a major version (new
+  optional fields/variants; old peers ignore what they don’t understand).
+- At the time of writing, the only shipped version is **3.0**.
+
 ### 4.6 `Reject` (router → worker)
 
 If the router rejects the handshake, it sends `Reject` and then closes the connection:
@@ -470,6 +479,17 @@ enum Notification {
   Unknown,
 }
 ```
+
+Message semantics (informative):
+
+- `LoadFiles` → `Response::Ack` (rehydrate the worker’s in-memory file map; does **not** rebuild the shard index)
+- `IndexShard` / `UpdateFile` → `Response::ShardIndex(ShardIndex)` (full shard symbol index payload)
+- `GetWorkerStats` → `Response::WorkerStats(WorkerStats)`
+- `Shutdown` → `Response::Shutdown`
+
+`Notification::CachedIndex(ShardIndex)` is optional and may be sent by a worker after handshake if it
+has a locally cached shard index. Routers can use this as a best-effort warm start for router-local
+symbol search.
 
 Shared structs referenced above (normative):
 
@@ -693,14 +713,15 @@ as a CBOR byte string. The compressed bytes are **not** CBOR.
 
 ## 8. Backward compatibility with the legacy lockstep protocol (`legacy_v2`)
 
-Protocol v3 is **not wire-compatible** with the legacy lockstep protocol currently used by
-`nova-router`/`nova-worker` (`nova_remote_proto::legacy_v2`, re-exported as
-`nova_remote_proto::PROTOCOL_VERSION`).
+Protocol v3 is **not wire-compatible** with the legacy lockstep protocol
+(`nova_remote_proto::legacy_v2`, re-exported as `nova_remote_proto::PROTOCOL_VERSION`).
+
+The legacy protocol is deprecated; it remains in-tree for compatibility/tests, but distributed mode
+uses v3. Mixed v2/v3 router/worker pairs will fail the handshake.
 
 - Legacy (lockstep): length-prefixed stream of `legacy_v2::RpcMessage` enums encoded via a
   custom length-delimited, length-checked binary codec with explicit hard limits (lockstep request/response).
 - v3 (this document): length-prefixed stream of CBOR `WireFrame` envelopes, with negotiation + multiplexing.
 
-The planned rollout is a coordinated upgrade of router and worker. If mixed-version support is
-needed for a transition period, it SHOULD be implemented explicitly (dual-stack listener/connector)
-rather than heuristic detection.
+If mixed-version support is ever needed for a transition period, it SHOULD be implemented explicitly
+(dual-stack listener/connector) rather than heuristic detection.

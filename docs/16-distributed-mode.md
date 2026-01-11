@@ -7,16 +7,22 @@ It is an MVP of the “distributed queries” direction described in
 [`docs/04-incremental-computation.md`](04-incremental-computation.md), but it also calls out the
 correctness and security guardrails that matter for real usage.
 
-**Protocol note:** the current distributed mode uses a simple lockstep, length-delimited binary
-protocol (`nova_remote_proto::legacy_v2`, no request IDs/multiplexing). Work is underway to migrate
-to **nova remote RPC v3**, which adds explicit
-`request_id: u64` (**router even**, **worker odd**), multiplexing, chunking (`PacketChunk`), and
-negotiated compression/cancellation. See the on-the-wire spec in
-[`docs/17-remote-rpc-protocol.md`](17-remote-rpc-protocol.md).
+**Protocol note:** Distributed mode uses **nova remote RPC v3**:
 
-v3 is not wire-compatible with `legacy_v2`; mixed router/worker versions will fail the handshake.
+- Schema/envelopes: `nova_remote_proto::v3`
+- Tokio transport/runtime: `crates/nova-remote-rpc` (`RpcConnection`)
 
-When v3 is enabled, the reference implementation (`crates/nova-remote-rpc`) currently defaults to:
+v3 is a framed stream (a `u32` little-endian length prefix followed by a CBOR `WireFrame`) with:
+
+- explicit `request_id: u64` (**router even**, **worker odd**) and multiplexing (out-of-order responses),
+- chunking (`WireFrame::PacketChunk`) for large payloads,
+- negotiated compression (`none` / `zstd`) and best-effort cancellation (`RpcPayload::Cancel`).
+
+v3 is **not wire-compatible** with the legacy lockstep protocol (`nova_remote_proto::legacy_v2`).
+`legacy_v2` is kept for backwards compatibility/tests, but is deprecated for real distributed-mode
+deployments; mixed router/worker versions will fail the handshake.
+
+The reference v3 implementation (`crates/nova-remote-rpc`) currently defaults to:
 
 - Pre-handshake max frame length: **1 MiB** (`nova_remote_rpc::DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN`)
 - Max frame length / max packet length offered in `WorkerHello.capabilities`: **64 MiB** each
@@ -41,10 +47,10 @@ The current distributed mode is intentionally narrow:
 
 - Sharding is by **source root** (a shard ID is the index of a source root in the router’s layout).
 - Workers rebuild their **entire shard index** on each update (no incremental/delta indexing yet).
-- Workspace symbol search is distributed: the router queries each shard worker for top-k matches
-  and merges results (disconnected workers are skipped).
+- The router maintains a **global symbol index** built from per-shard `ShardIndex` payloads and answers
+  `workspaceSymbols` locally (**no per-query RPC fanout**).
 - The RPC protocol is purpose-built for indexing (`IndexShard`, `UpdateFile`, `LoadFiles`) and
-  monitoring (`GetWorkerStats`, `SearchSymbols`). It is *not* a general “semantic query RPC” yet.
+  monitoring (`GetWorkerStats`). It is *not* a general “semantic query RPC” yet.
 
 Anything beyond this (semantic query routing, a generalized query RPC surface, aggressive
 parallelization, etc.) should be treated as **future work** and is documented separately below.
@@ -58,27 +64,26 @@ parallelization, etc.) should be treated as **future work** and is documented se
   - Calls into the router for shard indexing and workspace symbol search.
 - **Router (`nova-router`)**
   - Owns the *sharding layout* (source roots → shard IDs).
-  - Listens for worker connections over the nova remote RPC transport (legacy lockstep today; v3 is
-    the intended long-term protocol).
+  - Listens for worker connections over nova remote RPC **v3**.
   - Optionally spawns and supervises local `nova-worker` processes (one per shard).
-  - Answers workspace symbol queries by requesting top-k matches from shard workers
-    (`SearchSymbols`) and merging results.
+  - Maintains a router-local global symbol index and answers workspace symbol queries locally.
 - **Worker (`nova-worker`)**
   - Owns exactly **one shard**.
   - Maintains an in-memory `path -> text` map for the shard.
   - Builds a shard index (currently just symbols) and persists that index to disk.
-  - Serves symbol search (`SearchSymbols`) from its in-memory (or cached) index.
-  - Responds to router RPCs (`IndexShard`, `UpdateFile`, `LoadFiles`, `GetWorkerStats`,
-    `SearchSymbols`).
+  - Responds to router RPCs (`IndexShard`, `UpdateFile`, `LoadFiles`, `GetWorkerStats`) and returns
+    full `ShardIndex` payloads for `IndexShard`/`UpdateFile`.
+  - May send `Notification::CachedIndex(ShardIndex)` immediately after connecting if it has a cached
+    shard index (best-effort warm start for router-side symbol search).
 
 ### Data flow (high level)
 
 - **Initial indexing**: router reads a full `.java` snapshot for each shard and sends it to the
-  worker via `IndexShard`. The worker rebuilds and persists its shard index and returns only
-  lightweight counters to the router (the full symbol list stays on the worker).
+  worker via `IndexShard`. The worker rebuilds and persists its shard index and returns the full
+  `ShardIndex` payload; the router merges shard indexes into its global symbol index.
 - **File update**: the frontend sends the full updated file text to the router, which forwards it
   to the responsible worker via `UpdateFile`. The worker updates its in-memory file map and
-  rebuilds the *entire* shard index.
+  rebuilds the *entire* shard index, returning the updated `ShardIndex` to the router.
 - **Worker restart**: cached shard indexes can be used for warm startup; see “Cache & rehydration”
   for the important correctness details.
 
@@ -98,21 +103,27 @@ Distributed mode uses the cache directory as a **best-effort warm start** mechan
 
 ### Router startup behavior
 
-On startup, the router does **not** load cached shard indexes or build a global symbol table.
-`workspaceSymbols` is best-effort and queries only the workers that are currently connected.
+On startup, the router does **not** load shard cache blobs itself. Instead, it builds and maintains
+a global symbol index from shard indexes it receives from workers:
 
-Workers may still load their cached shard index on startup; once they connect, `SearchSymbols`
-queries can return results immediately even before the next full `IndexShard` rebuild completes.
+- `Response::ShardIndex` for `IndexShard` / `UpdateFile`
+- optionally `Notification::CachedIndex` immediately after worker connect (warm start)
+
+`workspaceSymbols` is therefore **best-effort based on which shard indexes the router currently has**
+(a disconnected shard simply contributes no symbols).
 
 The cache is not validated against the current filesystem state and can be stale; callers should
 still trigger a real `index_workspace` to refresh results when correctness matters.
 
 ### Worker restart behavior (“rehydration”)
 
-When a worker connects, it advertises whether it has a cached shard index:
+When a worker connects, it can advertise cached-index metadata in the v3 handshake:
+`v3::WireFrame::Hello(v3::WorkerHello { cached_index_info, ... })`.
 
-- Legacy lockstep protocol: `legacy_v2::RpcMessage::WorkerHello.has_cached_index`
-- v3 protocol: `v3::WireFrame::Hello(v3::WorkerHello { cached_index_info, ... })`
+If the worker successfully loads a cached shard index, it MAY also send
+`RpcPayload::Notification(Notification::CachedIndex(ShardIndex))` after `Welcome`. The router can
+use this to immediately populate its global symbol index (before the next full `IndexShard` rebuild
+completes).
 
 If a worker reports a cached index, the router will then send `LoadFiles` with a full on-disk
 snapshot of the shard’s files to **rehydrate** the worker’s in-memory file map.
@@ -122,8 +133,9 @@ file map. Without `LoadFiles`, a restarted worker would only know about the sing
 and would “forget” symbols from untouched files in the shard.
 
 Note that `LoadFiles` does **not** rebuild the shard index; it only repopulates the worker’s
-in-memory file contents. The shard index used for `SearchSymbols` remains whatever the worker last
-loaded/built until the next `IndexShard`/`UpdateFile` rebuild.
+in-memory file contents. The shard index used for router-side `workspaceSymbols` remains whatever
+the worker last loaded/built (and sent to the router) until the next `IndexShard`/`UpdateFile`
+rebuild.
 
 ## Unsaved editor text (correctness warning)
 
@@ -306,14 +318,15 @@ To debug router↔worker connections, enable `tracing` logs via `RUST_LOG`:
 
 Look for messages like:
 
-- `timed out waiting for WorkerHello`
+- `timed out waiting for Hello`
 - `tls accept timed out`
 - `dropping incoming … connection: too many pending handshakes`
 - `timed out writing request to worker …`
 - `timed out waiting for response from worker …`
 
-If you accidentally run a v3-capable worker against a legacy router, the router may reply with a
-v3 `Reject(unsupported_version, \"router only supports legacy_v2 protocol\")`.
+If you accidentally run a legacy worker against a v3 router (or vice versa), the handshake will be
+rejected. In v3, this shows up as a `Reject { code, message }` frame (most commonly
+`code=invalid_request` or `code=unsupported_version`).
 
 Notes:
 
@@ -362,17 +375,15 @@ Distributed mode currently prioritizes correctness and simplicity over throughpu
 - **Full shard rebuilds.** `UpdateFile` triggers a full rebuild of the shard index (not an
   incremental update).
 - **Large payloads / memory spikes.** The router and worker both hold full file texts in memory.
-  Very large shards can cause high peak memory usage. The planned v3 transport is intended to
-  mitigate this with negotiated frame/payload size limits and optional `PacketChunk` chunking (and
-  compression) to avoid unbounded allocations, but it is not yet wired into
-  `nova-router`/`nova-worker`.
-- **Hard message size limits.** The current legacy protocol enforces defensive hard limits to avoid
-  OOM on untrusted inputs (e.g. max ~64MiB per RPC payload and max ~8MiB per file text). If a shard
-  snapshot exceeds these limits, indexing will fail; split large source roots into smaller shards.
-  - For debugging/testing, you can further *lower* the framed transport limit by setting the
-    `NOVA_RPC_MAX_MESSAGE_SIZE` environment variable (bytes). The value is clamped to the built-in
-    64MiB max and cannot raise the limit. If you run workers remotely, set the env var on both the
-    router and worker processes.
+  Very large shards can cause high peak memory usage. v3 mitigates the *transport* side with:
+  negotiated `max_frame_len` / `max_packet_len`, bounded chunk reassembly (`PacketChunk`), and
+  optional compression. It does **not** eliminate application-level memory spikes from holding large
+  snapshots in memory.
+- **Hard message size limits.** v3 enforces defensive hard limits to avoid OOM on untrusted inputs:
+  negotiated `max_frame_len`/`max_packet_len` (default offer: **64 MiB** each) and additional
+  application-level caps in `nova-remote-proto` (for example: **8 MiB** max per file text). If a
+  shard snapshot exceeds these limits, indexing will fail; split large source roots into smaller
+  shards.
 - **Sequential indexing.** `index_workspace` currently indexes shards in a straightforward loop,
   rather than aggressively parallelizing shard RPCs.
 
@@ -399,11 +410,10 @@ firewall allowlists) until additional hardening lands (rate limiting, fuzzing, e
 - For stronger authentication/authorization guarantees, configure **mTLS** (client certificate
   verification) and shard-scoped authorization (e.g. the router’s client-cert fingerprint allowlist).
 - Even with TLS/mTLS enabled, remote deployments still need DoS hardening (connection limits, rate
-  limiting, etc.). Nova’s RPC stack enforces some basic size limits to avoid OOM, applies timeouts
+  limiting, etc.). Nova’s v3 RPC stack enforces some basic size limits to avoid OOM, applies timeouts
   to the initial handshake (and to TLS accept when enabled), and caps the number of concurrent
-  pending handshakes to avoid accept-loop stalls. The planned v3 transport is intended to help
-  further via negotiated max frame/payload sizes (see `docs/17-remote-rpc-protocol.md`) and stricter
-  handshake framing, but it is not a substitute for network-level controls.
+  pending handshakes to avoid accept-loop stalls. This is not a substitute for network-level
+  controls.
 
 ## Future work (not implemented yet)
 
