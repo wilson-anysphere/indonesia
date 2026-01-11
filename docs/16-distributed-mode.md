@@ -16,6 +16,18 @@ negotiated compression/cancellation. See the on-the-wire spec in
 
 v3 is not wire-compatible with `legacy_v2`; mixed router/worker versions will fail the handshake.
 
+When v3 is enabled, the reference implementation (`crates/nova-remote-rpc`) currently defaults to:
+
+- Pre-handshake max frame length: **1 MiB** (`nova_remote_rpc::DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN`)
+- Max frame length / max packet length offered in `Hello.capabilities`: **64 MiB** each
+  (`nova_remote_proto::v3::{DEFAULT_MAX_FRAME_LEN, DEFAULT_MAX_PACKET_LEN}`)
+- Compression: prefer `zstd` (negotiated) and compress payloads ≥ **1 KiB** when it produces smaller
+  on-wire bytes
+- Chunking: available when negotiated (`supports_chunking=true`); disabled by default
+- Keepalive: no application-level heartbeat yet
+
+These are internal defaults rather than user-facing CLI knobs.
+
 ## Scope (what exists today)
 
 Nova can split **indexing** work across **shards** (project modules / source roots). A
