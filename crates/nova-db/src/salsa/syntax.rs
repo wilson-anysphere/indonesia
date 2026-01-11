@@ -56,13 +56,19 @@ fn parse(db: &dyn NovaSyntax, file: FileId) -> Arc<ParseResult> {
     if db.persistence().mode().allows_read() {
         if let Some(file_path) = db.file_path(file).filter(|p| !p.is_empty()) {
             let fingerprint = Fingerprint::from_bytes(text.as_bytes());
-            if let Some(artifacts) = db
+            match db
                 .persistence()
                 .load_ast_artifacts(file_path.as_str(), &fingerprint)
             {
-                let result = Arc::new(artifacts.parse);
-                db.record_query_stat("parse", start.elapsed());
-                return result;
+                Some(artifacts) => {
+                    db.record_disk_cache_hit("parse");
+                    let result = Arc::new(artifacts.parse);
+                    db.record_query_stat("parse", start.elapsed());
+                    return result;
+                }
+                None => {
+                    db.record_disk_cache_miss("parse");
+                }
             }
         }
     }

@@ -908,6 +908,8 @@ mod tests {
         let from_cache = rw_db2.item_tree(file);
         assert_eq!(&*from_cache, &*from_rw);
         assert_eq!(executions(&rw_db2, "parse"), 0);
+        assert_eq!(stat(&rw_db2, "item_tree").disk_hits, 1);
+        assert_eq!(stat(&rw_db2, "item_tree").disk_misses, 0);
 
         // Third run: disabled (must ignore cache but produce identical results).
         let mut disabled_db = RootDatabase::new_with_persistence(
@@ -923,6 +925,74 @@ mod tests {
 
         let from_disabled = disabled_db.item_tree(file);
         assert_eq!(&*from_disabled, &*from_rw);
+        assert_eq!(stat(&disabled_db, "item_tree").disk_hits, 0);
+        assert_eq!(stat(&disabled_db, "item_tree").disk_misses, 0);
+    }
+
+    #[test]
+    fn read_only_mode_does_not_write_cache() {
+        let tmp = TempDir::new().unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+
+        let cache_root = tmp.path().join("cache");
+        std::fs::create_dir_all(&cache_root).unwrap();
+
+        let cache_cfg = CacheConfig {
+            cache_root_override: Some(cache_root.clone()),
+        };
+
+        let file = FileId::from_raw(1);
+        let rel_path = "src/Foo.java";
+        let text = Arc::new("class Foo { int x; }".to_string());
+
+        // Read-only mode should allow reads but never write back.
+        let mut ro_db = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadOnly,
+                cache: cache_cfg.clone(),
+            },
+        );
+        ro_db.set_file_exists(file, true);
+        ro_db.set_file_path(file, rel_path);
+        ro_db.set_file_content(file, text.clone());
+        let ro_tree = ro_db.item_tree(file);
+        assert_eq!(stat(&ro_db, "item_tree").disk_hits, 0);
+        assert_eq!(stat(&ro_db, "item_tree").disk_misses, 1);
+        assert_eq!(
+            ro_db.persistence_stats().ast_store_success,
+            0,
+            "read-only mode must not write AST artifacts"
+        );
+        drop(ro_db);
+
+        let cache_dir = nova_cache::CacheDir::new(&project_root, cache_cfg.clone()).unwrap();
+        let artifact_name = format!(
+            "{}.ast",
+            nova_cache::Fingerprint::from_bytes(rel_path.as_bytes()).as_str()
+        );
+        let artifact_path = cache_dir.ast_dir().join(artifact_name);
+        assert!(
+            !artifact_path.exists(),
+            "read-only mode must not create cache artifacts"
+        );
+
+        // A subsequent read-write run should not be able to warm-start.
+        let mut rw_db = RootDatabase::new_with_persistence(
+            &project_root,
+            PersistenceConfig {
+                mode: crate::PersistenceMode::ReadWrite,
+                cache: cache_cfg,
+            },
+        );
+        rw_db.set_file_exists(file, true);
+        rw_db.set_file_path(file, rel_path);
+        rw_db.set_file_content(file, text);
+        let rw_tree = rw_db.item_tree(file);
+        assert_eq!(&*rw_tree, &*ro_tree);
+        assert_eq!(stat(&rw_db, "item_tree").disk_hits, 0);
+        assert_eq!(stat(&rw_db, "item_tree").disk_misses, 1);
     }
 
     #[test]
@@ -983,6 +1053,8 @@ mod tests {
 
         let actual = db2.item_tree(file);
         assert_eq!(&*actual, &*expected);
+        assert_eq!(stat(&db2, "item_tree").disk_hits, 0);
+        assert_eq!(stat(&db2, "item_tree").disk_misses, 1);
 
         let stats = db2.persistence_stats();
         assert!(

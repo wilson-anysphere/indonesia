@@ -49,21 +49,27 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<ItemTree> {
     };
 
     let file_path = db.file_path(file).filter(|p| !p.is_empty());
-    let fingerprint =
-        if file_path.is_some() && db.persistence().mode() != crate::PersistenceMode::Disabled {
-            Some(Fingerprint::from_bytes(text.as_bytes()))
-        } else {
-            None
-        };
+    let mode = db.persistence().mode();
+    let fingerprint = if file_path.is_some() && mode.allows_read() {
+        Some(Fingerprint::from_bytes(text.as_bytes()))
+    } else {
+        None
+    };
 
     if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {
-        if let Some(artifacts) = db
+        match db
             .persistence()
             .load_ast_artifacts(file_path.as_str(), fingerprint)
         {
-            let result = Arc::new(artifacts.item_tree);
-            db.record_query_stat("item_tree", start.elapsed());
-            return result;
+            Some(artifacts) => {
+                db.record_disk_cache_hit("item_tree");
+                let result = Arc::new(artifacts.item_tree);
+                db.record_query_stat("item_tree", start.elapsed());
+                return result;
+            }
+            None => {
+                db.record_disk_cache_miss("item_tree");
+            }
         }
     }
 
