@@ -4,6 +4,7 @@ use nova_refactor::extract_method::{
 };
 use nova_refactor::TextRange;
 use serde::{Deserialize, Serialize};
+use nova_core::{LineIndex, Position as CorePosition};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractMethodCommandArgs {
@@ -20,9 +21,20 @@ pub struct ExtractMethodCommandArgs {
 /// collect additional input (method name, visibility) before the edit can be
 /// generated.
 pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> Option<CodeAction> {
+    let index = LineIndex::new(source);
     let range = TextRange::new(
-        position_to_offset(source, lsp_range.start)?,
-        position_to_offset(source, lsp_range.end)?,
+        index
+            .offset_of_position(
+                source,
+                CorePosition::new(lsp_range.start.line, lsp_range.start.character),
+            )?
+            .into(),
+        index
+            .offset_of_position(
+                source,
+                CorePosition::new(lsp_range.end.line, lsp_range.end.character),
+            )?
+            .into(),
     );
 
     // Probe analysis to see if extraction is possible; use a placeholder name.
@@ -59,45 +71,6 @@ pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> O
             }),
             ..Default::default()
         })
-    } else {
-        None
-    }
-}
-
-fn position_to_offset(text: &str, pos: lsp_types::Position) -> Option<usize> {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
-    let mut idx = 0;
-
-    for ch in text.chars() {
-        if line == pos.line && col_utf16 == pos.character {
-            return Some(idx);
-        }
-
-        if ch == '\n' {
-            if line == pos.line {
-                if col_utf16 == pos.character {
-                    return Some(idx);
-                }
-                return None;
-            }
-            line += 1;
-            col_utf16 = 0;
-            idx += 1;
-            continue;
-        }
-
-        if line == pos.line {
-            col_utf16 += ch.len_utf16() as u32;
-            if col_utf16 > pos.character {
-                return None;
-            }
-        }
-        idx += ch.len_utf8();
-    }
-
-    if line == pos.line && col_utf16 == pos.character {
-        Some(idx)
     } else {
         None
     }
