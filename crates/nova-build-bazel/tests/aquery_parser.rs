@@ -100,6 +100,32 @@ action {
 }
 
 #[test]
+fn colon_separated_lists_do_not_split_windows_drive_letters() {
+    let output = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:win_mix"
+  arguments: "external/local_jdk/bin/javac"
+  arguments: "-classpath"
+  arguments: "C:\\foo\\bar.jar:external/junit/junit.jar"
+  arguments: "C:\\src\\Hello.java"
+}
+"#;
+
+    let actions = parse_aquery_textproto(output);
+    assert_eq!(actions.len(), 1);
+
+    let info = extract_java_compile_info(&actions[0]);
+    assert_eq!(
+        info.classpath,
+        vec![
+            r"C:\foo\bar.jar".to_string(),
+            "external/junit/junit.jar".to_string()
+        ]
+    );
+}
+
+#[test]
 fn windows_path_lists_split_on_semicolon() {
     let output = r#"
 action {
