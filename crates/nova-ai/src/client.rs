@@ -456,6 +456,8 @@ fn provider_label(kind: &AiProviderKind) -> &'static str {
 }
 
 fn in_process_endpoint_id(cfg: &nova_config::InProcessLlamaConfig) -> Result<url::Url, AiError> {
+    use std::fmt::Write as _;
+
     let mut hasher = Sha256::new();
     hasher.update(cfg.model_path.to_string_lossy().as_bytes());
     hasher.update(b"\0");
@@ -470,7 +472,7 @@ fn in_process_endpoint_id(cfg: &nova_config::InProcessLlamaConfig) -> Result<url
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(16);
     for byte in digest.iter().take(8).copied() {
-        hex.push_str(&format!("{byte:02x}"));
+        write!(&mut hex, "{byte:02x}").expect("writing to string should not fail");
     }
 
     url::Url::parse(&format!("inprocess://local/{hex}"))
