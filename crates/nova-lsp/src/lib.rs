@@ -137,10 +137,23 @@ pub const MEMORY_STATUS_METHOD: &str = "nova/memoryStatus";
 pub const MEMORY_STATUS_NOTIFICATION: &str = "nova/memoryStatusChanged";
 pub const METRICS_METHOD: &str = "nova/metrics";
 pub const RESET_METRICS_METHOD: &str = "nova/resetMetrics";
+pub const SAFE_MODE_STATUS_METHOD: &str = "nova/safeModeStatus";
+pub const SAFE_MODE_CHANGED_NOTIFICATION: &str = "nova/safeModeChanged";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryStatusResponse {
     pub report: nova_memory::MemoryReport,
+}
+
+pub const SAFE_MODE_STATUS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafeModeStatusResponse {
+    pub schema_version: u32,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 pub const DOCUMENT_FORMATTING_METHOD: &str = "textDocument/formatting";
@@ -164,6 +177,15 @@ fn handle_custom_request_inner(
 
     match method {
         BUG_REPORT_METHOD => hardening::handle_bug_report(params),
+        SAFE_MODE_STATUS_METHOD => {
+            let (enabled, reason) = hardening::safe_mode_snapshot();
+            serde_json::to_value(SafeModeStatusResponse {
+                schema_version: SAFE_MODE_STATUS_SCHEMA_VERSION,
+                enabled,
+                reason: reason.map(ToString::to_string),
+            })
+            .map_err(|err| NovaLspError::Internal(err.to_string()))
+        }
         METRICS_METHOD => serde_json::to_value(nova_metrics::MetricsRegistry::global().snapshot())
             .map_err(|err| NovaLspError::Internal(err.to_string())),
         RESET_METRICS_METHOD => {

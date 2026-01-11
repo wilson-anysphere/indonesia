@@ -5,7 +5,7 @@ use crate::{
     JAVA_RESOLVE_MAIN_CLASS_METHOD, JAVA_SOURCE_PATHS_METHOD, METRICS_METHOD,
     PROJECT_CONFIGURATION_METHOD, PROJECT_MODEL_METHOD, RELOAD_PROJECT_METHOD,
     RESET_METRICS_METHOD, RUN_ANNOTATION_PROCESSING_METHOD, TEST_DEBUG_CONFIGURATION_METHOD,
-    TEST_DISCOVER_METHOD, TEST_RUN_METHOD,
+    SAFE_MODE_STATUS_METHOD, TEST_DISCOVER_METHOD, TEST_RUN_METHOD,
 };
 use nova_bugreport::{
     global_crash_store, install_panic_hook, BugReportBuilder, BugReportOptions, PanicHookConfig,
@@ -27,6 +27,7 @@ static WATCHDOG: OnceLock<Watchdog> = OnceLock::new();
 struct SafeModeState {
     enabled: AtomicBool,
     until: Mutex<Option<Instant>>,
+    reason: Mutex<Option<SafeModeReason>>,
 }
 
 fn perf() -> &'static PerfStats {
@@ -69,7 +70,7 @@ pub fn init(config: &NovaConfig, notifier: Arc<dyn Fn(&str) + Send + Sync + 'sta
 pub fn guard_method(method: &str) -> Result<()> {
     if matches!(
         method,
-        BUG_REPORT_METHOD | METRICS_METHOD | RESET_METRICS_METHOD
+        BUG_REPORT_METHOD | METRICS_METHOD | RESET_METRICS_METHOD | SAFE_MODE_STATUS_METHOD
     ) {
         return Ok(());
     }
@@ -89,12 +90,16 @@ pub fn guard_method(method: &str) -> Result<()> {
                     .until
                     .lock()
                     .expect("SafeModeState mutex poisoned") = None;
+                *safe_mode
+                    .reason
+                    .lock()
+                    .expect("SafeModeState mutex poisoned") = None;
                 return Ok(());
             }
         }
 
         return Err(NovaLspError::Internal(
-            "Nova is running in safe-mode (previous request crashed or timed out). Only `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` are available for now."
+            "Nova is running in safe-mode (previous request crashed or timed out). Only `nova/bugReport`, `nova/metrics`, `nova/resetMetrics`, and `nova/safeModeStatus` are available for now."
                 .to_owned(),
         ));
     }
@@ -115,12 +120,58 @@ fn enter_safe_mode(reason: SafeModeReason) {
         SafeModeReason::WatchdogTimeout => Duration::from_secs(30),
     };
     *until = Some(Instant::now() + duration);
+    *safe_mode
+        .reason
+        .lock()
+        .expect("SafeModeState mutex poisoned") = Some(reason);
 }
 
 #[derive(Debug, Clone, Copy)]
 enum SafeModeReason {
     Panic,
     WatchdogTimeout,
+}
+
+/// Snapshot the current safe-mode state.
+///
+/// Returns `(enabled, reason)` where `reason` is a stable string identifier intended for clients.
+pub fn safe_mode_snapshot() -> (bool, Option<&'static str>) {
+    let safe_mode = safe_mode();
+    if !safe_mode.enabled.load(Ordering::Relaxed) {
+        return (false, None);
+    }
+
+    if let Some(until) = safe_mode
+        .until
+        .lock()
+        .expect("SafeModeState mutex poisoned")
+        .as_ref()
+        .copied()
+    {
+        if Instant::now() >= until {
+            safe_mode.enabled.store(false, Ordering::Relaxed);
+            *safe_mode
+                .until
+                .lock()
+                .expect("SafeModeState mutex poisoned") = None;
+            *safe_mode
+                .reason
+                .lock()
+                .expect("SafeModeState mutex poisoned") = None;
+            return (false, None);
+        }
+    }
+
+    let reason = safe_mode
+        .reason
+        .lock()
+        .expect("SafeModeState mutex poisoned")
+        .as_ref()
+        .map(|reason| match reason {
+            SafeModeReason::Panic => "panic",
+            SafeModeReason::WatchdogTimeout => "watchdog_timeout",
+        });
+    (true, reason)
 }
 
 pub fn run_with_watchdog(

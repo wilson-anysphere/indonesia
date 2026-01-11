@@ -52,9 +52,10 @@ watchdog (see `crates/nova-lsp/src/hardening.rs`):
 - Some watchdog failures may temporarily put the server into **safe-mode**.
 
 When in safe-mode, **all methods dispatched through** `nova_lsp::handle_custom_request()` **except**
-`nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` fail with `-32603` and a message like:
+`nova/bugReport`, `nova/metrics`, `nova/resetMetrics`, and `nova/safeModeStatus` fail with `-32603`
+and a message like:
 
-> “Nova is running in safe-mode … Only `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` are available for now.”
+> “Nova is running in safe-mode … Only `nova/bugReport`, `nova/metrics`, `nova/resetMetrics`, and `nova/safeModeStatus` are available for now.”
 
 Note: safe-mode enforcement is currently implemented by `nova_lsp::hardening::guard_method()` and
 is typically enforced by `nova_lsp::handle_custom_request()`, but endpoints handled directly by the
@@ -1130,20 +1131,20 @@ Notes:
 
 ---
 
-### `nova/safeModeStatus` (currently not implemented)
+### `nova/safeModeStatus`
 
-The VS Code extension attempts to call this at startup to determine whether the server is currently
-in safe-mode (`editors/vscode/src/extension.ts`). The shipped `nova-lsp` server does **not**
-implement it yet; clients should infer safe-mode by observing the `-32603` safe-mode error message.
+The VS Code extension calls this at startup to determine whether the server is currently in safe
+mode (`editors/vscode/src/extension.ts`).
 
 - **Kind:** request
 - **Stability:** experimental
+- **Implemented in:** `crates/nova-lsp/src/lib.rs` (`SAFE_MODE_STATUS_METHOD`)
 
 #### Request params
 
 No params are required; clients should send `{}` or omit params.
 
-#### Response (proposed)
+#### Response
 
 ```json
 { "schemaVersion": 1, "enabled": true, "reason": "panic" }
@@ -1154,11 +1155,10 @@ No params are required; clients should send `{}` or omit params.
 - `"panic"`
 - `"watchdog_timeout"`
 
-Compatibility note: clients may encounter older servers that return a bare boolean `true | false`.
+Compatibility note: older servers may return a bare boolean `true | false`.
 
 #### Errors
 
-- `-32601` or `-32602` if the server does not support this endpoint.
 - `-32603` for internal errors.
 
 ---

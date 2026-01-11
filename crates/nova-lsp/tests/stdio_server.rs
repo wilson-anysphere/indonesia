@@ -41,6 +41,22 @@ struct LspWorkspaceEdit {
     changes: std::collections::HashMap<String, Vec<LspTextEdit>>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SafeModeStatusResponse {
+    schema_version: u32,
+    enabled: bool,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum SafeModeStatusResult {
+    Bool(bool),
+    Object(SafeModeStatusResponse),
+}
+
 fn apply_lsp_text_edits(original: &str, edits: &[LspTextEdit]) -> String {
     if edits.is_empty() {
         return original.to_string();
@@ -117,6 +133,67 @@ fn stdio_server_handles_metrics_request() {
         request_count > 0,
         "expected requestCount > 0, got: {resp:#}"
     );
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_handles_safe_mode_status_request() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+
+    // safeModeStatus
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "nova/safeModeStatus",
+            "params": null
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let result = resp.get("result").cloned().expect("result");
+    let status: SafeModeStatusResult = serde_json::from_value(result).expect("decode response");
+    match status {
+        SafeModeStatusResult::Object(status) => {
+            assert_eq!(status.schema_version, 1);
+            assert!(!status.enabled, "safe-mode should not be enabled at startup");
+            assert_eq!(status.reason, None);
+        }
+        SafeModeStatusResult::Bool(_) => panic!("expected safeModeStatus response object"),
+    }
 
     // shutdown + exit
     write_jsonrpc_message(
