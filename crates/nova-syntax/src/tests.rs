@@ -2309,6 +2309,39 @@ fn incremental_edit_inside_switch_expression_preserves_yield_statement() {
 }
 
 #[test]
+fn incremental_edit_inside_switch_statement_in_switch_expression_keeps_yield_as_identifier() {
+    let old_text = "class Foo {\n  int m(int x, int y) {\n    return switch (x) {\n      case 1 -> {\n        switch (y) {\n          case 1 -> { yield(); }\n          default -> { }\n        }\n        yield 1;\n      }\n      default -> 0;\n    };\n  }\n}\nclass Bar {}\n";
+    let old = parse_java(old_text);
+
+    let insert_offset = old_text
+        .find("yield();")
+        .expect("expected `yield();` call")
+        as u32
+        + "yield(".len() as u32;
+    let edit = TextEdit::insert(insert_offset, "1");
+
+    let mut new_text = old_text.to_string();
+    new_text.insert_str(insert_offset as usize, "1");
+
+    let new_parse = reparse_java(&old, old_text, edit, &new_text);
+    assert_eq!(new_parse.errors, Vec::new());
+
+    let yield_count = new_parse
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::YieldStatement)
+        .count();
+    assert_eq!(yield_count, 1);
+
+    let old_bar = find_class_by_name(&old, "Bar").green().into_owned();
+    let new_bar = find_class_by_name(&new_parse, "Bar").green().into_owned();
+    assert!(
+        green_ptr_eq(&old_bar, &new_bar),
+        "expected unchanged `Bar` subtree to be reused"
+    );
+}
+
+#[test]
 fn incremental_edit_crossing_brace_widens_reparse_root() {
     let old_text = "class Foo { void m() { { int a; } int b; } }\n";
     let old = parse_java(old_text);

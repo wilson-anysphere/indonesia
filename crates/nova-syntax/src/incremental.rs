@@ -368,13 +368,17 @@ fn statement_context_for_block(node: &crate::SyntaxNode) -> StatementContext {
     let mut cur = node.parent();
     while let Some(parent) = cur {
         match parent.kind() {
-            SyntaxKind::SwitchExpression => return StatementContext::SwitchExpression,
-            SyntaxKind::LambdaExpression
+            // Context boundaries: these constructs parse their nested blocks using the normal
+            // statement grammar even if they appear within a switch expression.
+            SyntaxKind::SwitchStatement
+            | SyntaxKind::LambdaExpression
             | SyntaxKind::ClassBody
             | SyntaxKind::InterfaceBody
             | SyntaxKind::EnumBody
             | SyntaxKind::RecordBody
             | SyntaxKind::AnnotationBody => return StatementContext::Normal,
+
+            SyntaxKind::SwitchExpression => return StatementContext::SwitchExpression,
             _ => {}
         }
         cur = parent.parent();
