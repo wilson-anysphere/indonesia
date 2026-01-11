@@ -99,7 +99,7 @@ jobs:
             sys.exit(0)
 
           # llvm-cov prints multiple percentages; the final one corresponds to line coverage.
-          matches = re.findall(r"([0-9]+(?:\\.[0-9]+)?)%", total_line)
+          matches = re.findall(r"([0-9]+(?:\.[0-9]+)?)%", total_line)
           if not matches:
             print(f"::warning::Could not parse coverage percentage from TOTAL line: {total_line}")
             sys.exit(0)
