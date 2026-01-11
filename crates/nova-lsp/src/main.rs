@@ -207,7 +207,7 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
         }
     }
 
-    // Fall back to workspace discovery (env var + ancestor walk). We seed the
+    // Fall back to workspace discovery (env var + workspace-root detection). We seed the
     // search from the current working directory.
     let cwd = match env::current_dir() {
         Ok(dir) => dir,
@@ -217,12 +217,14 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
         }
     };
 
-    match nova_config::load_for_workspace(&cwd) {
+    let root = nova_project::workspace_root(&cwd).unwrap_or(cwd);
+
+    match nova_config::load_for_workspace(&root) {
         Ok((config, _path)) => config,
         Err(err) => {
             eprintln!(
                 "nova-lsp: failed to load workspace config from {}: {err}",
-                cwd.display()
+                root.display()
             );
             nova_config::NovaConfig::default()
         }
