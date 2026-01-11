@@ -62,7 +62,7 @@ pub struct NovaClasspathResponse {
     pub output_dirs: OutputDirs,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LanguageLevel {
     pub major: u16,
@@ -1205,8 +1205,9 @@ mod tests {
             enable_preview: true,
             ..JavaCompileConfig::default()
         };
+        let actual: std::option::Option<LanguageLevel> = language_level_from_java_compile_config(&cfg);
         assert_eq!(
-            language_level_from_java_compile_config(&cfg),
+            actual,
             Some(LanguageLevel {
                 major: 21,
                 preview: true
@@ -1220,8 +1221,9 @@ mod tests {
             enable_preview: false,
             ..JavaCompileConfig::default()
         };
+        let actual: std::option::Option<LanguageLevel> = language_level_from_java_compile_config(&cfg);
         assert_eq!(
-            language_level_from_java_compile_config(&cfg),
+            actual,
             Some(LanguageLevel {
                 major: 8,
                 preview: false

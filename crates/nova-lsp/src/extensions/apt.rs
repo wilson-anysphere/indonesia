@@ -411,11 +411,13 @@ mod tests {
             java: nova_project::JavaConfig::default(),
             modules: Vec::new(),
             jpms_modules: Vec::new(),
+            jpms_workspace: None,
             source_roots: Vec::new(),
             module_path: Vec::new(),
             classpath: Vec::new(),
             output_dirs: Vec::new(),
             dependencies: Vec::new(),
+            workspace_model: None,
         };
 
         let params = NovaGeneratedSourcesParams {
@@ -446,11 +448,13 @@ mod tests {
             java: nova_project::JavaConfig::default(),
             modules: Vec::new(),
             jpms_modules: Vec::new(),
+            jpms_workspace: None,
             source_roots: Vec::new(),
             module_path: Vec::new(),
             classpath: Vec::new(),
             output_dirs: Vec::new(),
             dependencies: Vec::new(),
+            workspace_model: None,
         };
 
         let params = NovaGeneratedSourcesParams {
