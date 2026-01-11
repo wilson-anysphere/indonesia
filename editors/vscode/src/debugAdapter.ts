@@ -123,23 +123,8 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
   }
 
   async useLocalDebugAdapterBinary(): Promise<void> {
-    const picked = await vscode.window.showOpenDialog({
-      title: 'Select nova-dap binary',
-      canSelectMany: false,
-      canSelectFolders: false,
-      canSelectFiles: true,
-    });
-    if (!picked?.length) {
-      return;
-    }
-
     const cfg = vscode.workspace.getConfiguration('nova');
-    const pickedPath = picked[0].fsPath;
-    // Clear higher-precedence workspace/workspaceFolder overrides so the selected user setting takes effect.
-    await clearSettingAtAllTargets('dap.path');
-    // Clear deprecated alias to avoid confusing precedence rules.
-    await clearSettingAtAllTargets('debug.adapterPath');
-    await cfg.update('dap.path', pickedPath, vscode.ConfigurationTarget.Global);
+    await this.pickLocalDapBinary(cfg);
   }
 
   async showDebugAdapterVersion(workspaceFolder: vscode.WorkspaceFolder | undefined): Promise<void> {
@@ -374,6 +359,9 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
     }
 
     const pickedPath = picked[0].fsPath;
+    // Clear higher-precedence workspace/workspaceFolder overrides so the selected user setting takes effect.
+    await clearSettingAtAllTargets('dap.path');
+    await clearSettingAtAllTargets('debug.adapterPath');
     await config.update('dap.path', pickedPath, vscode.ConfigurationTarget.Global);
     return pickedPath;
   }
