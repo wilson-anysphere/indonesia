@@ -3369,6 +3369,8 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "ureq",
  "walkdir",
  "zstd 0.13.3",
