@@ -3231,6 +3231,7 @@ dependencies = [
 name = "nova-db"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "nova-cache",
  "nova-core",
  "nova-hir",
@@ -3239,6 +3240,7 @@ dependencies = [
  "nova-syntax",
  "parking_lot",
  "ra_ap_salsa",
+ "serde",
  "tempfile",
  "thiserror 2.0.17",
  "tracing",

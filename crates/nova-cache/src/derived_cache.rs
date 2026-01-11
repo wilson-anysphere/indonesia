@@ -25,6 +25,28 @@ impl DerivedArtifactCache {
         }
     }
 
+    /// Compute the fingerprint used to key a derived artifact.
+    ///
+    /// This is exposed so other caching layers (e.g. in-memory query caches) can
+    /// share a consistent key with the on-disk [`DerivedArtifactCache`].
+    pub fn key_fingerprint(
+        query_name: &str,
+        args: &impl Serialize,
+        input_fingerprints: &BTreeMap<String, Fingerprint>,
+    ) -> Result<Fingerprint, CacheError> {
+        let args_json = serde_json::to_vec(args)?;
+        let inputs_json = serde_json::to_vec(input_fingerprints)?;
+
+        let mut key_bytes = Vec::new();
+        key_bytes.extend_from_slice(query_name.as_bytes());
+        key_bytes.push(0);
+        key_bytes.extend_from_slice(&args_json);
+        key_bytes.push(0);
+        key_bytes.extend_from_slice(&inputs_json);
+
+        Ok(Fingerprint::from_bytes(key_bytes))
+    }
+
     pub fn store<T: Serialize>(
         &self,
         query_name: &str,
@@ -92,17 +114,7 @@ impl DerivedArtifactCache {
         let query_dir = self.root.join(safe_query);
         std::fs::create_dir_all(&query_dir)?;
 
-        let args_json = serde_json::to_vec(args)?;
-        let inputs_json = serde_json::to_vec(input_fingerprints)?;
-
-        let mut key_bytes = Vec::new();
-        key_bytes.extend_from_slice(query_name.as_bytes());
-        key_bytes.push(0);
-        key_bytes.extend_from_slice(&args_json);
-        key_bytes.push(0);
-        key_bytes.extend_from_slice(&inputs_json);
-
-        let fingerprint = Fingerprint::from_bytes(key_bytes);
+        let fingerprint = Self::key_fingerprint(query_name, args, input_fingerprints)?;
         let path = query_dir.join(format!("{}.bin", fingerprint.as_str()));
         Ok((path, fingerprint))
     }

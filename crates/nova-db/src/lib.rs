@@ -8,7 +8,7 @@
 //!   concurrency model described in `docs/04-incremental-computation.md`.
 
 mod query_cache;
-pub use query_cache::QueryCache;
+pub use query_cache::{PersistentQueryCache, QueryCache};
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
