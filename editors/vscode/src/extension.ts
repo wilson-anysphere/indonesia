@@ -1185,10 +1185,15 @@ function getTestOutputChannel(): vscode.OutputChannel {
 async function promptForBugReportReproduction(): Promise<string | undefined> {
   const input = vscode.window.createInputBox();
   input.title = 'Nova: Create Bug Report';
-  input.prompt = 'Optional reproduction steps. Press Enter to continue, Esc to cancel.';
+  const supportsMultiline = 'multiline' in input;
+  input.prompt = supportsMultiline
+    ? 'Optional reproduction steps. Press Ctrl+Enter to create the bug report, Esc to cancel.'
+    : 'Optional reproduction steps. Press Enter to create the bug report, Esc to cancel.';
   input.placeholder = 'What were you doing when the issue occurred?';
   input.ignoreFocusOut = true;
-  (input as unknown as { multiline?: boolean }).multiline = true;
+  if (supportsMultiline) {
+    (input as unknown as { multiline?: boolean }).multiline = true;
+  }
 
   return await new Promise((resolve) => {
     let accepted = false;
