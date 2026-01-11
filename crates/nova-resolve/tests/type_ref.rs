@@ -340,13 +340,14 @@ fn resolves_fully_qualified_nested_type_via_index() {
 fn unresolved_nested_type_uses_binary_guess_from_imported_outer() {
     let jdk = JdkIndex::new();
     let mut index = TestIndex::default();
-    index.add_type("java.util", "Map");
+    // Use a non-`java.*` package so the resolver consults the classpath index.
+    index.add_type("com.example", "Map");
     // Intentionally omit `Map$Entry` so scope-based resolution fails.
 
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let file = FileId::from_raw(0);
     let mut db = TestDb::default();
-    db.set_file_text(file, "import java.util.Map;\nclass C {}\n");
+    db.set_file_text(file, "import com.example.Map;\nclass C {}\n");
     let result = build_scopes(&db, file);
 
     let env = TypeStore::with_minimal_jdk();
@@ -362,7 +363,7 @@ fn unresolved_nested_type_uses_binary_guess_from_imported_outer() {
         None,
     );
 
-    assert_eq!(ty.ty, Type::Named("java.util.Map$Entry".to_string()));
+    assert_eq!(ty.ty, Type::Named("com.example.Map$Entry".to_string()));
     assert!(ty.diagnostics.iter().any(|d| d.code == "unresolved-type"));
 }
 

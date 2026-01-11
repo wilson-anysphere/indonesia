@@ -13,7 +13,7 @@ pub enum TypeKind {
 }
 
 /// Span-free summary of a type definition derived from `nova_hir::item_tree::ItemTree`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeDef {
     pub kind: TypeKind,
     pub name: Name,

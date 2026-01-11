@@ -100,6 +100,11 @@ impl JdkIndex {
         // java.util
         this.add_type("java.util", "List");
         this.add_type("java.util", "ArrayList");
+        // Keep a few nested-type examples around so resolver tests can validate
+        // `Outer.Inner` → `Outer$Inner` translation without relying on an
+        // on-disk JDK index.
+        this.add_type("java.util", "Map");
+        this.add_type("java.util", "Map$Entry");
 
         // A tiny set of static members for static-import testing.
         this.add_static_member("java.lang.Math", "max");

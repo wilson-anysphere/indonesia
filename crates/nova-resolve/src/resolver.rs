@@ -7,6 +7,7 @@ use nova_hir::ids::{ConstructorId, FieldId, InitializerId, ItemId, MethodId};
 use crate::diagnostics::{ambiguous_import_diagnostic, unresolved_import_diagnostic};
 use crate::import_map::ImportMap;
 use crate::scopes::{ScopeGraph, ScopeId, ScopeKind};
+use crate::WorkspaceDefMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BodyOwner {
@@ -93,6 +94,7 @@ impl NameResolution {
 pub struct Resolver<'a> {
     jdk: &'a dyn TypeIndex,
     classpath: Option<&'a dyn TypeIndex>,
+    workspace: Option<&'a WorkspaceDefMap>,
 }
 
 impl<'a> Resolver<'a> {
@@ -101,6 +103,7 @@ impl<'a> Resolver<'a> {
         Self {
             jdk,
             classpath: None,
+            workspace: None,
         }
     }
 
@@ -108,6 +111,67 @@ impl<'a> Resolver<'a> {
     pub fn with_classpath(mut self, classpath: &'a dyn TypeIndex) -> Self {
         self.classpath = Some(classpath);
         self
+    }
+
+    /// Attach a workspace definition map used to prefer source types over
+    /// classpath/JDK types and to surface `TypeResolution::Source` results.
+    #[must_use]
+    pub fn with_workspace(mut self, workspace: &'a WorkspaceDefMap) -> Self {
+        self.workspace = Some(workspace);
+        self
+    }
+
+    fn type_resolution_from_name(&self, ty: TypeName) -> TypeResolution {
+        // Mirror the JVM restriction that application class loaders cannot define
+        // `java.*` types. Even if the workspace contains a "shadowing" definition
+        // of `java.lang.String`, the JDK type should win for name resolution.
+        if ty.as_str().starts_with("java.") {
+            return TypeResolution::External(ty);
+        }
+        if let Some(workspace) = self.workspace {
+            if let Some(item) = workspace.item_by_type_name(&ty) {
+                return TypeResolution::Source(item);
+            }
+        }
+        TypeResolution::External(ty)
+    }
+
+    fn type_name_for_source(&self, scopes: &ScopeGraph, item: ItemId) -> Option<TypeName> {
+        scopes
+            .type_name(item)
+            .cloned()
+            .or_else(|| self.workspace.and_then(|workspace| workspace.type_name(item).cloned()))
+    }
+
+    fn static_member_resolution_from_id(&self, member: StaticMemberId) -> StaticMemberResolution {
+        let Some(workspace) = self.workspace else {
+            return StaticMemberResolution::External(member);
+        };
+
+        let (owner, name) = match member.as_str().split_once("::") {
+            Some((owner, name)) => (owner, name),
+            None => return StaticMemberResolution::External(member),
+        };
+
+        let owner = TypeName::new(owner);
+        let name = Name::from(name);
+        let Some(item) = workspace.item_by_type_name(&owner) else {
+            return StaticMemberResolution::External(member);
+        };
+        let Some(ty) = workspace.type_def(item) else {
+            return StaticMemberResolution::External(member);
+        };
+
+        if let Some(field) = ty.fields.get(&name) {
+            return StaticMemberResolution::SourceField(*field);
+        }
+        if let Some(methods) = ty.methods.get(&name) {
+            if let Some(first) = methods.first().copied() {
+                return StaticMemberResolution::SourceMethod(first);
+            }
+        }
+
+        StaticMemberResolution::External(member)
     }
 
     fn resolve_type_in_index(&self, name: &QualifiedName) -> Option<TypeName> {
@@ -410,7 +474,7 @@ impl<'a> Resolver<'a> {
         let resolved = self.resolve_qualified_type_resolution_in_scope(scopes, scope, path)?;
         match resolved {
             TypeResolution::External(ty) => Some(ty),
-            TypeResolution::Source(item) => scopes.type_name(item).cloned(),
+            TypeResolution::Source(item) => self.type_name_for_source(scopes, item),
         }
     }
 
@@ -424,7 +488,7 @@ impl<'a> Resolver<'a> {
         path: &QualifiedName,
     ) -> Option<TypeResolution> {
         if let Some(ty) = self.resolve_qualified_name(path) {
-            return Some(TypeResolution::External(ty));
+            return Some(self.type_resolution_from_name(ty));
         }
 
         let segments = path.segments();
@@ -442,22 +506,39 @@ impl<'a> Resolver<'a> {
             _ => return None,
         };
 
-        let mut candidate = match &owner {
+        let owner_name = match &owner {
             TypeResolution::External(ty) => ty.as_str().to_string(),
-            TypeResolution::Source(item) => scopes.type_name(*item)?.as_str().to_string(),
+            TypeResolution::Source(item) => self
+                .type_name_for_source(scopes, *item)?
+                .as_str()
+                .to_string(),
         };
-        for seg in rest {
-            candidate.push('$');
-            candidate.push_str(seg.as_str());
-        }
 
-        // Prefer source types if we have a local ItemTree type with that binary name.
-        if let Some(item) = scopes.item_by_type_name(&TypeName::new(candidate.clone())) {
+        // 1) Prefer local ItemTree types using binary names (`$` separators).
+        let mut candidate_binary = owner_name.clone();
+        for seg in rest {
+            candidate_binary.push('$');
+            candidate_binary.push_str(seg.as_str());
+        }
+        if let Some(item) = scopes.item_by_type_name(&TypeName::new(candidate_binary)) {
             return Some(TypeResolution::Source(item));
         }
 
-        self.resolve_type_in_index(&QualifiedName::from_dotted(&candidate))
-            .map(TypeResolution::External)
+        // 2) External indices vary in how they model nested types:
+        //    - some accept source-like `Outer.Inner` names directly
+        //    - others use binary names (`Outer$Inner`)
+        //
+        // Pass a dotted candidate (`Outer.Inner...`) through `resolve_type_in_index`,
+        // which in turn uses `resolve_type_with_nesting` to translate to `$` as
+        // needed.
+        let mut candidate_dotted = owner_name.replace('$', ".");
+        for seg in rest {
+            candidate_dotted.push('.');
+            candidate_dotted.push_str(seg.as_str());
+        }
+
+        self.resolve_type_in_index(&QualifiedName::from_dotted(&candidate_dotted))
+            .map(|ty| self.type_resolution_from_name(ty))
     }
 
     /// Resolve a simple name against a given scope.
@@ -516,7 +597,7 @@ impl<'a> Resolver<'a> {
                     if let Some(pkg) = package {
                         if let Some(ty) = self.resolve_type_in_package_index(pkg, name) {
                             return NameResolution::Resolved(Resolution::Type(
-                                TypeResolution::External(ty),
+                                self.type_resolution_from_name(ty),
                             ));
                         }
                     }
@@ -528,7 +609,7 @@ impl<'a> Resolver<'a> {
                             return NameResolution::Ambiguous(
                                 types
                                     .into_iter()
-                                    .map(|ty| Resolution::Type(TypeResolution::External(ty)))
+                                    .map(|ty| Resolution::Type(self.type_resolution_from_name(ty)))
                                     .collect(),
                             );
                         }
@@ -536,16 +617,17 @@ impl<'a> Resolver<'a> {
                     }
 
                     if let Some(ty) = self
-                        .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
+                        .jdk
+                        .resolve_type_in_package(&PackageName::from_dotted("java.lang"), name)
                     {
                         return NameResolution::Resolved(Resolution::Type(
-                            TypeResolution::External(ty),
+                            self.type_resolution_from_name(ty),
                         ));
                     }
 
                     if let Some(ty) = star_match {
                         return NameResolution::Resolved(Resolution::Type(
-                            TypeResolution::External(ty),
+                            self.type_resolution_from_name(ty),
                         ));
                     }
                 }
@@ -563,10 +645,11 @@ impl<'a> Resolver<'a> {
                 ScopeKind::Universe => {
                     // `java.lang.*` is always implicitly available.
                     if let Some(ty) = self
-                        .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
+                        .jdk
+                        .resolve_type_in_package(&PackageName::from_dotted("java.lang"), name)
                     {
                         return NameResolution::Resolved(Resolution::Type(
-                            TypeResolution::External(ty),
+                            self.type_resolution_from_name(ty),
                         ));
                     }
                 }
@@ -581,12 +664,12 @@ impl<'a> Resolver<'a> {
     fn resolve_single_type_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
         match self.resolve_single_type_imports_detailed(imports, name) {
             TypeLookup::Found(ty) => {
-                NameResolution::Resolved(Resolution::Type(TypeResolution::External(ty)))
+                NameResolution::Resolved(Resolution::Type(self.type_resolution_from_name(ty)))
             }
             TypeLookup::Ambiguous(types) => NameResolution::Ambiguous(
                 types
                     .into_iter()
-                    .map(|ty| Resolution::Type(TypeResolution::External(ty)))
+                    .map(|ty| Resolution::Type(self.type_resolution_from_name(ty)))
                     .collect(),
             ),
             TypeLookup::NotFound => NameResolution::Unresolved,
@@ -635,12 +718,12 @@ impl<'a> Resolver<'a> {
     fn resolve_static_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
         match self.resolve_static_imports_detailed(imports, name) {
             StaticLookup::Found(member) => NameResolution::Resolved(Resolution::StaticMember(
-                StaticMemberResolution::External(member),
+                self.static_member_resolution_from_id(member),
             )),
             StaticLookup::Ambiguous(members) => NameResolution::Ambiguous(
                 members
                     .into_iter()
-                    .map(|m| Resolution::StaticMember(StaticMemberResolution::External(m)))
+                    .map(|m| Resolution::StaticMember(self.static_member_resolution_from_id(m)))
                     .collect(),
             ),
             StaticLookup::NotFound => NameResolution::Unresolved,

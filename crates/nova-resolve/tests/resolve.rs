@@ -5,6 +5,7 @@ use std::sync::Arc;
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_core::{FileId, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_hir::queries::HirDatabase;
+use nova_hir::queries;
 use nova_jdk::JdkIndex;
 use nova_resolve::{build_scopes, BodyOwner, NameResolution, Resolution, Resolver, TypeResolution};
 
@@ -391,4 +392,85 @@ class C {}
             Resolution::Type(TypeResolution::External(b)),
         ])
     );
+}
+
+#[test]
+fn workspace_def_map_resolves_cross_file_same_package_type() {
+    let mut db = TestDb::default();
+    let foo_file = FileId::from_raw(0);
+    let use_file = FileId::from_raw(1);
+    db.set_file_text(foo_file, "package p; class Foo {}");
+    db.set_file_text(
+        use_file,
+        r#"
+package p;
+class C { Foo field; }
+"#,
+    );
+
+    let tree_foo = queries::item_tree(&db, foo_file);
+    let tree_use = queries::item_tree(&db, use_file);
+    let def_foo = nova_resolve::DefMap::from_item_tree(foo_file, &tree_foo);
+    let def_use = nova_resolve::DefMap::from_item_tree(use_file, &tree_use);
+
+    let foo_item = def_foo
+        .lookup_top_level(&Name::from("Foo"))
+        .expect("Foo should be declared");
+
+    let mut workspace = nova_resolve::WorkspaceDefMap::default();
+    workspace.extend_from_def_map(&def_foo);
+    workspace.extend_from_def_map(&def_use);
+
+    let scopes = build_scopes(&db, use_file);
+    let jdk = JdkIndex::new();
+    let resolver = Resolver::new(&jdk)
+        .with_classpath(&workspace)
+        .with_workspace(&workspace);
+    let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Foo"));
+    assert_eq!(res, Some(Resolution::Type(TypeResolution::Source(foo_item))));
+}
+
+#[test]
+fn workspace_type_preferred_over_classpath_definition() {
+    let mut db = TestDb::default();
+    let foo_file = FileId::from_raw(0);
+    let use_file = FileId::from_raw(1);
+    db.set_file_text(
+        foo_file,
+        r#"
+package com.example.dep;
+class Foo {}
+"#,
+    );
+    db.set_file_text(
+        use_file,
+        r#"
+package p;
+import com.example.dep.Foo;
+class C { Foo field; }
+"#,
+    );
+
+    let tree_foo = queries::item_tree(&db, foo_file);
+    let tree_use = queries::item_tree(&db, use_file);
+    let def_foo = nova_resolve::DefMap::from_item_tree(foo_file, &tree_foo);
+    let def_use = nova_resolve::DefMap::from_item_tree(use_file, &tree_use);
+
+    let foo_item = def_foo
+        .lookup_top_level(&Name::from("Foo"))
+        .expect("Foo should be declared");
+
+    let mut workspace = nova_resolve::WorkspaceDefMap::default();
+    workspace.extend_from_def_map(&def_foo);
+    workspace.extend_from_def_map(&def_use);
+
+    let jdk = JdkIndex::new();
+    let classpath = ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
+    let resolver = Resolver::new(&jdk)
+        .with_classpath(&classpath)
+        .with_workspace(&workspace);
+
+    let scopes = build_scopes(&db, use_file);
+    let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Foo"));
+    assert_eq!(res, Some(Resolution::Type(TypeResolution::Source(foo_item))));
 }

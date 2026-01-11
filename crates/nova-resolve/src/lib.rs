@@ -17,6 +17,7 @@ pub mod members;
 pub mod scopes;
 pub mod type_ref;
 pub mod types;
+pub mod workspace;
 
 pub use def_map::{DefMap, DefMapError, Import};
 pub use ids::{DefWithBodyId, ParamId, TypeDefId};
@@ -38,3 +39,4 @@ pub use scopes::{
     ScopeData, ScopeGraph, ScopeId, ScopeKind,
 };
 pub use types::{TypeDef, TypeKind};
+pub use workspace::WorkspaceDefMap;

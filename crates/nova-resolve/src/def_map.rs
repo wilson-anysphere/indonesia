@@ -45,7 +45,7 @@ pub enum DefMapError {
 }
 
 /// Span-free, stable-ID definition map for a single Java source file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefMap {
     file: FileId,
     package: Option<PackageName>,
@@ -135,6 +135,14 @@ impl DefMap {
     #[must_use]
     pub fn type_def(&self, id: ItemId) -> Option<&TypeDef> {
         self.types.get(&id)
+    }
+
+    /// Iterate all type definitions (top-level and nested) declared in this file.
+    ///
+    /// The iteration order is unspecified; callers that need determinism should
+    /// sort the results by `TypeDef.binary_name` or by `ItemId`.
+    pub fn iter_type_defs(&self) -> impl Iterator<Item = (ItemId, &TypeDef)> {
+        self.types.iter().map(|(id, def)| (*id, def))
     }
 
     #[must_use]
