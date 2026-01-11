@@ -20,6 +20,7 @@
     "onCommand:nova.installOrUpdateServer",
     "onCommand:nova.useLocalServerBinary",
     "onCommand:nova.showServerVersion",
+    "onCommand:nova.showBinaryStatus",
     "onCommand:nova.organizeImports",
     "onCommand:nova.bugReport",
     "onCommand:nova.discoverTests",
@@ -42,6 +43,10 @@
       {
         "command": "nova.showServerVersion",
         "title": "Nova: Show Server Version"
+      },
+      {
+        "command": "nova.showBinaryStatus",
+        "title": "Nova: Show Binary Status"
       },
       {
         "command": "nova.organizeImports",
@@ -79,6 +84,16 @@
           "default": null,
           "description": "Override the nova-lsp binary path. Supports ~ and ${workspaceFolder}. Relative paths resolve against the first workspace folder. When set, Nova will not download or manage the server."
         },
+        "nova.server.args": {
+          "type": "array",
+          "default": [
+            "--stdio"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Arguments passed to nova-lsp. Defaults to [\"--stdio\"]."
+        },
         "nova.server.autoDownload": {
           "type": "boolean",
           "default": true,
@@ -102,6 +117,44 @@
           "type": "string",
           "default": "https://github.com/wilson-anysphere/indonesia",
           "description": "GitHub repository URL (or \"owner/repo\") to download nova-lsp releases from."
+        },
+        "nova.dap.path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Override the nova-dap binary path (for future debug adapter integration). Supports ~ and ${workspaceFolder}. Relative paths resolve against the first workspace folder."
+        },
+        "nova.download.mode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "prompt",
+            "off"
+          ],
+          "default": "prompt",
+          "description": "Whether the extension should download nova-lsp/nova-dap binaries when missing. \"prompt\" shows a modal prompt, \"auto\" downloads automatically, \"off\" disables downloads."
+        },
+        "nova.download.releaseTag": {
+          "type": "string",
+          "default": "v0.1.0",
+          "description": "Git tag to download binaries from (e.g. \"v0.1.0\" or \"latest\"). Defaults to v${extensionVersion} for packaged releases."
+        },
+        "nova.download.baseUrl": {
+          "type": "string",
+          "default": "https://github.com/wilson-anysphere/indonesia/releases/download",
+          "description": "Base URL used to download release assets. The extension downloads ${baseUrl}/${releaseTag}/<asset>."
+        },
+        "nova.download.allowPrerelease": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow using pre-release builds when resolving nova.download.releaseTag=latest."
+        },
+        "nova.download.allowVersionMismatch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow using nova-lsp / nova-dap binaries whose --version output does not match the extension version."
         },
         "nova.lsp.configPath": {
           "type": [

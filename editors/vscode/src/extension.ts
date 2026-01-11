@@ -9,6 +9,7 @@ import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
+import { findOnPath, getBinaryVersion, getExtensionVersion, openInstallDocs, type DownloadMode } from './binaries';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
@@ -128,13 +129,26 @@ function clearAiCompletionCache(): void {
 
 function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
   const config = vscode.workspace.getConfiguration('nova');
+  const serverArgsSetting = config.get<string[]>('server.args', ['--stdio']);
   const configPath = config.get<string | null>('lsp.configPath', null);
   const extraArgs = config.get<string[]>('lsp.extraArgs', []);
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
 
   const aiEnabled = config.get<boolean>('ai.enabled', true);
 
-  return buildNovaLspLaunchConfig({ configPath, extraArgs, workspaceRoot, aiEnabled, baseEnv: process.env });
+  const launch = buildNovaLspLaunchConfig({ configPath, extraArgs, workspaceRoot, aiEnabled, baseEnv: process.env });
+
+  const normalizedServerArgs = Array.isArray(serverArgsSetting)
+    ? serverArgsSetting.map((arg) => String(arg).trim()).filter(Boolean)
+    : [];
+
+  // Treat the default setting value as "no override" so `nova.lsp.*` settings
+  // can continue to influence the argument list.
+  if (normalizedServerArgs.length > 0 && !(normalizedServerArgs.length === 1 && normalizedServerArgs[0] === '--stdio')) {
+    return { args: normalizedServerArgs, env: launch.env };
+  }
+
+  return launch;
 }
 
 interface BugReportResponse {
@@ -176,7 +190,7 @@ function ensureNovaCompletionItemUri(item: vscode.CompletionItem, uri: string): 
 }
 
 export async function activate(context: vscode.ExtensionContext) {
-  const serverOutput = vscode.window.createOutputChannel('Nova Server');
+  const serverOutput = vscode.window.createOutputChannel('Nova');
   context.subscriptions.push(serverOutput);
 
   bugReportOutput = vscode.window.createOutputChannel('Nova Bug Report');
@@ -193,24 +207,65 @@ export async function activate(context: vscode.ExtensionContext) {
     const rawPath = cfg.get<string | null>('server.path', null);
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
     const resolvedPath = resolveNovaConfigPath({ configPath: rawPath, workspaceRoot }) ?? null;
-    const rawChannel = cfg.get<string>('server.releaseChannel', 'stable');
-    const rawVersion = cfg.get<string>('server.version', 'latest');
-    const rawReleaseUrl = cfg.get<string>('server.releaseUrl', 'https://github.com/wilson-anysphere/indonesia');
+
+    const downloadMode = cfg.get<DownloadMode>('download.mode', 'prompt');
+    const allowPrerelease = cfg.get<boolean>('download.allowPrerelease', false);
+    const rawTag = cfg.get<string>('download.releaseTag', cfg.get<string>('server.version', 'latest'));
+    const rawBaseUrl = cfg.get<string>(
+      'download.baseUrl',
+      'https://github.com/wilson-anysphere/indonesia/releases/download',
+    );
+    const fallbackReleaseUrl = cfg.get<string>('server.releaseUrl', 'https://github.com/wilson-anysphere/indonesia');
+
+    const derivedReleaseUrl = (() => {
+      const trimmed = rawBaseUrl.trim().replace(/\/+$/, '');
+      const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\/download$/.exec(trimmed);
+      if (match) {
+        return `https://github.com/${match[1]}/${match[2]}`;
+      }
+      return trimmed.length > 0 ? trimmed : fallbackReleaseUrl;
+    })();
+
+    const version = typeof rawTag === 'string' && rawTag.trim().length > 0 ? rawTag.trim() : 'latest';
+
     return {
       path: resolvedPath,
-      autoDownload: cfg.get<boolean>('server.autoDownload', true),
-      releaseChannel: rawChannel === 'prerelease' ? 'prerelease' : 'stable',
-      version: typeof rawVersion === 'string' && rawVersion.trim().length > 0 ? rawVersion.trim() : 'latest',
-      releaseUrl:
-        typeof rawReleaseUrl === 'string' && rawReleaseUrl.trim().length > 0
-          ? rawReleaseUrl.trim()
-          : 'https://github.com/wilson-anysphere/indonesia',
+      autoDownload: downloadMode !== 'off',
+      releaseChannel: allowPrerelease ? 'prerelease' : 'stable',
+      version,
+      releaseUrl: derivedReleaseUrl,
     };
   };
 
   const setServerPath = async (value: string | null): Promise<void> => {
     await vscode.workspace.getConfiguration('nova').update('server.path', value, vscode.ConfigurationTarget.Global);
   };
+
+  const extensionVersion = getExtensionVersion(context);
+
+  const readDownloadMode = (): DownloadMode => {
+    return vscode.workspace.getConfiguration('nova').get<DownloadMode>('download.mode', 'prompt');
+  };
+
+  const allowVersionMismatch = (): boolean => {
+    return vscode.workspace.getConfiguration('nova').get<boolean>('download.allowVersionMismatch', false);
+  };
+
+  async function checkBinaryVersion(binaryPath: string): Promise<{
+    ok: boolean;
+    version?: string;
+    versionMatches?: boolean;
+    error?: string;
+  }> {
+    try {
+      const version = await getBinaryVersion(binaryPath);
+      const matches = version === extensionVersion;
+      return { ok: allowVersionMismatch() || matches, version, versionMatches: matches };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: message };
+    }
+  }
 
   const documentSelector: LspTextDocumentFilter[] = [
     { scheme: 'file', language: 'java' },
@@ -526,7 +581,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   async function showServerVersion(): Promise<void> {
     const settings = readServerSettings();
-    const resolved = await serverManager.resolveServerPath({ path: settings.path });
+    const resolved = settings.path
+      ? await serverManager.resolveServerPath({ path: settings.path })
+      : (await findOnPath('nova-lsp')) ?? (await serverManager.resolveServerPath({ path: null }));
     if (!resolved) {
       const message = settings.path
         ? `Nova: nova.server.path points to a missing file: ${settings.path}`
@@ -547,6 +604,72 @@ export async function activate(context: vscode.ExtensionContext) {
       const message = err instanceof Error ? err.message : String(err);
       vscode.window.showErrorMessage(`Nova: failed to run nova-lsp --version: ${message}`);
     }
+  }
+
+  async function showBinaryStatus(): Promise<void> {
+    const cfg = vscode.workspace.getConfiguration('nova');
+    const downloadMode = readDownloadMode();
+    const releaseTag = cfg.get<string>('download.releaseTag', '').trim();
+    const baseUrl = cfg.get<string>('download.baseUrl', '').trim();
+    const allowPrerelease = cfg.get<boolean>('download.allowPrerelease', false);
+
+    serverOutput.appendLine('Nova: Binary status');
+    serverOutput.appendLine(`- Extension version: ${extensionVersion}`);
+    serverOutput.appendLine(`- Platform: ${process.platform} (${process.arch})`);
+    serverOutput.appendLine(
+      `- Download: mode=${downloadMode} releaseTag=${releaseTag || '(unset)'} allowPrerelease=${allowPrerelease} baseUrl=${baseUrl || '(unset)'}`,
+    );
+    serverOutput.appendLine(`- Version check: requireMatch=${!allowVersionMismatch()}`);
+    serverOutput.appendLine('');
+
+    const serverSettings = readServerSettings();
+    await printBinaryStatusEntry({
+      id: 'nova-lsp',
+      settingPath: serverSettings.path,
+      managedPath: serverManager.getManagedServerPath(),
+    });
+
+    const rawDapPath = cfg.get<string | null>('dap.path', null);
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const dapPath = resolveNovaConfigPath({ configPath: rawDapPath, workspaceRoot }) ?? null;
+    await printBinaryStatusEntry({
+      id: 'nova-dap',
+      settingPath: dapPath,
+      managedPath: serverManager.getManagedDapPath(),
+    });
+
+    serverOutput.show(true);
+  }
+
+  async function printBinaryStatusEntry(opts: {
+    id: 'nova-lsp' | 'nova-dap';
+    settingPath: string | null;
+    managedPath: string;
+  }): Promise<void> {
+    const candidates: Array<{ source: string; path: string }> = [];
+    if (opts.settingPath) {
+      candidates.push({ source: 'setting', path: opts.settingPath });
+    }
+
+    const onPath = await findOnPath(opts.id);
+    if (onPath) {
+      candidates.push({ source: '$PATH', path: onPath });
+    }
+
+    candidates.push({ source: 'managed', path: opts.managedPath });
+
+    let resolvedLine = `${opts.id}: not found`;
+    for (const candidate of candidates) {
+      const checked = await checkBinaryVersion(candidate.path);
+      const versionStr = checked.version ? `v${checked.version}` : 'no-version';
+      const status = checked.ok ? 'ok' : checked.version ? `mismatch (expected v${extensionVersion})` : 'invalid';
+      serverOutput.appendLine(`- ${candidate.source}: ${candidate.path} (${versionStr}, ${status}${checked.error ? `, ${checked.error}` : ''})`);
+      if (checked.ok && checked.version && resolvedLine.endsWith('not found')) {
+        resolvedLine = `${opts.id}: ${candidate.path} (v${checked.version}, source=${candidate.source})`;
+      }
+    }
+    serverOutput.appendLine(resolvedLine);
+    serverOutput.appendLine('');
   }
 
   async function ensureLanguageClientStarted(opts?: { promptForInstall?: boolean }): Promise<void> {
@@ -586,20 +709,24 @@ export async function activate(context: vscode.ExtensionContext) {
   async function doEnsureLanguageClientStarted(promptForInstall: boolean): Promise<void> {
     while (true) {
       const settings = readServerSettings();
-      const resolved = await serverManager.resolveServerPath({ path: settings.path });
-      if (resolved) {
-        missingServerPrompted = false;
-        await ensureLanguageClientRunning(resolved);
-        return;
-      }
+      const downloadMode = readDownloadMode();
 
       if (settings.path) {
-        const actions = ['Use Local Server Binary...', 'Clear Setting'];
-        if (settings.autoDownload) {
-          actions.push('Install/Update Server');
+        const check = await checkBinaryVersion(settings.path);
+        if (check.ok && check.version) {
+          missingServerPrompted = false;
+          await ensureLanguageClientRunning(settings.path);
+          return;
         }
+
+        const suffix = check.version
+          ? `found v${check.version}, expected v${extensionVersion}`
+          : check.error
+            ? check.error
+            : 'unavailable';
+        const actions = ['Use Local Server Binary...', 'Clear Setting'];
         const choice = await vscode.window.showErrorMessage(
-          `Nova: nova.server.path points to a missing file: ${settings.path}`,
+          `Nova: nova.server.path is not usable (${suffix}): ${settings.path}`,
           ...actions,
         );
         if (choice === 'Use Local Server Binary...') {
@@ -607,31 +734,59 @@ export async function activate(context: vscode.ExtensionContext) {
         } else if (choice === 'Clear Setting') {
           await setServerPath(null);
           continue;
-        } else if (choice === 'Install/Update Server') {
-          await installOrUpdateServer();
         }
         return;
+      }
+
+      const fromPath = await findOnPath('nova-lsp');
+      if (fromPath) {
+        const check = await checkBinaryVersion(fromPath);
+        if (check.ok && check.version) {
+          missingServerPrompted = false;
+          await ensureLanguageClientRunning(fromPath);
+          return;
+        }
+        if (check.version) {
+          serverOutput.appendLine(
+            `Ignoring nova-lsp on PATH (${fromPath}): found v${check.version}, expected v${extensionVersion}.`,
+          );
+        }
+      }
+
+      const managed = await serverManager.resolveServerPath({ path: null });
+      if (managed) {
+        const check = await checkBinaryVersion(managed);
+        if (check.ok && check.version) {
+          missingServerPrompted = false;
+          await ensureLanguageClientRunning(managed);
+          return;
+        }
       }
 
       if (!promptForInstall) {
         return;
       }
 
-      if (!settings.autoDownload) {
+      if (downloadMode === 'off') {
         if (missingServerPrompted) {
           return;
         }
         missingServerPrompted = true;
         const action = await vscode.window.showErrorMessage(
-          'Nova: nova-lsp is not installed. Set nova.server.path or run Nova: Install/Update Server.',
-          'Install/Update Server',
-          'Use Local Server Binary...',
+          'Nova: nova-lsp is not installed and auto-download is disabled. Set nova.server.path or enable nova.download.mode.',
+          'Open Settings',
+          'Open install docs',
         );
-        if (action === 'Install/Update Server') {
-          await installOrUpdateServer();
-        } else if (action === 'Use Local Server Binary...') {
-          await useLocalServerBinary();
+        if (action === 'Open Settings') {
+          await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download.mode');
+        } else if (action === 'Open install docs') {
+          await openInstallDocs(context);
         }
+        return;
+      }
+
+      if (downloadMode === 'auto') {
+        await installOrUpdateServer();
         return;
       }
 
@@ -639,15 +794,16 @@ export async function activate(context: vscode.ExtensionContext) {
         return;
       }
       missingServerPrompted = true;
-      const choice = await vscode.window.showInformationMessage(
-        'Nova: nova-lsp is not installed. Install it now?',
-        'Install',
-        'Use Local Server Binary...',
+      const choice = await vscode.window.showErrorMessage(
+        'Nova: nova-lsp is not installed. Download it now?',
+        { modal: true },
+        'Download',
+        'Open install docs',
       );
-      if (choice === 'Install') {
+      if (choice === 'Download') {
         await installOrUpdateServer();
-      } else if (choice === 'Use Local Server Binary...') {
-        await useLocalServerBinary();
+      } else if (choice === 'Open install docs') {
+        await openInstallDocs(context);
       }
       return;
     }
@@ -656,6 +812,7 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(vscode.commands.registerCommand('nova.installOrUpdateServer', installOrUpdateServer));
   context.subscriptions.push(vscode.commands.registerCommand('nova.useLocalServerBinary', useLocalServerBinary));
   context.subscriptions.push(vscode.commands.registerCommand('nova.showServerVersion', showServerVersion));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.showBinaryStatus', showBinaryStatus));
 
   testController = vscode.tests.createTestController('novaTests', 'Nova Tests');
   context.subscriptions.push(testController);
@@ -1237,10 +1394,22 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
       const serverPathChanged = event.affectsConfiguration('nova.server.path');
+      const serverDownloadChanged =
+        event.affectsConfiguration('nova.download.mode') ||
+        event.affectsConfiguration('nova.download.releaseTag') ||
+        event.affectsConfiguration('nova.download.baseUrl') ||
+        event.affectsConfiguration('nova.download.allowPrerelease') ||
+        event.affectsConfiguration('nova.download.allowVersionMismatch');
       if (serverPathChanged) {
         void ensureLanguageClientStarted({ promptForInstall: false }).catch((err) => {
           const message = err instanceof Error ? err.message : String(err);
           serverOutput.appendLine(`Failed to restart nova-lsp: ${message}`);
+        });
+      }
+      if (!serverPathChanged && serverDownloadChanged) {
+        void ensureLanguageClientStarted({ promptForInstall: false }).catch((err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          serverOutput.appendLine(`Failed to re-resolve nova-lsp after download settings change: ${message}`);
         });
       }
 
@@ -1248,6 +1417,7 @@ export async function activate(context: vscode.ExtensionContext) {
         !serverPathChanged &&
         (event.affectsConfiguration('nova.lsp.configPath') ||
           event.affectsConfiguration('nova.lsp.extraArgs') ||
+          event.affectsConfiguration('nova.server.args') ||
           event.affectsConfiguration('nova.ai.enabled'))
       ) {
         promptRestartLanguageServer();

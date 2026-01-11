@@ -12,6 +12,17 @@ By default, Nova manages the `nova-lsp` binary for you:
 
 If you're offline or want to use a custom build, you can set `nova.server.path` (or run **Nova: Use Local Server Binary...**) to point at a local `nova-lsp` executable.
 
+## Language server + debug adapter binaries
+
+Nova resolves binaries in the following order:
+
+1. **User setting** (`nova.server.path` / `nova.dap.path`) if set to an absolute path.
+2. **Workspace-local path** if the setting is a relative path (resolved relative to the first workspace folder).
+3. **`$PATH`** discovery.
+4. **Extension-managed install** in VS Code global storage (`context.globalStorageUri`), with optional download.
+
+By default, Nova validates binaries by running `--version` and requiring it to match the extension version (override with `nova.download.allowVersionMismatch`).
+
 ## Build
 
 ```bash
@@ -36,6 +47,9 @@ npm run compile
 
 - **Nova: Show Server Version** (`nova.showServerVersion`)
   - Runs `nova-lsp --version` using the configured server.
+
+- **Nova: Show Binary Status** (`nova.showBinaryStatus`)
+  - Prints resolved paths + versions for `nova-lsp` and `nova-dap` to the **Nova** output channel.
 
 - **Nova: Organize Imports** (`nova.organizeImports`)
   - Sends a custom LSP request: `nova/java/organizeImports`.
@@ -123,12 +137,23 @@ Nova adds a **Debug** run profile alongside **Run**. Debugging a test will:
 ### Server
 
 - `nova.server.path` (string | null): override the `nova-lsp` binary path (disables managed downloads). Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder.
+- `nova.server.args` (string[]): arguments passed to `nova-lsp` (default: `["--stdio"]`).
 - `nova.server.autoDownload` (boolean): prompt to download the server when missing (default: true).
 - `nova.server.releaseChannel` ("stable" | "prerelease"): which channel to use when resolving `latest`.
 - `nova.server.version` (string | "latest"): version to install (default: "latest").
 - `nova.server.releaseUrl` (string): GitHub repository URL (or "owner/repo") to download releases from.
 - If you hit GitHub rate limits in the VS Code extension host, you can set `GITHUB_TOKEN`/`GH_TOKEN` (for public GitHub) or `NOVA_GITHUB_TOKEN` (for custom hosts) in the environment before launching VS Code.
   - Accepted `releaseUrl` formats include `owner/repo`, `https://github.com/owner/repo`, `git@github.com:owner/repo.git`, and GitHub API base URLs like `https://api.github.com/repos/owner/repo` (or GHES equivalents).
+
+### Download
+
+These settings control managed downloads for both `nova-lsp` and `nova-dap`:
+
+- `nova.download.mode` ("auto" | "prompt" | "off"): download missing binaries automatically, prompt, or never download (default: "prompt").
+- `nova.download.releaseTag` (string): release tag to download from (default: `v${extensionVersion}` for packaged releases).
+- `nova.download.baseUrl` (string): base URL for release assets (default: this repo’s GitHub releases).
+- `nova.download.allowPrerelease` (boolean): allow selecting pre-releases when `releaseTag` is `latest`.
+- `nova.download.allowVersionMismatch` (boolean): allow binaries whose `--version` output doesn’t match the extension version.
 
 ### LSP
 

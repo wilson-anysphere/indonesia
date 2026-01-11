@@ -12,7 +12,7 @@ import * as yauzl from 'yauzl';
 export type ReleaseChannel = 'stable' | 'prerelease';
 
 export type NovaServerSettings = {
-  /** Absolute path to a user-managed nova-lsp binary. If set, downloads are skipped and this path is used. */
+  /** Absolute path to a user-managed Nova binary. If set, downloads are skipped and this path is used. */
   path: string | null;
   /** Whether the extension should offer to download the server when missing. */
   autoDownload: boolean;
@@ -55,8 +55,17 @@ export class ServerManager {
     return path.join(this.storageRoot, 'server', binaryName);
   }
 
+  getManagedDapPath(): string {
+    const binaryName = novaDapBinaryName(this.platform);
+    return path.join(this.storageRoot, 'dap', binaryName);
+  }
+
   async isManagedServerInstalled(): Promise<boolean> {
     return fileExists(fs, this.getManagedServerPath());
+  }
+
+  async isManagedDapInstalled(): Promise<boolean> {
+    return fileExists(fs, this.getManagedDapPath());
   }
 
   async resolveServerPath(settings: Pick<NovaServerSettings, 'path'>): Promise<string | undefined> {
@@ -75,18 +84,64 @@ export class ServerManager {
     return undefined;
   }
 
+  async resolveDapPath(settings: Pick<NovaServerSettings, 'path'>): Promise<string | undefined> {
+    if (settings.path) {
+      if (await fileExists(fs, settings.path)) {
+        return settings.path;
+      }
+      return undefined;
+    }
+
+    const managed = this.getManagedDapPath();
+    if (await fileExists(fs, managed)) {
+      return managed;
+    }
+
+    return undefined;
+  }
+
   async installOrUpdate(settings: NovaServerSettings): Promise<{ path: string; version: string }> {
+    return await this.installOrUpdateBinary({
+      binaryId: 'nova-lsp',
+      installDirName: 'server',
+      binaryName: novaLspBinaryName(this.platform),
+      metadataFileName: 'nova-lsp.json',
+      archiveNameCandidates: (target) => candidateArchiveNames('nova-lsp', target, this.platform),
+      settings,
+    });
+  }
+
+  async installOrUpdateDap(settings: NovaServerSettings): Promise<{ path: string; version: string }> {
+    return await this.installOrUpdateBinary({
+      binaryId: 'nova-dap',
+      installDirName: 'dap',
+      binaryName: novaDapBinaryName(this.platform),
+      metadataFileName: 'nova-dap.json',
+      archiveNameCandidates: (target) => candidateArchiveNames('nova-dap', target, this.platform),
+      settings,
+    });
+  }
+
+  private async installOrUpdateBinary(opts: {
+    binaryId: 'nova-lsp' | 'nova-dap';
+    installDirName: string;
+    binaryName: string;
+    metadataFileName: string;
+    archiveNameCandidates: (target: string) => string[];
+    settings: NovaServerSettings;
+  }): Promise<{ path: string; version: string }> {
+    const settings = opts.settings;
     const repo = parseGitHubRepo(settings.releaseUrl);
     if (!repo) {
       throw new Error(`Invalid nova.server.releaseUrl: "${settings.releaseUrl}"`);
     }
 
     const target = detectNovaTarget({ platform: this.platform, arch: this.arch });
-    const serverDir = path.join(this.storageRoot, 'server');
-    await fs.mkdir(serverDir, { recursive: true });
+    const installDir = path.join(this.storageRoot, opts.installDirName);
+    await fs.mkdir(installDir, { recursive: true });
 
-    const finalBinaryPath = this.getManagedServerPath();
-    const metadataPath = path.join(serverDir, 'nova-lsp.json');
+    const finalBinaryPath = path.join(installDir, opts.binaryName);
+    const metadataPath = path.join(installDir, opts.metadataFileName);
 
     const desiredTag = normalizeVersionTag(settings.version);
     if (desiredTag !== 'latest') {
@@ -98,7 +153,7 @@ export class ServerManager {
         (installed.releaseApiBaseUrl ?? parseGitHubRepo(installed.releaseUrl ?? '')?.apiBaseUrl) === repo.apiBaseUrl &&
         (await fileExists(fs, finalBinaryPath))
       ) {
-        this.log(`nova-lsp ${desiredTag} is already installed`);
+        this.log(`${opts.binaryId} ${desiredTag} is already installed`);
         return { path: finalBinaryPath, version: desiredTag };
       }
     }
@@ -119,13 +174,13 @@ export class ServerManager {
         (installed.releaseApiBaseUrl ?? parseGitHubRepo(installed.releaseUrl ?? '')?.apiBaseUrl) === repo.apiBaseUrl &&
         (await fileExists(fs, finalBinaryPath))
       ) {
-        this.log(`nova-lsp ${tag} is already installed`);
+        this.log(`${opts.binaryId} ${tag} is already installed`);
         return { path: finalBinaryPath, version: tag };
       }
     }
 
     const release = await fetchReleaseByTag({ fetchImpl: this.fetchImpl, repo, tag });
-    const archiveNameCandidates = candidateArchiveNames(target, this.platform);
+    const archiveNameCandidates = opts.archiveNameCandidates(target);
     const archive = findFirstAssetByName(release.assets, archiveNameCandidates);
     if (!archive) {
       const available = release.assets.map((asset) => asset.name).sort().join(', ');
@@ -144,8 +199,8 @@ export class ServerManager {
       archiveName,
     });
 
-    const tmpArchivePath = path.join(serverDir, `${archiveName}.tmp`);
-    const tmpBinaryPath = path.join(serverDir, `${novaLspBinaryName(this.platform)}.tmp`);
+    const tmpArchivePath = path.join(installDir, `${archiveName}.tmp`);
+    const tmpBinaryPath = path.join(installDir, `${opts.binaryName}.tmp`);
 
     await safeRm(fs, tmpArchivePath);
     await safeRm(fs, tmpBinaryPath);
@@ -160,7 +215,7 @@ export class ServerManager {
 
       await this.extractor.extractBinaryFromArchive({
         archivePath: tmpArchivePath,
-        binaryName: novaLspBinaryName(this.platform),
+        binaryName: opts.binaryName,
         outputPath: tmpBinaryPath,
       });
 
@@ -190,7 +245,7 @@ export class ServerManager {
       await safeRm(fs, tmpBinaryPath);
     }
 
-    this.log(`Installed nova-lsp to ${finalBinaryPath}`);
+    this.log(`Installed ${opts.binaryId} to ${finalBinaryPath}`);
     return { path: finalBinaryPath, version: release.tag_name };
   }
 
@@ -298,7 +353,7 @@ export function detectNovaTarget(info: { platform: NodeJS.Platform; arch: string
   }
 
   throw new Error(
-    `Unsupported platform/arch: ${platform}/${arch}. Nova does not currently ship a prebuilt nova-lsp for this platform; set nova.server.path to a local nova-lsp executable instead.`,
+    `Unsupported platform/arch: ${platform}/${arch}. Nova does not currently ship a prebuilt binary for this platform; set nova.server.path or nova.dap.path to a local executable instead.`,
   );
 }
 
@@ -306,13 +361,17 @@ export function novaLspBinaryName(platform: NodeJS.Platform): string {
   return platform === 'win32' ? 'nova-lsp.exe' : 'nova-lsp';
 }
 
-export function novaLspArchiveName(target: string, platform: NodeJS.Platform): string {
-  const ext = platform === 'win32' ? 'zip' : 'tar.xz';
-  return `nova-lsp-${target}.${ext}`;
+export function novaDapBinaryName(platform: NodeJS.Platform): string {
+  return platform === 'win32' ? 'nova-dap.exe' : 'nova-dap';
 }
 
-function candidateArchiveNames(target: string, platform: NodeJS.Platform): string[] {
-  const primary = novaLspArchiveName(target, platform);
+export function novaArchiveName(binaryId: 'nova-lsp' | 'nova-dap', target: string, platform: NodeJS.Platform): string {
+  const ext = platform === 'win32' ? 'zip' : 'tar.xz';
+  return `${binaryId}-${target}.${ext}`;
+}
+
+function candidateArchiveNames(binaryId: 'nova-lsp' | 'nova-dap', target: string, platform: NodeJS.Platform): string[] {
+  const primary = novaArchiveName(binaryId, target, platform);
   if (platform !== 'win32' && primary.endsWith('.tar.xz')) {
     return [primary, primary.replace(/\.tar\.xz$/, '.tar.gz')];
   }
@@ -708,7 +767,7 @@ async function extractFromTar(opts: ExtractBinaryOptions): Promise<void> {
     throw new Error(`Unsupported archive type: ${opts.archivePath}`);
   }
 
-  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nova-lsp-'));
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), `${path.basename(opts.binaryName)}-`));
   try {
     const execFileAsync = promisify(execFile);
     try {
@@ -716,8 +775,9 @@ async function extractFromTar(opts: ExtractBinaryOptions): Promise<void> {
     } catch (err) {
       const code = (err as { code?: unknown }).code;
       if (code === 'ENOENT') {
+        const settingKey = path.basename(opts.binaryName).startsWith('nova-dap') ? 'nova.dap.path' : 'nova.server.path';
         throw new Error(
-          'Failed to extract nova-lsp: the `tar` command was not found. Install `tar` (required to unpack .tar.xz releases) or set nova.server.path to a local nova-lsp binary.',
+          `Failed to extract ${path.basename(opts.binaryName)}: the \`tar\` command was not found. Install \`tar\` (required to unpack .tar.xz releases) or set ${settingKey} to a local ${path.basename(opts.binaryName)} binary.`,
         );
       }
       throw err;

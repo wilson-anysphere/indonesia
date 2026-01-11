@@ -31,9 +31,22 @@ function updateJson(filePath, mutate) {
 }
 
 updateJson(packageJsonPath, (pkg) => {
-  if (pkg.version === version) return false;
-  pkg.version = version;
-  return true;
+  let changed = false;
+  if (pkg.version !== version) {
+    pkg.version = version;
+    changed = true;
+  }
+
+  // Keep the default download tag aligned with the extension version so users
+  // get the matching nova-lsp/nova-dap binaries without extra configuration.
+  const releaseTagPath =
+    pkg?.contributes?.configuration?.properties?.["nova.download.releaseTag"];
+  if (releaseTagPath && releaseTagPath.default !== `v${version}`) {
+    releaseTagPath.default = `v${version}`;
+    changed = true;
+  }
+
+  return changed;
 });
 
 updateJson(packageLockPath, (lock) => {
