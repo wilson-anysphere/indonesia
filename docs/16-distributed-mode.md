@@ -303,11 +303,11 @@ Remote mode is **not hardened** and should not be exposed to untrusted networks.
 - For stronger authentication/authorization guarantees, configure **mTLS** (client certificate
   verification) and shard-scoped authorization (e.g. the router’s client-cert fingerprint allowlist).
 - Even with TLS/mTLS enabled, remote deployments still need DoS hardening (connection limits, rate
-  limiting, etc.). Nova’s RPC stack enforces some basic size limits to avoid OOM, and the local
-  worker supervisor uses a handshake timeout when spawning workers. The planned v3 transport is
-  intended to help further via negotiated max frame/payload sizes (see
-  `docs/17-remote-rpc-protocol.md`) and stricter handshake framing, but it is not a substitute for
-  network-level controls.
+  limiting, etc.). Nova’s RPC stack enforces some basic size limits to avoid OOM, applies timeouts
+  to the initial handshake (and to TLS accept when enabled), and caps the number of concurrent
+  pending handshakes to avoid accept-loop stalls. The planned v3 transport is intended to help
+  further via negotiated max frame/payload sizes (see `docs/17-remote-rpc-protocol.md`) and stricter
+  handshake framing, but it is not a substitute for network-level controls.
 
 ## Future work (not implemented yet)
 
