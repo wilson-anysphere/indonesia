@@ -960,6 +960,53 @@ This is always available, even while the server is in safe-mode.
 
 ---
 
+### `nova/safeModeStatus` (currently not implemented)
+
+The VS Code extension attempts to call this at startup to determine whether the server is currently
+in safe-mode (`editors/vscode/src/extension.ts`). The shipped `nova-lsp` server does **not**
+implement it yet; clients should infer safe-mode by observing the `-32603` safe-mode error message.
+
+- **Kind:** request
+- **Stability:** experimental
+
+#### Request params
+
+No params are required; clients should send `{}` or omit params.
+
+#### Response (proposed)
+
+```json
+{ "schemaVersion": 1, "enabled": true, "reason": "panic" }
+```
+
+`reason` is optional and, if present, should be one of:
+
+- `"panic"`
+- `"watchdog_timeout"`
+
+Compatibility note: clients may encounter older servers that return a bare boolean `true | false`.
+
+#### Errors
+
+- `-32601` or `-32602` if the server does not support this endpoint.
+- `-32603` for internal errors.
+
+---
+
+### `nova/safeModeChanged` (currently not implemented)
+
+The VS Code extension registers this notification to update UI state when safe-mode changes
+(`editors/vscode/src/extension.ts`). The shipped `nova-lsp` server does **not** emit it yet.
+
+- **Kind:** notification
+- **Stability:** experimental
+
+#### Notification params (proposed)
+
+Same object as the `nova/safeModeStatus` response.
+
+---
+
 ## Experimental / client-specific methods
 
 ### `nova/completion/more`

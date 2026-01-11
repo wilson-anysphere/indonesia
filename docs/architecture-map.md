@@ -223,6 +223,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Known gaps vs intended docs:**
   - Primarily consumed via the custom LSP endpoints (`nova/micronaut/*`), not through a unified diagnostics engine.
 
+### `nova-framework-parse`
+- **Purpose:** shared Tree-sitter based parsing helpers for framework analyzers (node traversal, annotation parsing).
+- **Key entry points:** `crates/nova-framework-parse/src/lib.rs` (`parse_java`, `visit_nodes`, `ParsedAnnotation`, `collect_annotations`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Duplicates parsing responsibilities with `nova-syntax`; framework analyzers are not yet unified on rowan-based AST types.
+
 ### `nova-framework-quarkus`
 - **Purpose:** Quarkus CDI + endpoints + config helpers (best-effort).
 - **Key entry points:** `crates/nova-framework-quarkus/src/lib.rs` (`analyze_java_sources`).
@@ -265,6 +272,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Known gaps vs intended docs:**
   - Many features run on in-memory snapshots rather than the Salsa DB described in `docs/04-*`.
 
+### `nova-ids`
+- **Purpose:** canonical, dependency-free strongly-typed IDs (`FileId`, `ProjectId`, `SymbolId`, etc).
+- **Key entry points:** `crates/nova-ids/src/lib.rs`, re-exported from `crates/nova-core/src/id.rs`.
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Several crates still define their own ID newtypes (`nova-types`, `nova-db`); adoption is in progress.
+
 ### `nova-index`
 - **Purpose:** in-memory indexes (symbols, annotations, classpath-derived indexes) + persistence helpers.
 - **Key entry points:** `crates/nova-index/src/lib.rs` (`ProjectIndexes`, `SymbolSearchIndex`, `load_indexes`).
@@ -302,6 +316,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Only some components report usage today; accounting is opt-in and approximate by design.
+
+### `nova-metrics`
+- **Purpose:** lightweight runtime metrics (counters + latency histograms) for Nova servers.
+- **Key entry points:** `crates/nova-metrics/src/lib.rs` (`MetricsRegistry`, `MetricsSnapshot`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - In-memory only; currently exported via the custom LSP endpoints `nova/metrics` + `nova/resetMetrics` (no Prometheus/OpenTelemetry integration yet).
 
 ### `nova-modules`
 - **Purpose:** JPMS (Java Platform Module System) model (`ModuleGraph`, readability checks).
@@ -346,6 +367,14 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Protocol is still evolving; not yet integrated into `nova-lsp` (distributed mode is experimental).
+
+### `nova-remote-rpc`
+- **Purpose:** async negotiated RPC transport for distributed mode (v3 handshake, request/response framing, optional zstd compression).
+- **Key entry points:** `crates/nova-remote-rpc/src/lib.rs` (`Client`, `Server`, `ClientConfig`, `ServerConfig`, `PROTOCOL_VERSION`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Not yet wired into the `nova-router`/`nova-worker` binaries (distributed mode is still not editor-facing).
+  - Protocol types are still being reconciled with `nova-remote-proto`’s v3 CBOR envelope.
 
 ### `nova-resolve`
 - **Purpose:** name resolution + scope building (currently based on simplified `nova-hir`).
@@ -410,6 +439,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Not a full JLS implementation; designed for IDE-grade approximations.
+
+### `nova-types-bridge`
+- **Purpose:** bridges external stubs (e.g. parsed classfiles) into `nova-types`’ type system (`TypeStore`).
+- **Key entry points:** `crates/nova-types-bridge/src/lib.rs` (`ExternalTypeLoader`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Still a best-effort adapter; not yet the single canonical “type loading” path across the index/resolution stack.
 
 ### `nova-vfs`
 - **Purpose:** virtual filesystem layer (file IDs, overlays, archive paths, watcher abstractions).
