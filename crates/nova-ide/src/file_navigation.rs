@@ -21,6 +21,7 @@ struct TypeInfo {
 #[derive(Debug, Default)]
 struct FileNavigationIndex {
     files: HashMap<FileId, ParsedFile>,
+    uri_to_file_id: HashMap<String, FileId>,
     types: HashMap<String, TypeInfo>,
     inheritance: InheritanceIndex,
 }
@@ -28,15 +29,23 @@ struct FileNavigationIndex {
 impl FileNavigationIndex {
     fn new(db: &dyn Database) -> Self {
         let mut files = HashMap::new();
-        for file_id in db.all_file_ids() {
-            let uri = uri_for_file(db, file_id);
-            let text = db.file_content(file_id).to_string();
+        let mut file_ids = db.all_file_ids();
+        file_ids.sort_by_key(|id| id.to_raw());
+
+        let mut uri_to_file_id = HashMap::new();
+        for file_id in &file_ids {
+            let uri = uri_for_file(db, *file_id);
+            let text = db.file_content(*file_id).to_string();
             let parsed = parse_file(uri, text);
-            files.insert(file_id, parsed);
+            uri_to_file_id.insert(parsed.uri.to_string(), *file_id);
+            files.insert(*file_id, parsed);
         }
 
         let mut types: HashMap<String, TypeInfo> = HashMap::new();
-        for (file_id, parsed_file) in &files {
+        for file_id in &file_ids {
+            let Some(parsed_file) = files.get(file_id) else {
+                continue;
+            };
             for ty in &parsed_file.types {
                 types.entry(ty.name.clone()).or_insert_with(|| TypeInfo {
                     file_id: *file_id,
@@ -48,7 +57,10 @@ impl FileNavigationIndex {
 
         let mut inheritance = InheritanceIndex::default();
         let mut edges: Vec<InheritanceEdge> = Vec::new();
-        for parsed_file in files.values() {
+        for file_id in &file_ids {
+            let Some(parsed_file) = files.get(file_id) else {
+                continue;
+            };
             for ty in &parsed_file.types {
                 if let Some(super_class) = &ty.super_class {
                     edges.push(InheritanceEdge {
@@ -70,6 +82,7 @@ impl FileNavigationIndex {
 
         Self {
             files,
+            uri_to_file_id,
             types,
             inheritance,
         }
@@ -331,7 +344,8 @@ impl FileNavigationIndex {
     }
 
     fn file_by_uri(&self, uri: &Uri) -> Option<&ParsedFile> {
-        self.files.values().find(|f| &f.uri == uri)
+        let file_id = self.uri_to_file_id.get(uri.as_str())?;
+        self.file(*file_id)
     }
 }
 
