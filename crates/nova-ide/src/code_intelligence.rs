@@ -309,10 +309,8 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
 
         if maybe_jpa_file {
             if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
-                if let (Some(analysis), Some(path)) =
-                    (project.analysis.as_ref(), db.file_path(file))
-                {
-                    if let Some(source) = project.source_index(path) {
+                if let Some(analysis) = project.analysis.as_ref() {
+                    if let Some(source) = project.source_index_for_file(file) {
                         diagnostics.extend(
                             analysis
                                 .diagnostics
