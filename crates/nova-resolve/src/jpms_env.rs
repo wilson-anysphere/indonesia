@@ -117,6 +117,19 @@ pub fn build_jpms_environment(
     Ok(JpmsEnvironment { graph, unnamed })
 }
 
+pub fn build_jpms_environment_for_project(
+    jdk: &nova_jdk::JdkIndex,
+    project: &nova_project::ProjectConfig,
+) -> Result<JpmsEnvironment> {
+    let module_path_entries: Vec<ClasspathEntry> = project
+        .module_path
+        .iter()
+        .map(ClasspathEntry::from)
+        .collect();
+
+    build_jpms_environment(jdk, Some(project), &module_path_entries)
+}
+
 pub fn build_jpms_compilation_environment(
     jdk: &nova_jdk::JdkIndex,
     workspace: Option<&nova_project::ProjectConfig>,
