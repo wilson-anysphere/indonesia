@@ -4,7 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::fmt;
 
 use anyhow::{anyhow, Context, Result};
-use nova_remote_proto::{RpcMessage, ShardId, WorkerStats};
+use nova_remote_proto::v3::{Capabilities, ProtocolVersion, Request, Response, SupportedVersions, WorkerHello};
+use nova_remote_proto::{RpcMessage, ShardId, ShardIndex, WorkerStats};
+use nova_remote_rpc::{RpcConnection, RpcTransportError};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -37,119 +39,37 @@ async fn main() -> Result<()> {
         tokio::time::sleep(Duration::from_millis(cfg.connect_delay_ms)).await;
     }
 
-    let mut stream: BoxedStream = match args.connect {
-        #[cfg(unix)]
-        ConnectAddr::Unix(path) => Box::new(
-            UnixStream::connect(path)
-                .await
-                .context("connect unix socket")?,
-        ),
-        #[cfg(windows)]
-        ConnectAddr::NamedPipe(name) => {
-            let name = normalize_pipe_name(&name);
-            let mut attempts = 0u32;
-            let client = loop {
-                match ClientOptions::new().open(&name) {
-                    Ok(client) => break client,
-                    Err(err) if attempts < 50 => {
-                        attempts += 1;
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        continue;
-                    }
-                    Err(err) => {
-                        return Err(err).with_context(|| format!("connect named pipe {name}"))
-                    }
-                }
-            };
-            Box::new(client)
-        }
-        ConnectAddr::Tcp(addr) => Box::new(TcpStream::connect(addr).await.context("connect tcp")?),
+    let stream = connect(&args.connect).await?;
+    let hello = WorkerHello {
+        shard_id: args.shard_id,
+        auth_token: args.auth_token.clone(),
+        supported_versions: SupportedVersions {
+            min: ProtocolVersion::CURRENT,
+            max: ProtocolVersion::CURRENT,
+        },
+        capabilities: Capabilities {
+            supports_cancel: true,
+            supports_chunking: true,
+            ..Capabilities::default()
+        },
+        cached_index_info: None,
+        worker_build: None,
     };
 
-    write_message(
-        &mut stream,
-        &RpcMessage::WorkerHello {
-            shard_id: args.shard_id,
-            auth_token: args.auth_token.clone(),
-            has_cached_index: false,
-        },
-    )
-    .await?;
+    let v3_conn = match RpcConnection::handshake_as_worker(stream, hello).await {
+        Ok((conn, _welcome)) => Some(conn),
+        Err(err) if should_fallback_to_legacy_v2(&err) => None,
+        Err(err) => return Err(err).context("v3 handshake failed"),
+    };
 
-    let ack = read_message(&mut stream).await?;
-    match ack {
-        RpcMessage::RouterHello {
-            shard_id,
-            protocol_version,
-            ..
-        } if shard_id == args.shard_id
-            && protocol_version == nova_remote_proto::PROTOCOL_VERSION => {}
-        other => return Err(anyhow!("unexpected router hello: {other:?}")),
-    }
-
-    if attempt <= cfg.exit_after_handshake_attempts {
-        if cfg.exit_after_handshake_delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(cfg.exit_after_handshake_delay_ms)).await;
+    match v3_conn {
+        Some(conn) => {
+            if maybe_exit_after_handshake(&cfg, attempt, args.shard_id).await? {
+                return Ok(());
+            }
+            run_v3(conn, args.shard_id).await
         }
-        eprintln!(
-            "test worker shard {} exiting after handshake (attempt {})",
-            args.shard_id, attempt
-        );
-        return Ok(());
-    }
-
-    let mut state = WorkerState::new(args.shard_id);
-    loop {
-        let msg = read_message(&mut stream).await?;
-        match msg {
-            RpcMessage::LoadFiles { revision, files } => {
-                state.revision = revision;
-                state.file_count = files.len().try_into().unwrap_or(u32::MAX);
-                write_message(&mut stream, &RpcMessage::Ack).await?;
-            }
-            RpcMessage::IndexShard { revision, files } => {
-                state.revision = revision;
-                state.file_count = files.len().try_into().unwrap_or(u32::MAX);
-                state.index_generation = state.index_generation.saturating_add(1);
-                write_message(
-                    &mut stream,
-                    &RpcMessage::ShardIndexInfo(nova_remote_proto::ShardIndexInfo {
-                        shard_id: state.shard_id,
-                        revision: state.revision,
-                        index_generation: state.index_generation,
-                        symbol_count: 0,
-                    }),
-                )
-                .await?;
-            }
-            RpcMessage::UpdateFile { revision, .. } => {
-                state.revision = revision;
-                state.file_count = state.file_count.max(1);
-                state.index_generation = state.index_generation.saturating_add(1);
-                write_message(
-                    &mut stream,
-                    &RpcMessage::ShardIndexInfo(nova_remote_proto::ShardIndexInfo {
-                        shard_id: state.shard_id,
-                        revision: state.revision,
-                        index_generation: state.index_generation,
-                        symbol_count: 0,
-                    }),
-                )
-                .await?;
-            }
-            RpcMessage::GetWorkerStats => {
-                write_message(&mut stream, &RpcMessage::WorkerStats(state.stats())).await?;
-            }
-            RpcMessage::SearchSymbols { .. } => {
-                write_message(
-                    &mut stream,
-                    &RpcMessage::SearchSymbolsResult { items: Vec::new() },
-                )
-                .await?;
-            }
-            RpcMessage::Shutdown => return Ok(()),
-            _ => write_message(&mut stream, &RpcMessage::Ack).await?,
-        }
+        None => run_legacy_v2(&args, &cfg, attempt).await,
     }
 }
 
@@ -176,6 +96,15 @@ impl WorkerState {
             revision: self.revision,
             index_generation: self.index_generation,
             file_count: self.file_count,
+        }
+    }
+
+    fn shard_index(&self) -> ShardIndex {
+        ShardIndex {
+            shard_id: self.shard_id,
+            revision: self.revision,
+            index_generation: self.index_generation,
+            symbols: Vec::new(),
         }
     }
 }
@@ -336,6 +265,199 @@ impl Args {
             cache_dir,
             auth_token,
         })
+    }
+}
+
+async fn connect(connect: &ConnectAddr) -> Result<BoxedStream> {
+    match connect {
+        #[cfg(unix)]
+        ConnectAddr::Unix(path) => Ok(Box::new(
+            UnixStream::connect(path)
+                .await
+                .context("connect unix socket")?,
+        )),
+        #[cfg(windows)]
+        ConnectAddr::NamedPipe(name) => {
+            let name = normalize_pipe_name(name);
+            let mut attempts = 0u32;
+            let client = loop {
+                match ClientOptions::new().open(&name) {
+                    Ok(client) => break client,
+                    Err(err) if attempts < 50 => {
+                        attempts += 1;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                    Err(err) => return Err(err).with_context(|| format!("connect named pipe {name}")),
+                }
+            };
+            Ok(Box::new(client))
+        }
+        ConnectAddr::Tcp(addr) => Ok(Box::new(
+            TcpStream::connect(*addr).await.context("connect tcp")?,
+        )),
+    }
+}
+
+fn should_fallback_to_legacy_v2(err: &RpcTransportError) -> bool {
+    match err {
+        RpcTransportError::HandshakeFailed { message } => {
+            message.contains("UnsupportedVersion") || message.contains("legacy_v2")
+        }
+        RpcTransportError::DecodeError { .. } | RpcTransportError::Io { .. } => true,
+        _ => false,
+    }
+}
+
+async fn maybe_exit_after_handshake(
+    cfg: &TestWorkerConfig,
+    attempt: u32,
+    shard_id: ShardId,
+) -> Result<bool> {
+    if attempt > cfg.exit_after_handshake_attempts {
+        return Ok(false);
+    }
+    if cfg.exit_after_handshake_delay_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(cfg.exit_after_handshake_delay_ms)).await;
+    }
+    eprintln!(
+        "test worker shard {} exiting after handshake (attempt {})",
+        shard_id, attempt
+    );
+    Ok(true)
+}
+
+async fn run_v3(conn: RpcConnection, shard_id: ShardId) -> Result<()> {
+    let state = std::sync::Arc::new(std::sync::Mutex::new(WorkerState::new(shard_id)));
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(shutdown_tx)));
+
+    let state_clone = state.clone();
+    let shutdown_clone = shutdown_tx.clone();
+    conn.set_request_handler(move |_ctx, req| {
+        let state = state_clone.clone();
+        let shutdown_tx = shutdown_clone.clone();
+        async move {
+            match req {
+                Request::LoadFiles { revision, files } => {
+                    let mut guard = state.lock().unwrap();
+                    guard.revision = revision;
+                    guard.file_count = files.len().try_into().unwrap_or(u32::MAX);
+                    Ok(Response::Ack)
+                }
+                Request::IndexShard { revision, files } => {
+                    let mut guard = state.lock().unwrap();
+                    guard.revision = revision;
+                    guard.file_count = files.len().try_into().unwrap_or(u32::MAX);
+                    guard.index_generation = guard.index_generation.saturating_add(1);
+                    Ok(Response::ShardIndex(guard.shard_index()))
+                }
+                Request::UpdateFile { revision, .. } => {
+                    let mut guard = state.lock().unwrap();
+                    guard.revision = revision;
+                    guard.file_count = guard.file_count.max(1);
+                    guard.index_generation = guard.index_generation.saturating_add(1);
+                    Ok(Response::ShardIndex(guard.shard_index()))
+                }
+                Request::GetWorkerStats => {
+                    let guard = state.lock().unwrap();
+                    Ok(Response::WorkerStats(guard.stats()))
+                }
+                Request::Shutdown => {
+                    if let Some(tx) = shutdown_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    Ok(Response::Shutdown)
+                }
+                Request::Unknown => Ok(Response::Ack),
+            }
+        }
+    });
+
+    let _ = shutdown_rx.await;
+    Ok(())
+}
+
+async fn run_legacy_v2(args: &Args, cfg: &TestWorkerConfig, attempt: u32) -> Result<()> {
+    let mut stream = connect(&args.connect).await?;
+
+    write_message(
+        &mut stream,
+        &RpcMessage::WorkerHello {
+            shard_id: args.shard_id,
+            auth_token: args.auth_token.clone(),
+            has_cached_index: false,
+        },
+    )
+    .await?;
+
+    let ack = read_message(&mut stream).await?;
+    match ack {
+        RpcMessage::RouterHello {
+            shard_id,
+            protocol_version,
+            ..
+        } if shard_id == args.shard_id
+            && protocol_version == nova_remote_proto::PROTOCOL_VERSION => {}
+        other => return Err(anyhow!("unexpected router hello: {other:?}")),
+    }
+
+    if maybe_exit_after_handshake(cfg, attempt, args.shard_id).await? {
+        return Ok(());
+    }
+
+    let mut state = WorkerState::new(args.shard_id);
+    loop {
+        let msg = read_message(&mut stream).await?;
+        match msg {
+            RpcMessage::LoadFiles { revision, files } => {
+                state.revision = revision;
+                state.file_count = files.len().try_into().unwrap_or(u32::MAX);
+                write_message(&mut stream, &RpcMessage::Ack).await?;
+            }
+            RpcMessage::IndexShard { revision, files } => {
+                state.revision = revision;
+                state.file_count = files.len().try_into().unwrap_or(u32::MAX);
+                state.index_generation = state.index_generation.saturating_add(1);
+                write_message(
+                    &mut stream,
+                    &RpcMessage::ShardIndexInfo(nova_remote_proto::ShardIndexInfo {
+                        shard_id: state.shard_id,
+                        revision: state.revision,
+                        index_generation: state.index_generation,
+                        symbol_count: 0,
+                    }),
+                )
+                .await?;
+            }
+            RpcMessage::UpdateFile { revision, .. } => {
+                state.revision = revision;
+                state.file_count = state.file_count.max(1);
+                state.index_generation = state.index_generation.saturating_add(1);
+                write_message(
+                    &mut stream,
+                    &RpcMessage::ShardIndexInfo(nova_remote_proto::ShardIndexInfo {
+                        shard_id: state.shard_id,
+                        revision: state.revision,
+                        index_generation: state.index_generation,
+                        symbol_count: 0,
+                    }),
+                )
+                .await?;
+            }
+            RpcMessage::GetWorkerStats => {
+                write_message(&mut stream, &RpcMessage::WorkerStats(state.stats())).await?;
+            }
+            RpcMessage::SearchSymbols { .. } => {
+                write_message(
+                    &mut stream,
+                    &RpcMessage::SearchSymbolsResult { items: Vec::new() },
+                )
+                .await?;
+            }
+            RpcMessage::Shutdown => return Ok(()),
+            _ => write_message(&mut stream, &RpcMessage::Ack).await?,
+        }
     }
 }
 

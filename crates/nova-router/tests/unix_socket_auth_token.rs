@@ -27,6 +27,9 @@ async fn unix_socket_enforces_auth_token_when_configured() -> anyhow::Result<()>
         cache_dir,
         auth_token: Some("secret-token".into()),
         allow_insecure_tcp: false,
+        max_rpc_bytes: nova_router::DEFAULT_MAX_RPC_BYTES,
+        max_inflight_handshakes: nova_router::DEFAULT_MAX_INFLIGHT_HANDSHAKES,
+        max_worker_connections: nova_router::DEFAULT_MAX_WORKER_CONNECTIONS,
         #[cfg(feature = "tls")]
         tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: false,
