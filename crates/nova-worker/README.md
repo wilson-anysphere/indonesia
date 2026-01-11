@@ -156,6 +156,8 @@ In v3, the router may reject the initial handshake with `Reject { code, message 
 
 - `unsupported_version`: router and worker could not negotiate a mutually supported v3 version.
   Upgrade/downgrade one side so their supported version ranges overlap.
+  - If the router is still on the legacy protocol, you may see a message like:
+    `router only supports legacy_v2 protocol`.
 - `unauthorized`: authentication failed (missing/invalid `--auth-token`, or worker is not authorized
   for the claimed `--shard-id`).
 - `invalid_request`: protocol mismatch (e.g. trying to connect a legacy lockstep worker to a v3 router,

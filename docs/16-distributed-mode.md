@@ -94,8 +94,8 @@ still trigger a real `index_workspace` to refresh results when correctness matte
 
 When a worker connects, it advertises whether it has a cached shard index:
 
-- Legacy lockstep protocol: `WorkerHello.has_cached_index`
-- v3 protocol: `WorkerHello.cached_index_info`
+- Legacy lockstep protocol: `legacy_v2::RpcMessage::WorkerHello.has_cached_index`
+- v3 protocol: `v3::WireFrame::Hello(v3::WorkerHello { cached_index_info, ... })`
 
 If a worker reports a cached index, the router will then send `LoadFiles` with a full on-disk
 snapshot of the shard’s files to **rehydrate** the worker’s in-memory file map.
@@ -278,6 +278,9 @@ Look for messages like:
 - `timed out waiting for WorkerHello`
 - `tls accept timed out`
 - `dropping incoming … connection: too many pending handshakes`
+
+If you accidentally run a v3-capable worker against a legacy router, the router may reply with a
+v3 `Reject(unsupported_version, \"router only supports legacy_v2 protocol\")`.
 
 For the intended “secure remote mode” requirements (TLS + authentication + shard-scoped
 authorization + DoS hardening), see
