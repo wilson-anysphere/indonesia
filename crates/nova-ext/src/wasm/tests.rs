@@ -65,7 +65,7 @@ const WAT_DIAG_AND_COMPLETIONS: &str = r#"
   )
 
   ;; Static JSON payloads.
-  (data (i32.const 0) "[{\"message\":\"found needle\"}]")
+  (data (i32.const 0) "[{\"message\":\"found needle\",\"code\":\"my.plugin.code\"}]")
   (data (i32.const 64) "[]")
   (data (i32.const 128) "[{\"label\":\"from-wasm\"}]")
 
@@ -110,7 +110,7 @@ const WAT_DIAG_AND_COMPLETIONS: &str = r#"
     (local $out_len i32)
     (if (call $contains_needle (local.get $req_ptr) (local.get $req_len))
       (then
-        (local.set $out_len (i32.const 28))
+        (local.set $out_len (i32.const 52))
         (local.set $out_ptr (call $nova_ext_alloc (local.get $out_len)))
         (memory.copy (local.get $out_ptr) (i32.const 0) (local.get $out_len))
       )
@@ -257,6 +257,7 @@ fn ptr_len_roundtrip_and_basic_call_works() {
     let diags = plugin.provide_diagnostics(ctx(Arc::clone(&db)), DiagnosticParams { file });
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].message, "found needle");
+    assert_eq!(diags[0].code.as_ref(), "my.plugin.code");
 
     let completions = plugin.provide_completions(
         ctx(db),

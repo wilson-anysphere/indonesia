@@ -360,7 +360,7 @@ pub fn file_diagnostics_lsp(db: &dyn Database, file: FileId) -> Vec<lsp_types::D
                 Severity::Warning => DiagnosticSeverity::WARNING,
                 Severity::Info => DiagnosticSeverity::INFORMATION,
             }),
-            code: Some(NumberOrString::String(d.code.to_string())),
+            code: Some(NumberOrString::String(d.code.into_owned())),
             source: Some("nova".into()),
             message: d.message,
             ..Default::default()

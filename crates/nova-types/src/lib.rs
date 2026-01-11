@@ -10,6 +10,7 @@
 //! The type system implementation is intentionally best-effort (suitable for an
 //! IDE) rather than a full JLS implementation.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 
@@ -65,28 +66,63 @@ pub enum Severity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
     pub severity: Severity,
-    pub code: &'static str,
+    pub code: Cow<'static, str>,
     pub message: String,
     pub span: Option<Span>,
 }
 
 impl Diagnostic {
-    pub fn error(code: &'static str, message: impl Into<String>, span: Option<Span>) -> Self {
+    pub fn error(
+        code: impl Into<Cow<'static, str>>,
+        message: impl Into<String>,
+        span: Option<Span>,
+    ) -> Self {
         Self {
             severity: Severity::Error,
-            code,
+            code: code.into(),
             message: message.into(),
             span,
         }
     }
 
-    pub fn warning(code: &'static str, message: impl Into<String>, span: Option<Span>) -> Self {
+    pub fn warning(
+        code: impl Into<Cow<'static, str>>,
+        message: impl Into<String>,
+        span: Option<Span>,
+    ) -> Self {
         Self {
             severity: Severity::Warning,
-            code,
+            code: code.into(),
             message: message.into(),
             span,
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn static_codes_are_borrowed() {
+        let diag = Diagnostic::error("SYNTAX", "msg", None);
+        assert!(matches!(diag.code, Cow::Borrowed("SYNTAX")));
+    }
+
+    #[test]
+    fn dynamic_codes_can_be_owned() {
+        let diag = Diagnostic {
+            severity: Severity::Error,
+            code: Cow::Owned("my.plugin.code".to_string()),
+            message: "msg".to_string(),
+            span: None,
+        };
+
+        assert_eq!(diag.code.as_ref(), "my.plugin.code");
+
+        // Ensure `Diagnostic` stays `Clone + Eq`.
+        let cloned = diag.clone();
+        assert_eq!(cloned, diag);
     }
 }
 

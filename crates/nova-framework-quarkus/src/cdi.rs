@@ -358,7 +358,7 @@ fn detect_circular_dependencies(index: &CdiIndex) -> Vec<Diagnostic> {
 
         diagnostics.push(Diagnostic {
             severity: Severity::Warning,
-            code: CDI_CIRCULAR_CODE,
+            code: CDI_CIRCULAR_CODE.into(),
             message: msg,
             span: None,
         });

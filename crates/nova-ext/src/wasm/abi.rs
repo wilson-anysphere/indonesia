@@ -39,6 +39,8 @@ pub struct DiagnosticsRequestV1 {
 pub struct DiagnosticV1 {
     pub message: String,
     #[serde(default)]
+    pub code: Option<String>,
+    #[serde(default)]
     pub severity: Option<SeverityV1>,
     #[serde(default)]
     pub span: Option<SpanV1>,
@@ -125,4 +127,3 @@ pub struct InlayHintV1 {
     pub span: Option<SpanV1>,
     pub label: String,
 }
-

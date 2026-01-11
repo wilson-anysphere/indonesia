@@ -27,7 +27,7 @@
   (func (export "nova_ext_abi_version") (result i32) (i32.const 1))
   (func (export "nova_ext_capabilities") (result i32) (i32.const 1))
 
-  (data (i32.const 0) "[{\"message\":\"TODO found\",\"severity\":\"info\",\"span\":{\"start\":0,\"end\":4}}]")
+  (data (i32.const 0) "[{\"message\":\"TODO found\",\"code\":\"my.plugin.todo\",\"severity\":\"info\",\"span\":{\"start\":0,\"end\":4}}]")
 
   (func $contains_todo (param $ptr i32) (param $len i32) (result i32)
     (local $i i32)
@@ -67,7 +67,7 @@
     (if (i32.eq (call $contains_todo (local.get $req_ptr) (local.get $req_len)) (i32.const 0))
       (then (return (i64.const 0))))
 
-    (local.set $out_len (i32.const 71))
+    (local.set $out_len (i32.const 95))
     (local.set $out_ptr (call $nova_ext_alloc (local.get $out_len)))
     (memory.copy (local.get $out_ptr) (i32.const 0) (local.get $out_len))
 

@@ -541,7 +541,7 @@ where
                 .into_iter()
                 .map(|diag| Diagnostic {
                     severity: severity_from_v1(diag.severity),
-                    code: "WASM_EXT",
+                    code: diag.code.map_or_else(|| "WASM_EXT".into(), Into::into),
                     message: diag.message,
                     span: diag.span.map(|s| Span::new(s.start, s.end)),
                 })

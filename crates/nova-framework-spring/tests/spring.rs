@@ -68,7 +68,7 @@ fn no_bean_diagnostic_triggers() {
 
     let analysis = analyze_java_sources(&[bar]);
     assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(analysis.diagnostics[0].diagnostic.code, SPRING_NO_BEAN);
+    assert_eq!(analysis.diagnostics[0].diagnostic.code.as_ref(), SPRING_NO_BEAN);
     assert!(analysis.diagnostics[0]
         .diagnostic
         .message
@@ -105,7 +105,7 @@ fn ambiguous_bean_diagnostic_triggers() {
     let analysis = analyze_java_sources(&[impl1, impl2, bar]);
     assert_eq!(analysis.diagnostics.len(), 1);
     assert_eq!(
-        analysis.diagnostics[0].diagnostic.code,
+        analysis.diagnostics[0].diagnostic.code.as_ref(),
         SPRING_AMBIGUOUS_BEAN
     );
 

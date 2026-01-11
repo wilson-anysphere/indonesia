@@ -102,7 +102,7 @@ fn validate_constraints(
         match ann.simple_name.as_str() {
             "NotNull" if is_primitive => out.push(Diagnostic {
                 severity: Severity::Warning,
-                code: MICRONAUT_VALIDATION_PRIMITIVE_NONNULL,
+                code: MICRONAUT_VALIDATION_PRIMITIVE_NONNULL.into(),
                 message: format!(
                     "Bean Validation annotation @NotNull has no effect on primitive type `{ty}`"
                 ),
@@ -110,7 +110,7 @@ fn validate_constraints(
             }),
             "NotBlank" | "Email" if !is_string => out.push(Diagnostic {
                 severity: Severity::Warning,
-                code: MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH,
+                code: MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH.into(),
                 message: format!(
                     "Bean Validation annotation @{} is typically only valid on String/CharSequence types (found `{ty}`)",
                     ann.simple_name
@@ -128,7 +128,7 @@ fn validate_constraints(
             {
                 out.push(Diagnostic {
                     severity: Severity::Warning,
-                    code: MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH,
+                    code: MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH.into(),
                     message: format!(
                         "Bean Validation annotation @{} is typically only valid on numeric types (found `{ty}`)",
                         ann.simple_name
