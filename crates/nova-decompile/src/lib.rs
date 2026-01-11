@@ -10,6 +10,26 @@ use nova_core::{Position, Range};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// URI scheme used by Nova for all virtual documents (ADR0006).
+///
+/// Nova synthesizes some documents that do not exist on disk (e.g. decompiled
+/// `.class` stubs). These are addressed using `nova:///...` URIs so they can be
+/// routed through the rest of the system like normal files without colliding
+/// with on-disk paths.
+pub const NOVA_VIRTUAL_URI_SCHEME: &str = "nova";
+
+/// Version of the decompiled-URI hashing schema.
+///
+/// Bump this when the decompiler output format changes in a way that should
+/// invalidate cached/stored virtual documents (e.g. signature rendering tweaks,
+/// annotation formatting changes, etc). The version is incorporated into the
+/// content hash used in `nova:///decompiled/<hash>/...` URIs.
+pub const DECOMPILER_SCHEMA_VERSION: u32 = 1;
+
+/// Legacy URI scheme for decompiled virtual documents.
+///
+/// This pre-dates ADR0006 and does **not** incorporate a content hash. It is
+/// retained for backwards compatibility with downstream crates.
 pub const DECOMPILE_URI_SCHEME: &str = "nova-decompile";
 
 pub type Result<T> = std::result::Result<T, DecompileError>;
@@ -587,9 +607,13 @@ impl TextWriter {
     }
 }
 
-/// Returns a stable URI for a decompiled classfile.
+/// Returns a stable URI for a decompiled classfile (legacy scheme).
 ///
 /// Example: `nova-decompile:///com/example/Foo.class`
+///
+/// This helper remains for backwards compatibility; new virtual documents
+/// should prefer [`decompiled_uri_for_classfile`], which produces the canonical
+/// `nova:///decompiled/<hash>/<binary-name>.java` URI format.
 pub fn uri_for_class_internal_name(internal_name: &str) -> String {
     format!(
         "{DECOMPILE_URI_SCHEME}:///{}.class",
@@ -608,6 +632,91 @@ pub fn class_internal_name_from_uri(uri: &str) -> Option<String> {
     } else {
         Some(path.to_string())
     }
+}
+
+/// Parsed representation of a canonical decompiled virtual-document URI.
+///
+/// Canonical decompiled URIs have the form:
+/// `nova:///decompiled/<content-hash>/<binary-name>.java`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedDecompiledUri {
+    /// Hash of the original `.class` bytes plus [`DECOMPILER_SCHEMA_VERSION`].
+    ///
+    /// This is a lowercase SHA-256 hex digest.
+    pub content_hash: String,
+    /// JVM binary name for the class (dotted package, `$` for nested classes).
+    pub binary_name: String,
+}
+
+impl ParsedDecompiledUri {
+    /// Convert the binary name (`com.example.Foo$Inner`) back into a JVM internal
+    /// name (`com/example/Foo$Inner`).
+    pub fn internal_name(&self) -> String {
+        self.binary_name.replace('.', "/")
+    }
+}
+
+fn decompiled_content_fingerprint(bytes: &[u8], schema_version: u32) -> Fingerprint {
+    // Domain-separate the hash so it can't collide with other uses of
+    // `Fingerprint::from_bytes` across the codebase.
+    let mut input = Vec::with_capacity(
+        b"nova-decompile\0".len() + std::mem::size_of::<u32>() + 1 + bytes.len(),
+    );
+    input.extend_from_slice(b"nova-decompile\0");
+    input.extend_from_slice(&schema_version.to_le_bytes());
+    input.extend_from_slice(b"\0");
+    input.extend_from_slice(bytes);
+    Fingerprint::from_bytes(input)
+}
+
+/// Returns the canonical ADR0006 virtual-document URI for a decompiled class.
+///
+/// Format: `nova:///decompiled/<content-hash>/<binary-name>.java`
+///
+/// *Why include a hash?*
+/// The legacy `nova-decompile:///...` scheme only includes the class internal
+/// name, which is not unique across jars/classpaths (e.g. two different
+/// `com/example/Foo.class` versions). Content-addressing ensures the URI is
+/// stable for identical bytecode and changes whenever the bytecode (or
+/// [`DECOMPILER_SCHEMA_VERSION`]) changes.
+///
+/// *Why the `.java` extension?*
+/// Many editor integrations key language mode/formatting off the path
+/// extension; using `.java` ensures decompiled stubs are treated as Java source.
+pub fn decompiled_uri_for_classfile(bytes: &[u8], internal_name: &str) -> String {
+    let fingerprint = decompiled_content_fingerprint(bytes, DECOMPILER_SCHEMA_VERSION);
+    let binary_name = internal_name
+        .trim_start_matches('/')
+        .replace('/', ".");
+    format!(
+        "{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{fingerprint}/{binary_name}.java"
+    )
+}
+
+/// Attempts to parse a canonical decompiled virtual-document URI.
+pub fn parse_decompiled_uri(uri: &str) -> Option<ParsedDecompiledUri> {
+    let prefix = format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/");
+    let rest = uri.strip_prefix(&prefix)?;
+    let (content_hash, filename) = rest.split_once('/')?;
+
+    if content_hash.is_empty() {
+        return None;
+    }
+
+    // Avoid parsing unrelated `nova:///decompiled/...` URIs.
+    if content_hash.len() != 64 || !content_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    let binary_name = filename.strip_suffix(".java")?;
+    if binary_name.is_empty() || binary_name.contains('/') {
+        return None;
+    }
+
+    Some(ParsedDecompiledUri {
+        content_hash: content_hash.to_string(),
+        binary_name: binary_name.to_string(),
+    })
 }
 
 // Access flag constants (subset used by the stub generator).
