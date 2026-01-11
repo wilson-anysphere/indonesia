@@ -633,7 +633,7 @@ pub fn completions_for_properties_file(
 
     let mut observed: Vec<_> = index
         .observed_keys()
-        .filter(|k| k.starts_with(&prefix))
+        .filter(|k| k.starts_with(&prefix) && *k != &prefix)
         .cloned()
         .collect();
     observed.sort();
@@ -1164,6 +1164,24 @@ class C {
             &workspace,
         );
         assert!(items.iter().any(|i| i.label == "off"));
+    }
+
+    #[test]
+    fn properties_key_completion_does_not_suggest_current_incomplete_key() {
+        let mut workspace = SpringWorkspaceIndex::new(Arc::new(test_metadata()));
+        let text = "server.port=8080\nserver.p";
+        workspace.add_config_file("application.properties", text);
+
+        let offset = text.len();
+        let items = completions_for_properties_file(
+            Path::new("application.properties"),
+            text,
+            offset,
+            &workspace,
+        );
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"server.port"));
+        assert!(!labels.contains(&"server.p"));
     }
 
     #[test]
