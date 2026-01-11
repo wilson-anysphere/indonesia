@@ -41,7 +41,7 @@ pub use hir::NovaHir;
 pub use ide::NovaIde;
 pub use inputs::NovaInputs;
 pub use semantic::NovaSemantic;
-pub use stats::{HasQueryStats, QueryStat, QueryStats};
+pub use stats::{HasQueryStats, QueryStat, QueryStatReport, QueryStats, QueryStatsReport};
 pub use syntax::{NovaSyntax, SyntaxTree};
 
 use std::cell::RefCell;
