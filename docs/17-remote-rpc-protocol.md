@@ -318,6 +318,14 @@ Negotiation rules (normative):
 If the router cannot compute a valid `chosen_capabilities` set (for example: no common compression
 algorithm), it MUST send `Reject(code="invalid_request", ...)` and close the connection.
 
+Limit validation (MUST):
+
+- Peers MUST advertise non-zero values for `max_frame_len` and `max_packet_len`.
+- If the router receives invalid/unsatisfiable limits (e.g. `max_frame_len = 0`), it MUST reject the
+  handshake with `Reject(code="invalid_request", ...)` and close the connection.
+- Implementations MAY also enforce a local hard cap on these limits (independent of negotiation) for
+  defense-in-depth.
+
 Receivers MUST enforce these negotiated limits for the lifetime of the connection.
 
 Default values in `nova_remote_proto::v3` (informative):
