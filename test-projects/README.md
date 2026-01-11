@@ -23,6 +23,10 @@ NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/run-real-project-tests.sh
 Best-effort helper to compile the fixtures with their build toolchain (sanity-check your local JDK/Maven):
 ```bash
 ./scripts/javac-validate.sh
+
+# Or compile only some fixtures:
+./scripts/javac-validate.sh --only guava
+NOVA_TEST_PROJECTS=guava ./scripts/javac-validate.sh
 ```
 
 Pinned revisions are recorded in `pins.toml` (single source of truth).
