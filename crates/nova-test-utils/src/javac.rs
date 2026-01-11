@@ -10,7 +10,11 @@ pub struct JavacOptions {
     pub release: Option<u32>,
     /// Adds `--enable-preview`.
     pub enable_preview: bool,
-    /// Adds `-classpath <...>`.
+    /// Extra entries appended to the classpath.
+    ///
+    /// The harness always sets an explicit classpath to avoid inheriting the
+    /// `CLASSPATH` environment variable. The temporary source directory is
+    /// always included (via `-classpath .`).
     pub classpath: Vec<PathBuf>,
     /// Whether to pass `-Xlint:unchecked`.
     ///
@@ -121,12 +125,16 @@ fn run_javac_dir<'a>(
     if opts.enable_preview {
         cmd.arg("--enable-preview");
     }
-    if !opts.classpath.is_empty() {
-        let joined = std::env::join_paths(opts.classpath.iter())
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
-        cmd.arg("-classpath");
-        cmd.arg(joined);
-    }
+
+    // Always set an explicit classpath, so `javac` doesn't inherit CLASSPATH from the environment.
+    let mut classpath = Vec::with_capacity(1 + opts.classpath.len());
+    classpath.push(PathBuf::from("."));
+    classpath.extend(opts.classpath.iter().cloned());
+    let joined = std::env::join_paths(classpath.iter())
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    cmd.arg("-classpath");
+    cmd.arg(joined);
+
     if opts.xlint_unchecked {
         cmd.arg("-Xlint:unchecked");
     }
