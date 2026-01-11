@@ -8,6 +8,7 @@ use crate::parse::{
     infer_param_type_node, modifier_node, node_text, parse_java, simple_name, visit_nodes,
     ParsedAnnotation,
 };
+use crate::FileDiagnostic;
 use crate::JavaSource;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +57,7 @@ pub struct BeanAnalysis {
     pub beans: Vec<Bean>,
     pub injection_resolutions: Vec<InjectionResolution>,
     pub diagnostics: Vec<Diagnostic>,
+    pub file_diagnostics: Vec<FileDiagnostic>,
 }
 
 pub fn analyze_beans(sources: &[JavaSource]) -> BeanAnalysis {
@@ -93,6 +95,7 @@ pub fn analyze_beans(sources: &[JavaSource]) -> BeanAnalysis {
 
     let mut injection_resolutions = Vec::new();
     let mut diagnostics = Vec::new();
+    let mut file_diagnostics = Vec::new();
 
     for bean in &beans {
         for ip in &bean.injection_points {
@@ -106,27 +109,41 @@ pub fn analyze_beans(sources: &[JavaSource]) -> BeanAnalysis {
             });
 
             match candidate_ids.len() {
-                0 => diagnostics.push(Diagnostic::error(
-                    "MICRONAUT_NO_BEAN",
-                    format!("No bean of type `{}` found for injection", ip.ty),
-                    Some(ip.span),
-                )),
+                0 => {
+                    let diag = Diagnostic::error(
+                        "MICRONAUT_NO_BEAN",
+                        format!("No bean of type `{}` found for injection", ip.ty),
+                        Some(ip.span),
+                    );
+                    diagnostics.push(diag.clone());
+                    file_diagnostics.push(FileDiagnostic::new(ip.file.clone(), diag));
+                }
                 1 => {}
-                _ => diagnostics.push(Diagnostic::error(
-                    "MICRONAUT_AMBIGUOUS_BEAN",
-                    format!("Multiple beans of type `{}` found for injection", ip.ty),
-                    Some(ip.span),
-                )),
+                _ => {
+                    let diag = Diagnostic::error(
+                        "MICRONAUT_AMBIGUOUS_BEAN",
+                        format!("Multiple beans of type `{}` found for injection", ip.ty),
+                        Some(ip.span),
+                    );
+                    diagnostics.push(diag.clone());
+                    file_diagnostics.push(FileDiagnostic::new(ip.file.clone(), diag));
+                }
             }
         }
     }
 
-    diagnostics.extend(detect_circular_dependencies(&beans, &injection_resolutions));
+    detect_circular_dependencies(
+        &beans,
+        &injection_resolutions,
+        &mut diagnostics,
+        &mut file_diagnostics,
+    );
 
     BeanAnalysis {
         beans,
         injection_resolutions,
         diagnostics,
+        file_diagnostics,
     }
 }
 
@@ -590,10 +607,12 @@ fn qualifiers_match(injection: &[Qualifier], bean: &[Qualifier]) -> bool {
     injection.iter().all(|q| bean.iter().any(|bq| bq == q))
 }
 
-fn detect_circular_dependencies(
+fn detect_circular_dependencies_with_file_diags(
     beans: &[Bean],
     injection_resolutions: &[InjectionResolution],
-) -> Vec<Diagnostic> {
+    diags: &mut Vec<Diagnostic>,
+    file_diags: &mut Vec<FileDiagnostic>,
+) {
     let mut by_id = HashMap::<&str, usize>::new();
     for (idx, bean) in beans.iter().enumerate() {
         by_id.insert(bean.id.as_str(), idx);
@@ -621,7 +640,6 @@ fn detect_circular_dependencies(
 
     let mut marks: Vec<Option<Mark>> = vec![None; beans.len()];
     let mut stack: Vec<usize> = Vec::new();
-    let mut diags = Vec::new();
     let mut reported = HashSet::<usize>::new();
 
     fn visit(
@@ -632,6 +650,7 @@ fn detect_circular_dependencies(
         reported: &mut HashSet<usize>,
         beans: &[Bean],
         diags: &mut Vec<Diagnostic>,
+        file_diags: &mut Vec<FileDiagnostic>,
     ) {
         if marks[node] == Some(Mark::Permanent) {
             return;
@@ -646,11 +665,13 @@ fn detect_circular_dependencies(
                     .join(" -> ");
                 for idx in cycle {
                     if reported.insert(*idx) {
-                        diags.push(Diagnostic::warning(
+                        let diag = Diagnostic::warning(
                             "MICRONAUT_CIRCULAR_DEPENDENCY",
                             format!("Circular dependency detected: {cycle_names}"),
                             Some(beans[*idx].span),
-                        ));
+                        );
+                        diags.push(diag.clone());
+                        file_diags.push(FileDiagnostic::new(beans[*idx].file.clone(), diag));
                     }
                 }
             }
@@ -660,7 +681,9 @@ fn detect_circular_dependencies(
         marks[node] = Some(Mark::Temporary);
         stack.push(node);
         for &next in &edges[node] {
-            visit(next, edges, marks, stack, reported, beans, diags);
+            visit(
+                next, edges, marks, stack, reported, beans, diags, file_diags,
+            );
         }
         stack.pop();
         marks[node] = Some(Mark::Permanent);
@@ -674,11 +697,19 @@ fn detect_circular_dependencies(
             &mut stack,
             &mut reported,
             beans,
-            &mut diags,
+            diags,
+            file_diags,
         );
     }
+}
 
-    diags
+fn detect_circular_dependencies(
+    beans: &[Bean],
+    injection_resolutions: &[InjectionResolution],
+    diags: &mut Vec<Diagnostic>,
+    file_diags: &mut Vec<FileDiagnostic>,
+) {
+    detect_circular_dependencies_with_file_diags(beans, injection_resolutions, diags, file_diags);
 }
 
 fn decapitalize(name: &str) -> String {

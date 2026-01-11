@@ -18,6 +18,7 @@ pub mod semantics;
 pub mod code_intelligence;
 mod completion;
 mod jpa_intel;
+mod micronaut_intel;
 mod project;
 pub mod refactor;
 
@@ -56,9 +57,10 @@ pub mod micronaut {
     pub use nova_framework_micronaut::{
         analyze_sources, analyze_sources_with_config, collect_config_keys,
         completions_for_value_placeholder, config_completions, validation_diagnostics,
-        AnalysisResult, Bean, BeanKind, ConfigFile, ConfigFileKind, Endpoint, HandlerLocation,
-        InjectionPoint, InjectionResolution, JavaSource, MicronautAnalyzer, Qualifier,
-        MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH, MICRONAUT_VALIDATION_PRIMITIVE_NONNULL,
+        AnalysisResult, Bean, BeanKind, ConfigFile, ConfigFileKind, Endpoint, FileDiagnostic,
+        HandlerLocation, InjectionPoint, InjectionResolution, JavaSource, MicronautAnalyzer,
+        Qualifier, MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH,
+        MICRONAUT_VALIDATION_PRIMITIVE_NONNULL,
     };
 }
 

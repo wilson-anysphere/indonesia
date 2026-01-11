@@ -49,7 +49,24 @@ pub struct AnalysisResult {
     pub injection_resolutions: Vec<InjectionResolution>,
     pub endpoints: Vec<Endpoint>,
     pub diagnostics: Vec<Diagnostic>,
+    pub file_diagnostics: Vec<FileDiagnostic>,
     pub config_keys: Vec<String>,
+}
+
+/// Diagnostic payload annotated with its owning source file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDiagnostic {
+    pub file: String,
+    pub diagnostic: Diagnostic,
+}
+
+impl FileDiagnostic {
+    pub fn new(file: impl Into<String>, diagnostic: Diagnostic) -> Self {
+        Self {
+            file: file.into(),
+            diagnostic,
+        }
+    }
 }
 
 /// In-memory representation of a Java source file for analysis.
@@ -83,14 +100,35 @@ pub fn analyze_sources_with_config(
     let config_keys = collect_config_keys(config_files);
 
     let mut diagnostics = bean_analysis.diagnostics;
-    diagnostics.extend(validation::validation_diagnostics(sources));
+    let validation_file_diagnostics = validation::validation_file_diagnostics(sources);
+    diagnostics.extend(
+        validation_file_diagnostics
+            .iter()
+            .map(|d| d.diagnostic.clone()),
+    );
     diagnostics.sort_by_key(|d| (d.code, d.span.map(|s| s.start).unwrap_or(0)));
+
+    let mut file_diagnostics = bean_analysis.file_diagnostics;
+    file_diagnostics.extend(validation_file_diagnostics);
+    file_diagnostics.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then_with(|| a.diagnostic.code.cmp(&b.diagnostic.code))
+            .then_with(|| {
+                a.diagnostic
+                    .span
+                    .map(|s| s.start)
+                    .unwrap_or(0)
+                    .cmp(&b.diagnostic.span.map(|s| s.start).unwrap_or(0))
+            })
+    });
 
     AnalysisResult {
         beans: bean_analysis.beans,
         injection_resolutions: bean_analysis.injection_resolutions,
         endpoints,
         diagnostics,
+        file_diagnostics,
         config_keys,
     }
 }

@@ -22,6 +22,7 @@ use nova_fuzzy::FuzzyMatcher;
 use nova_types::{Diagnostic, Severity, Span};
 
 use crate::lombok_intel;
+use crate::micronaut_intel;
 use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
 
 #[cfg(feature = "ai")]
@@ -209,6 +210,23 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
         }
     }
 
+    // 4) Micronaut framework diagnostics (DI + validation).
+    if let Some(path) = db
+        .file_path(file)
+        .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
+            let path = path.to_string_lossy();
+            diagnostics.extend(
+                analysis
+                    .file_diagnostics
+                    .iter()
+                    .filter(|d| d.file == path.as_ref())
+                    .map(|d| d.diagnostic.clone()),
+            );
+        }
+    }
+
     diagnostics
 }
 
@@ -265,10 +283,28 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         .file_path(file)
         .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
     {
-        let index = spring_workspace_index(db);
-        let items = nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
-        if !items.is_empty() {
-            return spring_completions_to_lsp(items);
+        // Only attempt Spring `@Value` completions when the file appears to use
+        // Spring (`import org.springframework...`). Micronaut also has `@Value`,
+        // so we gate this to allow a Micronaut-specific fallback.
+        if text.contains("org.springframework.beans.factory.annotation") {
+            let index = spring_workspace_index(db);
+            let items =
+                nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
+            if !items.is_empty() {
+                return spring_completions_to_lsp(items);
+            }
+        }
+
+        // Micronaut `@Value("${...}")` completions as a fallback.
+        if let Some(analysis) = micronaut_intel::analysis_for_file(db, file) {
+            let items = nova_framework_micronaut::completions_for_value_placeholder(
+                text,
+                offset,
+                &analysis.config_keys,
+            );
+            if !items.is_empty() {
+                return spring_completions_to_lsp(items);
+            }
         }
     }
 
@@ -919,64 +955,6 @@ pub fn call_hierarchy_incoming_calls(
         })
         .collect()
 }
-pub fn outgoing_calls(
-    db: &dyn Database,
-    file: FileId,
-    method_name: &str,
-) -> Vec<CallHierarchyItem> {
-    let text = db.file_content(file);
-    let analysis = analyze(text);
-    let uri = file_uri(db, file);
-
-    let Some(owner) = analysis.methods.iter().find(|m| m.name == method_name) else {
-        return Vec::new();
-    };
-
-    let mut seen = HashSet::<String>::new();
-    let mut items = Vec::new();
-
-    for call in analysis.calls.iter().filter(|c| {
-        owner.body_span.start <= c.name_span.start && c.name_span.end <= owner.body_span.end
-    }) {
-        if !seen.insert(call.name.clone()) {
-            continue;
-        }
-        let Some(target) = analysis.methods.iter().find(|m| m.name == call.name) else {
-            continue;
-        };
-        items.push(call_hierarchy_item(&uri, text, target));
-    }
-
-    items
-}
-
-pub fn incoming_calls(
-    db: &dyn Database,
-    file: FileId,
-    method_name: &str,
-) -> Vec<CallHierarchyItem> {
-    let text = db.file_content(file);
-    let analysis = analyze(text);
-    let uri = file_uri(db, file);
-
-    let mut seen = HashSet::<String>::new();
-    let mut items = Vec::new();
-
-    for call in analysis.calls.iter().filter(|c| c.name == method_name) {
-        let Some(enclosing) = analysis.methods.iter().find(|m| {
-            m.body_span.start <= call.name_span.start && call.name_span.end <= m.body_span.end
-        }) else {
-            continue;
-        };
-        if !seen.insert(enclosing.name.clone()) {
-            continue;
-        }
-        items.push(call_hierarchy_item(&uri, text, enclosing));
-    }
-
-    items
-}
-
 fn call_hierarchy_item(uri: &lsp_types::Uri, text: &str, method: &MethodDecl) -> CallHierarchyItem {
     CallHierarchyItem {
         name: method.name.clone(),

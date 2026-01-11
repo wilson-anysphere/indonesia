@@ -2,6 +2,7 @@ use crate::parse::{
     clean_type, collect_annotations, infer_field_type_node, infer_param_type_node, modifier_node,
     node_text, parse_java, simple_name, visit_nodes,
 };
+use crate::FileDiagnostic;
 use crate::JavaSource;
 use nova_types::{Diagnostic, Severity};
 use tree_sitter::Node;
@@ -15,6 +16,13 @@ pub const MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH: &str =
 /// This is intentionally conservative and only covers a handful of high-signal
 /// cases (e.g. `@NotNull` on primitives).
 pub fn validation_diagnostics(sources: &[JavaSource]) -> Vec<Diagnostic> {
+    validation_file_diagnostics(sources)
+        .into_iter()
+        .map(|d| d.diagnostic)
+        .collect()
+}
+
+pub(crate) fn validation_file_diagnostics(sources: &[JavaSource]) -> Vec<FileDiagnostic> {
     let mut diags = Vec::new();
 
     for src in sources {
@@ -33,7 +41,7 @@ pub fn validation_diagnostics(sources: &[JavaSource]) -> Vec<Diagnostic> {
     diags
 }
 
-fn validate_field_declaration(node: Node<'_>, src: &JavaSource, out: &mut Vec<Diagnostic>) {
+fn validate_field_declaration(node: Node<'_>, src: &JavaSource, out: &mut Vec<FileDiagnostic>) {
     let Some(modifiers) = modifier_node(node) else {
         return;
     };
@@ -51,10 +59,16 @@ fn validate_field_declaration(node: Node<'_>, src: &JavaSource, out: &mut Vec<Di
     };
     let ty = simple_name(&clean_type(node_text(&src.text, ty_node)));
 
-    validate_constraints(&ty, &annotations, out);
+    let mut local = Vec::new();
+    validate_constraints(&ty, &annotations, &mut local);
+    out.extend(
+        local
+            .into_iter()
+            .map(|diagnostic| FileDiagnostic::new(src.path.clone(), diagnostic)),
+    );
 }
 
-fn validate_formal_parameter(node: Node<'_>, src: &JavaSource, out: &mut Vec<Diagnostic>) {
+fn validate_formal_parameter(node: Node<'_>, src: &JavaSource, out: &mut Vec<FileDiagnostic>) {
     let Some(modifiers) = modifier_node(node) else {
         return;
     };
@@ -72,7 +86,13 @@ fn validate_formal_parameter(node: Node<'_>, src: &JavaSource, out: &mut Vec<Dia
     };
     let ty = simple_name(&clean_type(node_text(&src.text, type_node)));
 
-    validate_constraints(&ty, &annotations, out);
+    let mut local = Vec::new();
+    validate_constraints(&ty, &annotations, &mut local);
+    out.extend(
+        local
+            .into_iter()
+            .map(|diagnostic| FileDiagnostic::new(src.path.clone(), diagnostic)),
+    );
 }
 
 fn validate_constraints(
