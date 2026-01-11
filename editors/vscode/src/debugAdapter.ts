@@ -226,24 +226,93 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
     const settings = this.readDapSettings(config);
 
     this.output.show(true);
-    const installed = await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: 'Nova: Installing/Updating nova-dap…',
-        cancellable: false,
-      },
-      async () => {
-        if (this.installTask) {
-          return await this.installTask;
+    let installed: { path: string; version: string };
+    try {
+      installed = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Nova: Installing/Updating nova-dap…',
+          cancellable: false,
+        },
+        async () => {
+          if (this.installTask) {
+            return await this.installTask;
+          }
+          this.installTask = this.serverManager.installOrUpdateDap(settings);
+          try {
+            return await this.installTask;
+          } finally {
+            this.installTask = undefined;
+          }
+        },
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.output.appendLine(`Install failed: ${message}`);
+      if (err instanceof Error && err.stack) {
+        this.output.appendLine(err.stack);
+      }
+      this.output.show(true);
+
+      const action = await vscode.window.showErrorMessage(
+        `Nova: Failed to install nova-dap: ${message}`,
+        'Show Output',
+        'Select local binary…',
+        'Open Settings',
+        'Open install docs',
+      );
+      if (action === 'Show Output') {
+        this.output.show(true);
+      } else if (action === 'Select local binary…') {
+        const pickedPath = await this.pickLocalDapBinary(config);
+        if (pickedPath) {
+          const allowMismatch = this.allowVersionMismatch(config);
+          const check = await this.checkBinaryVersion(pickedPath, allowMismatch);
+          if (check.ok && check.version) {
+            return pickedPath;
+          }
+
+          const suffix = check.version
+            ? `found v${check.version}, expected v${this.extensionVersion}`
+            : check.error
+              ? check.error
+              : 'unavailable';
+          const actions: string[] = [];
+          if (check.error && this.isPermissionError(check.error)) {
+            actions.push('Make Executable');
+          }
+          if (check.version && !allowMismatch) {
+            actions.push('Enable allowVersionMismatch');
+          }
+          actions.push('Cancel');
+          const followup = await vscode.window.showErrorMessage(
+            `Nova: selected nova-dap is not usable (${suffix}): ${pickedPath}`,
+            ...actions,
+          );
+          if (followup === 'Make Executable') {
+            const updated = await this.makeExecutable(pickedPath);
+            if (updated) {
+              const rechecked = await this.checkBinaryVersion(pickedPath, allowMismatch);
+              if (rechecked.ok && rechecked.version) {
+                return pickedPath;
+              }
+            }
+          } else if (followup === 'Enable allowVersionMismatch') {
+            await this.setAllowVersionMismatch(true);
+            const rechecked = await this.checkBinaryVersion(pickedPath, true);
+            if (rechecked.ok && rechecked.version) {
+              return pickedPath;
+            }
+          }
         }
-        this.installTask = this.serverManager.installOrUpdateDap(settings);
-        try {
-          return await this.installTask;
-        } finally {
-          this.installTask = undefined;
-        }
-      },
-    );
+      } else if (action === 'Open Settings') {
+        await vscode.commands.executeCommand('workbench.action.openSettings', 'nova.download');
+      } else if (action === 'Open install docs') {
+        await openInstallDocs(this.context);
+      }
+
+      throw new UserFacingError('nova-dap install failed');
+    }
 
     this.output.appendLine(`Installed nova-dap ${installed.version}.`);
 
