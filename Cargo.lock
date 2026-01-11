@@ -3652,6 +3652,7 @@ dependencies = [
  "nova-decompile",
  "nova-ext",
  "nova-framework",
+ "nova-framework-jpa",
  "nova-framework-lombok",
  "nova-framework-micronaut",
  "nova-framework-spring",

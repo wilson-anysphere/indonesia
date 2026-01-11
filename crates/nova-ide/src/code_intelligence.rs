@@ -81,6 +81,18 @@ fn spring_completions_to_lsp(items: Vec<nova_types::CompletionItem>) -> Vec<Comp
         .collect()
 }
 
+fn jpa_completions_to_lsp(items: Vec<nova_types::CompletionItem>) -> Vec<CompletionItem> {
+    items
+        .into_iter()
+        .map(|item| CompletionItem {
+            label: item.label,
+            kind: Some(CompletionItemKind::FIELD),
+            detail: item.detail,
+            ..Default::default()
+        })
+        .collect()
+}
+
 fn spring_location_to_lsp(
     db: &dyn Database,
     loc: &nova_framework_spring::ConfigLocation,
@@ -101,6 +113,32 @@ fn uri_from_path(path: &std::path::Path) -> Option<lsp_types::Uri> {
     let abs = AbsPathBuf::new(path.to_path_buf()).ok()?;
     let uri = path_to_file_uri(&abs).ok()?;
     lsp_types::Uri::from_str(&uri).ok()
+}
+
+fn location_from_path_and_span(
+    db: &dyn Database,
+    path: &std::path::Path,
+    span: Span,
+) -> Option<Location> {
+    let uri = uri_from_path(path)?;
+    let target_text = db
+        .file_id(path)
+        .map(|id| db.file_content(id).to_string())
+        .or_else(|| std::fs::read_to_string(path).ok())?;
+    Some(Location {
+        uri,
+        range: span_to_lsp_range(&target_text, span),
+    })
+}
+
+fn cursor_inside_jpql_string(java_source: &str, cursor: usize) -> bool {
+    nova_framework_jpa::extract_jpql_strings(java_source)
+        .into_iter()
+        .any(|(_, lit_span)| {
+            let content_start = lit_span.start.saturating_add(1);
+            let content_end_exclusive = lit_span.end.saturating_sub(1);
+            cursor >= content_start && cursor <= content_end_exclusive
+        })
 }
 
 // -----------------------------------------------------------------------------
@@ -149,6 +187,26 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
             format!("Cannot resolve symbol '{}'", call.name),
             Some(call.name_span),
         ));
+    }
+
+    // 3) JPA / JPQL diagnostics (best-effort).
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+    {
+        if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
+            if let (Some(analysis), Some(path)) = (project.analysis.as_ref(), db.file_path(file)) {
+                if let Some(source) = project.source_index(path) {
+                    diagnostics.extend(
+                        analysis
+                            .diagnostics
+                            .iter()
+                            .filter(|d| d.source == source)
+                            .map(|d| d.diagnostic.clone()),
+                    );
+                }
+            }
+        }
     }
 
     diagnostics
@@ -211,6 +269,26 @@ pub fn completions(db: &dyn Database, file: FileId, position: Position) -> Vec<C
         let items = nova_framework_spring::completions_for_value_placeholder(text, offset, &index);
         if !items.is_empty() {
             return spring_completions_to_lsp(items);
+        }
+    }
+
+    // JPQL completions inside JPA `@Query(...)` / `@NamedQuery(query=...)` strings.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+        && cursor_inside_jpql_string(text, offset)
+    {
+        if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
+            if let Some(analysis) = project.analysis.as_ref() {
+                let items = nova_framework_jpa::jpql_completions_in_java_source(
+                    text,
+                    offset,
+                    &analysis.model,
+                );
+                if !items.is_empty() {
+                    return jpa_completions_to_lsp(items);
+                }
+            }
         }
     }
 
@@ -517,6 +595,20 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
             nova_framework_spring::goto_definition_for_value_placeholder(text, offset, &index);
         if let Some(target) = targets.first() {
             return spring_location_to_lsp(db, target);
+        }
+    }
+
+    // JPA navigation inside JPQL strings.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+        && cursor_inside_jpql_string(text, offset)
+    {
+        if let Some(project) = crate::jpa_intel::project_for_file(db, file) {
+            if let Some(def) = crate::jpa_intel::resolve_definition_in_jpql(&project, text, offset)
+            {
+                return location_from_path_and_span(db, &def.path, def.span);
+            }
         }
     }
 

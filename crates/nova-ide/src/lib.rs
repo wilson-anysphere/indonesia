@@ -17,6 +17,7 @@ pub mod semantics;
 
 pub mod code_intelligence;
 mod completion;
+mod jpa_intel;
 mod project;
 pub mod refactor;
 
