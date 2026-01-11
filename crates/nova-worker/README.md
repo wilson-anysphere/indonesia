@@ -50,7 +50,7 @@ it uses built-in defaults and the router chooses the final negotiated settings.
 The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
 
 - Pre-handshake max frame length: **1 MiB** (`nova_remote_rpc::DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN`)
-- Max frame length / max packet length offered in `Hello.capabilities`:
+- Max frame length / max packet length offered in `WorkerHello.capabilities`:
   - **64 MiB** max frame (`nova_remote_proto::v3::DEFAULT_MAX_FRAME_LEN`)
   - **64 MiB** max packet (`nova_remote_proto::v3::DEFAULT_MAX_PACKET_LEN`)
 - Compression: offer `zstd` + `none` and compress payloads ≥ **1 KiB** (zstd level 3) when it
