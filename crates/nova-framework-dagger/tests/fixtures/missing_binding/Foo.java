@@ -1,9 +1,9 @@
 package test;
 
 import javax.inject.Inject;
+import javax.inject.Named;
 
 class Foo {
   @Inject
-  Foo(Bar bar) {}
+  Foo(@Named("😀") Bar bar) {}
 }
-

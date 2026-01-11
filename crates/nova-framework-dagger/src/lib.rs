@@ -1046,13 +1046,15 @@ fn parse_params_from_segment(
         let ty = ty?;
         let ty_normalized = ty.clone();
 
-        let col = find_token_column(raw_line, &ty, search_start)?;
-        search_start = col as usize + ty.len();
+        let col_byte = find_token_column(raw_line, &ty, search_start)?;
+        search_start = col_byte + ty.len();
+        let col_utf16 = utf16_col(raw_line, col_byte);
+        let end_utf16 = utf16_col(raw_line, col_byte + ty.len());
         let span = Location::new(
             path.clone(),
             Range::new(
-                Position::new(line_idx, col as u32),
-                Position::new(line_idx, (col + ty.len()) as u32),
+                Position::new(line_idx, col_utf16),
+                Position::new(line_idx, end_utf16),
             ),
         );
 
@@ -1139,13 +1141,15 @@ fn parse_params_from_line(
         let ty = ty?;
         let ty_normalized = ty.clone();
 
-        let col = find_token_column(raw_line, &ty, search_start)?;
-        search_start = col as usize + ty.len();
+        let col_byte = find_token_column(raw_line, &ty, search_start)?;
+        search_start = col_byte + ty.len();
+        let col_utf16 = utf16_col(raw_line, col_byte);
+        let end_utf16 = utf16_col(raw_line, col_byte + ty.len());
         let span = Location::new(
             path.clone(),
             Range::new(
-                Position::new(line_idx, col as u32),
-                Position::new(line_idx, (col + ty.len()) as u32),
+                Position::new(line_idx, col_utf16),
+                Position::new(line_idx, end_utf16),
             ),
         );
 
@@ -1178,12 +1182,14 @@ fn parse_field_declaration(raw_line: &str, line_idx: u32, path: &PathBuf) -> Opt
     let mut tokens = line.trim_end_matches(';').split_whitespace();
     let ty = tokens.next()?.to_string();
     let ty_norm = ty.clone();
-    let col = raw_line.find(&ty)?;
+    let col_byte = raw_line.find(&ty)?;
+    let col_utf16 = utf16_col(raw_line, col_byte);
+    let end_utf16 = utf16_col(raw_line, col_byte + ty.len());
     let span = Location::new(
         path.clone(),
         Range::new(
-            Position::new(line_idx, col as u32),
-            Position::new(line_idx, (col + ty.len()) as u32),
+            Position::new(line_idx, col_utf16),
+            Position::new(line_idx, end_utf16),
         ),
     );
     Some(ParsedField { ty: ty_norm, span })
@@ -1228,12 +1234,14 @@ fn parse_component_method(
         });
     }
 
-    let col = raw_line.find(&return_type)?;
+    let col_byte = raw_line.find(&return_type)?;
+    let col_utf16 = utf16_col(raw_line, col_byte);
+    let end_utf16 = utf16_col(raw_line, col_byte + return_type.len());
     let span = Location::new(
         path.clone(),
         Range::new(
-            Position::new(line_idx, col as u32),
-            Position::new(line_idx, (col + return_type.len()) as u32),
+            Position::new(line_idx, col_utf16),
+            Position::new(line_idx, end_utf16),
         ),
     );
     Some(ParsedComponentMethod {
@@ -1242,16 +1250,26 @@ fn parse_component_method(
 }
 
 fn span_for_token(path: &PathBuf, line_idx: u32, raw_line: &str, token: &str) -> Option<Location> {
-    let col = raw_line.find(token)?;
+    let col_byte = raw_line.find(token)?;
+    let col_utf16 = utf16_col(raw_line, col_byte);
+    let end_utf16 = utf16_col(raw_line, col_byte + token.len());
     Some(Location::new(
         path.clone(),
         Range::new(
-            Position::new(line_idx, col as u32),
-            Position::new(line_idx, (col + token.len()) as u32),
+            Position::new(line_idx, col_utf16),
+            Position::new(line_idx, end_utf16),
         ),
     ))
 }
 
 fn fallback_span(path: &PathBuf, line_idx: u32) -> Location {
     Location::new(path.clone(), Range::point(Position::new(line_idx, 0)))
+}
+
+fn utf16_col(line: &str, byte_idx: usize) -> u32 {
+    let mut idx = byte_idx.min(line.len());
+    while idx > 0 && !line.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    line[..idx].chars().map(|c| c.len_utf16() as u32).sum()
 }

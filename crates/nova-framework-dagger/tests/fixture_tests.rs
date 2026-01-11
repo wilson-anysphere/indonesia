@@ -32,13 +32,13 @@ fn collect_java_files(dir: &Path, out: &mut Vec<JavaSourceFile>) {
 }
 
 fn slice_range(text: &str, range: nova_core::Range) -> String {
-    let line = text
-        .lines()
-        .nth(range.start.line as usize)
-        .expect("range line exists");
-    let start = range.start.character as usize;
-    let end = range.end.character as usize;
-    line.get(start..end).unwrap_or("").to_string()
+    let index = nova_core::LineIndex::new(text);
+    let Some(byte_range) = index.text_range(text, range) else {
+        return String::new();
+    };
+    let start = u32::from(byte_range.start()) as usize;
+    let end = u32::from(byte_range.end()) as usize;
+    text.get(start..end).unwrap_or("").to_string()
 }
 
 #[test]
