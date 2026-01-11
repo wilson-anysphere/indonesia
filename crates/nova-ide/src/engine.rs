@@ -1,7 +1,7 @@
 use crate::{validate_ai_completion, CompletionConfig, NovaCompletionItem};
 use nova_ai::{
-    CancellationToken, CompletionContextBuilder, MultiTokenCompletionContext, MultiTokenCompletionProvider,
-    MultiTokenCompletionRequest,
+    CancellationToken, CompletionContextBuilder, MultiTokenCompletionContext,
+    MultiTokenCompletionProvider, MultiTokenCompletionRequest,
 };
 use std::sync::Arc;
 use tokio::time;

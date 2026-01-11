@@ -6,9 +6,9 @@ use std::time::Duration;
 
 use futures::future::BoxFuture;
 use nova_ai::{
-    AdditionalEdit, AiProviderError, CancellationToken, CompletionContextBuilder, MultiTokenCompletion,
-    MultiTokenCompletionContext, MultiTokenCompletionProvider, MultiTokenCompletionRequest,
-    MultiTokenInsertTextFormat,
+    AdditionalEdit, AiProviderError, CancellationToken, CompletionContextBuilder,
+    MultiTokenCompletion, MultiTokenCompletionContext, MultiTokenCompletionProvider,
+    MultiTokenCompletionRequest, MultiTokenInsertTextFormat,
 };
 use nova_ide::{CompletionConfig, CompletionEngine};
 use nova_lsp::{MoreCompletionsParams, NovaCompletionService};
@@ -136,7 +136,11 @@ async fn completion_more_returns_multi_token_items_async() {
     let service = NovaCompletionService::new(engine);
 
     let completion = service.completion(ctx(), CancellationToken::new());
-    assert!(completion.list.items.iter().any(|item| item.label == "filter"));
+    assert!(completion
+        .list
+        .items
+        .iter()
+        .any(|item| item.label == "filter"));
 
     let first_poll = service.completion_more(MoreCompletionsParams {
         context_id: completion.context_id.to_string(),

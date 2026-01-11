@@ -278,7 +278,8 @@ fn did_change_watched_files_updates_cached_analysis_state() {
     );
     let resp = read_jsonrpc_response_with_id(&mut stdout, 7);
     let location = resp.get("result").cloned().expect("definition result");
-    let range: Range = serde_json::from_value(location.get("range").cloned().expect("range")).expect("range");
+    let range: Range =
+        serde_json::from_value(location.get("range").cloned().expect("range")).expect("range");
     assert_eq!(range_text(fixed, range), "bar");
 
     // 6) Delete on disk without notifying; definition should still use cached content.

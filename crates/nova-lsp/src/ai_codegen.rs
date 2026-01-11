@@ -6,9 +6,9 @@ use nova_ai::safety::{
     enforce_no_new_imports, enforce_patch_safety, PatchSafetyConfig, SafetyError,
 };
 use nova_ai::workspace::{AppliedPatch, PatchApplyConfig, PatchApplyError, VirtualWorkspace};
+use nova_ai::CancellationToken;
 use nova_ai::{enforce_code_edit_policy, CodeEditPolicyError};
 use nova_config::AiPrivacyConfig;
-use nova_ai::CancellationToken;
 use nova_core::{LineIndex, TextRange};
 use nova_ide::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
 use nova_ide::format::Formatter;

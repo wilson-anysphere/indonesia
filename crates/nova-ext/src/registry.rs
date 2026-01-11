@@ -408,7 +408,10 @@ impl<DB: ?Sized + Send + Sync + 'static> ProviderId for Arc<dyn InlayHintProvide
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RegisterError {
-    DuplicateId { kind: &'static str, id: String },
+    DuplicateId {
+        kind: &'static str,
+        id: String,
+    },
     WasmCompile {
         id: String,
         dir: PathBuf,

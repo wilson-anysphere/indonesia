@@ -61,9 +61,13 @@ impl std::str::FromStr for ExtensionCapability {
         match normalized.as_str() {
             "diagnostic" | "diagnostics" => Ok(ExtensionCapability::Diagnostics),
             "completion" | "completions" => Ok(ExtensionCapability::Completion),
-            "code_action" | "code_actions" | "codeaction" | "codeactions" => Ok(ExtensionCapability::CodeAction),
+            "code_action" | "code_actions" | "codeaction" | "codeactions" => {
+                Ok(ExtensionCapability::CodeAction)
+            }
             "navigation" | "navigations" => Ok(ExtensionCapability::Navigation),
-            "inlay_hint" | "inlay_hints" | "inlayhint" | "inlayhints" => Ok(ExtensionCapability::InlayHint),
+            "inlay_hint" | "inlay_hints" | "inlayhint" | "inlayhints" => {
+                Ok(ExtensionCapability::InlayHint)
+            }
             _ => Err(format!("unknown capability '{s}'")),
         }
     }
@@ -74,7 +78,8 @@ where
     D: Deserializer<'de>,
 {
     let raw = String::deserialize(deserializer)?;
-    Version::parse(&raw).map_err(|e| D::Error::custom(format!("invalid semver version '{raw}': {e}")))
+    Version::parse(&raw)
+        .map_err(|e| D::Error::custom(format!("invalid semver version '{raw}': {e}")))
 }
 
 fn deserialize_capabilities<'de, D>(deserializer: D) -> Result<Vec<ExtensionCapability>, D::Error>
@@ -105,7 +110,9 @@ where
 
     let mut out = BTreeSet::<ExtensionCapability>::new();
     for name in names {
-        let cap = name.parse::<ExtensionCapability>().map_err(D::Error::custom)?;
+        let cap = name
+            .parse::<ExtensionCapability>()
+            .map_err(D::Error::custom)?;
         out.insert(cap);
     }
 

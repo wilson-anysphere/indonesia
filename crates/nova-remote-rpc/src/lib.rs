@@ -355,8 +355,8 @@ impl Handle {
 
         let request_type = request_type(&request);
 
-        let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG)
-            .then(Instant::now);
+        let start =
+            tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
 
         let span = tracing::debug_span!(
             target: TRACE_TARGET,

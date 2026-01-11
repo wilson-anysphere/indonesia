@@ -156,7 +156,11 @@ impl NovaCompletionService {
     }
 
     /// Equivalent to `textDocument/completion` for the multi-token completion prototype.
-    pub fn completion(&self, ctx: MultiTokenCompletionContext, cancel: CancellationToken) -> NovaCompletionResponse {
+    pub fn completion(
+        &self,
+        ctx: MultiTokenCompletionContext,
+        cancel: CancellationToken,
+    ) -> NovaCompletionResponse {
         self.cancel_all_sessions();
 
         let context_id = CompletionContextId(self.next_id.fetch_add(1, Ordering::Relaxed));

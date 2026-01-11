@@ -1980,7 +1980,10 @@ pub fn load_sharded_index_archives_from_fast_snapshot(
         shards.push(Some(shard_archives));
     }
 
-    let mut invalidated: BTreeSet<String> = metadata.diff_files_fast(fast_snapshot).into_iter().collect();
+    let mut invalidated: BTreeSet<String> = metadata
+        .diff_files_fast(fast_snapshot)
+        .into_iter()
+        .collect();
 
     if !missing_shards.is_empty() {
         for path in fast_snapshot.file_fingerprints().keys() {

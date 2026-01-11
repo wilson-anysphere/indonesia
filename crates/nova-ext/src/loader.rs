@@ -1,4 +1,6 @@
-use crate::manifest::{ExtensionCapability, ExtensionManifest, MANIFEST_FILE_NAME, SUPPORTED_ABI_VERSION};
+use crate::manifest::{
+    ExtensionCapability, ExtensionManifest, MANIFEST_FILE_NAME, SUPPORTED_ABI_VERSION,
+};
 use crate::{ExtensionRegistry, RegisterError};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -89,7 +91,11 @@ pub enum LoadError {
         supported: u32,
     },
     #[error("extension {id:?} at {dir:?}: entry must be a relative path, got {entry:?}")]
-    EntryNotRelative { dir: PathBuf, id: String, entry: PathBuf },
+    EntryNotRelative {
+        dir: PathBuf,
+        id: String,
+        entry: PathBuf,
+    },
     #[error("extension {id:?} at {dir:?}: missing entry file {entry_path:?}")]
     MissingEntry {
         dir: PathBuf,
@@ -129,10 +135,14 @@ pub struct ExtensionManager;
 impl ExtensionManager {
     pub fn load_from_dir(dir: &Path) -> Result<LoadedExtension, LoadError> {
         if !dir.exists() {
-            return Err(LoadError::MissingDirectory { dir: dir.to_path_buf() });
+            return Err(LoadError::MissingDirectory {
+                dir: dir.to_path_buf(),
+            });
         }
         if !dir.is_dir() {
-            return Err(LoadError::NotADirectory { dir: dir.to_path_buf() });
+            return Err(LoadError::NotADirectory {
+                dir: dir.to_path_buf(),
+            });
         }
 
         let manifest_path = dir.join(MANIFEST_FILE_NAME);
@@ -218,7 +228,11 @@ impl ExtensionManager {
         let duplicates = find_duplicate_extension_ids(&loaded);
         if !duplicates.is_empty() {
             let dup_ids: BTreeSet<String> = duplicates.keys().cloned().collect();
-            errors.extend(duplicates.into_iter().map(|(id, dirs)| LoadError::DuplicateId { id, dirs }));
+            errors.extend(
+                duplicates
+                    .into_iter()
+                    .map(|(id, dirs)| LoadError::DuplicateId { id, dirs }),
+            );
             loaded.retain(|ext| !dup_ids.contains(ext.id()));
         }
 
@@ -251,13 +265,17 @@ impl ExtensionManager {
         ordered.sort_by(|a, b| a.id().cmp(b.id()));
 
         for ext in ordered {
-            let plugin = WasmPlugin::from_wasm_bytes(ext.id(), ext.entry_bytes(), WasmPluginConfig::default())
-                .map_err(|err| RegisterError::WasmCompile {
-                    id: ext.id().to_string(),
-                    dir: ext.dir().to_path_buf(),
-                    entry_path: ext.entry_path().to_path_buf(),
-                    message: err.to_string(),
-                })?;
+            let plugin = WasmPlugin::from_wasm_bytes(
+                ext.id(),
+                ext.entry_bytes(),
+                WasmPluginConfig::default(),
+            )
+            .map_err(|err| RegisterError::WasmCompile {
+                id: ext.id().to_string(),
+                dir: ext.dir().to_path_buf(),
+                entry_path: ext.entry_path().to_path_buf(),
+                message: err.to_string(),
+            })?;
             let plugin = Arc::new(plugin);
             let caps = plugin.capabilities();
 
@@ -272,7 +290,7 @@ impl ExtensionManager {
                             });
                         }
                         registry.register_diagnostic_provider(
-                            Arc::clone(&plugin) as Arc<dyn DiagnosticProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn DiagnosticProvider<DB>>
                         )?;
                     }
                     ExtensionCapability::Completion => {
@@ -284,7 +302,7 @@ impl ExtensionManager {
                             });
                         }
                         registry.register_completion_provider(
-                            Arc::clone(&plugin) as Arc<dyn CompletionProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn CompletionProvider<DB>>
                         )?;
                     }
                     ExtensionCapability::CodeAction => {
@@ -296,7 +314,7 @@ impl ExtensionManager {
                             });
                         }
                         registry.register_code_action_provider(
-                            Arc::clone(&plugin) as Arc<dyn CodeActionProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn CodeActionProvider<DB>>
                         )?;
                     }
                     ExtensionCapability::Navigation => {
@@ -308,7 +326,7 @@ impl ExtensionManager {
                             });
                         }
                         registry.register_navigation_provider(
-                            Arc::clone(&plugin) as Arc<dyn NavigationProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn NavigationProvider<DB>>
                         )?;
                     }
                     ExtensionCapability::InlayHint => {
@@ -320,7 +338,7 @@ impl ExtensionManager {
                             });
                         }
                         registry.register_inlay_hint_provider(
-                            Arc::clone(&plugin) as Arc<dyn InlayHintProvider<DB>>,
+                            Arc::clone(&plugin) as Arc<dyn InlayHintProvider<DB>>
                         )?;
                     }
                 }
@@ -374,7 +392,10 @@ fn discover_extension_dirs(search_path: &Path) -> Result<Vec<PathBuf>, LoadError
 fn find_duplicate_extension_ids(loaded: &[LoadedExtension]) -> BTreeMap<String, Vec<PathBuf>> {
     let mut by_id: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for ext in loaded {
-        by_id.entry(ext.id().to_string()).or_default().push(ext.dir.clone());
+        by_id
+            .entry(ext.id().to_string())
+            .or_default()
+            .push(ext.dir.clone());
     }
 
     by_id.retain(|_, dirs| dirs.len() > 1);
@@ -434,7 +455,10 @@ capabilities = ["diagnostics"]
         assert_eq!(loaded[1].id(), "b");
 
         let listed = ExtensionManager::list(&[loaded[1].clone(), loaded[0].clone()]);
-        assert_eq!(listed.into_iter().map(|m| m.id).collect::<Vec<_>>(), vec!["a", "b"]);
+        assert_eq!(
+            listed.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
     }
 
     #[test]
@@ -473,7 +497,10 @@ capabilities = ["diagnostics"]
         let (loaded, errors) = ExtensionManager::load_all(&[root.to_path_buf()]);
         assert!(loaded.is_empty());
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(matches!(errors[0], LoadError::DuplicateId { .. }), "{errors:?}");
+        assert!(
+            matches!(errors[0], LoadError::DuplicateId { .. }),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -587,29 +614,45 @@ capabilities = ["diagnostics"]
             }
             out.push('\n');
 
-            out.push_str("  (func (export \"nova_ext_diagnostics\") (param i32 i32) (result i64)\n");
+            out.push_str(
+                "  (func (export \"nova_ext_diagnostics\") (param i32 i32) (result i64)\n",
+            );
             out.push_str("    (local $out_ptr i32)\n");
             out.push_str("    (local $out_len i32)\n");
-            out.push_str(&format!("    (local.set $out_len (i32.const {diag_len}))\n"));
+            out.push_str(&format!(
+                "    (local.set $out_len (i32.const {diag_len}))\n"
+            ));
             out.push_str("    (local.set $out_ptr (call $nova_ext_alloc (local.get $out_len)))\n");
-            out.push_str("    (memory.copy (local.get $out_ptr) (i32.const 0) (local.get $out_len))\n");
+            out.push_str(
+                "    (memory.copy (local.get $out_ptr) (i32.const 0) (local.get $out_len))\n",
+            );
             out.push_str("    (i64.or\n");
-            out.push_str("      (i64.shl (i64.extend_i32_u (local.get $out_len)) (i64.const 32))\n");
+            out.push_str(
+                "      (i64.shl (i64.extend_i32_u (local.get $out_len)) (i64.const 32))\n",
+            );
             out.push_str("      (i64.extend_i32_u (local.get $out_ptr))\n");
             out.push_str("    )\n");
             out.push_str("  )\n\n");
 
             if let Some((_completion_wat, completion_len)) = completion {
-                out.push_str("  (func (export \"nova_ext_completions\") (param i32 i32) (result i64)\n");
+                out.push_str(
+                    "  (func (export \"nova_ext_completions\") (param i32 i32) (result i64)\n",
+                );
                 out.push_str("    (local $out_ptr i32)\n");
                 out.push_str("    (local $out_len i32)\n");
-                out.push_str(&format!("    (local.set $out_len (i32.const {completion_len}))\n"));
-                out.push_str("    (local.set $out_ptr (call $nova_ext_alloc (local.get $out_len)))\n");
+                out.push_str(&format!(
+                    "    (local.set $out_len (i32.const {completion_len}))\n"
+                ));
+                out.push_str(
+                    "    (local.set $out_ptr (call $nova_ext_alloc (local.get $out_len)))\n",
+                );
                 out.push_str(&format!(
                     "    (memory.copy (local.get $out_ptr) (i32.const {completion_offset}) (local.get $out_len))\n"
                 ));
                 out.push_str("    (i64.or\n");
-                out.push_str("      (i64.shl (i64.extend_i32_u (local.get $out_len)) (i64.const 32))\n");
+                out.push_str(
+                    "      (i64.shl (i64.extend_i32_u (local.get $out_len)) (i64.const 32))\n",
+                );
                 out.push_str("      (i64.extend_i32_u (local.get $out_ptr))\n");
                 out.push_str("    )\n");
                 out.push_str("  )\n");
@@ -636,11 +679,7 @@ abi_version = 1
 capabilities = ["diagnostics"]
 "#,
             );
-            write_wat_wasm(
-                &ext_b,
-                "plugin.wasm",
-                &simple_wat("from-b", None),
-            );
+            write_wat_wasm(&ext_b, "plugin.wasm", &simple_wat("from-b", None));
 
             let ext_a = root.join("ext-a");
             fs::create_dir_all(&ext_a).unwrap();
@@ -654,11 +693,7 @@ abi_version = 1
 capabilities = ["diagnostics"]
 "#,
             );
-            write_wat_wasm(
-                &ext_a,
-                "plugin.wasm",
-                &simple_wat("from-a", None),
-            );
+            write_wat_wasm(&ext_a, "plugin.wasm", &simple_wat("from-a", None));
 
             let (loaded, errors) = ExtensionManager::load_all(&[root.to_path_buf()]);
             assert!(errors.is_empty(), "{errors:?}");
@@ -666,8 +701,15 @@ capabilities = ["diagnostics"]
             let mut registry = ExtensionRegistry::<TestDb>::default();
             ExtensionManager::register_all(&mut registry, &loaded).unwrap();
 
-            let db = Arc::new(TestDb { text: String::new() });
-            let out = registry.diagnostics(ctx(db), DiagnosticParams { file: FileId::from_raw(1) });
+            let db = Arc::new(TestDb {
+                text: String::new(),
+            });
+            let out = registry.diagnostics(
+                ctx(db),
+                DiagnosticParams {
+                    file: FileId::from_raw(1),
+                },
+            );
             assert_eq!(
                 out.into_iter().map(|d| d.message).collect::<Vec<_>>(),
                 vec!["from-a".to_string(), "from-b".to_string()]
@@ -692,7 +734,11 @@ capabilities = ["diagnostics", "completions"]
 "#,
             );
 
-            write_wat_wasm(&ext, "plugin.wasm", &simple_wat("from-multi", Some("completion")));
+            write_wat_wasm(
+                &ext,
+                "plugin.wasm",
+                &simple_wat("from-multi", Some("completion")),
+            );
 
             let (loaded, errors) = ExtensionManager::load_all(&[root.to_path_buf()]);
             assert!(errors.is_empty(), "{errors:?}");
@@ -700,10 +746,14 @@ capabilities = ["diagnostics", "completions"]
             let mut registry = ExtensionRegistry::<TestDb>::default();
             ExtensionManager::register_all(&mut registry, &loaded).unwrap();
 
-            let db = Arc::new(TestDb { text: String::new() });
+            let db = Arc::new(TestDb {
+                text: String::new(),
+            });
             let diagnostics = registry.diagnostics(
                 ctx(Arc::clone(&db)),
-                DiagnosticParams { file: FileId::from_raw(1) },
+                DiagnosticParams {
+                    file: FileId::from_raw(1),
+                },
             );
             assert_eq!(diagnostics.len(), 1);
             assert_eq!(diagnostics[0].message, "from-multi");

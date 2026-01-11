@@ -3,7 +3,8 @@ mod codec;
 use codec::{read_json_message, write_json_message};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
-    CompletionList, CompletionParams, DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
+    CompletionList, CompletionParams,
+    DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
     FileChangeType as LspFileChangeType, Position as LspTypesPosition, Range as LspTypesRange,
     RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
     WorkspaceEdit as LspWorkspaceEdit,
@@ -677,7 +678,9 @@ fn handle_request(
             let result = handle_definition(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         "textDocument/diagnostic" => {
@@ -687,7 +690,9 @@ fn handle_request(
             let result = handle_document_diagnostic(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         "completionItem/resolve" => {
@@ -1586,8 +1591,12 @@ fn handle_rename(
     workspace_edit_to_lsp(&db, &edit).map_err(|e| e.to_string())
 }
 
-fn handle_definition(params: serde_json::Value, state: &mut ServerState) -> Result<serde_json::Value, String> {
-    let params: TextDocumentPositionParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+fn handle_definition(
+    params: serde_json::Value,
+    state: &mut ServerState,
+) -> Result<serde_json::Value, String> {
+    let params: TextDocumentPositionParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
@@ -1612,7 +1621,8 @@ fn handle_document_diagnostic(
         text_document: lsp_types::TextDocumentIdentifier,
     }
 
-    let params: DocumentDiagnosticParams = serde_json::from_value(params).map_err(|e| e.to_string())?;
+    let params: DocumentDiagnosticParams =
+        serde_json::from_value(params).map_err(|e| e.to_string())?;
     let uri = params.text_document.uri;
 
     let file_id = state.analysis.ensure_loaded(&state.documents, &uri);
