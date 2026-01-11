@@ -679,6 +679,7 @@ pub struct LoadedShardedIndexView {
 #[derive(Debug)]
 pub struct ShardedIndexView {
     shards: Vec<Option<LoadedShardIndexArchives>>,
+    invalidated_files: BTreeSet<String>,
 }
 
 impl ShardedIndexView {
@@ -692,6 +693,13 @@ impl ShardedIndexView {
         self.shards.get(shard_id as usize)?.as_ref()
     }
 
+    /// Returns `true` if `file` should be treated as stale and filtered out of
+    /// archived query results.
+    #[inline]
+    pub fn is_file_invalidated(&self, file: &str) -> bool {
+        self.invalidated_files.contains(file)
+    }
+
     /// Return all `SymbolLocation`s for `symbol` across all available shards.
     ///
     /// This is a convenience helper for consumers that want a global view without
@@ -699,15 +707,21 @@ impl ShardedIndexView {
     #[must_use]
     pub fn symbol_locations(&self, symbol: &str) -> Vec<SymbolLocation> {
         let mut out = Vec::new();
+        let invalidated_files = &self.invalidated_files;
         for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
             let Some(locations) = shard.symbols.symbols.get(symbol) else {
                 continue;
             };
-            out.extend(locations.iter().map(|loc| SymbolLocation {
-                file: loc.file.as_str().to_string(),
-                line: loc.line,
-                column: loc.column,
-            }));
+            out.extend(
+                locations
+                    .iter()
+                    .filter(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .map(|loc| SymbolLocation {
+                        file: loc.file.as_str().to_string(),
+                        line: loc.line,
+                        column: loc.column,
+                    }),
+            );
         }
         out
     }
@@ -715,15 +729,21 @@ impl ShardedIndexView {
     #[must_use]
     pub fn reference_locations(&self, symbol: &str) -> Vec<ReferenceLocation> {
         let mut out = Vec::new();
+        let invalidated_files = &self.invalidated_files;
         for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
             let Some(locations) = shard.references.references.get(symbol) else {
                 continue;
             };
-            out.extend(locations.iter().map(|loc| ReferenceLocation {
-                file: loc.file.as_str().to_string(),
-                line: loc.line,
-                column: loc.column,
-            }));
+            out.extend(
+                locations
+                    .iter()
+                    .filter(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .map(|loc| ReferenceLocation {
+                        file: loc.file.as_str().to_string(),
+                        line: loc.line,
+                        column: loc.column,
+                    }),
+            );
         }
         out
     }
@@ -731,15 +751,21 @@ impl ShardedIndexView {
     #[must_use]
     pub fn annotation_locations(&self, annotation: &str) -> Vec<AnnotationLocation> {
         let mut out = Vec::new();
+        let invalidated_files = &self.invalidated_files;
         for shard in self.shards.iter().filter_map(|s| s.as_ref()) {
             let Some(locations) = shard.annotations.annotations.get(annotation) else {
                 continue;
             };
-            out.extend(locations.iter().map(|loc| AnnotationLocation {
-                file: loc.file.as_str().to_string(),
-                line: loc.line,
-                column: loc.column,
-            }));
+            out.extend(
+                locations
+                    .iter()
+                    .filter(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .map(|loc| AnnotationLocation {
+                        file: loc.file.as_str().to_string(),
+                        line: loc.line,
+                        column: loc.column,
+                    }),
+            );
         }
         out
     }
@@ -1013,9 +1039,12 @@ pub fn load_sharded_index_view(
         return Ok(None);
     };
 
+    let invalidated_files_set = archives.invalidated_files.iter().cloned().collect();
+
     Ok(Some(LoadedShardedIndexView {
         view: ShardedIndexView {
             shards: archives.shards,
+            invalidated_files: invalidated_files_set,
         },
         invalidated_files: archives.invalidated_files,
         missing_shards: archives.missing_shards,
@@ -1034,9 +1063,12 @@ pub fn load_sharded_index_view_fast(
         return Ok(None);
     };
 
+    let invalidated_files_set = archives.invalidated_files.iter().cloned().collect();
+
     Ok(Some(LoadedShardedIndexView {
         view: ShardedIndexView {
             shards: archives.shards,
+            invalidated_files: invalidated_files_set,
         },
         invalidated_files: archives.invalidated_files,
         missing_shards: archives.missing_shards,

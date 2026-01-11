@@ -172,6 +172,74 @@ fn invalidated_files_map_to_affected_shards() {
 }
 
 #[test]
+fn sharded_index_view_filters_invalidated_files() {
+    let shard_count = 16;
+
+    let temp = tempfile::tempdir().unwrap();
+    let project_root = temp.path().join("project");
+    std::fs::create_dir_all(&project_root).unwrap();
+
+    let a = project_root.join("A.java");
+    let b = project_root.join("B.java");
+    std::fs::write(&a, "class A {}").unwrap();
+    std::fs::write(&b, "class B {}").unwrap();
+
+    let snapshot_v1 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from("A.java"), PathBuf::from("B.java")],
+    )
+    .unwrap();
+
+    let cache_dir = CacheDir::new(
+        &project_root,
+        CacheConfig {
+            cache_root_override: Some(temp.path().join("cache-root")),
+        },
+    )
+    .unwrap();
+
+    let mut shards = empty_shards(shard_count);
+    shards[shard_id_for_path("A.java", shard_count) as usize]
+        .symbols
+        .insert(
+            "A",
+            SymbolLocation {
+                file: "A.java".to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+    shards[shard_id_for_path("B.java", shard_count) as usize]
+        .symbols
+        .insert(
+            "B",
+            SymbolLocation {
+                file: "B.java".to_string(),
+                line: 1,
+                column: 1,
+            },
+        );
+    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, shards).unwrap();
+
+    // Modify A.java so it is marked invalidated, but keep shard files intact on disk.
+    std::fs::write(&a, "class A { void m() {} }").unwrap();
+    let snapshot_v2 = ProjectSnapshot::new(
+        &project_root,
+        vec![PathBuf::from("A.java"), PathBuf::from("B.java")],
+    )
+    .unwrap();
+
+    let loaded_v2 = load_sharded_index_view(&cache_dir, &snapshot_v2, shard_count)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_v2.invalidated_files, vec!["A.java".to_string()]);
+
+    // The view should hide stale locations from invalidated files without requiring deserialization.
+    assert!(loaded_v2.view.symbol_locations("A").is_empty());
+    assert_eq!(loaded_v2.view.symbol_locations("B").len(), 1);
+}
+
+#[test]
 fn corrupt_shard_is_partial_cache_miss() {
     let shard_count = 64;
 
