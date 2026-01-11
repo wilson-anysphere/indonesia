@@ -16,10 +16,10 @@
 use nova_apt::discover_generated_source_roots;
 use nova_core::ProjectId;
 use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
-use nova_types::{ClassId, Diagnostic, Span};
 use nova_framework_parse::{
     collect_annotations, find_named_child, node_text, parse_java, visit_nodes, ParsedAnnotation,
 };
+use nova_types::{ClassId, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tree_sitter::Node;
@@ -687,7 +687,10 @@ fn parse_mapping_annotation(annotation: &ParsedAnnotation) -> Option<PropertyMap
     })
 }
 
-fn annotation_string_value_span(annotation: &ParsedAnnotation, key: &str) -> Option<(String, Span)> {
+fn annotation_string_value_span(
+    annotation: &ParsedAnnotation,
+    key: &str,
+) -> Option<(String, Span)> {
     let haystack = annotation.text.as_str();
     let idx = haystack.find(key)?;
     let after_key = &haystack[idx + key.len()..];

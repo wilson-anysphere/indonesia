@@ -68,7 +68,10 @@ fn no_bean_diagnostic_triggers() {
 
     let analysis = analyze_java_sources(&[bar]);
     assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(analysis.diagnostics[0].diagnostic.code.as_ref(), SPRING_NO_BEAN);
+    assert_eq!(
+        analysis.diagnostics[0].diagnostic.code.as_ref(),
+        SPRING_NO_BEAN
+    );
     assert!(analysis.diagnostics[0]
         .diagnostic
         .message

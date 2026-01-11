@@ -22,7 +22,11 @@ fn discovers_project_root_for_maven_layout() {
 #[test]
 fn discovers_project_root_for_gradle_layout() {
     let dir = tempdir().unwrap();
-    std::fs::write(dir.path().join("settings.gradle"), "rootProject.name = 'demo'").unwrap();
+    std::fs::write(
+        dir.path().join("settings.gradle"),
+        "rootProject.name = 'demo'",
+    )
+    .unwrap();
 
     let java_file = dir.path().join("src/main/java/com/example/App.java");
     std::fs::create_dir_all(java_file.parent().unwrap()).unwrap();
@@ -117,4 +121,3 @@ fn spring_metadata_cache_ingests_metadata_from_dependency_jar() {
     let second = spring_metadata_index(dir.path());
     assert!(Arc::ptr_eq(&first, &second));
 }
-

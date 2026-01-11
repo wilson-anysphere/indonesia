@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use nova_types::{ClassKind, FieldStub, MethodStub, Type, TypeDefStub, TypeEnv, TypeProvider, WildcardBound};
+use nova_types::{
+    ClassKind, FieldStub, MethodStub, Type, TypeDefStub, TypeEnv, TypeProvider, WildcardBound,
+};
 use nova_types_bridge::ExternalTypeLoader;
 
 #[derive(Default)]
@@ -119,12 +121,8 @@ fn cycle_safe_loading() {
     };
 
     let mut provider = MapProvider::default();
-    provider
-        .stubs
-        .insert("com.example.A".to_string(), a_stub);
-    provider
-        .stubs
-        .insert("com.example.B".to_string(), b_stub);
+    provider.stubs.insert("com.example.A".to_string(), a_stub);
+    provider.stubs.insert("com.example.B".to_string(), b_stub);
 
     let mut store = nova_types::TypeStore::default();
     let mut loader = ExternalTypeLoader::new(&mut store, &provider);
@@ -194,7 +192,9 @@ fn parses_wildcard_type_arguments_in_field_signatures() {
 
     let expected = Type::class(
         list_id,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::TypeVar(t))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::TypeVar(t),
+        )))],
     );
     assert_eq!(field.ty, expected);
 }
@@ -250,7 +250,9 @@ fn resolves_self_referential_method_type_param_bounds() {
     assert_eq!(method.type_params.len(), 1);
     let t = method.type_params[0];
 
-    let tp = store.type_param(t).expect("method type param should be defined");
+    let tp = store
+        .type_param(t)
+        .expect("method type param should be defined");
     assert_eq!(
         tp.upper_bounds,
         vec![Type::class(comparable_id, vec![Type::TypeVar(t)])]

@@ -20,7 +20,9 @@ use once_cell::sync::Lazy;
 use tree_sitter::{Node, Parser};
 
 use nova_db::{Database as TextDatabase, FileId};
-use nova_framework::{AnalyzerRegistry, Database as FrameworkDatabase, MemoryDatabase, VirtualMember};
+use nova_framework::{
+    AnalyzerRegistry, Database as FrameworkDatabase, MemoryDatabase, VirtualMember,
+};
 use nova_framework_lombok::LombokAnalyzer;
 use nova_hir::framework::{Annotation, ClassData, ConstructorData, FieldData, MethodData};
 use nova_types::{ClassId, Parameter, PrimitiveType, Type};
@@ -85,7 +87,10 @@ pub(crate) fn complete_members(
     for method in &class_data.methods {
         kind_by_name.insert(method.name.clone(), MemberKind::Method);
     }
-    for vm in intel.registry.virtual_members_for_class(&intel.db, class_id) {
+    for vm in intel
+        .registry
+        .virtual_members_for_class(&intel.db, class_id)
+    {
         match vm {
             VirtualMember::Field(f) => {
                 kind_by_name.insert(f.name, MemberKind::Field);
@@ -106,7 +111,10 @@ pub(crate) fn complete_members(
         if !seen.insert(name.clone()) {
             continue;
         }
-        let kind = kind_by_name.get(&name).copied().unwrap_or(MemberKind::Method);
+        let kind = kind_by_name
+            .get(&name)
+            .copied()
+            .unwrap_or(MemberKind::Method);
         out.push(MemberCompletion { label: name, kind });
     }
     out
@@ -246,7 +254,11 @@ fn extract_classes_from_source(source: &str) -> (Vec<ClassData>, bool) {
     (classes, saw_lombok)
 }
 
-fn parse_class_declaration(node: Node<'_>, source: &str, saw_lombok: &mut bool) -> Option<ClassData> {
+fn parse_class_declaration(
+    node: Node<'_>,
+    source: &str,
+    saw_lombok: &mut bool,
+) -> Option<ClassData> {
     let modifiers = modifier_node(node);
     let annotations = modifiers
         .map(|m| collect_annotations(m, source))
@@ -477,7 +489,11 @@ fn parse_annotation_name(text: &str) -> Option<String> {
         .unwrap_or(name_part)
         .trim()
         .to_string();
-    if simple.is_empty() { None } else { Some(simple) }
+    if simple.is_empty() {
+        None
+    } else {
+        Some(simple)
+    }
 }
 
 fn is_lombok_annotation(name: &str) -> bool {

@@ -58,9 +58,7 @@ impl<'a> TextPos<'a> {
             return None;
         }
         let offset_u32: u32 = offset.try_into().ok()?;
-        let pos = self
-            .index
-            .position(self.text, TextSize::from(offset_u32));
+        let pos = self.index.position(self.text, TextSize::from(offset_u32));
         Some(LspPosition {
             line: pos.line,
             character: pos.character,
@@ -100,4 +98,3 @@ pub fn lsp_position(text: &str, offset: usize) -> Option<LspPosition> {
 pub fn byte_range(text: &str, range: LspRange) -> Option<ByteRange<usize>> {
     TextPos::new(text).byte_range(range)
 }
-

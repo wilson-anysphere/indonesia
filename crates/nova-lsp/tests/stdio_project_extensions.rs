@@ -1,7 +1,7 @@
 use nova_lsp::extensions::java::{JavaSourcePathsResponse, ResolveMainClassResponse};
 use nova_lsp::extensions::project::{
-    BuildSystemKind, ClasspathEntryKind, OutputDirKind, ProjectConfigurationResponse, SourceRootKind,
-    SourceRootOrigin,
+    BuildSystemKind, ClasspathEntryKind, OutputDirKind, ProjectConfigurationResponse,
+    SourceRootKind, SourceRootOrigin,
 };
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -182,14 +182,16 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
         config
             .classpath
             .iter()
-            .any(|entry| entry.kind == ClasspathEntryKind::Directory && entry.path == expected_main_out),
+            .any(|entry| entry.kind == ClasspathEntryKind::Directory
+                && entry.path == expected_main_out),
         "expected main output on classpath"
     );
     assert!(
         config
             .classpath
             .iter()
-            .any(|entry| entry.kind == ClasspathEntryKind::Directory && entry.path == expected_test_out),
+            .any(|entry| entry.kind == ClasspathEntryKind::Directory
+                && entry.path == expected_test_out),
         "expected test output on classpath"
     );
     assert!(
@@ -221,15 +223,22 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
     );
     let resp = read_jsonrpc_response_with_id(&mut stdout, 3);
     let result = resp.get("result").cloned().expect("result");
-    let sources: JavaSourcePathsResponse = serde_json::from_value(result).expect("decode source paths");
+    let sources: JavaSourcePathsResponse =
+        serde_json::from_value(result).expect("decode source paths");
 
     assert_eq!(sources.schema_version, 1);
     assert!(
-        sources.roots.iter().any(|r| r.kind == SourceRootKind::Main && r.path == expected_main_root),
+        sources
+            .roots
+            .iter()
+            .any(|r| r.kind == SourceRootKind::Main && r.path == expected_main_root),
         "expected main source root"
     );
     assert!(
-        sources.roots.iter().any(|r| r.kind == SourceRootKind::Test && r.path == expected_test_root),
+        sources
+            .roots
+            .iter()
+            .any(|r| r.kind == SourceRootKind::Test && r.path == expected_test_root),
         "expected test source root"
     );
 
@@ -259,7 +268,11 @@ fn stdio_server_handles_project_metadata_and_main_class_requests() {
     names.sort();
     assert_eq!(
         names,
-        vec!["com.example.Application", "com.example.Main", "com.example.OtherMain"]
+        vec![
+            "com.example.Application",
+            "com.example.Main",
+            "com.example.OtherMain"
+        ]
     );
 
     let app = mains

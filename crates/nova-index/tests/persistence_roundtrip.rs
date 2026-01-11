@@ -265,7 +265,10 @@ fn corrupt_metadata_is_cache_miss() {
 
     // Corrupt both the binary and JSON metadata so loading cannot fall back.
     let bin_path = cache_dir.metadata_bin_path();
-    let bin = std::fs::OpenOptions::new().write(true).open(&bin_path).unwrap();
+    let bin = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&bin_path)
+        .unwrap();
     bin.set_len(1).unwrap();
     std::fs::write(cache_dir.metadata_path(), "this is not json").unwrap();
 

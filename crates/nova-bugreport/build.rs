@@ -7,4 +7,3 @@ fn main() {
     println!("cargo:rustc-env=NOVA_BUGREPORT_TARGET_TRIPLE={target}");
     println!("cargo:rerun-if-env-changed=TARGET");
 }
-

@@ -154,11 +154,19 @@ fn fingerprint_ignores_misplaced_maven_wrapper_properties() {
 
     // Only `.mvn/wrapper/maven-wrapper.properties` should affect the fingerprint.
     let misplaced = root.join("maven-wrapper.properties");
-    std::fs::write(&misplaced, "distributionUrl=https://example.invalid/a.zip\n").unwrap();
+    std::fs::write(
+        &misplaced,
+        "distributionUrl=https://example.invalid/a.zip\n",
+    )
+    .unwrap();
 
     let fp1 =
         BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
-    std::fs::write(&misplaced, "distributionUrl=https://example.invalid/b.zip\n").unwrap();
+    std::fs::write(
+        &misplaced,
+        "distributionUrl=https://example.invalid/b.zip\n",
+    )
+    .unwrap();
     let fp2 =
         BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
 

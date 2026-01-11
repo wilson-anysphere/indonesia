@@ -3,7 +3,10 @@ use nova_types::{Diagnostic, Span};
 use crate::language_level::{FeatureAvailability, JavaFeature, JavaLanguageLevel};
 use crate::{SyntaxKind, SyntaxNode, SyntaxToken};
 
-pub(crate) fn feature_gate_diagnostics(root: &SyntaxNode, level: JavaLanguageLevel) -> Vec<Diagnostic> {
+pub(crate) fn feature_gate_diagnostics(
+    root: &SyntaxNode,
+    level: JavaLanguageLevel,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     gate_modules(root, level, &mut diagnostics);
@@ -44,7 +47,10 @@ fn gate_records(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagn
         return;
     }
 
-    for node in root.descendants().filter(|n| n.kind() == SyntaxKind::RecordDeclaration) {
+    for node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::RecordDeclaration)
+    {
         let Some(record_kw) = node
             .children_with_tokens()
             .filter_map(|e| e.into_token())
@@ -120,13 +126,20 @@ fn gate_switch_expressions(root: &SyntaxNode, level: JavaLanguageLevel, out: &mu
         .filter_map(|e| e.into_token())
         .filter(|t| t.kind() == SyntaxKind::Arrow)
     {
-        if tok.parent().map_or(false, |p| p.kind() == SyntaxKind::SwitchLabel) {
+        if tok
+            .parent()
+            .map_or(false, |p| p.kind() == SyntaxKind::SwitchLabel)
+        {
             out.push(feature_error(level, JavaFeature::SwitchExpressions, &tok));
         }
     }
 }
 
-fn gate_pattern_matching_switch(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+fn gate_pattern_matching_switch(
+    root: &SyntaxNode,
+    level: JavaLanguageLevel,
+    out: &mut Vec<Diagnostic>,
+) {
     if level.is_enabled(JavaFeature::PatternMatchingSwitch) {
         return;
     }
@@ -136,7 +149,10 @@ fn gate_pattern_matching_switch(root: &SyntaxNode, level: JavaLanguageLevel, out
     // - null labels (`case null ->`) / `case null, default ->`
     // - `default` as a case label element (distinct from a `default:` label)
     // - guards (`when <expr>`)
-    for label in root.descendants().filter(|n| n.kind() == SyntaxKind::SwitchLabel) {
+    for label in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::SwitchLabel)
+    {
         let Some(first_tok) = label
             .children_with_tokens()
             .filter_map(|e| e.into_token())
@@ -155,7 +171,11 @@ fn gate_pattern_matching_switch(root: &SyntaxNode, level: JavaLanguageLevel, out
             .filter(|n| n.kind() == SyntaxKind::Pattern)
             .find_map(|n| first_token(&n));
         if let Some(tok) = pattern_tok {
-            out.push(feature_error(level, JavaFeature::PatternMatchingSwitch, &tok));
+            out.push(feature_error(
+                level,
+                JavaFeature::PatternMatchingSwitch,
+                &tok,
+            ));
             continue;
         }
 
@@ -164,7 +184,11 @@ fn gate_pattern_matching_switch(root: &SyntaxNode, level: JavaLanguageLevel, out
             .filter(|n| n.kind() == SyntaxKind::Guard)
             .find_map(|n| first_token(&n));
         if let Some(tok) = guard_tok {
-            out.push(feature_error(level, JavaFeature::PatternMatchingSwitch, &tok));
+            out.push(feature_error(
+                level,
+                JavaFeature::PatternMatchingSwitch,
+                &tok,
+            ));
             continue;
         }
 
@@ -176,7 +200,10 @@ fn gate_pattern_matching_switch(root: &SyntaxNode, level: JavaLanguageLevel, out
         {
             // If this element includes a Pattern, it would have been caught above; ignore `null`
             // literals inside e.g. guard expressions.
-            if element.descendants().any(|n| n.kind() == SyntaxKind::Pattern) {
+            if element
+                .descendants()
+                .any(|n| n.kind() == SyntaxKind::Pattern)
+            {
                 continue;
             }
 
@@ -185,7 +212,11 @@ fn gate_pattern_matching_switch(root: &SyntaxNode, level: JavaLanguageLevel, out
                 .filter_map(|e| e.into_token())
                 .find(|t| matches!(t.kind(), SyntaxKind::NullKw | SyntaxKind::DefaultKw));
             if let Some(tok) = tok {
-                out.push(feature_error(level, JavaFeature::PatternMatchingSwitch, &tok));
+                out.push(feature_error(
+                    level,
+                    JavaFeature::PatternMatchingSwitch,
+                    &tok,
+                ));
                 break;
             }
         }
@@ -197,7 +228,10 @@ fn gate_record_patterns(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut V
         return;
     }
 
-    for node in root.descendants().filter(|n| n.kind() == SyntaxKind::RecordPattern) {
+    for node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::RecordPattern)
+    {
         let Some(tok) = first_token(&node) else {
             continue;
         };
@@ -215,7 +249,10 @@ fn gate_pattern_matching_instanceof(
     }
 
     // `x instanceof Type binding`
-    for pattern in root.descendants().filter(|n| n.kind() == SyntaxKind::Pattern) {
+    for pattern in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::Pattern)
+    {
         let Some(parent) = pattern.parent() else {
             continue;
         };
@@ -234,11 +271,19 @@ fn gate_pattern_matching_instanceof(
         let Some(tok) = first_token(&pattern) else {
             continue;
         };
-        out.push(feature_error(level, JavaFeature::PatternMatchingInstanceof, &tok));
+        out.push(feature_error(
+            level,
+            JavaFeature::PatternMatchingInstanceof,
+            &tok,
+        ));
     }
 }
 
-fn gate_var_local_inference(root: &SyntaxNode, level: JavaLanguageLevel, out: &mut Vec<Diagnostic>) {
+fn gate_var_local_inference(
+    root: &SyntaxNode,
+    level: JavaLanguageLevel,
+    out: &mut Vec<Diagnostic>,
+) {
     if level.is_enabled(JavaFeature::VarLocalInference) {
         return;
     }
@@ -251,30 +296,50 @@ fn gate_var_local_inference(root: &SyntaxNode, level: JavaLanguageLevel, out: &m
         let Some(var_kw) = var_type_keyword(&node) else {
             continue;
         };
-        out.push(feature_error(level, JavaFeature::VarLocalInference, &var_kw));
+        out.push(feature_error(
+            level,
+            JavaFeature::VarLocalInference,
+            &var_kw,
+        ));
     }
 
     // try-with-resources: `try (var x = ...) { ... }`
-    for node in root.descendants().filter(|n| n.kind() == SyntaxKind::Resource) {
+    for node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::Resource)
+    {
         let Some(var_kw) = var_type_keyword(&node) else {
             continue;
         };
-        out.push(feature_error(level, JavaFeature::VarLocalInference, &var_kw));
+        out.push(feature_error(
+            level,
+            JavaFeature::VarLocalInference,
+            &var_kw,
+        ));
     }
 
     // for headers: `for (var i = 0; ...; ...)` / `for (var x : xs)`
-    for node in root.descendants().filter(|n| n.kind() == SyntaxKind::ForHeader) {
+    for node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::ForHeader)
+    {
         let Some(var_kw) = var_type_keyword(&node) else {
             continue;
         };
-        out.push(feature_error(level, JavaFeature::VarLocalInference, &var_kw));
+        out.push(feature_error(
+            level,
+            JavaFeature::VarLocalInference,
+            &var_kw,
+        ));
     }
 }
 
 fn var_type_keyword(container: &SyntaxNode) -> Option<SyntaxToken> {
     // We only want the *declaration type* (`Type` node that is a direct child of
     // the container), not nested `Type` nodes within e.g. cast expressions.
-    let ty = container.children().find(|n| n.kind() == SyntaxKind::Type)?;
+    let ty = container
+        .children()
+        .find(|n| n.kind() == SyntaxKind::Type)?;
 
     let first = ty
         .descendants_with_tokens()
@@ -287,8 +352,16 @@ fn var_type_keyword(container: &SyntaxNode) -> Option<SyntaxToken> {
     Some(first)
 }
 
-fn feature_error(level: JavaLanguageLevel, feature: JavaFeature, token: &SyntaxToken) -> Diagnostic {
-    Diagnostic::error(feature.diagnostic_code(), feature_message(level, feature), Some(span(token)))
+fn feature_error(
+    level: JavaLanguageLevel,
+    feature: JavaFeature,
+    token: &SyntaxToken,
+) -> Diagnostic {
+    Diagnostic::error(
+        feature.diagnostic_code(),
+        feature_message(level, feature),
+        Some(span(token)),
+    )
 }
 
 fn first_token(node: &SyntaxNode) -> Option<SyntaxToken> {
@@ -308,7 +381,10 @@ fn feature_message(level: JavaLanguageLevel, feature: JavaFeature) -> String {
     match level.availability(feature) {
         FeatureAvailability::Stable => {
             // Only called for disabled features.
-            format!("{} is enabled in this language level", feature.display_name())
+            format!(
+                "{} is enabled in this language level",
+                feature.display_name()
+            )
         }
         FeatureAvailability::Preview => format!(
             "{} is a preview feature in Java {} and requires --enable-preview",

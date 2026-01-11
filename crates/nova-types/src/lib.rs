@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 pub mod java;
 
 pub use java::format::{
-    format_method_signature, format_resolved_method, format_type, MethodSignatureDisplay, ResolvedMethodDisplay,
-    TypeDisplay,
+    format_method_signature, format_resolved_method, format_type, MethodSignatureDisplay,
+    ResolvedMethodDisplay, TypeDisplay,
 };
 mod type_loader;
 
@@ -2051,7 +2051,10 @@ fn reference_castability(env: &dyn TypeEnv, from: &Type, to: &Type) -> Castabili
         (Type::Array(_), _) | (_, Type::Array(_)) => Castability::No,
 
         // Classes / interfaces.
-        (Type::Class(ClassType { def: from_def, .. }), Type::Class(ClassType { def: to_def, .. })) => {
+        (
+            Type::Class(ClassType { def: from_def, .. }),
+            Type::Class(ClassType { def: to_def, .. }),
+        ) => {
             let Some(from_kind) = env.class(*from_def).map(|c| c.kind) else {
                 return Castability::Uncertain;
             };
@@ -2111,10 +2114,14 @@ pub fn conversion_cost(conv: &Conversion) -> ConversionCost {
     for step in &conv.steps {
         let step_cost = match step {
             ConversionStep::Identity => ConversionCost::Identity,
-            ConversionStep::WideningPrimitive | ConversionStep::WideningReference => ConversionCost::Widening,
+            ConversionStep::WideningPrimitive | ConversionStep::WideningReference => {
+                ConversionCost::Widening
+            }
             ConversionStep::Boxing | ConversionStep::Unboxing => ConversionCost::Boxing,
             ConversionStep::Unchecked => ConversionCost::Unchecked,
-            ConversionStep::NarrowingPrimitive | ConversionStep::NarrowingReference => ConversionCost::Narrowing,
+            ConversionStep::NarrowingPrimitive | ConversionStep::NarrowingReference => {
+                ConversionCost::Narrowing
+            }
         };
         cost = cost.max(step_cost);
     }
@@ -3622,7 +3629,11 @@ fn total_conversion_score(method: &ResolvedMethod) -> u32 {
     method.conversions.iter().map(conversion_score).sum()
 }
 
-fn rank_resolved_methods(_env: &dyn TypeEnv, call: &MethodCall<'_>, methods: &mut [ResolvedMethod]) {
+fn rank_resolved_methods(
+    _env: &dyn TypeEnv,
+    call: &MethodCall<'_>,
+    methods: &mut [ResolvedMethod],
+) {
     methods.sort_by(|a, b| {
         let ka = (
             u8::from(call.call_kind == CallKind::Instance && a.is_static),

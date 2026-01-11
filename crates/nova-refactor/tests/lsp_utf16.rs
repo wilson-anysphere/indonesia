@@ -75,4 +75,3 @@ fn workspace_edit_to_lsp_does_not_treat_character_as_utf8_bytes() {
     assert_eq!(range.end.line, expected_end.line);
     assert_eq!(range.end.character, expected_end.character);
 }
-

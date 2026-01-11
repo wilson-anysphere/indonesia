@@ -91,14 +91,8 @@ fn stdio_server_completion_replaces_prefix_and_supports_resolve() {
     );
 
     // Cursor after `len`.
-    let cursor_offset = source
-        .find("s.len")
-        .expect("contains s.len")
-        + "s.len".len();
-    let prefix_start_offset = source
-        .find("s.len")
-        .expect("contains s.len")
-        + "s.".len();
+    let cursor_offset = source.find("s.len").expect("contains s.len") + "s.len".len();
+    let prefix_start_offset = source.find("s.len").expect("contains s.len") + "s.".len();
 
     let index = nova_core::LineIndex::new(source);
     let cursor_pos = index.position(source, nova_core::TextSize::from(cursor_offset as u32));
@@ -140,7 +134,10 @@ fn stdio_server_completion_replaces_prefix_and_supports_resolve() {
         CompletionTextEdit::InsertAndReplace(edit) => (edit.replace, edit.new_text),
     };
 
-    let expected_start = index.position(source, nova_core::TextSize::from(prefix_start_offset as u32));
+    let expected_start = index.position(
+        source,
+        nova_core::TextSize::from(prefix_start_offset as u32),
+    );
     let expected_start = lsp_types::Position::new(expected_start.line, expected_start.character);
 
     assert_eq!(range.start, expected_start);
@@ -160,7 +157,8 @@ fn stdio_server_completion_replaces_prefix_and_supports_resolve() {
 
     let resolved_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
     let resolved = resolved_resp.get("result").cloned().expect("result");
-    let resolved: CompletionItem = serde_json::from_value(resolved).expect("resolved completion item");
+    let resolved: CompletionItem =
+        serde_json::from_value(resolved).expect("resolved completion item");
 
     assert!(
         resolved.documentation.is_some() || resolved.detail.is_some(),

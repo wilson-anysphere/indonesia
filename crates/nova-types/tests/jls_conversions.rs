@@ -102,22 +102,14 @@ fn assignment_allows_constant_narrowing() {
 
     assert!(assignment_conversion(&env, &int_ty, &byte_ty).is_none());
 
-    let conv = assignment_conversion_with_const(
-        &env,
-        &int_ty,
-        &byte_ty,
-        Some(ConstValue::Int(1)),
-    )
-    .unwrap();
+    let conv = assignment_conversion_with_const(&env, &int_ty, &byte_ty, Some(ConstValue::Int(1)))
+        .unwrap();
     assert_eq!(conv.steps, vec![ConversionStep::NarrowingPrimitive]);
 
-    assert!(assignment_conversion_with_const(
-        &env,
-        &int_ty,
-        &byte_ty,
-        Some(ConstValue::Int(128)),
-    )
-    .is_none());
+    assert!(
+        assignment_conversion_with_const(&env, &int_ty, &byte_ty, Some(ConstValue::Int(128)),)
+            .is_none()
+    );
 }
 
 #[test]

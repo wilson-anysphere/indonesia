@@ -371,7 +371,10 @@ impl WorkspaceProjectModel {
             if path.starts_with(&entry.path) {
                 let module = &self.modules[entry.module_index];
                 let source_root = &module.source_roots[entry.source_root_index];
-                return Some(WorkspaceModuleForPath { module, source_root });
+                return Some(WorkspaceModuleForPath {
+                    module,
+                    source_root,
+                });
             }
         }
 
@@ -402,7 +405,11 @@ impl WorkspaceProjectModel {
             b.path_components
                 .cmp(&a.path_components)
                 .then_with(|| a.path.cmp(&b.path))
-                .then_with(|| self.modules[a.module_index].id.cmp(&self.modules[b.module_index].id))
+                .then_with(|| {
+                    self.modules[a.module_index]
+                        .id
+                        .cmp(&self.modules[b.module_index].id)
+                })
                 .then_with(|| {
                     let a_root = &self.modules[a.module_index].source_roots[a.source_root_index];
                     let b_root = &self.modules[b.module_index].source_roots[b.source_root_index];

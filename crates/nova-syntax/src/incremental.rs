@@ -82,7 +82,10 @@ pub fn reparse_java(
     errors.extend(offset_errors(fragment.errors, plan.new_range.start));
     errors.sort_by_key(|e| (e.range.start, e.range.end));
 
-    let result = JavaParseResult { green: new_green, errors };
+    let result = JavaParseResult {
+        green: new_green,
+        errors,
+    };
 
     #[cfg(debug_assertions)]
     {
@@ -101,7 +104,9 @@ pub fn parse_java_incremental(
     new_text: &str,
 ) -> JavaParseResult {
     match (old, edit) {
-        (Some((old_parse, old_text)), Some(edit)) => reparse_java(old_parse, old_text, edit, new_text),
+        (Some((old_parse, old_text)), Some(edit)) => {
+            reparse_java(old_parse, old_text, edit, new_text)
+        }
         _ => parse_java(new_text),
     }
 }

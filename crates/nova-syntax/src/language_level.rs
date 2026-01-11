@@ -204,17 +204,17 @@ impl Default for JavaLanguageLevel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JavaFeature {
-    Modules,               // Java 9+
-    VarLocalInference,     // Java 10+
-    SwitchExpressions,     // final Java 14 (preview earlier in javac, ignored here)
-    TextBlocks,            // final Java 15
+    Modules,                   // Java 9+
+    VarLocalInference,         // Java 10+
+    SwitchExpressions,         // final Java 14 (preview earlier in javac, ignored here)
+    TextBlocks,                // final Java 15
     PatternMatchingInstanceof, // final Java 16 (preview 14/15)
-    Records,               // final Java 16 (preview 14/15)
-    SealedClasses,         // final Java 17 (preview 15/16)
-    PatternMatchingSwitch, // final Java 21 (preview 17-20)
-    RecordPatterns,        // final Java 21 (preview earlier)
-    UnnamedVariables,      // Java 22+ (preview in 21)
-    StringTemplates,       // Java 21+ (preview)
+    Records,                   // final Java 16 (preview 14/15)
+    SealedClasses,             // final Java 17 (preview 15/16)
+    PatternMatchingSwitch,     // final Java 21 (preview 17-20)
+    RecordPatterns,            // final Java 21 (preview earlier)
+    UnnamedVariables,          // Java 22+ (preview in 21)
+    StringTemplates,           // Java 21+ (preview)
 }
 
 impl JavaFeature {

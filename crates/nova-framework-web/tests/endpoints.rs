@@ -76,11 +76,15 @@ public class UserController
 }
 "#;
 
-    let endpoints = extract_spring_mvc_endpoints(&[(src, Some(PathBuf::from("UserController.java")))]);
+    let endpoints =
+        extract_spring_mvc_endpoints(&[(src, Some(PathBuf::from("UserController.java")))]);
     assert_eq!(endpoints.len(), 1);
     assert_eq!(endpoints[0].path, "/api/users");
     assert_eq!(endpoints[0].methods, vec!["GET".to_string()]);
-    assert_eq!(endpoints[0].handler.file, Some(PathBuf::from("UserController.java")));
+    assert_eq!(
+        endpoints[0].handler.file,
+        Some(PathBuf::from("UserController.java"))
+    );
     assert_eq!(endpoints[0].handler.line, 8);
 }
 
@@ -97,11 +101,15 @@ public class UserController {
 }
 "#;
 
-    let endpoints = extract_spring_mvc_endpoints(&[(src, Some(PathBuf::from("UserController.java")))]);
+    let endpoints =
+        extract_spring_mvc_endpoints(&[(src, Some(PathBuf::from("UserController.java")))]);
     assert_eq!(endpoints.len(), 1);
     assert_eq!(endpoints[0].path, "/api/users");
     assert_eq!(endpoints[0].methods, vec!["GET".to_string()]);
-    assert_eq!(endpoints[0].handler.file, Some(PathBuf::from("UserController.java")));
+    assert_eq!(
+        endpoints[0].handler.file,
+        Some(PathBuf::from("UserController.java"))
+    );
     assert_eq!(endpoints[0].handler.line, 8);
 }
 
@@ -157,6 +165,9 @@ public class HelloController
     assert_eq!(endpoints.len(), 1);
     assert_eq!(endpoints[0].path, "/api/hello");
     assert_eq!(endpoints[0].methods, vec!["GET".to_string()]);
-    assert_eq!(endpoints[0].handler.file, Some(PathBuf::from("HelloController.java")));
+    assert_eq!(
+        endpoints[0].handler.file,
+        Some(PathBuf::from("HelloController.java"))
+    );
     assert_eq!(endpoints[0].handler.line, 7);
 }

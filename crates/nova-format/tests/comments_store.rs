@@ -161,4 +161,3 @@ fn blank_line_metadata_is_detected() {
 
     store.assert_drained();
 }
-

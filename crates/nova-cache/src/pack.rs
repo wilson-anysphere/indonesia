@@ -613,14 +613,13 @@ mod tests {
             cache_dir.queries_dir().join("types.cache.tmp.123.0"),
             b"tmp",
         )?;
-        std::fs::write(
-            cache_dir.ast_dir().join("metadata.bin.tmp.123.0"),
-            b"tmp",
-        )?;
+        std::fs::write(cache_dir.ast_dir().join("metadata.bin.tmp.123.0"), b"tmp")?;
 
         let files = collect_cache_files(cache_dir.root())?;
         assert!(
-            !files.iter().any(|path| path.to_string_lossy().contains(".tmp.")),
+            !files
+                .iter()
+                .any(|path| path.to_string_lossy().contains(".tmp.")),
             "collect_cache_files included atomic-write tempfiles: {files:?}"
         );
         Ok(())

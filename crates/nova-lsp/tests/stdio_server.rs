@@ -100,10 +100,16 @@ fn stdio_server_handles_metrics_request() {
         .get("requestCount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    assert!(request_count > 0, "expected requestCount > 0, got: {resp:#}");
+    assert!(
+        request_count > 0,
+        "expected requestCount > 0, got: {resp:#}"
+    );
 
     // shutdown + exit
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
@@ -509,7 +515,9 @@ fn stdio_server_handles_completion_and_more_completions_request() {
         .and_then(|v| v.as_array())
         .expect("completion items array");
 
-    assert!(items.iter().any(|item| item.get("label").and_then(|v| v.as_str()) == Some("length")));
+    assert!(items
+        .iter()
+        .any(|item| item.get("label").and_then(|v| v.as_str()) == Some("length")));
 
     let context_id = items
         .iter()
@@ -534,13 +542,15 @@ fn stdio_server_handles_completion_and_more_completions_request() {
     let more_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
     assert_eq!(
-        more_result.get("items").and_then(|v| v.as_array()).unwrap().len(),
+        more_result
+            .get("items")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .len(),
         0
     );
     assert_eq!(
-        more_result
-            .get("is_incomplete")
-            .and_then(|v| v.as_bool()),
+        more_result.get("is_incomplete").and_then(|v| v.as_bool()),
         Some(false)
     );
 

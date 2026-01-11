@@ -121,10 +121,7 @@ fn diagnostics_sarif_emits_results() {
 
     let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let results = v["runs"][0]["results"].as_array().unwrap();
-    assert!(
-        !results.is_empty(),
-        "expected SARIF results, got: {v:#}"
-    );
+    assert!(!results.is_empty(), "expected SARIF results, got: {v:#}");
 }
 
 #[test]

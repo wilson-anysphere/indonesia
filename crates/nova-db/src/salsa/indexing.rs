@@ -55,7 +55,10 @@ fn file_fingerprint(db: &dyn NovaIndexing, file: FileId) -> Arc<Fingerprint> {
     result
 }
 
-fn project_file_fingerprints(db: &dyn NovaIndexing, project: ProjectId) -> Arc<BTreeMap<String, Fingerprint>> {
+fn project_file_fingerprints(
+    db: &dyn NovaIndexing,
+    project: ProjectId,
+) -> Arc<BTreeMap<String, Fingerprint>> {
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
@@ -136,7 +139,10 @@ fn project_indexes(db: &dyn NovaIndexing, project: ProjectId) -> Arc<ProjectInde
     let loaded = if persistence.mode().allows_read() {
         match cache_dir {
             Some(cache_dir) => {
-                match nova_index::load_indexes_with_fingerprints(cache_dir, file_fingerprints.as_ref()) {
+                match nova_index::load_indexes_with_fingerprints(
+                    cache_dir,
+                    file_fingerprints.as_ref(),
+                ) {
                     Ok(Some(loaded)) => {
                         db.record_disk_cache_hit("project_indexes");
                         Some(loaded)

@@ -210,8 +210,10 @@ fn command_output(mut command: Command) -> Result<std::process::Output> {
 fn should_retry_spawn(err: &std::io::Error) -> bool {
     // Under high system load `spawn()` can fail with EAGAIN ("Resource temporarily unavailable").
     // Retrying keeps the runner resilient in constrained environments (including CI).
-    matches!(err.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted)
-        || err.raw_os_error() == Some(11)
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+    ) || err.raw_os_error() == Some(11)
 }
 
 fn collect_and_parse_reports(

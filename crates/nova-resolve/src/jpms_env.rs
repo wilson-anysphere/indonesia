@@ -163,11 +163,8 @@ pub fn build_jpms_compilation_environment_for_project(
         .iter()
         .map(ClasspathEntry::from)
         .collect();
-    let classpath_entries: Vec<ClasspathEntry> = project
-        .classpath
-        .iter()
-        .map(ClasspathEntry::from)
-        .collect();
+    let classpath_entries: Vec<ClasspathEntry> =
+        project.classpath.iter().map(ClasspathEntry::from).collect();
 
     build_jpms_compilation_environment(
         jdk,
@@ -361,7 +358,10 @@ mod tests {
         .unwrap();
 
         let module = ModuleName::new("example.mod");
-        let info = env.graph.get(&module).expect("workspace module should exist");
+        let info = env
+            .graph
+            .get(&module)
+            .expect("workspace module should exist");
         assert_eq!(info.kind, ModuleKind::Explicit);
         assert!(info.exports.iter().any(|e| e.package == "workspace.pkg"));
     }
@@ -392,14 +392,9 @@ mod tests {
         let classpath = [ClasspathEntry::Jar(test_dep_jar())];
 
         let jdk = JdkIndex::new();
-        let env = build_jpms_compilation_environment(
-            &jdk,
-            Some(&ws),
-            &module_path,
-            &classpath,
-            None,
-        )
-        .unwrap();
+        let env =
+            build_jpms_compilation_environment(&jdk, Some(&ws), &module_path, &classpath, None)
+                .unwrap();
 
         // Module-path jar should have module metadata.
         let module = env
@@ -471,14 +466,9 @@ mod tests {
         let classpath: [ClasspathEntry; 0] = [];
 
         let jdk = JdkIndex::new();
-        let env = build_jpms_compilation_environment(
-            &jdk,
-            Some(&ws),
-            &module_path,
-            &classpath,
-            None,
-        )
-        .unwrap();
+        let env =
+            build_jpms_compilation_environment(&jdk, Some(&ws), &module_path, &classpath, None)
+                .unwrap();
 
         let ty = QualifiedName::from_dotted("com.example.dep.Foo");
 

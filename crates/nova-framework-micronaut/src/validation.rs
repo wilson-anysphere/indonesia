@@ -1,6 +1,6 @@
 use crate::parse::{
-    clean_type, collect_annotations, infer_field_type_node, infer_param_type_node,
-    modifier_node, node_text, parse_java, simple_name, visit_nodes,
+    clean_type, collect_annotations, infer_field_type_node, infer_param_type_node, modifier_node,
+    node_text, parse_java, simple_name, visit_nodes,
 };
 use crate::FileDiagnostic;
 use crate::JavaSource;

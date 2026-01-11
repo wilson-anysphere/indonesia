@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::fmt;
 
 use nova_classfile::{
-    parse_class_signature, parse_method_descriptor, parse_method_signature, BaseType, ClassTypeSignature,
-    FieldType, ReturnType, TypeArgument, TypeParameter, TypeSignature,
+    parse_class_signature, parse_method_descriptor, parse_method_signature, BaseType,
+    ClassTypeSignature, FieldType, ReturnType, TypeArgument, TypeParameter, TypeSignature,
 };
 
 use crate::{
-    ClassDef, ClassId, ClassKind, MethodDef, MethodStub, PrimitiveType, Type, TypeDefStub, TypeProvider,
-    TypeEnv, TypeStore, TypeVarId, WellKnownTypes, WildcardBound,
+    ClassDef, ClassId, ClassKind, MethodDef, MethodStub, PrimitiveType, Type, TypeDefStub, TypeEnv,
+    TypeProvider, TypeStore, TypeVarId, WellKnownTypes, WildcardBound,
 };
 
 #[derive(Debug)]
@@ -22,7 +22,9 @@ impl fmt::Display for TypeLoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TypeLoadError::MissingType(name) => write!(f, "missing type stub for `{name}`"),
-            TypeLoadError::WellKnownNotBootstrapped => write!(f, "well-known types not bootstrapped"),
+            TypeLoadError::WellKnownNotBootstrapped => {
+                write!(f, "well-known types not bootstrapped")
+            }
             TypeLoadError::Classfile(err) => write!(f, "{err}"),
         }
     }
@@ -161,7 +163,11 @@ impl<'a> TypeStoreLoader<'a> {
         Ok(Type::class(self.well_known()?.object, vec![]))
     }
 
-    fn build_class_def(&mut self, binary_name: &str, stub: &TypeDefStub) -> Result<ClassDef, TypeLoadError> {
+    fn build_class_def(
+        &mut self,
+        binary_name: &str,
+        stub: &TypeDefStub,
+    ) -> Result<ClassDef, TypeLoadError> {
         let kind = if stub.access_flags & 0x0200 != 0 {
             ClassKind::Interface
         } else {
@@ -176,7 +182,9 @@ impl<'a> TypeStoreLoader<'a> {
             let sig = parse_class_signature(sig)?;
 
             for tp in &sig.type_parameters {
-                let id = self.store.add_type_param(tp.name.clone(), vec![object.clone()]);
+                let id = self
+                    .store
+                    .add_type_param(tp.name.clone(), vec![object.clone()]);
                 type_vars.insert(tp.name.clone(), id);
                 type_params.push(id);
             }
@@ -254,7 +262,9 @@ impl<'a> TypeStoreLoader<'a> {
             let mut type_params = Vec::new();
 
             for tp in &sig.type_parameters {
-                let id = self.store.add_type_param(tp.name.clone(), vec![object.clone()]);
+                let id = self
+                    .store
+                    .add_type_param(tp.name.clone(), vec![object.clone()]);
                 type_vars.insert(tp.name.clone(), id);
                 type_params.push(id);
             }
@@ -360,7 +370,11 @@ impl<'a> TypeStoreLoader<'a> {
         self.class_name_to_type(&binary_name, args)
     }
 
-    fn class_name_to_type(&mut self, binary_name: &str, args: Vec<Type>) -> Result<Type, TypeLoadError> {
+    fn class_name_to_type(
+        &mut self,
+        binary_name: &str,
+        args: Vec<Type>,
+    ) -> Result<Type, TypeLoadError> {
         match self.ensure_class(binary_name) {
             Ok(id) => Ok(Type::class(id, args)),
             Err(TypeLoadError::MissingType(_)) => Ok(Type::Named(binary_name.to_string())),
@@ -392,7 +406,9 @@ impl<'a> TypeStoreLoader<'a> {
     ) -> Result<Type, TypeLoadError> {
         Ok(match sig {
             TypeSignature::Base(base) => Type::Primitive(map_primitive(*base)),
-            TypeSignature::Array(elem) => Type::Array(Box::new(self.type_sig_to_type(elem, type_vars)?)),
+            TypeSignature::Array(elem) => {
+                Type::Array(Box::new(self.type_sig_to_type(elem, type_vars)?))
+            }
             TypeSignature::Class(cls) => self.class_sig_to_type(cls, type_vars)?,
             TypeSignature::TypeVariable(name) => type_vars
                 .get(name)

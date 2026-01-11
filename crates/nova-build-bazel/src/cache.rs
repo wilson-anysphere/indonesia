@@ -4,8 +4,7 @@ use blake3::Hash;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    fs,
-    io,
+    fs, io,
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -143,7 +142,10 @@ impl BazelCache {
         let data = serde_json::to_string_pretty(self)?;
 
         let (tmp_path, mut file) = open_unique_tmp_file(path, parent)?;
-        if let Err(err) = file.write_all(data.as_bytes()).and_then(|()| file.sync_all()) {
+        if let Err(err) = file
+            .write_all(data.as_bytes())
+            .and_then(|()| file.sync_all())
+        {
             drop(file);
             let _ = fs::remove_file(&tmp_path);
             return Err(err.into());
@@ -240,9 +242,9 @@ fn digest_files(files: &[FileDigest]) -> Result<Vec<FileDigest>> {
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
-    let file_name = dest.file_name().ok_or_else(|| {
-        io::Error::other("destination path has no file name")
-    })?;
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| io::Error::other("destination path has no file name"))?;
     let pid = std::process::id();
 
     loop {

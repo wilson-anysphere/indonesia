@@ -1,7 +1,8 @@
 use nova_index::{Index, SymbolKind};
 use nova_refactor::{
-    apply_text_edits, change_signature, workspace_edit_to_lsp, ChangeSignature, ChangeSignatureConflict,
-    FileOp, HierarchyPropagation, ParameterOperation, WorkspaceEdit, WorkspaceTextEdit,
+    apply_text_edits, change_signature, workspace_edit_to_lsp, ChangeSignature,
+    ChangeSignatureConflict, FileOp, HierarchyPropagation, ParameterOperation, WorkspaceEdit,
+    WorkspaceTextEdit,
 };
 use nova_types::MethodId;
 use pretty_assertions::assert_eq;

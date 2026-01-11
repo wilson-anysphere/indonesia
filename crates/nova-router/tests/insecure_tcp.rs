@@ -1,7 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
-use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, TcpListenAddr, WorkspaceLayout};
+use nova_router::{
+    DistributedRouterConfig, ListenAddr, QueryRouter, TcpListenAddr, WorkspaceLayout,
+};
 
 #[tokio::test]
 async fn refuses_plain_tcp_on_non_loopback_by_default() {

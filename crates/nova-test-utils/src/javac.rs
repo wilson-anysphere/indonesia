@@ -123,10 +123,8 @@ fn run_javac_dir<'a>(
         cmd.arg("--enable-preview");
     }
     if !opts.classpath.is_empty() {
-        let joined =
-            std::env::join_paths(opts.classpath.iter()).map_err(|err| {
-                io::Error::new(io::ErrorKind::InvalidInput, err)
-            })?;
+        let joined = std::env::join_paths(opts.classpath.iter())
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
         cmd.arg("-classpath");
         cmd.arg(joined);
     }
@@ -242,14 +240,15 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
     while n1_start > 0 && bytes[n1_start - 1].is_ascii_digit() {
         n1_start -= 1;
     }
-    let (file_end_colon, line_no, col_no) = if n1_start < n1_end && n1_start > 0 && bytes[n1_start - 1] == b':' {
-        // file:line:col:
-        let line_no: usize = line[n1_start..n1_end].parse().ok()?;
-        (n1_start - 1, line_no, n2)
-    } else {
-        // file:line:
-        (sep2, n2, 0)
-    };
+    let (file_end_colon, line_no, col_no) =
+        if n1_start < n1_end && n1_start > 0 && bytes[n1_start - 1] == b':' {
+            // file:line:col:
+            let line_no: usize = line[n1_start..n1_end].parse().ok()?;
+            (n1_start - 1, line_no, n2)
+        } else {
+            // file:line:
+            (sep2, n2, 0)
+        };
 
     let file = line[..file_end_colon].trim_end();
     if file.is_empty() {

@@ -497,7 +497,8 @@ impl Debugger {
         if breakpoints.is_empty() {
             self.requested_breakpoints.remove(&file);
         } else {
-            self.requested_breakpoints.insert(file.clone(), breakpoints.clone());
+            self.requested_breakpoints
+                .insert(file.clone(), breakpoints.clone());
         }
 
         let mut results = Vec::with_capacity(breakpoints.len());
@@ -520,7 +521,9 @@ impl Debugger {
 
         if class_candidates.is_empty() {
             for bp in breakpoints {
-                results.push(json!({"verified": false, "line": bp.line, "message": "class not loaded yet"}));
+                results.push(
+                    json!({"verified": false, "line": bp.line, "message": "class not loaded yet"}),
+                );
             }
             return Ok(results);
         }
@@ -1017,10 +1020,16 @@ impl Debugger {
 
         let in_scope: Vec<VariableInfo> = vars
             .into_iter()
-            .filter(|v| v.code_index <= frame.location.index && frame.location.index < v.code_index + (v.length as u64))
+            .filter(|v| {
+                v.code_index <= frame.location.index
+                    && frame.location.index < v.code_index + (v.length as u64)
+            })
             .collect();
 
-        let slots: Vec<(u32, String)> = in_scope.iter().map(|v| (v.slot, v.signature.clone())).collect();
+        let slots: Vec<(u32, String)> = in_scope
+            .iter()
+            .map(|v| (v.slot, v.signature.clone()))
+            .collect();
         let values = self
             .jdwp
             .stack_frame_get_values(frame.thread, frame.frame_id, &slots)
@@ -1045,15 +1054,16 @@ impl Debugger {
             return Ok(Vec::new());
         };
 
-        let children = match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
-            Ok(children) => children,
-            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
-                self.objects.mark_invalid_object_id(object_id);
-                return Ok(vec![invalid_collected_variable()]);
-            }
-            Err(err) => return Err(err.into()),
-        };
+        let children =
+            match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
+                Ok(children) => children,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                    self.objects.mark_invalid_object_id(object_id);
+                    return Ok(vec![invalid_collected_variable()]);
+                }
+                Err(err) => return Err(err.into()),
+            };
 
         let mut out = Vec::with_capacity(children.len());
         for child in children {
@@ -1149,7 +1159,8 @@ impl Debugger {
 
         let values = cancellable_jdwp(
             cancel,
-            self.jdwp.object_reference_get_values(exception_id, &[field_id]),
+            self.jdwp
+                .object_reference_get_values(exception_id, &[field_id]),
         )
         .await?;
         let Some(value) = values.into_iter().next() else {
@@ -1179,13 +1190,18 @@ impl Debugger {
             return Ok(cached);
         }
 
-        let classes = cancellable_jdwp(cancel, self.jdwp.classes_by_signature("Ljava/lang/Throwable;")).await?;
+        let classes = cancellable_jdwp(
+            cancel,
+            self.jdwp.classes_by_signature("Ljava/lang/Throwable;"),
+        )
+        .await?;
         let Some(throwable) = classes.first() else {
             self.throwable_detail_message_field = Some(None);
             return Ok(None);
         };
 
-        let fields = cancellable_jdwp(cancel, self.jdwp.reference_type_fields(throwable.type_id)).await?;
+        let fields =
+            cancellable_jdwp(cancel, self.jdwp.reference_type_fields(throwable.type_id)).await?;
         let field_id = fields
             .into_iter()
             .find(|field| field.name == "detailMessage")
@@ -1266,7 +1282,11 @@ impl Debugger {
             if let Some(location) = self.location_for_line(&cancel, &class, spec_line).await? {
                 if let Ok(request_id) = self
                     .jdwp
-                    .event_request_set(2, JDWP_SUSPEND_POLICY_EVENT_THREAD, vec![EventModifier::LocationOnly { location }])
+                    .event_request_set(
+                        2,
+                        JDWP_SUSPEND_POLICY_EVENT_THREAD,
+                        vec![EventModifier::LocationOnly { location }],
+                    )
                     .await
                 {
                     entries.push(BreakpointEntry {
@@ -1859,7 +1879,10 @@ enum CmpOp {
     Lte,
 }
 
-fn eval_breakpoint_condition(expr: &str, locals: Option<&HashMap<String, JdwpValue>>) -> std::result::Result<bool, ()> {
+fn eval_breakpoint_condition(
+    expr: &str,
+    locals: Option<&HashMap<String, JdwpValue>>,
+) -> std::result::Result<bool, ()> {
     let expr = expr.trim();
     if expr.is_empty() {
         return Ok(true);
@@ -2086,7 +2109,10 @@ mod tests {
             "x is 42 and flag is true"
         );
         assert_eq!(render_log_message("{{x}}", Some(&locals)), "{x}");
-        assert_eq!(render_log_message("missing {y}", Some(&locals)), "missing {y}");
+        assert_eq!(
+            render_log_message("missing {y}", Some(&locals)),
+            "missing {y}"
+        );
     }
 }
 
@@ -2103,6 +2129,8 @@ fn is_retryable_attach_error(err: &DebuggerError) -> bool {
                 | std::io::ErrorKind::AddrNotAvailable
         ),
         DebuggerError::Jdwp(JdwpError::ConnectionClosed | JdwpError::Timeout) => true,
-        DebuggerError::Jdwp(JdwpError::Cancelled | JdwpError::Protocol(_) | JdwpError::VmError(_)) => false,
+        DebuggerError::Jdwp(
+            JdwpError::Cancelled | JdwpError::Protocol(_) | JdwpError::VmError(_),
+        ) => false,
     }
 }

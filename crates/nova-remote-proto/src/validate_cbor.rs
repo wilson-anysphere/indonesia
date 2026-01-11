@@ -1,7 +1,7 @@
 use anyhow::{bail, ensure, Context};
 
 use crate::{
-    MAX_FILE_TEXT_BYTES, MAX_FILES_PER_MESSAGE, MAX_MESSAGE_BYTES, MAX_SMALL_STRING_BYTES,
+    MAX_FILES_PER_MESSAGE, MAX_FILE_TEXT_BYTES, MAX_MESSAGE_BYTES, MAX_SMALL_STRING_BYTES,
     MAX_SYMBOLS_PER_SHARD_INDEX,
 };
 
@@ -134,7 +134,9 @@ impl<'a> Reader<'a> {
     }
 
     fn read_len(&mut self, ai: u8, field: &'static str) -> anyhow::Result<usize> {
-        let len_u64 = self.read_uint(ai).with_context(|| format!("read {field} length"))?;
+        let len_u64 = self
+            .read_uint(ai)
+            .with_context(|| format!("read {field} length"))?;
         let len: usize = len_u64
             .try_into()
             .map_err(|_| anyhow::anyhow!("{field} length does not fit in usize: {len_u64}"))?;

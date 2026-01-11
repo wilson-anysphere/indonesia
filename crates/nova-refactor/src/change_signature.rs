@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::edit::{
-    EditError, FileId, TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange, WorkspaceEdit,
+    EditError, FileId, TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange,
+    WorkspaceEdit,
 };
 use nova_index::{Index, ReferenceKind, SymbolId, SymbolKind, TextRange};
 use nova_types::MethodId;
@@ -1227,7 +1228,9 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
     out
 }
 
-fn build_workspace_edit(edits: Vec<(String, TextRange, String)>) -> Result<WorkspaceEdit, ChangeSignatureConflict> {
+fn build_workspace_edit(
+    edits: Vec<(String, TextRange, String)>,
+) -> Result<WorkspaceEdit, ChangeSignatureConflict> {
     let mut by_file: BTreeMap<String, Vec<(TextRange, String)>> = BTreeMap::new();
     for (file, range, text) in edits {
         by_file.entry(file).or_default().push((range, text));
@@ -1249,16 +1252,22 @@ fn build_workspace_edit(edits: Vec<(String, TextRange, String)>) -> Result<Works
         }
 
         let file_id = FileId::new(file.clone());
-        out.extend(file_edits.into_iter().map(|(range, new_text)| WorkspaceTextEdit {
-            file: file_id.clone(),
-            range: WorkspaceTextRange::new(range.start, range.end),
-            replacement: new_text,
-        }));
+        out.extend(
+            file_edits
+                .into_iter()
+                .map(|(range, new_text)| WorkspaceTextEdit {
+                    file: file_id.clone(),
+                    range: WorkspaceTextRange::new(range.start, range.end),
+                    replacement: new_text,
+                }),
+        );
     }
 
     let mut edit = WorkspaceEdit::new(out);
     edit.normalize().map_err(|err| match err {
-        EditError::InvalidRange { file: FileId(file), .. } => ChangeSignatureConflict::ParseError {
+        EditError::InvalidRange {
+            file: FileId(file), ..
+        } => ChangeSignatureConflict::ParseError {
             file,
             context: "invalid edit range",
         },
@@ -1271,7 +1280,9 @@ fn build_workspace_edit(edits: Vec<(String, TextRange, String)>) -> Result<Works
             first: TextRange::new(first.start, first.end),
             second: TextRange::new(second.start, second.end),
         },
-        EditError::OutOfBounds { file: FileId(file), .. } => ChangeSignatureConflict::ParseError {
+        EditError::OutOfBounds {
+            file: FileId(file), ..
+        } => ChangeSignatureConflict::ParseError {
             file,
             context: "edit out of bounds",
         },
@@ -1283,7 +1294,9 @@ fn build_workspace_edit(edits: Vec<(String, TextRange, String)>) -> Result<Works
             file,
             context: "file already exists",
         },
-        EditError::InvalidRename { from: FileId(file), .. } => ChangeSignatureConflict::ParseError {
+        EditError::InvalidRename {
+            from: FileId(file), ..
+        } => ChangeSignatureConflict::ParseError {
             file,
             context: "invalid rename operation",
         },
@@ -1291,36 +1304,40 @@ fn build_workspace_edit(edits: Vec<(String, TextRange, String)>) -> Result<Works
             file,
             context: "duplicate create operation",
         },
-        EditError::DuplicateRenameSource { from: FileId(file), .. } => {
-            ChangeSignatureConflict::ParseError {
-                file,
-                context: "duplicate rename source",
-            }
-        }
-        EditError::DuplicateRenameDestination { to: FileId(file), .. } => {
-            ChangeSignatureConflict::ParseError {
-                file,
-                context: "duplicate rename destination",
-            }
-        }
+        EditError::DuplicateRenameSource {
+            from: FileId(file), ..
+        } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "duplicate rename source",
+        },
+        EditError::DuplicateRenameDestination {
+            to: FileId(file), ..
+        } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "duplicate rename destination",
+        },
         EditError::RenameCycle { file: FileId(file) } => ChangeSignatureConflict::ParseError {
             file,
             context: "rename cycle detected",
         },
-        EditError::CreateDeleteConflict { file: FileId(file) } => ChangeSignatureConflict::ParseError {
-            file,
-            context: "file is both created and deleted",
-        },
-        EditError::FileOpCollision { file: FileId(file), .. } => ChangeSignatureConflict::ParseError {
+        EditError::CreateDeleteConflict { file: FileId(file) } => {
+            ChangeSignatureConflict::ParseError {
+                file,
+                context: "file is both created and deleted",
+            }
+        }
+        EditError::FileOpCollision {
+            file: FileId(file), ..
+        } => ChangeSignatureConflict::ParseError {
             file,
             context: "conflicting file operation",
         },
-        EditError::TextEditTargetsRenamedFile { file: FileId(file), .. } => {
-            ChangeSignatureConflict::ParseError {
-                file,
-                context: "text edit targets renamed file",
-            }
-        }
+        EditError::TextEditTargetsRenamedFile {
+            file: FileId(file), ..
+        } => ChangeSignatureConflict::ParseError {
+            file,
+            context: "text edit targets renamed file",
+        },
         EditError::TextEditTargetsDeletedFile { file: FileId(file) } => {
             ChangeSignatureConflict::ParseError {
                 file,

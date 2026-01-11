@@ -50,8 +50,9 @@ pub use completion_ranking::{
 };
 pub use completion_validation::validate_multi_token_completion;
 pub use context::{
-    BuiltContext, ContextBuilder, ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity,
-    ContextRequest, ContextSectionStat, RelatedCode, RelatedSymbol, SemanticContextBuilder,
+    BuiltContext, ContextBuilder, ContextDiagnostic, ContextDiagnosticKind,
+    ContextDiagnosticSeverity, ContextRequest, ContextSectionStat, RelatedCode, RelatedSymbol,
+    SemanticContextBuilder,
 };
 pub use error::AiError;
 pub use features::NovaAi;

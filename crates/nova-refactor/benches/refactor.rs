@@ -98,10 +98,7 @@ fn bench_refactorings(c: &mut Criterion) {
             },
         )
         .expect("rename must succeed on fixture");
-        assert!(
-            !edit.is_empty(),
-            "rename fixture should produce edits"
-        );
+        assert!(!edit.is_empty(), "rename fixture should produce edits");
 
         b.iter_batched(
             || RenameParams {

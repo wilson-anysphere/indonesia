@@ -21,7 +21,9 @@ pub fn extract_range(fixture: &str) -> (String, TextRange) {
         .find(start_marker)
         .expect("fixture missing /*start*/ marker");
     let after_start = start + start_marker.len();
-    let end = fixture.find(end_marker).expect("fixture missing /*end*/ marker");
+    let end = fixture
+        .find(end_marker)
+        .expect("fixture missing /*end*/ marker");
     assert!(end >= after_start, "/*end*/ must come after /*start*/");
 
     let mut text = String::with_capacity(fixture.len());

@@ -4,13 +4,12 @@ use crate::{
     DEBUG_HOT_SWAP_METHOD, JAVA_CLASSPATH_METHOD, JAVA_GENERATED_SOURCES_METHOD,
     JAVA_RESOLVE_MAIN_CLASS_METHOD, JAVA_SOURCE_PATHS_METHOD, METRICS_METHOD,
     PROJECT_CONFIGURATION_METHOD, PROJECT_MODEL_METHOD, RELOAD_PROJECT_METHOD,
-    RESET_METRICS_METHOD,
-    RUN_ANNOTATION_PROCESSING_METHOD, TEST_DEBUG_CONFIGURATION_METHOD, TEST_DISCOVER_METHOD,
-    TEST_RUN_METHOD,
+    RESET_METRICS_METHOD, RUN_ANNOTATION_PROCESSING_METHOD, TEST_DEBUG_CONFIGURATION_METHOD,
+    TEST_DISCOVER_METHOD, TEST_RUN_METHOD,
 };
 use nova_bugreport::{
-    BugReportBuilder, global_crash_store, install_panic_hook, BugReportOptions,
-    PanicHookConfig, PerfStats,
+    global_crash_store, install_panic_hook, BugReportBuilder, BugReportOptions, PanicHookConfig,
+    PerfStats,
 };
 use nova_config::{global_log_buffer, init_tracing_with_config, NovaConfig};
 use nova_scheduler::{CancellationToken, Watchdog, WatchdogError};
@@ -241,22 +240,23 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
 
     let config = config_snapshot();
     let safe_mode_active = safe_mode().enabled.load(Ordering::Relaxed);
-    let bundle = BugReportBuilder::new(&config, &global_log_buffer(), &global_crash_store(), perf())
-        .options(options)
-        .safe_mode_active(Some(safe_mode_active))
-        .extra_attachments(|dir| {
-            // Best-effort: attach the runtime request metrics snapshot. This is useful when
-            // diagnosing hangs/timeouts/panics because it captures per-method latencies and
-            // error rates.
-            if let Ok(metrics_json) =
-                serde_json::to_string_pretty(&nova_metrics::MetricsRegistry::global().snapshot())
-            {
-                let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
-            }
-            Ok(())
-        })
-        .build()
-        .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+    let bundle =
+        BugReportBuilder::new(&config, &global_log_buffer(), &global_crash_store(), perf())
+            .options(options)
+            .safe_mode_active(Some(safe_mode_active))
+            .extra_attachments(|dir| {
+                // Best-effort: attach the runtime request metrics snapshot. This is useful when
+                // diagnosing hangs/timeouts/panics because it captures per-method latencies and
+                // error rates.
+                if let Ok(metrics_json) = serde_json::to_string_pretty(
+                    &nova_metrics::MetricsRegistry::global().snapshot(),
+                ) {
+                    let _ = std::fs::write(dir.join("metrics.json"), metrics_json);
+                }
+                Ok(())
+            })
+            .build()
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
 
     Ok(serde_json::json!({
         "path": bundle.path(),

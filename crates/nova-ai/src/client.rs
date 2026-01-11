@@ -382,40 +382,41 @@ impl AiClient {
             );
         }
 
-        let inner = match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await
-        {
-            Ok(result) => match result {
-                Ok(stream) => stream,
-                Err(err) => {
+        let inner =
+            match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await
+            {
+                Ok(result) => match result {
+                    Ok(stream) => stream,
+                    Err(err) => {
+                        if self.audit_enabled {
+                            audit::log_llm_error(
+                                request_id,
+                                self.provider_label,
+                                &self.model,
+                                &err.to_string(),
+                                started_at.elapsed(),
+                                /*retry_count=*/ 0,
+                                /*stream=*/ true,
+                            );
+                        }
+                        return Err(err);
+                    }
+                },
+                Err(_) => {
                     if self.audit_enabled {
                         audit::log_llm_error(
                             request_id,
                             self.provider_label,
                             &self.model,
-                            &err.to_string(),
+                            &AiError::Timeout.to_string(),
                             started_at.elapsed(),
                             /*retry_count=*/ 0,
                             /*stream=*/ true,
                         );
                     }
-                    return Err(err);
+                    return Err(AiError::Timeout);
                 }
-            },
-            Err(_) => {
-                if self.audit_enabled {
-                    audit::log_llm_error(
-                        request_id,
-                        self.provider_label,
-                        &self.model,
-                        &AiError::Timeout.to_string(),
-                        started_at.elapsed(),
-                        /*retry_count=*/ 0,
-                        /*stream=*/ true,
-                    );
-                }
-                return Err(AiError::Timeout);
-            }
-        };
+            };
 
         let audit_enabled = self.audit_enabled;
         let request_id_for_stream = request_id;

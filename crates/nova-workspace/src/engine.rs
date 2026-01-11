@@ -119,7 +119,9 @@ impl WorkspaceEngine {
             .apply_document_changes(path, new_version, changes)?;
         let (file_id, edits) = match evt {
             ChangeEvent::DocumentChanged { file_id, edits, .. } => (file_id, edits),
-            other => unreachable!("apply_document_changes only returns DocumentChanged ({other:?})"),
+            other => {
+                unreachable!("apply_document_changes only returns DocumentChanged ({other:?})")
+            }
         };
 
         if let Ok(text) = self.vfs.read_to_string(path) {
@@ -162,52 +164,50 @@ impl WorkspaceEngine {
         let subscribers = Arc::clone(&self.subscribers);
         let scheduler = self.scheduler.clone();
 
-        self.index_debouncer.debounce("workspace-index", move |token| {
-            let ctx = scheduler.request_context_with_token("workspace/indexing", token);
-            let progress = ctx.progress().start("Indexing workspace");
+        self.index_debouncer
+            .debounce("workspace-index", move |token| {
+                let ctx = scheduler.request_context_with_token("workspace/indexing", token);
+                let progress = ctx.progress().start("Indexing workspace");
 
-            publish_to_subscribers(
-                &subscribers,
-                WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted),
-            );
-
-            let total = files.len();
-            let mut new_indexes = ProjectIndexes::default();
-
-            for (idx, path) in files.iter().enumerate() {
-                Cancelled::check(ctx.token())?;
-
-                if let Ok(text) = vfs.read_to_string(path) {
-                    index_symbols(&mut new_indexes, path, &text);
-                }
-
-                let percentage = if total == 0 {
-                    None
-                } else {
-                    Some(((idx + 1) * 100 / total).min(100) as u32)
-                };
-                progress.report(
-                    Some(format!("{}/{}", idx + 1, total)),
-                    percentage,
-                );
                 publish_to_subscribers(
                     &subscribers,
-                    WorkspaceEvent::IndexProgress(IndexProgress {
-                        current: idx + 1,
-                        total,
-                    }),
+                    WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted),
                 );
-            }
 
-            *indexes_arc.lock().expect("workspace indexes lock poisoned") = new_indexes;
+                let total = files.len();
+                let mut new_indexes = ProjectIndexes::default();
 
-            progress.finish(Some("Done".to_string()));
-            publish_to_subscribers(
-                &subscribers,
-                WorkspaceEvent::Status(WorkspaceStatus::IndexingReady),
-            );
-            Ok(())
-        });
+                for (idx, path) in files.iter().enumerate() {
+                    Cancelled::check(ctx.token())?;
+
+                    if let Ok(text) = vfs.read_to_string(path) {
+                        index_symbols(&mut new_indexes, path, &text);
+                    }
+
+                    let percentage = if total == 0 {
+                        None
+                    } else {
+                        Some(((idx + 1) * 100 / total).min(100) as u32)
+                    };
+                    progress.report(Some(format!("{}/{}", idx + 1, total)), percentage);
+                    publish_to_subscribers(
+                        &subscribers,
+                        WorkspaceEvent::IndexProgress(IndexProgress {
+                            current: idx + 1,
+                            total,
+                        }),
+                    );
+                }
+
+                *indexes_arc.lock().expect("workspace indexes lock poisoned") = new_indexes;
+
+                progress.finish(Some("Done".to_string()));
+                publish_to_subscribers(
+                    &subscribers,
+                    WorkspaceEvent::Status(WorkspaceStatus::IndexingReady),
+                );
+                Ok(())
+            });
     }
 
     pub fn debug_configurations(&self, root: &Path) -> Vec<DebugConfiguration> {

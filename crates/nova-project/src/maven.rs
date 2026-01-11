@@ -4,10 +4,10 @@ use std::sync::{Arc, OnceLock};
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
-    BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaVersion, Module,
-    JavaLanguageLevel, LanguageLevelProvenance, MavenGav, ModuleLanguageLevel, OutputDir,
-    OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId,
-    WorkspaceModuleConfig, WorkspaceProjectModel,
+    BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaLanguageLevel,
+    JavaVersion, LanguageLevelProvenance, MavenGav, Module, ModuleLanguageLevel, OutputDir,
+    OutputDirKind, ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin,
+    WorkspaceModuleBuildId, WorkspaceModuleConfig, WorkspaceProjectModel,
 };
 use regex::Regex;
 
@@ -17,7 +17,8 @@ pub(crate) fn load_maven_project(
 ) -> Result<ProjectConfig, ProjectError> {
     let root_pom_path = root.join("pom.xml");
     let root_pom = parse_pom(&root_pom_path)?;
-    let include_root_module = root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
+    let include_root_module =
+        root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
 
     let mut modules = Vec::new();
     let mut source_roots = Vec::new();
@@ -137,7 +138,6 @@ pub(crate) fn load_maven_project(
                 });
             }
         }
-
     }
 
     // Compute workspace Java config:
@@ -183,7 +183,8 @@ pub(crate) fn load_maven_workspace_model(
 ) -> Result<WorkspaceProjectModel, ProjectError> {
     let root_pom_path = root.join("pom.xml");
     let root_pom = parse_pom(&root_pom_path)?;
-    let include_root_module = root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
+    let include_root_module =
+        root_pom.packaging.as_deref() != Some("pom") || root_pom.modules.is_empty();
 
     let root_effective = Arc::new(EffectivePom::from_raw(&root_pom, None));
     let mut discovered_modules =

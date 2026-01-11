@@ -5,8 +5,8 @@ use regex::Regex;
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
-    BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaVersion, Module,
-    JavaLanguageLevel, LanguageLevelProvenance, ModuleLanguageLevel, OutputDir, OutputDirKind,
+    BuildSystem, ClasspathEntry, ClasspathEntryKind, Dependency, JavaConfig, JavaLanguageLevel,
+    JavaVersion, LanguageLevelProvenance, Module, ModuleLanguageLevel, OutputDir, OutputDirKind,
     ProjectConfig, SourceRoot, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId,
     WorkspaceModuleConfig, WorkspaceProjectModel,
 };

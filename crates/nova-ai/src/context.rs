@@ -6,15 +6,15 @@ use nova_core::ProjectDatabase;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
- 
+
 #[derive(Debug, Clone)]
 pub struct ContextBuilder;
- 
+
 impl ContextBuilder {
     pub fn new() -> Self {
         Self
     }
- 
+
     /// Build a context bundle while populating `related_code` from a semantic search engine.
     pub fn build_with_semantic_search(
         &self,
@@ -24,13 +24,13 @@ impl ContextBuilder {
     ) -> BuiltContext {
         self.build(req.with_related_code_from_focal(search, max_related))
     }
- 
+
     pub fn build(&self, req: ContextRequest) -> BuiltContext {
         let mut remaining = req.token_budget;
         let mut out = String::new();
         let mut sections = Vec::new();
         let mut truncated = false;
- 
+
         let options = CodeAnonymizerOptions {
             anonymize_identifiers: req.privacy.anonymize_identifiers,
             redact_sensitive_strings: req.privacy.redaction.redact_string_literals,
@@ -40,7 +40,7 @@ impl ContextBuilder {
             strip_or_redact_comments: req.privacy.anonymize_identifiers,
         };
         let mut anonymizer = CodeAnonymizer::new(options);
- 
+
         // Focal code is always highest priority.
         let built = build_section(
             "Focal code",
@@ -55,7 +55,7 @@ impl ContextBuilder {
             out.push_str(&built.text);
             sections.push(built.stat);
         }
- 
+
         // Diagnostics are high-signal; include early.
         if !req.diagnostics.is_empty() {
             if let Some(diag_text) = format_diagnostics(&req) {
@@ -77,7 +77,7 @@ impl ContextBuilder {
                 }
             }
         }
- 
+
         // Enclosing semantic skeleton/context.
         if let Some(enclosing) = req.enclosing_context.as_deref() {
             let built = build_section(
@@ -97,7 +97,7 @@ impl ContextBuilder {
                 sections.push(built.stat);
             }
         }
- 
+
         // Related symbols in provided order (caller can pre-sort by relevance).
         if !req.related_symbols.is_empty() {
             for symbol in &req.related_symbols {
@@ -110,7 +110,7 @@ impl ContextBuilder {
                 } else {
                     format!("Related symbol: {} ({})", symbol.name, symbol.kind)
                 };
- 
+
                 let built = build_section(
                     &title,
                     &symbol.snippet,
@@ -126,7 +126,7 @@ impl ContextBuilder {
                 }
             }
         }
- 
+
         // Related code snippets (typically supplied by semantic search).
         if !req.related_code.is_empty() {
             for related in &req.related_code {
@@ -134,7 +134,7 @@ impl ContextBuilder {
                     truncated = true;
                     break;
                 }
- 
+
                 let title = if req.privacy.include_file_paths {
                     format!(
                         "Related code: {} ({})",
@@ -144,7 +144,7 @@ impl ContextBuilder {
                 } else {
                     format!("Related code ({})", related.kind)
                 };
- 
+
                 let built = build_section(
                     &title,
                     &related.snippet,
@@ -160,7 +160,7 @@ impl ContextBuilder {
                 }
             }
         }
- 
+
         if req.include_doc_comments {
             if let Some(docs) = req.doc_comments.as_deref() {
                 let built = build_section(
@@ -181,7 +181,7 @@ impl ContextBuilder {
                 }
             }
         }
- 
+
         // Explicit extra files (e.g., related test file, interface, etc).
         if !req.extra_files.is_empty() {
             for (idx, snippet) in req.extra_files.iter().enumerate() {
@@ -189,12 +189,12 @@ impl ContextBuilder {
                     truncated = true;
                     break;
                 }
- 
+
                 let title = match (req.privacy.include_file_paths, snippet.path.as_ref()) {
                     (true, Some(path)) => format!("Extra file: {}", path.display()),
                     _ => format!("Extra file {}", idx + 1),
                 };
- 
+
                 let built = build_section(
                     &title,
                     &snippet.content,
@@ -210,7 +210,7 @@ impl ContextBuilder {
                 }
             }
         }
- 
+
         // Optional path metadata (kept last so it doesn't crowd out code).
         if req.privacy.include_file_paths {
             if let Some(path) = req.file_path.as_deref() {
@@ -232,7 +232,7 @@ impl ContextBuilder {
                 }
             }
         }
- 
+
         let mut text = out;
         let mut token_count = estimate_tokens(&text);
         // Hard budget enforcement: never exceed the requested budget.
@@ -241,7 +241,7 @@ impl ContextBuilder {
             token_count = estimate_tokens(&text);
             truncated = true;
         }
- 
+
         BuiltContext {
             text,
             token_count,
@@ -250,7 +250,7 @@ impl ContextBuilder {
         }
     }
 }
- 
+
 /// A context builder that can populate `related_code` automatically using a configured
 /// [`crate::SemanticSearch`] implementation.
 ///
@@ -260,7 +260,7 @@ pub struct SemanticContextBuilder {
     builder: ContextBuilder,
     search: Box<dyn crate::SemanticSearch>,
 }
- 
+
 impl SemanticContextBuilder {
     /// Construct a semantic context builder from the global AI configuration.
     ///
@@ -272,17 +272,17 @@ impl SemanticContextBuilder {
             search: crate::semantic_search_from_config(config),
         }
     }
- 
+
     pub fn index_project(&mut self, db: &dyn ProjectDatabase) {
         self.search.index_project(db);
     }
- 
+
     pub fn build(&self, req: ContextRequest, max_related: usize) -> BuiltContext {
         self.builder
             .build_with_semantic_search(req, self.search.as_ref(), max_related)
     }
 }
- 
+
 #[derive(Debug, Clone)]
 pub struct ContextRequest {
     pub file_path: Option<String>,
@@ -298,7 +298,7 @@ pub struct ContextRequest {
     pub token_budget: usize,
     pub privacy: PrivacyMode,
 }
- 
+
 impl ContextRequest {
     /// Build a context request from a Java source buffer + a byte-range selection.
     ///
@@ -317,9 +317,10 @@ impl ContextRequest {
     ) -> Self {
         let selection = clamp_range(selection, source.len());
         let focal_code = source[selection.clone()].to_string();
- 
-        let extracted = analyze_java_context(source, selection.clone(), &focal_code, include_doc_comments);
- 
+
+        let extracted =
+            analyze_java_context(source, selection.clone(), &focal_code, include_doc_comments);
+
         Self {
             file_path: None,
             focal_code,
@@ -335,7 +336,7 @@ impl ContextRequest {
             privacy,
         }
     }
- 
+
     /// Populate `related_code` using a [`crate::SemanticSearch`] implementation.
     ///
     /// Callers decide whether the underlying search engine is embedding-backed
@@ -359,7 +360,7 @@ impl ContextRequest {
             .collect();
         self
     }
- 
+
     /// Convenience wrapper around [`ContextRequest::with_related_code_from_search`] that uses the
     /// current `focal_code` contents as the query text.
     pub fn with_related_code_from_focal(
@@ -371,14 +372,14 @@ impl ContextRequest {
         self.with_related_code_from_search(search, &query, max_results)
     }
 }
- 
+
 #[derive(Debug, Clone)]
 pub struct RelatedSymbol {
     pub name: String,
     pub kind: String,
     pub snippet: String,
 }
- 
+
 #[derive(Debug, Clone)]
 pub struct RelatedCode {
     pub path: PathBuf,
@@ -386,14 +387,14 @@ pub struct RelatedCode {
     pub kind: String,
     pub snippet: String,
 }
- 
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextDiagnosticSeverity {
     Error,
     Warning,
     Info,
 }
- 
+
 impl ContextDiagnosticSeverity {
     fn as_str(self) -> &'static str {
         match self {
@@ -403,7 +404,7 @@ impl ContextDiagnosticSeverity {
         }
     }
 }
- 
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextDiagnosticKind {
     Syntax,
@@ -411,7 +412,7 @@ pub enum ContextDiagnosticKind {
     Lint,
     Other,
 }
- 
+
 impl ContextDiagnosticKind {
     fn as_str(self) -> &'static str {
         match self {
@@ -422,7 +423,7 @@ impl ContextDiagnosticKind {
         }
     }
 }
- 
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextDiagnostic {
     pub file: Option<String>,
@@ -431,14 +432,14 @@ pub struct ContextDiagnostic {
     pub message: String,
     pub kind: Option<ContextDiagnosticKind>,
 }
- 
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextSectionStat {
     pub title: String,
     pub token_estimate: usize,
     pub truncated: bool,
 }
- 
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltContext {
     pub text: String,
@@ -446,20 +447,20 @@ pub struct BuiltContext {
     pub truncated: bool,
     pub sections: Vec<ContextSectionStat>,
 }
- 
+
 #[derive(Debug, Clone)]
 struct ExtractedJavaContext {
     enclosing_context: Option<String>,
     doc_comment: Option<String>,
     related_symbols: Vec<RelatedSymbol>,
 }
- 
+
 fn clamp_range(range: Range<usize>, len: usize) -> Range<usize> {
     let start = range.start.min(len);
     let end = range.end.min(len).max(start);
     start..end
 }
- 
+
 fn analyze_java_context(
     source: &str,
     selection: Range<usize>,
@@ -467,7 +468,7 @@ fn analyze_java_context(
     include_doc_comments: bool,
 ) -> ExtractedJavaContext {
     use nova_syntax::java;
- 
+
     if source.is_empty() {
         return ExtractedJavaContext {
             enclosing_context: None,
@@ -475,53 +476,54 @@ fn analyze_java_context(
             related_symbols: Vec::new(),
         };
     }
- 
+
     let selection = clamp_range(selection, source.len());
     let offset = selection.start.min(source.len());
     let parsed = java::parse(source);
     let unit = parsed.compilation_unit();
- 
+
     let enclosing_type = find_enclosing_type(&unit.types, offset);
     let enclosing_callable = enclosing_type.and_then(|ty| find_enclosing_callable(ty, offset));
- 
+
     let mut parts: Vec<String> = Vec::new();
     if let Some(pkg) = unit.package.as_ref() {
         parts.push(format!("// Package\npackage {};", pkg.name));
     }
- 
+
     if !unit.imports.is_empty() {
         let imports: Vec<String> = unit.imports.iter().map(render_import_decl).collect();
         parts.push(format!("// Imports\n{}", imports.join("\n")));
     }
- 
+
     if let Some(ty) = enclosing_type {
         parts.push(format!(
             "// Enclosing type (skeleton)\n{}",
             render_type_skeleton(ty)
         ));
     }
- 
+
     if let Some(callable) = enclosing_callable.as_ref() {
         parts.push(format!(
             "// Enclosing member (skeleton)\n{}",
             render_callable_skeleton(callable)
         ));
     }
- 
+
     let doc_comment = if include_doc_comments {
         enclosing_callable
             .as_ref()
             .and_then(|callable| find_doc_comment_before_offset(source, callable.range_start()))
             .or_else(|| {
-                enclosing_type.and_then(|ty| find_doc_comment_before_offset(source, ty.range().start))
+                enclosing_type
+                    .and_then(|ty| find_doc_comment_before_offset(source, ty.range().start))
             })
     } else {
         None
     };
- 
+
     let mut decls = Vec::new();
     collect_symbol_decls(&unit.types, &mut decls, None);
- 
+
     let mut exclude = HashSet::new();
     if let Some(ty) = enclosing_type {
         exclude.insert(ty.name().to_string());
@@ -529,10 +531,10 @@ fn analyze_java_context(
     if let Some(callable) = enclosing_callable.as_ref() {
         exclude.insert(callable.name().to_string());
     }
- 
+
     let referenced = extract_referenced_identifiers(focal_code, &exclude);
     let related_symbols = related_symbols_from_references(&referenced, &decls);
- 
+
     ExtractedJavaContext {
         enclosing_context: if parts.is_empty() {
             None
@@ -543,10 +545,10 @@ fn analyze_java_context(
         related_symbols,
     }
 }
- 
+
 fn find_doc_comment_before_offset(source: &str, offset: usize) -> Option<String> {
     use nova_syntax::SyntaxKind;
- 
+
     let tokens = nova_syntax::lex(source);
     let mut idx = 0usize;
     while idx < tokens.len() {
@@ -556,7 +558,7 @@ fn find_doc_comment_before_offset(source: &str, offset: usize) -> Option<String>
         }
         idx += 1;
     }
- 
+
     while idx > 0 {
         idx -= 1;
         let tok = &tokens[idx];
@@ -566,22 +568,24 @@ fn find_doc_comment_before_offset(source: &str, offset: usize) -> Option<String>
             _ => break,
         }
     }
- 
+
     None
 }
- 
+
 fn format_diagnostics(req: &ContextRequest) -> Option<String> {
     let mut out = String::new();
     let mut first = true;
- 
-    for diag in req.diagnostics.iter().filter(|diag| {
-        diagnostic_is_relevant(diag, req.file_path.as_deref(), req.cursor)
-    }) {
+
+    for diag in req
+        .diagnostics
+        .iter()
+        .filter(|diag| diagnostic_is_relevant(diag, req.file_path.as_deref(), req.cursor))
+    {
         if !first {
             out.push('\n');
         }
         first = false;
- 
+
         out.push('[');
         out.push_str(diag.severity.as_str());
         out.push(']');
@@ -590,14 +594,14 @@ fn format_diagnostics(req: &ContextRequest) -> Option<String> {
             out.push_str(kind.as_str());
             out.push(']');
         }
- 
+
         if req.privacy.include_file_paths {
             if let Some(file) = diag.file.as_deref() {
                 out.push(' ');
                 out.push_str(file);
             }
         }
- 
+
         if let Some(range) = diag.range.as_ref() {
             out.push_str(&format!(
                 " L{}:{}-L{}:{}",
@@ -607,18 +611,18 @@ fn format_diagnostics(req: &ContextRequest) -> Option<String> {
                 range.end.character + 1
             ));
         }
- 
+
         out.push_str(": ");
         out.push_str(&diag.message);
     }
- 
+
     if out.trim().is_empty() {
         None
     } else {
         Some(out)
     }
 }
- 
+
 fn diagnostic_is_relevant(
     diag: &ContextDiagnostic,
     file_path: Option<&str>,
@@ -631,7 +635,7 @@ fn diagnostic_is_relevant(
             }
         }
     }
- 
+
     let Some(cursor) = cursor else {
         return true;
     };
@@ -640,23 +644,23 @@ fn diagnostic_is_relevant(
     };
     range_contains(range, cursor)
 }
- 
+
 fn range_contains(range: &PositionRange, pos: Position) -> bool {
     if pos.line < range.start.line || pos.line > range.end.line {
         return false;
     }
- 
+
     if pos.line == range.start.line && pos.character < range.start.character {
         return false;
     }
- 
+
     if pos.line == range.end.line && pos.character > range.end.character {
         return false;
     }
- 
+
     true
 }
- 
+
 #[derive(Debug, Clone)]
 struct BuiltSection {
     text: String,
@@ -664,7 +668,7 @@ struct BuiltSection {
     truncated: bool,
     stat: ContextSectionStat,
 }
- 
+
 fn build_section(
     title: &str,
     raw_content: &str,
@@ -685,10 +689,10 @@ fn build_section(
             },
         };
     }
- 
+
     let header = format!("## {title}\n");
     let header_tokens = estimate_tokens(&header);
- 
+
     if header_tokens >= remaining {
         if !always_include {
             return BuiltSection {
@@ -702,7 +706,7 @@ fn build_section(
                 },
             };
         }
- 
+
         let text = truncate_to_tokens(&header, remaining);
         let token_estimate = estimate_tokens(&text);
         let stat = ContextSectionStat {
@@ -717,14 +721,14 @@ fn build_section(
             stat,
         };
     }
- 
+
     let content = anonymizer.anonymize(raw_content);
     let allowed_tokens = remaining.saturating_sub(header_tokens);
     let current_tokens = estimate_tokens(&content);
     let content_truncated = current_tokens > allowed_tokens;
     let content = truncate_to_tokens(&content, allowed_tokens);
     let text = format!("{header}{content}\n\n");
- 
+
     let token_estimate = estimate_tokens(&text);
     let stat = ContextSectionStat {
         title: title.to_string(),
@@ -738,17 +742,17 @@ fn build_section(
         stat,
     }
 }
- 
+
 fn estimate_tokens(text: &str) -> usize {
     let mut tokens = 0usize;
     let mut in_word = false;
- 
+
     for ch in text.chars() {
         if ch.is_whitespace() {
             in_word = false;
             continue;
         }
- 
+
         if is_word_char(ch) {
             if !in_word {
                 tokens += 1;
@@ -759,25 +763,25 @@ fn estimate_tokens(text: &str) -> usize {
             in_word = false;
         }
     }
- 
+
     tokens
 }
- 
+
 fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
     if max_tokens == 0 {
         return String::new();
     }
- 
+
     let mut token_count = 0usize;
     let mut in_word = false;
     let mut last_good_end = 0usize;
- 
+
     for (idx, ch) in text.char_indices() {
         if ch.is_whitespace() {
             in_word = false;
             continue;
         }
- 
+
         if is_word_char(ch) {
             if !in_word {
                 token_count += 1;
@@ -793,22 +797,22 @@ fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
             }
             in_word = false;
         }
- 
+
         last_good_end = idx + ch.len_utf8();
     }
- 
+
     text[..last_good_end].to_string()
 }
- 
+
 fn is_word_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
 }
- 
+
 fn position_for_offset(text: &str, offset: usize) -> Position {
     let offset = offset.min(text.len());
     let mut line = 0u32;
     let mut last_line_start = 0usize;
- 
+
     for (idx, ch) in text.char_indices() {
         if idx >= offset {
             break;
@@ -818,15 +822,15 @@ fn position_for_offset(text: &str, offset: usize) -> Position {
             last_line_start = idx + ch.len_utf8();
         }
     }
- 
+
     let mut character = 0u32;
     for _ch in text[last_line_start..offset].chars() {
         character += 1;
     }
- 
+
     Position { line, character }
 }
- 
+
 fn render_import_decl(imp: &nova_syntax::java::ast::ImportDecl) -> String {
     let mut out = String::new();
     out.push_str("import ");
@@ -840,7 +844,7 @@ fn render_import_decl(imp: &nova_syntax::java::ast::ImportDecl) -> String {
     out.push(';');
     out
 }
- 
+
 fn find_enclosing_type<'a>(
     types: &'a [nova_syntax::java::ast::TypeDecl],
     offset: usize,
@@ -850,7 +854,7 @@ fn find_enclosing_type<'a>(
         if !span_contains(range.start, range.end, offset) {
             continue;
         }
- 
+
         if let Some(nested) = find_enclosing_type_in_members(ty.members(), offset) {
             return Some(nested);
         }
@@ -858,7 +862,7 @@ fn find_enclosing_type<'a>(
     }
     None
 }
- 
+
 fn find_enclosing_type_in_members<'a>(
     members: &'a [nova_syntax::java::ast::MemberDecl],
     offset: usize,
@@ -878,13 +882,13 @@ fn find_enclosing_type_in_members<'a>(
     }
     None
 }
- 
+
 #[derive(Debug, Clone, Copy)]
 enum EnclosingCallable<'a> {
     Method(&'a nova_syntax::java::ast::MethodDecl),
     Constructor(&'a nova_syntax::java::ast::ConstructorDecl),
 }
- 
+
 impl<'a> EnclosingCallable<'a> {
     fn name(self) -> &'a str {
         match self {
@@ -892,7 +896,7 @@ impl<'a> EnclosingCallable<'a> {
             EnclosingCallable::Constructor(c) => &c.name,
         }
     }
- 
+
     fn range_start(self) -> usize {
         match self {
             EnclosingCallable::Method(m) => m.range.start,
@@ -900,7 +904,7 @@ impl<'a> EnclosingCallable<'a> {
         }
     }
 }
- 
+
 fn find_enclosing_callable<'a>(
     ty: &'a nova_syntax::java::ast::TypeDecl,
     offset: usize,
@@ -922,18 +926,18 @@ fn find_enclosing_callable<'a>(
     }
     None
 }
- 
+
 fn span_contains(span_start: usize, span_end: usize, offset: usize) -> bool {
     offset >= span_start && offset < span_end
 }
- 
+
 fn render_type_skeleton(ty: &nova_syntax::java::ast::TypeDecl) -> String {
     let mut out = String::new();
     out.push_str(type_kind_keyword(ty));
     out.push(' ');
     out.push_str(ty.name());
     out.push_str(" {\n");
- 
+
     let mut wrote_member = false;
     for member in ty.members() {
         match member {
@@ -956,15 +960,15 @@ fn render_type_skeleton(ty: &nova_syntax::java::ast::TypeDecl) -> String {
             _ => {}
         }
     }
- 
+
     if !wrote_member {
         out.push_str("  // ...\n");
     }
- 
+
     out.push('}');
     out
 }
- 
+
 fn type_kind_keyword(ty: &nova_syntax::java::ast::TypeDecl) -> &'static str {
     match ty {
         nova_syntax::java::ast::TypeDecl::Class(_) => "class",
@@ -974,7 +978,7 @@ fn type_kind_keyword(ty: &nova_syntax::java::ast::TypeDecl) -> &'static str {
         nova_syntax::java::ast::TypeDecl::Annotation(_) => "@interface",
     }
 }
- 
+
 fn type_kind_label(ty: &nova_syntax::java::ast::TypeDecl) -> &'static str {
     match ty {
         nova_syntax::java::ast::TypeDecl::Class(_) => "class",
@@ -984,13 +988,20 @@ fn type_kind_label(ty: &nova_syntax::java::ast::TypeDecl) -> &'static str {
         nova_syntax::java::ast::TypeDecl::Annotation(_) => "annotation",
     }
 }
- 
+
 fn render_callable_skeleton(callable: &EnclosingCallable<'_>) -> String {
     match *callable {
         EnclosingCallable::Method(method) => {
             let params = render_param_list(&method.params);
-            let body = if method.body.is_some() { " { ... }" } else { ";" };
-            format!("{} {}({}){}", method.return_ty.text, method.name, params, body)
+            let body = if method.body.is_some() {
+                " { ... }"
+            } else {
+                ";"
+            };
+            format!(
+                "{} {}({}){}",
+                method.return_ty.text, method.name, params, body
+            )
         }
         EnclosingCallable::Constructor(cons) => {
             let params = render_param_list(&cons.params);
@@ -998,7 +1009,7 @@ fn render_callable_skeleton(callable: &EnclosingCallable<'_>) -> String {
         }
     }
 }
- 
+
 fn render_param_list(params: &[nova_syntax::java::ast::ParamDecl]) -> String {
     params
         .iter()
@@ -1006,7 +1017,7 @@ fn render_param_list(params: &[nova_syntax::java::ast::ParamDecl]) -> String {
         .collect::<Vec<_>>()
         .join(", ")
 }
- 
+
 #[derive(Debug, Clone)]
 struct SymbolDecl {
     name: String,
@@ -1014,7 +1025,7 @@ struct SymbolDecl {
     snippet: String,
     range_start: usize,
 }
- 
+
 fn collect_symbol_decls(
     types: &[nova_syntax::java::ast::TypeDecl],
     out: &mut Vec<SymbolDecl>,
@@ -1024,7 +1035,7 @@ fn collect_symbol_decls(
         collect_symbol_decls_for_type(ty, out, owner);
     }
 }
- 
+
 fn collect_symbol_decls_for_type(
     ty: &nova_syntax::java::ast::TypeDecl,
     out: &mut Vec<SymbolDecl>,
@@ -1036,14 +1047,14 @@ fn collect_symbol_decls_for_type(
         type_snippet.push_str(&format!("// nested in {owner}\n"));
     }
     type_snippet.push_str(&render_type_skeleton(ty));
- 
+
     out.push(SymbolDecl {
         name: ty.name().to_string(),
         kind: ty_kind,
         snippet: type_snippet,
         range_start: ty.range().start,
     });
- 
+
     let this_owner = ty.name();
     for member in ty.members() {
         match member {
@@ -1087,10 +1098,10 @@ fn collect_symbol_decls_for_type(
         }
     }
 }
- 
+
 fn extract_referenced_identifiers(code: &str, exclude: &HashSet<String>) -> Vec<String> {
     const MAX_IDENTIFIERS: usize = 12;
- 
+
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for tok in nova_syntax::lex(code) {
@@ -1113,7 +1124,7 @@ fn extract_referenced_identifiers(code: &str, exclude: &HashSet<String>) -> Vec<
     }
     out
 }
- 
+
 fn is_java_keyword(ident: &str) -> bool {
     matches!(
         ident,
@@ -1172,16 +1183,19 @@ fn is_java_keyword(ident: &str) -> bool {
             | "false"
     )
 }
- 
-fn related_symbols_from_references(referenced: &[String], decls: &[SymbolDecl]) -> Vec<RelatedSymbol> {
+
+fn related_symbols_from_references(
+    referenced: &[String],
+    decls: &[SymbolDecl],
+) -> Vec<RelatedSymbol> {
     const MAX_RELATED: usize = 8;
     const MAX_PER_NAME: usize = 3;
- 
+
     let mut by_name: HashMap<&str, Vec<&SymbolDecl>> = HashMap::new();
     for decl in decls {
         by_name.entry(decl.name.as_str()).or_default().push(decl);
     }
- 
+
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     for name in referenced {
@@ -1206,17 +1220,18 @@ fn related_symbols_from_references(referenced: &[String], decls: &[SymbolDecl]) 
     }
     out
 }
- 
+
 #[cfg(test)]
 mod tests {
     use super::*;
- 
+
     #[test]
     fn context_builder_enforces_budget_and_privacy() {
         let builder = ContextBuilder::new();
         let req = ContextRequest {
             file_path: Some("/home/user/project/Secret.java".to_string()),
-            focal_code: r#"class Secret { String apiKey = "sk-verysecretstringthatislong"; }"#.to_string(),
+            focal_code: r#"class Secret { String apiKey = "sk-verysecretstringthatislong"; }"#
+                .to_string(),
             enclosing_context: Some("package com.example;\n".to_string()),
             related_symbols: vec![RelatedSymbol {
                 name: "Secret".to_string(),
@@ -1224,12 +1239,21 @@ mod tests {
                 snippet: "class Secret {}".to_string(),
             }],
             related_code: vec![],
-            cursor: Some(Position { line: 0, character: 0 }),
+            cursor: Some(Position {
+                line: 0,
+                character: 0,
+            }),
             diagnostics: vec![ContextDiagnostic {
                 file: Some("/home/user/project/Secret.java".to_string()),
                 range: Some(PositionRange {
-                    start: Position { line: 0, character: 0 },
-                    end: Position { line: 0, character: 10 },
+                    start: Position {
+                        line: 0,
+                        character: 0,
+                    },
+                    end: Position {
+                        line: 0,
+                        character: 10,
+                    },
                 }),
                 severity: ContextDiagnosticSeverity::Error,
                 message: "cannot find symbol: Secret".to_string(),
@@ -1248,25 +1272,25 @@ mod tests {
                 ..PrivacyMode::default()
             },
         };
- 
+
         let built = builder.build(req.clone());
         assert!(built.token_count <= 20);
- 
+
         // Paths excluded.
         assert!(!built.text.contains("/home/user"));
- 
+
         // Suspicious string redacted.
         assert!(built.text.contains("\"[REDACTED]\""));
- 
+
         // Identifiers anonymized.
         assert!(!built.text.contains("Secret"));
- 
+
         // Stability: same input yields same output.
         let built2 = builder.build(req);
         assert_eq!(built.text, built2.text);
         assert_eq!(built.sections, built2.sections);
     }
- 
+
     #[test]
     fn java_source_range_extracts_enclosing_context_and_docs() {
         let source = r#"
@@ -1280,10 +1304,10 @@ public class Foo {
   }
 }
 "#;
- 
+
         let start = source.find("int x").unwrap();
         let end = start + "int x = 0;".len();
- 
+
         let req = ContextRequest::for_java_source_range(
             source,
             start..end,
@@ -1295,16 +1319,16 @@ public class Foo {
             },
             /*include_doc_comments=*/ true,
         );
- 
+
         let enclosing = req.enclosing_context.as_deref().unwrap();
         assert!(enclosing.contains("package com.example"));
         assert!(enclosing.contains("class Foo"));
         assert!(enclosing.contains("void bar("));
- 
+
         let docs = req.doc_comments.as_deref().unwrap();
         assert!(docs.contains("Method docs"));
     }
- 
+
     #[test]
     fn symbol_extraction_populates_related_symbols_deterministically() {
         let source = r#"
@@ -1321,10 +1345,10 @@ class Foo {
   }
 }
 "#;
- 
+
         let start = source.find("count++;").unwrap();
         let end = source.find("helper();").unwrap() + "helper();".len();
- 
+
         let req = ContextRequest::for_java_source_range(
             source,
             start..end,
@@ -1336,7 +1360,7 @@ class Foo {
             },
             /*include_doc_comments=*/ false,
         );
- 
+
         assert_eq!(
             req.related_symbols
                 .iter()
@@ -1344,13 +1368,13 @@ class Foo {
                 .collect::<Vec<_>>(),
             vec![("count", "field"), ("helper", "method")]
         );
- 
+
         let builder = ContextBuilder::new();
         let built1 = builder.build(req.clone());
         let built2 = builder.build(req);
         assert_eq!(built1.text, built2.text);
     }
- 
+
     #[test]
     fn diagnostics_section_included_when_provided() {
         let builder = ContextBuilder::new();
@@ -1360,7 +1384,10 @@ class Foo {
             enclosing_context: None,
             related_symbols: Vec::new(),
             related_code: Vec::new(),
-            cursor: Some(Position { line: 0, character: 0 }),
+            cursor: Some(Position {
+                line: 0,
+                character: 0,
+            }),
             diagnostics: vec![ContextDiagnostic {
                 file: None,
                 range: None,
@@ -1378,16 +1405,16 @@ class Foo {
                 ..PrivacyMode::default()
             },
         };
- 
+
         let built = builder.build(req.clone());
         assert!(built.text.contains("## Diagnostics"));
         assert!(built.text.contains("cannot find symbol"));
- 
+
         let built2 = builder.build(req);
         assert_eq!(built.text, built2.text);
         assert_eq!(built.sections, built2.sections);
     }
- 
+
     #[test]
     fn budget_enforced_with_many_sections() {
         let builder = ContextBuilder::new();
@@ -1421,7 +1448,7 @@ class Foo {
                 ..PrivacyMode::default()
             },
         };
- 
+
         let built = builder.build(req);
         assert!(built.token_count <= 30);
         assert!(built.truncated);

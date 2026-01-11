@@ -246,7 +246,8 @@ async fn worker_restart_rehydrates_shard_files_from_cache() -> anyhow::Result<()
 
 #[cfg(unix)]
 #[tokio::test]
-async fn distributed_workspace_symbols_merges_across_shards_deterministically() -> anyhow::Result<()> {
+async fn distributed_workspace_symbols_merges_across_shards_deterministically() -> anyhow::Result<()>
+{
     let tmp = TempDir::new()?;
     let workspace_root = tmp.path();
 
@@ -296,7 +297,8 @@ async fn distributed_workspace_symbols_merges_across_shards_deterministically() 
 
 #[cfg(unix)]
 #[tokio::test]
-async fn distributed_workspace_symbols_prefers_prefix_matches_across_shards() -> anyhow::Result<()> {
+async fn distributed_workspace_symbols_prefers_prefix_matches_across_shards() -> anyhow::Result<()>
+{
     let tmp = TempDir::new()?;
     let workspace_root = tmp.path();
 
@@ -337,7 +339,8 @@ async fn distributed_workspace_symbols_prefers_prefix_matches_across_shards() ->
 
 #[cfg(unix)]
 #[tokio::test]
-async fn distributed_workspace_symbols_supports_acronym_queries_across_shards() -> anyhow::Result<()> {
+async fn distributed_workspace_symbols_supports_acronym_queries_across_shards() -> anyhow::Result<()>
+{
     let tmp = TempDir::new()?;
     let workspace_root = tmp.path();
 

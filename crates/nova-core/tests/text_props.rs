@@ -1,6 +1,4 @@
-use nova_core::{
-    apply_text_edits, normalize_text_edits, LineIndex, TextEdit, TextRange, TextSize,
-};
+use nova_core::{apply_text_edits, normalize_text_edits, LineIndex, TextEdit, TextRange, TextSize};
 use proptest::prelude::*;
 
 const PROPTEST_CASES: u32 = 256;
@@ -54,18 +52,14 @@ struct PlanStep {
 }
 
 fn arb_plan_step() -> impl Strategy<Value = PlanStep> {
-    (
-        any::<bool>(),
-        arb_text(0, 8),
-        0u8..=4u8,
-        arb_text(0, 8),
-    )
-        .prop_map(|(insert, insert_text, replace_len, replace_text)| PlanStep {
+    (any::<bool>(), arb_text(0, 8), 0u8..=4u8, arb_text(0, 8)).prop_map(
+        |(insert, insert_text, replace_len, replace_text)| PlanStep {
             insert,
             insert_text,
             replace_len,
             replace_text,
-        })
+        },
+    )
 }
 
 fn edits_from_plan(boundaries: &[usize], plan: &[PlanStep]) -> Vec<TextEdit> {
@@ -94,7 +88,10 @@ fn edits_from_plan(boundaries: &[usize], plan: &[PlanStep]) -> Vec<TextEdit> {
         if len > 0 {
             let end_idx = i + len;
             let end = TextSize::from(boundaries[end_idx] as u32);
-            edits.push(TextEdit::new(TextRange::new(start, end), step.replace_text.clone()));
+            edits.push(TextEdit::new(
+                TextRange::new(start, end),
+                step.replace_text.clone(),
+            ));
             i = end_idx;
         } else {
             i += 1;
@@ -110,10 +107,12 @@ fn arb_text_and_edits() -> impl Strategy<Value = (String, Vec<TextEdit>, u64)> {
         let plan_len = boundaries.len();
         let plan = prop::collection::vec(arb_plan_step(), plan_len..=plan_len);
 
-        (Just(text), Just(boundaries), plan, any::<u64>()).prop_map(|(text, boundaries, plan, seed)| {
-            let edits = edits_from_plan(&boundaries, &plan);
-            (text, edits, seed)
-        })
+        (Just(text), Just(boundaries), plan, any::<u64>()).prop_map(
+            |(text, boundaries, plan, seed)| {
+                let edits = edits_from_plan(&boundaries, &plan);
+                (text, edits, seed)
+            },
+        )
     })
 }
 
@@ -168,13 +167,18 @@ fn arb_text_and_coalescible_edits() -> impl Strategy<Value = (String, Vec<TextEd
         let boundaries = char_boundaries(&text);
         let char_count = boundaries.len().saturating_sub(1);
 
-        let idxs =
-            proptest::collection::btree_set(0usize..=char_count, 5usize..=5usize);
+        let idxs = proptest::collection::btree_set(0usize..=char_count, 5usize..=5usize);
 
         let replacements = (arb_text(0, 3), arb_text(0, 3), arb_text(0, 3));
 
-        (Just(text), Just(boundaries), idxs, any::<u64>(), replacements).prop_map(
-            |(text, boundaries, idxs, seed, (r1, r2, r3))| {
+        (
+            Just(text),
+            Just(boundaries),
+            idxs,
+            any::<u64>(),
+            replacements,
+        )
+            .prop_map(|(text, boundaries, idxs, seed, (r1, r2, r3))| {
                 let mut idxs: Vec<usize> = idxs.into_iter().collect();
                 idxs.sort_unstable();
 
@@ -197,8 +201,7 @@ fn arb_text_and_coalescible_edits() -> impl Strategy<Value = (String, Vec<TextEd
                 ];
                 shuffle_with_seed(&mut edits, seed);
                 (text, edits, seed)
-            },
-        )
+            })
     })
 }
 

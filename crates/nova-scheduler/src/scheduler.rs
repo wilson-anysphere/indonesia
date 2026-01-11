@@ -5,8 +5,8 @@ use tokio::runtime::Runtime;
 use tokio::sync::{broadcast, oneshot};
 
 use crate::{
-    task::AsyncTask, task::BlockingTask, CancellationToken, Cancelled, ProgressSender, RequestContext,
-    TaskError,
+    task::AsyncTask, task::BlockingTask, CancellationToken, Cancelled, ProgressSender,
+    RequestContext, TaskError,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,9 +149,10 @@ impl Scheduler {
 
         let token_for_job = token.clone();
         let job = move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token_for_job)))
-                .map_err(|_| TaskError::Panicked)
-                .and_then(|result| result.map_err(TaskError::from));
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(token_for_job)))
+                    .map_err(|_| TaskError::Panicked)
+                    .and_then(|result| result.map_err(TaskError::from));
             let _ = tx.send(result);
         };
 
@@ -220,9 +221,9 @@ impl Scheduler {
         }
 
         let token_for_fut = token.clone();
-        let handle = self.io_handle().spawn(async move {
-            f(token_for_fut).await.map_err(TaskError::from)
-        });
+        let handle = self
+            .io_handle()
+            .spawn(async move { f(token_for_fut).await.map_err(TaskError::from) });
         AsyncTask::new(token, handle)
     }
 

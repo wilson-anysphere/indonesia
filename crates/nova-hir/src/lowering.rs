@@ -1,7 +1,5 @@
 use crate::ast_id::{span_to_text_range, AstId, AstIdMap};
-use crate::hir::{
-    Arena, BinaryOp, Body, Expr, ExprId, LiteralKind, Local, LocalId, Stmt, StmtId,
-};
+use crate::hir::{Arena, BinaryOp, Body, Expr, ExprId, LiteralKind, Local, LocalId, Stmt, StmtId};
 use crate::ids::{
     AnnotationId, ClassId, ConstructorId, EnumId, FieldId, InitializerId, InterfaceId, MethodId,
     RecordId,
@@ -140,8 +138,7 @@ impl ItemTreeLower<'_> {
             }
             syntax::TypeDecl::Record(record) => {
                 let members = self.lower_members(&record.members);
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::RecordDeclaration, record.name_range);
+                let ast_id = self.ast_id_for_name(SyntaxKind::RecordDeclaration, record.name_range);
                 let id = RecordId::new(self.file, ast_id);
                 self.tree.records.insert(
                     ast_id,
@@ -157,10 +154,8 @@ impl ItemTreeLower<'_> {
             }
             syntax::TypeDecl::Annotation(annotation) => {
                 let members = self.lower_members(&annotation.members);
-                let ast_id = self.ast_id_for_name(
-                    SyntaxKind::AnnotationTypeDeclaration,
-                    annotation.name_range,
-                );
+                let ast_id = self
+                    .ast_id_for_name(SyntaxKind::AnnotationTypeDeclaration, annotation.name_range);
                 let id = AnnotationId::new(self.file, ast_id);
                 self.tree.annotations.insert(
                     ast_id,
@@ -206,8 +201,7 @@ impl ItemTreeLower<'_> {
                 Some(Member::Field(id))
             }
             syntax::MemberDecl::Method(method) => {
-                let ast_id =
-                    self.ast_id_for_name(SyntaxKind::MethodDeclaration, method.name_range);
+                let ast_id = self.ast_id_for_name(SyntaxKind::MethodDeclaration, method.name_range);
                 let id = MethodId::new(self.file, ast_id);
                 let params = {
                     let mut params = Vec::with_capacity(method.params.len());
@@ -296,7 +290,10 @@ impl ItemTreeLower<'_> {
 
     fn ast_id_for_offset(&self, kind: SyntaxKind, offset: u32) -> Option<AstId> {
         let token = self.parse.token_at_offset(offset).right_biased()?;
-        let node = token.parent()?.ancestors().find(|ancestor| ancestor.kind() == kind)?;
+        let node = token
+            .parent()?
+            .ancestors()
+            .find(|ancestor| ancestor.kind() == kind)?;
         self.ast_id_map.ast_id(&node)
     }
 }

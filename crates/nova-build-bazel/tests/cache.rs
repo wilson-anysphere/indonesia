@@ -131,7 +131,9 @@ fn cache_deserializes_legacy_compile_info_fields() {
     std::fs::write(&path, json).unwrap();
 
     let cache = BazelCache::load(&path).unwrap();
-    let entry = cache.get("//:hello", "expr-v1").expect("missing cache entry");
+    let entry = cache
+        .get("//:hello", "expr-v1")
+        .expect("missing cache entry");
     assert!(entry.info.preview);
     assert_eq!(entry.info.output_dir.as_deref(), Some("out/classes"));
 }

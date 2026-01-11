@@ -1707,8 +1707,7 @@ fn has_generic_close_ahead(tokens: &[Token], l_angle_idx: usize) -> bool {
         }
         steps += 1;
 
-        let is_top_level =
-            paren_depth == 0 && bracket_depth == 0 && brace_depth == 0;
+        let is_top_level = paren_depth == 0 && bracket_depth == 0 && brace_depth == 0;
 
         match tok {
             Token::BlankLine => continue,

@@ -2,9 +2,10 @@ use std::path::Path;
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
-    BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, ProjectConfig, SourceRoot,
-    JavaLanguageLevel, LanguageLevelProvenance, ModuleLanguageLevel, SourceRootKind, SourceRootOrigin,
-    WorkspaceModuleBuildId, WorkspaceModuleConfig, WorkspaceProjectModel,
+    BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, JavaLanguageLevel,
+    LanguageLevelProvenance, Module, ModuleLanguageLevel, ProjectConfig, SourceRoot,
+    SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
+    WorkspaceProjectModel,
 };
 
 pub(crate) fn load_simple_project(

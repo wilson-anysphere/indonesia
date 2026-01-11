@@ -64,12 +64,12 @@ mod abi;
 mod runtime;
 
 pub use abi::{
-    AbiVersion, CodeActionV1, CompletionItemV1, DiagnosticV1, InlayHintV1, NavigationTargetV1,
-    SeverityV1, SpanV1, SymbolV1, ABI_V1, CodeActionsRequestV1, CompletionsRequestV1,
-    DiagnosticsRequestV1, InlayHintsRequestV1, NavigationRequestV1,
+    AbiVersion, CodeActionV1, CodeActionsRequestV1, CompletionItemV1, CompletionsRequestV1,
+    DiagnosticV1, DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1,
+    NavigationTargetV1, SeverityV1, SpanV1, SymbolV1, ABI_V1,
 };
 pub use runtime::{
-    WasmCapabilities, WasmCallError, WasmLoadError, WasmPlugin, WasmPluginConfig, WasmHostDb,
+    WasmCallError, WasmCapabilities, WasmHostDb, WasmLoadError, WasmPlugin, WasmPluginConfig,
 };
 
 #[cfg(test)]

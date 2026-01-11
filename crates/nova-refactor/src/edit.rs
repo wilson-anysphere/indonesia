@@ -581,10 +581,7 @@ mod tests {
         ]);
 
         edit.normalize().unwrap();
-        assert_eq!(
-            edit.text_edits,
-            vec![TextEdit::insert(file, 0, "ab")]
-        );
+        assert_eq!(edit.text_edits, vec![TextEdit::insert(file, 0, "ab")]);
     }
 
     #[test]
@@ -621,11 +618,7 @@ mod tests {
                     to: c.clone(),
                 },
             ],
-            text_edits: vec![TextEdit::replace(
-                b.clone(),
-                TextRange::new(0, 1),
-                "X",
-            )],
+            text_edits: vec![TextEdit::replace(b.clone(), TextRange::new(0, 1), "X")],
         };
         edit.normalize().unwrap();
 

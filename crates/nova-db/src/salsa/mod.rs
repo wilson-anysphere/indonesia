@@ -330,7 +330,7 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
     hir::NovaHirStorage,
     resolve::NovaResolveStorage,
     ide::NovaIdeStorage,
-    indexing::NovaIndexingStorage,
+    indexing::NovaIndexingStorage
 )]
 pub struct RootDatabase {
     storage: ra_salsa::Storage<RootDatabase>,
@@ -554,11 +554,8 @@ impl SalsaMemoEvictor {
             return;
         }
 
-        let registration = manager.register_evictor(
-            self.name.clone(),
-            MemoryCategory::QueryCache,
-            self.clone(),
-        );
+        let registration =
+            manager.register_evictor(self.name.clone(), MemoryCategory::QueryCache, self.clone());
         self.footprint.bind_tracker(registration.tracker());
         let _ = self.registration.set(registration);
     }
@@ -1129,7 +1126,10 @@ mod tests {
         assert_eq!(executions(&db, "hir_item_tree"), 2);
 
         let tree_after = db.hir_item_tree(file);
-        let body_after = tree_after.method(method).body.expect("method still has a body");
+        let body_after = tree_after
+            .method(method)
+            .body
+            .expect("method still has a body");
         let range_after = db
             .hir_ast_id_map(file)
             .span(body_after)
@@ -1204,7 +1204,10 @@ mod tests {
         assert_eq!(executions(&db, "hir_item_tree"), 2);
 
         let tree_after = db.hir_item_tree(file);
-        let body_after = tree_after.method(method).body.expect("method still has a body");
+        let body_after = tree_after
+            .method(method)
+            .body
+            .expect("method still has a body");
         let range_after = db
             .hir_ast_id_map(file)
             .span(body_after)
@@ -1535,7 +1538,10 @@ class Foo {
         });
 
         let bytes_before = db.salsa_memo_bytes();
-        assert!(bytes_before > 0, "expected memo tracker to grow after queries");
+        assert!(
+            bytes_before > 0,
+            "expected memo tracker to grow after queries"
+        );
         assert_eq!(
             manager.report().usage.query_cache,
             bytes_before,

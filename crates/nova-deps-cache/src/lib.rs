@@ -241,7 +241,8 @@ impl DependencyIndexStore {
                 }
                 // Skip crashed atomic-write temp files from `write_archive_atomic`, which
                 // uses unique names like `<dest>.tmp.<pid>.<counter>`.
-                if rel.file_name()
+                if rel
+                    .file_name()
                     .and_then(|name| name.to_str())
                     .is_some_and(|name| name.ends_with(".tmp") || name.contains(".tmp."))
                 {

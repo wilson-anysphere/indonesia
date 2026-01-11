@@ -56,7 +56,8 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -64,10 +65,16 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
 
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let (init_resp, _) = read_until_response(&mut reader, 1).await;
-    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     let initialized = read_next(&mut reader).await;
-    assert_eq!(initialized.get("event").and_then(|v| v.as_str()), Some("initialized"));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     let temp = TempDir::new().unwrap();
     let pid_path = temp.path().join("pid.txt");
@@ -90,7 +97,10 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
     .await;
 
     let (launch_resp, mut messages) = read_until_response(&mut reader, 2).await;
-    assert!(launch_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(launch_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     // Ensure at least one stdout/stderr output event is forwarded.
     let mut saw_output = messages.iter().any(|msg| {
@@ -106,7 +116,10 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
             && msg.get("event").and_then(|v| v.as_str()) == Some("output");
         messages.push(msg);
     }
-    assert!(saw_output, "expected at least one output event from launched process");
+    assert!(
+        saw_output,
+        "expected at least one output event from launched process"
+    );
 
     // Wait for the pid file to show up so we can assert termination semantics.
     let pid: u32 = {
@@ -124,7 +137,10 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
     };
 
     #[cfg(target_os = "linux")]
-    assert!(Path::new(&format!("/proc/{pid}")).exists(), "helper process should be running");
+    assert!(
+        Path::new(&format!("/proc/{pid}")).exists(),
+        "helper process should be running"
+    );
 
     send_request(&mut writer, 3, "threads", json!({})).await;
     let (threads_resp, _) = read_until_response(&mut reader, 3).await;
@@ -133,14 +149,32 @@ async fn dap_launch_spawns_process_forwards_output_and_disconnect_can_terminate(
         .and_then(|v| v.as_i64())
         .unwrap();
 
-    send_request(&mut writer, 4, "stackTrace", json!({ "threadId": thread_id })).await;
+    send_request(
+        &mut writer,
+        4,
+        "stackTrace",
+        json!({ "threadId": thread_id }),
+    )
+    .await;
     let (stack_resp, _) = read_until_response(&mut reader, 4).await;
-    let frames = stack_resp.pointer("/body/stackFrames").and_then(|v| v.as_array()).unwrap();
+    let frames = stack_resp
+        .pointer("/body/stackFrames")
+        .and_then(|v| v.as_array())
+        .unwrap();
     assert!(!frames.is_empty());
 
-    send_request(&mut writer, 5, "disconnect", json!({ "terminateDebuggee": true })).await;
+    send_request(
+        &mut writer,
+        5,
+        "disconnect",
+        json!({ "terminateDebuggee": true }),
+    )
+    .await;
     let (disc_resp, disc_messages) = read_until_response(&mut reader, 5).await;
-    assert!(disc_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(disc_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     // `terminated` can arrive before or after the disconnect response depending on scheduling.
     let mut saw_terminated = find_event(&disc_messages, "terminated").is_some();

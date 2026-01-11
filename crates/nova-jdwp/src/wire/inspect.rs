@@ -34,21 +34,35 @@ pub struct ObjectPreview {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectKindPreview {
     Plain,
-    String { value: String },
-    PrimitiveWrapper { value: Box<JdwpValue> },
+    String {
+        value: String,
+    },
+    PrimitiveWrapper {
+        value: Box<JdwpValue>,
+    },
     Array {
         element_type: String,
         length: usize,
         sample: Vec<JdwpValue>,
     },
-    List { size: usize, sample: Vec<JdwpValue> },
-    Set { size: usize, sample: Vec<JdwpValue> },
+    List {
+        size: usize,
+        sample: Vec<JdwpValue>,
+    },
+    Set {
+        size: usize,
+        sample: Vec<JdwpValue>,
+    },
     Map {
         size: usize,
         sample: Vec<(JdwpValue, JdwpValue)>,
     },
-    Optional { value: Option<Box<JdwpValue>> },
-    Stream { size: Option<usize> },
+    Optional {
+        value: Option<Box<JdwpValue>>,
+    },
+    Stream {
+        size: Option<usize>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,8 +90,14 @@ impl Inspector {
     }
 
     pub async fn runtime_type_name(&mut self, object_id: ObjectId) -> Result<String> {
-        let (_ref_type_tag, type_id) = self.client().object_reference_reference_type(object_id).await?;
-        let signature = self.client().reference_type_signature_cached(type_id).await?;
+        let (_ref_type_tag, type_id) = self
+            .client()
+            .object_reference_reference_type(object_id)
+            .await?;
+        let signature = self
+            .client()
+            .reference_type_signature_cached(type_id)
+            .await?;
         Ok(signature_to_type_name(&signature))
     }
 
@@ -266,7 +286,9 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
     }
 
     if runtime_type == "java.util.HashMap" {
-        if let Some((size, mut sample)) = hashmap_entries(jdwp, object_id, type_id, ARRAY_PREVIEW_SAMPLE).await {
+        if let Some((size, mut sample)) =
+            hashmap_entries(jdwp, object_id, type_id, ARRAY_PREVIEW_SAMPLE).await
+        {
             sort_map_sample(jdwp, &mut sample).await;
             return Ok(ObjectPreview {
                 runtime_type,
@@ -582,7 +604,8 @@ async fn hash_set_children(
         Ok((_ref_type_tag, type_id)) => type_id,
         Err(_) => return Ok(None),
     };
-    let Some((size, entries)) = hashmap_entries(jdwp, map_id, map_type_id, ARRAY_CHILD_SAMPLE).await
+    let Some((size, entries)) =
+        hashmap_entries(jdwp, map_id, map_type_id, ARRAY_CHILD_SAMPLE).await
     else {
         return Ok(None);
     };
@@ -707,7 +730,9 @@ async fn hashmap_entries(
     type_id: ReferenceTypeId,
     entry_limit: usize,
 ) -> Option<(usize, Vec<(JdwpValue, JdwpValue)>)> {
-    let children = instance_fields_with_type(jdwp, object_id, type_id).await.ok()?;
+    let children = instance_fields_with_type(jdwp, object_id, type_id)
+        .await
+        .ok()?;
     let size = children
         .iter()
         .find_map(|(name, value, _ty)| match (name.as_str(), value) {
@@ -727,12 +752,18 @@ async fn hashmap_entries(
             let table_len = table_len.max(0) as usize;
             let scan = table_len.min(HASHMAP_SCAN_LIMIT);
             if scan > 0 {
-                if let Ok(buckets) = jdwp.array_reference_get_values(table_id, 0, scan as i32).await {
+                if let Ok(buckets) = jdwp
+                    .array_reference_get_values(table_id, 0, scan as i32)
+                    .await
+                {
                     for bucket in buckets {
                         if sample.len() >= entry_limit {
                             break;
                         }
-                        let JdwpValue::Object { id: mut node_id, .. } = bucket else {
+                        let JdwpValue::Object {
+                            id: mut node_id, ..
+                        } = bucket
+                        else {
                             continue;
                         };
                         if node_id == 0 {

@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use nova_remote_proto::v3::{Capabilities, ProtocolVersion, SupportedVersions};
-use nova_router::{DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, TcpListenAddr, WorkspaceLayout};
+use nova_router::{
+    DistributedRouterConfig, ListenAddr, QueryRouter, SourceRoot, TcpListenAddr, WorkspaceLayout,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 

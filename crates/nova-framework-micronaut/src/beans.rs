@@ -4,9 +4,9 @@ use nova_syntax::{SyntaxKind, SyntaxNode};
 use nova_types::{Diagnostic, Span};
 
 use crate::parse::{
-    clean_type, collect_annotations, find_named_child, first_identifier_token, infer_field_type_node,
-    infer_param_type_node, modifier_node, node_span, node_text, parse_java, simple_name,
-    token_span, visit_nodes, ParsedAnnotation,
+    clean_type, collect_annotations, find_named_child, first_identifier_token,
+    infer_field_type_node, infer_param_type_node, modifier_node, node_span, node_text, parse_java,
+    simple_name, token_span, visit_nodes, ParsedAnnotation,
 };
 use crate::FileDiagnostic;
 use crate::JavaSource;
@@ -73,7 +73,8 @@ pub fn analyze_beans(sources: &[JavaSource]) -> BeanAnalysis {
         let root = parsed.syntax();
         visit_nodes(root, &mut |node| {
             if node.kind() == SyntaxKind::ClassDeclaration {
-                if let Some(mut discovered) = discover_beans_in_class(node, src, &qualifier_annotations)
+                if let Some(mut discovered) =
+                    discover_beans_in_class(node, src, &qualifier_annotations)
                 {
                     beans.append(&mut discovered);
                 }
@@ -306,12 +307,8 @@ fn discover_beans_in_class(
     let mut beans = Vec::new();
 
     if is_class_bean {
-        let injection_points = discover_injection_points_in_class_body(
-            &class_name,
-            &body,
-            src,
-            qualifier_annotations,
-        );
+        let injection_points =
+            discover_injection_points_in_class_body(&class_name, &body, src, qualifier_annotations);
 
         let bean_name = class_named
             .clone()
@@ -337,7 +334,10 @@ fn discover_beans_in_class(
     }
 
     if is_factory {
-        for child in body.children().filter(|c| c.kind() == SyntaxKind::MethodDeclaration) {
+        for child in body
+            .children()
+            .filter(|c| c.kind() == SyntaxKind::MethodDeclaration)
+        {
             if let Some(bean) = discover_factory_method_bean(
                 &class_name,
                 child,
@@ -509,7 +509,10 @@ fn discover_callable_params_as_injections(
     };
 
     let mut out = Vec::new();
-    for child in params.children().filter(|c| c.kind() == SyntaxKind::Parameter) {
+    for child in params
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::Parameter)
+    {
         let Some(name_token) = first_identifier_token(&child) else {
             continue;
         };

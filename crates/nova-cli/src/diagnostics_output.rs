@@ -63,7 +63,9 @@ fn github_escape_data(input: &str) -> String {
 }
 
 fn github_escape_property(input: &str) -> String {
-    github_escape_data(input).replace(':', "%3A").replace(',', "%2C")
+    github_escape_data(input)
+        .replace(':', "%3A")
+        .replace(',', "%2C")
 }
 
 fn sarif_log(report: &DiagnosticsReport) -> SarifLog {
@@ -181,4 +183,3 @@ struct SarifRegion {
     #[serde(rename = "startColumn")]
     start_column: usize,
 }
-

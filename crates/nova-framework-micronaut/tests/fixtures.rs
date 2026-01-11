@@ -136,7 +136,10 @@ fn diagnostic_ambiguous_beans() {
     let analysis = analyze_java_sources(&[service, a, b, foo]);
 
     assert_eq!(analysis.diagnostics.len(), 1);
-    assert_eq!(analysis.diagnostics[0].code.as_ref(), "MICRONAUT_AMBIGUOUS_BEAN");
+    assert_eq!(
+        analysis.diagnostics[0].code.as_ref(),
+        "MICRONAUT_AMBIGUOUS_BEAN"
+    );
 }
 
 #[test]
@@ -167,7 +170,8 @@ fn diagnostic_circular_dependency() {
         analysis
             .diagnostics
             .iter()
-            .any(|d| d.code.as_ref() == "MICRONAUT_CIRCULAR_DEPENDENCY" && d.severity == Severity::Warning),
+            .any(|d| d.code.as_ref() == "MICRONAUT_CIRCULAR_DEPENDENCY"
+                && d.severity == Severity::Warning),
         "expected circular dependency warning, got: {:#?}",
         analysis.diagnostics
     );
@@ -210,13 +214,10 @@ fn validation_diagnostic_notnull_on_primitive() {
 
     let analysis = analyze_java_sources(&[src]);
     assert!(
-        analysis
-            .diagnostics
-            .iter()
-            .any(|d| {
-                d.code.as_ref() == "MICRONAUT_VALIDATION_PRIMITIVE_NONNULL"
-                    && d.severity == Severity::Warning
-            }),
+        analysis.diagnostics.iter().any(|d| {
+            d.code.as_ref() == "MICRONAUT_VALIDATION_PRIMITIVE_NONNULL"
+                && d.severity == Severity::Warning
+        }),
         "expected validation warning, got: {:#?}",
         analysis.diagnostics
     );

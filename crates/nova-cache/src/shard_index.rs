@@ -5,7 +5,9 @@ use nova_remote_proto::{ShardId, ShardIndex, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 
 use crate::error::CacheError;
-use crate::util::{atomic_write, bincode_deserialize, bincode_serialize, BINCODE_PAYLOAD_LIMIT_BYTES};
+use crate::util::{
+    atomic_write, bincode_deserialize, bincode_serialize, BINCODE_PAYLOAD_LIMIT_BYTES,
+};
 
 const SHARD_INDEX_CACHE_MAGIC: [u8; 8] = *b"NOVASHRD";
 const SHARD_INDEX_CACHE_FORMAT_VERSION: u32 = 1;
@@ -58,7 +60,10 @@ pub fn save_shard_index(cache_dir: &Path, index: &ShardIndex) -> Result<(), Cach
     atomic_write(&path, &bytes)
 }
 
-pub fn load_shard_index(cache_dir: &Path, shard_id: ShardId) -> Result<Option<ShardIndex>, CacheError> {
+pub fn load_shard_index(
+    cache_dir: &Path,
+    shard_id: ShardId,
+) -> Result<Option<ShardIndex>, CacheError> {
     let path = shard_cache_path(cache_dir, shard_id);
     let Some(bytes) = read_shard_cache_bytes(&path, shard_id) else {
         return Ok(None);

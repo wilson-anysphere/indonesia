@@ -237,7 +237,6 @@ impl<R: BufRead> AqueryTextprotoStreamingJavacInfoParser<R> {
             done: false,
         }
     }
-
 }
 
 fn apply_javac_argument(

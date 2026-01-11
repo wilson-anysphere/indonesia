@@ -386,8 +386,11 @@ mod tests {
 
     #[test]
     fn does_not_split_commas_inside_strings() {
-        let ann = parse_annotation_text("@X(value = \"a,b\", name=\"c\")".to_string(), Span::new(0, 0))
-            .expect("annotation");
+        let ann = parse_annotation_text(
+            "@X(value = \"a,b\", name=\"c\")".to_string(),
+            Span::new(0, 0),
+        )
+        .expect("annotation");
         assert_eq!(ann.args.get("value").map(String::as_str), Some("a,b"));
         assert_eq!(ann.args.get("name").map(String::as_str), Some("c"));
     }
@@ -421,8 +424,9 @@ mod tests {
 
     #[test]
     fn preserves_class_literals() {
-        let ann = parse_annotation_text("@X(targetEntity = Foo.class)".to_string(), Span::new(0, 0))
-            .expect("annotation");
+        let ann =
+            parse_annotation_text("@X(targetEntity = Foo.class)".to_string(), Span::new(0, 0))
+                .expect("annotation");
         assert_eq!(
             ann.args.get("targetEntity").map(String::as_str),
             Some("Foo.class")

@@ -1,5 +1,5 @@
-use nova_types::Span;
 use nova_syntax::{SyntaxKind, SyntaxNode};
+use nova_types::Span;
 
 use crate::parse::{
     collect_annotations, find_named_child, first_identifier_token, modifier_node, parse_java,
@@ -70,7 +70,10 @@ fn discover_endpoints_in_class(node: SyntaxNode, src: &JavaSource) -> Vec<Endpoi
     };
 
     let mut out = Vec::new();
-    for child in body.children().filter(|c| c.kind() == SyntaxKind::MethodDeclaration) {
+    for child in body
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::MethodDeclaration)
+    {
         out.extend(discover_endpoints_in_method(
             &class_name,
             &base_path,

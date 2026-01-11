@@ -176,15 +176,17 @@ pub fn extract_jpql_strings(java_source: &str) -> Vec<(String, Span)> {
     let mut out = Vec::new();
     let parse = parse_java(java_source);
     let root = parse.syntax();
-    for annotation in root.descendants().filter(|n| n.kind() == SyntaxKind::Annotation) {
+    for annotation in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::Annotation)
+    {
         let Some(simple_name) = annotation_simple_name(&annotation) else {
             continue;
         };
 
         match simple_name.as_str() {
             "Query" => {
-                if let Some((value, span)) =
-                    jpql_string_from_annotation(&annotation, "value", true)
+                if let Some((value, span)) = jpql_string_from_annotation(&annotation, "value", true)
                 {
                     out.push((value, span));
                 }
@@ -235,7 +237,9 @@ fn literal_content_bounds(source: &str, lit_span: Span) -> (usize, usize) {
 }
 
 fn annotation_simple_name(annotation: &SyntaxNode) -> Option<String> {
-    let name = annotation.children().find(|n| n.kind() == SyntaxKind::Name)?;
+    let name = annotation
+        .children()
+        .find(|n| n.kind() == SyntaxKind::Name)?;
     let last = name
         .children_with_tokens()
         .filter_map(|e| e.into_token())
@@ -279,7 +283,10 @@ fn string_literal_for_named_arg(args: &SyntaxNode, key: &str) -> Option<(String,
         let mut seen_eq = false;
         let mut rhs_string: Option<SyntaxToken> = None;
 
-        for token in expr.descendants_with_tokens().filter_map(|e| e.into_token()) {
+        for token in expr
+            .descendants_with_tokens()
+            .filter_map(|e| e.into_token())
+        {
             if !seen_eq {
                 if token.kind() == SyntaxKind::Eq {
                     seen_eq = true;
@@ -291,7 +298,10 @@ fn string_literal_for_named_arg(args: &SyntaxNode, key: &str) -> Option<(String,
                 continue;
             }
 
-            if matches!(token.kind(), SyntaxKind::StringLiteral | SyntaxKind::TextBlock) {
+            if matches!(
+                token.kind(),
+                SyntaxKind::StringLiteral | SyntaxKind::TextBlock
+            ) {
                 rhs_string = Some(token);
                 break;
             }

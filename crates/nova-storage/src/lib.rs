@@ -109,7 +109,8 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
+        let loaded =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
         assert_eq!(loaded.header().schema_version, 1);
 
         assert_eq!(loaded.to_owned().unwrap(), value);
@@ -169,7 +170,8 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
+        let loaded =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
         assert_eq!(loaded.header().compression, Compression::Zstd);
         assert_eq!(loaded.to_owned().unwrap(), value);
     }
@@ -569,7 +571,8 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
+        let loaded =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
         assert_eq!(loaded.to_owned().unwrap(), second);
     }
 }

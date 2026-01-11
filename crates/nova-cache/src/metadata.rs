@@ -75,10 +75,7 @@ impl CacheMetadata {
     /// This is equivalent to [`Self::diff_files`] but allows callers to supply
     /// fingerprints computed outside `nova-cache` (e.g. Salsa-derived fingerprints
     /// from a VFS).
-    pub fn diff_file_fingerprints(
-        &self,
-        current: &BTreeMap<String, Fingerprint>,
-    ) -> Vec<String> {
+    pub fn diff_file_fingerprints(&self, current: &BTreeMap<String, Fingerprint>) -> Vec<String> {
         let mut invalidated = BTreeSet::new();
 
         for (path, current_fp) in current {

@@ -1,4 +1,8 @@
-use std::{fs::File, io, path::{Path, PathBuf}};
+use std::{
+    fs::File,
+    io,
+    path::{Path, PathBuf},
+};
 
 #[cfg(feature = "s3")]
 use std::ffi::{OsStr, OsString};

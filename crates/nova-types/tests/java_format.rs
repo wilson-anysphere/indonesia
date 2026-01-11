@@ -13,10 +13,9 @@ fn formats_wildcard_generic_array() {
 
     let ty = Type::Array(Box::new(Type::class(
         list,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-            string,
-            vec![],
-        ))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::class(string, vec![]),
+        )))],
     )));
 
     assert_eq!(format_type(&env, &ty), "List<? extends String>[]");

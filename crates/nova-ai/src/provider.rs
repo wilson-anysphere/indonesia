@@ -17,7 +17,11 @@ pub enum AiProviderError {
 }
 
 pub trait AiProvider: Send + Sync {
-    fn complete(&self, prompt: &str, cancel: &SyncCancellationToken) -> Result<String, AiProviderError>;
+    fn complete(
+        &self,
+        prompt: &str,
+        cancel: &SyncCancellationToken,
+    ) -> Result<String, AiProviderError>;
 }
 
 #[derive(Clone, Debug)]

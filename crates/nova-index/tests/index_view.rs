@@ -112,11 +112,15 @@ fn index_view_filters_invalidated_files_without_materializing() {
         vec!["OnlyA"]
     );
     assert_eq!(
-        view_v1.annotation_names_with_prefix("@D").collect::<Vec<_>>(),
+        view_v1
+            .annotation_names_with_prefix("@D")
+            .collect::<Vec<_>>(),
         vec!["@Deprecated"]
     );
     assert_eq!(
-        view_v1.referenced_symbols_with_prefix("F").collect::<Vec<_>>(),
+        view_v1
+            .referenced_symbols_with_prefix("F")
+            .collect::<Vec<_>>(),
         vec!["Foo"]
     );
 
@@ -286,17 +290,20 @@ fn index_view_filters_invalidated_files_without_materializing() {
         vec!["@Deprecated", "@NewInA", "@OnlyA"]
     );
     assert_eq!(
-        view_v2.symbol_names_with_prefix_merged("N")
+        view_v2
+            .symbol_names_with_prefix_merged("N")
             .collect::<Vec<_>>(),
         vec!["NewInA"]
     );
     assert_eq!(
-        view_v2.annotation_names_with_prefix_merged("@N")
+        view_v2
+            .annotation_names_with_prefix_merged("@N")
             .collect::<Vec<_>>(),
         vec!["@NewInA"]
     );
     assert_eq!(
-        view_v2.referenced_symbols_with_prefix_merged("O")
+        view_v2
+            .referenced_symbols_with_prefix_merged("O")
             .collect::<Vec<_>>(),
         vec!["OnlyA"]
     );

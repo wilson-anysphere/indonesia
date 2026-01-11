@@ -43,14 +43,14 @@ fn warm_start_indexes_only_changed_files() {
         assert_eq!(second.metrics.files_total, 2);
         assert_eq!(second.metrics.files_indexed, 0);
         assert_eq!(second.metrics.files_invalidated, 0);
-        assert_eq!(second.metrics.symbols_indexed, first.metrics.symbols_indexed);
+        assert_eq!(
+            second.metrics.symbols_indexed,
+            first.metrics.symbols_indexed
+        );
 
         // Touch one file (len+mtime changes) and ensure only that file is re-indexed.
-        std::fs::write(
-            project_root.join("src/A.java"),
-            "class A { void m() {} }\n",
-        )
-        .expect("touch A");
+        std::fs::write(project_root.join("src/A.java"), "class A { void m() {} }\n")
+            .expect("touch A");
 
         let third = ws.index_and_write_cache().expect("third index");
         assert_eq!(third.metrics.files_total, 2);
@@ -58,4 +58,3 @@ fn warm_start_indexes_only_changed_files() {
         assert_eq!(third.metrics.files_invalidated, 1);
     });
 }
-

@@ -448,8 +448,7 @@ pub struct BugReportBuilder<'a> {
     persisted_crash_log_path: Option<PathBuf>,
     create_archive: bool,
     safe_mode_active: Option<bool>,
-    extra_attachments:
-        Option<Box<dyn Fn(&Path) -> Result<(), BugReportError> + Send + Sync + 'a>>,
+    extra_attachments: Option<Box<dyn Fn(&Path) -> Result<(), BugReportError> + Send + Sync + 'a>>,
 }
 
 impl<'a> BugReportBuilder<'a> {
@@ -702,9 +701,7 @@ fn zip_dir_recursive(
             continue;
         }
 
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or_else(|_| path.as_path());
+        let rel = path.strip_prefix(root).unwrap_or_else(|_| path.as_path());
         let name = Path::new(prefix).join(rel);
         let name = name.to_string_lossy().replace('\\', "/");
 
@@ -819,11 +816,23 @@ mod tests {
         let sanitized = sanitize_value(input);
         let out = serde_json::to_string(&sanitized).expect("json serialization should succeed");
 
-        assert!(!out.contains("pass"), "userinfo password should be redacted");
+        assert!(
+            !out.contains("pass"),
+            "userinfo password should be redacted"
+        );
         assert!(!out.contains("abc123"), "query token should be redacted");
-        assert!(!out.contains("sk-12345678901234567890"), "api key should be redacted");
-        assert!(out.contains("foo=bar"), "non-sensitive query params should remain");
-        assert!(out.contains("<redacted>@example.com"), "userinfo should be redacted");
+        assert!(
+            !out.contains("sk-12345678901234567890"),
+            "api key should be redacted"
+        );
+        assert!(
+            out.contains("foo=bar"),
+            "non-sensitive query params should remain"
+        );
+        assert!(
+            out.contains("<redacted>@example.com"),
+            "userinfo should be redacted"
+        );
         assert!(
             out.contains("token=<redacted>") || out.contains("token=%3Credacted%3E"),
             "expected token query param to be redacted, got: {out}"
@@ -882,8 +891,8 @@ mod tests {
             .build()
             .expect("bundle creation failed");
 
-        let crashes_text =
-            std::fs::read_to_string(bundle.path().join("crashes.json")).expect("crashes read failed");
+        let crashes_text = std::fs::read_to_string(bundle.path().join("crashes.json"))
+            .expect("crashes read failed");
         let crashes: serde_json::Value =
             serde_json::from_str(&crashes_text).expect("crashes json should parse");
         let persisted = crashes

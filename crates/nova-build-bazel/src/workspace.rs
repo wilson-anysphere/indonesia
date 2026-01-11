@@ -70,7 +70,11 @@ fn compile_info_expr_version_hex() -> String {
 /// - `MODULE.bazel`
 pub fn bazel_workspace_root(start: impl AsRef<Path>) -> Option<PathBuf> {
     let start = start.as_ref();
-    let mut dir = if start.is_file() { start.parent()? } else { start };
+    let mut dir = if start.is_file() {
+        start.parent()?
+    } else {
+        start
+    };
 
     loop {
         if is_bazel_workspace(dir) {
@@ -222,12 +226,14 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             // used to find a *similar* `Javac` invocation from a dependency. In that case we can
             // stop after the first `Javac` action, avoiding a full scan of the (potentially huge)
             // deps query output.
-            info = self.aquery_compile_info(None, &deps_expr).with_context(|| {
-                direct_err
-                    .as_ref()
-                    .map(|err| format!("direct aquery failed: {err}"))
-                    .unwrap_or_else(|| "direct aquery returned no Javac actions".to_string())
-            })?;
+            info = self
+                .aquery_compile_info(None, &deps_expr)
+                .with_context(|| {
+                    direct_err
+                        .as_ref()
+                        .map(|err| format!("direct aquery failed: {err}"))
+                        .unwrap_or_else(|| "direct aquery returned no Javac actions".to_string())
+                })?;
         }
 
         let info = info.with_context(|| format!("no Javac actions found for {target}"))?;
@@ -462,7 +468,12 @@ fn build_file_for_label(workspace_root: &Path, label: &str) -> Result<Option<Pat
 fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    for name in [".bazelrc", ".bazelversion", "MODULE.bazel.lock", "bazelisk.rc"] {
+    for name in [
+        ".bazelrc",
+        ".bazelversion",
+        "MODULE.bazel.lock",
+        "bazelisk.rc",
+    ] {
         let abs = workspace_root.join(name);
         if abs.is_file() {
             paths.push(PathBuf::from(name));

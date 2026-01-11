@@ -18,7 +18,9 @@ use super::{HasSalsaMemoStats, TrackedSalsaMemo};
 pub type SyntaxTree = GreenNode;
 
 #[ra_salsa::query_group(NovaSyntaxStorage)]
-pub trait NovaSyntax: NovaInputs + HasQueryStats + HasPersistence + HasFilePaths + HasSalsaMemoStats {
+pub trait NovaSyntax:
+    NovaInputs + HasQueryStats + HasPersistence + HasFilePaths + HasSalsaMemoStats
+{
     /// Parse a file into a syntax tree (memoized and dependency-tracked).
     fn parse(&self, file: FileId) -> Arc<ParseResult>;
 

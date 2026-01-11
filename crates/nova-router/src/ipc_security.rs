@@ -45,7 +45,9 @@ pub(crate) fn ensure_unix_socket_dir(path: &Path) -> Result<()> {
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     builder.mode(0o700);
-    builder.create(parent).with_context(|| format!("create socket dir {parent:?}"))?;
+    builder
+        .create(parent)
+        .with_context(|| format!("create socket dir {parent:?}"))?;
 
     // Explicitly chmod to 0700 so other users cannot traverse the directory to reach the socket
     // path (and to correct permissions if the FS/umask created something more permissive).

@@ -146,11 +146,7 @@ pub fn lower_module_decl(decl: &ModuleDeclaration) -> ModuleInfo {
 
     ModuleInfo {
         kind: ModuleKind::Explicit,
-        name: ModuleName::new(
-            decl.name()
-                .expect("module declarations have a name")
-                .text(),
-        ),
+        name: ModuleName::new(decl.name().expect("module declarations have a name").text()),
         is_open: decl.is_open(),
         requires,
         exports,

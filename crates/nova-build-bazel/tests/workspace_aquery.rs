@@ -111,7 +111,10 @@ action {{
     let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner.clone()).unwrap();
     let info = workspace.target_compile_info(target).unwrap();
 
-    assert_eq!(info.classpath, vec!["a.jar".to_string(), "b.jar".to_string()]);
+    assert_eq!(
+        info.classpath,
+        vec!["a.jar".to_string(), "b.jar".to_string()]
+    );
 
     let aquery_exprs: Vec<String> = runner
         .calls()

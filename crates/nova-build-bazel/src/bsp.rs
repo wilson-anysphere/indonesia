@@ -380,7 +380,8 @@ impl BspWorkspace {
         if !root.is_absolute() {
             root = std::env::current_dir()?.join(root);
         }
-        let abs_root = AbsPathBuf::new(root.clone()).context("BSP workspace root must be absolute")?;
+        let abs_root =
+            AbsPathBuf::new(root.clone()).context("BSP workspace root must be absolute")?;
         let root_uri = nova_core::path_to_file_uri(&abs_root)
             .context("failed to convert workspace root to file:// URI for BSP initialization")?;
 
@@ -424,7 +425,10 @@ impl BspWorkspace {
     ///
     /// BSP build target identifiers are URIs, so the provided string is matched against
     /// `displayName` (preferred) and the raw `id.uri`.
-    pub fn resolve_build_target(&mut self, label_or_uri: &str) -> Result<Option<BuildTargetIdentifier>> {
+    pub fn resolve_build_target(
+        &mut self,
+        label_or_uri: &str,
+    ) -> Result<Option<BuildTargetIdentifier>> {
         if label_or_uri.contains("://") {
             return Ok(Some(BuildTargetIdentifier {
                 uri: label_or_uri.to_string(),
@@ -446,7 +450,10 @@ impl BspWorkspace {
             if score == 0 {
                 continue;
             }
-            if best.as_ref().is_some_and(|(best_score, _)| *best_score >= score) {
+            if best
+                .as_ref()
+                .is_some_and(|(best_score, _)| *best_score >= score)
+            {
                 continue;
             }
             best = Some((score, target.id.clone()));
@@ -509,7 +516,11 @@ fn javac_options_item_to_compile_info(item: &JavacOptionsItem) -> JavaCompileInf
     };
     info.classpath = classpath
         .iter()
-        .map(|entry| normalize_bsp_uri_to_path(entry).to_string_lossy().to_string())
+        .map(|entry| {
+            normalize_bsp_uri_to_path(entry)
+                .to_string_lossy()
+                .to_string()
+        })
         .collect();
     if !item.class_directory.trim().is_empty() {
         info.output_dir = Some(
@@ -827,7 +838,11 @@ pub fn target_compile_info_via_bsp(
     info.classpath = item
         .classpath
         .into_iter()
-        .map(|entry| normalize_bsp_uri_to_path(&entry).to_string_lossy().to_string())
+        .map(|entry| {
+            normalize_bsp_uri_to_path(&entry)
+                .to_string_lossy()
+                .to_string()
+        })
         .collect();
     info.output_dir = Some(
         normalize_bsp_uri_to_path(&item.class_directory)

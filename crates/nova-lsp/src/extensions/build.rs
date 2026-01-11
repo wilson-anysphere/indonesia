@@ -1353,7 +1353,8 @@ mod tests {
             enable_preview: true,
             ..JavaCompileConfig::default()
         };
-        let actual: std::option::Option<LanguageLevel> = language_level_from_java_compile_config(&cfg);
+        let actual: std::option::Option<LanguageLevel> =
+            language_level_from_java_compile_config(&cfg);
         assert_eq!(
             actual,
             Some(LanguageLevel {
@@ -1369,7 +1370,8 @@ mod tests {
             enable_preview: false,
             ..JavaCompileConfig::default()
         };
-        let actual: std::option::Option<LanguageLevel> = language_level_from_java_compile_config(&cfg);
+        let actual: std::option::Option<LanguageLevel> =
+            language_level_from_java_compile_config(&cfg);
         assert_eq!(
             actual,
             Some(LanguageLevel {

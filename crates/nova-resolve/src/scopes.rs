@@ -378,7 +378,10 @@ pub fn build_scopes(jdk: &dyn TypeIndex, file: &CompilationUnit) -> ScopeBuildRe
 }
 
 /// Build a scope graph using an already-configured [`Resolver`].
-pub fn build_scopes_with_resolver(resolver: &Resolver<'_>, file: &CompilationUnit) -> ScopeBuildResult {
+pub fn build_scopes_with_resolver(
+    resolver: &Resolver<'_>,
+    file: &CompilationUnit,
+) -> ScopeBuildResult {
     build_scopes_with_resolver_and_cancel(resolver, file, || {})
 }
 
@@ -483,7 +486,10 @@ where
 
         // Populate common java.lang types from the JDK index.
         // We don't have a way to enumerate, so we hardcode the usual suspects used in tests.
-        for (idx, ty) in ["Object", "String", "Integer", "System", "Math"].iter().enumerate() {
+        for (idx, ty) in ["Object", "String", "Integer", "System", "Math"]
+            .iter()
+            .enumerate()
+        {
             if idx % 64 == 0 {
                 self.check_cancelled();
             }

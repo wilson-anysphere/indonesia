@@ -63,9 +63,7 @@ struct ChildGuard {
 
 impl ChildGuard {
     fn spawn(port: u16, classes_dir: &Path) -> anyhow::Result<Self> {
-        let jdwp = format!(
-            "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address={port}"
-        );
+        let jdwp = format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address={port}");
         let child = Command::new("java")
             .arg(jdwp)
             .arg("-cp")
@@ -209,7 +207,8 @@ async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut dap = DapHarness::new(client_read, client_write);
@@ -218,11 +217,17 @@ async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
     let init_resp = dap
         .wait_for_response(1, Instant::now() + Duration::from_secs(5))
         .await;
-    assert_eq!(init_resp.get("success").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(
+        init_resp.get("success").and_then(|v| v.as_bool()),
+        Some(true)
+    );
     let initialized = dap
         .wait_for_event("initialized", Instant::now() + Duration::from_secs(5))
         .await;
-    assert_eq!(initialized.get("event").and_then(|v| v.as_str()), Some("initialized"));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     let attach_deadline = Instant::now() + Duration::from_secs(30);
     let mut seq = 2i64;
@@ -294,7 +299,10 @@ async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
         stopped.pointer("/body/reason").and_then(|v| v.as_str()),
         Some("breakpoint")
     );
-    let thread_id = stopped.pointer("/body/threadId").and_then(|v| v.as_i64()).unwrap();
+    let thread_id = stopped
+        .pointer("/body/threadId")
+        .and_then(|v| v.as_i64())
+        .unwrap();
 
     let stack_seq = continue_seq + 1;
     dap.send_request(stack_seq, "stackTrace", json!({ "threadId": thread_id }))
@@ -326,7 +334,8 @@ async fn dap_can_attach_to_real_jvm_set_breakpoint_and_stop() {
     );
 
     let disconnect_seq = stack_seq + 1;
-    dap.send_request(disconnect_seq, "disconnect", json!({})).await;
+    dap.send_request(disconnect_seq, "disconnect", json!({}))
+        .await;
     let _ = dap
         .wait_for_response(disconnect_seq, Instant::now() + Duration::from_secs(5))
         .await;

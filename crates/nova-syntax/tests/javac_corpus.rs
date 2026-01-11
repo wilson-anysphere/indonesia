@@ -42,7 +42,11 @@ fn javac_corpus_ok() {
 
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/javac/ok");
     let files = collect_java_files(&dir);
-    assert!(!files.is_empty(), "no ok corpus files found at {}", dir.display());
+    assert!(
+        !files.is_empty(),
+        "no ok corpus files found at {}",
+        dir.display()
+    );
 
     let opts = javac_opts();
     let parse_opts = nova_opts();

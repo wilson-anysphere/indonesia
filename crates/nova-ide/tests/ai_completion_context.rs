@@ -103,4 +103,3 @@ class A {
         ctx.available_methods
     );
 }
-

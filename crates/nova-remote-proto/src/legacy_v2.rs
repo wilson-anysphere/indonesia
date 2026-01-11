@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     FileText, Revision, ScoredSymbol, ShardId, ShardIndexInfo, WorkerId, WorkerStats,
-    MAX_FILE_TEXT_BYTES, MAX_FILES_PER_MESSAGE, MAX_MESSAGE_BYTES, MAX_SEARCH_RESULTS_PER_MESSAGE,
+    MAX_FILES_PER_MESSAGE, MAX_FILE_TEXT_BYTES, MAX_MESSAGE_BYTES, MAX_SEARCH_RESULTS_PER_MESSAGE,
     MAX_SMALL_STRING_BYTES,
 };
 
@@ -59,10 +59,15 @@ pub enum RpcMessage {
     ShardIndexInfo(ShardIndexInfo),
 
     /// Query a shard's symbol index and return the top-k results.
-    SearchSymbols { query: String, limit: u32 },
+    SearchSymbols {
+        query: String,
+        limit: u32,
+    },
 
     /// Response to `SearchSymbols`.
-    SearchSymbolsResult { items: Vec<ScoredSymbol> },
+    SearchSymbolsResult {
+        items: Vec<ScoredSymbol>,
+    },
 
     /// Generic success response for commands that don't have a structured payload.
     Ack,
@@ -396,7 +401,9 @@ impl<'a> WireReader<'a> {
     }
 
     fn read_string(&mut self, field: &'static str, max_bytes: usize) -> anyhow::Result<String> {
-        let len = self.read_len().with_context(|| format!("read {field} length"))?;
+        let len = self
+            .read_len()
+            .with_context(|| format!("read {field} length"))?;
         ensure!(
             len <= max_bytes,
             "{field} too large: {len} bytes (max {max_bytes})"
@@ -407,8 +414,7 @@ impl<'a> WireReader<'a> {
             self.remaining()
         );
         let bytes = self.read_exact(len)?;
-        let s = std::str::from_utf8(bytes)
-            .with_context(|| format!("invalid UTF-8 in {field}"))?;
+        let s = std::str::from_utf8(bytes).with_context(|| format!("invalid UTF-8 in {field}"))?;
         let mut out = String::new();
         out.try_reserve_exact(s.len())
             .map_err(|err| anyhow!("failed to reserve {} bytes for {field}: {err:?}", s.len()))?;
@@ -434,7 +440,9 @@ impl<'a> WireReader<'a> {
         min_wire_bytes_per_item: usize,
         mut read: impl FnMut(&mut Self) -> anyhow::Result<T>,
     ) -> anyhow::Result<Vec<T>> {
-        let len = self.read_len().with_context(|| format!("read {field} length"))?;
+        let len = self
+            .read_len()
+            .with_context(|| format!("read {field} length"))?;
         ensure!(
             len <= max_len,
             "{field} too long: {len} elements (max {max_len})"
@@ -503,7 +511,9 @@ impl<'a> WireReader<'a> {
             index_generation: self
                 .read_u64()
                 .context("read ShardIndexInfo.index_generation")?,
-            symbol_count: self.read_u32().context("read ShardIndexInfo.symbol_count")?,
+            symbol_count: self
+                .read_u32()
+                .context("read ShardIndexInfo.symbol_count")?,
         })
     }
 
@@ -515,7 +525,9 @@ impl<'a> WireReader<'a> {
                 auth_token: self.read_option(|r| {
                     r.read_string("WorkerHello.auth_token", MAX_SMALL_STRING_BYTES)
                 })?,
-                has_cached_index: self.read_bool().context("read WorkerHello.has_cached_index")?,
+                has_cached_index: self
+                    .read_bool()
+                    .context("read WorkerHello.has_cached_index")?,
             }),
             1 => Ok(RpcMessage::RouterHello {
                 worker_id: self.read_u32().context("read RouterHello.worker_id")?,
@@ -554,7 +566,8 @@ impl<'a> WireReader<'a> {
                 self.read_worker_stats().context("read WorkerStats")?,
             )),
             7 => Ok(RpcMessage::ShardIndexInfo(
-                self.read_shard_index_info().context("read ShardIndexInfo")?,
+                self.read_shard_index_info()
+                    .context("read ShardIndexInfo")?,
             )),
             8 => {
                 let query = self.read_string("SearchSymbols.query", MAX_SMALL_STRING_BYTES)?;

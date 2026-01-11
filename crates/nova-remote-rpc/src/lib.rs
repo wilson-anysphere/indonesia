@@ -1621,7 +1621,8 @@ mod tests {
                         let mut caps = Capabilities::default();
                         caps.max_frame_len = 4096;
                         caps.max_packet_len = 16 * 1024;
-                        caps.supported_compression = vec![CompressionAlgo::Zstd, CompressionAlgo::None];
+                        caps.supported_compression =
+                            vec![CompressionAlgo::Zstd, CompressionAlgo::None];
                         caps.supports_chunking = true;
 
                         let negotiated = Negotiated {

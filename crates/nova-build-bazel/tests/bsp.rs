@@ -19,8 +19,9 @@ fn bsp_compile_collects_diagnostics_on_non_zero_status() {
     let file_path = src_dir.join("My File.java");
     std::fs::write(&file_path, "class Hello {}").unwrap();
 
-    let file_uri = nova_core::path_to_file_uri(&nova_core::AbsPathBuf::new(file_path.clone()).unwrap())
-        .unwrap();
+    let file_uri =
+        nova_core::path_to_file_uri(&nova_core::AbsPathBuf::new(file_path.clone()).unwrap())
+            .unwrap();
 
     let target = BuildTarget {
         id: BuildTargetIdentifier {
@@ -35,8 +36,14 @@ fn bsp_compile_collects_diagnostics_on_non_zero_status() {
         text_document: TextDocumentIdentifier { uri: file_uri },
         diagnostics: vec![Diagnostic {
             range: Range {
-                start: Position { line: 2, character: 1 },
-                end: Position { line: 2, character: 5 },
+                start: Position {
+                    line: 2,
+                    character: 1,
+                },
+                end: Position {
+                    line: 2,
+                    character: 5,
+                },
             },
             severity: Some(1),
             message: "boom".to_string(),

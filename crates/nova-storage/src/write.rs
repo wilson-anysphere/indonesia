@@ -156,12 +156,13 @@ where
                 let (compressed_path, compressed_file) = open_unique_tmp_file(path, parent)?;
 
                 let compressed_result = (|| -> Result<(), StorageError> {
-                    let (mut compressed_file, payload_len, content_hash) = compress_uncompressed_tmp(
-                        &tmp_path,
-                        compressed_file,
-                        uncompressed_len,
-                        level,
-                    )?;
+                    let (mut compressed_file, payload_len, content_hash) =
+                        compress_uncompressed_tmp(
+                            &tmp_path,
+                            compressed_file,
+                            uncompressed_len,
+                            level,
+                        )?;
 
                     let header = StorageHeader::new(
                         kind,

@@ -18,4 +18,3 @@ fn query_disk_cache_gc_does_not_delete_fresh_entries() {
     let loaded = cache.load("key").unwrap();
     assert_eq!(loaded.as_deref(), Some(b"value".as_slice()));
 }
-

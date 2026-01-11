@@ -232,9 +232,7 @@ class C {
     let extract = actions
         .iter()
         .find(|action| {
-            action
-                .pointer("/command/command")
-                .and_then(|v| v.as_str())
+            action.pointer("/command/command").and_then(|v| v.as_str())
                 == Some("nova.extractMethod")
         })
         .expect("extract method action");
@@ -333,4 +331,3 @@ fn read_jsonrpc_response_with_id(reader: &mut impl BufRead, id: i64) -> serde_js
         }
     }
 }
-

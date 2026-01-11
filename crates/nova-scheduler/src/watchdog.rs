@@ -103,12 +103,13 @@ mod tests {
         let start = Instant::now();
         let token = CancellationToken::new();
 
-        let result = watchdog.run_with_deadline(Duration::from_millis(50), token.clone(), |token| {
-            while !token.is_cancelled() {
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            42_u32
-        });
+        let result =
+            watchdog.run_with_deadline(Duration::from_millis(50), token.clone(), |token| {
+                while !token.is_cancelled() {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                42_u32
+            });
 
         assert!(matches!(result, Err(TaskError::DeadlineExceeded(_))));
         assert!(token.is_cancelled());

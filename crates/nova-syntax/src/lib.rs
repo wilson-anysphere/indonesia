@@ -1,12 +1,10 @@
 //! Syntax tree and parsing primitives.
 //!
-//! This crate provides three complementary entry points:
+//! This crate provides two complementary entry points:
 //! - [`parse`]: produces a small, serializable green tree used by Nova's on-disk
 //!   cache layer (`nova-cache`). Tokens store byte ranges into the source text.
 //! - [`parse_java`]: produces a full-fidelity rowan-based syntax tree suitable
 //!   for interactive IDE features and semantic analysis.
-//! - [`parse_java_expression`]: parses standalone Java expressions (not full
-//!   compilation units) for debugger/evaluator use.
 
 mod ast;
 mod feature_gate;
@@ -20,19 +18,19 @@ mod tree_store;
 mod util;
 
 pub use ast::*;
+pub use incremental::{parse_java_incremental, reparse_java};
+pub use language_level::{FeatureAvailability, JavaFeature, JavaLanguageLevel};
 pub use lexer::{lex, lex_with_errors, LexError, Lexer, Token};
 pub use literals::{
-    parse_double_literal, parse_float_literal, parse_int_literal, parse_literal, parse_long_literal,
-    unescape_char_literal, unescape_string_literal, unescape_text_block, LiteralError, LiteralValue,
+    parse_double_literal, parse_float_literal, parse_int_literal, parse_literal,
+    parse_long_literal, unescape_char_literal, unescape_string_literal, unescape_text_block,
+    LiteralError, LiteralValue,
 };
-pub use incremental::{parse_java_incremental, reparse_java};
 pub use parser::{
-    parse_expression, parse_java, parse_java_expression, JavaParseResult, SyntaxElement, SyntaxNode,
-    SyntaxToken,
+    parse_expression, parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken,
 };
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
 pub use tree_store::SyntaxTreeStore;
-pub use language_level::{FeatureAvailability, JavaFeature, JavaLanguageLevel};
 
 /// Options that influence parsing diagnostics.
 ///
@@ -60,7 +58,10 @@ pub struct JavaParse {
 pub fn parse_java_with_options(text: &str, opts: ParseOptions) -> JavaParse {
     let result = parser::parse_java(text);
     let diagnostics = feature_gate::feature_gate_diagnostics(&result.syntax(), opts.language_level);
-    JavaParse { result, diagnostics }
+    JavaParse {
+        result,
+        diagnostics,
+    }
 }
 
 /// Parse a `module-info.java` file.
@@ -144,7 +145,13 @@ impl TextEdit {
     }
 
     pub fn insert(offset: u32, text: impl Into<String>) -> Self {
-        Self::new(TextRange { start: offset, end: offset }, text)
+        Self::new(
+            TextRange {
+                start: offset,
+                end: offset,
+            },
+            text,
+        )
     }
 
     /// Net byte change produced by this edit (`replacement.len() - range.len()`).

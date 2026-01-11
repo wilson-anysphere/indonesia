@@ -56,8 +56,7 @@ fn explicit_import_uses_classpath_index() {
     let project = ProjectId::from_raw(0);
 
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
-    let classpath =
-        ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
+    let classpath = ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
     db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
 
     let file = FileId::from_raw(1);
@@ -92,8 +91,7 @@ fn body_only_edit_does_not_recompute_resolution() {
     let project = ProjectId::from_raw(0);
 
     db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
-    let classpath =
-        ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
+    let classpath = ClasspathIndex::build(&[ClasspathEntry::Jar(test_dep_jar())], None).unwrap();
     db.set_classpath_index(project, Some(ArcEq::new(Arc::new(classpath))));
 
     let file = FileId::from_raw(1);

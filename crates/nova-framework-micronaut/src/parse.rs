@@ -59,7 +59,10 @@ pub(crate) fn find_named_child(node: &SyntaxNode, kind: SyntaxKind) -> Option<Sy
 
 pub(crate) fn collect_annotations(modifiers: SyntaxNode, source: &str) -> Vec<ParsedAnnotation> {
     let mut anns = Vec::new();
-    for child in modifiers.children().filter(|c| c.kind() == SyntaxKind::Annotation) {
+    for child in modifiers
+        .children()
+        .filter(|c| c.kind() == SyntaxKind::Annotation)
+    {
         if let Some(ann) = parse_annotation(child, source) {
             anns.push(ann);
         }

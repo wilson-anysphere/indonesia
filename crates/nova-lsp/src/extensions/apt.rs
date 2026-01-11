@@ -1,5 +1,7 @@
 use crate::{NovaLspError, Result};
-use nova_apt::{AptManager, AptProgressEvent, AptRunTarget, GeneratedSourcesFreshness, ProgressReporter};
+use nova_apt::{
+    AptManager, AptProgressEvent, AptRunTarget, GeneratedSourcesFreshness, ProgressReporter,
+};
 use nova_config::NovaConfig;
 use nova_project::{load_project_with_options, BuildSystem, LoadOptions, SourceRootKind};
 use serde::{Deserialize, Serialize};

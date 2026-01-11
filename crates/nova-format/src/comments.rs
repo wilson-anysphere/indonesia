@@ -242,4 +242,3 @@ fn count_line_breaks_between(source: &str, start: TextSize, end: TextSize) -> u3
     }
     count
 }
-

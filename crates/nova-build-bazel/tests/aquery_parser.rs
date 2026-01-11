@@ -329,6 +329,9 @@ fn parses_realistic_aquery_fixture_with_nested_braces_and_escapes() {
     assert!(info.preview);
     assert_eq!(
         info.source_roots,
-        vec!["java/com/example".to_string(), "java/com/example/generated".to_string()]
+        vec![
+            "java/com/example".to_string(),
+            "java/com/example/generated".to_string()
+        ]
     );
 }

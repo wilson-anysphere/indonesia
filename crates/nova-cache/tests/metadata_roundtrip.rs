@@ -59,7 +59,10 @@ fn metadata_bin_corruption_falls_back_to_json() {
     metadata.save(cache_dir.metadata_path()).unwrap();
 
     let bin_path = cache_dir.metadata_bin_path();
-    let file = std::fs::OpenOptions::new().write(true).open(&bin_path).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&bin_path)
+        .unwrap();
     file.set_len(1).unwrap();
 
     let loaded = CacheMetadata::load(cache_dir.metadata_path()).unwrap();

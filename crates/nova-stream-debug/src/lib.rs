@@ -1,8 +1,8 @@
+use std::sync::OnceLock;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use nova_jdwp::{FrameId, JdwpClient, JdwpError, JdwpValue, ObjectKindPreview};

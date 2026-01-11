@@ -75,4 +75,3 @@ fn timeout_kills_process_tree() {
         start.elapsed()
     );
 }
-

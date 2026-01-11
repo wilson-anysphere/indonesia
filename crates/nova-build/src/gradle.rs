@@ -66,7 +66,10 @@ impl GradleBuild {
             if let Some(projects) = cached.projects {
                 return Ok(projects
                     .into_iter()
-                    .map(|p| GradleProjectInfo { path: p.path, dir: p.dir })
+                    .map(|p| GradleProjectInfo {
+                        path: p.path,
+                        dir: p.dir,
+                    })
                     .collect());
             }
         }
@@ -221,7 +224,12 @@ impl GradleBuild {
         project_path: Option<&str>,
         cache: &BuildCache,
     ) -> Result<BuildResult> {
-        self.build_with_task(project_root, project_path, GradleBuildTask::CompileJava, cache)
+        self.build_with_task(
+            project_root,
+            project_path,
+            GradleBuildTask::CompileJava,
+            cache,
+        )
     }
 
     pub fn build_with_task(

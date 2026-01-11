@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use nova_dap::jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpValue};
 use nova_dap::jdwp::wire::inspect;
+use nova_dap::jdwp::wire::{mock::MockJdwpServer, JdwpClient, JdwpValue};
 use nova_dap::wire_format::{ObjectChildrenKind, ValueFormatter};
 
 fn alloc_registry() -> impl FnMut(u64, ObjectChildrenKind) -> i64 {

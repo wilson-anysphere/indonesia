@@ -140,7 +140,10 @@ fn parse_entities(source: &str, source_idx: usize) -> Result<Vec<Entity>, String
 
     let parse = parse_java(source);
     let root = parse.syntax();
-    for node in root.descendants().filter(|n| n.kind() == SyntaxKind::ClassDeclaration) {
+    for node in root
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::ClassDeclaration)
+    {
         if let Some(entity) = parse_entity_class(&node, source, source_idx) {
             out.push(entity);
         }
@@ -285,7 +288,11 @@ fn is_no_arg_constructor(node: &SyntaxNode) -> bool {
     let Some(params) = params else {
         return false;
     };
-    params.children().filter(|n| n.kind() == SyntaxKind::Parameter).count() == 0
+    params
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::Parameter)
+        .count()
+        == 0
 }
 
 fn parse_field_declaration(node: &SyntaxNode, source: &str) -> Vec<Field> {

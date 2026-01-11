@@ -60,9 +60,10 @@ fn scope_graph(db: &dyn NovaResolve, file: FileId) -> Arc<nova_resolve::ScopeBui
     };
 
     let unit = db.compilation_unit(file);
-    let built = nova_resolve::build_scopes_with_resolver_and_cancel(&resolver, unit.as_ref(), || {
-        cancel::check_cancelled(db);
-    });
+    let built =
+        nova_resolve::build_scopes_with_resolver_and_cancel(&resolver, unit.as_ref(), || {
+            cancel::check_cancelled(db);
+        });
 
     let result = Arc::new(built);
     db.record_query_stat("scope_graph", start.elapsed());
@@ -98,7 +99,9 @@ fn resolve_name(
     resolved
 }
 
-fn lower_compilation_unit(unit: &nova_syntax::java::ast::CompilationUnit) -> nova_hir::CompilationUnit {
+fn lower_compilation_unit(
+    unit: &nova_syntax::java::ast::CompilationUnit,
+) -> nova_hir::CompilationUnit {
     use nova_core::PackageName;
 
     let package = unit
@@ -159,7 +162,9 @@ fn lower_type_decl(decl: &nova_syntax::java::ast::TypeDecl) -> nova_hir::TypeDec
 
     for member in decl.members() {
         match member {
-            syntax::MemberDecl::Field(field) => out.fields.push(FieldDecl::new(field.name.as_str())),
+            syntax::MemberDecl::Field(field) => {
+                out.fields.push(FieldDecl::new(field.name.as_str()))
+            }
             syntax::MemberDecl::Method(method) => {
                 let mut hir_method = MethodDecl::new(method.name.as_str());
                 hir_method.params = method

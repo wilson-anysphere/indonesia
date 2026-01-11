@@ -147,8 +147,8 @@ mod tests {
     use super::*;
     use nova_ai::provider::AiProviderError;
     use nova_ai::safety::SafetyError;
-    use nova_ai::PatchSafetyConfig;
     use nova_ai::CodeEditPolicyError;
+    use nova_ai::PatchSafetyConfig;
     use pretty_assertions::assert_eq;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -378,8 +378,14 @@ mod tests {
         let action = AiCodeAction::GenerateMethodBody {
             file: "Example.java".into(),
             insert_range: Range {
-                start: Position { line: 2, character: 0 },
-                end: Position { line: 3, character: 0 },
+                start: Position {
+                    line: 2,
+                    character: 0,
+                },
+                end: Position {
+                    line: 3,
+                    character: 0,
+                },
             },
         };
 
@@ -411,8 +417,14 @@ mod tests {
         let action = AiCodeAction::GenerateTest {
             file: "Example.java".into(),
             insert_range: Range {
-                start: Position { line: 2, character: 0 },
-                end: Position { line: 3, character: 0 },
+                start: Position {
+                    line: 2,
+                    character: 0,
+                },
+                end: Position {
+                    line: 3,
+                    character: 0,
+                },
             },
         };
 
@@ -443,15 +455,23 @@ mod tests {
         let action = AiCodeAction::GenerateMethodBody {
             file: "Example.java".into(),
             insert_range: Range {
-                start: Position { line: 2, character: 0 },
-                end: Position { line: 3, character: 0 },
+                start: Position {
+                    line: 2,
+                    character: 0,
+                },
+                end: Position {
+                    line: 3,
+                    character: 0,
+                },
             },
         };
 
         let err = executor.execute(action, &workspace, &cancel).unwrap_err();
         assert_eq!(provider.call_count(), 0);
         match err {
-            CodeActionError::Codegen(CodeGenerationError::Policy(CodeEditPolicyError::CloudEditsDisabled)) => {}
+            CodeActionError::Codegen(CodeGenerationError::Policy(
+                CodeEditPolicyError::CloudEditsDisabled,
+            )) => {}
             other => panic!("unexpected error: {other:?}"),
         }
     }
@@ -474,8 +494,14 @@ mod tests {
         let action = AiCodeAction::GenerateMethodBody {
             file: "Example.java".into(),
             insert_range: Range {
-                start: Position { line: 2, character: 0 },
-                end: Position { line: 3, character: 0 },
+                start: Position {
+                    line: 2,
+                    character: 0,
+                },
+                end: Position {
+                    line: 3,
+                    character: 0,
+                },
             },
         };
 

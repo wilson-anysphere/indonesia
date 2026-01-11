@@ -195,7 +195,10 @@ fn mixed_index_assigns_modules_based_on_entry_kind() {
 
     let module = index.module_of("com.example.api.Api").unwrap();
     assert_eq!(module.as_str(), "example.mod");
-    assert_eq!(index.module_kind_of("com.example.api.Api"), ModuleNameKind::Explicit);
+    assert_eq!(
+        index.module_kind_of("com.example.api.Api"),
+        ModuleNameKind::Explicit
+    );
 
     assert!(index.module_of("com.example.dep.Foo").is_none());
     assert_eq!(

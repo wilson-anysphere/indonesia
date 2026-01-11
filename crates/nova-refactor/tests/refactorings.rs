@@ -20,7 +20,14 @@ fn rename_updates_all_occurrences_not_strings() {
     let offset = src.find("int foo").unwrap() + "int ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
 
-    let edit = rename(&db, RenameParams { symbol, new_name: "bar".into() }).unwrap();
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
 
     assert!(after.contains("int bar = 1;"));
@@ -89,7 +96,7 @@ fn extract_variable_generates_valid_edit() {
         },
     )
     .unwrap();
- 
+
     let after = apply_text_edits(src, &edit.text_edits).unwrap();
     let expected = r#"class Test {
   void m() {

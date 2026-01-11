@@ -230,7 +230,11 @@ const WAT_MEMORY_GROW: &str = r#"
 
 #[test]
 fn abi_version_mismatch_is_rejected() {
-    let err = match WasmPlugin::from_wat("abi-mismatch", WAT_ABI_MISMATCH, WasmPluginConfig::default()) {
+    let err = match WasmPlugin::from_wat(
+        "abi-mismatch",
+        WAT_ABI_MISMATCH,
+        WasmPluginConfig::default(),
+    ) {
         Ok(_) => panic!("module should be rejected"),
         Err(err) => err,
     };
@@ -245,8 +249,12 @@ fn abi_version_mismatch_is_rejected() {
 
 #[test]
 fn ptr_len_roundtrip_and_basic_call_works() {
-    let plugin = WasmPlugin::from_wat("roundtrip", WAT_DIAG_AND_COMPLETIONS, WasmPluginConfig::default())
-        .expect("load plugin");
+    let plugin = WasmPlugin::from_wat(
+        "roundtrip",
+        WAT_DIAG_AND_COMPLETIONS,
+        WasmPluginConfig::default(),
+    )
+    .expect("load plugin");
 
     let file = FileId::from_raw(1);
     let db = Arc::new(TestDb {
@@ -259,13 +267,7 @@ fn ptr_len_roundtrip_and_basic_call_works() {
     assert_eq!(diags[0].message, "found needle");
     assert_eq!(diags[0].code.as_ref(), "my.plugin.code");
 
-    let completions = plugin.provide_completions(
-        ctx(db),
-        CompletionParams {
-            file,
-            offset: 0,
-        },
-    );
+    let completions = plugin.provide_completions(ctx(db), CompletionParams { file, offset: 0 });
     assert_eq!(
         completions,
         vec![CompletionItem {
@@ -278,15 +280,27 @@ fn ptr_len_roundtrip_and_basic_call_works() {
 #[test]
 fn capabilities_drive_registry_registration() {
     let plugin = Arc::new(
-        WasmPlugin::from_wat("capabilities", WAT_DIAG_AND_COMPLETIONS, WasmPluginConfig::default())
-            .expect("load plugin"),
+        WasmPlugin::from_wat(
+            "capabilities",
+            WAT_DIAG_AND_COMPLETIONS,
+            WasmPluginConfig::default(),
+        )
+        .expect("load plugin"),
     );
 
-    assert!(plugin.capabilities().contains(WasmCapabilities::DIAGNOSTICS));
-    assert!(plugin.capabilities().contains(WasmCapabilities::COMPLETIONS));
-    assert!(!plugin.capabilities().contains(WasmCapabilities::CODE_ACTIONS));
+    assert!(plugin
+        .capabilities()
+        .contains(WasmCapabilities::DIAGNOSTICS));
+    assert!(plugin
+        .capabilities()
+        .contains(WasmCapabilities::COMPLETIONS));
+    assert!(!plugin
+        .capabilities()
+        .contains(WasmCapabilities::CODE_ACTIONS));
     assert!(!plugin.capabilities().contains(WasmCapabilities::NAVIGATION));
-    assert!(!plugin.capabilities().contains(WasmCapabilities::INLAY_HINTS));
+    assert!(!plugin
+        .capabilities()
+        .contains(WasmCapabilities::INLAY_HINTS));
 
     let mut registry = ExtensionRegistry::<TestDb>::default();
     plugin.register(&mut registry).unwrap();
@@ -314,17 +328,17 @@ fn capabilities_drive_registry_registration() {
     // But non-capabilities should still accept the same ID.
     registry
         .register_code_action_provider(Arc::new(DummyCodeActionProvider {
-            id: plugin.id().to_string()
+            id: plugin.id().to_string(),
         }))
         .unwrap();
     registry
         .register_navigation_provider(Arc::new(DummyNavigationProvider {
-            id: plugin.id().to_string()
+            id: plugin.id().to_string(),
         }))
         .unwrap();
     registry
         .register_inlay_hint_provider(Arc::new(DummyInlayHintProvider {
-            id: plugin.id().to_string()
+            id: plugin.id().to_string(),
         }))
         .unwrap();
 }
@@ -333,7 +347,8 @@ fn capabilities_drive_registry_registration() {
 fn busy_loop_is_interrupted_by_timeout() {
     let mut config = WasmPluginConfig::default();
     config.timeout = Duration::from_millis(10);
-    let plugin = WasmPlugin::from_wat("busy", WAT_BUSY_LOOP, config).expect("load busy-loop plugin");
+    let plugin =
+        WasmPlugin::from_wat("busy", WAT_BUSY_LOOP, config).expect("load busy-loop plugin");
 
     let file = FileId::from_raw(1);
     let db = Arc::new(TestDb {
@@ -348,15 +363,17 @@ fn busy_loop_is_interrupted_by_timeout() {
         elapsed < Duration::from_millis(200),
         "call should be interrupted quickly (elapsed={elapsed:?})"
     );
-    assert!(diags.is_empty(), "timeout should be treated as provider failure");
+    assert!(
+        diags.is_empty(),
+        "timeout should be treated as provider failure"
+    );
 }
 
 #[test]
 fn memory_limit_prevents_unbounded_growth() {
     let mut config = WasmPluginConfig::default();
     config.max_memory_bytes = 64 * 1024; // 1 page
-    let plugin =
-        WasmPlugin::from_wat("memlimit", WAT_MEMORY_GROW, config).expect("load module");
+    let plugin = WasmPlugin::from_wat("memlimit", WAT_MEMORY_GROW, config).expect("load module");
 
     let file = FileId::from_raw(1);
     let db = Arc::new(TestDb {
@@ -378,7 +395,11 @@ impl DiagnosticProvider<TestDb> for DummyDiagProvider {
         &self.id
     }
 
-    fn provide_diagnostics(&self, _ctx: ExtensionContext<TestDb>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+    fn provide_diagnostics(
+        &self,
+        _ctx: ExtensionContext<TestDb>,
+        _params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
         Vec::new()
     }
 }
@@ -393,7 +414,11 @@ impl CompletionProvider<TestDb> for DummyCompletionProvider {
         &self.id
     }
 
-    fn provide_completions(&self, _ctx: ExtensionContext<TestDb>, _params: CompletionParams) -> Vec<CompletionItem> {
+    fn provide_completions(
+        &self,
+        _ctx: ExtensionContext<TestDb>,
+        _params: CompletionParams,
+    ) -> Vec<CompletionItem> {
         Vec::new()
     }
 }
@@ -408,7 +433,11 @@ impl CodeActionProvider<TestDb> for DummyCodeActionProvider {
         &self.id
     }
 
-    fn provide_code_actions(&self, _ctx: ExtensionContext<TestDb>, _params: CodeActionParams) -> Vec<CodeAction> {
+    fn provide_code_actions(
+        &self,
+        _ctx: ExtensionContext<TestDb>,
+        _params: CodeActionParams,
+    ) -> Vec<CodeAction> {
         Vec::new()
     }
 }
@@ -423,7 +452,11 @@ impl NavigationProvider<TestDb> for DummyNavigationProvider {
         &self.id
     }
 
-    fn provide_navigation(&self, _ctx: ExtensionContext<TestDb>, _params: NavigationParams) -> Vec<NavigationTarget> {
+    fn provide_navigation(
+        &self,
+        _ctx: ExtensionContext<TestDb>,
+        _params: NavigationParams,
+    ) -> Vec<NavigationTarget> {
         Vec::new()
     }
 }
@@ -438,7 +471,11 @@ impl InlayHintProvider<TestDb> for DummyInlayHintProvider {
         &self.id
     }
 
-    fn provide_inlay_hints(&self, _ctx: ExtensionContext<TestDb>, _params: InlayHintParams) -> Vec<InlayHint> {
+    fn provide_inlay_hints(
+        &self,
+        _ctx: ExtensionContext<TestDb>,
+        _params: InlayHintParams,
+    ) -> Vec<InlayHint> {
         Vec::new()
     }
 }

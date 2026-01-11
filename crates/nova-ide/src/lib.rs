@@ -11,17 +11,17 @@ pub mod code_action;
 pub mod decompile;
 pub mod diagnostics;
 pub mod extensions;
-pub mod framework_cache;
 pub mod format;
+pub mod framework_cache;
 pub mod semantics;
 
 pub mod code_intelligence;
-mod spring_di;
 mod completion;
 mod jpa_intel;
 mod micronaut_intel;
 mod project;
 pub mod refactor;
+mod spring_di;
 
 pub use ai::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
@@ -65,9 +65,9 @@ pub mod micronaut {
     };
 }
 
-mod lombok_intel;
 mod dagger_intel;
 mod db;
+mod lombok_intel;
 mod navigation;
 mod parse;
 mod text;
@@ -75,9 +75,9 @@ mod text;
 pub use crate::db::{Database, DatabaseSnapshot};
 
 #[cfg(feature = "ai")]
-mod config;
-#[cfg(feature = "ai")]
 mod ai_completion_context;
+#[cfg(feature = "ai")]
+mod config;
 #[cfg(feature = "ai")]
 mod engine;
 #[cfg(feature = "ai")]
@@ -88,9 +88,9 @@ mod model;
 mod validation;
 
 #[cfg(feature = "ai")]
-pub use config::CompletionConfig;
-#[cfg(feature = "ai")]
 pub use ai_completion_context::multi_token_completion_context;
+#[cfg(feature = "ai")]
+pub use config::CompletionConfig;
 #[cfg(feature = "ai")]
 pub use engine::CompletionEngine;
 #[cfg(feature = "ai")]

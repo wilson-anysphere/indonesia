@@ -47,10 +47,9 @@ pub fn resolve_completion_item(mut item: CompletionItem, document_text: &str) ->
             // `completionItem/resolve` may be called multiple times by clients; avoid producing
             // duplicate edits when we've already resolved this item once.
             for edit in new_edits.drain(..) {
-                if existing
-                    .iter()
-                    .any(|existing| existing.range == edit.range && existing.new_text == edit.new_text)
-                {
+                if existing.iter().any(|existing| {
+                    existing.range == edit.range && existing.new_text == edit.new_text
+                }) {
                     continue;
                 }
                 existing.push(edit);

@@ -104,7 +104,11 @@ action {
     assert_eq!(runner.call_count(), 3, "expected cache hit");
 
     // Mutate a *dependency* BUILD file and ensure the entry becomes invalid.
-    std::fs::write(&dep_build, "java_library(name = \"dep\", visibility = [])\n").unwrap();
+    std::fs::write(
+        &dep_build,
+        "java_library(name = \"dep\", visibility = [])\n",
+    )
+    .unwrap();
     let _ = workspace.target_compile_info("//java:hello").unwrap();
     assert_eq!(
         runner.call_count(),
@@ -148,10 +152,12 @@ impl CommandRunner for BuildfilesFallbackRunner {
                 // Simulate Bazel versions/environments where `buildfiles(...)` is unsupported.
                 anyhow::bail!("buildfiles query unsupported in test runner");
             }
-            ["query", expr, "--output=label"] if expr.starts_with("loadfiles(") => Ok(CommandOutput {
-                stdout: String::new(),
-                stderr: String::new(),
-            }),
+            ["query", expr, "--output=label"] if expr.starts_with("loadfiles(") => {
+                Ok(CommandOutput {
+                    stdout: String::new(),
+                    stderr: String::new(),
+                })
+            }
             ["query", expr, "--output=label"] if expr.starts_with("deps(") => Ok(CommandOutput {
                 stdout: self.deps_stdout.clone(),
                 stderr: String::new(),
@@ -202,7 +208,11 @@ action {
     assert_eq!(runner.call_count(), 4);
 
     // Mutating a dependency BUILD file must still invalidate the cached entry.
-    std::fs::write(&dep_build, "java_library(name = \"dep\", visibility = [])\n").unwrap();
+    std::fs::write(
+        &dep_build,
+        "java_library(name = \"dep\", visibility = [])\n",
+    )
+    .unwrap();
     let _ = workspace.target_compile_info("//java:hello").unwrap();
     assert_eq!(runner.call_count(), 8);
 }

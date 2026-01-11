@@ -447,7 +447,8 @@ impl<'a> Lexer<'a> {
     fn scan_decimal_float_after_dot(&mut self) -> Result<SyntaxKind, String> {
         // Assumes current token begins with `.` and the following character is a digit.
         self.pos += 1; // '.'
-        let frac = self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b.is_ascii_digit());
+        let frac =
+            self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b.is_ascii_digit());
         if frac.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());
         }
@@ -486,12 +487,12 @@ impl<'a> Lexer<'a> {
                 || (self.peek_byte(0) == Some(b'_')
                     && matches!(self.peek_byte(1), Some(b'0'..=b'9')))
             {
-                let frac = self.scan_digits_with_underscores(
-                    |b| b.is_ascii_digit(),
-                    |b| b.is_ascii_digit(),
-                );
+                let frac = self
+                    .scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b.is_ascii_digit());
                 if frac.leading_underscore {
-                    return Err("`_` is not allowed directly after `.` in a numeric literal".to_string());
+                    return Err(
+                        "`_` is not allowed directly after `.` in a numeric literal".to_string()
+                    );
                 }
                 if frac.trailing_underscore {
                     return Err("numeric literal cannot end with `_`".to_string());
@@ -601,7 +602,10 @@ impl<'a> Lexer<'a> {
 
                 let require_after = before.digits == 0;
                 if matches!(self.peek_byte(0), Some(b'_'))
-                    && matches!(self.peek_byte(1), Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F'))
+                    && matches!(
+                        self.peek_byte(1),
+                        Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+                    )
                 {
                     after = self.scan_digits_with_underscores(is_hex_digit, is_hex_digit);
                 } else if self.peek_byte(0).is_some_and(is_hex_digit) {
@@ -612,7 +616,9 @@ impl<'a> Lexer<'a> {
                     return Err("expected hexadecimal digits after `0x.`".to_string());
                 }
                 if after.leading_underscore {
-                    return Err("`_` is not allowed directly after `.` in a numeric literal".to_string());
+                    return Err(
+                        "`_` is not allowed directly after `.` in a numeric literal".to_string()
+                    );
                 }
                 if after.trailing_underscore {
                     return Err("numeric literal cannot end with `_`".to_string());
@@ -626,7 +632,9 @@ impl<'a> Lexer<'a> {
         let has_exponent = self.peek_byte(0).is_some_and(|b| b == b'p' || b == b'P');
         if has_exponent {
             if before.leading_underscore {
-                return Err("`_` is not allowed directly after `0x` in a numeric literal".to_string());
+                return Err(
+                    "`_` is not allowed directly after `0x` in a numeric literal".to_string(),
+                );
             }
             if before.trailing_underscore {
                 return Err("numeric literal cannot end with `_`".to_string());
@@ -655,7 +663,9 @@ impl<'a> Lexer<'a> {
             // Attempt to consume `_...` to surface the underscore error.
             if self.peek_byte(0) == Some(b'_') && self.peek_byte(1).is_some_and(is_hex_digit) {
                 self.scan_digits_with_underscores(is_hex_digit, is_hex_digit);
-                return Err("`_` is not allowed directly after `0x` in a numeric literal".to_string());
+                return Err(
+                    "`_` is not allowed directly after `0x` in a numeric literal".to_string(),
+                );
             }
             return Err("expected hexadecimal digits after `0x`".to_string());
         }
@@ -681,7 +691,8 @@ impl<'a> Lexer<'a> {
     fn scan_binary_number(&mut self) -> Result<SyntaxKind, String> {
         // `0b` / `0B`
         self.pos += 2;
-        let digits = self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b == b'0' || b == b'1');
+        let digits =
+            self.scan_digits_with_underscores(|b| b.is_ascii_digit(), |b| b == b'0' || b == b'1');
 
         if digits.digits == 0 {
             return Err("expected binary digits after `0b`".to_string());
@@ -719,7 +730,10 @@ impl<'a> Lexer<'a> {
             return Err("expected exponent digits after `p`".to_string());
         }
         if exp.leading_underscore {
-            return Err("`_` is not allowed directly after the exponent sign in a numeric literal".to_string());
+            return Err(
+                "`_` is not allowed directly after the exponent sign in a numeric literal"
+                    .to_string(),
+            );
         }
         if exp.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());
@@ -748,7 +762,10 @@ impl<'a> Lexer<'a> {
             return Err("expected exponent digits after `e`".to_string());
         }
         if exp.leading_underscore {
-            return Err("`_` is not allowed directly after the exponent sign in a numeric literal".to_string());
+            return Err(
+                "`_` is not allowed directly after the exponent sign in a numeric literal"
+                    .to_string(),
+            );
         }
         if exp.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());

@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use nova_project::{
-    load_project, load_workspace_model, BuildSystem, ClasspathEntryKind, JavaVersion, OutputDirKind,
-    SourceRootKind, SourceRootOrigin,
+    load_project, load_workspace_model, BuildSystem, ClasspathEntryKind, JavaVersion,
+    OutputDirKind, SourceRootKind, SourceRootOrigin,
 };
 
 fn testdata_path(rel: &str) -> PathBuf {
@@ -175,7 +175,10 @@ fn loads_maven_multi_module_workspace_model() {
             (
                 sr.kind,
                 sr.origin,
-                sr.path.strip_prefix(&model.workspace_root).unwrap().to_path_buf(),
+                sr.path
+                    .strip_prefix(&model.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
             )
         })
         .collect();
@@ -191,12 +194,18 @@ fn loads_maven_multi_module_workspace_model() {
         .map(|out| {
             (
                 out.kind,
-                out.path.strip_prefix(&model.workspace_root).unwrap().to_path_buf(),
+                out.path
+                    .strip_prefix(&model.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
             )
         })
         .collect();
     assert!(app_outputs.contains(&(OutputDirKind::Main, PathBuf::from("app/target/classes"))));
-    assert!(app_outputs.contains(&(OutputDirKind::Test, PathBuf::from("app/target/test-classes"))));
+    assert!(app_outputs.contains(&(
+        OutputDirKind::Test,
+        PathBuf::from("app/target/test-classes")
+    )));
 
     let lib_source_roots: BTreeSet<_> = lib
         .source_roots
@@ -205,7 +214,10 @@ fn loads_maven_multi_module_workspace_model() {
             (
                 sr.kind,
                 sr.origin,
-                sr.path.strip_prefix(&model.workspace_root).unwrap().to_path_buf(),
+                sr.path
+                    .strip_prefix(&model.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
             )
         })
         .collect();
@@ -218,14 +230,18 @@ fn loads_maven_multi_module_workspace_model() {
     let app_file = model
         .workspace_root
         .join("app/src/main/java/com/example/app/App.java");
-    let match_app = model.module_for_path(&app_file).expect("module for App.java");
+    let match_app = model
+        .module_for_path(&app_file)
+        .expect("module for App.java");
     assert_eq!(match_app.module.id, "maven:com.example:app");
     assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
 
     let lib_file = model
         .workspace_root
         .join("lib/src/main/java/com/example/lib/Lib.java");
-    let match_lib = model.module_for_path(&lib_file).expect("module for Lib.java");
+    let match_lib = model
+        .module_for_path(&lib_file)
+        .expect("module for Lib.java");
     assert_eq!(match_lib.module.id, "maven:com.example:lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
 }
@@ -237,12 +253,8 @@ fn loads_gradle_multi_module_workspace_model() {
 
     assert_eq!(model.build_system, BuildSystem::Gradle);
 
-    let _app = model
-        .module_by_id("gradle::app")
-        .expect("app module");
-    let lib = model
-        .module_by_id("gradle::lib")
-        .expect("lib module");
+    let _app = model.module_by_id("gradle::app").expect("app module");
+    let lib = model.module_by_id("gradle::lib").expect("lib module");
 
     let lib_outputs: BTreeSet<_> = lib
         .output_dirs
@@ -250,7 +262,10 @@ fn loads_gradle_multi_module_workspace_model() {
         .map(|out| {
             (
                 out.kind,
-                out.path.strip_prefix(&model.workspace_root).unwrap().to_path_buf(),
+                out.path
+                    .strip_prefix(&model.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
             )
         })
         .collect();
@@ -266,14 +281,18 @@ fn loads_gradle_multi_module_workspace_model() {
     let app_file = model
         .workspace_root
         .join("app/src/main/java/com/example/app/App.java");
-    let match_app = model.module_for_path(&app_file).expect("module for App.java");
+    let match_app = model
+        .module_for_path(&app_file)
+        .expect("module for App.java");
     assert_eq!(match_app.module.id, "gradle::app");
     assert_eq!(match_app.source_root.kind, SourceRootKind::Main);
 
     let lib_file = model
         .workspace_root
         .join("lib/src/main/java/com/example/lib/Lib.java");
-    let match_lib = model.module_for_path(&lib_file).expect("module for Lib.java");
+    let match_lib = model
+        .module_for_path(&lib_file)
+        .expect("module for Lib.java");
     assert_eq!(match_lib.module.id, "gradle::lib");
     assert_eq!(match_lib.source_root.kind, SourceRootKind::Main);
 }

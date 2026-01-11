@@ -6,7 +6,7 @@ use crate::session::DebugSession;
 use crate::smart_step_into::enumerate_step_in_targets_in_line;
 use crate::stream_debug::{run_stream_debug, StreamDebugArguments, STREAM_DEBUG_COMMAND};
 use anyhow::Context;
-use nova_bugreport::{BugReportBuilder, global_crash_store, BugReportOptions, PerfStats};
+use nova_bugreport::{global_crash_store, BugReportBuilder, BugReportOptions, PerfStats};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
 use nova_jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
@@ -308,7 +308,9 @@ impl<C: JdwpClient> DapServer<C> {
 
         impl SourceBreakpoint {
             fn uses_unsupported_features(&self) -> bool {
-                self.condition.is_some() || self.hit_condition.is_some() || self.log_message.is_some()
+                self.condition.is_some()
+                    || self.hit_condition.is_some()
+                    || self.log_message.is_some()
             }
         }
 

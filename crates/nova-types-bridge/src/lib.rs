@@ -94,8 +94,11 @@ impl<'a> ExternalTypeLoader<'a> {
                 let Some(id) = class_type_vars.get(&tp.name).copied() else {
                     continue;
                 };
-                let bounds =
-                    self.convert_type_parameter_bounds(tp, &class_type_vars, &empty_method_type_vars);
+                let bounds = self.convert_type_parameter_bounds(
+                    tp,
+                    &class_type_vars,
+                    &empty_method_type_vars,
+                );
                 self.store.define_type_param(
                     id,
                     TypeParamDef {
@@ -194,7 +197,11 @@ impl<'a> ExternalTypeLoader<'a> {
         let is_accessible = stub.access_flags & ACC_PRIVATE == 0;
         let empty_method_type_vars = HashMap::<String, TypeVarId>::new();
 
-        if let Some(sig) = stub.signature.as_deref().and_then(|s| parse_method_signature(s).ok()) {
+        if let Some(sig) = stub
+            .signature
+            .as_deref()
+            .and_then(|s| parse_method_signature(s).ok())
+        {
             let params = sig
                 .parameters
                 .iter()
@@ -228,7 +235,11 @@ impl<'a> ExternalTypeLoader<'a> {
         let is_varargs = stub.access_flags & ACC_VARARGS != 0;
         let is_abstract = stub.access_flags & ACC_ABSTRACT != 0;
 
-        if let Some(sig) = stub.signature.as_deref().and_then(|s| parse_method_signature(s).ok()) {
+        if let Some(sig) = stub
+            .signature
+            .as_deref()
+            .and_then(|s| parse_method_signature(s).ok())
+        {
             let mut method_type_vars = HashMap::<String, TypeVarId>::new();
             let mut type_params = Vec::new();
             // Two-pass allocation so self-referential bounds can resolve.
@@ -244,7 +255,8 @@ impl<'a> ExternalTypeLoader<'a> {
                 let Some(id) = method_type_vars.get(&tp.name).copied() else {
                     continue;
                 };
-                let bounds = self.convert_type_parameter_bounds(tp, class_type_vars, &method_type_vars);
+                let bounds =
+                    self.convert_type_parameter_bounds(tp, class_type_vars, &method_type_vars);
                 self.store.define_type_param(
                     id,
                     TypeParamDef {
@@ -401,7 +413,9 @@ impl<'a> ExternalTypeLoader<'a> {
                 class_type_vars,
                 method_type_vars,
             ))),
-            TypeSignature::Class(cls) => self.class_type_signature(cls, class_type_vars, method_type_vars),
+            TypeSignature::Class(cls) => {
+                self.class_type_signature(cls, class_type_vars, method_type_vars)
+            }
             TypeSignature::TypeVariable(name) => method_type_vars
                 .get(name)
                 .or_else(|| class_type_vars.get(name))

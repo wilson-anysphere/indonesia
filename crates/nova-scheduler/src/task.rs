@@ -86,10 +86,12 @@ impl<T> Future for AsyncTask<T> {
             return std::task::Poll::Ready(Err(TaskError::Cancelled));
         }
 
-        Pin::new(&mut self.handle).poll(cx).map(|result| match result {
-            Ok(result) => result,
-            Err(err) if err.is_cancelled() => Err(TaskError::Cancelled),
-            Err(_err) => Err(TaskError::Panicked),
-        })
+        Pin::new(&mut self.handle)
+            .poll(cx)
+            .map(|result| match result {
+                Ok(result) => result,
+                Err(err) if err.is_cancelled() => Err(TaskError::Cancelled),
+                Err(_err) => Err(TaskError::Panicked),
+            })
     }
 }

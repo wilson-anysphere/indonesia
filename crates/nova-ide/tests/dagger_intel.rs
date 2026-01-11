@@ -6,8 +6,7 @@ use nova_db::{Database as _, RootDatabase};
 use nova_ide::{file_diagnostics, goto_definition};
 
 fn fixtures_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../nova-framework-dagger/tests/fixtures")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-framework-dagger/tests/fixtures")
 }
 
 fn load_fixture(name: &str) -> (RootDatabase, Vec<PathBuf>) {

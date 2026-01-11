@@ -11,17 +11,19 @@ use nova_ai::context::{
 };
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
 #[cfg(feature = "ai")]
-use nova_ai::{CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionProvider};
+use nova_ai::{
+    CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionProvider,
+};
+use nova_db::{FileId as DbFileId, InMemoryFileStore};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
     CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN, COMMAND_EXPLAIN_ERROR,
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
-use nova_index::{Index, SymbolKind};
 #[cfg(feature = "ai")]
 use nova_ide::{multi_token_completion_context, CompletionConfig, CompletionEngine};
-use nova_db::{FileId as DbFileId, InMemoryFileStore};
+use nova_index::{Index, SymbolKind};
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
@@ -291,7 +293,8 @@ impl ServerState {
         let completion_service = {
             let ai_provider = completion_llm.map(|client| {
                 let provider: Arc<dyn MultiTokenCompletionProvider> = Arc::new(
-                    CloudMultiTokenCompletionProvider::new(client).with_privacy_mode(privacy.clone()),
+                    CloudMultiTokenCompletionProvider::new(client)
+                        .with_privacy_mode(privacy.clone()),
                 );
                 provider
             });
@@ -435,7 +438,9 @@ fn handle_request(
             let result = handle_completion(params, state);
             Ok(match result {
                 Ok(list) => json!({ "jsonrpc": "2.0", "id": id, "result": list }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         "textDocument/codeAction" => {
@@ -518,7 +523,9 @@ fn handle_request(
             let result = handle_completion_more(params, state);
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } }),
+                Err(err) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err } })
+                }
             })
         }
         nova_lsp::DOCUMENT_FORMATTING_METHOD
@@ -1205,7 +1212,8 @@ fn handle_completion_more(
 ) -> Result<serde_json::Value, String> {
     let params: nova_lsp::MoreCompletionsParams =
         serde_json::from_value(params).map_err(|e| e.to_string())?;
-    serde_json::to_value(state.completion_service.completion_more(params)).map_err(|e| e.to_string())
+    serde_json::to_value(state.completion_service.completion_more(params))
+        .map_err(|e| e.to_string())
 }
 
 fn handle_prepare_rename(

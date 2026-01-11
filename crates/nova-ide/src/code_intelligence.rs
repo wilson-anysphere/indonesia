@@ -379,16 +379,16 @@ pub fn file_diagnostics_lsp(db: &dyn Database, file: FileId) -> Vec<lsp_types::D
 
 pub(crate) const STRING_MEMBER_METHODS: &[(&str, &str)] = &[
     ("length", "int length()"),
-    ("substring", "String substring(int beginIndex, int endIndex)"),
+    (
+        "substring",
+        "String substring(int beginIndex, int endIndex)",
+    ),
     ("charAt", "char charAt(int index)"),
     ("isEmpty", "boolean isEmpty()"),
 ];
 
 pub(crate) const STREAM_MEMBER_METHODS: &[(&str, &str)] = &[
-    (
-        "filter",
-        "Stream<T> filter(Predicate<? super T> predicate)",
-    ),
+    ("filter", "Stream<T> filter(Predicate<? super T> predicate)"),
     (
         "map",
         "<R> Stream<R> map(Function<? super T, ? extends R> mapper)",

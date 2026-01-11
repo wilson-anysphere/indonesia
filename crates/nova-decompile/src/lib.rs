@@ -685,12 +685,8 @@ fn decompiled_content_fingerprint(bytes: &[u8], schema_version: u32) -> Fingerpr
 /// extension; using `.java` ensures decompiled stubs are treated as Java source.
 pub fn decompiled_uri_for_classfile(bytes: &[u8], internal_name: &str) -> String {
     let fingerprint = decompiled_content_fingerprint(bytes, DECOMPILER_SCHEMA_VERSION);
-    let binary_name = internal_name
-        .trim_start_matches('/')
-        .replace('/', ".");
-    format!(
-        "{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{fingerprint}/{binary_name}.java"
-    )
+    let binary_name = internal_name.trim_start_matches('/').replace('/', ".");
+    format!("{NOVA_VIRTUAL_URI_SCHEME}:///decompiled/{fingerprint}/{binary_name}.java")
 }
 
 /// Attempts to parse a canonical decompiled virtual-document URI.

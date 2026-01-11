@@ -114,7 +114,10 @@ impl NovaCompletionService {
         &self.engine
     }
 
-    fn prune_sessions_locked(&self, sessions: &mut HashMap<CompletionContextId, CompletionSession>) {
+    fn prune_sessions_locked(
+        &self,
+        sessions: &mut HashMap<CompletionContextId, CompletionSession>,
+    ) {
         let now = Instant::now();
         let expired: Vec<_> = sessions
             .iter()

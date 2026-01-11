@@ -5,4 +5,3 @@
 //! intended for diagnostics and language server features.
 
 pub mod format;
-

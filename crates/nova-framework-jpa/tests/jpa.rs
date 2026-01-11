@@ -352,7 +352,9 @@ fn jpql_completion_handles_multiple_from_entities() {
         &analysis.model,
     );
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "JPQL_UNKNOWN_ALIAS"),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "JPQL_UNKNOWN_ALIAS"),
         "unexpected alias diagnostics: {diags:#?}"
     );
 }
@@ -376,7 +378,9 @@ fn jpql_diagnostics_validate_join_entity_names() {
     );
 
     assert!(
-        diags.iter().any(|d| d.code.as_ref() == "JPQL_UNKNOWN_ENTITY"),
+        diags
+            .iter()
+            .any(|d| d.code.as_ref() == "JPQL_UNKNOWN_ENTITY"),
         "expected JPQL_UNKNOWN_ENTITY diagnostic, got: {diags:#?}"
     );
 }
@@ -461,7 +465,9 @@ fn jpql_completion_handles_nested_paths() {
         &analysis.model,
     );
     assert!(
-        !diags.iter().any(|d| d.code.as_ref() == "JPQL_UNKNOWN_ALIAS"),
+        !diags
+            .iter()
+            .any(|d| d.code.as_ref() == "JPQL_UNKNOWN_ALIAS"),
         "unexpected alias diagnostics: {diags:#?}"
     );
 }

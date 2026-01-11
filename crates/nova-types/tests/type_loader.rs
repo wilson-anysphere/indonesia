@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_types::{
-    resolve_method_call, CallKind, ChainTypeProvider, ClassKind, MethodCall, MethodResolution, PrimitiveType,
-    Type, TypeEnv, TypeStore, TypeStoreLoader,
+    resolve_method_call, CallKind, ChainTypeProvider, ClassKind, MethodCall, MethodResolution,
+    PrimitiveType, Type, TypeEnv, TypeStore, TypeStoreLoader,
 };
 
 use pretty_assertions::assert_eq;
@@ -14,15 +14,12 @@ fn type_store_loader_bridge_from_classpath_index() {
     let jdk_jmod = manifest_dir.join("../nova-jdk/testdata/fake-jdk/jmods/java.base.jmod");
     let dep_jar = manifest_dir.join("../nova-classpath/testdata/dep.jar");
 
-    let jdk_index = ClasspathIndex::build_with_deps_store(
-        &[ClasspathEntry::Jmod(jdk_jmod)],
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    let jdk_index =
+        ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jmod(jdk_jmod)], None, None, None)
+            .unwrap();
     let dep_index =
-        ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(dep_jar)], None, None, None).unwrap();
+        ClasspathIndex::build_with_deps_store(&[ClasspathEntry::Jar(dep_jar)], None, None, None)
+            .unwrap();
 
     let provider = ChainTypeProvider::new(vec![&dep_index, &jdk_index]);
 

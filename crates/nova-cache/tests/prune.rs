@@ -62,7 +62,8 @@ fn rewrite_query_saved_at<T: Serialize + for<'de> Deserialize<'de>>(
     saved_at_millis: u64,
 ) {
     let bytes = std::fs::read(entry_path).unwrap();
-    let mut persisted: PersistedDerivedValueOwned<T> = ast_bincode_options().deserialize(&bytes).unwrap();
+    let mut persisted: PersistedDerivedValueOwned<T> =
+        ast_bincode_options().deserialize(&bytes).unwrap();
     persisted.saved_at_millis = saved_at_millis;
     let bytes = ast_bincode_options().serialize(&persisted).unwrap();
     std::fs::write(entry_path, bytes).unwrap();

@@ -79,15 +79,7 @@ fn resolves_string_and_primitives_and_arrays_and_varargs() {
 
     let string_id = env.lookup_class("java.lang.String").unwrap();
 
-    let ty = resolve_type_ref_text(
-        &resolver,
-        &scopes,
-        scope,
-        &env,
-        &type_vars,
-        "String",
-        None,
-    );
+    let ty = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "String", None);
     assert_eq!(ty.diagnostics, Vec::new());
     assert_eq!(ty.ty, Type::class(string_id, vec![]));
 
@@ -103,15 +95,7 @@ fn resolves_string_and_primitives_and_arrays_and_varargs() {
     assert_eq!(ty.diagnostics, Vec::new());
     assert_eq!(ty.ty, Type::class(string_id, vec![]));
 
-    let ty = resolve_type_ref_text(
-        &resolver,
-        &scopes,
-        scope,
-        &env,
-        &type_vars,
-        "int[][]",
-        None,
-    );
+    let ty = resolve_type_ref_text(&resolver, &scopes, scope, &env, &type_vars, "int[][]", None);
     assert_eq!(ty.diagnostics, Vec::new());
     assert_eq!(
         ty.ty,
@@ -181,7 +165,9 @@ fn resolves_generics_wildcards_arrays_and_nested_closing_angles() {
         ty.ty,
         Type::class(
             list_id,
-            vec![Type::Wildcard(WildcardBound::Extends(Box::new(string.clone())))]
+            vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+                string.clone()
+            )))]
         )
     );
 
@@ -218,10 +204,7 @@ fn resolves_generics_wildcards_arrays_and_nested_closing_angles() {
     assert_eq!(ty.diagnostics, Vec::new());
     assert_eq!(
         ty.ty,
-        Type::class(
-            list_id,
-            vec![Type::class(list_id, vec![string.clone()])]
-        )
+        Type::class(list_id, vec![Type::class(list_id, vec![string.clone()])])
     );
 }
 
@@ -336,8 +319,5 @@ fn falls_back_to_type_variables_when_name_resolution_fails() {
         None,
     );
     assert_eq!(ty.ty, Type::Named("DoesNotExist".to_string()));
-    assert!(ty
-        .diagnostics
-        .iter()
-        .any(|d| d.code == "unresolved-type"));
+    assert!(ty.diagnostics.iter().any(|d| d.code == "unresolved-type"));
 }

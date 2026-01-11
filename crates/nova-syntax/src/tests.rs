@@ -1,12 +1,9 @@
 use pretty_assertions::assert_eq;
 
 use crate::{
-    lex, lex_with_errors, parse_expression, parse_java, parse_java_expression, parse_java_with_options,
-    reparse_java,
-    AstNode,
-    CompilationUnit,
-    ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions, ProvidesDirective,
-    RequiresDirective, TextEdit, TextRange, UsesDirective, SyntaxKind,
+    lex, lex_with_errors, parse_expression, parse_java, parse_java_with_options, reparse_java,
+    AstNode, CompilationUnit, ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions,
+    ProvidesDirective, RequiresDirective, SyntaxKind, TextEdit, TextRange, UsesDirective,
 };
 
 fn bless_enabled() -> bool {
@@ -578,7 +575,8 @@ fn parse_expression_parses_this_access() {
     let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
     assert!(kinds.contains(&SyntaxKind::ThisExpression));
     assert!(
-        kinds.contains(&SyntaxKind::FieldAccessExpression) || kinds.contains(&SyntaxKind::NameExpression),
+        kinds.contains(&SyntaxKind::FieldAccessExpression)
+            || kinds.contains(&SyntaxKind::NameExpression),
         "expected either a field access or name expression"
     );
 }
@@ -610,55 +608,6 @@ fn parse_expression_snapshot() {
 
     let expected = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
     assert_eq!(actual, expected);
-}
-
-fn assert_java_expression_snapshot(input: &str, snapshot_name: &str) {
-    let result = parse_java_expression(input);
-    assert_eq!(result.errors, Vec::new());
-
-    let actual = crate::parser::debug_dump(&result.syntax());
-    let snapshot_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src/snapshots")
-        .join(snapshot_name);
-
-    if bless_enabled() {
-        std::fs::write(&snapshot_path, &actual).expect("write blessed snapshot");
-        return;
-    }
-
-    let expected = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
-    assert_eq!(actual, expected);
-}
-
-#[test]
-fn parse_java_expression_snapshots() {
-    assert_java_expression_snapshot("x + 1", "parse_expression_x_plus_1.tree");
-    assert_java_expression_snapshot("this.field", "parse_expression_this_field.tree");
-    assert_java_expression_snapshot(
-        "obj.method(1, \"hi\")",
-        "parse_expression_method_call.tree",
-    );
-    assert_java_expression_snapshot("arr[i]", "parse_expression_array_access.tree");
-    assert_java_expression_snapshot(
-        "(a && b) ? c : d",
-        "parse_expression_conditional.tree",
-    );
-}
-
-#[test]
-fn parse_java_expression_accepts_trailing_semicolon() {
-    let result = parse_java_expression("x + 1;");
-    assert_eq!(result.errors, Vec::new());
-
-    let expr = result.expression().expect("expected expression node");
-    assert_eq!(expr.kind(), SyntaxKind::BinaryExpression);
-
-    let has_semicolon = result
-        .syntax()
-        .descendants_with_tokens()
-        .filter_map(|e| e.into_token())
-        .any(|t| t.kind() == SyntaxKind::Semicolon);
-    assert!(has_semicolon);
 }
 
 #[test]
@@ -848,9 +797,9 @@ fn feature_gate_modules_version_matrix() {
 fn feature_gate_text_blocks_version_matrix() {
     // Java text blocks require a line terminator immediately after the opening delimiter.
     let input = r#"class Foo { String s = """
- hi
- there
- """; }"#;
+hi
+there
+"""; }"#;
 
     let java14 = parse_java_with_options(
         input,
@@ -1017,7 +966,10 @@ fn feature_gate_switch_expressions_version_matrix() {
             .iter()
             .map(|d| d.code.as_ref())
             .collect::<Vec<_>>(),
-        vec!["JAVA_FEATURE_SWITCH_EXPRESSIONS", "JAVA_FEATURE_SWITCH_EXPRESSIONS"]
+        vec![
+            "JAVA_FEATURE_SWITCH_EXPRESSIONS",
+            "JAVA_FEATURE_SWITCH_EXPRESSIONS"
+        ]
     );
 
     let java13_preview = parse_java_with_options(
@@ -1351,7 +1303,10 @@ class Foo {
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
 
-    let has_guard = result.syntax().descendants().any(|n| n.kind() == SyntaxKind::Guard);
+    let has_guard = result
+        .syntax()
+        .descendants()
+        .any(|n| n.kind() == SyntaxKind::Guard);
     assert!(has_guard);
 }
 

@@ -259,10 +259,10 @@ impl Args {
                     )
                 }
                 "--auth-token-file" => {
-                    auth_token_file = Some(PathBuf::from(
-                        iter.next()
-                            .ok_or_else(|| anyhow!("--auth-token-file requires value"))?,
-                    ))
+                    auth_token_file =
+                        Some(PathBuf::from(iter.next().ok_or_else(|| {
+                            anyhow!("--auth-token-file requires value")
+                        })?))
                 }
                 "--auth-token-env" => {
                     auth_token_env = Some(
@@ -315,8 +315,8 @@ impl Args {
                 Some(token)
             }
             (None, None, Some(var)) => {
-                let token = std::env::var(&var)
-                    .with_context(|| format!("read --auth-token-env {var}"))?;
+                let token =
+                    std::env::var(&var).with_context(|| format!("read --auth-token-env {var}"))?;
                 let token = token.trim().to_string();
                 if token.is_empty() {
                     return Err(anyhow!("--auth-token-env {var} was empty"));
@@ -765,7 +765,8 @@ async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessag
     // Use fallible reservation so allocation failure surfaces as an error rather than aborting the
     // process.
     let mut buf = Vec::new();
-    buf.try_reserve_exact(len_usize).context("allocate message buffer")?;
+    buf.try_reserve_exact(len_usize)
+        .context("allocate message buffer")?;
     buf.resize(len_usize, 0);
     stream
         .read_exact(&mut buf)

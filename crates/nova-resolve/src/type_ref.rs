@@ -240,9 +240,9 @@ impl<'a, 'idx> Parser<'a, 'idx> {
         let dotted = segments.join(".");
         let qname = QualifiedName::from_dotted(&dotted);
 
-        if let Some(type_name) = self
-            .resolver
-            .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
+        if let Some(type_name) =
+            self.resolver
+                .resolve_qualified_type_in_scope(self.scopes, self.scope, &qname)
         {
             let resolved_name = type_name.as_str();
             if let Some(class_id) = self.env.lookup_class(resolved_name) {

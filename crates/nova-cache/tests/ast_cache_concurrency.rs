@@ -66,7 +66,10 @@ fn concurrent_store_does_not_lose_metadata_entries() {
     let bytes = std::fs::read(tmp.path().join("metadata.bin")).unwrap();
     let metadata = decode_metadata(&bytes);
     assert_eq!(metadata.schema_version, AST_ARTIFACT_SCHEMA_VERSION);
-    assert_eq!(metadata.syntax_schema_version, nova_syntax::SYNTAX_SCHEMA_VERSION);
+    assert_eq!(
+        metadata.syntax_schema_version,
+        nova_syntax::SYNTAX_SCHEMA_VERSION
+    );
     assert_eq!(metadata.hir_schema_version, nova_hir::HIR_SCHEMA_VERSION);
     assert_eq!(metadata.nova_version, nova_core::NOVA_VERSION);
     assert_eq!(metadata.files.len(), threads);
@@ -117,7 +120,10 @@ fn concurrent_store_does_not_corrupt_metadata_and_corruption_is_cache_miss() {
     let bytes = std::fs::read(tmp.path().join("metadata.bin")).unwrap();
     let metadata = decode_metadata(&bytes);
     assert_eq!(metadata.schema_version, AST_ARTIFACT_SCHEMA_VERSION);
-    assert_eq!(metadata.syntax_schema_version, nova_syntax::SYNTAX_SCHEMA_VERSION);
+    assert_eq!(
+        metadata.syntax_schema_version,
+        nova_syntax::SYNTAX_SCHEMA_VERSION
+    );
     assert_eq!(metadata.hir_schema_version, nova_hir::HIR_SCHEMA_VERSION);
     assert_eq!(metadata.nova_version, nova_core::NOVA_VERSION);
     assert_eq!(metadata.files.len(), threads * iters);

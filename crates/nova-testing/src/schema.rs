@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 pub const SCHEMA_VERSION: u32 = 1;
 

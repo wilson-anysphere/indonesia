@@ -230,7 +230,8 @@ fn decoding_rejects_allocation_bombs() {
         0xa3, // map(3)
         0x62, b'i', b'd', // "id"
         0x01, // 1
-        0x6b, b'c', b'o', b'm', b'p', b'r', b'e', b's', b's', b'i', b'o', b'n', // "compression"
+        0x6b, b'c', b'o', b'm', b'p', b'r', b'e', b's', b's', b'i', b'o',
+        b'n', // "compression"
         0x64, b'n', b'o', b'n', b'e', // "none"
         0x64, b'd', b'a', b't', b'a', // "data"
         0x5a, 0xff, 0xff, 0xff, 0xff, // bytes(u32::MAX)
@@ -252,7 +253,8 @@ fn decoding_rejects_allocation_bombs() {
         0x64, b'b', b'o', b'd', b'y', // "body"
         0xa3, // map(3)
         0x64, b't', b'y', b'p', b'e', // "type"
-        0x6b, b'i', b'n', b'd', b'e', b'x', b'_', b's', b'h', b'a', b'r', b'd', // "index_shard"
+        0x6b, b'i', b'n', b'd', b'e', b'x', b'_', b's', b'h', b'a', b'r',
+        b'd', // "index_shard"
         0x68, b'r', b'e', b'v', b'i', b's', b'i', b'o', b'n', // "revision"
         0x01, // 1
         0x65, b'f', b'i', b'l', b'e', b's', // "files"

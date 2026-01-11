@@ -22,12 +22,14 @@ use tokio::{
     task::JoinSet,
 };
 
-use nova_bugreport::{BugReportBuilder, global_crash_store, BugReportOptions, PerfStats};
+use nova_bugreport::{global_crash_store, BugReportBuilder, BugReportOptions, PerfStats};
 use nova_config::NovaConfig;
 
 use crate::{
     dap_tokio::{make_event, make_response, DapError, DapReader, DapWriter, Request},
-    wire_debugger::{AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError, StepDepth},
+    wire_debugger::{
+        AttachArgs, BreakpointDisposition, BreakpointSpec, Debugger, DebuggerError, StepDepth,
+    },
 };
 
 #[derive(Debug, Error)]
@@ -390,7 +392,10 @@ async fn handle_request_inner(
                     request,
                     false,
                     None,
-                    Some("launch must specify either {command,cwd} or {mainClass,classpath}".to_string()),
+                    Some(
+                        "launch must specify either {command,cwd} or {mainClass,classpath}"
+                            .to_string(),
+                    ),
                 );
                 return;
             };
@@ -1578,20 +1583,41 @@ async fn handle_request_inner(
         // Data breakpoints / watchpoints (requires JDWP canWatchField* capabilities).
         "dataBreakpointInfo" | "setDataBreakpoints" => {
             if cancel.is_cancelled() {
-                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
                 return;
             }
 
             let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
 
             let Some(dbg) = guard.as_ref() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
@@ -1625,20 +1651,41 @@ async fn handle_request_inner(
         // Hot swap support (class redefinition).
         "redefineClasses" | "hotCodeReplace" | "nova/hotSwap" => {
             if cancel.is_cancelled() {
-                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
                 return;
             }
 
             let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
 
             let Some(dbg) = guard.as_ref() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
@@ -1670,20 +1717,41 @@ async fn handle_request_inner(
         // Method return values (e.g. step-out with return value).
         "nova/enableMethodReturnValues" => {
             if cancel.is_cancelled() {
-                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("cancelled".to_string()),
+                );
                 return;
             }
 
             let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
                 Some(guard) => guard,
                 None => {
-                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("cancelled".to_string()),
+                    );
                     return;
                 }
             };
 
             let Some(dbg) = guard.as_ref() else {
-                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("not attached".to_string()),
+                );
                 return;
             };
 
@@ -1709,7 +1777,9 @@ async fn handle_request_inner(
                 request,
                 false,
                 None,
-                Some("method return values are not implemented in the wire adapter yet".to_string()),
+                Some(
+                    "method return values are not implemented in the wire adapter yet".to_string(),
+                ),
             );
         }
         "terminate" => {
@@ -1816,8 +1886,7 @@ fn join_classpath(classpath: &Classpath) -> std::result::Result<std::ffi::OsStri
         .into_iter()
         .map(std::ffi::OsString::from)
         .collect();
-    std::env::join_paths(parts.iter())
-        .map_err(|err| format!("launch.classpath is invalid: {err}"))
+    std::env::join_paths(parts.iter()).map_err(|err| format!("launch.classpath is invalid: {err}"))
 }
 
 async fn pick_free_port() -> std::io::Result<u16> {
@@ -2064,7 +2133,9 @@ fn spawn_event_task(
                         // If the breakpoint should not stop execution, resume immediately.
                         if matches!(
                             breakpoint_disposition.as_ref(),
-                            Some(BreakpointDisposition::Continue | BreakpointDisposition::Log { .. })
+                            Some(
+                                BreakpointDisposition::Continue | BreakpointDisposition::Log { .. }
+                            )
                         ) {
                             let _ = dbg.continue_(&server_shutdown).await;
                         }

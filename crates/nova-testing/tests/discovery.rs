@@ -213,7 +213,11 @@ class BetaTest {
 
     let beta_child_ids1: Vec<_> = beta1.children.iter().map(|c| c.id.clone()).collect();
     assert_eq!(
-        alpha1.children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        alpha1
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["com.example.AlphaTest#alpha"]
     );
     assert_eq!(beta_child_ids1, vec!["com.example.BetaTest#beta"]);
@@ -247,11 +251,19 @@ class AlphaTest {
         .unwrap();
 
     assert_eq!(
-        alpha2.children.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        alpha2
+            .children
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["com.example.AlphaTest#alphaRenamed"]
     );
     assert_eq!(
-        beta2.children.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+        beta2
+            .children
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>(),
         beta_child_ids1
     );
 
@@ -259,12 +271,6 @@ class AlphaTest {
     fs::remove_file(&b).unwrap();
 
     let resp3 = discover_tests(&req).unwrap();
-    assert!(resp3
-        .tests
-        .iter()
-        .any(|t| t.id == "com.example.AlphaTest"));
-    assert!(resp3
-        .tests
-        .iter()
-        .all(|t| t.id != "com.example.BetaTest"));
+    assert!(resp3.tests.iter().any(|t| t.id == "com.example.AlphaTest"));
+    assert!(resp3.tests.iter().all(|t| t.id != "com.example.BetaTest"));
 }

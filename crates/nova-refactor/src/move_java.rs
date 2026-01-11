@@ -3,7 +3,9 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::edit::{FileId as RefactorFileId, FileOp, TextEdit as WorkspaceTextEdit, TextRange, WorkspaceEdit};
+use crate::edit::{
+    FileId as RefactorFileId, FileOp, TextEdit as WorkspaceTextEdit, TextRange, WorkspaceEdit,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileMove {

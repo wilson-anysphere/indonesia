@@ -209,17 +209,21 @@ impl Workspace {
         // ------------------------------------------------------------------
 
         let snapshot_start = Instant::now();
-        let stamp_snapshot = ProjectSnapshot::new_fast(&self.root, files.clone()).with_context(
-            || format!("failed to build file stamp snapshot for {}", self.root.display()),
-        )?;
+        let stamp_snapshot =
+            ProjectSnapshot::new_fast(&self.root, files.clone()).with_context(|| {
+                format!(
+                    "failed to build file stamp snapshot for {}",
+                    self.root.display()
+                )
+            })?;
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
         // Load cache metadata (if any) so we can reuse content fingerprints for
         // unchanged files when persisting updated metadata.
         let metadata_path = cache_dir.metadata_path();
-        let metadata = CacheMetadata::load(&metadata_path)
-            .ok()
-            .filter(|meta| meta.is_compatible() && &meta.project_hash == stamp_snapshot.project_hash());
+        let metadata = CacheMetadata::load(&metadata_path).ok().filter(|meta| {
+            meta.is_compatible() && &meta.project_hash == stamp_snapshot.project_hash()
+        });
 
         let mut content_fingerprints = metadata
             .as_ref()
@@ -298,12 +302,8 @@ impl Workspace {
                 (0usize, 0u64, std::collections::BTreeMap::new(), 0u128)
             } else {
                 let index_start = Instant::now();
-                let (files_indexed, bytes_indexed, updated_fingerprints) = self.index_files(
-                    &stamp_snapshot,
-                    &mut shards,
-                    shard_count,
-                    &files_to_index,
-                )?;
+                let (files_indexed, bytes_indexed, updated_fingerprints) =
+                    self.index_files(&stamp_snapshot, &mut shards, shard_count, &files_to_index)?;
                 let index_ms = index_start.elapsed().as_millis();
                 (files_indexed, bytes_indexed, updated_fingerprints, index_ms)
             };

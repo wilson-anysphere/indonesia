@@ -12,8 +12,8 @@ use nova_core::{Position, Range, TextEdit, TextRange, TextSize};
 use nova_syntax::{SyntaxKind, SyntaxTree};
 use thiserror::Error;
 
-pub use nova_core::LineIndex;
 pub use comments::{Comment, CommentKind, CommentStore, TokenKey};
+pub use nova_core::LineIndex;
 
 mod formatter;
 
@@ -809,7 +809,13 @@ fn format_java_with_indent(
     initial_indent: usize,
     input_has_final_newline: bool,
 ) -> String {
-    formatter::format_java_with_indent(tree, source, config, initial_indent, input_has_final_newline)
+    formatter::format_java_with_indent(
+        tree,
+        source,
+        config,
+        initial_indent,
+        input_has_final_newline,
+    )
 }
 
 fn indentation_for(config: &FormatConfig, indent_level: usize) -> String {

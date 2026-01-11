@@ -5,8 +5,9 @@ use nova_ai::MultiTokenCompletionContext;
 use nova_db::{Database, FileId};
 
 use crate::code_intelligence::{
-    analyze_for_completion_context, identifier_prefix, receiver_before_dot, skip_whitespace_backwards,
-    CompletionContextAnalysis, STREAM_MEMBER_METHODS, STRING_MEMBER_METHODS,
+    analyze_for_completion_context, identifier_prefix, receiver_before_dot,
+    skip_whitespace_backwards, CompletionContextAnalysis, STREAM_MEMBER_METHODS,
+    STRING_MEMBER_METHODS,
 };
 use crate::text::position_to_offset;
 
@@ -21,7 +22,9 @@ pub fn multi_token_completion_context(
     position: Position,
 ) -> MultiTokenCompletionContext {
     let text = db.file_content(file);
-    let offset = position_to_offset(text, position).unwrap_or(text.len()).min(text.len());
+    let offset = position_to_offset(text, position)
+        .unwrap_or(text.len())
+        .min(text.len());
 
     let analysis = analyze_for_completion_context(text);
 
@@ -167,7 +170,12 @@ fn importable_paths_for_receiver(receiver_type: Option<&str>) -> Vec<String> {
     }
 }
 
-fn surrounding_code_window(text: &str, position: Position, offset: usize, context_lines: u32) -> String {
+fn surrounding_code_window(
+    text: &str,
+    position: Position,
+    offset: usize,
+    context_lines: u32,
+) -> String {
     let start_line = position.line.saturating_sub(context_lines);
     let start_offset = offset_for_line(text, start_line).min(offset.min(text.len()));
     let end_offset = offset.min(text.len());

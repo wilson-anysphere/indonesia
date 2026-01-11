@@ -1,5 +1,7 @@
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
-use nova_deps_cache::{DepsClassStub, DepsFieldStub, DepsMethodStub, DependencyIndexBundle, DependencyIndexStore};
+use nova_deps_cache::{
+    DependencyIndexBundle, DependencyIndexStore, DepsClassStub, DepsFieldStub, DepsMethodStub,
+};
 use tempfile::TempDir;
 
 fn make_bundle(jar_sha256: String, method_name: &str) -> DependencyIndexBundle {
@@ -59,7 +61,10 @@ fn classpath_lookup_prefers_first_entry_on_duplicate_classes() {
         .unwrap();
 
     let index = ClasspathIndex::build_with_deps_store(
-        &[ClasspathEntry::Jar(jar1.clone()), ClasspathEntry::Jar(jar2.clone())],
+        &[
+            ClasspathEntry::Jar(jar1.clone()),
+            ClasspathEntry::Jar(jar2.clone()),
+        ],
         None,
         Some(&deps_store),
         None,
@@ -80,4 +85,3 @@ fn classpath_lookup_prefers_first_entry_on_duplicate_classes() {
     let stub = index.lookup_binary("com.example.Dupe").unwrap();
     assert!(stub.methods.iter().any(|m| m.name == "from_jar2"));
 }
-

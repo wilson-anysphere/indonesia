@@ -2,9 +2,9 @@ use std::path::Path;
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
-    BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, Module, OutputDir, OutputDirKind,
-    JavaLanguageLevel, LanguageLevelProvenance, ModuleLanguageLevel, ProjectConfig, SourceRoot,
-    SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
+    BuildSystem, ClasspathEntry, ClasspathEntryKind, JavaConfig, JavaLanguageLevel,
+    LanguageLevelProvenance, Module, ModuleLanguageLevel, OutputDir, OutputDirKind, ProjectConfig,
+    SourceRoot, SourceRootKind, SourceRootOrigin, WorkspaceModuleBuildId, WorkspaceModuleConfig,
     WorkspaceProjectModel,
 };
 

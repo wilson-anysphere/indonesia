@@ -263,7 +263,11 @@ pub fn print<'a>(doc: Doc<'a>, config: PrintConfig) -> String {
                 } else {
                     flat_doc.clone()
                 };
-                stack.push(Command { indent, mode, doc: chosen });
+                stack.push(Command {
+                    indent,
+                    mode,
+                    doc: chosen,
+                });
             }
         }
     }
@@ -339,7 +343,11 @@ fn fits<'a>(mut remaining_width: isize, cmds: &[Command<'a>], config: PrintConfi
                 } else {
                     flat_doc.clone()
                 };
-                stack.push(Command { indent, mode, doc: chosen });
+                stack.push(Command {
+                    indent,
+                    mode,
+                    doc: chosen,
+                });
             }
         }
     }
@@ -370,8 +378,7 @@ mod tests {
     #[test]
     fn fits_considers_trailing_stack() {
         let doc = Doc::concat([
-            Doc::concat([Doc::text("a"), Doc::line(), Doc::text("b")])
-                .group(),
+            Doc::concat([Doc::text("a"), Doc::line(), Doc::text("b")]).group(),
             Doc::text("c"),
         ]);
 
@@ -430,4 +437,3 @@ mod tests {
         assert_eq!(print(doc, cfg(2)), "aX\nb");
     }
 }
-

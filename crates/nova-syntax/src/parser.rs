@@ -524,16 +524,23 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_requires_directive(&mut self) {
-        self.builder.start_node(SyntaxKind::RequiresDirective.into());
+        self.builder
+            .start_node(SyntaxKind::RequiresDirective.into());
         self.expect(SyntaxKind::RequiresKw, "expected `requires`");
 
         // `requires transitive static foo.bar;`
-        while matches!(self.current(), SyntaxKind::TransitiveKw | SyntaxKind::StaticKw) {
+        while matches!(
+            self.current(),
+            SyntaxKind::TransitiveKw | SyntaxKind::StaticKw
+        ) {
             self.bump();
         }
 
         self.parse_name();
-        if !self.expect(SyntaxKind::Semicolon, "expected `;` after requires directive") {
+        if !self.expect(
+            SyntaxKind::Semicolon,
+            "expected `;` after requires directive",
+        ) {
             self.recover_to_module_directive_boundary();
         }
         self.builder.finish_node();
@@ -553,7 +560,10 @@ impl<'a> Parser<'a> {
             }
         }
 
-        if !self.expect(SyntaxKind::Semicolon, "expected `;` after exports directive") {
+        if !self.expect(
+            SyntaxKind::Semicolon,
+            "expected `;` after exports directive",
+        ) {
             self.recover_to_module_directive_boundary();
         }
         self.builder.finish_node();
@@ -590,7 +600,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_provides_directive(&mut self) {
-        self.builder.start_node(SyntaxKind::ProvidesDirective.into());
+        self.builder
+            .start_node(SyntaxKind::ProvidesDirective.into());
         self.expect(SyntaxKind::ProvidesKw, "expected `provides`");
         self.parse_name();
         self.expect(SyntaxKind::WithKw, "expected `with` in provides directive");
@@ -1192,7 +1203,10 @@ impl<'a> Parser<'a> {
     fn parse_annotation_element_default(&mut self) {
         self.builder.start_node(SyntaxKind::DefaultValue.into());
         self.expect(SyntaxKind::DefaultKw, "expected `default`");
-        if matches!(self.current(), SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::Eof) {
+        if matches!(
+            self.current(),
+            SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::Eof
+        ) {
             self.error_here("expected default value");
         } else {
             while !matches!(
@@ -1200,8 +1214,12 @@ impl<'a> Parser<'a> {
                 SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::Eof
             ) {
                 match self.current() {
-                    SyntaxKind::LParen => self.bump_balanced(SyntaxKind::LParen, SyntaxKind::RParen),
-                    SyntaxKind::LBrace => self.bump_balanced(SyntaxKind::LBrace, SyntaxKind::RBrace),
+                    SyntaxKind::LParen => {
+                        self.bump_balanced(SyntaxKind::LParen, SyntaxKind::RParen)
+                    }
+                    SyntaxKind::LBrace => {
+                        self.bump_balanced(SyntaxKind::LBrace, SyntaxKind::RBrace)
+                    }
                     _ => self.bump_any(),
                 }
             }
@@ -1596,7 +1614,11 @@ impl<'a> Parser<'a> {
                 Some(SyntaxKind::At) => {
                     // Skip `@Name(...)` loosely (same strategy as `at_local_var_decl_start`).
                     i = skip_trivia(&self.tokens, i + 1);
-                    if self.tokens.get(i).map_or(false, |t| t.kind.is_identifier_like()) {
+                    if self
+                        .tokens
+                        .get(i)
+                        .map_or(false, |t| t.kind.is_identifier_like())
+                    {
                         i += 1;
                         loop {
                             let dot = skip_trivia(&self.tokens, i);
@@ -1699,7 +1721,11 @@ impl<'a> Parser<'a> {
             // Ensure progress on malformed patterns without consuming the label terminator.
             if !matches!(
                 self.current(),
-                SyntaxKind::Arrow | SyntaxKind::Colon | SyntaxKind::Comma | SyntaxKind::RParen | SyntaxKind::Eof
+                SyntaxKind::Arrow
+                    | SyntaxKind::Colon
+                    | SyntaxKind::Comma
+                    | SyntaxKind::RParen
+                    | SyntaxKind::Eof
             ) {
                 self.bump_any();
             }
@@ -2196,7 +2222,11 @@ impl<'a> Parser<'a> {
                 // If we're sitting at a structural delimiter, don't consume it: callers
                 // typically expect to see it and can recover locally.
                 self.eat_trivia();
-                let kind = self.tokens.front().map(|t| t.kind).unwrap_or(SyntaxKind::Eof);
+                let kind = self
+                    .tokens
+                    .front()
+                    .map(|t| t.kind)
+                    .unwrap_or(SyntaxKind::Eof);
                 if kind != SyntaxKind::Eof && !EXPR_RECOVERY.contains(kind) {
                     self.bump_any();
                 }
@@ -2568,7 +2598,11 @@ impl<'a> Parser<'a> {
         let mut depth = DelimiterDepth::default();
         loop {
             self.eat_trivia();
-            let kind = self.tokens.front().map(|t| t.kind).unwrap_or(SyntaxKind::Eof);
+            let kind = self
+                .tokens
+                .front()
+                .map(|t| t.kind)
+                .unwrap_or(SyntaxKind::Eof);
             if kind == SyntaxKind::Eof {
                 break;
             }
@@ -2611,7 +2645,10 @@ impl<'a> Parser<'a> {
                 break;
             }
 
-            if self.tokens.get(skip_trivia(&self.tokens, i + 1)).map(|t| t.kind)
+            if self
+                .tokens
+                .get(skip_trivia(&self.tokens, i + 1))
+                .map(|t| t.kind)
                 == Some(SyntaxKind::InterfaceKw)
             {
                 return false;
@@ -2739,7 +2776,10 @@ impl<'a> Parser<'a> {
             let range = match kind {
                 SyntaxKind::Semicolon => {
                     let pos = self.last_non_trivia_end;
-                    TextRange { start: pos, end: pos }
+                    TextRange {
+                        start: pos,
+                        end: pos,
+                    }
                 }
                 _ => self.current_range(),
             };

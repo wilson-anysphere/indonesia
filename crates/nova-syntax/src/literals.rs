@@ -497,9 +497,7 @@ fn validate_decimal_floating(main: &str, had_suffix: bool) -> Result<(), Literal
         if matches!(bytes.get(exp_start), Some(b'+' | b'-')) {
             exp_start += 1;
         }
-        let exp_has_digit = bytes[exp_start..]
-            .iter()
-            .any(|b| matches!(b, b'0'..=b'9'));
+        let exp_has_digit = bytes[exp_start..].iter().any(|b| matches!(b, b'0'..=b'9'));
         if !exp_has_digit {
             return Err(err("Missing exponent digits", e..e + 1));
         }
@@ -518,7 +516,10 @@ fn validate_decimal_floating(main: &str, had_suffix: bool) -> Result<(), Literal
 fn parse_hex_floating(main: &str, target: FloatTarget) -> Result<FloatValue, LiteralError> {
     let bytes = main.as_bytes();
     if bytes.len() < 3 {
-        return Err(err("Incomplete hexadecimal floating literal", 0..main.len()));
+        return Err(err(
+            "Incomplete hexadecimal floating literal",
+            0..main.len(),
+        ));
     }
     if bytes.get(2) == Some(&b'_') {
         return Err(err(
@@ -527,12 +528,15 @@ fn parse_hex_floating(main: &str, target: FloatTarget) -> Result<FloatValue, Lit
         ));
     }
 
-    let p_idx = bytes.iter().position(|b| matches!(b, b'p' | b'P')).ok_or_else(|| {
-        err(
-            "Hexadecimal floating literal is missing binary exponent (`p`)",
-            0..main.len(),
-        )
-    })?;
+    let p_idx = bytes
+        .iter()
+        .position(|b| matches!(b, b'p' | b'P'))
+        .ok_or_else(|| {
+            err(
+                "Hexadecimal floating literal is missing binary exponent (`p`)",
+                0..main.len(),
+            )
+        })?;
 
     if p_idx <= 2 {
         return Err(err(
@@ -687,7 +691,10 @@ fn hex_value(b: u8) -> Option<u8> {
     }
 }
 
-fn parse_signed_decimal_with_underscores(bytes: &[u8], span_base: usize) -> Result<i64, LiteralError> {
+fn parse_signed_decimal_with_underscores(
+    bytes: &[u8],
+    span_base: usize,
+) -> Result<i64, LiteralError> {
     if bytes.is_empty() {
         return Err(err("Missing exponent digits", span_base..span_base));
     }
@@ -942,7 +949,9 @@ pub fn unescape_char_literal(text: &str) -> Result<char, LiteralError> {
     let mut out = String::new();
     unescape_java_string_like(text, 1, text.len() - 1, false, &mut out)?;
     let mut chars = out.chars();
-    let ch = chars.next().ok_or_else(|| err("Empty char literal", 0..text.len()))?;
+    let ch = chars
+        .next()
+        .ok_or_else(|| err("Empty char literal", 0..text.len()))?;
     if chars.next().is_some() {
         return Err(err(
             "Char literal must contain exactly one character",
@@ -1002,7 +1011,10 @@ pub fn unescape_text_block(text: &str) -> Result<String, LiteralError> {
     }
 
     if content_start >= closing_start {
-        return Err(err("Missing line terminator after opening delimiter", 3..closing_start));
+        return Err(err(
+            "Missing line terminator after opening delimiter",
+            3..closing_start,
+        ));
     }
 
     match bytes[content_start] {
@@ -1260,7 +1272,10 @@ mod tests {
 
     #[test]
     fn long_literals_suffix_and_twos_complement() {
-        assert_eq!(parse_long_literal("9223372036854775807L").unwrap(), i64::MAX);
+        assert_eq!(
+            parse_long_literal("9223372036854775807L").unwrap(),
+            i64::MAX
+        );
         assert!(parse_long_literal("9223372036854775808L").is_err());
         assert_eq!(parse_long_literal("0xFFFF_FFFF_FFFF_FFFFL").unwrap(), -1);
     }

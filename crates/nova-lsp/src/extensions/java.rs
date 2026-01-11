@@ -25,8 +25,8 @@ pub struct JavaSourcePathsResponse {
 }
 
 pub fn handle_source_paths(params: serde_json::Value) -> Result<serde_json::Value> {
-    let params: JavaSourcePathsParams =
-        serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let params: JavaSourcePathsParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
     if params.project_root.trim().is_empty() {
         return Err(NovaLspError::InvalidParams(
@@ -85,23 +85,26 @@ pub struct ResolveMainClassResponse {
 }
 
 pub fn handle_resolve_main_class(params: serde_json::Value) -> Result<serde_json::Value> {
-    let params: ResolveMainClassParams =
-        serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let params: ResolveMainClassParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
-    let classes = if let Some(root) = params.project_root.as_deref().filter(|root| !root.trim().is_empty()) {
-        let project =
-            nova_ide::Project::load_from_dir(Path::new(root)).map_err(|err| NovaLspError::Internal(err.to_string()))?;
+    let classes = if let Some(root) = params
+        .project_root
+        .as_deref()
+        .filter(|root| !root.trim().is_empty())
+    {
+        let project = nova_ide::Project::load_from_dir(Path::new(root))
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
         project.discover_classes()
     } else if let Some(uri) = params.uri.as_deref().filter(|uri| !uri.trim().is_empty()) {
         let url = url::Url::parse(uri).map_err(|err| {
             NovaLspError::InvalidParams(format!("`uri` must be a valid URI ({err})"))
         })?;
-        let path = url.to_file_path().map_err(|_| {
-            NovaLspError::InvalidParams("`uri` must be a file:// URI".to_string())
-        })?;
-        let text = std::fs::read_to_string(&path).map_err(|err| {
-            NovaLspError::Internal(format!("failed to read {path:?}: {err}"))
-        })?;
+        let path = url
+            .to_file_path()
+            .map_err(|_| NovaLspError::InvalidParams("`uri` must be a file:// URI".to_string()))?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|err| NovaLspError::Internal(format!("failed to read {path:?}: {err}")))?;
         let project = nova_ide::Project::new(vec![(path, text)]);
         project.discover_classes()
     } else {
@@ -128,7 +131,11 @@ pub fn handle_resolve_main_class(params: serde_json::Value) -> Result<serde_json
         })
         .collect();
 
-    classes.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name).then(a.path.cmp(&b.path)));
+    classes.sort_by(|a, b| {
+        a.qualified_name
+            .cmp(&b.qualified_name)
+            .then(a.path.cmp(&b.path))
+    });
 
     let resp = ResolveMainClassResponse {
         schema_version: SCHEMA_VERSION,
@@ -137,4 +144,3 @@ pub fn handle_resolve_main_class(params: serde_json::Value) -> Result<serde_json
 
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
-

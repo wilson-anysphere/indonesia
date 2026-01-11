@@ -1,8 +1,7 @@
 use std::{
     env,
     io::{self, Write},
-    process,
-    thread,
+    process, thread,
     time::Duration,
 };
 

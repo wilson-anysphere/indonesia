@@ -3,10 +3,10 @@ use std::collections::HashSet;
 use nova_ai::context::{ContextBuilder, ContextRequest, RelatedSymbol};
 use nova_ai::{
     filter_duplicates_against_insert_text_set, parse_structured_patch,
-    safety::{enforce_no_new_imports, enforce_patch_safety}, validate_multi_token_completion,
-    AdditionalEdit, AiClient,
-    MultiTokenCompletion, MultiTokenCompletionContext, MultiTokenInsertTextFormat,
-    PatchSafetyConfig, PrivacyMode, SafetyError, VirtualWorkspace,
+    safety::{enforce_no_new_imports, enforce_patch_safety},
+    validate_multi_token_completion, AdditionalEdit, AiClient, MultiTokenCompletion,
+    MultiTokenCompletionContext, MultiTokenInsertTextFormat, PatchSafetyConfig, PrivacyMode,
+    SafetyError, VirtualWorkspace,
 };
 use nova_config::{AiConfig, AiPrivacyConfig, AiProviderConfig, AiProviderKind};
 use url::Url;

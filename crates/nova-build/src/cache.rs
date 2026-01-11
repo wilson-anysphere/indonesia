@@ -181,12 +181,10 @@ impl BuildCache {
         data: &CachedBuildData,
     ) -> Result<()> {
         let path = self.cache_file(project_root, kind, fingerprint);
-        let parent = path
-            .parent()
-            .ok_or_else(|| CacheError::Write {
-                path: path.clone(),
-                source: io::Error::new(io::ErrorKind::Other, "path has no parent"),
-            })?;
+        let parent = path.parent().ok_or_else(|| CacheError::Write {
+            path: path.clone(),
+            source: io::Error::new(io::ErrorKind::Other, "path has no parent"),
+        })?;
         let parent = if parent.as_os_str().is_empty() {
             Path::new(".")
         } else {
@@ -316,9 +314,9 @@ impl BuildCache {
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
-    let file_name = dest.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
-    })?;
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "destination path has no file name"))?;
     let pid = std::process::id();
 
     loop {

@@ -15,4 +15,3 @@ pub use scopes::{
     build_scopes, build_scopes_with_resolver, build_scopes_with_resolver_and_cancel, Resolution,
     Resolver, ScopeBuildResult, ScopeData, ScopeGraph, ScopeId, ScopeKind,
 };
-

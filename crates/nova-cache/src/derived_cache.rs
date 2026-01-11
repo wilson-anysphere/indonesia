@@ -2,8 +2,8 @@ use crate::error::CacheError;
 use crate::fingerprint::Fingerprint;
 use crate::path::normalize_inputs_map;
 use crate::util::{
-    atomic_write, atomic_write_with, bincode_deserialize, bincode_options_limited, bincode_serialize,
-    now_millis, read_file_limited,
+    atomic_write, atomic_write_with, bincode_deserialize, bincode_options_limited,
+    bincode_serialize, now_millis, read_file_limited,
 };
 use bincode::Options;
 use serde::de::DeserializeOwned;
@@ -349,19 +349,24 @@ impl DerivedArtifactCache {
 
         let mut dirty = false;
         let mut index = match std::fs::File::open(&index_path) {
-            Ok(file) => match serde_json::from_reader::<_, DerivedQueryIndex>(std::io::BufReader::new(file)) {
-                Ok(mut index) => {
-                    if index.schema_version != DERIVED_CACHE_INDEX_SCHEMA_VERSION || !index.is_safe() {
-                        dirty = true;
-                        index = DerivedQueryIndex::empty();
+            Ok(file) => {
+                match serde_json::from_reader::<_, DerivedQueryIndex>(std::io::BufReader::new(file))
+                {
+                    Ok(mut index) => {
+                        if index.schema_version != DERIVED_CACHE_INDEX_SCHEMA_VERSION
+                            || !index.is_safe()
+                        {
+                            dirty = true;
+                            index = DerivedQueryIndex::empty();
+                        }
+                        index
                     }
-                    index
+                    Err(_) => {
+                        dirty = true;
+                        DerivedQueryIndex::empty()
+                    }
                 }
-                Err(_) => {
-                    dirty = true;
-                    DerivedQueryIndex::empty()
-                }
-            },
+            }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 dirty = true;
                 DerivedQueryIndex::empty()
@@ -611,7 +616,9 @@ fn read_saved_at_millis(path: &Path) -> Option<u64> {
     let file = std::fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
     let (schema_version, nova_version, saved_at_millis): (u32, String, u64) =
-        bincode_options_limited().deserialize_from(&mut reader).ok()?;
+        bincode_options_limited()
+            .deserialize_from(&mut reader)
+            .ok()?;
 
     if schema_version != DERIVED_CACHE_SCHEMA_VERSION {
         return None;

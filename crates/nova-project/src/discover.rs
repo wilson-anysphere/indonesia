@@ -102,9 +102,10 @@ pub fn load_project_with_workspace_config(
     root: impl AsRef<Path>,
 ) -> Result<ProjectConfig, ProjectError> {
     let start_path = crate::workspace_config::canonicalize_workspace_root(root)?;
-    let workspace_root = workspace_root(&start_path)
-        .ok_or(ProjectError::UnknownProjectType { root: start_path })?;
-    let (nova_config, nova_config_path) = crate::workspace_config::load_nova_config(&workspace_root)?;
+    let workspace_root =
+        workspace_root(&start_path).ok_or(ProjectError::UnknownProjectType { root: start_path })?;
+    let (nova_config, nova_config_path) =
+        crate::workspace_config::load_nova_config(&workspace_root)?;
     let options = LoadOptions {
         nova_config,
         nova_config_path,
@@ -119,8 +120,8 @@ pub fn load_project_with_options(
     options: &LoadOptions,
 ) -> Result<ProjectConfig, ProjectError> {
     let start_path = crate::workspace_config::canonicalize_workspace_root(root)?;
-    let workspace_root = workspace_root(&start_path)
-        .ok_or(ProjectError::UnknownProjectType { root: start_path })?;
+    let workspace_root =
+        workspace_root(&start_path).ok_or(ProjectError::UnknownProjectType { root: start_path })?;
     load_project_from_workspace_root(&workspace_root, options)
 }
 
@@ -129,8 +130,8 @@ pub fn load_workspace_model_with_options(
     options: &LoadOptions,
 ) -> Result<WorkspaceProjectModel, ProjectError> {
     let start_path = crate::workspace_config::canonicalize_workspace_root(root)?;
-    let workspace_root = workspace_root(&start_path)
-        .ok_or(ProjectError::UnknownProjectType { root: start_path })?;
+    let workspace_root =
+        workspace_root(&start_path).ok_or(ProjectError::UnknownProjectType { root: start_path })?;
     load_workspace_model_from_workspace_root(&workspace_root, options)
 }
 
@@ -446,10 +447,12 @@ fn is_build_file(build_system: BuildSystem, path: &Path) -> bool {
                 | "settings.gradle.kts"
                 | "gradle.properties"
         ),
-        BuildSystem::Bazel => matches!(
-            name,
-            "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel" | "BUILD" | "BUILD.bazel"
-        ) || path.extension().is_some_and(|ext| ext == "bzl"),
+        BuildSystem::Bazel => {
+            matches!(
+                name,
+                "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel" | "BUILD" | "BUILD.bazel"
+            ) || path.extension().is_some_and(|ext| ext == "bzl")
+        }
         BuildSystem::Simple => false,
     }
 }

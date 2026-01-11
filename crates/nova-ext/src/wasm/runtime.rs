@@ -12,9 +12,9 @@ use std::time::Duration;
 use wasmtime::{Engine, Instance, Linker, Module, Store, StoreLimitsBuilder, TypedFunc};
 
 use super::abi::{
-    CodeActionV1, CodeActionsRequestV1, CompletionsRequestV1, CompletionItemV1, DiagnosticV1,
-    DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1, NavigationTargetV1,
-    SeverityV1, SpanV1, SymbolV1, ABI_V1,
+    CodeActionV1, CodeActionsRequestV1, CompletionItemV1, CompletionsRequestV1, DiagnosticV1,
+    DiagnosticsRequestV1, InlayHintV1, InlayHintsRequestV1, NavigationRequestV1,
+    NavigationTargetV1, SeverityV1, SpanV1, SymbolV1, ABI_V1,
 };
 
 const EXPORT_ABI_VERSION: &str = "nova_ext_abi_version";
@@ -42,8 +42,7 @@ fn engine() -> &'static Engine {
         let mut config = wasmtime::Config::new();
         config.epoch_interruption(true);
 
-        let engine =
-            Engine::new(&config).expect("wasmtime Engine construction should not fail");
+        let engine = Engine::new(&config).expect("wasmtime Engine construction should not fail");
 
         // A single global epoch-ticker thread is sufficient to support timeouts for all stores
         // created by this engine.
@@ -151,7 +150,9 @@ impl std::fmt::Display for WasmLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WasmLoadError::Compile(msg) => write!(f, "failed to compile wasm module: {msg}"),
-            WasmLoadError::Instantiate(msg) => write!(f, "failed to instantiate wasm module: {msg}"),
+            WasmLoadError::Instantiate(msg) => {
+                write!(f, "failed to instantiate wasm module: {msg}")
+            }
             WasmLoadError::MissingExport(name) => write!(f, "missing required wasm export: {name}"),
             WasmLoadError::AbiVersionMismatch { expected, found } => write!(
                 f,
@@ -167,9 +168,19 @@ impl std::error::Error for WasmLoadError {}
 pub enum WasmCallError {
     Instantiate(String),
     MissingExport(&'static str),
-    RequestTooLarge { len: usize, max: usize },
-    ResponseTooLarge { len: usize, max: usize },
-    MemoryOutOfBounds { ptr: usize, len: usize, memory_len: usize },
+    RequestTooLarge {
+        len: usize,
+        max: usize,
+    },
+    ResponseTooLarge {
+        len: usize,
+        max: usize,
+    },
+    MemoryOutOfBounds {
+        ptr: usize,
+        len: usize,
+        memory_len: usize,
+    },
     Timeout(String),
     Trap(String),
     Json(String),
@@ -178,7 +189,9 @@ pub enum WasmCallError {
 impl std::fmt::Display for WasmCallError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WasmCallError::Instantiate(msg) => write!(f, "failed to instantiate wasm module: {msg}"),
+            WasmCallError::Instantiate(msg) => {
+                write!(f, "failed to instantiate wasm module: {msg}")
+            }
             WasmCallError::MissingExport(name) => write!(f, "missing required wasm export: {name}"),
             WasmCallError::RequestTooLarge { len, max } => {
                 write!(f, "wasm request too large ({len} bytes > {max} bytes)")
@@ -186,7 +199,11 @@ impl std::fmt::Display for WasmCallError {
             WasmCallError::ResponseTooLarge { len, max } => {
                 write!(f, "wasm response too large ({len} bytes > {max} bytes)")
             }
-            WasmCallError::MemoryOutOfBounds { ptr, len, memory_len } => write!(
+            WasmCallError::MemoryOutOfBounds {
+                ptr,
+                len,
+                memory_len,
+            } => write!(
                 f,
                 "wasm response out of bounds (ptr={ptr}, len={len}, memory_len={memory_len})"
             ),
@@ -267,44 +284,52 @@ impl WasmPlugin {
     }
 
     /// Register all implemented capabilities with an [`ExtensionRegistry`].
-    pub fn register<DB>(self: &std::sync::Arc<Self>, registry: &mut ExtensionRegistry<DB>) -> Result<(), crate::RegisterError>
+    pub fn register<DB>(
+        self: &std::sync::Arc<Self>,
+        registry: &mut ExtensionRegistry<DB>,
+    ) -> Result<(), crate::RegisterError>
     where
         DB: ?Sized + Send + Sync + WasmHostDb + 'static,
     {
         if self.capabilities.contains(WasmCapabilities::DIAGNOSTICS) {
             registry.register_diagnostic_provider(
-                std::sync::Arc::clone(self) as std::sync::Arc<dyn DiagnosticProvider<DB>>,
+                std::sync::Arc::clone(self) as std::sync::Arc<dyn DiagnosticProvider<DB>>
             )?;
         }
         if self.capabilities.contains(WasmCapabilities::COMPLETIONS) {
             registry.register_completion_provider(
-                std::sync::Arc::clone(self) as std::sync::Arc<dyn CompletionProvider<DB>>,
+                std::sync::Arc::clone(self) as std::sync::Arc<dyn CompletionProvider<DB>>
             )?;
         }
         if self.capabilities.contains(WasmCapabilities::CODE_ACTIONS) {
             registry.register_code_action_provider(
-                std::sync::Arc::clone(self) as std::sync::Arc<dyn CodeActionProvider<DB>>,
+                std::sync::Arc::clone(self) as std::sync::Arc<dyn CodeActionProvider<DB>>
             )?;
         }
         if self.capabilities.contains(WasmCapabilities::NAVIGATION) {
             registry.register_navigation_provider(
-                std::sync::Arc::clone(self) as std::sync::Arc<dyn NavigationProvider<DB>>,
+                std::sync::Arc::clone(self) as std::sync::Arc<dyn NavigationProvider<DB>>
             )?;
         }
         if self.capabilities.contains(WasmCapabilities::INLAY_HINTS) {
             registry.register_inlay_hint_provider(
-                std::sync::Arc::clone(self) as std::sync::Arc<dyn InlayHintProvider<DB>>,
+                std::sync::Arc::clone(self) as std::sync::Arc<dyn InlayHintProvider<DB>>
             )?;
         }
         Ok(())
     }
 
-    fn call_vec<Req, Out>(&self, export: &'static str, request: &Req) -> Result<Vec<Out>, WasmCallError>
+    fn call_vec<Req, Out>(
+        &self,
+        export: &'static str,
+        request: &Req,
+    ) -> Result<Vec<Out>, WasmCallError>
     where
         Req: serde::Serialize,
         Out: for<'de> serde::Deserialize<'de>,
     {
-        let req_bytes = serde_json::to_vec(request).map_err(|e| WasmCallError::Json(e.to_string()))?;
+        let req_bytes =
+            serde_json::to_vec(request).map_err(|e| WasmCallError::Json(e.to_string()))?;
         if req_bytes.len() > self.config.max_request_bytes {
             return Err(WasmCallError::RequestTooLarge {
                 len: req_bytes.len(),
@@ -378,7 +403,10 @@ impl WasmPlugin {
         serde_json::from_slice::<Vec<Out>>(&bytes).map_err(|e| WasmCallError::Json(e.to_string()))
     }
 
-    fn call_diagnostics_v1(&self, req: DiagnosticsRequestV1) -> Result<Vec<DiagnosticV1>, WasmCallError> {
+    fn call_diagnostics_v1(
+        &self,
+        req: DiagnosticsRequestV1,
+    ) -> Result<Vec<DiagnosticV1>, WasmCallError> {
         self.call_vec(EXPORT_DIAGNOSTICS, &req)
     }
 
@@ -389,7 +417,10 @@ impl WasmPlugin {
         self.call_vec(EXPORT_COMPLETIONS, &req)
     }
 
-    fn call_code_actions_v1(&self, req: CodeActionsRequestV1) -> Result<Vec<CodeActionV1>, WasmCallError> {
+    fn call_code_actions_v1(
+        &self,
+        req: CodeActionsRequestV1,
+    ) -> Result<Vec<CodeActionV1>, WasmCallError> {
         self.call_vec(EXPORT_CODE_ACTIONS, &req)
     }
 
@@ -400,7 +431,10 @@ impl WasmPlugin {
         self.call_vec(EXPORT_NAVIGATION, &req)
     }
 
-    fn call_inlay_hints_v1(&self, req: InlayHintsRequestV1) -> Result<Vec<InlayHintV1>, WasmCallError> {
+    fn call_inlay_hints_v1(
+        &self,
+        req: InlayHintsRequestV1,
+    ) -> Result<Vec<InlayHintV1>, WasmCallError> {
         self.call_vec(EXPORT_INLAY_HINTS, &req)
     }
 }
@@ -412,7 +446,10 @@ fn new_store(config: &WasmPluginConfig) -> Store<StoreState> {
     store
 }
 
-fn instantiate(store: &mut Store<StoreState>, module: &Module) -> Result<Instance, wasmtime::Error> {
+fn instantiate(
+    store: &mut Store<StoreState>,
+    module: &Module,
+) -> Result<Instance, wasmtime::Error> {
     // No WASI, no host functions by default.
     let linker = Linker::new(engine());
     linker.instantiate(store, module)
@@ -432,7 +469,11 @@ impl StoreState {
     }
 }
 
-fn probe_module(id: &str, module: &Module, config: &WasmPluginConfig) -> Result<WasmCapabilities, WasmLoadError> {
+fn probe_module(
+    id: &str,
+    module: &Module,
+    config: &WasmPluginConfig,
+) -> Result<WasmCapabilities, WasmLoadError> {
     let mut store = new_store(config);
     let instance = instantiate(&mut store, module).map_err(|e| {
         tracing::warn!(plugin_id = %id, error = %e, "failed to instantiate wasm extension for probing");
@@ -520,7 +561,11 @@ where
         self.id()
     }
 
-    fn provide_diagnostics(&self, ctx: ExtensionContext<DB>, params: DiagnosticParams) -> Vec<Diagnostic> {
+    fn provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
         if !self.capabilities.contains(WasmCapabilities::DIAGNOSTICS) {
             return Vec::new();
         }
@@ -612,7 +657,11 @@ where
         self.id()
     }
 
-    fn provide_code_actions(&self, ctx: ExtensionContext<DB>, params: CodeActionParams) -> Vec<CodeAction> {
+    fn provide_code_actions(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: CodeActionParams,
+    ) -> Vec<CodeAction> {
         if !self.capabilities.contains(WasmCapabilities::CODE_ACTIONS) {
             return Vec::new();
         }
@@ -697,7 +746,11 @@ where
         self.id()
     }
 
-    fn provide_inlay_hints(&self, ctx: ExtensionContext<DB>, params: InlayHintParams) -> Vec<InlayHint> {
+    fn provide_inlay_hints(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: InlayHintParams,
+    ) -> Vec<InlayHint> {
         if !self.capabilities.contains(WasmCapabilities::INLAY_HINTS) {
             return Vec::new();
         }

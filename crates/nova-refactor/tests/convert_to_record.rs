@@ -23,13 +23,7 @@ fn converts_minimal_class_and_formats_empty_record_body() {
     );
 
     let cursor = source.find("class Point").unwrap();
-    let edit = convert_to_record(
-        file,
-        source,
-        cursor,
-        ConvertToRecordOptions::default(),
-    )
-    .unwrap();
+    let edit = convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
 
     let result = apply_edit(source, &edit);
     assert_eq!(result, "public record Point(int x, int y) {\n}\n");
@@ -48,13 +42,7 @@ fn converts_messy_class_and_formats_record_members() {
     );
 
     let cursor = source.find("class Point").unwrap();
-    let edit = convert_to_record(
-        file,
-        source,
-        cursor,
-        ConvertToRecordOptions::default(),
-    )
-    .unwrap();
+    let edit = convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
 
     let result = apply_edit(source, &edit);
     assert_eq!(

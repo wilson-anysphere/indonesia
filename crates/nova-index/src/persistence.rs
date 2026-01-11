@@ -827,7 +827,10 @@ pub fn save_indexes_with_fingerprints(
                     last_updated_millis: now,
                     project_hash: cache_dir.project_hash().clone(),
                     file_fingerprints: file_fingerprints.clone(),
-                    file_metadata_fingerprints: compute_metadata_fingerprints(cache_dir, file_fingerprints),
+                    file_metadata_fingerprints: compute_metadata_fingerprints(
+                        cache_dir,
+                        file_fingerprints,
+                    ),
                 },
                 0,
             )
@@ -861,7 +864,8 @@ pub fn save_indexes_with_fingerprints(
     metadata.last_updated_millis = generation;
     metadata.project_hash = cache_dir.project_hash().clone();
     metadata.file_fingerprints = file_fingerprints.clone();
-    metadata.file_metadata_fingerprints = compute_metadata_fingerprints(cache_dir, file_fingerprints);
+    metadata.file_metadata_fingerprints =
+        compute_metadata_fingerprints(cache_dir, file_fingerprints);
     metadata.save(metadata_path)?;
     Ok(())
 }

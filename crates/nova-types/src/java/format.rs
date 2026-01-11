@@ -184,7 +184,12 @@ fn fmt_type_var(env: &dyn TypeEnv, id: TypeVarId, f: &mut fmt::Formatter<'_>) ->
     }
 }
 
-fn fmt_method_signature(env: &dyn TypeEnv, owner: ClassId, method: &MethodDef, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn fmt_method_signature(
+    env: &dyn TypeEnv,
+    owner: ClassId,
+    method: &MethodDef,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     fmt_type_param_list(env, &method.type_params, f)?;
 
     if is_constructor_name(&method.name) {
@@ -198,7 +203,11 @@ fn fmt_method_signature(env: &dyn TypeEnv, owner: ClassId, method: &MethodDef, f
     fmt_param_list(env, &method.params, method.is_varargs, f)
 }
 
-fn fmt_resolved_method(env: &dyn TypeEnv, method: &ResolvedMethod, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn fmt_resolved_method(
+    env: &dyn TypeEnv,
+    method: &ResolvedMethod,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     if is_constructor_name(&method.name) {
         fmt_class_id(env, method.owner, f)?;
     } else {
@@ -209,7 +218,11 @@ fn fmt_resolved_method(env: &dyn TypeEnv, method: &ResolvedMethod, f: &mut fmt::
     fmt_param_list(env, &method.params, method.is_varargs, f)
 }
 
-fn fmt_type_param_list(env: &dyn TypeEnv, params: &[TypeVarId], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn fmt_type_param_list(
+    env: &dyn TypeEnv,
+    params: &[TypeVarId],
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     if params.is_empty() {
         return Ok(());
     }
@@ -223,7 +236,11 @@ fn fmt_type_param_list(env: &dyn TypeEnv, params: &[TypeVarId], f: &mut fmt::For
     f.write_str("> ")
 }
 
-fn fmt_type_param_decl(env: &dyn TypeEnv, id: TypeVarId, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn fmt_type_param_decl(
+    env: &dyn TypeEnv,
+    id: TypeVarId,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     let Some(tp) = env.type_param(id) else {
         return write!(f, "<tv#{}>", id.0);
     };
@@ -251,7 +268,12 @@ fn is_object_bound(env: &dyn TypeEnv, ty: &Type) -> bool {
     *def == env.well_known().object && args.is_empty()
 }
 
-fn fmt_param_list(env: &dyn TypeEnv, params: &[Type], is_varargs: bool, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+fn fmt_param_list(
+    env: &dyn TypeEnv,
+    params: &[Type],
+    is_varargs: bool,
+    f: &mut fmt::Formatter<'_>,
+) -> fmt::Result {
     f.write_char('(')?;
     for (idx, param) in params.iter().enumerate() {
         if idx != 0 {

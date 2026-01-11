@@ -1111,7 +1111,10 @@ mod tests {
             .iter()
             .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_request"))
             .expect("request audit event emitted");
-        let request_id = request.fields.get("request_id").expect("request_id present");
+        let request_id = request
+            .fields
+            .get("request_id")
+            .expect("request_id present");
 
         let error = audit
             .iter()

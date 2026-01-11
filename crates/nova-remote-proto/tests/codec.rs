@@ -44,8 +44,8 @@ fn rpc_roundtrips() -> anyhow::Result<()> {
             shard_id: 1,
             revision: 42,
             index_generation: 7,
-                file_count: 3,
-            }),
+            file_count: 3,
+        }),
         RpcMessage::ShardIndexInfo(ShardIndexInfo {
             shard_id: 1,
             revision: 42,

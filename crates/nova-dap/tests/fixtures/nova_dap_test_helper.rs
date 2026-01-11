@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     io::{self, Write},
     thread,
     time::Duration,
@@ -38,4 +37,3 @@ fn main() {
         thread::sleep(Duration::from_millis(sleep_ms));
     }
 }
-

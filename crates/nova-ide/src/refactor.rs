@@ -3,9 +3,7 @@
 //! This module provides a thin bridge between `nova-refactor` and LSP concepts
 //! (code actions, workspace edits, and resolution).
 
-use lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, Uri,
-};
+use lsp_types::{CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, Uri};
 use nova_refactor::{
     extract_constant, extract_field, inline_method, workspace_edit_to_lsp, ExtractError,
     ExtractOptions, FileId, InlineMethodOptions, TextDatabase, TextRange,
@@ -180,9 +178,8 @@ pub fn resolve_extract_member_code_action(
             .map(WorkspaceTextEdit::from)
             .collect::<Vec<_>>(),
     );
-    action.edit = Some(
-        workspace_edit_to_lsp(&db, &edit).map_err(|_| ExtractError::InvalidSelection)?,
-    );
+    action.edit =
+        Some(workspace_edit_to_lsp(&db, &edit).map_err(|_| ExtractError::InvalidSelection)?);
 
     Ok(())
 }

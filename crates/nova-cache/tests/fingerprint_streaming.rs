@@ -1,4 +1,6 @@
-use nova_cache::{pack_cache_package, CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
+use nova_cache::{
+    pack_cache_package, CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot,
+};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -35,12 +37,7 @@ unsafe impl GlobalAlloc for TrackingAllocator {
 fn track_alloc(size: usize) {
     let mut current = MAX_ALLOC.load(Ordering::Relaxed);
     while size > current {
-        match MAX_ALLOC.compare_exchange_weak(
-            current,
-            size,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        ) {
+        match MAX_ALLOC.compare_exchange_weak(current, size, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => break,
             Err(old) => current = old,
         }
@@ -115,7 +112,8 @@ fn pack_cache_package_does_not_load_large_index_files_into_memory() {
     )
     .unwrap();
 
-    let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("src/Main.java")]).unwrap();
+    let snapshot =
+        ProjectSnapshot::new(&project_root, vec![PathBuf::from("src/Main.java")]).unwrap();
     let metadata = CacheMetadata::new(&snapshot);
     metadata.save(cache_dir.metadata_path()).unwrap();
 

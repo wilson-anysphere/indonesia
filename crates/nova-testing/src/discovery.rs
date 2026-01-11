@@ -69,7 +69,10 @@ pub fn discover_tests(req: &TestDiscoverRequest) -> Result<TestDiscoverResponse>
     })
 }
 
-fn get_or_create_index(workspace_root: &Path, roots: Vec<PathBuf>) -> Arc<Mutex<TestDiscoveryIndex>> {
+fn get_or_create_index(
+    workspace_root: &Path,
+    roots: Vec<PathBuf>,
+) -> Arc<Mutex<TestDiscoveryIndex>> {
     let cache = DISCOVERY_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
 
     let mut cache = lock_mutex(cache);
@@ -411,9 +414,9 @@ fn node_contains_child_kind(node: Node<'_>, kind: &str) -> bool {
 }
 
 fn infer_framework_from_imports(imports: &Imports) -> TestFramework {
-    let any_junit5 = imports.all_import_roots().any(|path| {
-        path == "org.junit.jupiter" || path.starts_with("org.junit.jupiter.")
-    });
+    let any_junit5 = imports
+        .all_import_roots()
+        .any(|path| path == "org.junit.jupiter" || path.starts_with("org.junit.jupiter."));
     if any_junit5 {
         return TestFramework::Junit5;
     }
@@ -470,12 +473,7 @@ fn classify_test_annotations(
 fn is_test_annotation(simple_name: &str) -> bool {
     matches!(
         simple_name,
-        "Test"
-            | "ParameterizedTest"
-            | "RepeatedTest"
-            | "TestFactory"
-            | "TestTemplate"
-            | "Theory"
+        "Test" | "ParameterizedTest" | "RepeatedTest" | "TestFactory" | "TestTemplate" | "Theory"
     )
 }
 
@@ -499,7 +497,9 @@ fn infer_framework_for_annotation(imports: &Imports, ann: &Annotation) -> TestFr
     }
 
     match ann.simple_name.as_str() {
-        "ParameterizedTest" | "RepeatedTest" | "TestFactory" | "TestTemplate" => TestFramework::Junit5,
+        "ParameterizedTest" | "RepeatedTest" | "TestFactory" | "TestTemplate" => {
+            TestFramework::Junit5
+        }
         "Theory" => TestFramework::Junit4,
         "Test" => infer_framework_from_imports(imports),
         _ => TestFramework::Unknown,

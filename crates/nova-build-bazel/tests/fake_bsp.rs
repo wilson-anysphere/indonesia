@@ -175,9 +175,10 @@ pub fn spawn_fake_bsp_server(
                     // No-op
                 }
                 (Some("workspace/buildTargets"), Some(id)) => {
-                    let result =
-                        serde_json::to_value(&WorkspaceBuildTargetsResult { targets: config.targets.clone() })
-                            .unwrap();
+                    let result = serde_json::to_value(&WorkspaceBuildTargetsResult {
+                        targets: config.targets.clone(),
+                    })
+                    .unwrap();
                     let _ = write_message(
                         &mut writer,
                         &serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}),
@@ -188,8 +189,11 @@ pub fn spawn_fake_bsp_server(
                         .get("params")
                         .cloned()
                         .and_then(|v| serde_json::from_value(v).ok())
-                        .unwrap_or(JavacOptionsParams { targets: Vec::new() });
-                    let requested: Vec<String> = params.targets.into_iter().map(|t| t.uri).collect();
+                        .unwrap_or(JavacOptionsParams {
+                            targets: Vec::new(),
+                        });
+                    let requested: Vec<String> =
+                        params.targets.into_iter().map(|t| t.uri).collect();
                     let items: Vec<JavacOptionsItem> = config
                         .javac_options
                         .iter()
@@ -207,7 +211,9 @@ pub fn spawn_fake_bsp_server(
                         .get("params")
                         .cloned()
                         .and_then(|v| serde_json::from_value(v).ok())
-                        .unwrap_or(CompileParams { targets: Vec::new() });
+                        .unwrap_or(CompileParams {
+                            targets: Vec::new(),
+                        });
                     let _ = params;
 
                     // Interleave diagnostics notifications before the compile response to
