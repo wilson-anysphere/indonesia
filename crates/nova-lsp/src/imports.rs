@@ -19,8 +19,8 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
 
     let line_ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
 
-    let mut package_insert_offset: Option<usize> = None;
-    let mut last_import_insert_offset: Option<usize> = None;
+    let mut package_insert_range: Option<(usize, usize)> = None;
+    let mut last_import_insert_range: Option<(usize, usize)> = None;
 
     let mut offset = 0usize;
     for segment in text.split_inclusive('\n') {
@@ -30,14 +30,16 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
         let mut line = segment.strip_suffix('\n').unwrap_or(segment);
         line = line.strip_suffix('\r').unwrap_or(line);
 
-        if package_insert_offset.is_none() && is_package_declaration(line) {
+        if package_insert_range.is_none() && is_package_declaration(line) {
             if let Some(semi) = line.find(';') {
                 let after = &line[semi + 1..];
-                package_insert_offset = Some(if has_code_after_semicolon(after) {
-                    line_start + semi + 1 + leading_whitespace_len(after)
+                if has_code_after_semicolon(after) {
+                    let ws = leading_whitespace_len(after);
+                    let start = line_start + semi + 1;
+                    package_insert_range = Some((start, start + ws));
                 } else {
-                    line_end
-                });
+                    package_insert_range = Some((line_end, line_end));
+                }
             }
         }
 
@@ -48,28 +50,33 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
 
             if let Some(semi) = line.find(';') {
                 let after = &line[semi + 1..];
-                last_import_insert_offset = Some(if has_code_after_semicolon(after) {
-                    line_start + semi + 1 + leading_whitespace_len(after)
+                if has_code_after_semicolon(after) {
+                    let ws = leading_whitespace_len(after);
+                    let start = line_start + semi + 1;
+                    last_import_insert_range = Some((start, start + ws));
                 } else {
-                    line_end
-                });
+                    last_import_insert_range = Some((line_end, line_end));
+                }
             }
         }
 
         offset = line_end;
     }
 
-    let insertion_offset = last_import_insert_offset
-        .or(package_insert_offset)
-        .unwrap_or(0)
-        .min(text.len());
-    let needs_prefix = insertion_offset > 0 && text.as_bytes()[insertion_offset - 1] != b'\n';
+    let (mut start_offset, mut end_offset) = last_import_insert_range
+        .or(package_insert_range)
+        .unwrap_or((0, 0));
+    start_offset = start_offset.min(text.len());
+    end_offset = end_offset.min(text.len()).max(start_offset);
+
+    let needs_prefix = start_offset > 0 && text.as_bytes()[start_offset - 1] != b'\n';
     let prefix = if needs_prefix { line_ending } else { "" };
     let new_text = format!("{prefix}import {path};{line_ending}");
 
-    let pos = offset_to_position_utf16(text, insertion_offset);
+    let start_pos = offset_to_position_utf16(text, start_offset);
+    let end_pos = offset_to_position_utf16(text, end_offset);
     Some(TextEdit {
-        range: Range::new(pos, pos),
+        range: Range::new(start_pos, end_pos),
         new_text,
     })
 }
@@ -220,9 +227,12 @@ mod tests {
         let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
         assert_eq!(
             edit.range.start,
+            Position::new(0, "package com.example;".encode_utf16().count() as u32)
+        );
+        assert_eq!(
+            edit.range.end,
             Position::new(0, "package com.example; ".encode_utf16().count() as u32)
         );
-        assert_eq!(edit.range.end, edit.range.start);
         assert_eq!(edit.new_text, "\nimport java.util.List;\n");
     }
 
@@ -253,9 +263,12 @@ mod tests {
         let edit = java_import_text_edit(text, "java.util.Set").expect("expected edit");
         assert_eq!(
             edit.range.start,
+            Position::new(0, "import java.util.List;".encode_utf16().count() as u32)
+        );
+        assert_eq!(
+            edit.range.end,
             Position::new(0, "import java.util.List; ".encode_utf16().count() as u32)
         );
-        assert_eq!(edit.range.end, edit.range.start);
         assert_eq!(edit.new_text, "\nimport java.util.Set;\n");
     }
 
