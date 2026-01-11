@@ -7,7 +7,7 @@ Wire format for Nova distributed / multi-process mode messaging (router ⇄ work
 On the wire, RPC messages are encoded as:
 
 1. `u32` little-endian payload length
-2. bincode-encoded `RpcMessage` payload
+2. legacy `RpcMessage` payload (custom `legacy_v2` codec; intentionally not bincode)
 
 Shared helpers live in `nova_remote_proto::transport`.
 

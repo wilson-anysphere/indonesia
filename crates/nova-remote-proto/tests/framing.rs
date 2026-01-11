@@ -16,7 +16,7 @@ fn decode_framed_message_rejects_trailing_bytes() {
 }
 
 #[test]
-fn decode_framed_message_rejects_invalid_bincode_payload() {
+fn decode_framed_message_rejects_invalid_payload() {
     let frame = transport::encode_frame(&[0xff]).unwrap();
     assert!(transport::decode_framed_message(&frame).is_err());
 }
@@ -27,4 +27,3 @@ fn decode_framed_message_rejects_oversized_len_prefix() {
     let bytes = oversized_len.to_le_bytes();
     assert!(transport::decode_framed_message(&bytes).is_err());
 }
-
