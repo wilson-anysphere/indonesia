@@ -77,6 +77,100 @@ action {
   arguments: "lib.jar"
   arguments: "java/Hello.java"
 }
+
+#[derive(Clone)]
+struct BuildfilesFallbackRunner {
+    calls: Arc<Mutex<usize>>,
+    deps_stdout: String,
+    aquery_stdout: String,
+}
+
+impl BuildfilesFallbackRunner {
+    fn new(deps_stdout: String, aquery_stdout: String) -> Self {
+        Self {
+            calls: Arc::new(Mutex::new(0)),
+            deps_stdout,
+            aquery_stdout,
+        }
+    }
+
+    fn call_count(&self) -> usize {
+        *self.calls.lock().unwrap()
+    }
+}
+
+impl CommandRunner for BuildfilesFallbackRunner {
+    fn run(&self, _cwd: &Path, program: &str, args: &[&str]) -> anyhow::Result<CommandOutput> {
+        assert_eq!(program, "bazel");
+        *self.calls.lock().unwrap() += 1;
+
+        match args {
+            ["aquery", ..] => Ok(CommandOutput {
+                stdout: self.aquery_stdout.clone(),
+                stderr: String::new(),
+            }),
+            ["query", expr, "--output=label"] if expr.starts_with("buildfiles(") => {
+                // Simulate Bazel versions/environments where `buildfiles(...)` is unsupported.
+                anyhow::bail!("buildfiles query unsupported in test runner");
+            }
+            ["query", expr, "--output=label"] if expr.starts_with("loadfiles(") => Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            }),
+            ["query", expr, "--output=label"] if expr.starts_with("deps(") => Ok(CommandOutput {
+                stdout: self.deps_stdout.clone(),
+                stderr: String::new(),
+            }),
+            other => anyhow::bail!("unexpected bazel invocation: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn falls_back_to_deps_when_buildfiles_query_is_unavailable() {
+    let dir = tempdir().unwrap();
+
+    std::fs::write(dir.path().join("WORKSPACE"), "# test workspace\n").unwrap();
+    std::fs::create_dir_all(dir.path().join("java")).unwrap();
+    std::fs::create_dir_all(dir.path().join("dep")).unwrap();
+
+    let java_build = dir.path().join("java/BUILD");
+    let dep_build = dir.path().join("dep/BUILD");
+    std::fs::write(&java_build, "java_library(name = \"hello\")\n").unwrap();
+    std::fs::write(&dep_build, "java_library(name = \"dep\")\n").unwrap();
+
+    let deps_stdout = "//java:hello\n//dep:dep\n".to_string();
+    let aquery_stdout = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java:hello"
+  arguments: "javac"
+  arguments: "-classpath"
+  arguments: "lib.jar"
+  arguments: "java/Hello.java"
+}
+"#
+    .to_string();
+
+    let runner = BuildfilesFallbackRunner::new(deps_stdout, aquery_stdout);
+    let mut workspace = BazelWorkspace::new(dir.path().to_path_buf(), runner.clone()).unwrap();
+
+    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(
+        runner.call_count(),
+        4,
+        "expected aquery + buildfiles (error) + deps + loadfiles"
+    );
+
+    // Cache hit: no additional Bazel invocations.
+    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(runner.call_count(), 4);
+
+    // Mutating a dependency BUILD file must still invalidate the cached entry.
+    std::fs::write(&dep_build, "java_library(name = \"dep\", visibility = [])\n").unwrap();
+    let _ = workspace.target_compile_info("//java:hello").unwrap();
+    assert_eq!(runner.call_count(), 8);
+}
 "#
     .to_string();
 

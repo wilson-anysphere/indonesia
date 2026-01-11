@@ -20,6 +20,7 @@ const AQUERY_DIRECT_TEMPLATE: &str = r#"mnemonic("Javac", TARGET)"#;
 const AQUERY_DEPS_TEMPLATE: &str = r#"mnemonic("Javac", deps(TARGET))"#;
 const BUILDFILES_QUERY_TEMPLATE: &str = "buildfiles(deps(TARGET))";
 const LOADFILES_QUERY_TEMPLATE: &str = "loadfiles(deps(TARGET))";
+const DEPS_QUERY_TEMPLATE: &str = "deps(TARGET)";
 const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v5";
 
 fn compile_info_expr_version_hex() -> String {
@@ -48,6 +49,10 @@ fn compile_info_expr_version_hex() -> String {
 
     hasher.update(b"query_loadfiles=");
     hasher.update(LOADFILES_QUERY_TEMPLATE.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"query_deps=");
+    hasher.update(DEPS_QUERY_TEMPLATE.as_bytes());
     hasher.update(b"\n");
 
     hasher.update(b"textproto_parser=");
@@ -262,12 +267,17 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         }
 
         // Collect all BUILD / BUILD.bazel files that can influence `deps(target)` evaluation.
+        //
+        // Prefer `buildfiles(...)` when available because it is much smaller than a full deps
+        // traversal. If `buildfiles(...)` is unsupported, fall back to `deps(...)` and resolve
+        // BUILD files on disk.
         let buildfiles_query = BUILDFILES_QUERY_TEMPLATE.replace("TARGET", target);
-        let _ = self.runner.run_with_stdout(
+        let buildfiles_paths = self.runner.run_with_stdout(
             &self.root,
             "bazel",
             &["query", &buildfiles_query, "--output=label"],
             |stdout| {
+                let mut paths = Vec::new();
                 let mut line = String::new();
                 loop {
                     line.clear();
@@ -280,12 +290,52 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                         continue;
                     }
                     if let Some(path) = workspace_path_from_label(label) {
-                        inputs.insert(self.root.join(path));
+                        paths.push(path);
                     }
                 }
-                Ok(())
+                Ok(paths)
             },
         );
+
+        match buildfiles_paths {
+            Ok(paths) => {
+                for path in paths {
+                    inputs.insert(self.root.join(path));
+                }
+            }
+            Err(_) => {
+                // Fall back to `deps(target)` and include the BUILD file for each package we can
+                // resolve on disk.
+                let deps_query = DEPS_QUERY_TEMPLATE.replace("TARGET", target);
+                if let Ok(labels) = self.runner.run_with_stdout(
+                    &self.root,
+                    "bazel",
+                    &["query", &deps_query, "--output=label"],
+                    |stdout| {
+                        let mut labels = Vec::new();
+                        let mut line = String::new();
+                        loop {
+                            line.clear();
+                            let bytes = stdout.read_line(&mut line)?;
+                            if bytes == 0 {
+                                break;
+                            }
+                            let label = line.trim();
+                            if !label.is_empty() {
+                                labels.push(label.to_string());
+                            }
+                        }
+                        Ok(labels)
+                    },
+                ) {
+                    for label in labels {
+                        if let Some(build_file) = build_file_for_label(&self.root, &label)? {
+                            inputs.insert(build_file);
+                        }
+                    }
+                }
+            }
+        }
 
         // Additionally include Starlark `.bzl` files loaded by the target's build graph.
         //
