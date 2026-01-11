@@ -5,7 +5,7 @@
 //! can lead to OOM when invoked from the language server.
 //!
 //! This crate provides bounded output capture with optional wall-clock
-//! timeouts.
+//! timeouts and cancellation.
 
 use std::{
     fmt,
@@ -15,6 +15,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+pub use tokio_util::sync::CancellationToken;
 
 /// Captured stdout/stderr from a command, truncated to a maximum size.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,12 +44,18 @@ impl BoundedOutput {
 }
 
 /// Options controlling command execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RunOptions {
     /// Kill the process if it hasn't exited after this duration.
     pub timeout: Option<Duration>,
     /// Maximum bytes to capture *per stream* (stdout and stderr).
     pub max_bytes: usize,
+    /// Optional cancellation token. When cancelled, the process is terminated
+    /// and `cancelled` is set on the result.
+    pub cancellation: Option<CancellationToken>,
+    /// How long to wait after sending a graceful termination signal before
+    /// force-killing the process tree.
+    pub kill_grace: Duration,
 }
 
 impl Default for RunOptions {
@@ -57,6 +65,8 @@ impl Default for RunOptions {
             // 16MiB per stream (32MiB total) keeps memory bounded while still
             // capturing enough context for diagnostics.
             max_bytes: 16 * 1024 * 1024,
+            cancellation: None,
+            kill_grace: Duration::from_millis(250),
         }
     }
 }
@@ -101,6 +111,7 @@ pub struct CommandResult {
     pub status: ExitStatus,
     pub output: BoundedOutput,
     pub timed_out: bool,
+    pub cancelled: bool,
 }
 
 /// Structured error describing a command failure (non-zero exit or timeout).
@@ -113,6 +124,7 @@ pub struct CommandFailure {
     pub status: ExitStatus,
     pub output: BoundedOutput,
     pub timed_out: bool,
+    pub cancelled: bool,
     pub output_truncated: bool,
 }
 
@@ -122,6 +134,7 @@ impl CommandFailure {
         status: ExitStatus,
         output: BoundedOutput,
         timed_out: bool,
+        cancelled: bool,
     ) -> Self {
         let output_truncated = output.truncated;
         Self {
@@ -129,6 +142,7 @@ impl CommandFailure {
             status,
             output,
             timed_out,
+            cancelled,
             output_truncated,
         }
     }
@@ -139,6 +153,9 @@ impl fmt::Display for CommandFailure {
         writeln!(f, "`{}` exited with {}", self.command, self.status)?;
         if self.timed_out {
             writeln!(f, "timed_out: true")?;
+        }
+        if self.cancelled {
+            writeln!(f, "cancelled: true")?;
         }
         if self.output_truncated {
             writeln!(f, "output_truncated: true")?;
@@ -187,7 +204,9 @@ impl std::error::Error for RunCommandError {
 /// each.
 ///
 /// The function always returns the process `ExitStatus`. When the timeout is
-/// reached, the process is killed and `timed_out` is set to `true`.
+/// reached, the process is killed and `timed_out` is set to `true`. When the
+/// cancellation token is triggered, the process is killed and `cancelled` is
+/// set to `true`.
 pub fn run_command(
     cwd: &Path,
     program: &Path,
@@ -211,12 +230,13 @@ pub fn run_command_checked(
         source,
     })?;
 
-    if result.timed_out || !result.status.success() {
+    if result.timed_out || result.cancelled || !result.status.success() {
         return Err(RunCommandError::Failed(Box::new(CommandFailure::new(
             command,
             result.status,
             result.output,
             result.timed_out,
+            result.cancelled,
         ))));
     }
 
@@ -263,21 +283,32 @@ fn run_command_spec(command: &CommandSpec, opts: RunOptions) -> io::Result<Comma
 
     let start = Instant::now();
     let mut timed_out = false;
+    let mut cancelled = false;
 
-    let status = if let Some(timeout) = opts.timeout {
+    let status = if opts.timeout.is_some() || opts.cancellation.is_some() {
         let poll = Duration::from_millis(50);
         loop {
             if let Some(status) = child.try_wait()? {
                 break status;
             }
 
-            if start.elapsed() >= timeout {
-                timed_out = true;
-                kill_process_tree(&mut child);
-                break child.wait()?;
+            if let Some(token) = opts.cancellation.as_ref() {
+                if token.is_cancelled() {
+                    cancelled = true;
+                    break terminate_process_tree(&mut child, opts.kill_grace)?;
+                }
             }
 
-            thread::sleep(poll.min(timeout.saturating_sub(start.elapsed())));
+            if let Some(timeout) = opts.timeout {
+                if start.elapsed() >= timeout {
+                    timed_out = true;
+                    break terminate_process_tree(&mut child, opts.kill_grace)?;
+                }
+
+                thread::sleep(poll.min(timeout.saturating_sub(start.elapsed())));
+            } else {
+                thread::sleep(poll);
+            }
         }
     } else {
         child.wait()?
@@ -297,20 +328,40 @@ fn run_command_spec(command: &CommandSpec, opts: RunOptions) -> io::Result<Comma
             truncated: stdout_truncated || stderr_truncated,
         },
         timed_out,
+        cancelled,
     })
 }
 
-fn kill_process_tree(child: &mut std::process::Child) {
+fn terminate_process_tree(
+    child: &mut std::process::Child,
+    grace: Duration,
+) -> io::Result<ExitStatus> {
     #[cfg(unix)]
-    unsafe {
+    {
         let pid = child.id() as i32;
-        // Negative pid targets the process group, which we set to the child's
-        // pid via `setpgid(0, 0)` in `pre_exec`.
-        let _ = libc::kill(-pid, libc::SIGKILL);
+        // Negative pid targets the process group, which we set to the child's pid via
+        // `setpgid(0, 0)` in `pre_exec`.
+        unsafe {
+            let _ = libc::kill(-pid, libc::SIGTERM);
+        }
+
+        let start = Instant::now();
+        while start.elapsed() < grace {
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        unsafe {
+            let _ = libc::kill(-pid, libc::SIGKILL);
+        }
+        return child.wait();
     }
 
     #[cfg(windows)]
     {
+        let _ = grace;
         // Best-effort process tree kill on Windows.
         //
         // `Child::kill()` only terminates the immediate process. Wrapper scripts (e.g. Gradle's
@@ -326,10 +377,17 @@ fn kill_process_tree(child: &mut std::process::Child) {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+
+        let _ = child.kill();
+        return child.wait();
     }
 
-    // Fallback: kill just the immediate child.
-    let _ = child.kill();
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = grace;
+        let _ = child.kill();
+        return child.wait();
+    }
 }
 
 fn join_reader(

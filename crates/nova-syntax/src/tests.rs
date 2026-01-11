@@ -1055,7 +1055,7 @@ fn feature_gate_switch_expressions_version_matrix() {
             .collect::<Vec<_>>(),
         vec![
             "JAVA_FEATURE_SWITCH_EXPRESSIONS",
-            "JAVA_FEATURE_SWITCH_EXPRESSIONS"
+            "JAVA_FEATURE_SWITCH_EXPRESSIONS",
         ]
     );
 

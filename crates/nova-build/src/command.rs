@@ -38,11 +38,16 @@ pub struct DefaultCommandRunner {
     /// - When the timeout elapses, Nova makes a best-effort attempt to terminate the
     ///   full process tree (Unix process groups; `taskkill /T` on Windows).
     pub timeout: Option<Duration>,
+    /// Optional cancellation token for cooperative task cancellation.
+    pub cancellation: Option<nova_process::CancellationToken>,
 }
 
 impl Default for DefaultCommandRunner {
     fn default() -> Self {
-        Self { timeout: None }
+        Self {
+            timeout: Some(Duration::from_secs(15 * 60)),
+            cancellation: None,
+        }
     }
 }
 
@@ -55,6 +60,8 @@ impl CommandRunner for DefaultCommandRunner {
         let opts = RunOptions {
             timeout: self.timeout,
             max_bytes: MAX_BYTES,
+            cancellation: self.cancellation.clone(),
+            ..RunOptions::default()
         };
 
         let result = run_command(cwd, program, args, opts).map_err(|err| {
@@ -79,6 +86,22 @@ impl CommandRunner for DefaultCommandRunner {
                 msg.push_str(&stderr);
             }
             return Err(io::Error::new(io::ErrorKind::TimedOut, msg));
+        }
+
+        if result.cancelled {
+            let mut msg = format!("command `{command}` cancelled");
+            if result.output.truncated {
+                msg.push_str("\n(output truncated)");
+            }
+            if !stdout.is_empty() {
+                msg.push_str("\nstdout:\n");
+                msg.push_str(&stdout);
+            }
+            if !stderr.is_empty() {
+                msg.push_str("\nstderr:\n");
+                msg.push_str(&stderr);
+            }
+            return Err(io::Error::new(io::ErrorKind::Interrupted, msg));
         }
 
         Ok(CommandOutput {
@@ -124,6 +147,7 @@ mod tests {
 
         let runner = DefaultCommandRunner {
             timeout: Some(Duration::from_millis(50)),
+            ..Default::default()
         };
         let err = runner.run(dir.path(), &script, &[]).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);

@@ -58,18 +58,20 @@ impl CommandRunner for DefaultCommandRunner {
         let opts = RunOptions {
             timeout: Some(Duration::from_secs(55)),
             max_bytes: 16 * 1024 * 1024,
+            ..RunOptions::default()
         };
 
         let result = run_command(cwd, Path::new(program), &args, opts)
             .with_context(|| format!("failed to run `{program}`"))?;
 
-        if result.timed_out || !result.status.success() {
+        if result.timed_out || result.cancelled || !result.status.success() {
             let command = CommandSpec::new(cwd, Path::new(program), &args);
             return Err(anyhow!(CommandFailure::new(
                 command,
                 result.status,
                 result.output,
                 result.timed_out,
+                result.cancelled,
             )));
         }
 

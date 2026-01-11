@@ -132,7 +132,7 @@ fn cache_deserializes_legacy_compile_info_fields() {
 
     let cache = BazelCache::load(&path).unwrap();
     let entry = cache
-        .get("//:hello", "expr-v1")
+        .get("//:hello", "expr-v1", CompileInfoProvider::Aquery)
         .expect("missing cache entry");
     assert!(entry.info.preview);
     assert_eq!(entry.info.output_dir.as_deref(), Some("out/classes"));
