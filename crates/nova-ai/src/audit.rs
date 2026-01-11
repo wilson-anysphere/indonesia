@@ -19,11 +19,15 @@ fn sanitize_text(text: &str) -> String {
         Regex::new(r"(?i)(bearer\s+)[A-Za-z0-9\-._=+/]{16,}").expect("valid regex")
     });
     static HEADER_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\b(authorization|x-api-key|api-key)\s*:\s*([^\r\n]+)")
+        Regex::new(r"(?i)\b(authorization|x-[a-z0-9-]*api[-_]?key|api[-_]?key)\s*:\s*([^\r\n]+)")
             .expect("valid regex")
     });
     static QUERY_PARAM_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)([?&](?:key|api_key|apikey|token)=)([^&\s]+)").expect("valid regex")
+        Regex::new(r"(?i)([?&](?:key|api[_-]?key|token|access[_-]?token)=)([^&\s]+)")
+            .expect("valid regex")
+    });
+    static URL_USERINFO_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(r"(?i)\b([a-z][a-z0-9+.-]*://)[^\s/@]+@").expect("valid regex")
     });
     static LONG_HEX_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\b[0-9a-fA-F]{32,}\b").expect("valid regex"));
@@ -32,6 +36,9 @@ fn sanitize_text(text: &str) -> String {
 
     let mut out = text.to_string();
 
+    out = URL_USERINFO_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| format!("{}[REDACTED]@", &caps[1]))
+        .into_owned();
     out = HEADER_VALUE_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
             format!("{}: [REDACTED]", &caps[1])
@@ -156,4 +163,19 @@ pub(crate) fn log_llm_error(
         stream = stream,
         error = %error,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_text_redacts_url_userinfo_and_tokens() {
+        let input = "POST https://user:pass@example.com/path?access_token=abcd1234 and sk-proj-012345678901234567890123456789";
+        let out = sanitize_prompt_for_audit(input);
+        assert!(!out.contains("user:pass@"));
+        assert!(!out.contains("access_token=abcd1234"));
+        assert!(out.contains("[REDACTED]"));
+        assert!(!out.contains("sk-proj-012345678901234567890123456789"));
+    }
 }
