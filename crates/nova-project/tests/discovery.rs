@@ -43,9 +43,11 @@ fn loads_maven_multi_module_workspace() {
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
         .map(|cp| cp.path.clone())
         .collect::<Vec<_>>();
-    assert!(jar_entries.iter().any(|p| p
-        .to_string_lossy()
-        .contains("com/google/guava/guava/33.0.0-jre")));
+    assert!(jar_entries.iter().any(|p| {
+        p.to_string_lossy()
+            .replace('\\', "/")
+            .contains("com/google/guava/guava/33.0.0-jre")
+    }));
 
     // Dependencies should be stable and contain expected coordinates.
     let deps: BTreeSet<_> = config
