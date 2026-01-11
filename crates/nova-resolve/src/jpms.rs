@@ -12,13 +12,11 @@ use std::path::{Path, PathBuf};
 use nova_classpath::ModuleAwareClasspathIndex;
 use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_hir::module_info::{lower_module_info_source_strict, ModuleInfoLowerError};
-use nova_hir::{CompilationUnit, ImportDecl};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::scopes::{append_package, resolve_type_with_nesting};
-use crate::{Resolution, ScopeGraph, ScopeId, ScopeKind};
+use crate::{Resolution, Resolver, ScopeGraph, ScopeId};
 
 /// A JPMS-aware wrapper around [`crate::Resolver`].
 ///
@@ -36,21 +34,14 @@ pub struct JpmsResolver<'a> {
     from: ModuleName,
 }
 
-impl<'a> JpmsResolver<'a> {
-    pub fn new(
-        jdk: &'a nova_jdk::JdkIndex,
-        graph: &'a ModuleGraph,
-        classpath: &'a ModuleAwareClasspathIndex,
-        from: ModuleName,
-    ) -> Self {
-        Self {
-            jdk,
-            graph,
-            classpath,
-            from,
-        }
-    }
+struct JpmsTypeIndex<'a> {
+    jdk: &'a nova_jdk::JdkIndex,
+    graph: &'a ModuleGraph,
+    classpath: &'a ModuleAwareClasspathIndex,
+    from: &'a ModuleName,
+}
 
+impl<'a> JpmsTypeIndex<'a> {
     fn module_of_type(&self, ty: &TypeName) -> Option<ModuleName> {
         if let Some(to) = self.classpath.module_of(ty.as_str()) {
             return Some(to.clone());
@@ -70,7 +61,7 @@ impl<'a> JpmsResolver<'a> {
             return true;
         };
 
-        if !self.graph.can_read(&self.from, &to) {
+        if !self.graph.can_read(self.from, &to) {
             return false;
         }
 
@@ -84,25 +75,23 @@ impl<'a> JpmsResolver<'a> {
             return true;
         };
 
-        info.exports_package_to(package, &self.from)
+        info.exports_package_to(package, self.from)
     }
+}
 
-    fn resolve_type_in_index(&self, name: &QualifiedName) -> Option<TypeName> {
-        if let Some(ty) = resolve_type_with_nesting(self.classpath, name) {
+impl TypeIndex for JpmsTypeIndex<'_> {
+    fn resolve_type(&self, name: &QualifiedName) -> Option<TypeName> {
+        if let Some(ty) = self.classpath.resolve_type(name) {
             if self.type_is_accessible(&ty) {
                 return Some(ty);
             }
         }
 
-        let ty = resolve_type_with_nesting(self.jdk, name)?;
+        let ty = self.jdk.resolve_type(name)?;
         self.type_is_accessible(&ty).then_some(ty)
     }
 
-    fn resolve_type_in_package_index(
-        &self,
-        package: &PackageName,
-        name: &Name,
-    ) -> Option<TypeName> {
+    fn resolve_type_in_package(&self, package: &PackageName, name: &Name) -> Option<TypeName> {
         if let Some(ty) = self.classpath.resolve_type_in_package(package, name) {
             if self.type_is_accessible(&ty) {
                 return Some(ty);
@@ -118,13 +107,40 @@ impl<'a> JpmsResolver<'a> {
     }
 
     fn resolve_static_member(&self, owner: &TypeName, name: &Name) -> Option<StaticMemberId> {
+        // Static member imports require the owning type to be accessible.
+        if !self.type_is_accessible(owner) {
+            return None;
+        }
+
         self.classpath
             .resolve_static_member(owner, name)
             .or_else(|| self.jdk.resolve_static_member(owner, name))
     }
+}
+
+impl<'a> JpmsResolver<'a> {
+    pub fn new(
+        jdk: &'a nova_jdk::JdkIndex,
+        graph: &'a ModuleGraph,
+        classpath: &'a ModuleAwareClasspathIndex,
+        from: ModuleName,
+    ) -> Self {
+        Self {
+            jdk,
+            graph,
+            classpath,
+            from,
+        }
+    }
 
     pub fn resolve_qualified_name(&self, path: &QualifiedName) -> Option<TypeName> {
-        self.resolve_type_in_index(path)
+        let index = JpmsTypeIndex {
+            jdk: self.jdk,
+            graph: self.graph,
+            classpath: self.classpath,
+            from: &self.from,
+        };
+        Resolver::new(&index).resolve_qualified_name(path)
     }
 
     pub fn resolve_qualified_type_in_scope(
@@ -133,44 +149,13 @@ impl<'a> JpmsResolver<'a> {
         scope: ScopeId,
         path: &QualifiedName,
     ) -> Option<TypeName> {
-        if let Some(ty) = self.resolve_qualified_name(path) {
-            return Some(ty);
-        }
-
-        let segments = path.segments();
-        let (first, rest) = segments.split_first()?;
-
-        if rest.is_empty() {
-            return match self.resolve_name(scopes, scope, first)? {
-                Resolution::Type(ty) => Some(ty),
-                _ => None,
-            };
-        }
-
-        let owner = match self.resolve_name(scopes, scope, first)? {
-            Resolution::Type(ty) => ty,
-            _ => return None,
+        let index = JpmsTypeIndex {
+            jdk: self.jdk,
+            graph: self.graph,
+            classpath: self.classpath,
+            from: &self.from,
         };
-
-        let mut candidate = owner.as_str().to_string();
-        for seg in rest {
-            candidate.push('$');
-            candidate.push_str(seg.as_str());
-        }
-
-        self.resolve_type_in_index(&QualifiedName::from_dotted(&candidate))
-    }
-
-    pub fn resolve_import(&self, file: &CompilationUnit, name: &Name) -> Option<TypeName> {
-        self.resolve_import_types(&file.imports, name)
-            .or_else(|| {
-                file.package
-                    .as_ref()
-                    .and_then(|pkg| self.resolve_type_in_package_index(pkg, name))
-            })
-            .or_else(|| {
-                self.resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
-            })
+        Resolver::new(&index).resolve_qualified_type_in_scope(scopes, scope, path)
     }
 
     pub fn resolve_name(
@@ -179,103 +164,13 @@ impl<'a> JpmsResolver<'a> {
         scope: ScopeId,
         name: &Name,
     ) -> Option<Resolution> {
-        let mut current = Some(scope);
-        while let Some(id) = current {
-            let data = scopes.scope(id);
-
-            if let Some(value) = data.values().get(name) {
-                return Some(value.clone());
-            }
-
-            if let Some(ty) = data.types().get(name) {
-                // Types declared in the current file/module are always accessible.
-                return Some(Resolution::Type(ty.clone()));
-            }
-
-            match data.kind() {
-                ScopeKind::Import { imports, .. } => {
-                    if let Some(res) = self.resolve_static_imports(imports, name) {
-                        return Some(res);
-                    }
-                    if let Some(ty) = self.resolve_import_types(imports, name) {
-                        return Some(Resolution::Type(ty));
-                    }
-                }
-                ScopeKind::Package { package } => {
-                    if let Some(pkg) = package {
-                        if let Some(ty) = self.resolve_type_in_package_index(pkg, name) {
-                            return Some(Resolution::Type(ty));
-                        }
-                    }
-
-                    if package
-                        .as_ref()
-                        .is_some_and(|pkg| self.package_exists(&append_package(pkg, name)))
-                    {
-                        let pkg = append_package(package.as_ref().unwrap(), name).to_dotted();
-                        return Some(Resolution::Package(nova_core::PackageId::new(pkg)));
-                    }
-                }
-                ScopeKind::Universe => {
-                    if let Some(ty) = self
-                        .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
-                    {
-                        return Some(Resolution::Type(ty));
-                    }
-                }
-                _ => {}
-            }
-
-            current = data.parent();
-        }
-        None
-    }
-
-    fn resolve_import_types(&self, imports: &[ImportDecl], name: &Name) -> Option<TypeName> {
-        for import in imports {
-            if let ImportDecl::TypeSingle { ty, alias } = import {
-                let import_name = alias.as_ref().or_else(|| ty.last());
-                if import_name == Some(name) {
-                    if let Some(ty) = self.resolve_type_in_index(ty) {
-                        return Some(ty);
-                    }
-                }
-            }
-        }
-
-        for import in imports {
-            if let ImportDecl::TypeStar { package } = import {
-                if let Some(ty) = self.resolve_type_in_package_index(package, name) {
-                    return Some(ty);
-                }
-            }
-        }
-
-        None
-    }
-
-    fn resolve_static_imports(&self, imports: &[ImportDecl], name: &Name) -> Option<Resolution> {
-        for import in imports {
-            if let ImportDecl::StaticSingle { ty, member, alias } = import {
-                let import_name = alias.as_ref().unwrap_or(member);
-                if import_name == name {
-                    let owner = self.resolve_type_in_index(ty)?;
-                    let static_member = self.resolve_static_member(&owner, member)?;
-                    return Some(Resolution::StaticMember(static_member));
-                }
-            }
-        }
-
-        for import in imports {
-            if let ImportDecl::StaticStar { ty } = import {
-                let owner = self.resolve_type_in_index(ty)?;
-                if let Some(static_member) = self.resolve_static_member(&owner, name) {
-                    return Some(Resolution::StaticMember(static_member));
-                }
-            }
-        }
-
-        None
+        let index = JpmsTypeIndex {
+            jdk: self.jdk,
+            graph: self.graph,
+            classpath: self.classpath,
+            from: &self.from,
+        };
+        Resolver::new(&index).resolve_name(scopes, scope, name)
     }
 }
 
@@ -504,9 +399,13 @@ fn parse_first_type_name(src: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use nova_classpath::ClasspathClassStub;
+    use nova_core::FileId;
+    use nova_hir::queries::HirDatabase;
     use nova_jdk::JdkIndex;
     use nova_modules::ModuleKind;
 
@@ -540,13 +439,32 @@ mod tests {
         ModuleAwareClasspathIndex::from_stubs(stubs)
     }
 
-    fn main_unit() -> CompilationUnit {
-        let mut unit = CompilationUnit::new(Some(PackageName::from_dotted("com.example.a")));
-        unit.imports.push(ImportDecl::TypeSingle {
-            ty: QualifiedName::from_dotted("com.example.b.hidden.Hidden"),
-            alias: None,
-        });
-        unit
+    fn main_unit_src() -> &'static str {
+        r#"
+package com.example.a;
+import com.example.b.hidden.Hidden;
+class C {}
+"#
+    }
+
+    #[derive(Default)]
+    struct TestDb {
+        files: HashMap<FileId, Arc<str>>,
+    }
+
+    impl TestDb {
+        fn set_file_text(&mut self, file: FileId, text: impl Into<Arc<str>>) {
+            self.files.insert(file, text.into());
+        }
+    }
+
+    impl HirDatabase for TestDb {
+        fn file_text(&self, file: FileId) -> Arc<str> {
+            self.files
+                .get(&file)
+                .cloned()
+                .unwrap_or_else(|| Arc::from(""))
+        }
     }
 
     #[test]
@@ -558,14 +476,16 @@ mod tests {
 
         let resolver = JpmsResolver::new(&jdk, &ws.graph, &classpath, from);
 
-        let unit = main_unit();
-        let scopes = build_scopes(&jdk, &unit);
+        let file = FileId::from_raw(0);
+        let mut db = TestDb::default();
+        db.set_file_text(file, main_unit_src());
+        let scopes = build_scopes(&db, file);
         let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Hidden"));
 
         assert_eq!(
             res,
-            Some(Resolution::Type(TypeName::from(
-                "com.example.b.hidden.Hidden"
+            Some(Resolution::Type(crate::TypeResolution::External(
+                TypeName::from("com.example.b.hidden.Hidden")
             )))
         );
     }
@@ -579,8 +499,10 @@ mod tests {
 
         let resolver = JpmsResolver::new(&jdk, &ws.graph, &classpath, from);
 
-        let unit = main_unit();
-        let scopes = build_scopes(&jdk, &unit);
+        let file = FileId::from_raw(0);
+        let mut db = TestDb::default();
+        db.set_file_text(file, main_unit_src());
+        let scopes = build_scopes(&db, file);
         let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Hidden"));
 
         assert_eq!(res, None);
@@ -634,8 +556,10 @@ mod tests {
 
         let resolver = JpmsResolver::new(&jdk, &ws.graph, &classpath, from);
 
-        let unit = main_unit();
-        let scopes = build_scopes(&jdk, &unit);
+        let file = FileId::from_raw(0);
+        let mut db = TestDb::default();
+        db.set_file_text(file, main_unit_src());
+        let scopes = build_scopes(&db, file);
         let res = resolver.resolve_name(&scopes.scopes, scopes.file_scope, &Name::from("Hidden"));
 
         assert_eq!(res, None);

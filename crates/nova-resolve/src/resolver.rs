@@ -1,0 +1,556 @@
+use std::collections::{HashMap, HashSet};
+
+use nova_core::{Name, PackageId, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
+use nova_hir::hir;
+use nova_hir::ids::{ConstructorId, FieldId, InitializerId, ItemId, MethodId};
+
+use crate::diagnostics::{ambiguous_import_diagnostic, unresolved_import_diagnostic};
+use crate::import_map::ImportMap;
+use crate::scopes::{ScopeGraph, ScopeId, ScopeKind};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BodyOwner {
+    Method(MethodId),
+    Constructor(ConstructorId),
+    Initializer(InitializerId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalRef {
+    pub owner: BodyOwner,
+    pub local: hir::LocalId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamOwner {
+    Method(MethodId),
+    Constructor(ConstructorId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ParamRef {
+    pub owner: ParamOwner,
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TypeResolution {
+    Source(ItemId),
+    External(TypeName),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum StaticMemberResolution {
+    SourceField(FieldId),
+    SourceMethod(MethodId),
+    External(StaticMemberId),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    Local(LocalRef),
+    Parameter(ParamRef),
+    Field(FieldId),
+    Methods(Vec<MethodId>),
+    Constructors(Vec<ConstructorId>),
+    Type(TypeResolution),
+    Package(PackageId),
+    StaticMember(StaticMemberResolution),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NameResolution {
+    Resolved(Resolution),
+    Unresolved,
+    Ambiguous(Vec<Resolution>),
+}
+
+impl NameResolution {
+    #[must_use]
+    pub fn into_option(self) -> Option<Resolution> {
+        match self {
+            NameResolution::Resolved(res) => Some(res),
+            NameResolution::Unresolved | NameResolution::Ambiguous(_) => None,
+        }
+    }
+}
+
+/// A name resolver that consults the JDK index and an optional project/classpath index.
+pub struct Resolver<'a> {
+    jdk: &'a dyn TypeIndex,
+    classpath: Option<&'a dyn TypeIndex>,
+}
+
+impl<'a> Resolver<'a> {
+    #[must_use]
+    pub fn new(jdk: &'a dyn TypeIndex) -> Self {
+        Self {
+            jdk,
+            classpath: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_classpath(mut self, classpath: &'a dyn TypeIndex) -> Self {
+        self.classpath = Some(classpath);
+        self
+    }
+
+    fn resolve_type_in_index(&self, name: &QualifiedName) -> Option<TypeName> {
+        if let Some(classpath) = self.classpath {
+            if let Some(ty) = resolve_type_with_nesting(classpath, name) {
+                return Some(ty);
+            }
+        }
+
+        resolve_type_with_nesting(self.jdk, name)
+    }
+
+    fn resolve_type_in_package_index(
+        &self,
+        package: &PackageName,
+        name: &Name,
+    ) -> Option<TypeName> {
+        self.classpath
+            .and_then(|cp| cp.resolve_type_in_package(package, name))
+            .or_else(|| self.jdk.resolve_type_in_package(package, name))
+    }
+
+    fn package_exists(&self, package: &PackageName) -> bool {
+        self.classpath.is_some_and(|cp| cp.package_exists(package))
+            || self.jdk.package_exists(package)
+    }
+
+    fn resolve_static_member_in_index(
+        &self,
+        owner: &TypeName,
+        name: &Name,
+    ) -> Option<StaticMemberId> {
+        self.classpath
+            .and_then(|cp| cp.resolve_static_member(owner, name))
+            .or_else(|| self.jdk.resolve_static_member(owner, name))
+    }
+
+    /// Best-effort validation of import declarations.
+    ///
+    /// The resolver is resilient by design: broken/unknown imports should not
+    /// prevent resolution of the rest of the file. This helper is a lightweight
+    /// diagnostic hook for higher layers (IDE, tests).
+    #[must_use]
+    pub fn diagnose_imports(&self, imports: &ImportMap) -> Vec<nova_types::Diagnostic> {
+        let mut diags = Vec::new();
+
+        // Duplicate single-type imports (`import a.Foo; import b.Foo;`).
+        let mut single_type_by_name: HashMap<Name, Vec<String>> = HashMap::new();
+        let mut single_type_span: HashMap<Name, nova_types::Span> = HashMap::new();
+        for import in &imports.type_single {
+            single_type_by_name
+                .entry(import.imported.clone())
+                .or_default()
+                .push(import.path.to_dotted());
+            single_type_span
+                .entry(import.imported.clone())
+                .or_insert(import.range);
+        }
+        for (name, paths) in single_type_by_name {
+            if paths.len() <= 1 {
+                continue;
+            }
+            let span = single_type_span
+                .get(&name)
+                .copied()
+                .unwrap_or_else(|| nova_types::Span::new(0, 0));
+            diags.push(ambiguous_import_diagnostic(span, name.as_str(), &paths));
+        }
+
+        for import in &imports.type_single {
+            if self.resolve_type_in_index(&import.path).is_none() {
+                diags.push(unresolved_import_diagnostic(
+                    import.range,
+                    &import.path.to_dotted(),
+                ));
+            }
+        }
+
+        for import in &imports.type_star {
+            if !self.package_exists(&import.package) {
+                diags.push(unresolved_import_diagnostic(
+                    import.range,
+                    &format!("{}.*", import.package),
+                ));
+            }
+        }
+
+        // Duplicate static single imports (`import static a.Foo.x; import static b.Bar.x;`).
+        let mut static_single_by_name: HashMap<Name, Vec<String>> = HashMap::new();
+        let mut static_single_span: HashMap<Name, nova_types::Span> = HashMap::new();
+        for import in &imports.static_single {
+            static_single_by_name
+                .entry(import.imported.clone())
+                .or_default()
+                .push(format!("{}.{}", import.ty.to_dotted(), import.member));
+            static_single_span
+                .entry(import.imported.clone())
+                .or_insert(import.range);
+        }
+        for (name, paths) in static_single_by_name {
+            if paths.len() <= 1 {
+                continue;
+            }
+            let span = static_single_span
+                .get(&name)
+                .copied()
+                .unwrap_or_else(|| nova_types::Span::new(0, 0));
+            diags.push(ambiguous_import_diagnostic(span, name.as_str(), &paths));
+        }
+
+        for import in &imports.static_single {
+            let Some(owner) = self.resolve_type_in_index(&import.ty) else {
+                diags.push(unresolved_import_diagnostic(
+                    import.range,
+                    &format!("static {}.{}", import.ty.to_dotted(), import.member),
+                ));
+                continue;
+            };
+            if self
+                .resolve_static_member_in_index(&owner, &import.member)
+                .is_none()
+            {
+                diags.push(unresolved_import_diagnostic(
+                    import.range,
+                    &format!("static {}.{}", import.ty.to_dotted(), import.member),
+                ));
+            }
+        }
+
+        for import in &imports.static_star {
+            if self.resolve_type_in_index(&import.ty).is_none() {
+                diags.push(unresolved_import_diagnostic(
+                    import.range,
+                    &format!("static {}.*", import.ty.to_dotted()),
+                ));
+            }
+        }
+
+        diags
+    }
+
+    /// Resolve a qualified name as a type using the external indexes.
+    #[must_use]
+    pub fn resolve_qualified_name(&self, path: &QualifiedName) -> Option<TypeName> {
+        self.resolve_type_in_index(path)
+    }
+
+    /// Resolve a qualified type name in the context of a scope.
+    ///
+    /// This is an important extension over [`Resolver::resolve_qualified_name`]:
+    /// Java code frequently refers to nested types through an imported/enclosing
+    /// outer type, e.g. `Map.Entry`, where `Map` is a simple name resolved via
+    /// imports/same-package/java.lang.
+    ///
+    /// The algorithm is:
+    /// 1. Try resolving the path as a fully-qualified name (fast path, supports
+    ///    `java.util.Map.Entry`).
+    /// 2. Otherwise resolve the first segment as a simple type name in `scope`,
+    ///    then append remaining segments as binary nested type separators (`$`).
+    pub fn resolve_qualified_type_in_scope(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        path: &QualifiedName,
+    ) -> Option<TypeName> {
+        let resolved = self.resolve_qualified_type_resolution_in_scope(scopes, scope, path)?;
+        match resolved {
+            TypeResolution::External(ty) => Some(ty),
+            TypeResolution::Source(item) => scopes.type_name(item).cloned(),
+        }
+    }
+
+    /// Like [`Resolver::resolve_qualified_type_in_scope`], but preserves whether
+    /// the resolved type is sourced from the current file (`ItemTree`) or from
+    /// an external index (JDK/classpath).
+    pub fn resolve_qualified_type_resolution_in_scope(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        path: &QualifiedName,
+    ) -> Option<TypeResolution> {
+        if let Some(ty) = self.resolve_qualified_name(path) {
+            return Some(TypeResolution::External(ty));
+        }
+
+        let segments = path.segments();
+        let (first, rest) = segments.split_first()?;
+
+        if rest.is_empty() {
+            return match self.resolve_name(scopes, scope, first)? {
+                Resolution::Type(ty) => Some(ty),
+                _ => None,
+            };
+        }
+
+        let owner = match self.resolve_name(scopes, scope, first)? {
+            Resolution::Type(ty) => ty,
+            _ => return None,
+        };
+
+        let mut candidate = match &owner {
+            TypeResolution::External(ty) => ty.as_str().to_string(),
+            TypeResolution::Source(item) => scopes.type_name(*item)?.as_str().to_string(),
+        };
+        for seg in rest {
+            candidate.push('$');
+            candidate.push_str(seg.as_str());
+        }
+
+        // Prefer source types if we have a local ItemTree type with that binary name.
+        if let Some(item) = scopes.item_by_type_name(&TypeName::new(candidate.clone())) {
+            return Some(TypeResolution::Source(item));
+        }
+
+        self.resolve_type_in_index(&QualifiedName::from_dotted(&candidate))
+            .map(TypeResolution::External)
+    }
+
+    /// Resolve a simple name against a given scope.
+    pub fn resolve_name(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        name: &Name,
+    ) -> Option<Resolution> {
+        self.resolve_name_detailed(scopes, scope, name)
+            .into_option()
+    }
+
+    /// Like [`Resolver::resolve_name`], but reports ambiguity.
+    pub fn resolve_name_detailed(
+        &self,
+        scopes: &ScopeGraph,
+        scope: ScopeId,
+        name: &Name,
+    ) -> NameResolution {
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            let data = scopes.scope(id);
+
+            if let Some(value) = data.values.get(name) {
+                return NameResolution::Resolved(value.clone());
+            }
+
+            if let Some(ty) = data.types.get(name) {
+                return NameResolution::Resolved(Resolution::Type(ty.clone()));
+            }
+
+            match &data.kind {
+                ScopeKind::Import { imports, package } => {
+                    match self.resolve_static_imports(imports, name) {
+                        NameResolution::Resolved(res) => return NameResolution::Resolved(res),
+                        NameResolution::Ambiguous(candidates) => {
+                            return NameResolution::Ambiguous(candidates)
+                        }
+                        NameResolution::Unresolved => {}
+                    }
+
+                    // JLS-ish precedence (simplified to match Nova's current model):
+                    // 1) single-type imports
+                    // 2) same-package types
+                    // 3) on-demand imports
+                    match self.resolve_single_type_imports(imports, name) {
+                        NameResolution::Resolved(res) => return NameResolution::Resolved(res),
+                        NameResolution::Ambiguous(candidates) => {
+                            return NameResolution::Ambiguous(candidates)
+                        }
+                        NameResolution::Unresolved => {}
+                    }
+
+                    if let Some(pkg) = package {
+                        if let Some(ty) = self.resolve_type_in_package_index(pkg, name) {
+                            return NameResolution::Resolved(Resolution::Type(
+                                TypeResolution::External(ty),
+                            ));
+                        }
+                    }
+
+                    match self.resolve_star_type_imports(imports, name) {
+                        NameResolution::Resolved(res) => return NameResolution::Resolved(res),
+                        NameResolution::Ambiguous(candidates) => {
+                            return NameResolution::Ambiguous(candidates)
+                        }
+                        NameResolution::Unresolved => {}
+                    }
+                }
+                ScopeKind::Package { package } => {
+                    // Allow resolving subpackages in a qualified name context.
+                    if let Some(pkg) = package {
+                        let next = append_package(pkg, name);
+                        if self.package_exists(&next) {
+                            return NameResolution::Resolved(Resolution::Package(PackageId::new(
+                                next.to_dotted(),
+                            )));
+                        }
+                    }
+                }
+                ScopeKind::Universe => {
+                    // `java.lang.*` is always implicitly available (after package + imports).
+                    if let Some(ty) = self
+                        .resolve_type_in_package_index(&PackageName::from_dotted("java.lang"), name)
+                    {
+                        return NameResolution::Resolved(Resolution::Type(
+                            TypeResolution::External(ty),
+                        ));
+                    }
+                }
+                _ => {}
+            }
+
+            current = data.parent;
+        }
+        NameResolution::Unresolved
+    }
+
+    fn resolve_single_type_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
+        let mut candidates = Vec::new();
+        for import in &imports.type_single {
+            if &import.imported != name {
+                continue;
+            }
+            if let Some(ty) = self.resolve_type_in_index(&import.path) {
+                candidates.push(Resolution::Type(TypeResolution::External(ty)));
+            }
+        }
+
+        match candidates.len() {
+            0 => NameResolution::Unresolved,
+            1 => NameResolution::Resolved(candidates.into_iter().next().unwrap()),
+            _ => NameResolution::Ambiguous(candidates),
+        }
+    }
+
+    fn resolve_star_type_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
+        let mut seen = HashSet::<TypeName>::new();
+        let mut candidates = Vec::new();
+
+        for import in &imports.type_star {
+            if let Some(ty) = self.resolve_type_in_package_index(&import.package, name) {
+                if seen.insert(ty.clone()) {
+                    candidates.push(Resolution::Type(TypeResolution::External(ty)));
+                }
+            }
+        }
+
+        match candidates.len() {
+            0 => NameResolution::Unresolved,
+            1 => NameResolution::Resolved(candidates.into_iter().next().unwrap()),
+            _ => NameResolution::Ambiguous(candidates),
+        }
+    }
+
+    fn resolve_static_imports(&self, imports: &ImportMap, name: &Name) -> NameResolution {
+        // 1) Explicit single static member imports.
+        let mut single_candidates = Vec::new();
+        for import in &imports.static_single {
+            if &import.imported != name {
+                continue;
+            }
+            let Some(owner) = self.resolve_type_in_index(&import.ty) else {
+                continue;
+            };
+            let Some(static_member) = self.resolve_static_member_in_index(&owner, &import.member)
+            else {
+                continue;
+            };
+            single_candidates.push(Resolution::StaticMember(StaticMemberResolution::External(
+                static_member,
+            )));
+        }
+
+        match single_candidates.len() {
+            0 => {}
+            1 => return NameResolution::Resolved(single_candidates.into_iter().next().unwrap()),
+            _ => return NameResolution::Ambiguous(single_candidates),
+        }
+
+        // 2) Static star imports.
+        let mut seen = HashSet::<StaticMemberId>::new();
+        let mut star_candidates = Vec::new();
+        for import in &imports.static_star {
+            let Some(owner) = self.resolve_type_in_index(&import.ty) else {
+                continue;
+            };
+            if let Some(static_member) = self.resolve_static_member_in_index(&owner, name) {
+                if seen.insert(static_member.clone()) {
+                    star_candidates.push(Resolution::StaticMember(
+                        StaticMemberResolution::External(static_member),
+                    ));
+                }
+            }
+        }
+
+        match star_candidates.len() {
+            0 => NameResolution::Unresolved,
+            1 => NameResolution::Resolved(star_candidates.into_iter().next().unwrap()),
+            _ => NameResolution::Ambiguous(star_candidates),
+        }
+    }
+}
+
+pub(crate) fn append_package(base: &PackageName, name: &Name) -> PackageName {
+    let mut next = PackageName::from_dotted(&base.to_dotted());
+    next.push(name.clone());
+    next
+}
+
+pub(crate) fn resolve_type_with_nesting(
+    index: &dyn TypeIndex,
+    name: &QualifiedName,
+) -> Option<TypeName> {
+    index
+        .resolve_type(name)
+        .or_else(|| resolve_nested_type(index, name))
+}
+
+fn resolve_nested_type(index: &dyn TypeIndex, name: &QualifiedName) -> Option<TypeName> {
+    // Java source refers to nested classes as `Outer.Inner`, but classpath/JDK
+    // indices tend to use binary names (`Outer$Inner`). When a qualified name
+    // fails to resolve as-is, try progressively treating the rightmost segments
+    // as nested types.
+    let segments = name.segments();
+    if segments.len() < 2 {
+        return None;
+    }
+
+    // Prefer longer package prefixes first (e.g. `java.util.Map.Entry` should try
+    // `java.util.Map$Entry` before `java$util$Map$Entry`).
+    for split_at in (0..segments.len() - 1).rev() {
+        let type_segments = &segments[split_at..];
+        if type_segments.len() < 2 {
+            continue;
+        }
+
+        let mut candidate = String::new();
+        if split_at > 0 {
+            for (idx, seg) in segments[..split_at].iter().enumerate() {
+                if idx > 0 {
+                    candidate.push('.');
+                }
+                candidate.push_str(seg.as_str());
+            }
+            candidate.push('.');
+        }
+
+        for (idx, seg) in type_segments.iter().enumerate() {
+            if idx > 0 {
+                candidate.push('$');
+            }
+            candidate.push_str(seg.as_str());
+        }
+
+        let candidate = QualifiedName::from_dotted(&candidate);
+        if let Some(ty) = index.resolve_type(&candidate) {
+            return Some(ty);
+        }
+    }
+
+    None
+}

@@ -1,11 +1,32 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-use nova_core::{Name, PackageName, QualifiedName, TypeIndex, TypeName};
-use nova_hir::{CompilationUnit, ImportDecl};
+use nova_core::{FileId, Name, PackageName, QualifiedName, TypeIndex, TypeName};
+use nova_hir::queries::HirDatabase;
 use nova_jdk::JdkIndex;
 use nova_resolve::type_ref::resolve_type_ref_text;
 use nova_resolve::{build_scopes, Resolver};
 use nova_types::{PrimitiveType, Type, TypeEnv, TypeStore, WildcardBound};
+
+#[derive(Default)]
+struct TestDb {
+    files: HashMap<FileId, Arc<str>>,
+}
+
+impl TestDb {
+    fn set_file_text(&mut self, file: FileId, text: impl Into<Arc<str>>) {
+        self.files.insert(file, text.into());
+    }
+}
+
+impl HirDatabase for TestDb {
+    fn file_text(&self, file: FileId) -> Arc<str> {
+        self.files
+            .get(&file)
+            .cloned()
+            .unwrap_or_else(|| Arc::from(""))
+    }
+}
 
 #[derive(Default)]
 struct TestIndex {
@@ -49,14 +70,8 @@ impl TypeIndex for TestIndex {
     }
 }
 
-fn setup(
-    imports: Vec<ImportDecl>,
-) -> (
-    JdkIndex,
-    TestIndex,
-    nova_resolve::ScopeGraph,
-    nova_resolve::ScopeId,
-) {
+fn setup(imports: &[&str]) -> (JdkIndex, TestIndex, nova_resolve::ScopeGraph, nova_resolve::ScopeId)
+{
     let jdk = JdkIndex::new();
     let mut index = TestIndex::default();
     // The built-in JDK index used in tests does not include `java.util.Map`, but
@@ -64,15 +79,25 @@ fn setup(
     index.add_type("java.util", "Map");
     index.add_type("java.util", "Map$Entry");
 
-    let mut unit = CompilationUnit::new(None);
-    unit.imports = imports;
-    let result = build_scopes(&jdk, &unit);
+    let file = FileId::from_raw(0);
+    let mut db = TestDb::default();
+    let mut src = String::new();
+    for line in imports {
+        src.push_str(line);
+        if !line.ends_with('\n') {
+            src.push('\n');
+        }
+    }
+    src.push_str("class C {}\n");
+    db.set_file_text(file, src);
+
+    let result = build_scopes(&db, file);
     (jdk, index, result.scopes, result.file_scope)
 }
 
 #[test]
 fn resolves_string_and_primitives_and_arrays_and_varargs() {
-    let (jdk, index, scopes, scope) = setup(vec![]);
+    let (jdk, index, scopes, scope) = setup(&[]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
@@ -119,9 +144,7 @@ fn resolves_string_and_primitives_and_arrays_and_varargs() {
 
 #[test]
 fn resolves_generics_wildcards_arrays_and_nested_closing_angles() {
-    let (jdk, index, scopes, scope) = setup(vec![ImportDecl::TypeStar {
-        package: PackageName::from_dotted("java.util"),
-    }]);
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
@@ -210,10 +233,7 @@ fn resolves_generics_wildcards_arrays_and_nested_closing_angles() {
 
 #[test]
 fn resolves_nested_type_via_imported_outer() {
-    let (jdk, index, scopes, scope) = setup(vec![ImportDecl::TypeSingle {
-        ty: QualifiedName::from_dotted("java.util.Map"),
-        alias: None,
-    }]);
+    let (jdk, index, scopes, scope) = setup(&["import java.util.Map;"]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
@@ -265,9 +285,7 @@ fn unresolved_nested_type_uses_binary_guess_from_imported_outer() {
 
 #[test]
 fn malformed_inputs_produce_diagnostics_but_do_not_crash() {
-    let (jdk, index, scopes, scope) = setup(vec![ImportDecl::TypeStar {
-        package: PackageName::from_dotted("java.util"),
-    }]);
+    let (jdk, index, scopes, scope) = setup(&["import java.util.*;"]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let env = TypeStore::with_minimal_jdk();
     let type_vars = HashMap::new();
@@ -297,7 +315,7 @@ fn malformed_inputs_produce_diagnostics_but_do_not_crash() {
 
 #[test]
 fn falls_back_to_type_variables_when_name_resolution_fails() {
-    let (jdk, index, scopes, scope) = setup(vec![]);
+    let (jdk, index, scopes, scope) = setup(&[]);
     let resolver = Resolver::new(&jdk).with_classpath(&index);
     let mut env = TypeStore::with_minimal_jdk();
 

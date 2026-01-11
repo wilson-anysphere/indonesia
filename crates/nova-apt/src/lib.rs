@@ -883,13 +883,34 @@ fn rel_to_gradle_project_path(rel: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use nova_config::NovaConfig;
-    use nova_core::{Name, PackageName, QualifiedName};
-    use nova_hir::{CompilationUnit, ImportDecl};
+    use nova_core::{FileId, Name};
+    use nova_hir::queries::HirDatabase;
     use nova_index::ClassIndex;
     use nova_jdk::JdkIndex;
     use nova_project::{load_project_with_options, LoadOptions, SourceRootOrigin};
-    use nova_resolve::Resolver;
+    use nova_resolve::{build_scopes, Resolver};
     use std::path::PathBuf;
+    use std::sync::Arc;
+
+    #[derive(Default)]
+    struct TestDb {
+        files: std::collections::HashMap<FileId, Arc<str>>,
+    }
+
+    impl TestDb {
+        fn set_file_text(&mut self, file: FileId, text: impl Into<Arc<str>>) {
+            self.files.insert(file, text.into());
+        }
+    }
+
+    impl HirDatabase for TestDb {
+        fn file_text(&self, file: FileId) -> Arc<str> {
+            self.files
+                .get(&file)
+                .cloned()
+                .unwrap_or_else(|| Arc::from(""))
+        }
+    }
 
     fn fixture_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/maven_simple")
@@ -912,15 +933,25 @@ mod tests {
         let index = ClassIndex::build(&project.source_roots).unwrap();
         assert!(index.contains("com.example.generated.GeneratedHello"));
 
-        let mut unit = CompilationUnit::new(Some(PackageName::from_dotted("com.example.app")));
-        unit.imports.push(ImportDecl::TypeSingle {
-            ty: QualifiedName::from_dotted("com.example.generated.GeneratedHello"),
-            alias: None,
-        });
+        let file = FileId::from_raw(0);
+        let mut db = TestDb::default();
+        db.set_file_text(
+            file,
+            r#"
+package com.example.app;
+import com.example.generated.GeneratedHello;
+class C {}
+"#,
+        );
 
         let jdk = JdkIndex::new();
         let resolver = Resolver::new(&jdk).with_classpath(&index);
-        let resolved = resolver.resolve_import(&unit, &Name::from("GeneratedHello"));
+        let scopes = build_scopes(&db, file);
+        let resolved = resolver.resolve_name(
+            &scopes.scopes,
+            scopes.file_scope,
+            &Name::from("GeneratedHello"),
+        );
 
         assert!(resolved.is_some());
     }
@@ -943,15 +974,25 @@ mod tests {
         let index = ClassIndex::build(&project.source_roots).unwrap();
         assert!(!index.contains("com.example.generated.GeneratedHello"));
 
-        let mut unit = CompilationUnit::new(Some(PackageName::from_dotted("com.example.app")));
-        unit.imports.push(ImportDecl::TypeSingle {
-            ty: QualifiedName::from_dotted("com.example.generated.GeneratedHello"),
-            alias: None,
-        });
+        let file = FileId::from_raw(0);
+        let mut db = TestDb::default();
+        db.set_file_text(
+            file,
+            r#"
+package com.example.app;
+import com.example.generated.GeneratedHello;
+class C {}
+"#,
+        );
 
         let jdk = JdkIndex::new();
         let resolver = Resolver::new(&jdk).with_classpath(&index);
-        let resolved = resolver.resolve_import(&unit, &Name::from("GeneratedHello"));
+        let scopes = build_scopes(&db, file);
+        let resolved = resolver.resolve_name(
+            &scopes.scopes,
+            scopes.file_scope,
+            &Name::from("GeneratedHello"),
+        );
 
         assert!(resolved.is_none());
     }

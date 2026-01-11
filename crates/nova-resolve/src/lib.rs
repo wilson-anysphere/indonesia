@@ -1,8 +1,12 @@
 //! Name resolution and scope building for Java.
 //!
-//! This crate is intentionally small for now: it builds a scope graph from the
-//! simplified `nova-hir` structures and provides name resolution for locals,
-//! members and imports (including the implicit `java.lang.*` import).
+//! The resolver operates on Nova's stable-id HIR:
+//! - [`nova_hir::item_tree::ItemTree`] for file-level structure (package/imports/items).
+//! - [`nova_hir::hir::Body`] for statement/expression bodies.
+//!
+//! The APIs in this crate are designed to be used from a query-based database
+//! (Salsa-style): all derived data structures are pure functions of input HIR
+//! (or of the file text via `nova-hir`'s HIR queries).
 
 pub mod jpms;
 pub mod jpms_env;
@@ -11,7 +15,16 @@ pub mod scopes;
 pub mod type_ref;
 
 pub use members::{complete_member_names, resolve_method_call, CallKind};
-pub use scopes::{
-    build_scopes, build_scopes_with_resolver, build_scopes_with_resolver_and_cancel, Resolution,
-    Resolver, ScopeBuildResult, ScopeData, ScopeGraph, ScopeId, ScopeKind,
+mod diagnostics;
+mod import_map;
+mod resolver;
+
+pub use diagnostics::{
+    ambiguous_import_diagnostic, unresolved_identifier_diagnostic, unresolved_import_diagnostic,
 };
+pub use import_map::ImportMap;
+pub use resolver::{
+    BodyOwner, LocalRef, NameResolution, ParamOwner, ParamRef, Resolution, Resolver,
+    StaticMemberResolution, TypeResolution,
+};
+pub use scopes::{build_scopes, ScopeBuildResult, ScopeData, ScopeGraph, ScopeId, ScopeKind};
