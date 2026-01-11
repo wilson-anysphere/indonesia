@@ -544,7 +544,7 @@ mod tests {
 
         db.set_file_content(
             file,
-            Arc::new("class Foo { int x; void bar() { int y = 2; } }".to_string()),
+            Arc::new("class Foo { int x; void bar() { int y = 1; int z = 0; } }".to_string()),
         );
         let second = db.hir_symbol_names(file);
 
