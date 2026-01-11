@@ -21,6 +21,18 @@ Note: When capturing runs for comparison, start from a clean `$CARGO_TARGET_DIR/
 does) so removed benchmarks don’t leave stale `**/new/sample.json` files that `nova perf capture`
 would otherwise pick up.
 
+## How CI runs the perf guard
+
+The `perf` GitHub Actions workflow (`.github/workflows/perf.yml`) runs the benchmark suite on pull
+requests and on pushes to `main`:
+
+- **Pull requests:** produce a baseline run for the PR base SHA (either by downloading a cached
+  baseline from `main` or by benching the base commit in a git worktree), then bench the PR head,
+  capture both via `nova perf capture`, and compare via `nova perf compare --thresholds-config
+  perf/thresholds.toml`.
+- **Pushes to `main`:** bench the current `main` commit and upload `perf-current.json` as the
+  reusable baseline artifact for future PRs.
+
 ### Suites
 
 - `nova-core/critical_paths`: existing synthetic + IDE-critical benchmarks.
