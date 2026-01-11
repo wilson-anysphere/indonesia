@@ -6,7 +6,7 @@ pub(crate) fn generate_auth_token() -> Result<String> {
     // 256-bit random token (hex encoded) used as a shared secret between the router and workers.
     // This is primarily a defense-in-depth measure for local IPC transports.
     let mut bytes = [0u8; 32];
-    getrandom::getrandom(&mut bytes).context("generate auth token")?;
+    getrandom::getrandom(&mut bytes).map_err(|err| anyhow!("generate auth token: {err}"))?;
     Ok(hex_encode(&bytes))
 }
 

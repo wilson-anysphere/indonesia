@@ -773,6 +773,12 @@ impl<C: JdwpClient> DapServer<C> {
         .map_err(|err| anyhow::anyhow!(err))
         .context("failed to create bug report bundle")?;
 
+        if let Ok(metrics_json) =
+            serde_json::to_string_pretty(&nova_metrics::MetricsRegistry::global().snapshot())
+        {
+            let _ = std::fs::write(bundle.path().join("metrics.json"), metrics_json);
+        }
+
         self.simple_ok(
             request,
             Some(json!({ "path": bundle.path().display().to_string() })),

@@ -51,14 +51,13 @@ watchdog (see `crates/nova-lsp/src/hardening.rs`):
 - If the handler **panics**, the request fails with `-32603`.
 - Some watchdog failures may temporarily put the server into **safe-mode**.
 
-When in safe-mode, **all methods dispatched through** `nova_lsp::handle_custom_request()` **except
-`nova/bugReport`** fail with `-32603` and a message like:
+When in safe-mode, **all methods dispatched through** `nova_lsp::handle_custom_request()` **except**
+`nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` fail with `-32603` and a message like:
 
-> “Nova is running in safe-mode … Only `nova/bugReport` is available for now.”
+> “Nova is running in safe-mode … Only `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` are available for now.”
 
-Note: the stdio server also special-cases `nova/memoryStatus` / `nova/metrics` in
-`crates/nova-lsp/src/main.rs`, so those endpoints may remain available even while safe-mode is
-active.
+Note: the stdio server handles `nova/memoryStatus` directly in `crates/nova-lsp/src/main.rs`, so it
+remains available even while safe-mode is active.
 
 Safe-mode windows:
 
@@ -784,7 +783,7 @@ JSON string (the generated tests snippet).
 
 ---
 
-## Performance / memory endpoints
+## Performance / observability endpoints
 
 ### `nova/memoryStatus`
 
@@ -816,15 +815,6 @@ Notes:
 
 ---
 
-### `nova/metrics` (legacy alias)
-
-- **Kind:** request
-- **Stability:** experimental (deprecated name; prefer `nova/memoryStatus`)
-- **Implemented in:** `crates/nova-lsp/src/main.rs`
-- **Behavior:** identical to `nova/memoryStatus` (same params and response payload).
-
----
-
 ### `nova/memoryStatusChanged`
 
 - **Kind:** notification
@@ -835,6 +825,69 @@ Notes:
 #### Notification params
 
 Same as the `nova/memoryStatus` response object.
+
+---
+
+### `nova/metrics`
+
+Per-method runtime request metrics for debugging and bug reports.
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-metrics/src/lib.rs` (`MetricsSnapshot`)
+- **Handler:** `crates/nova-lsp/src/lib.rs` (`METRICS_METHOD`)
+
+#### Request params
+
+No params are required; clients should send `{}` or omit params.
+
+#### Response
+
+```json
+{
+  "totals": {
+    "requestCount": 12,
+    "errorCount": 1,
+    "timeoutCount": 0,
+    "panicCount": 0,
+    "latencyUs": { "p50Us": 120, "p95Us": 900, "maxUs": 1200 }
+  },
+  "methods": {
+    "initialize": {
+      "requestCount": 1,
+      "errorCount": 0,
+      "timeoutCount": 0,
+      "panicCount": 0,
+      "latencyUs": { "p50Us": 500, "p95Us": 500, "maxUs": 500 }
+    }
+  }
+}
+```
+
+Notes:
+
+- Latencies are reported in **microseconds** (`*_Us`).
+- This endpoint is allowed in safe-mode.
+
+---
+
+### `nova/resetMetrics`
+
+Reset the runtime metrics registry (useful when capturing a focused reproduction).
+
+- **Kind:** request
+- **Stability:** experimental
+- **Handler:** `crates/nova-lsp/src/lib.rs` (`RESET_METRICS_METHOD`)
+
+#### Request params
+
+No params are required; clients should send `{}` or omit params.
+
+#### Response
+
+```json
+{ "ok": true }
+```
 
 ---
 

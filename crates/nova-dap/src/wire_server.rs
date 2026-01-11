@@ -260,14 +260,22 @@ async fn handle_request_inner(
                 &perf,
                 options,
             ) {
-                Ok(bundle) => send_response(
-                    out_tx,
-                    seq,
-                    request,
-                    true,
-                    Some(json!({ "path": bundle.path().display().to_string() })),
-                    None,
-                ),
+                Ok(bundle) => {
+                    if let Ok(metrics_json) = serde_json::to_string_pretty(
+                        &nova_metrics::MetricsRegistry::global().snapshot(),
+                    ) {
+                        let _ = std::fs::write(bundle.path().join("metrics.json"), metrics_json);
+                    }
+
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        true,
+                        Some(json!({ "path": bundle.path().display().to_string() })),
+                        None,
+                    );
+                }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }

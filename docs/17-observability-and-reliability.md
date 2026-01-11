@@ -322,6 +322,7 @@ A bug report bundle is a directory containing:
 - `config.json` – serialized `NovaConfig`, with secrets redacted
 - `logs.txt` – recent log lines (from the in-memory ring buffer)
 - `performance.json` – counters (requests/timeouts/panics/safe-mode entries)
+- `metrics.json` – per-method request metrics (counts + latency summaries)
 - `crashes.json` – recent panic records (message/location/backtrace if enabled)
 - `repro.txt` – reproduction text (only if provided)
 
@@ -355,21 +356,31 @@ If you forgot to include reproduction steps, add them either:
 
 ## Metrics
 
-Nova’s main runtime “metrics” surface today is memory reporting and memory-pressure-driven feature
-throttling.
+Nova exposes two runtime metrics surfaces:
 
-Nova exposes two equivalent LSP requests:
+1. **Request metrics** (per-method request counts, error/timeout/panic counts, and latency summaries).
+   - LSP: `nova/metrics`
+   - LSP: `nova/resetMetrics`
 
-- `nova/metrics` (alias)
-- `nova/memoryStatus`
+2. **Memory metrics** (memory budget/usage/pressure and derived throttles).
+   - LSP: `nova/memoryStatus`
+   - notification: `nova/memoryStatusChanged`
 
-Both report memory usage/pressure and any resulting feature throttles.
+### LSP: `nova/metrics` / `nova/resetMetrics` (request metrics)
 
-### LSP: `nova/metrics` / `nova/memoryStatus` (memory + throttling snapshot)
+`nova/metrics` returns a `MetricsSnapshot` with:
+
+- totals across all methods
+- per-method entries keyed by method name
+- latency summaries (p50/p95/max) in **microseconds**
+
+`nova/resetMetrics` resets the registry and returns `{ "ok": true }`.
+
+### LSP: `nova/memoryStatus` (memory + throttling snapshot)
 
 The `nova-lsp` stdio server exposes a custom request:
 
-- method: `nova/metrics` (alias) or `nova/memoryStatus`
+- method: `nova/memoryStatus`
 - result: `{ "report": <MemoryReport> }`
 
 The `report` payload includes:
@@ -401,9 +412,10 @@ When diagnosing performance/reliability issues, start with:
 Bug report bundles already include:
 
 - `performance.json` (request/timeout/panic counters)
+- `metrics.json` (per-method request metrics + latency summaries)
 
 To include memory metrics:
 
-1. call `nova/metrics` (or `nova/memoryStatus`)
+1. call `nova/memoryStatus`
 2. copy/paste the JSON result into your issue, or save it as `memory.json` next to the bundle before
    compressing it.
