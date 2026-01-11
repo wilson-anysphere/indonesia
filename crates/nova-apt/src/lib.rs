@@ -1071,8 +1071,9 @@ mod tests {
     use nova_jdk::JdkIndex;
     use nova_project::{load_project_with_options, LoadOptions, SourceRootOrigin};
     use nova_resolve::{build_scopes, Resolver};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use tempfile::TempDir;
 
     #[derive(Default)]
     struct TestDb {
@@ -1098,22 +1099,72 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata/maven_simple")
     }
 
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            let dst_path = dst.join(entry.file_name());
+            if ty.is_dir() {
+                copy_dir_recursive(&entry.path(), &dst_path)?;
+            } else if ty.is_file() {
+                std::fs::copy(entry.path(), dst_path)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_generated_hello(project_root: &Path) {
+        let path = project_root.join(
+            "target/generated-sources/annotations/com/example/generated/GeneratedHello.java",
+        );
+        std::fs::create_dir_all(path.parent().expect("generated file parent")).unwrap();
+        std::fs::write(
+            &path,
+            r#"
+package com.example.generated;
+
+public class GeneratedHello {
+    public static String hello() {
+        return "hello";
+    }
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    fn temp_project_root_with_generated_hello() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        copy_dir_recursive(&fixture_root().join("src"), &dir.path().join("src")).unwrap();
+        write_generated_hello(dir.path());
+        dir
+    }
+
     #[test]
     fn resolves_generated_type_when_generated_roots_enabled() {
-        let project_root = fixture_root();
+        let dir = temp_project_root_with_generated_hello();
+        let project_root = dir.path();
 
         let config = NovaConfig::default();
         let mut options = LoadOptions::default();
         options.nova_config = config.clone();
-        let project = load_project_with_options(&project_root, &options).unwrap();
+        let project = load_project_with_options(project_root, &options).unwrap();
 
-        assert!(project
-            .source_roots
-            .iter()
-            .any(|sr| sr.origin == SourceRootOrigin::Generated));
+        let generated_root = project
+            .workspace_root
+            .join("target/generated-sources/annotations");
+        assert!(project.source_roots.iter().any(|sr| {
+            sr.origin == SourceRootOrigin::Generated && sr.path == generated_root
+        }));
 
         let index = ClassIndex::build(&project.source_roots).unwrap();
         assert!(index.contains("com.example.generated.GeneratedHello"));
+        let location = index
+            .lookup("com.example.generated.GeneratedHello")
+            .expect("generated class location");
+        assert_eq!(location.origin, SourceRootOrigin::Generated);
+        assert_eq!(location.source_root, generated_root);
 
         let file = FileId::from_raw(0);
         let mut db = TestDb::default();
@@ -1140,18 +1191,20 @@ class C {}
 
     #[test]
     fn does_not_resolve_generated_type_when_generated_roots_excluded() {
-        let project_root = fixture_root();
+        let dir = temp_project_root_with_generated_hello();
+        let project_root = dir.path();
 
         let mut config = NovaConfig::default();
         config.generated_sources.enabled = false;
         let mut options = LoadOptions::default();
         options.nova_config = config;
-        let project = load_project_with_options(&project_root, &options).unwrap();
+        let project = load_project_with_options(project_root, &options).unwrap();
 
-        assert!(!project
-            .source_roots
-            .iter()
-            .any(|sr| sr.origin == SourceRootOrigin::Generated));
+        let generated_root = project
+            .workspace_root
+            .join("target/generated-sources/annotations");
+        assert!(!project.source_roots.iter().any(|sr| sr.origin == SourceRootOrigin::Generated));
+        assert!(!project.source_roots.iter().any(|sr| sr.path == generated_root));
 
         let index = ClassIndex::build(&project.source_roots).unwrap();
         assert!(!index.contains("com.example.generated.GeneratedHello"));
