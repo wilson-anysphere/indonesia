@@ -591,6 +591,22 @@ ExpressionRoot {
   expression: Expression?
 }
 
+ExpressionFragment {
+  expression: Expression?
+}
+
+StatementFragment {
+  statement: Statement?
+}
+
+BlockFragment {
+  block: Block?
+}
+
+ClassMemberFragment {
+  member: ClassMember?
+}
+
 Error {}
 
 ModuleDeclaration {

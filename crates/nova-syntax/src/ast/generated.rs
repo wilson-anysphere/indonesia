@@ -3088,6 +3088,110 @@ impl ExpressionRoot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpressionFragment {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ExpressionFragment {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ExpressionFragment
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ExpressionFragment {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatementFragment {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for StatementFragment {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::StatementFragment
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl StatementFragment {
+    pub fn statement(&self) -> Option<Statement> {
+        support::child::<Statement>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockFragment {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for BlockFragment {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::BlockFragment
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl BlockFragment {
+    pub fn block(&self) -> Option<Block> {
+        support::child::<Block>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassMemberFragment {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ClassMemberFragment {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ClassMemberFragment
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ClassMemberFragment {
+    pub fn member(&self) -> Option<ClassMember> {
+        support::child::<ClassMember>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error {
     syntax: SyntaxNode,
 }

@@ -1,8 +1,8 @@
 use crate::ast::{
-    AstNode, ClassDeclaration, ClassMember, CompilationUnit, Expression, ModuleDirectiveKind,
-    Statement, SwitchRuleBody, TypeDeclaration,
+    AstNode, ClassDeclaration, ClassMember, CompilationUnit, Expression, ExpressionFragment,
+    ModuleDirectiveKind, Statement, StatementFragment, SwitchRuleBody, TypeDeclaration,
 };
-use crate::parse_java;
+use crate::{parse_java, parse_java_expression_fragment, parse_java_statement_fragment};
 use crate::SyntaxKind;
 
 #[test]
@@ -26,6 +26,27 @@ fn typed_casts_smoke() {
         .expect("class decl");
 
     assert_eq!(class.name_token().unwrap().text(), "Foo");
+}
+
+#[test]
+fn fragment_root_wrappers_work() {
+    let expr_parse = parse_java_expression_fragment("a + b", 0);
+    assert!(expr_parse.parse.errors.is_empty());
+    let fragment = ExpressionFragment::cast(expr_parse.parse.syntax()).expect("ExpressionFragment");
+    let expr = fragment.expression().expect("expression");
+    assert!(
+        matches!(expr, Expression::BinaryExpression(_)),
+        "expected binary expression, got {expr:?}"
+    );
+
+    let stmt_parse = parse_java_statement_fragment("return 1;", 0);
+    assert!(stmt_parse.parse.errors.is_empty());
+    let fragment = StatementFragment::cast(stmt_parse.parse.syntax()).expect("StatementFragment");
+    let stmt = fragment.statement().expect("statement");
+    assert!(
+        matches!(stmt, Statement::ReturnStatement(_)),
+        "expected return statement, got {stmt:?}"
+    );
 }
 
 #[test]
