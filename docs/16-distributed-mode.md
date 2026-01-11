@@ -260,7 +260,7 @@ into more shards (more source roots) to bound per-message and per-worker memory.
 Remote mode is **not hardened** and should not be exposed to untrusted networks.
 
 - The `--auth-token` is a **shared secret** and is sent by the worker during the initial handshake
-  (`Hello.auth_token`).
+  (`WorkerHello.auth_token`).
   **Do not send it over plaintext TCP.**
 - Plain `tcp:` also sends **full file contents** in cleartext. Use TLS for any remote deployment.
 - TLS support exists behind the `tls` Cargo feature for both router and worker (see the worker
