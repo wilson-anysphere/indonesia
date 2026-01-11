@@ -187,16 +187,11 @@ impl MavenBuild {
             }
         }
 
-        let compile_output =
-            self.run(project_root, module_relative, &self.config.classpath_args)?;
-        if !compile_output.status.success() {
-            return Err(BuildError::CommandFailed {
-                tool: "maven",
-                code: compile_output.status.code(),
-                output: combine_output(&compile_output),
-            });
-        }
-        let mut compile_classpath = parse_maven_classpath_output(&combine_output(&compile_output));
+        let mut compile_classpath = self.evaluate_path_list(
+            project_root,
+            module_relative,
+            "project.compileClasspathElements",
+        )?;
 
         let mut test_classpath = self.evaluate_path_list(
             project_root,
@@ -430,12 +425,7 @@ impl MavenBuild {
         module_relative: Option<&Path>,
         expression: &str,
     ) -> Result<String> {
-        let args = vec![
-            "-q".to_string(),
-            "-DforceStdout".to_string(),
-            format!("-Dexpression={expression}"),
-            "help:evaluate".to_string(),
-        ];
+        let args = self.help_evaluate_args(expression);
         let output = self.run(project_root, module_relative, &args)?;
         if !output.status.success() {
             return Err(BuildError::CommandFailed {
@@ -445,6 +435,39 @@ impl MavenBuild {
             });
         }
         Ok(combine_output(&output))
+    }
+
+    fn help_evaluate_args(&self, expression: &str) -> Vec<String> {
+        let mut args = self.config.classpath_args.clone();
+
+        let expr_positions: Vec<_> = args
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, arg)| arg.starts_with("-Dexpression=").then_some(idx))
+            .collect();
+        if let Some(&first) = expr_positions.first() {
+            args[first] = format!("-Dexpression={expression}");
+            for idx in expr_positions.iter().skip(1).rev() {
+                args.remove(*idx);
+            }
+        } else if let Some(pos) = args.iter().position(|arg| arg == "help:evaluate") {
+            args.insert(pos, format!("-Dexpression={expression}"));
+        } else {
+            args.push(format!("-Dexpression={expression}"));
+        }
+
+        if !args.iter().any(|arg| arg == "-q") {
+            args.insert(0, "-q".to_string());
+        }
+        if !args.iter().any(|arg| arg == "-DforceStdout") {
+            let pos = args.iter().position(|arg| arg == "-q").map_or(0, |i| i + 1);
+            args.insert(pos, "-DforceStdout".to_string());
+        }
+        if !args.iter().any(|arg| arg == "help:evaluate") {
+            args.push("help:evaluate".to_string());
+        }
+
+        args
     }
 }
 
