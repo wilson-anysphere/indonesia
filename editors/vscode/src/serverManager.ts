@@ -398,7 +398,7 @@ async function fetchJson<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'nova-vscode',
         'X-GitHub-Api-Version': '2022-11-28',
-        ...githubAuthHeaders(),
+        ...githubAuthHeaders(url),
       },
       signal: abortSignalTimeout(20_000),
     });
@@ -425,7 +425,7 @@ async function downloadBytes(fetchImpl: typeof fetch, url: string): Promise<Arra
     resp = await fetchImpl(url, {
       headers: {
         'User-Agent': 'nova-vscode',
-        ...githubAuthHeaders(),
+        ...githubAuthHeaders(url),
       },
       signal: abortSignalTimeout(30_000),
     });
@@ -544,7 +544,7 @@ async function downloadToFileAndSha256(fetchImpl: typeof fetch, url: string, des
     resp = await fetchImpl(url, {
       headers: {
         'User-Agent': 'nova-vscode',
-        ...githubAuthHeaders(),
+        ...githubAuthHeaders(url),
       },
       signal: abortSignalTimeout(5 * 60_000),
     });
@@ -613,12 +613,31 @@ function isAbortError(err: unknown): boolean {
   return candidate.name === 'AbortError' || candidate.code === 'ABORT_ERR';
 }
 
-function githubAuthHeaders(): Record<string, string> {
-  const token = process.env.NOVA_GITHUB_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+function githubAuthHeaders(url: string): Record<string, string> {
+  const explicitToken = process.env.NOVA_GITHUB_TOKEN;
+  if (explicitToken) {
+    return { Authorization: `Bearer ${explicitToken}` };
+  }
+
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
   if (!token) {
     return {};
   }
+
+  if (!isPublicGitHubHost(url)) {
+    return {};
+  }
+
   return { Authorization: `Bearer ${token}` };
+}
+
+function isPublicGitHubHost(url: string): boolean {
+  try {
+    const { hostname } = new URL(url);
+    return hostname === 'github.com' || hostname.endsWith('.github.com') || hostname.endsWith('githubusercontent.com');
+  } catch {
+    return false;
+  }
 }
 
 async function readErrorBody(resp: Response): Promise<string | undefined> {
