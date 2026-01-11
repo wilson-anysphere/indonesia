@@ -1,5 +1,7 @@
 # ADR 0009: Router ↔ Worker remote RPC protocol (v3)
 
+**Status:** Implemented (v3 is the active router↔worker wire protocol; `legacy_v2` is deprecated).
+
 ## Context
 
 Nova supports a distributed / multi-process execution mode where a **router** process coordinates one
@@ -9,8 +11,8 @@ Transport security requirements (TLS, secret handling, shard-scoped authorizatio
 [ADR 0008](0008-distributed-mode-security.md). This ADR focuses on the **RPC framing and wire-format**
 needed to support v3 distributed-mode features.
 
-The current router↔worker RPC transport (the legacy lockstep protocol, implemented in
-`nova_remote_proto::legacy_v2`) is intentionally minimal:
+Historically, Nova’s router↔worker RPC transport was the legacy lockstep protocol (implemented in
+`nova_remote_proto::legacy_v2`). That v2 protocol is intentionally minimal:
 
 - each message is a length-delimited binary encoding of a Rust `enum` (`RpcMessage`) with explicit
   hard limits (to avoid allocation bombs on untrusted inputs),
