@@ -312,7 +312,7 @@ impl<'a> ScopeBuilder<'a> {
                 Member::Constructor(_) => {}
                 Member::Initializer(_) => {}
                 Member::Type(child) => {
-                    let child_id = item_id(child.clone());
+                    let child_id = item_id(*child);
                     let name = Name::from(self.item_name(child_id));
                     self.scopes[class_scope]
                         .types
@@ -334,7 +334,7 @@ impl<'a> ScopeBuilder<'a> {
                     self.build_initializer_scopes(db, class_scope, *id);
                 }
                 Member::Type(child) => {
-                    let child_id = item_id(child.clone());
+                    let child_id = item_id(*child);
                     self.build_type_scopes(db, class_scope, package, Some(&ty_name), child_id);
                 }
                 Member::Field(_) => {}

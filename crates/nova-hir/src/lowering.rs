@@ -59,7 +59,7 @@ impl ItemTreeLower<'_> {
     fn lower_compilation_unit(&mut self, unit: &syntax::CompilationUnit) {
         self.check_cancelled();
         self.tree.package = unit.package.as_ref().map(|pkg| PackageDecl {
-            name: pkg.name.clone(),
+            name: pkg.name.trim().to_string(),
             range: pkg.range,
         });
 
