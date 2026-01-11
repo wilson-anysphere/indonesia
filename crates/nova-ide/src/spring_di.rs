@@ -215,6 +215,7 @@ pub(crate) fn injection_definition_targets(
     let Some(path) = db.file_path(file) else {
         return None;
     };
+    let source_text = db.file_content(file);
     let entry = workspace_entry(db, file)?;
     let analysis = entry.analysis.as_ref()?;
     let source_idx = entry.source_index_for_path(path)?;
@@ -225,7 +226,8 @@ pub(crate) fn injection_definition_targets(
         .iter()
         .enumerate()
         .find(|(_, inj)| {
-            inj.location.source == source_idx && span_contains(inj.location.span, offset)
+            inj.location.source == source_idx
+                && injection_contains_offset(source_text, inj.location.span, &inj.ty, offset)
         })
         .map(|(idx, _)| idx)?;
 
@@ -446,6 +448,54 @@ fn discover_project_root(path: &Path) -> PathBuf {
 
 fn span_contains(span: Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
+}
+
+fn injection_contains_offset(text: &str, name_span: Span, ty: &str, offset: usize) -> bool {
+    if span_contains(name_span, offset) {
+        return true;
+    }
+
+    let Some(ty_span) = find_type_span_before_name(text, name_span.start, ty) else {
+        return false;
+    };
+
+    span_contains(ty_span, offset)
+}
+
+fn find_type_span_before_name(text: &str, name_start: usize, ty: &str) -> Option<Span> {
+    let ty = ty.trim();
+    if ty.is_empty() {
+        return None;
+    }
+
+    let bytes = text.as_bytes();
+    let ty_bytes = ty.as_bytes();
+    if ty_bytes.is_empty() || name_start > bytes.len() {
+        return None;
+    }
+
+    let search_end = name_start.min(bytes.len());
+    let search_start = search_end.saturating_sub(256);
+
+    let mut best = None::<usize>;
+    let mut i = search_start;
+    while i + ty_bytes.len() <= search_end {
+        if bytes[i..i + ty_bytes.len()] == *ty_bytes {
+            let before_ok = i == 0 || !is_ident_continue(bytes[i - 1]);
+            let after_idx = i + ty_bytes.len();
+            let after_ok = after_idx >= bytes.len() || !is_ident_continue(bytes[after_idx]);
+            if before_ok && after_ok {
+                best = Some(i);
+            }
+        }
+        i += 1;
+    }
+
+    best.map(|start| Span::new(start, start + ty_bytes.len()))
+}
+
+fn is_ident_continue(b: u8) -> bool {
+    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'$')
 }
 
 fn enclosing_unescaped_string_literal(bytes: &[u8], offset: usize) -> Option<(usize, usize)> {

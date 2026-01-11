@@ -193,6 +193,41 @@ class FooService {}
 }
 
 #[test]
+fn spring_goto_definition_from_injection_type_jumps_to_component() {
+    let consumer_path = PathBuf::from("/spring-nav-type/src/main/java/Consumer.java");
+    let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+@Component
+class Consumer {
+  @Autowired Foo<|>Service fooService;
+}
+"#;
+
+    let bean_path = PathBuf::from("/spring-nav-type/src/main/java/FooService.java");
+    let bean_text = r#"import org.springframework.stereotype.Component;
+
+@Component
+class FooService {}
+"#;
+
+    let (db, file, pos) = fixture_multi(
+        consumer_path,
+        consumer_text,
+        vec![(bean_path, bean_text.to_string())],
+    );
+
+    let loc = goto_definition(&db, file, pos).expect("expected bean definition location");
+    assert!(
+        loc.uri.as_str().contains("FooService.java"),
+        "expected definition URI to point at FooService; got {:?}",
+        loc.uri
+    );
+    assert_eq!(loc.range.start.line, 2);
+    assert_eq!(loc.range.start.character, 6);
+}
+
+#[test]
 fn spring_goto_definition_returns_none_for_ambiguous_injection() {
     let consumer_path = PathBuf::from("/spring-nav-ambiguous/src/main/java/Consumer.java");
     let consumer_text = r#"import org.springframework.beans.factory.annotation.Autowired;
