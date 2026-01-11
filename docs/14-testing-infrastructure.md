@@ -48,6 +48,23 @@ npm ci
 npm run package
 ```
 
+## Full PR gate run (requires a JDK)
+
+Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same core checks locally:
+
+```bash
+# ci.yml
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+
+# javac.yml (requires `javac` on PATH)
+cargo test -p nova-types --test javac_differential -- --ignored
+
+# perf.yml (benchmark; see below for capture/compare)
+cargo bench -p nova-core --bench critical_paths
+```
+
 ---
 
 ## Test tiers (what exists + where it lives + how to run)
