@@ -2282,7 +2282,24 @@ fn handle_execute_command(
                 .collect();
             let index = Index::new(files);
             match nova_lsp::handle_safe_delete(&index, args) {
-                Ok(result) => serde_json::to_value(result).map_err(|e| (-32603, e.to_string())),
+                Ok(result) => {
+                    if let nova_lsp::SafeDeleteResult::WorkspaceEdit(edit) = &result {
+                        write_json_message(
+                            writer,
+                            &json!({
+                                "jsonrpc": "2.0",
+                                "id": state.next_outgoing_id(),
+                                "method": "workspace/applyEdit",
+                                "params": {
+                                    "label": "Safe delete",
+                                    "edit": edit,
+                                }
+                            }),
+                        )
+                        .map_err(|e| (-32603, e.to_string()))?;
+                    }
+                    serde_json::to_value(result).map_err(|e| (-32603, e.to_string()))
+                }
                 Err(err) => {
                     let (code, message) = match err {
                         nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),

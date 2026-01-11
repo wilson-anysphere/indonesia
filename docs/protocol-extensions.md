@@ -1365,6 +1365,8 @@ Notes:
   `start`/`end` are **byte offsets** into the UTF-8 source file (not LSP UTF-16 positions).
 - The stdio server also exposes Safe Delete via `workspace/executeCommand` (`nova.safeDelete`),
   using the same argument shape as `SafeDeleteParams` and returning the same `SafeDeleteResult`.
+  When the command returns a `WorkspaceEdit`, the server also sends a `workspace/applyEdit`
+  request (label: `"Safe delete"`) to apply it immediately.
 
 #### Errors
 

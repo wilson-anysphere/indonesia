@@ -5,7 +5,7 @@ use std::io::BufReader;
 use std::process::{Command, Stdio};
 
 mod support;
-use support::{read_response_with_id, write_jsonrpc_message};
+use support::{drain_notifications_until_id, read_response_with_id, write_jsonrpc_message};
 
 fn apply_lsp_edits(original: &str, edits: &[TextEdit]) -> String {
     if edits.is_empty() {
@@ -190,7 +190,27 @@ class A {
             }
         }),
     );
-    let apply_resp = read_response_with_id(&mut stdout, 5);
+    let (notifications, apply_resp) = drain_notifications_until_id(&mut stdout, 5);
+    let apply_edit_req = notifications
+        .iter()
+        .find(|msg| msg.get("method").and_then(|v| v.as_str()) == Some("workspace/applyEdit"))
+        .cloned()
+        .expect("server emitted workspace/applyEdit request");
+    assert_eq!(
+        apply_edit_req
+            .pointer("/params/label")
+            .and_then(|v| v.as_str()),
+        Some("Safe delete")
+    );
+    let apply_edit_id = apply_edit_req.get("id").cloned().expect("applyEdit id");
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": apply_edit_id,
+            "result": { "applied": true }
+        }),
+    );
     let edit: WorkspaceEdit =
         serde_json::from_value(apply_resp.get("result").cloned().expect("result"))
             .expect("decode workspace edit");
