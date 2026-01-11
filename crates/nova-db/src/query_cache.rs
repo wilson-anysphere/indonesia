@@ -606,6 +606,22 @@ mod disk_cache_tests {
     }
 
     #[test]
+    fn disk_cache_oversized_entry_is_deleted_and_treated_as_miss() {
+        let tmp = TempDir::new().unwrap();
+        let cache = QueryDiskCache::new(tmp.path()).unwrap();
+
+        let fingerprint = Fingerprint::from_bytes("key".as_bytes());
+        let path = tmp.path().join(format!("{}.bin", fingerprint.as_str()));
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(nova_cache::BINCODE_PAYLOAD_LIMIT_BYTES as u64 + 1)
+            .unwrap();
+        drop(file);
+
+        assert_eq!(cache.load("key").unwrap(), None);
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn disk_cache_gc_expires_entries_by_saved_at_millis() {
         let tmp = TempDir::new().unwrap();
         let cache = QueryDiskCache::new_with_policy(

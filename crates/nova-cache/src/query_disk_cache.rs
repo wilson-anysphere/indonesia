@@ -90,6 +90,9 @@ impl QueryDiskCache {
         };
 
         let bytes = bincode_serialize(&persisted)?;
+        if bytes.len() > BINCODE_PAYLOAD_LIMIT_BYTES {
+            return Ok(());
+        }
         atomic_write(&path, &bytes)?;
         self.maybe_gc();
         Ok(())
@@ -98,6 +101,17 @@ impl QueryDiskCache {
     pub fn load(&self, key: &str) -> Result<Option<Vec<u8>>, CacheError> {
         let key_fingerprint = Fingerprint::from_bytes(key.as_bytes());
         let path = self.entry_path(&key_fingerprint);
+        // Avoid following symlinks out of the cache directory.
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let _ = std::fs::remove_file(&path);
+                return Ok(None);
+            }
+            Ok(meta) if !meta.is_file() => return Ok(None),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Ok(None),
+        };
         let bytes = match read_file_limited(&path) {
             Some(bytes) => bytes,
             None => {
@@ -191,9 +205,16 @@ impl QueryDiskCache {
             // We only expect `.bin` files for cache entries. Clean up any other
             // leftovers (including crashed atomic-write tempfiles).
             if path.extension().and_then(|s| s.to_str()) != Some("bin") {
-                if file_type.is_file() {
+                if file_type.is_file() || file_type.is_symlink() {
                     let _ = std::fs::remove_file(&path);
                 }
+                continue;
+            }
+
+            if file_type.is_symlink() {
+                // Symlinks could point outside the cache directory. Delete them
+                // rather than following.
+                let _ = std::fs::remove_file(&path);
                 continue;
             }
 
@@ -215,11 +236,11 @@ impl QueryDiskCache {
 
             // If the file name doesn't match the stored key fingerprint, treat
             // as corruption and delete.
-            if path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .is_some_and(|stem| stem != header.key_fingerprint.as_str())
-            {
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                let _ = std::fs::remove_file(&path);
+                continue;
+            };
+            if stem != header.key_fingerprint.as_str() {
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
