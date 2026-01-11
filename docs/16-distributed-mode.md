@@ -135,13 +135,31 @@ The router passes each worker:
 - `--connect <ipc-addr>`
 - `--shard-id <id>`
 - `--cache-dir <dir>`
-- optionally `--auth-token <token>`
+- optionally `--auth-token <token>` (auto-generated when spawning workers locally if not provided)
+
+#### Security notes (local IPC)
+
+Local IPC is intended to be safe on multi-tenant machines (multiple OS users) by relying on OS
+access controls:
+
+- **Unix**: the router attempts to create the socket directory with **0700** (owner-only) and then
+  restricts the socket file itself to **0600** after `bind()`.
+  - The socket file's *initial* permissions are still subject to the process **umask**, so for
+    maximum safety in shared environments prefer placing the socket under a private directory (e.g.
+    `$XDG_RUNTIME_DIR`, `$HOME/.cache`, or another per-user directory) rather than a shared location
+    like `/tmp`.
+- **Windows**: the named pipe is created with a DACL that restricts access to the **current user**
+  (and LocalSystem) and rejects remote clients.
+
+For additional defense-in-depth, the router/worker RPC protocol supports a shared authentication
+token. When the router is configured to spawn workers locally, it will auto-generate a random token
+if one is not provided and pass it to its worker processes.
 
 For debugging, a worker can also be started manually (normally the router spawns it):
 
 ```bash
 nova-worker \
-  --connect unix:/tmp/nova-router.sock \
+  --connect unix:$XDG_RUNTIME_DIR/nova-router.sock \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache
 ```

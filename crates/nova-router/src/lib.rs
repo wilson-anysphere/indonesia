@@ -21,6 +21,8 @@ use tokio::time::{timeout, Duration};
 #[cfg(unix)]
 use tokio::net::UnixListener;
 
+mod ipc_security;
+
 #[cfg(feature = "tls")]
 pub mod tls;
 
@@ -384,6 +386,11 @@ impl WorkerHandle {
 
 impl DistributedRouter {
     async fn new(config: DistributedRouterConfig, layout: WorkspaceLayout) -> Result<Self> {
+        let mut config = config;
+        if config.spawn_workers && config.auth_token.is_none() {
+            config.auth_token = Some(ipc_security::generate_auth_token()?);
+        }
+
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
         let mut shards = HashMap::new();
@@ -668,12 +675,11 @@ async fn accept_loop_unix(
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Result<()> {
     let _ = std::fs::remove_file(&path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create socket dir {parent:?}"))?;
-    }
+    ipc_security::ensure_unix_socket_dir(&path)?;
 
     let listener =
         UnixListener::bind(&path).with_context(|| format!("bind unix socket {path:?}"))?;
+    ipc_security::restrict_unix_socket_permissions(&path)?;
 
     loop {
         tokio::select! {
@@ -699,12 +705,8 @@ async fn accept_loop_named_pipe(
     name: String,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Result<()> {
-    use tokio::net::windows::named_pipe::ServerOptions;
-
     let name = normalize_pipe_name(&name);
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .create(&name)
+    let mut server = ipc_security::create_secure_named_pipe_server(&name, true)
         .with_context(|| format!("create named pipe {name}"))?;
 
     loop {
@@ -720,8 +722,7 @@ async fn accept_loop_named_pipe(
                 if let Err(err) = handle_new_connection(state.clone(), stream, WorkerIdentity::Unauthenticated).await {
                     eprintln!("failed to handle worker connection: {err:?}");
                 }
-                server = ServerOptions::new()
-                    .create(&name)
+                server = ipc_security::create_secure_named_pipe_server(&name, false)
                     .with_context(|| format!("create named pipe {name}"))?;
             }
         }
