@@ -2,6 +2,10 @@
 //!
 //! This crate currently provides:
 //! - [`InMemoryFileStore`]: a small in-memory file store used by `nova-dap`.
+//! - [`SourceDatabase`]: a Salsa-friendly interface returning owned, snapshot-safe
+//!   values (e.g. `Arc<String>`).
+//! - [`SalsaDbView`]: an adapter that lets legacy code expecting [`Database`]
+//!   run on Salsa snapshots.
 //! - [`AnalysisDatabase`]: an experimental, non-Salsa cache facade for warm-start
 //!   parsing and per-file structural summaries.
 //! - [`salsa`]: the Salsa-powered incremental query database and snapshot
@@ -11,6 +15,9 @@ mod query_cache;
 pub use query_cache::{PersistentQueryCache, QueryCache};
 
 pub mod persistence;
+
+mod salsa_db_view;
+mod source_db;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -26,19 +33,31 @@ use nova_hir::token_item_tree::{
 };
 use nova_syntax::{parse as syntax_parse, ParseResult};
 
+pub use salsa_db_view::SalsaDbView;
+pub use source_db::SourceDatabase;
+
 /// A small in-memory store for file contents keyed by a compact [`FileId`].
 #[derive(Debug, Default)]
 pub struct InMemoryFileStore {
     next_file_id: u32,
     path_to_file: HashMap<PathBuf, FileId>,
     file_to_path: HashMap<FileId, PathBuf>,
-    files: HashMap<FileId, String>,
+    files: HashMap<FileId, Arc<String>>,
 }
 
 /// Minimal query surface needed by IDE features.
 ///
 /// In the long term this will be backed by an incremental query engine; for now
 /// we only expose raw file text for analysis.
+///
+/// ## Salsa compatibility
+///
+/// This trait returns borrowed `&str`/`&Path` references, which is awkward to
+/// implement on top of Salsa snapshots (inputs are stored as `Arc<String>` and
+/// must outlive the call that produced the reference).
+///
+/// New code should prefer [`SourceDatabase`], which returns owned values.
+/// Legacy code can run on Salsa snapshots via [`SalsaDbView`].
 pub trait Database {
     fn file_content(&self, file_id: FileId) -> &str;
 
@@ -77,11 +96,11 @@ impl InMemoryFileStore {
     }
 
     pub fn set_file_text(&mut self, file_id: FileId, text: String) {
-        self.files.insert(file_id, text);
+        self.files.insert(file_id, Arc::new(text));
     }
 
     pub fn file_text(&self, file_id: FileId) -> Option<&str> {
-        self.files.get(&file_id).map(String::as_str)
+        self.files.get(&file_id).map(|text| text.as_str())
     }
 
     pub fn path_for_file(&self, file_id: FileId) -> Option<&Path> {
@@ -102,6 +121,29 @@ impl Database for InMemoryFileStore {
         let mut ids: Vec<_> = self.files.keys().copied().collect();
         ids.sort_by_key(|id| id.to_raw());
         ids
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        self.path_to_file.get(path).copied()
+    }
+}
+
+impl SourceDatabase for InMemoryFileStore {
+    fn file_content(&self, file_id: FileId) -> Arc<String> {
+        self.files
+            .get(&file_id)
+            .cloned()
+            .unwrap_or_else(|| Arc::new(String::new()))
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<PathBuf> {
+        self.file_to_path.get(&file_id).cloned()
+    }
+
+    fn all_file_ids(&self) -> Arc<Vec<FileId>> {
+        let mut ids: Vec<_> = self.files.keys().copied().collect();
+        ids.sort_by_key(|id| id.to_raw());
+        Arc::new(ids)
     }
 
     fn file_id(&self, path: &Path) -> Option<FileId> {

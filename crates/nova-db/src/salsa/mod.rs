@@ -53,7 +53,7 @@ pub use workspace::{WorkspaceLoadError, WorkspaceLoader};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -282,6 +282,7 @@ impl SalsaMemoFootprint {
 
 #[derive(Debug, Default, Clone)]
 struct SalsaInputs {
+    all_file_ids: Arc<Vec<FileId>>,
     file_exists: HashMap<FileId, bool>,
     file_project: HashMap<FileId, ProjectId>,
     file_content: HashMap<FileId, Arc<String>>,
@@ -295,6 +296,7 @@ struct SalsaInputs {
 
 impl SalsaInputs {
     fn apply_to(&self, db: &mut RootDatabase) {
+        db.set_all_file_ids(self.all_file_ids.clone());
         for (&file, &exists) in &self.file_exists {
             db.set_file_exists(file, exists);
         }
@@ -406,6 +408,10 @@ impl RootDatabase {
                 workspace_model: None,
             }),
         );
+
+        // Ensure "global" inputs have a sensible default so snapshots can be
+        // used as a standalone read-only database facade.
+        db.set_all_file_ids(Arc::new(Vec::new()));
 
         db
     }
@@ -645,6 +651,37 @@ pub struct Database {
     memo_footprint: Arc<SalsaMemoFootprint>,
 }
 
+fn add_file_id(current: &Arc<Vec<FileId>>, file: FileId) -> Arc<Vec<FileId>> {
+    if current.contains(&file) {
+        return current.clone();
+    }
+
+    let mut next = current.as_ref().clone();
+    next.push(file);
+    next.sort_by_key(|id| id.to_raw());
+    Arc::new(next)
+}
+
+fn merge_file_ids(current: &Arc<Vec<FileId>>, files: impl IntoIterator<Item = FileId>) -> Arc<Vec<FileId>> {
+    let mut next = current.as_ref().clone();
+    let mut changed = false;
+
+    for file in files {
+        if !next.contains(&file) {
+            next.push(file);
+            changed = true;
+        }
+    }
+
+    if !changed {
+        return current.clone();
+    }
+
+    next.sort_by_key(|id| id.to_raw());
+    next.dedup();
+    Arc::new(next)
+}
+
 impl Default for Database {
     fn default() -> Self {
         let db = RootDatabase::default();
@@ -654,6 +691,7 @@ impl Default for Database {
         inputs
             .project_config
             .insert(default_project, db.project_config(default_project));
+        inputs.all_file_ids = db.all_file_ids();
         Self {
             inner: Arc::new(ParkingMutex::new(db)),
             inputs: Arc::new(ParkingMutex::new(inputs)),
@@ -685,6 +723,7 @@ impl Database {
         inputs
             .project_config
             .insert(default_project, db.project_config(default_project));
+        inputs.all_file_ids = db.all_file_ids();
         Self {
             inner: Arc::new(ParkingMutex::new(db)),
             inputs: Arc::new(ParkingMutex::new(inputs)),
@@ -732,23 +771,38 @@ impl Database {
     }
 
     pub fn set_file_exists(&self, file: FileId, exists: bool) {
-        self.inputs.lock().file_exists.insert(file, exists);
-        self.inner.lock().set_file_exists(file, exists);
+        let all_file_ids = {
+            let mut inputs = self.inputs.lock();
+            inputs.file_exists.insert(file, exists);
+            let all = add_file_id(&inputs.all_file_ids, file);
+            inputs.all_file_ids = all.clone();
+            all
+        };
+
+        let mut db = self.inner.lock();
+        db.set_file_exists(file, exists);
+        db.set_all_file_ids(all_file_ids);
     }
 
     pub fn set_file_content(&self, file: FileId, content: Arc<String>) {
-        self.inputs
-            .lock()
-            .file_content
-            .insert(file, content.clone());
-        self.inner.lock().set_file_content(file, content);
+        let all_file_ids = {
+            let mut inputs = self.inputs.lock();
+            inputs.file_content.insert(file, content.clone());
+            let all = add_file_id(&inputs.all_file_ids, file);
+            inputs.all_file_ids = all.clone();
+            all
+        };
+
+        let mut db = self.inner.lock();
+        db.set_file_content(file, content);
+        db.set_all_file_ids(all_file_ids);
     }
 
     pub fn set_file_text(&self, file: FileId, text: impl Into<String>) {
         let text = Arc::new(text.into());
         let default_project = ProjectId::from_raw(0);
         let default_root = SourceRootId::from_raw(0);
-        let (set_default_project, set_default_root) = {
+        let (all_file_ids, set_default_project, set_default_root) = {
             let mut inputs = self.inputs.lock();
             inputs.file_exists.insert(file, true);
             inputs.file_content.insert(file, text.clone());
@@ -763,7 +817,9 @@ impl Database {
                 inputs.source_root.insert(file, default_root);
             }
 
-            (set_default_project, set_default_root)
+            let all = add_file_id(&inputs.all_file_ids, file);
+            inputs.all_file_ids = all.clone();
+            (all, set_default_project, set_default_root)
         };
         let mut db = self.inner.lock();
         db.set_file_exists(file, true);
@@ -774,30 +830,52 @@ impl Database {
             db.set_source_root(file, default_root);
         }
         db.set_file_content(file, text);
+        db.set_all_file_ids(all_file_ids);
     }
 
     pub fn set_file_path(&self, file: FileId, path: impl Into<String>) {
-        self.inner.lock().set_file_path(file, path);
+        let all_file_ids = {
+            let mut inputs = self.inputs.lock();
+            let all = add_file_id(&inputs.all_file_ids, file);
+            inputs.all_file_ids = all.clone();
+            all
+        };
+
+        let mut db = self.inner.lock();
+        db.set_file_path(file, path);
+        db.set_all_file_ids(all_file_ids);
     }
 
     pub fn set_project_files(&self, project: ProjectId, files: Arc<Vec<FileId>>) {
-        self.inputs
-            .lock()
-            .project_files
-            .insert(project, files.clone());
-        self.inner.lock().set_project_files(project, files);
+        let all_file_ids = {
+            let mut inputs = self.inputs.lock();
+            inputs.project_files.insert(project, files.clone());
+            let all = merge_file_ids(&inputs.all_file_ids, files.iter().copied());
+            inputs.all_file_ids = all.clone();
+            all
+        };
+
+        let mut db = self.inner.lock();
+        db.set_project_files(project, files);
+        db.set_all_file_ids(all_file_ids);
     }
 
     pub fn set_file_rel_path(&self, file: FileId, rel_path: Arc<String>) {
-        self.inputs
-            .lock()
-            .file_rel_path
-            .insert(file, Arc::clone(&rel_path));
+        let all_file_ids = {
+            let mut inputs = self.inputs.lock();
+            inputs
+                .file_rel_path
+                .insert(file, Arc::clone(&rel_path));
+            let all = add_file_id(&inputs.all_file_ids, file);
+            inputs.all_file_ids = all.clone();
+            all
+        };
         let mut db = self.inner.lock();
         db.set_file_rel_path(file, Arc::clone(&rel_path));
         // Keep the non-tracked file path map in sync so existing persistence
         // caches (AST artifacts, derived caches) can reuse the same keys.
         db.set_file_path(file, rel_path.as_ref().clone());
+        db.set_all_file_ids(all_file_ids);
     }
 
     pub fn set_project_config(&self, project: ProjectId, config: Arc<ProjectConfig>) {
@@ -809,8 +887,17 @@ impl Database {
     }
 
     pub fn set_file_project(&self, file: FileId, project: ProjectId) {
-        self.inputs.lock().file_project.insert(file, project);
-        self.inner.lock().set_file_project(file, project);
+        let all_file_ids = {
+            let mut inputs = self.inputs.lock();
+            inputs.file_project.insert(file, project);
+            let all = add_file_id(&inputs.all_file_ids, file);
+            inputs.all_file_ids = all.clone();
+            all
+        };
+
+        let mut db = self.inner.lock();
+        db.set_file_project(file, project);
+        db.set_all_file_ids(all_file_ids);
     }
 
     pub fn set_jdk_index(&self, project: ProjectId, index: Arc<nova_jdk::JdkIndex>) {
@@ -833,8 +920,17 @@ impl Database {
     }
 
     pub fn set_source_root(&self, file: FileId, root: SourceRootId) {
-        self.inputs.lock().source_root.insert(file, root);
-        self.inner.lock().set_source_root(file, root);
+        let all_file_ids = {
+            let mut inputs = self.inputs.lock();
+            inputs.source_root.insert(file, root);
+            let all = add_file_id(&inputs.all_file_ids, file);
+            inputs.all_file_ids = all.clone();
+            all
+        };
+
+        let mut db = self.inner.lock();
+        db.set_source_root(file, root);
+        db.set_all_file_ids(all_file_ids);
     }
 
     /// Best-effort drop of memoized Salsa query results.
@@ -906,6 +1002,52 @@ impl Database {
             file_fingerprints.as_ref(),
             &mut indexes,
         )
+    }
+}
+
+impl crate::SourceDatabase for Snapshot {
+    fn file_content(&self, file_id: FileId) -> Arc<String> {
+        let db: &RootDatabase = self;
+        NovaInputs::file_content(db, file_id)
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<PathBuf> {
+        self.file_paths
+            .read()
+            .get(&file_id)
+            .map(|path| PathBuf::from(path.as_str()))
+    }
+
+    fn all_file_ids(&self) -> Arc<Vec<FileId>> {
+        let db: &RootDatabase = self;
+        NovaInputs::all_file_ids(db)
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        let path = path.to_str()?;
+        self.file_paths
+            .read()
+            .iter()
+            .find_map(|(&file_id, stored)| (stored.as_str() == path).then_some(file_id))
+    }
+}
+
+impl crate::SourceDatabase for Database {
+    fn file_content(&self, file_id: FileId) -> Arc<String> {
+        self.with_snapshot(|snap| crate::SourceDatabase::file_content(snap, file_id))
+    }
+
+    fn file_path(&self, file_id: FileId) -> Option<PathBuf> {
+        self.with_snapshot(|snap| crate::SourceDatabase::file_path(snap, file_id))
+    }
+
+    fn all_file_ids(&self) -> Arc<Vec<FileId>> {
+        self.with_snapshot(|snap| crate::SourceDatabase::all_file_ids(snap))
+    }
+
+    fn file_id(&self, path: &Path) -> Option<FileId> {
+        let path = path.to_path_buf();
+        self.with_snapshot(|snap| crate::SourceDatabase::file_id(snap, &path))
     }
 }
 

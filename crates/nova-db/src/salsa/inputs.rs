@@ -14,6 +14,13 @@ pub trait NovaInputs: ra_salsa::Database {
     #[ra_salsa::input]
     fn file_content(&self, file: FileId) -> Arc<String>;
 
+    /// Stable list of all files known to the host.
+    ///
+    /// This is intentionally an input so Salsa snapshots can enumerate files
+    /// without consulting non-tracked host state.
+    #[ra_salsa::input]
+    fn all_file_ids(&self) -> Arc<Vec<FileId>>;
+
     /// Whether a file exists on disk (or in the VFS).
     #[ra_salsa::input]
     fn file_exists(&self, file: FileId) -> bool;
