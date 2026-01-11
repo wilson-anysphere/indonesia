@@ -221,7 +221,25 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
             Ok(config) => return config,
             Err(err) => {
                 eprintln!(
-                    "nova-lsp: failed to load config from {}: {err}",
+                    "nova-lsp: failed to load config from {}: {err}; continuing with defaults",
+                    resolved.display()
+                );
+                return nova_config::NovaConfig::default();
+            }
+        }
+    }
+
+    // Fall back to `NOVA_CONFIG` env var (used by deployment wrappers). When set,
+    // also mirror the value to `NOVA_CONFIG_PATH` so downstream workspace config
+    // discovery uses the same file.
+    if let Some(path) = env::var_os("NOVA_CONFIG").map(PathBuf::from) {
+        let resolved = path.canonicalize().unwrap_or(path);
+        env::set_var("NOVA_CONFIG_PATH", &resolved);
+        match nova_config::NovaConfig::load_from_path(&resolved) {
+            Ok(config) => return config,
+            Err(err) => {
+                eprintln!(
+                    "nova-lsp: failed to load config from {}: {err}; continuing with defaults",
                     resolved.display()
                 );
                 return nova_config::NovaConfig::default();
@@ -250,7 +268,7 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
         }
         Err(err) => {
             eprintln!(
-                "nova-lsp: failed to load workspace config from {}: {err}",
+                "nova-lsp: failed to load workspace config from {}: {err}; continuing with defaults",
                 root.display()
             );
             nova_config::NovaConfig::default()
