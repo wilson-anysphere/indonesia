@@ -173,6 +173,17 @@ is available on your `$PATH` and supports `--stdio`.
 - Neovim: [`editors/neovim/README.md`](./editors/neovim/README.md)
 - Emacs: [`editors/emacs/README.md`](./editors/emacs/README.md)
 
+## Troubleshooting / bug reports
+
+If Nova hits an internal error (panic) or enters safe mode, generate a diagnostic bundle via the
+custom LSP request:
+
+- `nova/bugReport` → returns `{ "path": "/tmp/nova-bugreport-..." }`
+
+Compress the directory and attach it to your issue along with reproduction steps. See
+[`docs/17-observability-and-reliability.md`](./docs/17-observability-and-reliability.md) for details
+(logging, safe mode behavior, bundle contents/redaction).
+
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup, workflows, and code style.

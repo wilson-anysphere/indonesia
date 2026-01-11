@@ -597,46 +597,20 @@ impl NovaServer {
 
 ## Error Handling
 
-```rust
-impl NovaServer {
-    fn handle_panic(&self, panic: Box<dyn Any + Send>) {
-        // Log the panic
-        tracing::error!("Server panic: {:?}", panic);
-        
-        // Notify client
-        self.connection.send_notification::<ShowMessage>(
-            ShowMessageParams {
-                typ: MessageType::ERROR,
-                message: "Nova encountered an internal error. Please restart.".into(),
-            }
-        );
-        
-        // Try to recover
-        if self.can_recover() {
-            self.reinitialize();
-        } else {
-            // Graceful shutdown
-            self.shutdown();
-        }
-    }
-    
-    fn handle_request_error(&self, req: &Request, error: Error) -> Response {
-        // Map internal errors to LSP errors
-        let lsp_error = match error {
-            Error::Cancelled => LspError::request_cancelled(),
-            Error::InvalidParams(msg) => LspError::invalid_params(msg),
-            Error::Internal(msg) => {
-                // Log internal errors
-                tracing::error!("Internal error handling {}: {}", req.method, msg);
-                LspError::internal_error(msg)
-            }
-            Error::NotSupported => LspError::method_not_found(),
-        };
-        
-        Response::err(req.id.clone(), lsp_error)
-    }
-}
-```
+Nova is designed to be resilient under editor workloads:
+
+- The `nova-lsp` and `nova-dap` binaries wrap request handling in `catch_unwind` so a panic in one
+  handler does not take down the entire process.
+- Nova’s custom `nova/*` extension endpoints (e.g. build/test integration) run under a watchdog
+  (`nova_scheduler::Watchdog`) with per-method deadlines. If a request panics or times out, Nova can
+  temporarily enter **safe mode** to avoid repeatedly triggering the same failure.
+- When safe mode is active, Nova keeps `nova/bugReport` available so clients can collect a
+  diagnostic bundle.
+
+For practical operational guidance (where logs go, how to generate bug report bundles, and how safe
+mode behaves), see:
+
+- [17 - Observability and Reliability](17-observability-and-reliability.md)
 
 ---
 
