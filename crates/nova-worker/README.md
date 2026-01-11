@@ -22,7 +22,7 @@ the “secure remote mode” requirements in
 ⚠️ Plaintext `tcp:` is not secure and should only be used with an explicit “insecure” opt-in in
 isolated dev setups.
 
-## Protocol (nova remote RPC v3)
+## Protocol (legacy lockstep today; nova remote RPC v3 planned)
 
 Nova is migrating the router↔worker transport from the legacy lockstep protocol
 (`nova_remote_proto::legacy_v2`, length-delimited binary encoding, no request IDs/multiplexing) to
