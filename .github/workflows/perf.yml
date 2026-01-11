@@ -29,6 +29,9 @@ jobs:
 
       - name: Toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          # Pin the toolchain so cached `main` baselines remain comparable over time.
+          toolchain: 1.92.0
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
