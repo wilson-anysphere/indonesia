@@ -699,6 +699,7 @@ pub const NOVA_CONFIG_ENV_VAR: &str = "NOVA_CONFIG_PATH";
 /// 2) `nova.toml` in `workspace_root`
 /// 3) `.nova.toml` in `workspace_root`
 /// 4) `nova.config.toml` in `workspace_root`
+/// 5) `.nova/config.toml` in `workspace_root` (legacy fallback)
 pub fn discover_config_path(workspace_root: &Path) -> Option<PathBuf> {
     if let Some(value) = std::env::var_os(NOVA_CONFIG_ENV_VAR) {
         let candidate = PathBuf::from(value);
