@@ -2,7 +2,10 @@ use crate::{NovaLspError, Result};
 use nova_build::{BuildError, BuildManager, BuildResult, Classpath};
 use nova_cache::{CacheConfig, CacheDir};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 
 /// Parameters accepted by Nova's build-related extension requests.
 ///
@@ -365,6 +368,8 @@ pub struct BuildDiagnosticsResult {
     pub target: Option<String>,
     #[serde(default)]
     pub diagnostics: Vec<NovaDiagnostic>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json::Value> {
@@ -376,12 +381,95 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
         .canonicalize()
         .unwrap_or_else(|_| requested_root.clone());
 
-    if nova_project::bazel_workspace_root(&requested_root).is_some() {
-        // Bazel build diagnostics are expected to be sourced via `bazel build` output or BSP.
-        // For now, return an empty set so clients can rely on the endpoint.
+    if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
+        let Some(target) = req.target.clone() else {
+            // Clients may call this endpoint without selecting a target first. For Bazel workspaces
+            // we currently require an explicit target so we can ask the BSP server to compile it.
+            return serde_json::to_value(BuildDiagnosticsResult {
+                target: None,
+                diagnostics: Vec::new(),
+                source: Some("bazel: missing `target` (Bazel label)".to_string()),
+            })
+            .map_err(|err| NovaLspError::Internal(err.to_string()));
+        };
+
+        // BSP configuration discovery (env-based).
+        //
+        // - NOVA_BSP_PROGRAM: launcher executable (e.g. `bsp4bazel`)
+        // - NOVA_BSP_ARGS: optional args, either:
+        //     - JSON array (e.g. `["--arg1","--arg2"]`)
+        //     - whitespace-separated string (quotes are not interpreted)
+        let Some(program) = env::var("NOVA_BSP_PROGRAM")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        else {
+            return serde_json::to_value(BuildDiagnosticsResult {
+                target: Some(target),
+                diagnostics: Vec::new(),
+                source: Some("bazel: BSP not configured (set NOVA_BSP_PROGRAM)".to_string()),
+            })
+            .map_err(|err| NovaLspError::Internal(err.to_string()));
+        };
+
+        let args = match env::var("NOVA_BSP_ARGS") {
+            Ok(raw) => {
+                let raw = raw.trim();
+                if raw.is_empty() {
+                    Vec::new()
+                } else if raw.starts_with('[') {
+                    match serde_json::from_str::<Vec<String>>(raw) {
+                        Ok(args) => args,
+                        Err(err) => {
+                            return serde_json::to_value(BuildDiagnosticsResult {
+                                target: Some(target),
+                                diagnostics: Vec::new(),
+                                source: Some(format!(
+                                    "bazel: invalid NOVA_BSP_ARGS JSON array: {err}"
+                                )),
+                            })
+                            .map_err(|err| NovaLspError::Internal(err.to_string()));
+                        }
+                    }
+                } else {
+                    raw.split_whitespace().map(|s| s.to_string()).collect()
+                }
+            }
+            Err(env::VarError::NotPresent) => Vec::new(),
+            Err(err) => {
+                return Err(NovaLspError::Internal(format!(
+                    "failed to read NOVA_BSP_ARGS: {err}"
+                )));
+            }
+        };
+
+        let config = nova_build_bazel::BazelBspConfig { program, args };
+        let targets = vec![target.clone()];
+        let publish = match nova_build_bazel::bsp_compile_and_collect_diagnostics(
+            &config,
+            &workspace_root,
+            &targets,
+        ) {
+            Ok(params) => params,
+            Err(err) => {
+                return serde_json::to_value(BuildDiagnosticsResult {
+                    target: Some(target),
+                    diagnostics: Vec::new(),
+                    source: Some(format!("bazel: BSP compile failed: {err}")),
+                })
+                .map_err(|err| NovaLspError::Internal(err.to_string()));
+            }
+        };
+
+        let diagnostics = nova_build_bazel::bsp_publish_diagnostics_to_nova_diagnostics(&publish)
+            .into_iter()
+            .map(NovaDiagnostic::from)
+            .collect();
+
         return serde_json::to_value(BuildDiagnosticsResult {
-            target: req.target,
-            diagnostics: Vec::new(),
+            target: Some(target),
+            diagnostics,
+            source: Some("bsp".to_string()),
         })
         .map_err(|err| NovaLspError::Internal(err.to_string()));
     }
@@ -402,6 +490,7 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
             .into_iter()
             .map(NovaDiagnostic::from)
             .collect(),
+        source: None,
     };
     serde_json::to_value(resp).map_err(|err| NovaLspError::Internal(err.to_string()))
 }

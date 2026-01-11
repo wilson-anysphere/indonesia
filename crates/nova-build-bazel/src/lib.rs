@@ -12,7 +12,9 @@ mod cache;
 mod command;
 mod workspace;
 
-#[cfg(feature = "bsp")]
+// The BSP module is optional at runtime, but we still compile it for unit tests so
+// the protocol glue (JSON deserialization, diagnostics mapping) remains covered.
+#[cfg(any(test, feature = "bsp"))]
 pub mod bsp;
 
 pub use crate::{
@@ -20,4 +22,10 @@ pub use crate::{
     cache::{digest_file, BazelCache, BuildFileDigest, CacheEntry},
     command::{CommandOutput, CommandRunner, DefaultCommandRunner},
     workspace::{BazelWorkspace, BazelWorkspaceDiscovery},
+};
+
+#[cfg(any(test, feature = "bsp"))]
+pub use crate::bsp::{
+    bsp_compile_and_collect_diagnostics, bsp_publish_diagnostics_to_nova_diagnostics,
+    BazelBspConfig,
 };

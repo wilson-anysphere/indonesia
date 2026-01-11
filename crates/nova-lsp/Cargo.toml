@@ -37,7 +37,7 @@ nova-testing = { path = "../nova-testing" }
 nova-jdwp = { path = "../nova-jdwp" }
 nova-remote-proto = { path = "../nova-remote-proto" }
 nova-router = { path = "../nova-router" }
-nova-build-bazel = { path = "../nova-build-bazel" }
+nova-build-bazel = { path = "../nova-build-bazel", features = ["bsp"] }
 nova-framework-micronaut = { path = "../nova-framework-micronaut" }
 nova-framework-mapstruct = { path = "../nova-framework-mapstruct" }
 
