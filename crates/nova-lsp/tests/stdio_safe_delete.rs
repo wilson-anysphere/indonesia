@@ -138,7 +138,7 @@ class A {
         .and_then(|v| v.as_u64())
         .expect("target symbol id");
 
-    // 4) request preview via executeCommand
+    // 4) request preview via executeCommand (the code action is wired to this command)
     write_jsonrpc_message(
         &mut stdin,
         &json!({
@@ -151,20 +151,38 @@ class A {
             }
         }),
     );
-    let preview_resp = read_response_with_id(&mut stdout, 3);
+    let preview_via_command = read_response_with_id(&mut stdout, 3);
     assert_eq!(
-        preview_resp
+        preview_via_command
             .pointer("/result/type")
             .and_then(|v| v.as_str()),
         Some("nova/refactor/preview")
     );
 
-    // 5) apply via executeCommand
+    // 5) request preview via custom method
     write_jsonrpc_message(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 4,
+            "method": "nova/refactor/safeDelete",
+            "params": { "target": target_id, "mode": "safe" }
+        }),
+    );
+    let preview_via_method = read_response_with_id(&mut stdout, 4);
+    assert_eq!(
+        preview_via_method
+            .pointer("/result/type")
+            .and_then(|v| v.as_str()),
+        Some("nova/refactor/preview")
+    );
+
+    // 6) apply via executeCommand
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 5,
             "method": "workspace/executeCommand",
             "params": {
                 "command": "nova.safeDelete",
@@ -172,7 +190,7 @@ class A {
             }
         }),
     );
-    let apply_resp = read_response_with_id(&mut stdout, 4);
+    let apply_resp = read_response_with_id(&mut stdout, 5);
     let edit: WorkspaceEdit =
         serde_json::from_value(apply_resp.get("result").cloned().expect("result"))
             .expect("decode workspace edit");
@@ -183,12 +201,12 @@ class A {
     assert!(!actual.contains("void used"), "method should be removed");
     assert!(!actual.contains("used()"), "usage should be removed");
 
-    // 6) shutdown + exit
+    // 7) shutdown + exit
     write_jsonrpc_message(
         &mut stdin,
-        &json!({ "jsonrpc": "2.0", "id": 5, "method": "shutdown" }),
+        &json!({ "jsonrpc": "2.0", "id": 6, "method": "shutdown" }),
     );
-    let _shutdown_resp = read_response_with_id(&mut stdout, 5);
+    let _shutdown_resp = read_response_with_id(&mut stdout, 6);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
