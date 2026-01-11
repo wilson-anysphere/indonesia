@@ -317,7 +317,8 @@ RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_format -- -max_total_time=60
 RUST_BACKTRACE=1 cargo +nightly fuzz run fuzz_classfile -- -max_total_time=60
 ```
 
-There are additional targets (e.g. `refactor_smoke`, `parse_java`, `format_java`)—list them with:
+There are additional targets (e.g. `parse_java`, `format_java`, and `refactor_smoke` which requires
+`--features refactor`)—list them with:
 
 ```bash
 cargo +nightly fuzz list
