@@ -96,12 +96,14 @@ nova cache warm --path <workspace>
 nova cache clean --path <workspace>
 
 # Cache packaging (team-shared warm starts)
-nova cache pack <path> --out nova-cache.tar.zst
-nova cache install <path> nova-cache.tar.zst
-nova cache fetch <path> https://example.com/nova-cache.tar.zst
+  nova cache pack <path> --out nova-cache.tar.zst
+  nova cache install <path> nova-cache.tar.zst
+  nova cache fetch <path> https://example.com/nova-cache.tar.zst
+  # (optional, requires building with `--features s3`)
+  nova cache fetch <path> s3://my-bucket/path/to/nova-cache.tar.zst
 
-# Performance report (reads the persisted cache `perf.json`)
-nova perf report --path <workspace>
+  # Performance report (reads the persisted cache `perf.json`)
+  nova perf report --path <workspace>
 
 # Debug parsing for a single file
 nova parse <file>
@@ -114,6 +116,7 @@ nova bugreport --json
 Cache location:
 - default: `~/.nova/cache/<project-hash>/`
 - override: set `NOVA_CACHE_DIR` (the project hash is still appended)
+- optional `nova cache fetch` size cap: set `NOVA_CACHE_MAX_DOWNLOAD_BYTES` (bytes; `0` disables)
 
 ### Cache packaging (shared indexes)
 
