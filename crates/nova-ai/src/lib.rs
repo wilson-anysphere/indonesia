@@ -53,7 +53,8 @@ pub use features::NovaAi;
 pub use privacy::{PrivacyMode, RedactionConfig};
 pub use provider::MultiTokenCompletionProvider;
 pub use semantic_search::{
-    semantic_search_from_config, SearchResult, SemanticSearch, TrigramSemanticSearch,
+    semantic_search_from_config, NoopSemanticSearch, SearchResult, SemanticSearch,
+    TrigramSemanticSearch,
 };
 #[cfg(feature = "embeddings")]
 pub use semantic_search::{Embedder, EmbeddingSemanticSearch, HashEmbedder};

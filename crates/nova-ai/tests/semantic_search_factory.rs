@@ -39,6 +39,10 @@ fn semantic_search_from_config_respects_feature_flag() {
             enabled: true,
             ..AiEmbeddingsConfig::default()
         },
+        features: nova_config::AiFeaturesConfig {
+            semantic_search: true,
+            ..nova_config::AiFeaturesConfig::default()
+        },
         ..AiConfig::default()
     };
 
@@ -53,4 +57,12 @@ fn semantic_search_from_config_respects_feature_flag() {
         "file"
     };
     assert_eq!(results[0].kind, expected_kind);
+}
+
+#[test]
+fn semantic_search_from_config_disabled_returns_empty() {
+    let cfg = AiConfig::default();
+    let mut search = semantic_search_from_config(&cfg);
+    search.index_project(&MemDb(Vec::new()));
+    assert!(search.search("hello world").is_empty());
 }
