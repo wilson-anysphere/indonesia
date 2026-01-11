@@ -18,6 +18,8 @@ fn infer_simple_identity() {
         type_params: vec![],
         super_class: Some(Type::class(object, vec![])),
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![MethodDef {
             name: "id".to_string(),
             type_params: vec![t],
@@ -58,6 +60,8 @@ fn infer_from_return_context() {
         type_params: vec![],
         super_class: Some(Type::class(object, vec![])),
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![MethodDef {
             name: "empty".to_string(),
             type_params: vec![t],
@@ -98,6 +102,8 @@ fn inferred_type_respects_bounds() {
         type_params: vec![],
         super_class: Some(Type::class(object, vec![])),
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![MethodDef {
             name: "m".to_string(),
             type_params: vec![n],

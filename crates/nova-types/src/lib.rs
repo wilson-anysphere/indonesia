@@ -306,6 +306,14 @@ pub struct TypeDefStub {
     pub methods: Vec<MethodStub>,
 }
 
+// JVM access flags (JVMS 4.1, 4.5, 4.6). We only model a small subset for now.
+const ACC_PRIVATE: u16 = 0x0002;
+const ACC_FINAL: u16 = 0x0010;
+const ACC_STATIC: u16 = 0x0008;
+const ACC_VARARGS: u16 = 0x0080;
+const ACC_INTERFACE: u16 = 0x0200;
+const ACC_ABSTRACT: u16 = 0x0400;
+
 /// A source of types used by the semantic layers.
 ///
 /// Implementations can be backed by the JDK, a project index, third-party jars, etc.
@@ -393,12 +401,36 @@ pub enum ClassKind {
     Interface,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallKind {
+    Static,
+    Instance,
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeParamDef {
     pub name: String,
     pub upper_bounds: Vec<Type>,
     /// Capture conversion may introduce a lower bound (`? super T`).
     pub lower_bound: Option<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldDef {
+    pub name: String,
+    pub ty: Type,
+    pub is_static: bool,
+    pub is_final: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstructorDef {
+    pub params: Vec<Type>,
+    pub is_varargs: bool,
+    /// Best-effort accessibility bit (e.g. `private` constructors are marked
+    /// inaccessible). Full accessibility rules depend on the call-site context
+    /// and will be handled by higher semantic layers.
+    pub is_accessible: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -447,6 +479,8 @@ pub struct ClassDef {
     pub type_params: Vec<TypeVarId>,
     pub super_class: Option<Type>,
     pub interfaces: Vec<Type>,
+    pub fields: Vec<FieldDef>,
+    pub constructors: Vec<ConstructorDef>,
     pub methods: Vec<MethodDef>,
 }
 
@@ -498,6 +532,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: None,
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let string = store.add_class(ClassDef {
@@ -506,6 +542,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let number = store.add_class(ClassDef {
@@ -514,6 +552,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let _boolean = store.add_class(ClassDef {
@@ -522,6 +562,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let _byte = store.add_class(ClassDef {
@@ -530,6 +572,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(number, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let _short = store.add_class(ClassDef {
@@ -538,6 +582,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(number, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let _character = store.add_class(ClassDef {
@@ -546,6 +592,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let integer = store.add_class(ClassDef {
@@ -554,6 +602,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(number, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let _long = store.add_class(ClassDef {
@@ -562,6 +612,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(number, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let _float = store.add_class(ClassDef {
@@ -570,6 +622,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(number, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let _double = store.add_class(ClassDef {
@@ -578,6 +632,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: Some(Type::class(number, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let cloneable = store.add_class(ClassDef {
@@ -586,6 +642,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: None,
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let serializable = store.add_class(ClassDef {
@@ -594,6 +652,8 @@ impl TypeStore {
             type_params: vec![],
             super_class: None,
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
 
@@ -605,6 +665,8 @@ impl TypeStore {
             type_params: vec![list_e],
             super_class: None,
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![
                 MethodDef {
                     name: "get".to_string(),
@@ -635,6 +697,8 @@ impl TypeStore {
             type_params: vec![array_list_e],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![Type::class(list, vec![Type::TypeVar(array_list_e)])],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
 
@@ -647,6 +711,8 @@ impl TypeStore {
             type_params: vec![function_t, function_r],
             super_class: None,
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![MethodDef {
                 name: "apply".to_string(),
                 type_params: vec![],
@@ -769,6 +835,236 @@ impl TypeStore {
 
     pub fn class_id(&self, name: &str) -> Option<ClassId> {
         self.lookup_class(name)
+    }
+
+    /// Load a class stub from a [`TypeProvider`] into this [`TypeStore`].
+    ///
+    /// This is a best-effort bridge between the "classpath/JDK stubs" model and
+    /// Nova's semantic class/type representation.
+    ///
+    /// The loader:
+    /// - Creates [`ClassDef`] entries for the requested class and its supertypes
+    ///   (superclass + interfaces) so that inherited member resolution works.
+    /// - Converts field stubs to [`FieldDef`]s.
+    /// - Converts `<init>` method stubs to [`ConstructorDef`]s.
+    /// - Converts all other method stubs to [`MethodDef`]s.
+    pub fn load_from_provider(&mut self, provider: &dyn TypeProvider, binary_name: &str) -> Option<ClassId> {
+        let mut visiting = HashSet::<String>::new();
+        self.load_from_provider_inner(provider, binary_name, &mut visiting)
+    }
+
+    fn load_from_provider_inner(
+        &mut self,
+        provider: &dyn TypeProvider,
+        binary_name: &str,
+        visiting: &mut HashSet<String>,
+    ) -> Option<ClassId> {
+        if let Some(id) = self.lookup_class(binary_name) {
+            return Some(id);
+        }
+
+        if !visiting.insert(binary_name.to_string()) {
+            // Cycle in the provider graph (should be rare). Skip loading to
+            // avoid infinite recursion.
+            return self.lookup_class(binary_name);
+        }
+
+        let stub = provider.lookup_type(binary_name)?;
+
+        // Ensure supertypes exist in the store so `is_subtype`/member resolution
+        // can traverse them.
+        let super_id = stub
+            .super_binary_name
+            .as_deref()
+            .and_then(|name| self.load_from_provider_inner(provider, name, visiting));
+        let interface_ids: Vec<ClassId> = stub
+            .interfaces
+            .iter()
+            .filter_map(|name| self.load_from_provider_inner(provider, name, visiting))
+            .collect();
+
+        let kind = if stub.access_flags & ACC_INTERFACE != 0 {
+            ClassKind::Interface
+        } else {
+            ClassKind::Class
+        };
+
+        let mut fields = Vec::new();
+        for f in stub.fields {
+            let ty = self
+                .parse_field_descriptor(&f.descriptor)
+                .unwrap_or(Type::Unknown);
+            fields.push(FieldDef {
+                name: f.name,
+                ty,
+                is_static: f.access_flags & ACC_STATIC != 0,
+                is_final: f.access_flags & ACC_FINAL != 0,
+            });
+        }
+
+        let mut methods = Vec::new();
+        let mut constructors = Vec::new();
+        for m in stub.methods {
+            // Ignore the JVM class initializer.
+            if m.name == "<clinit>" {
+                continue;
+            }
+
+            let (params, return_type) = self
+                .parse_method_descriptor(&m.descriptor)
+                .unwrap_or((Vec::new(), Type::Unknown));
+            let is_varargs = m.access_flags & ACC_VARARGS != 0;
+            let is_accessible = m.access_flags & ACC_PRIVATE == 0;
+
+            if m.name == "<init>" {
+                constructors.push(ConstructorDef {
+                    params,
+                    is_varargs,
+                    is_accessible,
+                });
+            } else {
+                methods.push(MethodDef {
+                    name: m.name,
+                    type_params: vec![],
+                    params,
+                    return_type,
+                    is_static: m.access_flags & ACC_STATIC != 0,
+                    is_varargs,
+                    is_abstract: m.access_flags & ACC_ABSTRACT != 0,
+                });
+            }
+        }
+
+        let super_class = match kind {
+            ClassKind::Interface => None,
+            ClassKind::Class => super_id.map(|id| Type::class(id, vec![])),
+        };
+        let interfaces = interface_ids
+            .into_iter()
+            .map(|id| Type::class(id, vec![]))
+            .collect();
+
+        let id = self.add_class(ClassDef {
+            name: stub.binary_name,
+            kind,
+            type_params: vec![],
+            super_class,
+            interfaces,
+            fields,
+            constructors,
+            methods,
+        });
+
+        visiting.remove(binary_name);
+        Some(id)
+    }
+
+    fn parse_field_descriptor(&self, desc: &str) -> Option<Type> {
+        let mut idx = 0usize;
+        let ty = self.parse_descriptor_type(desc, &mut idx)?;
+        if idx == desc.len() {
+            Some(ty)
+        } else {
+            None
+        }
+    }
+
+    fn parse_method_descriptor(&self, desc: &str) -> Option<(Vec<Type>, Type)> {
+        let bytes = desc.as_bytes();
+        if bytes.first().copied() != Some(b'(') {
+            return None;
+        }
+
+        let mut idx = 1usize;
+        let mut params = Vec::new();
+        while idx < desc.len() && bytes[idx] != b')' {
+            params.push(self.parse_descriptor_type(desc, &mut idx)?);
+        }
+        if idx >= desc.len() || bytes[idx] != b')' {
+            return None;
+        }
+        idx += 1;
+
+        if idx >= desc.len() {
+            return None;
+        }
+
+        let return_type = if bytes[idx] == b'V' {
+            idx += 1;
+            Type::Void
+        } else {
+            self.parse_descriptor_type(desc, &mut idx)?
+        };
+
+        if idx == desc.len() {
+            Some((params, return_type))
+        } else {
+            None
+        }
+    }
+
+    fn parse_descriptor_type(&self, desc: &str, idx: &mut usize) -> Option<Type> {
+        let bytes = desc.as_bytes();
+        let b = *bytes.get(*idx)?;
+        match b {
+            b'B' => {
+                *idx += 1;
+                Some(Type::Primitive(PrimitiveType::Byte))
+            }
+            b'C' => {
+                *idx += 1;
+                Some(Type::Primitive(PrimitiveType::Char))
+            }
+            b'D' => {
+                *idx += 1;
+                Some(Type::Primitive(PrimitiveType::Double))
+            }
+            b'F' => {
+                *idx += 1;
+                Some(Type::Primitive(PrimitiveType::Float))
+            }
+            b'I' => {
+                *idx += 1;
+                Some(Type::Primitive(PrimitiveType::Int))
+            }
+            b'J' => {
+                *idx += 1;
+                Some(Type::Primitive(PrimitiveType::Long))
+            }
+            b'S' => {
+                *idx += 1;
+                Some(Type::Primitive(PrimitiveType::Short))
+            }
+            b'Z' => {
+                *idx += 1;
+                Some(Type::Primitive(PrimitiveType::Boolean))
+            }
+            b'[' => {
+                *idx += 1;
+                let elem = self.parse_descriptor_type(desc, idx)?;
+                Some(Type::Array(Box::new(elem)))
+            }
+            b'L' => {
+                // Object type: `L...;`
+                let start = *idx + 1;
+                let mut end = start;
+                while end < desc.len() && bytes[end] != b';' {
+                    end += 1;
+                }
+                if end >= desc.len() {
+                    return None;
+                }
+                *idx = end + 1;
+                let internal = &desc[start..end];
+                let binary = internal.replace('/', ".");
+                Some(
+                    self.lookup_class(&binary)
+                        .map(|id| Type::class(id, vec![]))
+                        .unwrap_or_else(|| Type::Named(binary)),
+                )
+            }
+            _ => None,
+        }
     }
 }
 
@@ -1459,6 +1755,79 @@ fn glb(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
     Type::Intersection(vec![a.clone(), b.clone()])
 }
 
+// === Member resolution =======================================================
+
+pub fn resolve_field(env: &dyn TypeEnv, receiver: &Type, name: &str, call_kind: CallKind) -> Option<FieldDef> {
+    let mut receiver = receiver.clone();
+    if let Type::Named(n) = &receiver {
+        if let Some(id) = env.lookup_class(n) {
+            receiver = Type::class(id, vec![]);
+        }
+    }
+
+    let start = match receiver {
+        Type::Class(_) => receiver,
+        Type::Array(_) => Type::class(env.well_known().object, vec![]),
+        _ => return None,
+    };
+
+    let mut queue = VecDeque::new();
+    let mut seen = HashSet::new();
+    queue.push_back(start);
+
+    while let Some(current) = queue.pop_front() {
+        let Type::Class(ClassType { def, args }) = current.clone() else {
+            continue;
+        };
+        if !seen.insert((def, args.clone())) {
+            continue;
+        }
+
+        let Some(class_def) = env.class(def) else {
+            continue;
+        };
+        let subst = class_def
+            .type_params
+            .iter()
+            .copied()
+            .zip(args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+
+        for field in &class_def.fields {
+            if field.name != name {
+                continue;
+            }
+
+            let allowed = match (call_kind, field.is_static) {
+                (CallKind::Static, true) => true,
+                (CallKind::Instance, false) => true,
+                // Best-effort: allow static fields from an instance receiver.
+                (CallKind::Instance, true) => true,
+                (CallKind::Static, false) => false,
+            };
+            if !allowed {
+                continue;
+            }
+
+            return Some(FieldDef {
+                name: field.name.clone(),
+                ty: substitute(&field.ty, &subst),
+                is_static: field.is_static,
+                is_final: field.is_final,
+            });
+        }
+
+        if let Some(sc) = &class_def.super_class {
+            queue.push_back(substitute(sc, &subst));
+        }
+        for iface in &class_def.interfaces {
+            queue.push_back(substitute(iface, &subst));
+        }
+    }
+
+    None
+}
+
 // === Method resolution =======================================================
 
 #[derive(Debug, Clone)]
@@ -1516,6 +1885,84 @@ pub fn resolve_method_call(env: &mut TypeStore, call: &MethodCall<'_>) -> Method
         let applicable: Vec<ResolvedMethod> = candidates
             .iter()
             .filter_map(|cand| check_applicability(env_ro, cand, call, phase))
+            .collect();
+
+        if applicable.is_empty() {
+            continue;
+        }
+
+        return match most_specific(env_ro, &applicable, call.args.len()) {
+            Some(best) => MethodResolution::Found(best.clone()),
+            None => MethodResolution::Ambiguous(applicable),
+        };
+    }
+
+    MethodResolution::NotFound
+}
+
+pub fn resolve_constructor_call(
+    env: &mut TypeStore,
+    class: ClassId,
+    args: &[Type],
+    expected: Option<&Type>,
+) -> MethodResolution {
+    let receiver = match expected {
+        Some(Type::Class(ClassType { def, args })) if *def == class => Type::class(class, args.clone()),
+        _ => Type::class(class, vec![]),
+    };
+    let receiver_args = match &receiver {
+        Type::Class(ClassType { args, .. }) => args.clone(),
+        _ => Vec::new(),
+    };
+    let return_type = receiver.clone();
+
+    let call = MethodCall {
+        receiver,
+        name: "<init>",
+        args: args.to_vec(),
+        expected_return: expected.cloned(),
+        explicit_type_args: vec![],
+    };
+
+    let env_ro: &TypeStore = &*env;
+    let Some(class_def) = env_ro.class(class) else {
+        return MethodResolution::NotFound;
+    };
+
+    let class_subst = class_def
+        .type_params
+        .iter()
+        .copied()
+        .zip(receiver_args.into_iter())
+        .collect::<HashMap<_, _>>();
+
+    let candidates: Vec<CandidateMethod> = class_def
+        .constructors
+        .iter()
+        .filter(|c| c.is_accessible)
+        .map(|ctor| CandidateMethod {
+            owner: class,
+            method: MethodDef {
+                name: "<init>".to_string(),
+                type_params: vec![],
+                params: ctor.params.clone(),
+                return_type: return_type.clone(),
+                is_static: false,
+                is_varargs: ctor.is_varargs,
+                is_abstract: false,
+            },
+            class_subst: class_subst.clone(),
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return MethodResolution::NotFound;
+    }
+
+    for phase in [MethodPhase::Strict, MethodPhase::Loose, MethodPhase::Varargs] {
+        let applicable: Vec<ResolvedMethod> = candidates
+            .iter()
+            .filter_map(|cand| check_applicability(env_ro, cand, &call, phase))
             .collect();
 
         if applicable.is_empty() {
@@ -2464,6 +2911,8 @@ mod tests {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
         let dog = env.add_class(ClassDef {
@@ -2472,6 +2921,8 @@ mod tests {
             type_params: vec![],
             super_class: Some(Type::class(animal, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![],
         });
 
@@ -2499,6 +2950,8 @@ mod tests {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![
                 MethodDef {
                     name: "m".to_string(),
@@ -2583,6 +3036,8 @@ mod tests {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![MethodDef {
                 name: "id".to_string(),
                 type_params: vec![t],
@@ -2619,6 +3074,8 @@ mod tests {
             type_params: vec![],
             super_class: Some(Type::class(object, vec![])),
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![MethodDef {
                 name: "id".to_string(),
                 type_params: vec![t],
