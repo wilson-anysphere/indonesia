@@ -584,7 +584,18 @@ fn is_build_file(path: &Path) -> bool {
         return false;
     };
 
-    if name == "pom.xml" || name.starts_with("build.gradle") || name.starts_with("settings.gradle") {
+    if name == "pom.xml"
+        || name.starts_with("build.gradle")
+        || name.starts_with("settings.gradle")
+        || matches!(
+            name,
+            "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel"
+        )
+    {
+        return true;
+    }
+
+    if path.extension().and_then(|s| s.to_str()) == Some("bzl") {
         return true;
     }
 
@@ -783,9 +794,22 @@ mod tests {
                 .join("maven-wrapper.properties"),
             root.join(".mvn").join("extensions.xml"),
             root.join(".mvn").join("maven.config"),
+            root.join("WORKSPACE"),
+            root.join("WORKSPACE.bazel"),
+            root.join("MODULE.bazel"),
+            root.join("BUILD"),
+            root.join("BUILD.bazel"),
+            root.join("some").join("pkg").join("BUILD"),
+            root.join("some").join("pkg").join("BUILD.bazel"),
+            root.join("tools").join("defs.bzl"),
         ];
 
         for path in build_files {
+            assert!(
+                is_build_file(&path),
+                "expected {} to be treated as a build file",
+                path.display()
+            );
             let event = NormalizedEvent::Modified(path.clone());
             assert_eq!(
                 categorize_event(&config, &event),
@@ -796,6 +820,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn java_edits_remain_source_changes() {
+        let root = PathBuf::from("/tmp/workspace");
+        let config = WorkspaceConfig::new(root.clone(), vec![], vec![], vec![]);
+        let path = root.join("Example.java");
+        assert!(!is_build_file(&path));
+        let event = NormalizedEvent::Modified(path);
+        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+    }
     #[derive(Default)]
     struct TestClient {
         statuses: Mutex<Vec<String>>,
