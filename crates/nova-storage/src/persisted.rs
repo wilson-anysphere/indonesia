@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::header::{ArtifactKind, Compression, StorageHeader, HEADER_LEN};
 
-/// Maximum number of bytes we'll ever read into memory when mmap is unavailable.
+/// Maximum file size we'll accept when mmap is unavailable.
 ///
 /// Nova runs many agents concurrently with a hard per-agent memory budget (see `AGENTS.md`).
 /// Treating unexpectedly-large cache files as a miss is preferable to risking an OOM.

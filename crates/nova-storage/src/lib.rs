@@ -333,6 +333,37 @@ mod tests {
     }
 
     #[test]
+    fn oversized_payload_len_is_error() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _payload_limit_guard = EnvVarGuard::set("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES", "1024");
+        let _uncompressed_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_UNCOMPRESSED_LEN_BYTES");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("corrupt.bin");
+
+        let header = StorageHeader::new(
+            ArtifactKind::AstArtifacts,
+            1,
+            Compression::None,
+            u64::MAX,
+            0,
+            0,
+        );
+        std::fs::write(&path, header.encode()).unwrap();
+
+        let err =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap_err();
+        match err {
+            StorageError::TooLarge { kind, bytes, limit } => {
+                assert_eq!(kind, "payload");
+                assert_eq!(bytes, u64::MAX);
+                assert_eq!(limit, 1024);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn oversized_uncompressed_len_is_error_for_uncompressed_artifact() {
         let _lock = ENV_LOCK.lock().unwrap();
         let _payload_guard = EnvVarGuard::remove("NOVA_STORAGE_MAX_PAYLOAD_LEN_BYTES");
