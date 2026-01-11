@@ -7,7 +7,6 @@ edition = "2021"
 wasm-extensions = [
     "dep:serde",
     "dep:serde_json",
-    "dep:tracing",
     "dep:wasmtime",
     "dep:wat",
     "dep:semver",
@@ -20,13 +19,13 @@ nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-types = { path = "../nova-types" }
 nova-scheduler = { path = "../nova-scheduler" }
+tracing = { workspace = true }
 
 semver = { version = "1", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 thiserror = { version = "1", optional = true }
 toml = { version = "0.8", optional = true }
-tracing = { workspace = true, optional = true }
 wasmtime = { version = "18.0", optional = true, default-features = false, features = ["cranelift", "runtime"] }
 wat = { version = "1.0", optional = true }
 

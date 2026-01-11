@@ -9,8 +9,8 @@ use nova_types::{CompletionItem, Diagnostic};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Clone, Debug)]
 pub struct ExtensionRegistryOptions {
@@ -57,7 +57,50 @@ impl Default for ExtensionRegistryOptions {
     }
 }
 
-#[derive(Clone)]
+const PROVIDER_KIND_DIAGNOSTIC: &str = "diagnostic";
+const PROVIDER_KIND_COMPLETION: &str = "completion";
+const PROVIDER_KIND_CODE_ACTION: &str = "code_action";
+const PROVIDER_KIND_NAVIGATION: &str = "navigation";
+const PROVIDER_KIND_INLAY_HINT: &str = "inlay_hint";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderLastError {
+    Timeout,
+    Panic,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ProviderStats {
+    pub calls_total: u64,
+    pub timeouts_total: u64,
+    pub panics_total: u64,
+    pub last_ok_at: Option<SystemTime>,
+    pub last_error: Option<ProviderLastError>,
+    pub last_duration: Option<Duration>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ExtensionRegistryStats {
+    pub diagnostic: BTreeMap<String, ProviderStats>,
+    pub completion: BTreeMap<String, ProviderStats>,
+    pub code_action: BTreeMap<String, ProviderStats>,
+    pub navigation: BTreeMap<String, ProviderStats>,
+    pub inlay_hint: BTreeMap<String, ProviderStats>,
+}
+
+impl ExtensionRegistryStats {
+    fn map_mut(&mut self, kind: &'static str) -> &mut BTreeMap<String, ProviderStats> {
+        match kind {
+            PROVIDER_KIND_DIAGNOSTIC => &mut self.diagnostic,
+            PROVIDER_KIND_COMPLETION => &mut self.completion,
+            PROVIDER_KIND_CODE_ACTION => &mut self.code_action,
+            PROVIDER_KIND_NAVIGATION => &mut self.navigation,
+            PROVIDER_KIND_INLAY_HINT => &mut self.inlay_hint,
+            _ => unreachable!("unknown provider kind: {kind}"),
+        }
+    }
+}
+
 pub struct ExtensionRegistry<DB: ?Sized + Send + Sync + 'static> {
     options: ExtensionRegistryOptions,
     diagnostic_providers: BTreeMap<String, Arc<dyn DiagnosticProvider<DB>>>,
@@ -65,6 +108,21 @@ pub struct ExtensionRegistry<DB: ?Sized + Send + Sync + 'static> {
     code_action_providers: BTreeMap<String, Arc<dyn CodeActionProvider<DB>>>,
     navigation_providers: BTreeMap<String, Arc<dyn NavigationProvider<DB>>>,
     inlay_hint_providers: BTreeMap<String, Arc<dyn InlayHintProvider<DB>>>,
+    stats: Mutex<ExtensionRegistryStats>,
+}
+
+impl<DB: ?Sized + Send + Sync + 'static> Clone for ExtensionRegistry<DB> {
+    fn clone(&self) -> Self {
+        Self {
+            options: self.options.clone(),
+            diagnostic_providers: self.diagnostic_providers.clone(),
+            completion_providers: self.completion_providers.clone(),
+            code_action_providers: self.code_action_providers.clone(),
+            navigation_providers: self.navigation_providers.clone(),
+            inlay_hint_providers: self.inlay_hint_providers.clone(),
+            stats: Mutex::new(self.stats()),
+        }
+    }
 }
 
 impl<DB: ?Sized + Send + Sync + 'static> fmt::Debug for ExtensionRegistry<DB> {
@@ -110,6 +168,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             code_action_providers: BTreeMap::new(),
             navigation_providers: BTreeMap::new(),
             inlay_hint_providers: BTreeMap::new(),
+            stats: Mutex::new(ExtensionRegistryStats::default()),
         }
     }
 
@@ -121,39 +180,127 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         &mut self.options
     }
 
+    pub fn stats(&self) -> ExtensionRegistryStats {
+        self.stats
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn ensure_stats_entry(&self, kind: &'static str, id: &str) {
+        let mut stats = self
+            .stats
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = stats.map_mut(kind);
+        map.entry(id.to_string()).or_insert_with(ProviderStats::default);
+    }
+
+    fn record_provider_call(
+        &self,
+        kind: &'static str,
+        id: &str,
+        result: Result<(), ProviderLastError>,
+        elapsed: Duration,
+    ) {
+        let mut stats = self
+            .stats
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = stats.map_mut(kind);
+        let entry = if let Some(entry) = map.get_mut(id) {
+            entry
+        } else {
+            map.insert(id.to_string(), ProviderStats::default());
+            map.get_mut(id).expect("just inserted provider stats")
+        };
+
+        entry.calls_total += 1;
+        entry.last_duration = Some(elapsed);
+
+        match result {
+            Ok(()) => {
+                entry.last_ok_at = Some(SystemTime::now());
+                entry.last_error = None;
+            }
+            Err(error) => {
+                match error {
+                    ProviderLastError::Timeout => entry.timeouts_total += 1,
+                    ProviderLastError::Panic => entry.panics_total += 1,
+                }
+                entry.last_error = Some(error);
+            }
+        }
+    }
+
     pub fn register_diagnostic_provider(
         &mut self,
         provider: Arc<dyn DiagnosticProvider<DB>>,
     ) -> Result<(), RegisterError> {
-        register_provider("diagnostic", &mut self.diagnostic_providers, provider)
+        let id = provider.id().to_string();
+        register_provider(
+            PROVIDER_KIND_DIAGNOSTIC,
+            &mut self.diagnostic_providers,
+            provider,
+        )?;
+        self.ensure_stats_entry(PROVIDER_KIND_DIAGNOSTIC, &id);
+        Ok(())
     }
 
     pub fn register_completion_provider(
         &mut self,
         provider: Arc<dyn CompletionProvider<DB>>,
     ) -> Result<(), RegisterError> {
-        register_provider("completion", &mut self.completion_providers, provider)
+        let id = provider.id().to_string();
+        register_provider(
+            PROVIDER_KIND_COMPLETION,
+            &mut self.completion_providers,
+            provider,
+        )?;
+        self.ensure_stats_entry(PROVIDER_KIND_COMPLETION, &id);
+        Ok(())
     }
 
     pub fn register_code_action_provider(
         &mut self,
         provider: Arc<dyn CodeActionProvider<DB>>,
     ) -> Result<(), RegisterError> {
-        register_provider("code_action", &mut self.code_action_providers, provider)
+        let id = provider.id().to_string();
+        register_provider(
+            PROVIDER_KIND_CODE_ACTION,
+            &mut self.code_action_providers,
+            provider,
+        )?;
+        self.ensure_stats_entry(PROVIDER_KIND_CODE_ACTION, &id);
+        Ok(())
     }
 
     pub fn register_navigation_provider(
         &mut self,
         provider: Arc<dyn NavigationProvider<DB>>,
     ) -> Result<(), RegisterError> {
-        register_provider("navigation", &mut self.navigation_providers, provider)
+        let id = provider.id().to_string();
+        register_provider(
+            PROVIDER_KIND_NAVIGATION,
+            &mut self.navigation_providers,
+            provider,
+        )?;
+        self.ensure_stats_entry(PROVIDER_KIND_NAVIGATION, &id);
+        Ok(())
     }
 
     pub fn register_inlay_hint_provider(
         &mut self,
         provider: Arc<dyn InlayHintProvider<DB>>,
     ) -> Result<(), RegisterError> {
-        register_provider("inlay_hint", &mut self.inlay_hint_providers, provider)
+        let id = provider.id().to_string();
+        register_provider(
+            PROVIDER_KIND_INLAY_HINT,
+            &mut self.inlay_hint_providers,
+            provider,
+        )?;
+        self.ensure_stats_entry(PROVIDER_KIND_INLAY_HINT, &id);
+        Ok(())
     }
 
     pub fn diagnostics(
@@ -162,7 +309,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         params: DiagnosticParams,
     ) -> Vec<Diagnostic> {
         let mut out = Vec::new();
-        for (_id, provider) in &self.diagnostic_providers {
+        for (id, provider) in &self.diagnostic_providers {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -174,12 +321,17 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(
+            let started_at = Instant::now();
+            let result = run_with_timeout(
                 self.options.diagnostic_timeout,
                 provider_cancel,
                 move |_token| provider.provide_diagnostics(provider_ctx, params),
-            ) {
+            );
+            let elapsed = started_at.elapsed();
+
+            match result {
                 Ok(mut diagnostics) => {
+                    self.record_provider_call(PROVIDER_KIND_DIAGNOSTIC, id, Ok(()), elapsed);
                     diagnostics.truncate(self.options.max_diagnostics_per_provider);
                     out.extend(diagnostics);
                     if out.len() >= self.options.max_diagnostics {
@@ -188,7 +340,38 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                     }
                 }
                 Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
+                Err(TaskError::DeadlineExceeded(_)) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_DIAGNOSTIC,
+                        id,
+                        Err(ProviderLastError::Timeout),
+                        elapsed,
+                    );
+                    tracing::warn!(
+                        provider_kind = PROVIDER_KIND_DIAGNOSTIC,
+                        provider_id = %id,
+                        timeout = ?self.options.diagnostic_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider timed out"
+                    );
+                    continue;
+                }
+                Err(TaskError::Panicked) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_DIAGNOSTIC,
+                        id,
+                        Err(ProviderLastError::Panic),
+                        elapsed,
+                    );
+                    tracing::error!(
+                        provider_kind = PROVIDER_KIND_DIAGNOSTIC,
+                        provider_id = %id,
+                        timeout = ?self.options.diagnostic_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider panicked"
+                    );
+                    continue;
+                }
             }
         }
 
@@ -201,7 +384,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         params: CompletionParams,
     ) -> Vec<CompletionItem> {
         let mut out = Vec::new();
-        for (_id, provider) in &self.completion_providers {
+        for (id, provider) in &self.completion_providers {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -213,12 +396,17 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(
+            let started_at = Instant::now();
+            let result = run_with_timeout(
                 self.options.completion_timeout,
                 provider_cancel,
                 move |_token| provider.provide_completions(provider_ctx, params),
-            ) {
+            );
+            let elapsed = started_at.elapsed();
+
+            match result {
                 Ok(mut completions) => {
+                    self.record_provider_call(PROVIDER_KIND_COMPLETION, id, Ok(()), elapsed);
                     completions.truncate(self.options.max_completions_per_provider);
                     out.extend(completions);
                     if out.len() >= self.options.max_completions {
@@ -227,7 +415,38 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                     }
                 }
                 Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
+                Err(TaskError::DeadlineExceeded(_)) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_COMPLETION,
+                        id,
+                        Err(ProviderLastError::Timeout),
+                        elapsed,
+                    );
+                    tracing::warn!(
+                        provider_kind = PROVIDER_KIND_COMPLETION,
+                        provider_id = %id,
+                        timeout = ?self.options.completion_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider timed out"
+                    );
+                    continue;
+                }
+                Err(TaskError::Panicked) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_COMPLETION,
+                        id,
+                        Err(ProviderLastError::Panic),
+                        elapsed,
+                    );
+                    tracing::error!(
+                        provider_kind = PROVIDER_KIND_COMPLETION,
+                        provider_id = %id,
+                        timeout = ?self.options.completion_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider panicked"
+                    );
+                    continue;
+                }
             }
         }
 
@@ -240,7 +459,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         params: CodeActionParams,
     ) -> Vec<CodeAction> {
         let mut out = Vec::new();
-        for (_id, provider) in &self.code_action_providers {
+        for (id, provider) in &self.code_action_providers {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -252,12 +471,17 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(
+            let started_at = Instant::now();
+            let result = run_with_timeout(
                 self.options.code_action_timeout,
                 provider_cancel,
                 move |_token| provider.provide_code_actions(provider_ctx, params),
-            ) {
+            );
+            let elapsed = started_at.elapsed();
+
+            match result {
                 Ok(mut actions) => {
+                    self.record_provider_call(PROVIDER_KIND_CODE_ACTION, id, Ok(()), elapsed);
                     actions.truncate(self.options.max_code_actions_per_provider);
                     out.extend(actions);
                     if out.len() >= self.options.max_code_actions {
@@ -266,7 +490,38 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                     }
                 }
                 Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
+                Err(TaskError::DeadlineExceeded(_)) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_CODE_ACTION,
+                        id,
+                        Err(ProviderLastError::Timeout),
+                        elapsed,
+                    );
+                    tracing::warn!(
+                        provider_kind = PROVIDER_KIND_CODE_ACTION,
+                        provider_id = %id,
+                        timeout = ?self.options.code_action_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider timed out"
+                    );
+                    continue;
+                }
+                Err(TaskError::Panicked) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_CODE_ACTION,
+                        id,
+                        Err(ProviderLastError::Panic),
+                        elapsed,
+                    );
+                    tracing::error!(
+                        provider_kind = PROVIDER_KIND_CODE_ACTION,
+                        provider_id = %id,
+                        timeout = ?self.options.code_action_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider panicked"
+                    );
+                    continue;
+                }
             }
         }
 
@@ -279,7 +534,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         params: NavigationParams,
     ) -> Vec<NavigationTarget> {
         let mut out = Vec::new();
-        for (_id, provider) in &self.navigation_providers {
+        for (id, provider) in &self.navigation_providers {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -291,12 +546,17 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(
+            let started_at = Instant::now();
+            let result = run_with_timeout(
                 self.options.navigation_timeout,
                 provider_cancel,
                 move |_token| provider.provide_navigation(provider_ctx, params),
-            ) {
+            );
+            let elapsed = started_at.elapsed();
+
+            match result {
                 Ok(mut targets) => {
+                    self.record_provider_call(PROVIDER_KIND_NAVIGATION, id, Ok(()), elapsed);
                     targets.truncate(self.options.max_navigation_targets_per_provider);
                     out.extend(targets);
                     if out.len() >= self.options.max_navigation_targets {
@@ -305,7 +565,38 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                     }
                 }
                 Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
+                Err(TaskError::DeadlineExceeded(_)) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_NAVIGATION,
+                        id,
+                        Err(ProviderLastError::Timeout),
+                        elapsed,
+                    );
+                    tracing::warn!(
+                        provider_kind = PROVIDER_KIND_NAVIGATION,
+                        provider_id = %id,
+                        timeout = ?self.options.navigation_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider timed out"
+                    );
+                    continue;
+                }
+                Err(TaskError::Panicked) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_NAVIGATION,
+                        id,
+                        Err(ProviderLastError::Panic),
+                        elapsed,
+                    );
+                    tracing::error!(
+                        provider_kind = PROVIDER_KIND_NAVIGATION,
+                        provider_id = %id,
+                        timeout = ?self.options.navigation_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider panicked"
+                    );
+                    continue;
+                }
             }
         }
 
@@ -318,7 +609,7 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         params: InlayHintParams,
     ) -> Vec<InlayHint> {
         let mut out = Vec::new();
-        for (_id, provider) in &self.inlay_hint_providers {
+        for (id, provider) in &self.inlay_hint_providers {
             if ctx.cancel.is_cancelled() {
                 break;
             }
@@ -330,12 +621,17 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(
+            let started_at = Instant::now();
+            let result = run_with_timeout(
                 self.options.inlay_hint_timeout,
                 provider_cancel,
                 move |_token| provider.provide_inlay_hints(provider_ctx, params),
-            ) {
+            );
+            let elapsed = started_at.elapsed();
+
+            match result {
                 Ok(mut hints) => {
+                    self.record_provider_call(PROVIDER_KIND_INLAY_HINT, id, Ok(()), elapsed);
                     hints.truncate(self.options.max_inlay_hints_per_provider);
                     out.extend(hints);
                     if out.len() >= self.options.max_inlay_hints {
@@ -344,7 +640,38 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
                     }
                 }
                 Err(TaskError::Cancelled) => break,
-                Err(TaskError::DeadlineExceeded(_) | TaskError::Panicked) => continue,
+                Err(TaskError::DeadlineExceeded(_)) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_INLAY_HINT,
+                        id,
+                        Err(ProviderLastError::Timeout),
+                        elapsed,
+                    );
+                    tracing::warn!(
+                        provider_kind = PROVIDER_KIND_INLAY_HINT,
+                        provider_id = %id,
+                        timeout = ?self.options.inlay_hint_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider timed out"
+                    );
+                    continue;
+                }
+                Err(TaskError::Panicked) => {
+                    self.record_provider_call(
+                        PROVIDER_KIND_INLAY_HINT,
+                        id,
+                        Err(ProviderLastError::Panic),
+                        elapsed,
+                    );
+                    tracing::error!(
+                        provider_kind = PROVIDER_KIND_INLAY_HINT,
+                        provider_id = %id,
+                        timeout = ?self.options.inlay_hint_timeout,
+                        elapsed = ?elapsed,
+                        "extension provider panicked"
+                    );
+                    continue;
+                }
             }
         }
 
@@ -547,7 +874,7 @@ mod tests {
         struct SlowProvider;
         impl DiagnosticProvider<()> for SlowProvider {
             fn id(&self) -> &str {
-                "slow"
+                "a.slow"
             }
 
             fn provide_diagnostics(
@@ -565,7 +892,7 @@ mod tests {
         struct FastProvider;
         impl DiagnosticProvider<()> for FastProvider {
             fn id(&self) -> &str {
-                "fast"
+                "b.fast"
             }
 
             fn provide_diagnostics(
@@ -601,6 +928,26 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "fast");
+
+        let stats = registry.stats();
+        let slow_stats = stats
+            .diagnostic
+            .get("a.slow")
+            .expect("stats for slow provider");
+        assert_eq!(slow_stats.calls_total, 1);
+        assert_eq!(slow_stats.timeouts_total, 1);
+        assert_eq!(slow_stats.panics_total, 0);
+        assert_eq!(slow_stats.last_error, Some(ProviderLastError::Timeout));
+
+        let fast_stats = stats
+            .diagnostic
+            .get("b.fast")
+            .expect("stats for fast provider");
+        assert_eq!(fast_stats.calls_total, 1);
+        assert_eq!(fast_stats.timeouts_total, 0);
+        assert_eq!(fast_stats.panics_total, 0);
+        assert!(fast_stats.last_ok_at.is_some());
+        assert_eq!(fast_stats.last_error, None);
     }
 
     #[test]
@@ -759,5 +1106,60 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "ok");
+    }
+
+    #[test]
+    fn panicking_provider_increments_stats_and_is_skipped() {
+        struct PanicProvider;
+        impl DiagnosticProvider<()> for PanicProvider {
+            fn id(&self) -> &str {
+                "a.panic"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                panic!("boom");
+            }
+        }
+
+        struct FastProvider;
+        impl DiagnosticProvider<()> for FastProvider {
+            fn id(&self) -> &str {
+                "b.fast"
+            }
+
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
+                vec![diag("fast")]
+            }
+        }
+
+        let mut registry = ExtensionRegistry::default();
+        registry
+            .register_diagnostic_provider(Arc::new(PanicProvider))
+            .unwrap();
+        registry
+            .register_diagnostic_provider(Arc::new(FastProvider))
+            .unwrap();
+
+        let out = registry.diagnostics(ctx(), DiagnosticParams { file: FileId::from_raw(1) });
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].message, "fast");
+
+        let stats = registry.stats();
+        let panic_stats = stats
+            .diagnostic
+            .get("a.panic")
+            .expect("stats for panic provider");
+        assert_eq!(panic_stats.calls_total, 1);
+        assert_eq!(panic_stats.timeouts_total, 0);
+        assert_eq!(panic_stats.panics_total, 1);
+        assert_eq!(panic_stats.last_error, Some(ProviderLastError::Panic));
     }
 }

@@ -12,7 +12,10 @@ mod manifest;
 pub mod wasm;
 
 pub use context::ExtensionContext;
-pub use registry::{ExtensionRegistry, ExtensionRegistryOptions, RegisterError};
+pub use registry::{
+    ExtensionRegistry, ExtensionRegistryOptions, ExtensionRegistryStats, ProviderLastError,
+    ProviderStats, RegisterError,
+};
 pub use traits::{
     CodeActionParams, CodeActionProvider, CompletionParams, CompletionProvider, DiagnosticParams,
     DiagnosticProvider, InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider,
