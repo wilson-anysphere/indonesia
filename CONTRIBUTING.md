@@ -122,10 +122,30 @@ Pushing the tag triggers `.github/workflows/release.yml` which:
 ## Real-world fixture projects (optional)
 
 Some ignored integration tests validate Nova against real OSS Java projects. The fixture repositories
-are not checked into git; they are cloned locally under `test-projects/`.
+are not checked into git; they are cloned locally under `test-projects/`. Pinned revisions are tracked
+in `test-projects/pins.toml` (single source of truth).
 
 ```bash
 ./scripts/clone-test-projects.sh
+```
+
+Run the ignored test suites with:
+
+```bash
+./scripts/run-real-project-tests.sh
+```
+
+To focus on a subset of fixtures:
+
+```bash
+./scripts/clone-test-projects.sh --only guava,spring-petclinic
+./scripts/run-real-project-tests.sh --only guava,spring-petclinic
+```
+
+Optional helper to compile the fixtures with their build toolchain (best-effort sanity check):
+
+```bash
+./scripts/javac-validate.sh
 ```
 
 ## Benchmarks

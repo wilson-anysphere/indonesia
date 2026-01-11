@@ -399,6 +399,12 @@ Always inspect `git diff` after updating snapshots.
 
 ## CI workflows → guarantees mapping
 
+In practice, Nova’s CI splits into:
+
+- **PR/push gates**: `ci.yml`, `perf.yml`, `javac.yml`
+- **Scheduled/manual heavy jobs**: `fuzz.yml`, `real-projects.yml`, `coverage.yml`
+- **Release automation** (not a test gate): `release.yml`
+
 | Workflow | Status | What it runs | Local equivalent |
 |---|---|---|---|
 | `.github/workflows/ci.yml` | in repo | `cargo fmt`, `cargo clippy`, `cargo test` (plus actionlint + VS Code packaging) | See “CI-equivalent smoke run” above |
