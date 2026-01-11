@@ -27,3 +27,12 @@ To clone/update only a subset of fixtures:
 # or:
 NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/clone-test-projects.sh
 ```
+
+## CI
+These fixtures back ignored integration tests and are intentionally excluded
+from normal `cargo test` runs.
+
+The `Real project fixtures` GitHub Actions workflow runs the real-project tests
+on a schedule and can also be triggered manually. For manual runs, you can
+optionally provide a comma-separated `only` input (e.g. `guava,spring-petclinic`)
+to limit which fixtures are exercised.
