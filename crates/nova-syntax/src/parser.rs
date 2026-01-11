@@ -1096,6 +1096,7 @@ impl<'a> Parser<'a> {
                 self.error_here("expected parameter type");
             }
             if self.at(SyntaxKind::Ellipsis) {
+                // Varargs parameter: `String... args`.
                 self.bump();
             }
             self.expect_ident_like("expected parameter name");

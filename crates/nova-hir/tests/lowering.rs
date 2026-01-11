@@ -124,28 +124,29 @@ class Foo {
         .any(|member| matches!(member, nova_hir::item_tree::Member::Type(_))));
 
     assert_eq!(tree.constructors.len(), 1);
-    assert_eq!(tree.constructors[0].name, "Foo");
-    assert_eq!(tree.constructors[0].params.len(), 1);
-    assert_eq!(tree.constructors[0].params[0].ty, "int");
-    assert_eq!(tree.constructors[0].params[0].name, "a");
+    let ctor = tree.constructors.values().next().expect("constructor");
+    assert_eq!(ctor.name, "Foo");
+    assert_eq!(ctor.params.len(), 1);
+    assert_eq!(ctor.params[0].ty, "int");
+    assert_eq!(ctor.params[0].name, "a");
 
-    assert!(tree.initializers.iter().any(|init| init.is_static));
+    assert!(tree.initializers.values().any(|init| init.is_static));
 
     assert_eq!(tree.fields.len(), 1);
-    assert_eq!(tree.fields[0].name, "field");
-    assert!(tree.methods.iter().any(|method| method.name == "value"));
+    assert_eq!(tree.fields.values().next().expect("field").name, "field");
+    assert!(tree.methods.values().any(|method| method.name == "value"));
     assert!(tree
         .methods
-        .iter()
-        .any(|method| method.name == "value" && method.body_range.is_none()));
-    assert!(tree.methods.iter().any(|method| method.name == "bar"));
+        .values()
+        .any(|method| method.name == "value" && method.body.is_none()));
+    assert!(tree.methods.values().any(|method| method.name == "bar"));
 
-    let bar_index = tree
+    let (&bar_ast_id, _) = tree
         .methods
         .iter()
-        .position(|method| method.name == "bar")
+        .find(|(_, method)| method.name == "bar")
         .expect("bar method");
-    let bar_id = nova_hir::ids::MethodId::new(file, bar_index as u32);
+    let bar_id = nova_hir::ids::MethodId::new(file, bar_ast_id);
     let bar_sig = tree.method(bar_id);
     assert_eq!(bar_sig.params.len(), 1);
     assert_eq!(bar_sig.params[0].ty, "int");
@@ -178,7 +179,8 @@ class Foo {
     }
     assert!(call_paths.iter().any(|path| path == "System.out.println"));
 
-    let ctor_id = nova_hir::ids::ConstructorId::new(file, 0);
+    let (&ctor_ast_id, _) = tree.constructors.iter().next().expect("ctor");
+    let ctor_id = nova_hir::ids::ConstructorId::new(file, ctor_ast_id);
     let ctor_body = constructor_body(&db, ctor_id);
     let ctor_local_names: Vec<_> = ctor_body
         .locals
@@ -197,12 +199,12 @@ class Foo {
     }
     assert!(ctor_call_paths.iter().any(|path| path == "bar"));
 
-    let init_index = tree
+    let (&init_ast_id, _) = tree
         .initializers
         .iter()
-        .position(|init| init.is_static)
+        .find(|(_, init)| init.is_static)
         .expect("static initializer");
-    let init_id = nova_hir::ids::InitializerId::new(file, init_index as u32);
+    let init_id = nova_hir::ids::InitializerId::new(file, init_ast_id);
     let init_body = initializer_body(&db, init_id);
     let init_locals: Vec<_> = init_body
         .locals
@@ -242,12 +244,13 @@ enum E {
 
     // Enum constants should not be mis-lowered as fields.
     assert_eq!(tree.fields.len(), 1);
-    assert_eq!(tree.fields[0].name, "field");
+    assert_eq!(tree.fields.values().next().expect("field").name, "field");
 
     assert_eq!(tree.methods.len(), 1);
-    assert_eq!(tree.methods[0].name, "m");
+    assert_eq!(tree.methods.values().next().expect("method").name, "m");
 
-    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let (&method_ast_id, _) = tree.methods.iter().next().expect("method");
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
     let body = body(&db, method_id);
     let local_names: Vec<_> = body
         .locals
@@ -291,10 +294,11 @@ interface I {
     assert_eq!(tree.interface(interface_id).name, "I");
 
     assert_eq!(tree.methods.len(), 1);
-    assert_eq!(tree.methods[0].name, "m");
-    assert!(tree.methods[0].body_range.is_some());
+    let (&method_ast_id, method) = tree.methods.iter().next().expect("method");
+    assert_eq!(method.name, "m");
+    assert!(method.body.is_some());
 
-    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
     let body = body(&db, method_id);
     let local_names: Vec<_> = body
         .locals
@@ -330,10 +334,11 @@ class Foo {
 
     let tree = item_tree(&db, file);
     assert_eq!(tree.methods.len(), 1);
-    assert_eq!(tree.methods[0].name, "id");
-    assert!(tree.methods[0].body_range.is_some());
+    let (&method_ast_id, method) = tree.methods.iter().next().expect("method");
+    assert_eq!(method.name, "id");
+    assert!(method.body.is_some());
 
-    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
     let body = body(&db, method_id);
     assert!(body.locals.is_empty());
 
@@ -411,13 +416,13 @@ class Foo {
 
     let tree = item_tree(&db, file);
     assert_eq!(tree.methods.len(), 1);
-    let method = &tree.methods[0];
+    let (&method_ast_id, method) = tree.methods.iter().next().expect("method");
     assert_eq!(method.name, "m");
     assert_eq!(method.params.len(), 1);
     assert_eq!(method.params[0].ty, "String...");
     assert_eq!(method.params[0].name, "args");
 
-    let method_id = nova_hir::ids::MethodId::new(file, 0);
+    let method_id = nova_hir::ids::MethodId::new(file, method_ast_id);
     let body = body(&db, method_id);
     let mut call_paths = Vec::new();
     for (id, expr) in body.exprs.iter() {
@@ -449,4 +454,109 @@ fn lower_non_sealed_class() {
         _ => panic!("expected class item"),
     };
     assert_eq!(tree.class(class_id).name, "Foo");
+}
+
+fn method_id_by_name(
+    tree: &nova_hir::item_tree::ItemTree,
+    file: FileId,
+    name: &str,
+) -> nova_hir::ids::MethodId {
+    let (&ast_id, _) = tree
+        .methods
+        .iter()
+        .find(|(_, method)| method.name == name)
+        .unwrap_or_else(|| panic!("missing method {name}"));
+    nova_hir::ids::MethodId::new(file, ast_id)
+}
+
+fn field_id_by_name(
+    tree: &nova_hir::item_tree::ItemTree,
+    file: FileId,
+    name: &str,
+) -> nova_hir::ids::FieldId {
+    let (&ast_id, _) = tree
+        .fields
+        .iter()
+        .find(|(_, field)| field.name == name)
+        .unwrap_or_else(|| panic!("missing field {name}"));
+    nova_hir::ids::FieldId::new(file, ast_id)
+}
+
+#[test]
+fn ids_are_stable_under_whitespace_only_edits() {
+    let v1 = r#"
+class Foo {
+    int field;
+
+    void bar() {}
+}
+"#;
+    let v2 = r#"
+
+
+class Foo {
+    int field;
+
+    void bar() {}
+}
+"#;
+
+    let file = FileId::from_raw(0);
+
+    let tree1 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v1)],
+        },
+        file,
+    );
+    let tree2 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v2)],
+        },
+        file,
+    );
+
+    assert_eq!(
+        method_id_by_name(&tree1, file, "bar"),
+        method_id_by_name(&tree2, file, "bar")
+    );
+    assert_eq!(
+        field_id_by_name(&tree1, file, "field"),
+        field_id_by_name(&tree2, file, "field")
+    );
+}
+
+#[test]
+fn ids_may_change_after_structural_edits() {
+    let v1 = r#"
+class Foo {
+    void bar() {}
+}
+"#;
+    let v2 = r#"
+class Foo {
+    void inserted() {}
+    void bar() {}
+}
+"#;
+
+    let file = FileId::from_raw(0);
+
+    let tree1 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v1)],
+        },
+        file,
+    );
+    let tree2 = item_tree(
+        &TestDb {
+            files: vec![Arc::from(v2)],
+        },
+        file,
+    );
+
+    assert_ne!(
+        method_id_by_name(&tree1, file, "bar"),
+        method_id_by_name(&tree2, file, "bar")
+    );
 }

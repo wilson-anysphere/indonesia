@@ -1,4 +1,7 @@
-use crate::hir::{Arena, BinaryOp, Body, Expr, ExprId, LiteralKind, Local, LocalId, Stmt, StmtId};
+use crate::ast_id::{span_to_text_range, AstId, AstIdMap};
+use crate::hir::{
+    Arena, BinaryOp, Body, Expr, ExprId, LiteralKind, Local, LocalId, Stmt, StmtId,
+};
 use crate::ids::{
     AnnotationId, ClassId, ConstructorId, EnumId, FieldId, InitializerId, InterfaceId, MethodId,
     RecordId,
@@ -8,22 +11,32 @@ use crate::item_tree::{
     Member, Method, PackageDecl, Param, Record,
 };
 use nova_syntax::java::ast as syntax;
+use nova_syntax::{JavaParseResult, SyntaxKind};
 use nova_types::Span;
 use nova_vfs::FileId;
 
 #[must_use]
-pub fn lower_item_tree(file: FileId, unit: &syntax::CompilationUnit) -> ItemTree {
-    lower_item_tree_with(file, unit, &mut || {})
+pub fn lower_item_tree(
+    file: FileId,
+    unit: &syntax::CompilationUnit,
+    parse: &JavaParseResult,
+    ast_id_map: &AstIdMap,
+) -> ItemTree {
+    lower_item_tree_with(file, unit, parse, ast_id_map, &mut || {})
 }
 
 #[must_use]
 pub fn lower_item_tree_with(
     file: FileId,
     unit: &syntax::CompilationUnit,
+    parse: &JavaParseResult,
+    ast_id_map: &AstIdMap,
     check_cancelled: &mut dyn FnMut(),
 ) -> ItemTree {
     let mut ctx = ItemTreeLower {
         file,
+        parse,
+        ast_id_map,
         tree: ItemTree::default(),
         check_cancelled,
     };
@@ -33,6 +46,8 @@ pub fn lower_item_tree_with(
 
 struct ItemTreeLower<'a> {
     file: FileId,
+    parse: &'a JavaParseResult,
+    ast_id_map: &'a AstIdMap,
     tree: ItemTree,
     check_cancelled: &'a mut dyn FnMut(),
 }
@@ -75,68 +90,88 @@ impl ItemTreeLower<'_> {
         self.check_cancelled();
         match decl {
             syntax::TypeDecl::Class(class) => {
-                let id = ClassId::new(self.file, self.tree.classes.len() as u32);
-                self.tree.classes.push(Class {
-                    name: class.name.clone(),
-                    name_range: class.name_range,
-                    range: class.range,
-                    body_range: class.body_range,
-                    members: Vec::new(),
-                });
                 let members = self.lower_members(&class.members);
-                self.tree.classes[id.idx()].members = members;
+                let ast_id = self.ast_id_for_name(SyntaxKind::ClassDeclaration, class.name_range);
+                let id = ClassId::new(self.file, ast_id);
+                self.tree.classes.insert(
+                    ast_id,
+                    Class {
+                        name: class.name.clone(),
+                        name_range: class.name_range,
+                        range: class.range,
+                        body_range: class.body_range,
+                        members,
+                    },
+                );
                 Item::Class(id)
             }
             syntax::TypeDecl::Interface(interface) => {
-                let id = InterfaceId::new(self.file, self.tree.interfaces.len() as u32);
-                self.tree.interfaces.push(Interface {
-                    name: interface.name.clone(),
-                    name_range: interface.name_range,
-                    range: interface.range,
-                    body_range: interface.body_range,
-                    members: Vec::new(),
-                });
                 let members = self.lower_members(&interface.members);
-                self.tree.interfaces[id.idx()].members = members;
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::InterfaceDeclaration, interface.name_range);
+                let id = InterfaceId::new(self.file, ast_id);
+                self.tree.interfaces.insert(
+                    ast_id,
+                    Interface {
+                        name: interface.name.clone(),
+                        name_range: interface.name_range,
+                        range: interface.range,
+                        body_range: interface.body_range,
+                        members,
+                    },
+                );
                 Item::Interface(id)
             }
             syntax::TypeDecl::Enum(enm) => {
-                let id = EnumId::new(self.file, self.tree.enums.len() as u32);
-                self.tree.enums.push(Enum {
-                    name: enm.name.clone(),
-                    name_range: enm.name_range,
-                    range: enm.range,
-                    body_range: enm.body_range,
-                    members: Vec::new(),
-                });
                 let members = self.lower_members(&enm.members);
-                self.tree.enums[id.idx()].members = members;
+                let ast_id = self.ast_id_for_name(SyntaxKind::EnumDeclaration, enm.name_range);
+                let id = EnumId::new(self.file, ast_id);
+                self.tree.enums.insert(
+                    ast_id,
+                    Enum {
+                        name: enm.name.clone(),
+                        name_range: enm.name_range,
+                        range: enm.range,
+                        body_range: enm.body_range,
+                        members,
+                    },
+                );
                 Item::Enum(id)
             }
             syntax::TypeDecl::Record(record) => {
-                let id = RecordId::new(self.file, self.tree.records.len() as u32);
-                self.tree.records.push(Record {
-                    name: record.name.clone(),
-                    name_range: record.name_range,
-                    range: record.range,
-                    body_range: record.body_range,
-                    members: Vec::new(),
-                });
                 let members = self.lower_members(&record.members);
-                self.tree.records[id.idx()].members = members;
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::RecordDeclaration, record.name_range);
+                let id = RecordId::new(self.file, ast_id);
+                self.tree.records.insert(
+                    ast_id,
+                    Record {
+                        name: record.name.clone(),
+                        name_range: record.name_range,
+                        range: record.range,
+                        body_range: record.body_range,
+                        members,
+                    },
+                );
                 Item::Record(id)
             }
             syntax::TypeDecl::Annotation(annotation) => {
-                let id = AnnotationId::new(self.file, self.tree.annotations.len() as u32);
-                self.tree.annotations.push(Annotation {
-                    name: annotation.name.clone(),
-                    name_range: annotation.name_range,
-                    range: annotation.range,
-                    body_range: annotation.body_range,
-                    members: Vec::new(),
-                });
                 let members = self.lower_members(&annotation.members);
-                self.tree.annotations[id.idx()].members = members;
+                let ast_id = self.ast_id_for_name(
+                    SyntaxKind::AnnotationTypeDeclaration,
+                    annotation.name_range,
+                );
+                let id = AnnotationId::new(self.file, ast_id);
+                self.tree.annotations.insert(
+                    ast_id,
+                    Annotation {
+                        name: annotation.name.clone(),
+                        name_range: annotation.name_range,
+                        range: annotation.range,
+                        body_range: annotation.body_range,
+                        members,
+                    },
+                );
                 Item::Annotation(id)
             }
         }
@@ -157,17 +192,23 @@ impl ItemTreeLower<'_> {
         self.check_cancelled();
         match member {
             syntax::MemberDecl::Field(field) => {
-                let id = FieldId::new(self.file, self.tree.fields.len() as u32);
-                self.tree.fields.push(Field {
-                    ty: field.ty.text.clone(),
-                    name: field.name.clone(),
-                    range: field.range,
-                    name_range: field.name_range,
-                });
+                let ast_id = self.ast_id_for_name(SyntaxKind::FieldDeclaration, field.name_range);
+                let id = FieldId::new(self.file, ast_id);
+                self.tree.fields.insert(
+                    ast_id,
+                    Field {
+                        ty: field.ty.text.clone(),
+                        name: field.name.clone(),
+                        range: field.range,
+                        name_range: field.name_range,
+                    },
+                );
                 Some(Member::Field(id))
             }
             syntax::MemberDecl::Method(method) => {
-                let id = MethodId::new(self.file, self.tree.methods.len() as u32);
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::MethodDeclaration, method.name_range);
+                let id = MethodId::new(self.file, ast_id);
                 let params = {
                     let mut params = Vec::with_capacity(method.params.len());
                     for param in &method.params {
@@ -176,18 +217,27 @@ impl ItemTreeLower<'_> {
                     }
                     params
                 };
-                self.tree.methods.push(Method {
-                    return_ty: method.return_ty.text.clone(),
-                    name: method.name.clone(),
-                    range: method.range,
-                    name_range: method.name_range,
-                    params,
-                    body_range: method.body.as_ref().map(|block| block.range),
-                });
+                let body = method
+                    .body
+                    .as_ref()
+                    .map(|block| self.ast_id_for_range(SyntaxKind::Block, block.range));
+                self.tree.methods.insert(
+                    ast_id,
+                    Method {
+                        return_ty: method.return_ty.text.clone(),
+                        name: method.name.clone(),
+                        range: method.range,
+                        name_range: method.name_range,
+                        params,
+                        body,
+                    },
+                );
                 Some(Member::Method(id))
             }
             syntax::MemberDecl::Constructor(cons) => {
-                let id = ConstructorId::new(self.file, self.tree.constructors.len() as u32);
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range);
+                let id = ConstructorId::new(self.file, ast_id);
                 let params = {
                     let mut params = Vec::with_capacity(cons.params.len());
                     for param in &cons.params {
@@ -196,26 +246,58 @@ impl ItemTreeLower<'_> {
                     }
                     params
                 };
-                self.tree.constructors.push(Constructor {
-                    name: cons.name.clone(),
-                    range: cons.range,
-                    name_range: cons.name_range,
-                    params,
-                    body_range: cons.body.range,
-                });
+                let body = self.ast_id_for_range(SyntaxKind::Block, cons.body.range);
+                self.tree.constructors.insert(
+                    ast_id,
+                    Constructor {
+                        name: cons.name.clone(),
+                        range: cons.range,
+                        name_range: cons.name_range,
+                        params,
+                        body,
+                    },
+                );
                 Some(Member::Constructor(id))
             }
             syntax::MemberDecl::Initializer(init) => {
-                let id = InitializerId::new(self.file, self.tree.initializers.len() as u32);
-                self.tree.initializers.push(Initializer {
-                    is_static: init.is_static,
-                    range: init.range,
-                    body_range: init.body.range,
-                });
+                let ast_id = self.ast_id_for_range(SyntaxKind::InitializerBlock, init.range);
+                let id = InitializerId::new(self.file, ast_id);
+                let body = self.ast_id_for_range(SyntaxKind::Block, init.body.range);
+                self.tree.initializers.insert(
+                    ast_id,
+                    Initializer {
+                        is_static: init.is_static,
+                        range: init.range,
+                        body,
+                    },
+                );
                 Some(Member::Initializer(id))
             }
             syntax::MemberDecl::Type(decl) => Some(Member::Type(self.lower_type_decl(decl))),
         }
+    }
+
+    fn ast_id_for_range(&self, kind: SyntaxKind, range: Span) -> AstId {
+        let text_range = span_to_text_range(range);
+        if let Some(id) = self.ast_id_map.ast_id_for_ptr(kind, text_range) {
+            return id;
+        }
+
+        let offset = u32::try_from(range.start).expect("range start does not fit in u32");
+        self.ast_id_for_offset(kind, offset)
+            .unwrap_or_else(|| panic!("missing AstId for {kind:?} at {text_range:?}"))
+    }
+
+    fn ast_id_for_name(&self, kind: SyntaxKind, name_range: Span) -> AstId {
+        let offset = u32::try_from(name_range.start).expect("name start does not fit in u32");
+        self.ast_id_for_offset(kind, offset)
+            .unwrap_or_else(|| panic!("missing AstId for {kind:?} at offset {offset}"))
+    }
+
+    fn ast_id_for_offset(&self, kind: SyntaxKind, offset: u32) -> Option<AstId> {
+        let token = self.parse.token_at_offset(offset).right_biased()?;
+        let node = token.parent()?.ancestors().find(|ancestor| ancestor.kind() == kind)?;
+        self.ast_id_map.ast_id(&node)
     }
 }
 

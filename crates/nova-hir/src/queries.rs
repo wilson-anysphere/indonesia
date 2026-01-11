@@ -1,3 +1,4 @@
+use crate::ast_id::AstIdMap;
 use crate::hir::Body;
 use crate::ids::{ConstructorId, InitializerId, MethodId};
 use crate::item_tree::ItemTree;
@@ -20,8 +21,15 @@ pub trait HirDatabase {
 #[must_use]
 pub fn item_tree(db: &dyn HirDatabase, file: FileId) -> Arc<ItemTree> {
     let text = db.file_text(file);
+    let parse_java = nova_syntax::parse_java(&text);
+    let ast_id_map = AstIdMap::new(&parse_java.syntax());
     let parse = nova_syntax::java::parse(&text);
-    Arc::new(lower_item_tree(file, parse.compilation_unit()))
+    Arc::new(lower_item_tree(
+        file,
+        parse.compilation_unit(),
+        &parse_java,
+        &ast_id_map,
+    ))
 }
 
 /// Lower the body of a method into HIR.
@@ -29,11 +37,16 @@ pub fn item_tree(db: &dyn HirDatabase, file: FileId) -> Arc<ItemTree> {
 pub fn body(db: &dyn HirDatabase, method: MethodId) -> Arc<Body> {
     let tree = item_tree(db, method.file);
     let method_data = tree.method(method);
-    let Some(body_range) = method_data.body_range else {
+    let Some(body_id) = method_data.body else {
         return Arc::new(Body::empty(method_data.range));
     };
 
     let text = db.file_text(method.file);
+    let parse_java = nova_syntax::parse_java(&text);
+    let ast_id_map = AstIdMap::new(&parse_java.syntax());
+    let body_range = ast_id_map
+        .span(body_id)
+        .expect("missing body AstId in AstIdMap");
     let block_text = slice_range(&text, body_range);
     let block = nova_syntax::java::parse_block(block_text, body_range.start);
     Arc::new(lower_body(&block))
@@ -44,8 +57,12 @@ pub fn body(db: &dyn HirDatabase, method: MethodId) -> Arc<Body> {
 pub fn constructor_body(db: &dyn HirDatabase, constructor: ConstructorId) -> Arc<Body> {
     let tree = item_tree(db, constructor.file);
     let data = tree.constructor(constructor);
-    let body_range = data.body_range;
     let text = db.file_text(constructor.file);
+    let parse_java = nova_syntax::parse_java(&text);
+    let ast_id_map = AstIdMap::new(&parse_java.syntax());
+    let body_range = ast_id_map
+        .span(data.body)
+        .expect("missing constructor body AstId in AstIdMap");
     let block_text = slice_range(&text, body_range);
     let block = nova_syntax::java::parse_block(block_text, body_range.start);
     Arc::new(lower_body(&block))
@@ -56,8 +73,12 @@ pub fn constructor_body(db: &dyn HirDatabase, constructor: ConstructorId) -> Arc
 pub fn initializer_body(db: &dyn HirDatabase, initializer: InitializerId) -> Arc<Body> {
     let tree = item_tree(db, initializer.file);
     let data = tree.initializer(initializer);
-    let body_range = data.body_range;
     let text = db.file_text(initializer.file);
+    let parse_java = nova_syntax::parse_java(&text);
+    let ast_id_map = AstIdMap::new(&parse_java.syntax());
+    let body_range = ast_id_map
+        .span(data.body)
+        .expect("missing initializer body AstId in AstIdMap");
     let block_text = slice_range(&text, body_range);
     let block = nova_syntax::java::parse_block(block_text, body_range.start);
     Arc::new(lower_body(&block))

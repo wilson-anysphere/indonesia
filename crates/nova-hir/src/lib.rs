@@ -237,6 +237,7 @@ pub mod token_item_tree;
 // Experimental semantic substrate (`ItemTree` + body HIR with stable IDs)
 
 pub mod hir;
+pub mod ast_id;
 pub mod ids;
 pub mod item_tree;
 pub mod lowering;

@@ -1,3 +1,4 @@
+use crate::ast_id::AstId;
 use nova_vfs::FileId;
 use std::fmt;
 
@@ -6,18 +7,13 @@ macro_rules! impl_id {
         #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub struct $name {
             pub file: FileId,
-            pub index: u32,
+            pub ast_id: AstId,
         }
 
         impl $name {
             #[must_use]
-            pub fn new(file: FileId, index: u32) -> Self {
-                Self { file, index }
-            }
-
-            #[must_use]
-            pub fn idx(self) -> usize {
-                self.index as usize
+            pub fn new(file: FileId, ast_id: AstId) -> Self {
+                Self { file, ast_id }
             }
         }
 
@@ -25,8 +21,8 @@ macro_rules! impl_id {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 write!(
                     f,
-                    concat!(stringify!($name), "({:?}, {})"),
-                    self.file, self.index
+                    concat!(stringify!($name), "({:?}, {:?})"),
+                    self.file, self.ast_id
                 )
             }
         }

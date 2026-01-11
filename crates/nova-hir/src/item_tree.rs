@@ -1,8 +1,10 @@
+use crate::ast_id::AstId;
 use crate::ids::{
     AnnotationId, ClassId, ConstructorId, EnumId, FieldId, InitializerId, InterfaceId, MethodId,
     RecordId,
 };
 use nova_types::Span;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemTree {
@@ -10,62 +12,70 @@ pub struct ItemTree {
     pub imports: Vec<Import>,
     pub items: Vec<Item>,
 
-    pub classes: Vec<Class>,
-    pub interfaces: Vec<Interface>,
-    pub enums: Vec<Enum>,
-    pub records: Vec<Record>,
-    pub annotations: Vec<Annotation>,
+    pub classes: BTreeMap<AstId, Class>,
+    pub interfaces: BTreeMap<AstId, Interface>,
+    pub enums: BTreeMap<AstId, Enum>,
+    pub records: BTreeMap<AstId, Record>,
+    pub annotations: BTreeMap<AstId, Annotation>,
 
-    pub fields: Vec<Field>,
-    pub methods: Vec<Method>,
-    pub constructors: Vec<Constructor>,
-    pub initializers: Vec<Initializer>,
+    pub fields: BTreeMap<AstId, Field>,
+    pub methods: BTreeMap<AstId, Method>,
+    pub constructors: BTreeMap<AstId, Constructor>,
+    pub initializers: BTreeMap<AstId, Initializer>,
 }
 
 impl ItemTree {
     #[must_use]
     pub fn class(&self, id: ClassId) -> &Class {
-        &self.classes[id.idx()]
+        self.classes.get(&id.ast_id).expect("invalid ClassId")
     }
 
     #[must_use]
     pub fn interface(&self, id: InterfaceId) -> &Interface {
-        &self.interfaces[id.idx()]
+        self.interfaces
+            .get(&id.ast_id)
+            .expect("invalid InterfaceId")
     }
 
     #[must_use]
     pub fn enum_(&self, id: EnumId) -> &Enum {
-        &self.enums[id.idx()]
+        self.enums.get(&id.ast_id).expect("invalid EnumId")
     }
 
     #[must_use]
     pub fn record(&self, id: RecordId) -> &Record {
-        &self.records[id.idx()]
+        self.records.get(&id.ast_id).expect("invalid RecordId")
     }
 
     #[must_use]
     pub fn annotation(&self, id: AnnotationId) -> &Annotation {
-        &self.annotations[id.idx()]
+        self.annotations
+            .get(&id.ast_id)
+            .expect("invalid AnnotationId")
     }
 
     #[must_use]
     pub fn method(&self, id: MethodId) -> &Method {
-        &self.methods[id.idx()]
+        self.methods.get(&id.ast_id).expect("invalid MethodId")
     }
 
     #[must_use]
     pub fn field(&self, id: FieldId) -> &Field {
-        &self.fields[id.idx()]
+        self.fields.get(&id.ast_id).expect("invalid FieldId")
     }
 
     #[must_use]
     pub fn constructor(&self, id: ConstructorId) -> &Constructor {
-        &self.constructors[id.idx()]
+        self.constructors
+            .get(&id.ast_id)
+            .expect("invalid ConstructorId")
     }
 
     #[must_use]
     pub fn initializer(&self, id: InitializerId) -> &Initializer {
-        &self.initializers[id.idx()]
+        self.initializers
+            .get(&id.ast_id)
+            .expect("invalid InitializerId")
     }
 }
 
@@ -75,15 +85,15 @@ impl Default for ItemTree {
             package: None,
             imports: Vec::new(),
             items: Vec::new(),
-            classes: Vec::new(),
-            interfaces: Vec::new(),
-            enums: Vec::new(),
-            records: Vec::new(),
-            annotations: Vec::new(),
-            fields: Vec::new(),
-            methods: Vec::new(),
-            constructors: Vec::new(),
-            initializers: Vec::new(),
+            classes: BTreeMap::new(),
+            interfaces: BTreeMap::new(),
+            enums: BTreeMap::new(),
+            records: BTreeMap::new(),
+            annotations: BTreeMap::new(),
+            fields: BTreeMap::new(),
+            methods: BTreeMap::new(),
+            constructors: BTreeMap::new(),
+            initializers: BTreeMap::new(),
         }
     }
 }
@@ -262,7 +272,7 @@ pub struct Method {
     pub range: Span,
     pub name_range: Span,
     pub params: Vec<Param>,
-    pub body_range: Option<Span>,
+    pub body: Option<AstId>,
 }
 
 impl PartialEq for Method {
@@ -270,7 +280,7 @@ impl PartialEq for Method {
         self.return_ty == other.return_ty
             && self.name == other.name
             && self.params == other.params
-            && self.body_range.is_some() == other.body_range.is_some()
+            && self.body.is_some() == other.body.is_some()
     }
 }
 
@@ -282,7 +292,7 @@ pub struct Constructor {
     pub range: Span,
     pub name_range: Span,
     pub params: Vec<Param>,
-    pub body_range: Span,
+    pub body: AstId,
 }
 
 impl PartialEq for Constructor {
@@ -297,7 +307,7 @@ impl Eq for Constructor {}
 pub struct Initializer {
     pub is_static: bool,
     pub range: Span,
-    pub body_range: Span,
+    pub body: AstId,
 }
 
 impl PartialEq for Initializer {
