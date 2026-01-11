@@ -1,162 +1,184 @@
-//! v3 router ↔ worker remote RPC transport.
+//! Tokio-based transport/runtime for Nova's v3 remote RPC protocol.
 //!
-//! This crate implements the `nova_remote_proto::v3` wire format:
-//! length-prefixed frames (`u32_le` size + CBOR payload) carrying `WireFrame`s.
-//!
-//! # Tracing / telemetry
-//!
-//! Tracing is emitted under the `nova.remote_rpc` target:
-//!
-//! - `DEBUG` includes handshake start/end (negotiated version + capabilities) and per-call
-//!   completion events (latency, status).
-//! - `TRACE` includes per-packet send/recv events (request id, kind, compression/chunking flags,
-//!   byte sizes).
-//!
-//! Sensitive data is intentionally **never** logged:
-//! - auth tokens are redacted (only presence is recorded),
-//! - packet payload bytes are not recorded in tracing fields.
-//!
-//! To enable detailed logs:
-//!
-//! ```text
-//! RUST_LOG=nova.remote_rpc=trace
-//! ```
-//!
-//! (or use `nova.remote_rpc=debug` for lower volume).
+//! This crate implements:
+//! - u32 length-prefixed framing with strict size checks before allocation
+//! - request id allocation with router/worker parity (router = even, worker = odd)
+//! - multiplexed concurrent in-flight calls
+//! - packet chunking (`WireFrame::PacketChunk`) with interleaving reassembly
+//! - optional `zstd` compression (feature: `zstd`)
+//! - structured remote errors (`nova_remote_proto::v3::RpcError`) and cancellation packets
 
 use std::collections::HashMap;
-use std::fmt;
-use std::io::Read;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::Instant;
+use std::sync::{Arc, RwLock};
 
-use anyhow::{anyhow, Context, Result};
+use bytes::Bytes;
 use nova_remote_proto::v3::{
-    self, Capabilities, CompressionAlgo, HandshakeReject, ProtocolVersion, RejectCode, Request,
-    Response, RouterWelcome, RpcError, RpcErrorCode, RpcPayload, RpcResult, SupportedVersions,
-    WireFrame, WorkerHello,
+    self, Capabilities, CompressionAlgo, HandshakeReject, Notification, ProtocolVersion, RejectCode,
+    Request, Response, RouterWelcome, RpcError as ProtoRpcError, RpcErrorCode, RpcPayload,
+    RpcResult, SupportedVersions, WireFrame, WorkerHello,
 };
-#[cfg(test)]
-use nova_remote_proto::FileText;
-use nova_remote_proto::{Revision, ShardId, WorkerId};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
-use tokio::sync::{mpsc, oneshot, Mutex};
-use tracing::Instrument;
-
-/// The `tracing` target used by this crate.
-pub const TRACE_TARGET: &str = "nova.remote_rpc";
-
-/// Maximum allowed frame size before the handshake completes.
-///
-/// The v3 protocol requires a small, local (non-negotiated) guard here to avoid allocating
-/// attacker-controlled lengths before we've validated the peer's capabilities.
-pub const DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN: u32 = 1024 * 1024; // 1 MiB
+use nova_remote_proto::{Revision, WorkerId};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
 
 pub type RequestId = u64;
 
-#[derive(Debug, Clone)]
-pub struct Negotiated {
-    pub version: ProtocolVersion,
-    pub capabilities: Capabilities,
+/// Which side of the connection we are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RpcRole {
+    Router,
+    Worker,
 }
 
-#[derive(Clone)]
-pub struct ClientConfig {
-    /// Worker-side hello payload (includes supported versions/capabilities).
-    ///
-    /// NOTE: `auth_token` is treated as a bearer secret and must never be logged.
-    pub hello: WorkerHello,
-    pub pre_handshake_max_frame_len: u32,
-    /// Compress payloads larger than this threshold (if zstd is negotiated).
-    pub compression_threshold: usize,
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum RpcTransportError {
+    #[error("I/O error: {message}")]
+    Io { message: String },
+
+    #[error("allocation failed: {message}")]
+    AllocationFailed { message: String },
+
+    #[error("frame too large: {len} > {max}")]
+    FrameTooLarge { len: u32, max: u32 },
+
+    #[error("packet too large: {len} > {max}")]
+    PacketTooLarge { len: usize, max: usize },
+
+    #[error("decode error: {message}")]
+    DecodeError { message: String },
+
+    #[error("encode error: {message}")]
+    EncodeError { message: String },
+
+    #[error("handshake failed: {message}")]
+    HandshakeFailed { message: String },
+
+    #[error("unsupported compression algorithm: {algo:?}")]
+    UnsupportedCompression { algo: CompressionAlgo },
+
+    #[error("protocol violation: {message}")]
+    ProtocolViolation { message: String },
+
+    #[error("connection closed")]
+    ConnectionClosed,
 }
 
-impl fmt::Debug for ClientConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ClientConfig")
-            .field("shard_id", &self.hello.shard_id)
-            .field("auth_present", &self.hello.auth_token.is_some())
-            .field("supported_versions", &self.hello.supported_versions)
-            .field("capabilities", &self.hello.capabilities)
-            .field("cached_index_info", &self.hello.cached_index_info)
-            .field("worker_build", &self.hello.worker_build)
-            .field(
-                "pre_handshake_max_frame_len",
-                &self.pre_handshake_max_frame_len,
-            )
-            .field("compression_threshold", &self.compression_threshold)
-            .finish()
-    }
-}
-
-impl Default for ClientConfig {
-    fn default() -> Self {
-        Self {
-            hello: WorkerHello {
-                shard_id: 0,
-                auth_token: None,
-                supported_versions: SupportedVersions {
-                    min: ProtocolVersion::CURRENT,
-                    max: ProtocolVersion::CURRENT,
-                },
-                capabilities: Capabilities {
-                    supported_compression: vec![CompressionAlgo::Zstd, CompressionAlgo::None],
-                    ..Capabilities::default()
-                },
-                cached_index_info: None,
-                worker_build: None,
-            },
-            pre_handshake_max_frame_len: DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN,
-            compression_threshold: 1024,
+impl From<std::io::Error> for RpcTransportError {
+    fn from(err: std::io::Error) -> Self {
+        RpcTransportError::Io {
+            message: err.to_string(),
         }
     }
 }
 
-#[derive(Clone)]
-pub struct ServerConfig {
+#[derive(Debug, thiserror::Error)]
+pub enum RpcError {
+    #[error(transparent)]
+    Transport(#[from] RpcTransportError),
+
+    #[error("remote error: {0:?}")]
+    Remote(ProtoRpcError),
+
+    #[error("request cancelled")]
+    Canceled,
+
+    #[error("unexpected response payload")]
+    UnexpectedResponse,
+}
+
+type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+
+type RequestHandler =
+    Arc<dyn Fn(RequestContext, Request) -> BoxFuture<Result<Response, ProtoRpcError>> + Send + Sync>;
+type NotificationHandler =
+    Arc<dyn Fn(Notification) -> BoxFuture<()> + Send + Sync + 'static>;
+type CancelHandler = Arc<dyn Fn(RequestId) + Send + Sync + 'static>;
+
+/// A lightweight cancellation token for incoming requests.
+#[derive(Debug, Clone)]
+pub struct CancellationToken {
+    rx: watch::Receiver<bool>,
+}
+
+impl CancellationToken {
+    pub fn is_cancelled(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    pub async fn cancelled(&mut self) {
+        while self.rx.changed().await.is_ok() {
+            if *self.rx.borrow() {
+                return;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestContext {
+    request_id: RequestId,
+    cancel: CancellationToken,
+}
+
+impl RequestContext {
+    pub fn request_id(&self) -> RequestId {
+        self.request_id
+    }
+
+    pub fn cancellation(&self) -> CancellationToken {
+        self.cancel.clone()
+    }
+}
+
+/// Worker-side (client) transport configuration.
+#[derive(Debug, Clone)]
+pub struct WorkerConfig {
+    pub hello: WorkerHello,
+    pub pre_handshake_max_frame_len: u32,
+    pub compression_threshold: usize,
+}
+
+impl WorkerConfig {
+    pub fn new(hello: WorkerHello) -> Self {
+        Self {
+            hello,
+            pre_handshake_max_frame_len: DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN,
+            compression_threshold: DEFAULT_COMPRESSION_THRESHOLD,
+        }
+    }
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self::new(default_worker_hello())
+    }
+}
+
+/// Router-side (server) transport configuration.
+#[derive(Debug, Clone)]
+pub struct RouterConfig {
     pub supported_versions: SupportedVersions,
     pub capabilities: Capabilities,
     pub pre_handshake_max_frame_len: u32,
     pub compression_threshold: usize,
     pub worker_id: WorkerId,
     pub revision: Revision,
-    /// Optional bearer token expected from the worker.
-    ///
-    /// NOTE: This is secret material and must never be logged.
     pub expected_auth_token: Option<String>,
 }
 
-impl fmt::Debug for ServerConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ServerConfig")
-            .field("supported_versions", &self.supported_versions)
-            .field("capabilities", &self.capabilities)
-            .field(
-                "pre_handshake_max_frame_len",
-                &self.pre_handshake_max_frame_len,
-            )
-            .field("compression_threshold", &self.compression_threshold)
-            .field("worker_id", &self.worker_id)
-            .field("revision", &self.revision)
-            .field("auth_required", &self.expected_auth_token.is_some())
-            .finish()
-    }
-}
-
-impl Default for ServerConfig {
+impl Default for RouterConfig {
     fn default() -> Self {
         Self {
             supported_versions: SupportedVersions {
                 min: ProtocolVersion::CURRENT,
                 max: ProtocolVersion::CURRENT,
             },
-            capabilities: Capabilities {
-                supported_compression: vec![CompressionAlgo::Zstd, CompressionAlgo::None],
-                ..Capabilities::default()
-            },
+            capabilities: default_capabilities(),
             pre_handshake_max_frame_len: DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN,
-            compression_threshold: 1024,
+            compression_threshold: DEFAULT_COMPRESSION_THRESHOLD,
             worker_id: 1,
             revision: 0,
             expected_auth_token: None,
@@ -164,656 +186,82 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct IncomingRequest {
-    pub request_id: RequestId,
-    pub request: Request,
-}
-
-pub struct Client {
+#[derive(Clone)]
+pub struct RpcConnection {
     inner: Arc<Inner>,
     welcome: RouterWelcome,
-    incoming: mpsc::UnboundedReceiver<IncomingRequest>,
 }
 
-pub struct Server {
-    inner: Arc<Inner>,
-    incoming: mpsc::UnboundedReceiver<IncomingRequest>,
-    pub peer_shard_id: ShardId,
-    pub peer_auth_present: bool,
-}
-
-/// Cloneable handle for issuing calls / sending responses on a connection.
-///
-/// This is intentionally separate from the request receiver so callers can dedicate a single task
-/// to draining inbound requests while still issuing outbound calls from other tasks.
-#[derive(Clone)]
-pub struct Handle {
-    inner: Arc<Inner>,
-}
-
-struct Inner {
-    writer: Mutex<WriteHalf<BoxedStream>>,
-    pending: Mutex<HashMap<RequestId, oneshot::Sender<RpcResult<Response>>>>,
-    negotiated: Negotiated,
-    compression_threshold: usize,
-    worker_id: WorkerId,
-    shard_id: ShardId,
-    next_request_id: AtomicU64,
-    request_id_step: u64,
-}
-
-type BoxedStream = Box<dyn AsyncReadWrite>;
-
-trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
-
-impl Client {
-    pub async fn connect<S>(stream: S, config: ClientConfig) -> Result<Self>
+impl RpcConnection {
+    pub async fn handshake_as_router<S>(
+        stream: S,
+        expected_auth_token: Option<&str>,
+    ) -> Result<(Self, RouterWelcome), RpcTransportError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let mut stream: BoxedStream = Box::new(stream);
-        let welcome = client_handshake(&mut stream, &config).await?;
-
-        let negotiated = Negotiated {
-            version: welcome.chosen_version,
-            capabilities: welcome.chosen_capabilities.clone(),
-        };
-
-        let (reader, writer) = tokio::io::split(stream);
-        let (incoming_tx, incoming) = mpsc::unbounded_channel();
-        let inner = Arc::new(Inner {
-            writer: Mutex::new(writer),
-            pending: Mutex::new(HashMap::new()),
-            negotiated,
-            compression_threshold: config.compression_threshold,
-            worker_id: welcome.worker_id,
-            shard_id: welcome.shard_id,
-            // Worker-initiated request IDs are odd.
-            next_request_id: AtomicU64::new(1),
-            request_id_step: 2,
-        });
-
-        let inner_clone = inner.clone();
-        tokio::spawn(async move { read_loop(reader, inner_clone, Some(incoming_tx)).await });
-
-        Ok(Self {
-            inner,
-            welcome,
-            incoming,
-        })
+        let mut cfg = RouterConfig::default();
+        cfg.expected_auth_token = expected_auth_token.map(|s| s.to_string());
+        Self::handshake_as_router_with_config(stream, cfg).await
     }
 
-    pub fn welcome(&self) -> &RouterWelcome {
-        &self.welcome
-    }
-
-    pub fn negotiated(&self) -> &Negotiated {
-        &self.inner.negotiated
-    }
-
-    pub fn handle(&self) -> Handle {
-        Handle {
-            inner: self.inner.clone(),
-        }
-    }
-
-    pub async fn recv_request(&mut self) -> Option<IncomingRequest> {
-        self.incoming.recv().await
-    }
-
-    pub async fn respond(
-        &self,
-        request_id: RequestId,
-        response: RpcResult<Response>,
-    ) -> Result<()> {
-        self.handle().respond(request_id, response).await
-    }
-
-    pub async fn respond_ok(&self, request_id: RequestId, value: Response) -> Result<()> {
-        self.handle().respond_ok(request_id, value).await
-    }
-
-    pub async fn respond_err(&self, request_id: RequestId, error: RpcError) -> Result<()> {
-        self.handle().respond_err(request_id, error).await
-    }
-
-    pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
-        self.handle().call(request).await
-    }
-}
-
-impl Server {
-    pub async fn accept<S>(stream: S, config: ServerConfig) -> Result<Self>
+    pub async fn handshake_as_router_with_config<S>(
+        mut stream: S,
+        mut cfg: RouterConfig,
+    ) -> Result<(Self, RouterWelcome), RpcTransportError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let mut stream: BoxedStream = Box::new(stream);
+        sanitize_capabilities(&mut cfg.capabilities);
 
-        let (welcome, peer_shard_id, peer_auth_present) =
-            server_handshake(&mut stream, &config).await?;
-
-        let negotiated = Negotiated {
-            version: welcome.chosen_version,
-            capabilities: welcome.chosen_capabilities.clone(),
+        let hello = match read_wire_frame(&mut stream, cfg.pre_handshake_max_frame_len).await? {
+            WireFrame::Hello(hello) => hello,
+            other => {
+                return Err(RpcTransportError::HandshakeFailed {
+                    message: format!("expected hello frame, got {}", wire_frame_type(&other)),
+                })
+            }
         };
 
-        let (reader, writer) = tokio::io::split(stream);
-        let (incoming_tx, incoming) = mpsc::unbounded_channel();
-
-        let inner = Arc::new(Inner {
-            writer: Mutex::new(writer),
-            pending: Mutex::new(HashMap::new()),
-            negotiated,
-            compression_threshold: config.compression_threshold,
-            worker_id: welcome.worker_id,
-            shard_id: welcome.shard_id,
-            // Router-initiated request IDs are even.
-            next_request_id: AtomicU64::new(2),
-            request_id_step: 2,
-        });
-
-        let inner_clone = inner.clone();
-        tokio::spawn(async move { read_loop(reader, inner_clone, Some(incoming_tx)).await });
-
-        Ok(Self {
-            inner,
-            incoming,
-            peer_shard_id,
-            peer_auth_present,
-        })
-    }
-
-    pub fn negotiated(&self) -> &Negotiated {
-        &self.inner.negotiated
-    }
-
-    pub fn handle(&self) -> Handle {
-        Handle {
-            inner: self.inner.clone(),
-        }
-    }
-
-    pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
-        self.handle().call(request).await
-    }
-
-    pub async fn recv_request(&mut self) -> Option<IncomingRequest> {
-        self.incoming.recv().await
-    }
-
-    pub async fn respond(
-        &self,
-        request_id: RequestId,
-        response: RpcResult<Response>,
-    ) -> Result<()> {
-        self.handle().respond(request_id, response).await
-    }
-
-    pub async fn respond_ok(&self, request_id: RequestId, value: Response) -> Result<()> {
-        self.handle().respond_ok(request_id, value).await
-    }
-
-    pub async fn respond_err(&self, request_id: RequestId, error: RpcError) -> Result<()> {
-        self.handle().respond_err(request_id, error).await
-    }
-}
-
-impl Handle {
-    pub fn negotiated(&self) -> &Negotiated {
-        &self.inner.negotiated
-    }
-
-    pub fn worker_id(&self) -> WorkerId {
-        self.inner.worker_id
-    }
-
-    pub fn shard_id(&self) -> ShardId {
-        self.inner.shard_id
-    }
-
-    pub async fn call(&self, request: Request) -> Result<RpcResult<Response>> {
-        let request_id = self
-            .inner
-            .next_request_id
-            .fetch_add(self.inner.request_id_step, Ordering::Relaxed);
-
-        let request_type = request_type(&request);
-
-        let start =
-            tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
-
-        let span = tracing::debug_span!(
-            target: TRACE_TARGET,
-            "call",
-            worker_id = self.inner.worker_id,
-            shard_id = self.inner.shard_id,
-            request_id,
-            request_type
-        );
-        let parent_span = span.clone();
-        let inner = self.inner.clone();
-        let response = async move {
-            let (tx, rx) = oneshot::channel();
-            {
-                let mut pending = inner.pending.lock().await;
-                pending.insert(request_id, tx);
+        if let Some(expected) = cfg.expected_auth_token.as_deref() {
+            if hello.auth_token.as_deref() != Some(expected) {
+                let reject = HandshakeReject {
+                    code: RejectCode::Unauthorized,
+                    message: "authentication failed".into(),
+                };
+                let _ = write_wire_frame(
+                    &mut stream,
+                    cfg.pre_handshake_max_frame_len,
+                    &WireFrame::Reject(reject),
+                )
+                .await;
+                return Err(RpcTransportError::HandshakeFailed {
+                    message: "authentication failed".into(),
+                });
             }
-
-            if let Err(err) = inner
-                .send_packet(request_id, RpcPayload::Request(request))
-                .await
-            {
-                let mut pending = inner.pending.lock().await;
-                pending.remove(&request_id);
-                return Err(err);
-            }
-
-            rx.await
-                .map_err(|_| anyhow!("connection closed while waiting for response"))
-        }
-        .instrument(span)
-        .await?;
-
-        if let Some(start) = start {
-            let elapsed = start.elapsed();
-            let status = rpc_result_status(&response);
-            let error_code = rpc_result_error_code_str(&response);
-            tracing::debug!(
-                target: TRACE_TARGET,
-                parent: &parent_span,
-                event = "call_complete",
-                worker_id = self.inner.worker_id,
-                shard_id = self.inner.shard_id,
-                request_id,
-                request_type,
-                status,
-                error_code,
-                latency_ms = elapsed.as_secs_f64() * 1000.0
-            );
         }
 
-        Ok(response)
-    }
-
-    pub async fn respond(
-        &self,
-        request_id: RequestId,
-        response: RpcResult<Response>,
-    ) -> Result<()> {
-        self.inner
-            .send_packet(request_id, RpcPayload::Response(response))
-            .await
-    }
-
-    pub async fn respond_ok(&self, request_id: RequestId, value: Response) -> Result<()> {
-        self.respond(request_id, RpcResult::Ok { value }).await
-    }
-
-    pub async fn respond_err(&self, request_id: RequestId, error: RpcError) -> Result<()> {
-        self.respond(request_id, RpcResult::Err { error }).await
-    }
-}
-
-impl Inner {
-    async fn send_packet(&self, request_id: RequestId, payload: RpcPayload) -> Result<()> {
-        let payload_kind = payload_kind(&payload);
-        let request_type = payload_request_type(&payload);
-        let notification_type = payload_notification_type(&payload);
-        let response_status = payload_response_status(&payload);
-        let response_type = payload_response_type(&payload);
-        let error_code = payload_error_code(&payload);
-
-        let uncompressed = encode_payload(&payload)?;
-        let (compression, wire_bytes) = maybe_compress(
-            &self.negotiated.capabilities,
-            self.compression_threshold,
-            &uncompressed,
-        )?;
-        let chunked = self.negotiated.capabilities.supports_chunking
-            && !packet_fits_in_single_frame(
-                &wire_bytes,
-                self.negotiated.capabilities.max_frame_len,
-            );
-
-        tracing::trace!(
-            target: TRACE_TARGET,
-            direction = "send",
-            worker_id = self.worker_id,
-            shard_id = self.shard_id,
-            request_id,
-            payload_kind,
-            request_type,
-            notification_type,
-            response_status,
-            response_type,
-            error_code,
-            compressed = compression != CompressionAlgo::None,
-            chunked,
-            bytes = wire_bytes.len(),
-            uncompressed_bytes = uncompressed.len()
-        );
-
-        let mut writer = self.writer.lock().await;
-        if chunked {
-            write_packet_chunked(
-                &mut *writer,
-                self.negotiated.capabilities.max_frame_len,
-                request_id,
-                compression,
-                wire_bytes,
-            )
-            .await
-        } else {
-            let frame = WireFrame::Packet {
-                id: request_id,
-                compression,
-                data: wire_bytes,
-            };
-            write_wire_frame(
-                &mut *writer,
-                self.negotiated.capabilities.max_frame_len,
-                &frame,
-            )
-            .await
-        }
-    }
-}
-
-fn packet_fits_in_single_frame(data: &[u8], max_frame_len: u32) -> bool {
-    // We're encoding `WireFrame` as CBOR and then prefixing with a u32 length.
-    // The CBOR overhead is small compared to typical payload sizes; we use a
-    // conservative margin to decide whether to try the single-frame path.
-    const WIRE_FRAME_OVERHEAD: usize = 256;
-    data.len() + WIRE_FRAME_OVERHEAD <= max_frame_len as usize
-}
-
-async fn write_packet_chunked(
-    stream: &mut (impl AsyncWrite + Unpin),
-    max_frame_len: u32,
-    request_id: RequestId,
-    compression: CompressionAlgo,
-    data: Vec<u8>,
-) -> Result<()> {
-    let empty = WireFrame::PacketChunk {
-        id: request_id,
-        compression,
-        seq: 0,
-        last: false,
-        data: Vec::new(),
-    };
-    let empty_encoded = v3::encode_wire_frame(&empty).context("encode empty packet chunk")?;
-    // Account for CBOR byte-string length header growth.
-    let chunk_budget = max_frame_len
-        .saturating_sub(empty_encoded.len().try_into().unwrap_or(u32::MAX))
-        .saturating_sub(16) as usize;
-
-    anyhow::ensure!(
-        chunk_budget > 0,
-        "max_frame_len too small for chunked packets: {max_frame_len}"
-    );
-
-    let chunks = data.chunks(chunk_budget);
-    let total_chunks = chunks.len();
-    for (idx, chunk) in chunks.enumerate() {
-        let seq: u32 = idx.try_into().unwrap_or(u32::MAX);
-        let last = idx + 1 == total_chunks;
-        let frame = WireFrame::PacketChunk {
-            id: request_id,
-            compression,
-            seq,
-            last,
-            data: chunk.to_vec(),
-        };
-        write_wire_frame(stream, max_frame_len, &frame).await?;
-    }
-
-    Ok(())
-}
-
-async fn client_handshake(
-    stream: &mut BoxedStream,
-    config: &ClientConfig,
-) -> Result<RouterWelcome> {
-    let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
-
-    tracing::debug!(
-        target: TRACE_TARGET,
-        event = "handshake_start",
-        role = "worker",
-        shard_id = config.hello.shard_id,
-        supported_versions = ?config.hello.supported_versions,
-        capabilities = ?config.hello.capabilities,
-        auth_present = config.hello.auth_token.is_some()
-    );
-
-    write_wire_frame(
-        stream,
-        config.pre_handshake_max_frame_len,
-        &WireFrame::Hello(config.hello.clone()),
-    )
-    .await
-    .map_err(|err| {
-        let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-        tracing::debug!(
-            target: TRACE_TARGET,
-            event = "handshake_end",
-            role = "worker",
-            status = "error",
-            latency_ms,
-            error = %err
-        );
-        err
-    })?;
-
-    let frame = match read_wire_frame(stream, config.pre_handshake_max_frame_len).await {
-        Ok(frame) => frame,
-        Err(err) => {
-            if let Some(start) = start {
-                tracing::debug!(
-                    target: TRACE_TARGET,
-                    event = "handshake_end",
-                    role = "worker",
-                    status = "error",
-                    latency_ms = start.elapsed().as_secs_f64() * 1000.0,
-                    error = %err
-                );
-            } else {
-                tracing::debug!(
-                    target: TRACE_TARGET,
-                    event = "handshake_end",
-                    role = "worker",
-                    status = "error",
-                    error = %err
-                );
-            }
-            return Err(err);
-        }
-    };
-    match frame {
-        WireFrame::Welcome(welcome) => {
-            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-            tracing::debug!(
-                target: TRACE_TARGET,
-                event = "handshake_end",
-                role = "worker",
-                status = "ok",
-                worker_id = welcome.worker_id,
-                shard_id = welcome.shard_id,
-                revision = welcome.revision,
-                negotiated_version = ?welcome.chosen_version,
-                negotiated_capabilities = ?welcome.chosen_capabilities,
-                latency_ms
-            );
-            Ok(welcome)
-        }
-        WireFrame::Reject(reject) => {
-            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-            tracing::debug!(
-                target: TRACE_TARGET,
-                event = "handshake_end",
-                role = "worker",
-                status = "rejected",
-                reject_code = ?reject.code,
-                latency_ms,
-                message = %reject.message
-            );
-
-            Err(anyhow!(
-                "handshake rejected (code={:?}): {}",
-                reject.code,
-                reject.message
-            ))
-        }
-        other => {
-            let frame_type = wire_frame_type(&other);
-            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-            tracing::debug!(
-                target: TRACE_TARGET,
-                event = "handshake_end",
-                role = "worker",
-                status = "error",
-                latency_ms,
-                frame_type
-            );
-            Err(anyhow!("unexpected handshake frame: {frame_type}"))
-        }
-    }
-}
-
-async fn server_handshake(
-    stream: &mut BoxedStream,
-    config: &ServerConfig,
-) -> Result<(RouterWelcome, ShardId, bool)> {
-    let start = tracing::enabled!(target: TRACE_TARGET, tracing::Level::DEBUG).then(Instant::now);
-
-    tracing::debug!(
-        target: TRACE_TARGET,
-        event = "handshake_start",
-        role = "router",
-        supported_versions = ?config.supported_versions,
-        capabilities = ?config.capabilities,
-        auth_required = config.expected_auth_token.is_some()
-    );
-
-    let frame = match read_wire_frame(stream, config.pre_handshake_max_frame_len).await {
-        Ok(frame) => frame,
-        Err(err) => {
-            if let Some(start) = start {
-                tracing::debug!(
-                    target: TRACE_TARGET,
-                    event = "handshake_end",
-                    role = "router",
-                    status = "error",
-                    latency_ms = start.elapsed().as_secs_f64() * 1000.0,
-                    error = %err
-                );
-            } else {
-                tracing::debug!(
-                    target: TRACE_TARGET,
-                    event = "handshake_end",
-                    role = "router",
-                    status = "error",
-                    error = %err
-                );
-            }
-            return Err(err);
-        }
-    };
-    let hello = match frame {
-        WireFrame::Hello(hello) => hello,
-        other => {
-            let frame_type = wire_frame_type(&other);
+        let Some(chosen_version) = cfg
+            .supported_versions
+            .choose_common(&hello.supported_versions)
+        else {
             let reject = HandshakeReject {
-                code: RejectCode::InvalidRequest,
-                message: format!("expected hello, got {frame_type}"),
+                code: RejectCode::UnsupportedVersion,
+                message: "unsupported protocol version".into(),
             };
-            let reject_frame = WireFrame::Reject(reject);
-            let _ =
-                write_wire_frame(stream, config.pre_handshake_max_frame_len, &reject_frame).await;
-            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-            tracing::debug!(
-                target: TRACE_TARGET,
-                event = "handshake_end",
-                role = "router",
-                status = "rejected",
-                reject_code = ?RejectCode::InvalidRequest,
-                latency_ms,
-                message = "expected hello"
-            );
-            return Err(anyhow!(
-                "invalid handshake: expected hello, got {frame_type}"
-            ));
-        }
-    };
-
-    tracing::debug!(
-        target: TRACE_TARGET,
-        event = "handshake_hello",
-        role = "router",
-        shard_id = hello.shard_id,
-        peer_supported_versions = ?hello.supported_versions,
-        peer_capabilities = ?hello.capabilities,
-        peer_auth_present = hello.auth_token.is_some(),
-        cached_index_present = hello.cached_index_info.is_some(),
-        worker_build_present = hello.worker_build.is_some()
-    );
-
-    if let Some(expected) = config.expected_auth_token.as_deref() {
-        let provided = hello.auth_token.as_deref().unwrap_or("");
-        if provided != expected {
-            let reject = HandshakeReject {
-                code: RejectCode::Unauthorized,
-                message: "invalid auth token".to_string(),
-            };
-            write_wire_frame(
-                stream,
-                config.pre_handshake_max_frame_len,
-                &WireFrame::Reject(reject.clone()),
+            let _ = write_wire_frame(
+                &mut stream,
+                cfg.pre_handshake_max_frame_len,
+                &WireFrame::Reject(reject),
             )
-            .await?;
-            let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-            tracing::debug!(
-                target: TRACE_TARGET,
-                event = "handshake_end",
-                role = "router",
-                status = "rejected",
-                reject_code = ?RejectCode::Unauthorized,
-                latency_ms
-            );
-            return Err(anyhow!("handshake rejected: unauthorized"));
-        }
-    }
-
-    let Some(chosen_version) = hello
-        .supported_versions
-        .choose_common(&config.supported_versions)
-    else {
-        let reject = HandshakeReject {
-            code: RejectCode::UnsupportedVersion,
-            message: "no common protocol version".to_string(),
+            .await;
+            return Err(RpcTransportError::HandshakeFailed {
+                message: "unsupported protocol version".into(),
+            });
         };
-        let _ = write_wire_frame(
-            stream,
-            config.pre_handshake_max_frame_len,
-            &WireFrame::Reject(reject),
-        )
-        .await;
-        let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-        tracing::debug!(
-            target: TRACE_TARGET,
-            event = "handshake_end",
-            role = "router",
-            status = "rejected",
-            reject_code = ?RejectCode::UnsupportedVersion,
-            latency_ms
-        );
-        return Err(anyhow!("handshake rejected: unsupported version"));
-    };
 
-    let chosen_capabilities =
-        match negotiate_capabilities(&config.capabilities, &hello.capabilities) {
+        let chosen_capabilities = match negotiate_capabilities(&cfg.capabilities, &hello.capabilities)
+        {
             Ok(caps) => caps,
             Err(err) => {
                 let reject = HandshakeReject {
@@ -821,58 +269,348 @@ async fn server_handshake(
                     message: err.to_string(),
                 };
                 let _ = write_wire_frame(
-                    stream,
-                    config.pre_handshake_max_frame_len,
+                    &mut stream,
+                    cfg.pre_handshake_max_frame_len,
                     &WireFrame::Reject(reject),
                 )
                 .await;
-                let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-                tracing::debug!(
-                    target: TRACE_TARGET,
-                    event = "handshake_end",
-                    role = "router",
-                    status = "rejected",
-                    reject_code = ?RejectCode::InvalidRequest,
-                    latency_ms
-                );
-                return Err(err).context("handshake rejected: incompatible capabilities");
+                return Err(err);
             }
         };
 
-    let welcome = RouterWelcome {
-        worker_id: config.worker_id,
-        shard_id: hello.shard_id,
-        revision: config.revision,
-        chosen_version,
-        chosen_capabilities,
-    };
+        let welcome = RouterWelcome {
+            worker_id: cfg.worker_id,
+            shard_id: hello.shard_id,
+            revision: cfg.revision,
+            chosen_version,
+            chosen_capabilities: chosen_capabilities.clone(),
+        };
 
-    write_wire_frame(
-        stream,
-        config.pre_handshake_max_frame_len,
-        &WireFrame::Welcome(welcome.clone()),
-    )
-    .await?;
+        write_wire_frame(
+            &mut stream,
+            cfg.pre_handshake_max_frame_len,
+            &WireFrame::Welcome(welcome.clone()),
+        )
+        .await?;
 
-    let latency_ms = start.map(|start| start.elapsed().as_secs_f64() * 1000.0);
-    tracing::debug!(
-        target: TRACE_TARGET,
-        event = "handshake_end",
-        role = "router",
-        status = "ok",
-        worker_id = welcome.worker_id,
-        shard_id = welcome.shard_id,
-        revision = welcome.revision,
-        negotiated_version = ?welcome.chosen_version,
-        negotiated_capabilities = ?welcome.chosen_capabilities,
-        peer_auth_present = hello.auth_token.is_some(),
-        latency_ms
-    );
+        let conn = RpcConnection::start(
+            stream,
+            RpcRole::Router,
+            chosen_version,
+            chosen_capabilities,
+            cfg.compression_threshold,
+            welcome.clone(),
+        );
+        Ok((conn, welcome))
+    }
 
-    Ok((welcome, hello.shard_id, hello.auth_token.is_some()))
+    pub async fn handshake_as_worker<S>(
+        stream: S,
+        hello: WorkerHello,
+    ) -> Result<(Self, RouterWelcome), RpcTransportError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        Self::handshake_as_worker_with_config(stream, WorkerConfig::new(hello)).await
+    }
+
+    pub async fn handshake_as_worker_with_config<S>(
+        mut stream: S,
+        mut cfg: WorkerConfig,
+    ) -> Result<(Self, RouterWelcome), RpcTransportError>
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        sanitize_capabilities(&mut cfg.hello.capabilities);
+
+        write_wire_frame(
+            &mut stream,
+            cfg.pre_handshake_max_frame_len,
+            &WireFrame::Hello(cfg.hello.clone()),
+        )
+        .await?;
+
+        let frame = read_wire_frame(&mut stream, cfg.pre_handshake_max_frame_len).await?;
+        match frame {
+            WireFrame::Welcome(welcome) => {
+                let conn = RpcConnection::start(
+                    stream,
+                    RpcRole::Worker,
+                    welcome.chosen_version,
+                    welcome.chosen_capabilities.clone(),
+                    cfg.compression_threshold,
+                    welcome.clone(),
+                );
+                Ok((conn, welcome))
+            }
+            WireFrame::Reject(reject) => Err(RpcTransportError::HandshakeFailed {
+                message: format!("handshake rejected (code={:?}): {}", reject.code, reject.message),
+            }),
+            other => Err(RpcTransportError::HandshakeFailed {
+                message: format!(
+                    "unexpected handshake frame: {}",
+                    wire_frame_type(&other)
+                ),
+            }),
+        }
+    }
+
+    pub fn welcome(&self) -> &RouterWelcome {
+        &self.welcome
+    }
+
+    pub fn negotiated_capabilities(&self) -> &Capabilities {
+        &self.inner.capabilities
+    }
+
+    pub fn negotiated_version(&self) -> ProtocolVersion {
+        self.inner.version
+    }
+
+    pub fn role(&self) -> RpcRole {
+        self.inner.role
+    }
+
+    pub fn set_request_handler<H, Fut>(&self, handler: H)
+    where
+        H: Fn(RequestContext, Request) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Response, ProtoRpcError>> + Send + 'static,
+    {
+        let handler: RequestHandler = Arc::new(move |ctx, req| Box::pin(handler(ctx, req)));
+        *self.inner.request_handler.write().unwrap() = Some(handler);
+    }
+
+    pub fn set_notification_handler<H, Fut>(&self, handler: H)
+    where
+        H: Fn(Notification) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let handler: NotificationHandler = Arc::new(move |n| Box::pin(handler(n)));
+        *self.inner.notification_handler.write().unwrap() = Some(handler);
+    }
+
+    pub fn set_cancel_handler<H>(&self, handler: H)
+    where
+        H: Fn(RequestId) + Send + Sync + 'static,
+    {
+        *self.inner.cancel_handler.write().unwrap() = Some(Arc::new(handler));
+    }
+
+    pub async fn call(&self, request: Request) -> Result<Response, RpcError> {
+        if let Some(err) = self.inner.is_closed().await {
+            return Err(RpcError::Transport(err));
+        }
+
+        let request_id = self.inner.alloc_id();
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut pending = self.inner.pending.lock().await;
+            pending.insert(request_id, tx);
+        }
+
+        if let Err(err) = send_rpc_payload(&self.inner, request_id, RpcPayload::Request(request)).await
+        {
+            let mut pending = self.inner.pending.lock().await;
+            pending.remove(&request_id);
+            return Err(RpcError::Transport(err));
+        }
+
+        match rx.await {
+            Ok(res) => res,
+            Err(_) => Err(RpcError::Transport(RpcTransportError::ConnectionClosed)),
+        }
+    }
+
+    pub async fn notify(&self, notification: Notification) -> Result<(), RpcTransportError> {
+        if let Some(err) = self.inner.is_closed().await {
+            return Err(err);
+        }
+        let id = self.inner.alloc_id();
+        send_rpc_payload(&self.inner, id, RpcPayload::Notification(notification)).await
+    }
+
+    pub async fn cancel(&self, request_id: RequestId) -> Result<(), RpcTransportError> {
+        if let Some(err) = self.inner.is_closed().await {
+            return Err(err);
+        }
+        send_rpc_payload(&self.inner, request_id, RpcPayload::Cancel).await
+    }
+
+    pub async fn shutdown(&self) -> Result<(), RpcTransportError> {
+        self.inner.close(RpcTransportError::ConnectionClosed).await;
+        Ok(())
+    }
+
+    fn start<S>(
+        stream: S,
+        role: RpcRole,
+        version: ProtocolVersion,
+        capabilities: Capabilities,
+        compression_threshold: usize,
+        welcome: RouterWelcome,
+    ) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (tx, rx) = mpsc::channel::<Bytes>(256);
+
+        // Request-id parity rule:
+        // - Router-initiated request IDs are even.
+        // - Worker-initiated request IDs are odd.
+        let next_request_id = match role {
+            RpcRole::Router => 2,
+            RpcRole::Worker => 1,
+        };
+
+        let inner = Arc::new(Inner {
+            role,
+            version,
+            capabilities: capabilities.clone(),
+            compression_threshold,
+            next_request_id: AtomicU64::new(next_request_id),
+            request_id_step: 2,
+            tx,
+            shutdown_tx,
+            closed: tokio::sync::Mutex::new(None),
+            pending: Mutex::new(HashMap::new()),
+            incoming_cancels: Mutex::new(HashMap::new()),
+            request_handler: RwLock::new(None),
+            notification_handler: RwLock::new(None),
+            cancel_handler: RwLock::new(None),
+            max_inflight_chunked_packets: MAX_INFLIGHT_CHUNKED_PACKETS,
+            max_reassembly_bytes: MAX_REASSEMBLY_BYTES,
+        });
+
+        let (read_half, write_half) = tokio::io::split(stream);
+        tokio::spawn(read_loop(read_half, inner.clone(), shutdown_rx.clone()));
+        tokio::spawn(write_loop(write_half, inner.clone(), shutdown_rx, rx));
+
+        Self { inner, welcome }
+    }
 }
 
-fn negotiate_capabilities(router: &Capabilities, worker: &Capabilities) -> Result<Capabilities> {
+struct Inner {
+    role: RpcRole,
+    version: ProtocolVersion,
+    capabilities: Capabilities,
+    compression_threshold: usize,
+    next_request_id: AtomicU64,
+    request_id_step: u64,
+    tx: mpsc::Sender<Bytes>,
+    shutdown_tx: watch::Sender<bool>,
+    closed: tokio::sync::Mutex<Option<RpcTransportError>>,
+
+    pending: Mutex<HashMap<RequestId, oneshot::Sender<Result<Response, RpcError>>>>,
+    incoming_cancels: Mutex<HashMap<RequestId, watch::Sender<bool>>>,
+
+    request_handler: RwLock<Option<RequestHandler>>,
+    notification_handler: RwLock<Option<NotificationHandler>>,
+    cancel_handler: RwLock<Option<CancelHandler>>,
+
+    max_inflight_chunked_packets: usize,
+    max_reassembly_bytes: usize,
+}
+
+impl Inner {
+    fn alloc_id(&self) -> RequestId {
+        loop {
+            let current = self.next_request_id.load(Ordering::Relaxed);
+            let mut next = current.wrapping_add(self.request_id_step);
+            if next == 0 {
+                next = next.wrapping_add(self.request_id_step);
+            }
+            if self
+                .next_request_id
+                .compare_exchange(current, next, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return current;
+            }
+        }
+    }
+
+    async fn close(&self, err: RpcTransportError) {
+        {
+            let mut guard = self.closed.lock().await;
+            if guard.is_some() {
+                return;
+            }
+            *guard = Some(err.clone());
+        }
+
+        let _ = self.shutdown_tx.send(true);
+
+        let mut pending = self.pending.lock().await;
+        for (_, tx) in pending.drain() {
+            let _ = tx.send(Err(RpcError::Transport(err.clone())));
+        }
+    }
+
+    async fn is_closed(&self) -> Option<RpcTransportError> {
+        self.closed.lock().await.clone()
+    }
+}
+
+/// Maximum allowed frame size before the handshake completes.
+///
+/// The v3 protocol requires a small, local (non-negotiated) guard here to avoid allocating
+/// attacker-controlled lengths before we've validated the peer's capabilities.
+pub const DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN: u32 = 1024 * 1024; // 1 MiB
+const DEFAULT_COMPRESSION_THRESHOLD: usize = 1024;
+
+const MAX_INFLIGHT_CHUNKED_PACKETS: usize = 32;
+const MAX_REASSEMBLY_BYTES: usize = 256 * 1024 * 1024;
+
+/// Conservative headroom for CBOR overhead when chunking.
+const CHUNK_OVERHEAD_GUESS: usize = 256;
+
+fn default_worker_hello() -> WorkerHello {
+    WorkerHello {
+        shard_id: 0,
+        auth_token: None,
+        supported_versions: SupportedVersions {
+            min: ProtocolVersion::CURRENT,
+            max: ProtocolVersion::CURRENT,
+        },
+        capabilities: default_capabilities(),
+        cached_index_info: None,
+        worker_build: None,
+    }
+}
+
+fn default_capabilities() -> Capabilities {
+    let mut caps = Capabilities::default();
+    caps.supported_compression = local_supported_compression();
+    caps.supports_cancel = true;
+    caps.supports_chunking = true;
+    caps
+}
+
+fn local_supported_compression() -> Vec<CompressionAlgo> {
+    #[cfg(feature = "zstd")]
+    {
+        return vec![CompressionAlgo::Zstd, CompressionAlgo::None];
+    }
+    #[cfg(not(feature = "zstd"))]
+    {
+        return vec![CompressionAlgo::None];
+    }
+}
+
+fn sanitize_capabilities(caps: &mut Capabilities) {
+    let local = local_supported_compression();
+    caps.supported_compression
+        .retain(|algo| *algo != CompressionAlgo::Unknown && local.contains(algo));
+    if !caps.supported_compression.contains(&CompressionAlgo::None) {
+        caps.supported_compression.push(CompressionAlgo::None);
+    }
+    if caps.supported_compression.is_empty() {
+        caps.supported_compression.push(CompressionAlgo::None);
+    }
+}
+
+fn negotiate_capabilities(router: &Capabilities, worker: &Capabilities) -> Result<Capabilities, RpcTransportError> {
     let max_frame_len = router.max_frame_len.min(worker.max_frame_len);
     let max_packet_len = router.max_packet_len.min(worker.max_packet_len);
     let supports_cancel = router.supports_cancel && worker.supports_cancel;
@@ -890,7 +628,9 @@ fn negotiate_capabilities(router: &Capabilities, worker: &Capabilities) -> Resul
         .collect();
 
     if supported_compression.is_empty() {
-        return Err(anyhow!("no common compression algorithm"));
+        return Err(RpcTransportError::HandshakeFailed {
+            message: "no common compression algorithm".into(),
+        });
     }
 
     Ok(Capabilities {
@@ -906,75 +646,475 @@ async fn write_wire_frame(
     stream: &mut (impl AsyncWrite + Unpin),
     max_frame_len: u32,
     frame: &WireFrame,
-) -> Result<()> {
-    let payload = v3::encode_wire_frame(frame).context("encode wire frame")?;
-    write_wire_frame_bytes(stream, max_frame_len, &payload).await
-}
-
-async fn write_wire_frame_bytes(
-    stream: &mut (impl AsyncWrite + Unpin),
-    max_frame_len: u32,
-    payload: &[u8],
-) -> Result<()> {
+) -> Result<(), RpcTransportError> {
+    let payload = v3::encode_wire_frame(frame).map_err(|err| RpcTransportError::EncodeError {
+        message: err.to_string(),
+    })?;
     let len: u32 = payload
         .len()
         .try_into()
-        .map_err(|_| anyhow!("frame too large"))?;
+        .map_err(|_| RpcTransportError::FrameTooLarge {
+            len: u32::MAX,
+            max: max_frame_len,
+        })?;
     if len > max_frame_len {
-        return Err(anyhow!(
-            "frame too large: {len} bytes (limit {max_frame_len} bytes)"
-        ));
+        return Err(RpcTransportError::FrameTooLarge {
+            len,
+            max: max_frame_len,
+        });
     }
 
-    stream.write_u32_le(len).await.context("write frame len")?;
-    stream
-        .write_all(&payload)
-        .await
-        .context("write frame payload")?;
-    stream.flush().await.context("flush frame")?;
+    stream.write_u32_le(len).await?;
+    stream.write_all(&payload).await?;
+    stream.flush().await?;
     Ok(())
 }
 
 async fn read_wire_frame(
     stream: &mut (impl AsyncRead + Unpin),
     max_frame_len: u32,
-) -> Result<WireFrame> {
-    let len = stream.read_u32_le().await.context("read frame len")?;
+) -> Result<WireFrame, RpcTransportError> {
+    let len = stream.read_u32_le().await?;
     if len > max_frame_len {
-        return Err(anyhow!(
-            "frame too large: {len} bytes (limit {max_frame_len} bytes)"
-        ));
+        return Err(RpcTransportError::FrameTooLarge {
+            len,
+            max: max_frame_len,
+        });
     }
 
-    // Use fallible reservation so allocation failure surfaces as an error rather than aborting the
-    // process.
+    // Reserve fallibly so allocation failure surfaces as an error instead of aborting the process.
     let len_usize = len as usize;
     let mut buf = Vec::new();
-    buf.try_reserve_exact(len_usize)
-        .with_context(|| format!("allocate frame buffer ({len} bytes)"))?;
+    buf.try_reserve_exact(len_usize).map_err(|err| {
+        RpcTransportError::AllocationFailed {
+            message: format!("allocate frame buffer ({len} bytes): {err}"),
+        }
+    })?;
     buf.resize(len_usize, 0);
-    stream
-        .read_exact(&mut buf)
-        .await
-        .context("read frame payload")?;
-    v3::decode_wire_frame(&buf).context("decode wire frame")
+    stream.read_exact(&mut buf).await?;
+    v3::decode_wire_frame(&buf).map_err(|err| RpcTransportError::DecodeError {
+        message: err.to_string(),
+    })
 }
 
-fn encode_payload(payload: &RpcPayload) -> Result<Vec<u8>> {
-    v3::encode_rpc_payload(payload).context("encode rpc payload")
+async fn write_loop<W: AsyncWrite + Unpin + Send + 'static>(
+    mut w: W,
+    inner: Arc<Inner>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    mut rx: mpsc::Receiver<Bytes>,
+) {
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            bytes = rx.recv() => {
+                let Some(bytes) = bytes else { break; };
+                if bytes.len() > inner.capabilities.max_frame_len as usize {
+                    inner.close(RpcTransportError::FrameTooLarge {
+                        len: bytes.len().min(u32::MAX as usize) as u32,
+                        max: inner.capabilities.max_frame_len,
+                    }).await;
+                    break;
+                }
+
+                let len: u32 = match bytes.len().try_into() {
+                    Ok(len) => len,
+                    Err(_) => {
+                        inner.close(RpcTransportError::FrameTooLarge {
+                            len: u32::MAX,
+                            max: inner.capabilities.max_frame_len,
+                        }).await;
+                        break;
+                    }
+                };
+
+                if let Err(err) = w.write_u32_le(len).await {
+                    inner.close(RpcTransportError::from(err)).await;
+                    break;
+                }
+                if let Err(err) = w.write_all(&bytes).await {
+                    inner.close(RpcTransportError::from(err)).await;
+                    break;
+                }
+                if let Err(err) = w.flush().await {
+                    inner.close(RpcTransportError::from(err)).await;
+                    break;
+                }
+            }
+        }
+    }
+
+    let _ = w.shutdown().await;
+}
+
+async fn read_loop<R: AsyncRead + Unpin + Send + 'static>(
+    mut r: R,
+    inner: Arc<Inner>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) {
+    #[derive(Debug)]
+    struct Reassembly {
+        compression: CompressionAlgo,
+        next_seq: u32,
+        buf: Vec<u8>,
+    }
+
+    let mut in_flight: HashMap<RequestId, Reassembly> = HashMap::new();
+    let mut total_bytes: usize = 0;
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    break;
+                }
+            }
+            res = read_wire_frame(&mut r, inner.capabilities.max_frame_len) => {
+                let frame = match res {
+                    Ok(frame) => frame,
+                    Err(err) => {
+                        inner.close(err).await;
+                        break;
+                    }
+                };
+
+                match frame {
+                    WireFrame::Packet { id, compression, data } => {
+                        if let Err(err) = process_packet(&inner, id, compression, data).await {
+                            inner.close(err).await;
+                            break;
+                        }
+                    }
+                    WireFrame::PacketChunk { id, compression, seq, last, data } => {
+                        if !inner.capabilities.supports_chunking {
+                            inner.close(RpcTransportError::ProtocolViolation {
+                                message: "received chunked packet but chunking not negotiated".into(),
+                            }).await;
+                            break;
+                        }
+
+                        if !in_flight.contains_key(&id) {
+                            if in_flight.len() >= inner.max_inflight_chunked_packets {
+                                inner.close(RpcTransportError::ProtocolViolation {
+                                    message: "too many in-flight chunked packets".into(),
+                                }).await;
+                                break;
+                            }
+                            in_flight.insert(id, Reassembly { compression, next_seq: 0, buf: Vec::new() });
+                        }
+
+                        let Some(entry) = in_flight.get_mut(&id) else {
+                            inner.close(RpcTransportError::ProtocolViolation {
+                                message: "missing chunk reassembly entry".into(),
+                            }).await;
+                            break;
+                        };
+
+                        if entry.compression != compression {
+                            inner.close(RpcTransportError::ProtocolViolation {
+                                message: "chunk compression changed mid-stream".into(),
+                            }).await;
+                            break;
+                        }
+
+                        if entry.next_seq != seq {
+                            inner.close(RpcTransportError::ProtocolViolation {
+                                message: format!("chunk seq mismatch for id {id}: expected {}, got {seq}", entry.next_seq),
+                            }).await;
+                            break;
+                        }
+                        entry.next_seq = entry.next_seq.wrapping_add(1);
+
+                        if total_bytes.saturating_add(data.len()) > inner.max_reassembly_bytes {
+                            inner.close(RpcTransportError::ProtocolViolation {
+                                message: "reassembly buffer limit exceeded".into(),
+                            }).await;
+                            break;
+                        }
+                        if entry.buf.len().saturating_add(data.len()) > inner.capabilities.max_packet_len as usize {
+                            inner.close(RpcTransportError::PacketTooLarge {
+                                len: entry.buf.len().saturating_add(data.len()),
+                                max: inner.capabilities.max_packet_len as usize,
+                            }).await;
+                            break;
+                        }
+
+                        entry.buf.extend_from_slice(&data);
+                        total_bytes += data.len();
+
+                        if last {
+                            let entry = in_flight.remove(&id).expect("entry present");
+                            total_bytes = total_bytes.saturating_sub(entry.buf.len());
+                            if let Err(err) = process_packet(&inner, id, entry.compression, entry.buf).await {
+                                inner.close(err).await;
+                                break;
+                            }
+                        }
+                    }
+                    WireFrame::Hello(_) | WireFrame::Welcome(_) | WireFrame::Reject(_) => {
+                        inner.close(RpcTransportError::ProtocolViolation {
+                            message: "unexpected handshake frame after handshake".into(),
+                        }).await;
+                        break;
+                    }
+                    WireFrame::Unknown => {
+                        // Ignore forward-compatible frames.
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn process_packet(
+    inner: &Arc<Inner>,
+    request_id: RequestId,
+    compression: CompressionAlgo,
+    data: Vec<u8>,
+) -> Result<(), RpcTransportError> {
+    if data.len() > inner.capabilities.max_packet_len as usize {
+        return Err(RpcTransportError::PacketTooLarge {
+            len: data.len(),
+            max: inner.capabilities.max_packet_len as usize,
+        });
+    }
+
+    let decoded = maybe_decompress(&inner.capabilities, compression, &data)?;
+    let payload = v3::decode_rpc_payload(&decoded).map_err(|err| RpcTransportError::DecodeError {
+        message: err.to_string(),
+    })?;
+    handle_payload(inner.clone(), request_id, payload).await
+}
+
+async fn handle_payload(
+    inner: Arc<Inner>,
+    request_id: RequestId,
+    payload: RpcPayload,
+) -> Result<(), RpcTransportError> {
+    match payload {
+        RpcPayload::Response(result) => {
+            let tx = {
+                let mut pending = inner.pending.lock().await;
+                pending.remove(&request_id)
+            };
+            if let Some(tx) = tx {
+                let mapped = match result {
+                    RpcResult::Ok { value } => Ok(value),
+                    RpcResult::Err { error } if error.code == RpcErrorCode::Cancelled => {
+                        Err(RpcError::Canceled)
+                    }
+                    RpcResult::Err { error } => Err(RpcError::Remote(error)),
+                    RpcResult::Unknown => Err(RpcError::UnexpectedResponse),
+                };
+                let _ = tx.send(mapped);
+            }
+            Ok(())
+        }
+        RpcPayload::Request(request) => {
+            let handler = inner.request_handler.read().unwrap().clone();
+            let inner_clone = inner.clone();
+            tokio::spawn(async move {
+                let (cancel_tx, cancel_rx) = watch::channel(false);
+                {
+                    let mut map = inner_clone.incoming_cancels.lock().await;
+                    map.insert(request_id, cancel_tx);
+                }
+
+                let ctx = RequestContext {
+                    request_id,
+                    cancel: CancellationToken { rx: cancel_rx },
+                };
+
+                let result = if let Some(handler) = handler {
+                    handler(ctx, request).await
+                } else {
+                    Err(ProtoRpcError {
+                        code: RpcErrorCode::InvalidRequest,
+                        message: "no request handler installed".into(),
+                        retryable: false,
+                        details: None,
+                    })
+                };
+
+                {
+                    let mut map = inner_clone.incoming_cancels.lock().await;
+                    map.remove(&request_id);
+                }
+
+                let payload = match result {
+                    Ok(value) => RpcPayload::Response(RpcResult::Ok { value }),
+                    Err(error) => RpcPayload::Response(RpcResult::Err { error }),
+                };
+
+                if let Err(err) = send_rpc_payload(&inner_clone, request_id, payload).await {
+                    inner_clone.close(err).await;
+                }
+            });
+            Ok(())
+        }
+        RpcPayload::Notification(notification) => {
+            let handler = inner.notification_handler.read().unwrap().clone();
+            if let Some(handler) = handler {
+                tokio::spawn(async move {
+                    handler(notification).await;
+                });
+            }
+            Ok(())
+        }
+        RpcPayload::Cancel => {
+            if inner.capabilities.supports_cancel {
+                {
+                    let map = inner.incoming_cancels.lock().await;
+                    if let Some(tx) = map.get(&request_id) {
+                        let _ = tx.send(true);
+                    }
+                }
+
+                let pending = {
+                    let mut pending = inner.pending.lock().await;
+                    pending.remove(&request_id)
+                };
+                if let Some(tx) = pending {
+                    let _ = tx.send(Err(RpcError::Canceled));
+                }
+
+                let handler = inner.cancel_handler.read().unwrap().clone();
+                if let Some(handler) = handler {
+                    handler(request_id);
+                }
+            }
+            Ok(())
+        }
+        RpcPayload::Unknown => Ok(()),
+    }
+}
+
+async fn send_rpc_payload(
+    inner: &Arc<Inner>,
+    request_id: RequestId,
+    payload: RpcPayload,
+) -> Result<(), RpcTransportError> {
+    if inner.is_closed().await.is_some() {
+        return Err(RpcTransportError::ConnectionClosed);
+    }
+
+    let uncompressed = v3::encode_rpc_payload(&payload).map_err(|err| RpcTransportError::EncodeError {
+        message: err.to_string(),
+    })?;
+    let max_packet_len = inner.capabilities.max_packet_len as usize;
+    if uncompressed.len() > max_packet_len {
+        return Err(RpcTransportError::PacketTooLarge {
+            len: uncompressed.len(),
+            max: max_packet_len,
+        });
+    }
+
+    let (compression, wire_bytes) = maybe_compress(&inner.capabilities, inner.compression_threshold, &uncompressed)?;
+
+    if wire_bytes.len() > max_packet_len {
+        return Err(RpcTransportError::PacketTooLarge {
+            len: wire_bytes.len(),
+            max: max_packet_len,
+        });
+    }
+
+    // First attempt: single Packet frame.
+    let packet_frame = WireFrame::Packet {
+        id: request_id,
+        compression,
+        data: wire_bytes.clone(),
+    };
+    let encoded_packet = v3::encode_wire_frame(&packet_frame).map_err(|err| RpcTransportError::EncodeError {
+        message: err.to_string(),
+    })?;
+
+    if encoded_packet.len() <= inner.capabilities.max_frame_len as usize {
+        inner
+            .tx
+            .send(Bytes::from(encoded_packet))
+            .await
+            .map_err(|_| RpcTransportError::ConnectionClosed)?;
+        return Ok(());
+    }
+
+    if !inner.capabilities.supports_chunking {
+        return Err(RpcTransportError::FrameTooLarge {
+            len: encoded_packet
+                .len()
+                .min(u32::MAX as usize) as u32,
+            max: inner.capabilities.max_frame_len,
+        });
+    }
+
+    let bytes = Bytes::from(wire_bytes);
+    let max_frame_len = inner.capabilities.max_frame_len as usize;
+    let mut offset = 0usize;
+    let mut seq: u32 = 0;
+    let mut base_chunk = max_frame_len.saturating_sub(CHUNK_OVERHEAD_GUESS).max(1);
+
+    while offset < bytes.len() {
+        let remaining = bytes.len() - offset;
+        let mut take = remaining.min(base_chunk);
+
+        // Ensure the encoded chunk frame fits within max_frame_len.
+        let encoded = loop {
+            if take == 0 {
+                return Err(RpcTransportError::ProtocolViolation {
+                    message: "unable to fit packet chunk in negotiated max_frame_len".into(),
+                });
+            }
+            let last = offset + take == bytes.len();
+            let frame = WireFrame::PacketChunk {
+                id: request_id,
+                compression,
+                seq,
+                last,
+                data: bytes.slice(offset..offset + take).to_vec(),
+            };
+            let encoded = v3::encode_wire_frame(&frame).map_err(|err| RpcTransportError::EncodeError {
+                message: err.to_string(),
+            })?;
+            if encoded.len() <= max_frame_len {
+                break encoded;
+            }
+            if take <= 1 {
+                return Err(RpcTransportError::FrameTooLarge {
+                    len: encoded.len().min(u32::MAX as usize) as u32,
+                    max: inner.capabilities.max_frame_len,
+                });
+            }
+            // Reduce a bit and try again.
+            take = take.saturating_sub(128).max(1);
+            base_chunk = base_chunk.min(take);
+        };
+
+        inner
+            .tx
+            .send(Bytes::from(encoded))
+            .await
+            .map_err(|_| RpcTransportError::ConnectionClosed)?;
+
+        offset += take;
+        seq = seq.wrapping_add(1);
+    }
+
+    Ok(())
 }
 
 fn maybe_compress(
     negotiated: &Capabilities,
     threshold: usize,
     uncompressed: &[u8],
-) -> Result<(CompressionAlgo, Vec<u8>)> {
-    if uncompressed.len() > negotiated.max_packet_len as usize {
-        return Err(anyhow!(
-            "payload too large: {} bytes (limit {} bytes)",
-            uncompressed.len(),
-            negotiated.max_packet_len
-        ));
+) -> Result<(CompressionAlgo, Vec<u8>), RpcTransportError> {
+    let max_packet_len = negotiated.max_packet_len as usize;
+    if uncompressed.len() > max_packet_len {
+        return Err(RpcTransportError::PacketTooLarge {
+            len: uncompressed.len(),
+            max: max_packet_len,
+        });
     }
 
     let allow_zstd = negotiated
@@ -982,359 +1122,112 @@ fn maybe_compress(
         .iter()
         .any(|algo| *algo == CompressionAlgo::Zstd);
 
+    #[cfg(not(feature = "zstd"))]
+    let _ = threshold;
+
+    #[cfg(feature = "zstd")]
     if allow_zstd && uncompressed.len() >= threshold {
-        let compressed = zstd::bulk::compress(uncompressed, 3).context("zstd compress")?;
+        let compressed = zstd::bulk::compress(uncompressed, 3).map_err(|err| {
+            RpcTransportError::EncodeError {
+                message: format!("zstd compress failed: {err}"),
+            }
+        })?;
         if compressed.len() < uncompressed.len() {
             return Ok((CompressionAlgo::Zstd, compressed));
         }
     }
 
-    Ok((CompressionAlgo::None, uncompressed.to_vec()))
+    #[cfg(not(feature = "zstd"))]
+    if allow_zstd {
+        // Negotiated Zstd but local build doesn't support it.
+        // We'll fall back to `None` for outbound packets.
+    }
+
+    let mut out = Vec::new();
+    out.try_reserve_exact(uncompressed.len()).map_err(|err| {
+        RpcTransportError::AllocationFailed {
+            message: format!("allocate packet buffer ({} bytes): {err}", uncompressed.len()),
+        }
+    })?;
+    out.extend_from_slice(uncompressed);
+    Ok((CompressionAlgo::None, out))
 }
 
 fn maybe_decompress(
     negotiated: &Capabilities,
     compression: CompressionAlgo,
     data: &[u8],
-) -> Result<Vec<u8>> {
+) -> Result<Vec<u8>, RpcTransportError> {
     let max_packet_len = negotiated.max_packet_len as usize;
+
+    if !negotiated.supported_compression.contains(&compression)
+        && compression != CompressionAlgo::None
+    {
+        return Err(RpcTransportError::UnsupportedCompression { algo: compression });
+    }
+
     match compression {
         CompressionAlgo::None => {
             if data.len() > max_packet_len {
-                return Err(anyhow!(
-                    "payload too large: {} bytes (limit {} bytes)",
-                    data.len(),
-                    max_packet_len
-                ));
+                return Err(RpcTransportError::PacketTooLarge {
+                    len: data.len(),
+                    max: max_packet_len,
+                });
             }
             let mut out = Vec::new();
-            out.try_reserve_exact(data.len())
-                .context("allocate packet buffer")?;
+            out.try_reserve_exact(data.len()).map_err(|err| {
+                RpcTransportError::AllocationFailed {
+                    message: format!("allocate packet buffer ({} bytes): {err}", data.len()),
+                }
+            })?;
             out.extend_from_slice(data);
             Ok(out)
         }
-        CompressionAlgo::Zstd => decompress_zstd_with_limit(data, max_packet_len),
-        CompressionAlgo::Unknown => Err(anyhow!("unsupported compression algorithm: unknown")),
+        CompressionAlgo::Zstd => {
+            #[cfg(feature = "zstd")]
+            {
+                return decompress_zstd_with_limit(data, max_packet_len);
+            }
+            #[cfg(not(feature = "zstd"))]
+            {
+                return Err(RpcTransportError::UnsupportedCompression { algo: compression });
+            }
+        }
+        CompressionAlgo::Unknown => Err(RpcTransportError::UnsupportedCompression { algo: compression }),
     }
 }
 
-fn decompress_zstd_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>> {
-    let mut decoder = zstd::stream::read::Decoder::new(data).context("create zstd decoder")?;
+#[cfg(feature = "zstd")]
+fn decompress_zstd_with_limit(data: &[u8], limit: usize) -> Result<Vec<u8>, RpcTransportError> {
+    use std::io::Read;
+
+    let mut decoder = zstd::stream::read::Decoder::new(data).map_err(|err| RpcTransportError::DecodeError {
+        message: format!("create zstd decoder: {err}"),
+    })?;
     let mut out = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
-        let n = decoder.read(&mut buf).context("read zstd stream")?;
+        let n = decoder.read(&mut buf).map_err(|err| RpcTransportError::DecodeError {
+            message: format!("read zstd stream: {err}"),
+        })?;
         if n == 0 {
             break;
         }
         if out.len() + n > limit {
-            return Err(anyhow!(
-                "decompressed payload too large: {} bytes (limit {} bytes)",
-                out.len() + n,
-                limit
-            ));
+            return Err(RpcTransportError::PacketTooLarge {
+                len: out.len() + n,
+                max: limit,
+            });
         }
-        out.try_reserve(n)
-            .context("allocate decompression buffer")?;
+        out.try_reserve(n).map_err(|err| RpcTransportError::AllocationFailed {
+            message: format!(
+                "allocate decompression buffer ({} bytes): {err}",
+                out.len() + n
+            ),
+        })?;
         out.extend_from_slice(&buf[..n]);
     }
     Ok(out)
-}
-
-async fn read_loop(
-    mut reader: ReadHalf<BoxedStream>,
-    inner: Arc<Inner>,
-    incoming_tx: Option<mpsc::UnboundedSender<IncomingRequest>>,
-) {
-    struct ChunkState {
-        compression: CompressionAlgo,
-        next_seq: u32,
-        data: Vec<u8>,
-    }
-
-    let mut chunked_packets: HashMap<RequestId, ChunkState> = HashMap::new();
-    loop {
-        let frame =
-            match read_wire_frame(&mut reader, inner.negotiated.capabilities.max_frame_len).await {
-                Ok(frame) => frame,
-                Err(err) => {
-                    tracing::debug!(
-                        target: TRACE_TARGET,
-                        event = "read_loop_end",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        error = %err
-                    );
-                    let mut pending = inner.pending.lock().await;
-                    pending.clear();
-                    break;
-                }
-            };
-
-        let (request_id, compression, data, chunked) = match frame {
-            WireFrame::Packet {
-                id,
-                compression,
-                data,
-            } => (id, compression, data, false),
-            WireFrame::PacketChunk {
-                id,
-                compression,
-                seq,
-                last,
-                data,
-            } => {
-                if !inner.negotiated.capabilities.supports_chunking {
-                    tracing::debug!(
-                        target: TRACE_TARGET,
-                        event = "unsupported_chunk",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id = id
-                    );
-                    continue;
-                }
-
-                if let Err(err) = chunked_packets.try_reserve(1) {
-                    tracing::debug!(
-                        target: TRACE_TARGET,
-                        event = "chunk_state_alloc_failed",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id = id,
-                        error = ?err
-                    );
-                    let mut pending = inner.pending.lock().await;
-                    pending.clear();
-                    break;
-                }
-
-                let max_packet_len = inner.negotiated.capabilities.max_packet_len as usize;
-                let entry = chunked_packets.entry(id).or_insert_with(|| ChunkState {
-                    compression,
-                    next_seq: 0,
-                    data: Vec::new(),
-                });
-
-                if entry.compression != compression || entry.next_seq != seq {
-                    tracing::debug!(
-                        target: TRACE_TARGET,
-                        event = "chunk_out_of_order",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id = id,
-                        expected_seq = entry.next_seq,
-                        got_seq = seq
-                    );
-                    chunked_packets.remove(&id);
-                    let mut pending = inner.pending.lock().await;
-                    pending.clear();
-                    break;
-                }
-                entry.next_seq = entry.next_seq.saturating_add(1);
-
-                if entry.data.len() + data.len() > max_packet_len {
-                    tracing::debug!(
-                        target: TRACE_TARGET,
-                        event = "chunk_too_large",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id = id,
-                        current = entry.data.len(),
-                        incoming = data.len(),
-                        max_packet_len
-                    );
-                    chunked_packets.remove(&id);
-                    let mut pending = inner.pending.lock().await;
-                    pending.clear();
-                    break;
-                }
-
-                if let Err(err) = entry.data.try_reserve(data.len()) {
-                    tracing::debug!(
-                        target: TRACE_TARGET,
-                        event = "chunk_data_alloc_failed",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id = id,
-                        current = entry.data.len(),
-                        incoming = data.len(),
-                        error = ?err
-                    );
-                    let mut pending = inner.pending.lock().await;
-                    pending.clear();
-                    break;
-                }
-                entry.data.extend_from_slice(&data);
-
-                if !last {
-                    continue;
-                }
-
-                let Some(entry) = chunked_packets.remove(&id) else {
-                    tracing::debug!(
-                        target: TRACE_TARGET,
-                        event = "chunk_state_missing",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id = id
-                    );
-                    let mut pending = inner.pending.lock().await;
-                    pending.clear();
-                    break;
-                };
-                (id, entry.compression, entry.data, true)
-            }
-            other => {
-                tracing::trace!(
-                    target: TRACE_TARGET,
-                    event = "unexpected_frame",
-                    worker_id = inner.worker_id,
-                    shard_id = inner.shard_id,
-                    frame_type = wire_frame_type(&other)
-                );
-                continue;
-            }
-        };
-
-        let compressed = compression != CompressionAlgo::None;
-        let decoded_bytes =
-            match maybe_decompress(&inner.negotiated.capabilities, compression, &data) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    tracing::debug!(
-                        target: TRACE_TARGET,
-                        event = "decompress_error",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id,
-                        error = %err
-                    );
-                    let mut pending = inner.pending.lock().await;
-                    pending.clear();
-                    break;
-                }
-            };
-
-        let payload: RpcPayload = match v3::decode_rpc_payload(&decoded_bytes) {
-            Ok(payload) => payload,
-            Err(err) => {
-                tracing::debug!(
-                    target: TRACE_TARGET,
-                    event = "decode_error",
-                    worker_id = inner.worker_id,
-                    shard_id = inner.shard_id,
-                    request_id,
-                    error = %err
-                );
-                let mut pending = inner.pending.lock().await;
-                pending.clear();
-                break;
-            }
-        };
-
-        tracing::trace!(
-            target: TRACE_TARGET,
-            direction = "recv",
-            worker_id = inner.worker_id,
-            shard_id = inner.shard_id,
-            request_id,
-            payload_kind = payload_kind(&payload),
-            request_type = payload_request_type(&payload),
-            notification_type = payload_notification_type(&payload),
-            response_status = payload_response_status(&payload),
-            response_type = payload_response_type(&payload),
-            error_code = payload_error_code(&payload),
-            compressed,
-            chunked,
-            bytes = data.len(),
-            uncompressed_bytes = decoded_bytes.len()
-        );
-
-        match payload {
-            RpcPayload::Response(response) => {
-                let tx = {
-                    let mut pending = inner.pending.lock().await;
-                    pending.remove(&request_id)
-                };
-                if let Some(tx) = tx {
-                    let _ = tx.send(response);
-                } else {
-                    tracing::trace!(
-                        target: TRACE_TARGET,
-                        event = "orphan_response",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id
-                    );
-                }
-            }
-            RpcPayload::Request(request) => {
-                if let Some(tx) = incoming_tx.as_ref() {
-                    let _ = tx.send(IncomingRequest {
-                        request_id,
-                        request,
-                    });
-                } else {
-                    tracing::trace!(
-                        target: TRACE_TARGET,
-                        event = "unexpected_request",
-                        worker_id = inner.worker_id,
-                        shard_id = inner.shard_id,
-                        request_id
-                    );
-                }
-            }
-            RpcPayload::Notification(_) | RpcPayload::Cancel | RpcPayload::Unknown => {
-                // Not routed yet; callers can enable `trace` to see the packet metadata.
-            }
-        }
-    }
-}
-
-fn payload_kind(payload: &RpcPayload) -> &'static str {
-    match payload {
-        RpcPayload::Request(_) => "request",
-        RpcPayload::Response(_) => "response",
-        RpcPayload::Notification(_) => "notification",
-        RpcPayload::Cancel => "cancel",
-        RpcPayload::Unknown => "unknown",
-    }
-}
-
-fn payload_request_type(payload: &RpcPayload) -> &'static str {
-    match payload {
-        RpcPayload::Request(request) => request_type(request),
-        _ => "",
-    }
-}
-
-fn payload_notification_type(payload: &RpcPayload) -> &'static str {
-    match payload {
-        RpcPayload::Notification(notification) => notification_type(notification),
-        _ => "",
-    }
-}
-
-fn payload_response_status(payload: &RpcPayload) -> &'static str {
-    match payload {
-        RpcPayload::Response(result) => rpc_result_status(result),
-        _ => "",
-    }
-}
-
-fn payload_response_type(payload: &RpcPayload) -> &'static str {
-    match payload {
-        RpcPayload::Response(RpcResult::Ok { value }) => response_type(value),
-        _ => "",
-    }
-}
-
-fn payload_error_code(payload: &RpcPayload) -> &'static str {
-    match payload {
-        RpcPayload::Response(RpcResult::Err { error }) => rpc_error_code_str(error.code),
-        _ => "",
-    }
 }
 
 fn wire_frame_type(frame: &WireFrame) -> &'static str {
@@ -1348,307 +1241,9 @@ fn wire_frame_type(frame: &WireFrame) -> &'static str {
     }
 }
 
-fn request_type(request: &Request) -> &'static str {
-    match request {
-        Request::LoadFiles { .. } => "load_files",
-        Request::IndexShard { .. } => "index_shard",
-        Request::UpdateFile { .. } => "update_file",
-        Request::GetWorkerStats => "get_worker_stats",
-        Request::Shutdown => "shutdown",
-        Request::Unknown => "unknown",
-    }
-}
-
-fn notification_type(notification: &nova_remote_proto::v3::Notification) -> &'static str {
-    match notification {
-        nova_remote_proto::v3::Notification::CachedIndex(_) => "cached_index",
-        nova_remote_proto::v3::Notification::Unknown => "unknown",
-    }
-}
-
-fn response_type(response: &Response) -> &'static str {
-    match response {
-        Response::Ack => "ack",
-        Response::ShardIndex(_) => "shard_index",
-        Response::WorkerStats(_) => "worker_stats",
-        Response::Shutdown => "shutdown",
-        Response::Unknown => "unknown",
-    }
-}
-
-fn rpc_result_status(result: &RpcResult<Response>) -> &'static str {
-    match result {
-        RpcResult::Ok { .. } => "ok",
-        RpcResult::Err { .. } => "err",
-        RpcResult::Unknown => "unknown",
-    }
-}
-
-fn rpc_result_error_code_str(result: &RpcResult<Response>) -> &'static str {
-    match result {
-        RpcResult::Err { error } => rpc_error_code_str(error.code),
-        _ => "",
-    }
-}
-
-fn rpc_error_code_str(code: RpcErrorCode) -> &'static str {
-    match code {
-        RpcErrorCode::InvalidRequest => "invalid_request",
-        RpcErrorCode::Unauthorized => "unauthorized",
-        RpcErrorCode::UnsupportedVersion => "unsupported_version",
-        RpcErrorCode::TooLarge => "too_large",
-        RpcErrorCode::Cancelled => "cancelled",
-        RpcErrorCode::Internal => "internal",
-        RpcErrorCode::Unknown => "unknown",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
-    use std::sync::Mutex as StdMutex;
-
-    use proptest::prelude::*;
-    use proptest::test_runner::TestRunner;
-    use tracing_subscriber::fmt::MakeWriter;
-    use tracing_subscriber::EnvFilter;
-
-    #[derive(Clone, Default)]
-    struct BufferWriter(Arc<StdMutex<Vec<u8>>>);
-
-    struct BufferGuard(Arc<StdMutex<Vec<u8>>>);
-
-    impl<'a> MakeWriter<'a> for BufferWriter {
-        type Writer = BufferGuard;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            BufferGuard(self.0.clone())
-        }
-    }
-
-    impl io::Write for BufferGuard {
-        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            let mut guard = self.0.lock().unwrap();
-            guard.extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn client_server_roundtrip() -> Result<()> {
-        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-
-        let server_task = tokio::spawn(async move {
-            let mut server = Server::accept(server_stream, ServerConfig::default()).await?;
-            let req = server
-                .recv_request()
-                .await
-                .ok_or_else(|| anyhow!("missing request"))?;
-            assert_eq!(
-                req.request_id % 2,
-                1,
-                "worker-initiated request IDs are odd"
-            );
-            assert!(matches!(req.request, Request::GetWorkerStats));
-            server.respond_ok(req.request_id, Response::Ack).await?;
-            Ok::<_, anyhow::Error>(())
-        });
-
-        let client = Client::connect(client_stream, ClientConfig::default()).await?;
-        let resp = client.call(Request::GetWorkerStats).await?;
-        match resp {
-            RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
-            other => return Err(anyhow!("unexpected response: {other:?}")),
-        }
-
-        server_task.await??;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn router_initiated_roundtrip() -> Result<()> {
-        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-
-        let server_task = tokio::spawn(async move {
-            let server = Server::accept(server_stream, ServerConfig::default()).await?;
-            let resp = server.call(Request::GetWorkerStats).await?;
-            match resp {
-                RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
-                other => return Err(anyhow!("unexpected response: {other:?}")),
-            }
-            Ok::<_, anyhow::Error>(())
-        });
-
-        let mut client = Client::connect(client_stream, ClientConfig::default()).await?;
-        let req = client
-            .recv_request()
-            .await
-            .ok_or_else(|| anyhow!("missing request"))?;
-        assert_eq!(
-            req.request_id % 2,
-            0,
-            "router-initiated request IDs are even"
-        );
-        assert!(matches!(req.request, Request::GetWorkerStats));
-        client.respond_ok(req.request_id, Response::Ack).await?;
-
-        server_task.await??;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn handshake_does_not_log_auth_token() -> Result<()> {
-        let buf = Arc::new(StdMutex::new(Vec::new()));
-        let writer = BufferWriter(buf.clone());
-
-        let subscriber = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("nova.remote_rpc=trace"))
-            .with_writer(writer)
-            .with_ansi(false)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-
-        let secret = "super-secret-token".to_string();
-
-        let mut client_cfg = ClientConfig::default();
-        client_cfg.hello.auth_token = Some(secret.clone());
-
-        let mut server_cfg = ServerConfig::default();
-        server_cfg.expected_auth_token = Some(secret.clone());
-
-        let server_task = tokio::spawn(async move {
-            let _server = Server::accept(server_stream, server_cfg).await?;
-            Ok::<_, anyhow::Error>(())
-        });
-
-        let _client = Client::connect(client_stream, client_cfg).await?;
-        server_task.await??;
-
-        let output = String::from_utf8(buf.lock().unwrap().clone()).context("decode output")?;
-        assert!(
-            !output.contains(&secret),
-            "tracing output unexpectedly contained auth token"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn packet_tracing_does_not_log_payload_contents() -> Result<()> {
-        let buf = Arc::new(StdMutex::new(Vec::new()));
-        let writer = BufferWriter(buf.clone());
-
-        let subscriber = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("nova.remote_rpc=trace"))
-            .with_writer(writer)
-            .with_ansi(false)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-
-        let secret_payload = "very-secret-payload-contents-12345".to_string();
-        let request = Request::LoadFiles {
-            revision: 1,
-            files: vec![FileText {
-                path: "a.java".into(),
-                text: secret_payload.clone(),
-            }],
-        };
-
-        let server_task = tokio::spawn(async move {
-            let mut server = Server::accept(server_stream, ServerConfig::default()).await?;
-            let req = server
-                .recv_request()
-                .await
-                .ok_or_else(|| anyhow!("missing request"))?;
-            assert!(matches!(req.request, Request::LoadFiles { .. }));
-            server.respond_ok(req.request_id, Response::Ack).await?;
-            Ok::<_, anyhow::Error>(())
-        });
-
-        let client = Client::connect(client_stream, ClientConfig::default()).await?;
-        let resp = client.call(request).await?;
-        match resp {
-            RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
-            other => return Err(anyhow!("unexpected response: {other:?}")),
-        }
-
-        server_task.await??;
-
-        let output = String::from_utf8(buf.lock().unwrap().clone()).context("decode output")?;
-        assert!(
-            !output.contains(&secret_payload),
-            "tracing output unexpectedly contained request payload text; output was:\n{output}"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn compression_roundtrip_logs_compressed_packets() -> Result<()> {
-        let buf = Arc::new(StdMutex::new(Vec::new()));
-        let writer = BufferWriter(buf.clone());
-
-        let subscriber = tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::new("nova.remote_rpc=trace"))
-            .with_writer(writer)
-            .with_ansi(false)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-
-        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
-
-        let mut client_cfg = ClientConfig::default();
-        client_cfg.compression_threshold = 1;
-
-        let mut server_cfg = ServerConfig::default();
-        server_cfg.compression_threshold = 1;
-
-        let large_text = "x".repeat(16 * 1024);
-        let request = Request::LoadFiles {
-            revision: 1,
-            files: vec![FileText {
-                path: "a.java".into(),
-                text: large_text,
-            }],
-        };
-
-        let server_task = tokio::spawn(async move {
-            let mut server = Server::accept(server_stream, server_cfg).await?;
-            let req = server
-                .recv_request()
-                .await
-                .ok_or_else(|| anyhow!("missing request"))?;
-            assert!(matches!(req.request, Request::LoadFiles { .. }));
-            server.respond_ok(req.request_id, Response::Ack).await?;
-            Ok::<_, anyhow::Error>(())
-        });
-
-        let client = Client::connect(client_stream, client_cfg).await?;
-        let resp = client.call(request).await?;
-        match resp {
-            RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
-            other => return Err(anyhow!("unexpected response: {other:?}")),
-        }
-
-        server_task.await??;
-
-        let output = String::from_utf8(buf.lock().unwrap().clone()).context("decode output")?;
-        assert!(
-            output.contains("compressed=true"),
-            "expected at least one compressed packet to be logged; output was:\n{output}"
-        );
-
-        Ok(())
-    }
 
     #[test]
     fn read_wire_frame_rejects_oversize_len_prefix_without_allocating() {
@@ -1663,6 +1258,8 @@ mod tests {
             .expect("build tokio runtime");
 
         rt.block_on(async {
+            use tokio::io::AsyncWriteExt as _;
+
             let max_frame_len = 1024u32;
             let len = u32::MAX;
 
@@ -1673,158 +1270,15 @@ mod tests {
             tx.write_all(&bytes).await.expect("write prefix");
             drop(tx);
 
-            let err = read_wire_frame(&mut rx, max_frame_len)
-                .await
-                .expect_err("expected oversize frame error");
-            assert!(
-                err.to_string().contains("frame too large"),
-                "unexpected error: {err:?}"
-            );
-        });
-    }
-
-    #[test]
-    fn read_wire_frame_never_panics_on_random_bytes() {
-        const MAX_FUZZ_INPUT_LEN: usize = 64 * 1024;
-        const MAX_FRAME_LEN: u32 = 64 * 1024;
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build tokio runtime");
-
-        let mut runner = TestRunner::new(ProptestConfig {
-            cases: 64,
-            ..ProptestConfig::default()
-        });
-        runner
-            .run(
-                &proptest::collection::vec(any::<u8>(), 0..=MAX_FUZZ_INPUT_LEN),
-                |bytes| {
-                    rt.block_on(async {
-                        let cap = bytes.len().max(1);
-                        let (mut tx, mut rx) = tokio::io::duplex(cap);
-                        tx.write_all(&bytes)
-                            .await
-                            .expect("write fuzz input to duplex");
-                        drop(tx);
-
-                        let _ = read_wire_frame(&mut rx, MAX_FRAME_LEN).await;
-                    });
-                    Ok(())
-                },
+            let err = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                read_wire_frame(&mut rx, max_frame_len),
             )
-            .unwrap();
-    }
+            .await
+            .expect("read_wire_frame timed out")
+            .expect_err("expected oversize frame error");
 
-    #[test]
-    fn read_loop_never_panics_on_random_bytes() {
-        const MAX_FUZZ_INPUT_LEN: usize = 16 * 1024;
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build tokio runtime");
-
-        let mut runner = TestRunner::new(ProptestConfig {
-            cases: 64,
-            ..ProptestConfig::default()
+            assert!(matches!(err, RpcTransportError::FrameTooLarge { .. }));
         });
-        runner
-            .run(
-                &proptest::collection::vec(any::<u8>(), 0..=MAX_FUZZ_INPUT_LEN),
-                |bytes| {
-                    rt.block_on(async {
-                        // Ensure random bytes cannot trigger large allocations via the length prefix.
-                        let mut caps = Capabilities::default();
-                        caps.max_frame_len = 4096;
-                        caps.max_packet_len = 16 * 1024;
-                        caps.supported_compression =
-                            vec![CompressionAlgo::Zstd, CompressionAlgo::None];
-                        caps.supports_chunking = true;
-
-                        let negotiated = Negotiated {
-                            version: ProtocolVersion::CURRENT,
-                            capabilities: caps,
-                        };
-
-                        let (mut tx, rx) = tokio::io::duplex(bytes.len().max(1));
-                        let stream: BoxedStream = Box::new(rx);
-                        let (reader, writer) = tokio::io::split(stream);
-
-                        let inner = Arc::new(Inner {
-                            writer: Mutex::new(writer),
-                            pending: Mutex::new(HashMap::new()),
-                            negotiated,
-                            compression_threshold: 1024,
-                            worker_id: 0,
-                            shard_id: 0,
-                            next_request_id: AtomicU64::new(1),
-                            request_id_step: 2,
-                        });
-
-                        let task = tokio::spawn(read_loop(reader, inner, None));
-                        tx.write_all(&bytes).await.expect("write fuzz bytes");
-                        drop(tx);
-
-                        assert!(
-                            task.await.is_ok(),
-                            "read_loop task panicked while parsing random bytes"
-                        );
-                    });
-                    Ok(())
-                },
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn maybe_decompress_never_panics_on_random_bytes() {
-        const MAX_FUZZ_INPUT_LEN: usize = 16 * 1024;
-
-        let compression = prop_oneof![
-            Just(CompressionAlgo::None),
-            Just(CompressionAlgo::Zstd),
-            Just(CompressionAlgo::Unknown),
-        ];
-
-        let mut runner = TestRunner::new(ProptestConfig {
-            cases: 64,
-            ..ProptestConfig::default()
-        });
-        runner
-            .run(
-                &(
-                    proptest::collection::vec(any::<u8>(), 0..=MAX_FUZZ_INPUT_LEN),
-                    0u32..=8192u32,
-                    compression,
-                ),
-                |(data, max_packet_len, compression)| {
-                    let mut caps = Capabilities::default();
-                    caps.max_packet_len = max_packet_len;
-
-                    let _ = maybe_decompress(&caps, compression, &data);
-                    Ok(())
-                },
-            )
-            .unwrap();
-    }
-
-    #[test]
-    fn maybe_decompress_zstd_respects_max_packet_len() -> Result<()> {
-        let uncompressed = vec![b'x'; 1025];
-        let compressed = zstd::bulk::compress(&uncompressed, 3).context("compress zstd")?;
-
-        let mut caps = Capabilities::default();
-        caps.max_packet_len = 1024;
-
-        let err = maybe_decompress(&caps, CompressionAlgo::Zstd, &compressed)
-            .expect_err("expected error");
-        assert!(
-            err.to_string().contains("decompressed payload too large"),
-            "unexpected error: {err:?}"
-        );
-
-        Ok(())
     }
 }

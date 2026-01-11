@@ -3,13 +3,18 @@ name = "nova-remote-rpc"
 version.workspace = true
 edition.workspace = true
 
+[features]
+default = []
+zstd = ["dep:zstd"]
+
 [dependencies]
-anyhow.workspace = true
+bytes = "1"
+nova-remote-proto = { path = "../nova-remote-proto" }
+thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
-nova-remote-proto = { path = "../nova-remote-proto" }
-zstd = "0.13"
+
+zstd = { version = "0.13", optional = true }
 
 [dev-dependencies]
-tracing-subscriber.workspace = true
-proptest = "1"
+tokio = { workspace = true, features = ["test-util"] }

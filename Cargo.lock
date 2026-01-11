@@ -4046,12 +4046,11 @@ dependencies = [
 name = "nova-remote-rpc"
 version = "0.1.0"
 dependencies = [
- "anyhow",
+ "bytes",
  "nova-remote-proto",
- "proptest",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "zstd 0.13.3",
 ]
 
