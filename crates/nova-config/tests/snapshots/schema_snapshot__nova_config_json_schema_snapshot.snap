@@ -595,6 +595,16 @@ expression: schema
     },
     "AiPrivacyConfig": {
       "type": "object",
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "anonymize",
+              "anonymize_identifiers"
+            ]
+          }
+        }
+      ],
       "properties": {
         "allow_cloud_code_edits": {
           "description": "Allow AI-assisted code edits (patches / file modifications) when `local_only = false` (cloud mode).\n\nThis is intentionally opt-in because code-edit prompts typically include larger portions of source code and the resulting edits can directly modify project files.",
@@ -986,6 +996,16 @@ expression: schema
     },
     "JdkConfig": {
       "type": "object",
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "home",
+              "jdk_home"
+            ]
+          }
+        }
+      ],
       "properties": {
         "home": {
           "description": "Optional override for the JDK installation to use.\n\nWhen set, JDK discovery will use this path instead of searching `JAVA_HOME` or `java` on `PATH`.",

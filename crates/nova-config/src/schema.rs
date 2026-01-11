@@ -233,6 +233,7 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
     );
 
     allow_deprecated_aliases(schema);
+    disallow_alias_collisions(schema);
 
     // Minor semantic constraints that are easier to express by post-processing the generated schema.
     set_min_items(schema, "GeneratedSourcesConfig", "override_roots", 1);
@@ -274,6 +275,29 @@ fn allow_deprecated_aliases(schema: &mut RootSchema) {
             "type": ["boolean", "null"]
         })),
     );
+}
+
+fn disallow_alias_collisions(schema: &mut RootSchema) {
+    // Serde aliases mean multiple TOML keys deserialize into the same struct field. If users specify
+    // both forms, deserialization fails with a duplicate-field error. Encode the same constraint in
+    // the schema so editor/CI validation can catch it early.
+    disallow_both_required(schema, "JdkConfig", "home", "jdk_home");
+    disallow_both_required(schema, "AiPrivacyConfig", "anonymize", "anonymize_identifiers");
+}
+
+fn disallow_both_required(schema: &mut RootSchema, definition_name: &str, a: &str, b: &str) {
+    let Some(definition) = schema.definitions.get_mut(definition_name) else {
+        return;
+    };
+
+    let Schema::Object(obj) = definition else {
+        return;
+    };
+
+    obj.subschemas()
+        .all_of
+        .get_or_insert_with(Vec::new)
+        .push(schema_from_json(json!({ "not": { "required": [a, b] } })));
 }
 
 fn add_deprecated_property(
