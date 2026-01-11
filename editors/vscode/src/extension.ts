@@ -646,9 +646,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         switch (picked) {
           case 'Open Folder':
-            await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(bundlePath), {
-              forceNewWindow: true,
-            });
+            await vscode.commands.executeCommand('vscode.openFolder', vscode.Uri.file(bundlePath), true);
             break;
           case 'Copy Path':
             await vscode.env.clipboard.writeText(bundlePath);
