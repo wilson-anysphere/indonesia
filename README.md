@@ -183,6 +183,9 @@ Currently pinned fixtures:
 - `guava`
 - `maven-resolver`
 
+For more details (including running only a subset of fixtures and pinned revisions), see:
+[`test-projects/README.md`](./test-projects/README.md).
+
 ### Download / update fixtures
 
 ```bash
