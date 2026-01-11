@@ -1,0 +1,17 @@
+class UnaryOps{
+int m(int x){
+return -x;
+}
+
+int n(int x,int y){
+return x*-y + -1;
+}
+
+void call(int x,int y){
+foo(-x,+x,x*-y);
+}
+
+void foo(int a,int b,int c){
+}
+}
+

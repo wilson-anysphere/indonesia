@@ -1,0 +1,14 @@
+import java.util.*;
+
+class  Generics{
+Map<String,List<Integer>>map=new HashMap<String,List<Integer>>();
+
+public <T extends Comparable<T>>T id(T x){return x;}
+
+void m(){
+List<List<String>>list=new ArrayList<List<String>>();
+Collections.<String>emptyList();
+var keys = map.entrySet().stream().map(Map.Entry::getKey).toList();
+}
+}
+

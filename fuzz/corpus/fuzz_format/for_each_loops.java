@@ -1,0 +1,11 @@
+import java.util.*;
+
+class ForEach{
+void m(List<String>xs){
+for(String s:xs){System.out.println(s);}
+for(var t : xs){
+System.out.println(t);
+}
+}
+}
+
