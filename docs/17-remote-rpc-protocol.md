@@ -323,7 +323,8 @@ Recommended meanings:
 
 ### 4.7 Authentication token handling
 
-`Hello.auth_token` is an **optional** shared-secret bearer token:
+`WorkerHello.auth_token` (the `WireFrame::Hello` body field) is an **optional** shared-secret bearer
+token:
 
 - If the router is configured without an expected token, it SHOULD ignore the worker token.
 - If the router is configured with an expected token:
