@@ -13,10 +13,19 @@ use crate::framework_cache;
 
 const MAX_CACHED_ROOTS: usize = 32;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct CacheEntry<V> {
     fingerprint: u64,
     value: Arc<V>,
+}
+
+impl<V> Clone for CacheEntry<V> {
+    fn clone(&self) -> Self {
+        Self {
+            fingerprint: self.fingerprint,
+            value: Arc::clone(&self.value),
+        }
+    }
 }
 
 #[derive(Debug)]

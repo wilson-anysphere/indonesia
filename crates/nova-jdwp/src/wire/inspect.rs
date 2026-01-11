@@ -287,7 +287,7 @@ pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<Ob
 
             if let Some(map_id) = map_id {
                 let map_type_id = match jdwp.object_reference_reference_type(map_id).await {
-                    Ok(id) => id,
+                    Ok((_ref_type_tag, id)) => id,
                     Err(_) => {
                         return Ok(ObjectPreview {
                             runtime_type,
@@ -419,7 +419,7 @@ async fn instance_fields(
     jdwp: &JdwpClient,
     object_id: ObjectId,
 ) -> Result<Vec<(String, JdwpValue, Option<String>)>> {
-    let type_id = jdwp.object_reference_reference_type(object_id).await?;
+    let (_ref_type_tag, type_id) = jdwp.object_reference_reference_type(object_id).await?;
     instance_fields_with_type(jdwp, object_id, type_id).await
 }
 
@@ -456,7 +456,7 @@ async fn array_list_children(
     let sample_len = size.min(ARRAY_CHILD_SAMPLE);
     if array_id != 0 && sample_len > 0 {
         let element_type = match jdwp.object_reference_reference_type(array_id).await {
-            Ok(array_type) => jdwp
+            Ok((_ref_type_tag, array_type)) => jdwp
                 .reference_type_signature_cached(array_type)
                 .await
                 .ok()
@@ -579,7 +579,7 @@ async fn hash_set_children(
     };
 
     let map_type_id = match jdwp.object_reference_reference_type(map_id).await {
-        Ok(id) => id,
+        Ok((_ref_type_tag, id)) => id,
         Err(_) => return Ok(None),
     };
     let Some((size, entries)) = hashmap_entries(jdwp, map_id, map_type_id, ARRAY_CHILD_SAMPLE).await
@@ -615,7 +615,7 @@ async fn map_key_display(jdwp: &JdwpClient, key: &JdwpValue) -> String {
             }
 
             let is_string = match jdwp.object_reference_reference_type(*id).await {
-                Ok(type_id) => jdwp
+                Ok((_ref_type_tag, type_id)) => jdwp
                     .reference_type_signature_cached(type_id)
                     .await
                     .map(|sig| sig == "Ljava/lang/String;")
