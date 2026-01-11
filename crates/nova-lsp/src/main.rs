@@ -877,7 +877,7 @@ fn handle_code_action(
                             .filter(|sym| sym.file == uri.as_str())
                             .filter(|sym| sym.kind == SymbolKind::Method)
                             .filter(|sym| {
-                                offset >= sym.decl_range.start && offset < sym.decl_range.end
+                                offset >= sym.name_range.start && offset <= sym.name_range.end
                             })
                             .min_by_key(|sym| sym.decl_range.len())
                             .map(|sym| sym.id);
