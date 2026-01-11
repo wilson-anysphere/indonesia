@@ -94,6 +94,12 @@ cargo test -p nova-cli --test real_projects -- --include-ignored
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 
+# Docs consistency checks (CI runs this)
+python3 scripts/check-docs-consistency.py
+
+# Crate dependency boundary check (CI runs this; ADR 0007)
+./scripts/check-deps.sh
+
 # Lint GitHub Actions workflows (CI runs actionlint)
 # https://github.com/rhysd/actionlint
 actionlint
@@ -224,6 +230,7 @@ git diff --exit-code
 cd editors/vscode
 npm ci
 npm run compile
+npm test
 ```
 
 Package a `.vsix` (also runs version sync):

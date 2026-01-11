@@ -22,12 +22,17 @@ If you’re looking for *why* we test at each layer, start with the conceptual c
 From the repo root:
 
 ```bash
+# Lint job (docs + dependency boundaries + clippy)
+python3 scripts/check-docs-consistency.py
 cargo fmt --all -- --check
+./scripts/check-deps.sh
 cargo clippy --all-targets --all-features -- -D warnings
+
+# Test job (CI runs this on ubuntu/macos/windows)
 cargo test
 ```
 
-This matches `.github/workflows/ci.yml` (Rust job).
+This matches `.github/workflows/ci.yml` (lint + test jobs).
 
 `ci.yml` also runs:
 
@@ -40,11 +45,11 @@ To run those locally:
 # workflow linting (install actionlint first: https://github.com/rhysd/actionlint)
 actionlint
 
-# VS Code extension packaging (also checks version sync)
+# VS Code extension packaging + tests (also checks version sync)
 # CI uses Node.js 20 (see `.github/workflows/ci.yml`).
 ./scripts/sync-versions.sh
 git diff --exit-code
-(cd editors/vscode && npm ci && npm run package)
+(cd editors/vscode && npm ci && npm test && npm run package)
 ```
 
 ## Full PR gate run (requires a JDK)
@@ -53,7 +58,9 @@ Nova’s PR gates include `ci.yml`, `perf.yml`, and `javac.yml`. To run the same
 
 ```bash
 # ci.yml (rust)
+python3 scripts/check-docs-consistency.py
 cargo fmt --all -- --check
+./scripts/check-deps.sh
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 
@@ -64,7 +71,7 @@ actionlint
 # CI uses Node.js 20 (see `.github/workflows/ci.yml`).
 ./scripts/sync-versions.sh
 git diff --exit-code
-(cd editors/vscode && npm ci && npm run package)
+(cd editors/vscode && npm ci && npm test && npm run package)
 
 # javac.yml (requires `javac` on PATH; JDK 17+ recommended)
 cargo test -p nova-syntax --test javac_corpus
