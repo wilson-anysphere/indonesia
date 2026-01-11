@@ -14,7 +14,6 @@ rowan = "0.15.17"
 text-size = "1.1.1"
 thiserror = { workspace = true }
 unicode-ident = "1"
-thiserror = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.5"
