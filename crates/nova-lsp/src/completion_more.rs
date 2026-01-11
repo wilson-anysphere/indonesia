@@ -46,7 +46,7 @@ pub struct CompletionMoreConfig {
 impl CompletionMoreConfig {
     pub fn from_provider_config(config: &nova_config::AiProviderConfig) -> Self {
         Self {
-            ai_concurrency: config.concurrency,
+            ai_concurrency: config.effective_concurrency(),
             ..Self::default()
         }
     }
