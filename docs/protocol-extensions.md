@@ -1,0 +1,941 @@
+# Protocol extensions (`nova/*` LSP methods)
+
+Nova extends LSP with a small set of **custom JSON-RPC methods** under the `nova/*` namespace. This
+document is the stable reference for those methods so editor clients do **not** need to read Rust
+code to interoperate.
+
+Source of truth for method names:
+
+- `crates/nova-lsp/src/lib.rs` (string constants like `TEST_DISCOVER_METHOD`)
+- `editors/vscode/src/*.ts` (client usage for a subset)
+
+> Note: Nova also uses standard LSP requests (e.g. `textDocument/formatting`) and standard command /
+> code action wiring. Those are intentionally *not* covered here.
+
+## Capability gating (how clients detect support)
+
+Today, `nova-lsp` does **not** advertise a structured list of custom methods in
+`initializeResult.capabilities.experimental`. As a result, clients should gate features using one
+or more of:
+
+1. **Optimistic call + graceful fallback**: send the request and treat JSON-RPC `-32601` “Method
+   not found” **or** `-32602` with an “unknown … method” message as “server doesn’t support this
+   extension”. (The current `nova-lsp` stdio server routes all `nova/*` requests through a single
+   dispatcher, so unsupported `nova/*` methods often show up as `-32602`.)
+2. **Version gating**: use `initializeResult.serverInfo` (`name`/`version`) and require a minimum
+   Nova version for features that are known to exist after a cutoff.
+3. **Schema gating**: for endpoints that return `schemaVersion`, clients must validate it and
+   reject unknown major versions.
+
+The VS Code extension uses (1) for `nova/completion/more` (see
+`editors/vscode/src/aiCompletionMore.ts`).
+
+## Common error behavior (timeouts, safe-mode, cancellation)
+
+### JSON-RPC error codes
+
+Nova uses standard JSON-RPC/LSP error codes:
+
+- `-32601` — method not found (treat as “unsupported extension”)
+- `-32602` — invalid params (schema mismatch). Note: the current `nova-lsp` stdio server also
+  returns `-32602` for **unknown `nova/*` methods** (because it attempts to dispatch all `nova/*`
+  through `nova_lsp::handle_custom_request()`).
+- `-32603` — internal error
+
+### Watchdog timeouts + safe-mode
+
+Most `nova/*` requests dispatched through `nova_lsp::handle_custom_request()` are wrapped in a
+watchdog (see `crates/nova-lsp/src/hardening.rs`):
+
+- If the handler **exceeds its per-method time budget**, the request fails with `-32603`.
+- If the handler **panics**, the request fails with `-32603`.
+- Some watchdog failures may temporarily put the server into **safe-mode**.
+
+When in safe-mode, **all methods except `nova/bugReport`** fail with `-32603` and a message like:
+
+> “Nova is running in safe-mode … Only `nova/bugReport` is available for now.”
+
+Safe-mode windows:
+
+- Panic: ~60s
+- Watchdog timeout (selected methods): ~30s
+
+### Cancellation
+
+Nova’s watchdog has a cancellation mechanism (via `nova-scheduler`), but most current handlers are
+synchronous and **do not yet poll cancellation tokens**. Clients should treat cancellation as
+best-effort:
+
+- If the server honours cancellation, the request may fail with `-32603` and a message like
+  “`{method}` was cancelled”.
+- Otherwise, the request will complete normally or hit its timeout budget.
+
+## Method catalog
+
+Unless stated otherwise:
+
+- Requests use `params` as a JSON object (not positional).
+- Positions/ranges follow LSP conventions: 0-based line and UTF-16 `character` offsets.
+- Field casing is as defined by the Rust `serde` types. Most endpoints use `camelCase`; notable
+  exceptions are called out below.
+
+---
+
+## Testing (`nova-testing`)
+
+### `nova/test/discover`
+
+- **Kind:** request
+- **Stability:** stable
+- **Rust types:** `crates/nova-testing/src/schema.rs` (`TestDiscoverRequest`, `TestDiscoverResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/test.rs::handle_discover`
+- **Time budget:** 30s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace"
+}
+```
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "tests": [
+    {
+      "id": "com.example.MyTest",
+      "label": "MyTest",
+      "kind": "class",
+      "framework": "junit5",
+      "path": "src/test/java/com/example/MyTest.java",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } },
+      "children": []
+    }
+  ]
+}
+```
+
+#### Errors
+
+- `-32602` if params do not match the schema.
+- `-32603` for internal failures (IO, parsing, tool errors).
+
+---
+
+### `nova/test/run`
+
+- **Kind:** request
+- **Stability:** stable
+- **Rust types:** `crates/nova-testing/src/schema.rs` (`TestRunRequest`, `TestRunResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/test.rs::handle_run`
+- **Time budget:** 300s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "buildTool": "auto",
+  "tests": ["com.example.MyTest#adds"]
+}
+```
+
+`buildTool` is one of: `"auto" | "maven" | "gradle"`.
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "tool": "maven",
+  "success": true,
+  "exitCode": 0,
+  "stdout": "",
+  "stderr": "",
+  "tests": [
+    { "id": "com.example.MyTest#adds", "status": "passed", "durationMs": 4 }
+  ],
+  "summary": { "total": 1, "passed": 1, "failed": 0, "skipped": 0 }
+}
+```
+
+---
+
+### `nova/test/debugConfiguration`
+
+- **Kind:** request
+- **Stability:** stable
+- **Rust types:** `crates/nova-testing/src/schema.rs` (`TestDebugRequest`, `TestDebugResponse`, `DebugConfiguration`)
+- **Handler:** `crates/nova-lsp/src/extensions/test.rs::handle_debug_configuration`
+- **Time budget:** 30s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "buildTool": "auto",
+  "test": "com.example.MyTest#adds"
+}
+```
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "tool": "maven",
+  "configuration": {
+    "schemaVersion": 1,
+    "name": "Debug com.example.MyTest#adds",
+    "cwd": "/absolute/path/to/workspace",
+    "command": "mvn",
+    "args": ["-Dmaven.surefire.debug", "-Dtest=com.example.MyTest#adds", "test"],
+    "env": {}
+  }
+}
+```
+
+---
+
+## Build integration (`nova-build`, `nova-project`)
+
+### `nova/buildProject`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`NovaProjectParams`, `NovaBuildProjectResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_build_project`
+- **Time budget:** 120s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "buildTool": "auto",
+  "module": null,
+  "projectPath": null
+}
+```
+
+Notes:
+
+- `projectRoot` also accepts the legacy alias `root`.
+- `buildTool` also accepts the legacy alias `kind`.
+- For Maven multi-module projects, `module` is a path relative to `projectRoot`.
+- For Gradle, `projectPath` is the Gradle path (e.g. `":app"`).
+
+#### Response
+
+```json
+{
+  "diagnostics": [
+    {
+      "file": "/absolute/path/to/Foo.java",
+      "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 1 } },
+      "severity": "error",
+      "message": "…",
+      "source": "maven"
+    }
+  ]
+}
+```
+
+---
+
+### `nova/java/classpath`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`NovaProjectParams`, `NovaClasspathResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_java_classpath`
+- **Time budget:** 60s (no safe-mode on timeout)
+
+#### Request params
+
+Same as `nova/buildProject` (`NovaProjectParams`).
+
+#### Response
+
+```json
+{
+  "classpath": ["/path/to/dependency.jar", "/path/to/target/classes"]
+}
+```
+
+---
+
+### `nova/reloadProject`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`NovaProjectParams`)
+- **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_reload_project`
+- **Time budget:** 60s (no safe-mode on timeout)
+
+#### Request params
+
+Same as `nova/buildProject` (`NovaProjectParams`).
+
+#### Response
+
+`null` (JSON-RPC result `null`).
+
+---
+
+### `nova/build/targetClasspath`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`TargetClasspathParams`, `TargetClasspathResult`)
+- **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_target_classpath`
+- **Time budget:** 60s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "target": null
+}
+```
+
+Notes:
+
+- `projectRoot` also accepts the legacy alias `root`.
+- For **Bazel** workspaces, `target` is required and should be a Bazel label (e.g. `//app:lib`).
+
+#### Response
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "target": "//app:lib",
+  "classpath": ["/path/to/dependency.jar"],
+  "modulePath": [],
+  "sourceRoots": ["src/main/java"],
+  "source": "17",
+  "targetVersion": "17"
+}
+```
+
+---
+
+### `nova/build/status`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`BuildStatusParams`, `BuildStatusResult`)
+- **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_build_status`
+- **Time budget:** 5s (**timeout may enter safe-mode**)
+
+#### Request params
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace" }
+```
+
+`projectRoot` also accepts the legacy alias `root`.
+
+#### Response
+
+```json
+{ "status": "idle" }
+```
+
+Status values are `snake_case`: `"idle" | "building" | "failed"`.
+
+---
+
+### `nova/build/diagnostics`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`BuildDiagnosticsParams`, `BuildDiagnosticsResult`)
+- **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_build_diagnostics`
+- **Time budget:** 120s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "target": null
+}
+```
+
+#### Response
+
+```json
+{
+  "target": null,
+  "diagnostics": []
+}
+```
+
+Notes:
+
+- For Bazel projects the endpoint currently returns an empty diagnostic list (placeholder for BSP / build output parsing).
+
+---
+
+## Annotation processing / generated sources (`nova-apt`)
+
+### `nova/java/generatedSources`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/apt.rs` (`NovaGeneratedSourcesParams`, `GeneratedSourcesResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/apt.rs::handle_generated_sources`
+- **Time budget:** 60s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace" }
+```
+
+`projectRoot` also accepts the legacy alias `root`.
+
+#### Response
+
+```json
+{
+  "enabled": true,
+  "modules": [
+    {
+      "moduleName": "app",
+      "moduleRoot": "/absolute/path/to/workspace",
+      "roots": [
+        { "kind": "main", "path": "/absolute/path/to/workspace/target/generated-sources/annotations", "freshness": "fresh" }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### `nova/java/runAnnotationProcessing`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/apt.rs` (`RunAnnotationProcessingResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/apt.rs::handle_run_annotation_processing`
+- **Time budget:** 300s (no safe-mode on timeout)
+
+#### Request params
+
+Same as `nova/java/generatedSources`.
+
+#### Response
+
+```json
+{
+  "progress": ["Running annotation processing", "Invoking build tool", "Build finished", "done"],
+  "diagnostics": [],
+  "generatedSources": { "enabled": true, "modules": [] }
+}
+```
+
+---
+
+## Framework introspection endpoints
+
+### `nova/web/endpoints`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/web.rs` (`WebEndpointsRequest`, `WebEndpointsResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/web.rs::handle_endpoints`
+- **Time budget:** 2s (**timeout may enter safe-mode**)
+
+#### Request params
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace" }
+```
+
+#### Response
+
+```json
+{
+  "endpoints": [
+    { "path": "/api/hello", "methods": ["GET"], "file": "src/main/java/com/example/Hello.java", "line": 42 }
+  ]
+}
+```
+
+Notes:
+
+- `line` is **1-based** (matches `nova-framework-web`).
+- `file` is a best-effort relative path when `projectRoot` is provided.
+
+---
+
+### `nova/quarkus/endpoints` (alias)
+
+- **Kind:** request
+- **Stability:** experimental
+- **Definition:** `crates/nova-lsp/src/lib.rs::QUARKUS_ENDPOINTS_METHOD`
+- **Behavior:** identical to `nova/web/endpoints` (same handler and payloads).
+
+---
+
+### `nova/micronaut/endpoints`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/micronaut.rs` (`MicronautRequest`, `MicronautEndpointsResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/micronaut.rs::handle_endpoints`
+- **Time budget:** 2s (**timeout may enter safe-mode**)
+
+#### Request params
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace" }
+```
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/hello",
+      "handler": {
+        "file": "src/main/java/com/example/HelloController.java",
+        "span": { "start": 123, "end": 140 },
+        "className": "com.example.HelloController",
+        "methodName": "hello"
+      }
+    }
+  ]
+}
+```
+
+`span.start` / `span.end` are **byte offsets** into the UTF-8 source file.
+
+---
+
+### `nova/micronaut/beans`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/micronaut.rs` (`MicronautBeansResponse`)
+- **Handler:** `crates/nova-lsp/src/extensions/micronaut.rs::handle_beans`
+- **Time budget:** 2s (**timeout may enter safe-mode**)
+
+#### Request params
+
+Same as `nova/micronaut/endpoints`.
+
+#### Response
+
+```json
+{
+  "schemaVersion": 1,
+  "beans": [
+    {
+      "id": "bean:com.example.Foo",
+      "name": "foo",
+      "ty": "com.example.Foo",
+      "kind": "class",
+      "qualifiers": [],
+      "file": "src/main/java/com/example/Foo.java",
+      "span": { "start": 10, "end": 20 }
+    }
+  ]
+}
+```
+
+---
+
+## Debugger-excellence endpoints
+
+### `nova/debug/configurations`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-ide/src/project.rs` (`DebugConfiguration`)
+- **Handler:** `crates/nova-lsp/src/extensions/debug.rs::handle_debug_configurations`
+- **Time budget:** 30s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace" }
+```
+
+`projectRoot` also accepts the legacy alias `root`.
+
+#### Response
+
+JSON array of VS Code-style debug configurations:
+
+```json
+[
+  {
+    "name": "Run Main",
+    "type": "java",
+    "request": "launch",
+    "mainClass": "com.example.Main",
+    "args": [],
+    "vmArgs": [],
+    "projectName": "my-workspace",
+    "springBoot": false
+  }
+]
+```
+
+---
+
+### `nova/debug/hotSwap`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:**
+  - Request: `crates/nova-lsp/src/extensions/debug.rs` (`HotSwapRequestParams`)
+  - Response: `crates/nova-dap/src/hot_swap.rs` (`HotSwapResult`)
+- **Handler:** `crates/nova-lsp/src/extensions/debug.rs::handle_hot_swap`
+- **Time budget:** 120s (no safe-mode on timeout)
+
+#### Request params
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "changedFiles": ["src/main/java/com/example/Foo.java"],
+  "host": "127.0.0.1",
+  "port": 5005
+}
+```
+
+Notes:
+
+- `changedFiles` entries may be absolute or relative paths; relative paths are resolved against `projectRoot`.
+- `host` is optional; default is `127.0.0.1`.
+
+#### Response
+
+```json
+{
+  "results": [
+    { "file": "/absolute/path/to/workspace/src/main/java/com/example/Foo.java", "status": "success" }
+  ]
+}
+```
+
+`status` values are `snake_case`:
+
+`"success" | "compile_error" | "schema_change" | "redefinition_error"`.
+
+---
+
+## AI augmentation endpoints
+
+These endpoints are currently implemented in the `nova-lsp` **binary**
+(`crates/nova-lsp/src/main.rs`) and require AI to be configured (see env vars in `main.rs` like
+`NOVA_AI_PROVIDER`).
+
+All AI requests accept an optional `workDoneToken` (standard LSP work-done progress token). When
+present, the server emits `$/progress` notifications for user-visible progress.
+
+### `nova/ai/explainError`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-ide/src/ai.rs` (`ExplainErrorArgs`)
+
+#### Request params
+
+```json
+{
+  "workDoneToken": "optional",
+  "diagnostic_message": "cannot find symbol",
+  "code": "optional snippet",
+  "uri": "file:///…",
+  "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
+}
+```
+
+Note the field names inside args are currently **snake_case** (`diagnostic_message`) because the
+Rust type does not use `rename_all = "camelCase"`.
+
+#### Response
+
+JSON string (the explanation).
+
+#### Errors
+
+- `-32600` if AI is not configured.
+- `-32603` for model/provider failures.
+
+---
+
+### `nova/ai/generateMethodBody`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-ide/src/ai.rs` (`GenerateMethodBodyArgs`)
+
+#### Request params
+
+```json
+{
+  "workDoneToken": "optional",
+  "method_signature": "public int add(int a, int b)",
+  "context": "optional surrounding code",
+  "uri": "file:///…",
+  "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
+}
+```
+
+#### Response
+
+JSON string (the generated method body snippet).
+
+---
+
+### `nova/ai/generateTests`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-ide/src/ai.rs` (`GenerateTestsArgs`)
+
+#### Request params
+
+```json
+{
+  "workDoneToken": "optional",
+  "target": "public int add(int a, int b)",
+  "context": "optional surrounding code",
+  "uri": "file:///…",
+  "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 10 } }
+}
+```
+
+#### Response
+
+JSON string (the generated tests snippet).
+
+---
+
+## Performance / memory endpoints
+
+### `nova/memoryStatus`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/lib.rs::MemoryStatusResponse`, `crates/nova-memory/src/report.rs::MemoryReport`
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server)
+
+#### Request params
+
+No params are required; clients should send `{}` or omit params.
+
+#### Response
+
+```json
+{
+  "report": {
+    "budget": { "total": 4294967296, "categories": { "query_cache": 0, "syntax_trees": 0, "indexes": 0, "type_info": 0, "other": 0 } },
+    "usage": { "query_cache": 0, "syntax_trees": 0, "indexes": 0, "type_info": 0, "other": 0 },
+    "pressure": "low",
+    "degraded": { "skip_expensive_diagnostics": false, "completion_candidate_cap": 200, "background_indexing": "full" }
+  }
+}
+```
+
+Notes:
+
+- This payload uses **snake_case** for many nested fields (it is a direct `serde` encoding of `nova-memory` types).
+
+---
+
+### `nova/memoryStatusChanged`
+
+- **Kind:** notification
+- **Stability:** experimental
+- **Rust types:** same payload as `nova/memoryStatus`
+- **Implemented in:** `crates/nova-lsp/src/main.rs`
+
+#### Notification params
+
+Same as the `nova/memoryStatus` response object.
+
+---
+
+## Resilience endpoints
+
+### `nova/bugReport`
+
+- **Kind:** request
+- **Stability:** stable (intended as the “escape hatch” when other requests are failing)
+- **Rust types:** `crates/nova-lsp/src/hardening.rs` (`BugReportParams`), `crates/nova-bugreport/`
+- **Handler:** `crates/nova-lsp/src/hardening.rs::handle_bug_report`
+
+#### Request params
+
+Params are optional; send `null` or omit params to accept defaults.
+
+```json
+{
+  "maxLogLines": 500,
+  "reproduction": "optional free-form text"
+}
+```
+
+#### Response
+
+```json
+{ "path": "/tmp/nova-bugreport-…/" }
+```
+
+This is always available, even while the server is in safe-mode.
+
+---
+
+## Experimental / client-specific methods
+
+### `nova/completion/more`
+
+This is the “poll for async AI completions” endpoint used by the VS Code extension.
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/requests.rs` (`MoreCompletionsParams`, `MoreCompletionsResult`)
+- **Client usage:** `editors/vscode/src/aiCompletionMore.ts`
+
+#### Request params (note: snake_case)
+
+```json
+{ "context_id": "123" }
+```
+
+#### Response (note: snake_case)
+
+```json
+{
+  "items": [/* standard LSP CompletionItem objects */],
+  "is_incomplete": false
+}
+```
+
+Clients obtain `context_id` from the `data` field attached to completion items (best-effort). The
+VS Code extension expects:
+
+```json
+{ "nova": { "completion_context_id": "123" } }
+```
+
+#### Errors
+
+- Clients should treat `-32601` (method not found) **or** `-32602` (“unknown … method”) as “AI
+  completions not supported”.
+
+---
+
+### `nova/refactor/changeSignature` (reserved; not implemented)
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** request plan is `crates/nova-refactor/src/change_signature.rs` (`ChangeSignature`,
+  `ParameterOperation`, `HierarchyPropagation`)
+
+This method name exists as a constant (`crates/nova-lsp/src/refactor.rs::CHANGE_SIGNATURE_METHOD`)
+but the shipped `nova-lsp` stdio server does **not** handle it today.
+
+#### Request params (note: snake_case)
+
+```json
+{
+  "target": 42,
+  "new_name": "renamedMethod",
+  "parameters": [{ "Existing": { "old_index": 0, "new_name": "value", "new_type": null } }],
+  "new_return_type": null,
+  "new_throws": null,
+  "propagate_hierarchy": "Both"
+}
+```
+
+#### Response
+
+If/when implemented, the natural response type is a standard LSP `WorkspaceEdit` (the underlying
+refactoring engine returns `lsp_types::WorkspaceEdit`).
+
+#### Errors
+
+- Today: the request fails with `-32602` (“unknown (stateless) method: nova/refactor/changeSignature”).
+
+---
+
+### `nova/refactor/moveMethod` (reserved; not implemented)
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/refactor.rs` (`MoveMethodParams`), engine lives in
+  `crates/nova-refactor/src/move_member.rs`
+
+#### Request params
+
+```json
+{
+  "fromClass": "com.example.A",
+  "methodName": "foo",
+  "toClass": "com.example.B"
+}
+```
+
+#### Response
+
+If/when implemented, the expected response is a standard LSP `WorkspaceEdit`.
+
+#### Errors
+
+- Today: the request fails with `-32602` (“unknown (stateless) method: nova/refactor/moveMethod”).
+
+---
+
+### `nova/refactor/moveStaticMember` (reserved; not implemented)
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/refactor.rs` (`MoveStaticMemberParams`), engine lives in
+  `crates/nova-refactor/src/move_member.rs`
+
+#### Request params
+
+```json
+{
+  "fromClass": "com.example.A",
+  "memberName": "CONST",
+  "toClass": "com.example.B"
+}
+```
+
+#### Response
+
+If/when implemented, the expected response is a standard LSP `WorkspaceEdit`.
+
+#### Errors
+
+- Today: the request fails with `-32602` (“unknown (stateless) method: nova/refactor/moveStaticMember”).
+
+---
+
+### `nova/java/organizeImports` (currently not implemented)
+
+The VS Code extension currently sends this request (`editors/vscode/src/extension.ts`), but the
+`nova-lsp` stdio server does **not** implement it today.
+
+Recommended alternative:
+
+- Use the standard LSP code action kind `source.organizeImports` (implemented by the server; see
+  `crates/nova-lsp/src/main.rs::organize_imports_code_action`).

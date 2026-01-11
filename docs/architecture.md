@@ -37,6 +37,8 @@ For ADR authoring conventions, see: [`docs/adr/README.md`](adr/README.md).
 
 The ADRs are normative; these pointers are only meant to make it easy to find the current implementations.
 
+- **Crate-by-crate ownership map (current reality):** [`architecture-map.md`](architecture-map.md)
+- **Custom LSP methods (`nova/*`) spec:** [`protocol-extensions.md`](protocol-extensions.md)
 - **ADR 0001 (Salsa / incremental engine)**:
   - `crates/nova-db/src/salsa.rs` — `ra_ap_salsa` query groups, snapshots, cancellation checkpoints
 - **ADR 0002 (Rowan syntax trees)**:
@@ -71,7 +73,24 @@ This repository contains working code **and** forward-looking design docs. Some 
 
 Notable “delta” areas to be aware of:
 
-- Incremental engine: Nova uses Salsa already (via `ra_ap_salsa` / `ra_salsa` in `crates/nova-db`), but the set of queries and how broadly they cover analysis is still evolving.
-- Protocols: there is a minimal stdio JSON message loop in the current `nova-lsp` binary; ADR 0003 selects `lsp-server` for the long-term LSP transport.
-- Persistence: the workspace uses both `rkyv` (for mmap-friendly indexes) and `serde`/`bincode` (for smaller caches). ADR 0005 documents when each is appropriate and the versioning/invalidation policy.
-- URIs: `nova-core` provides robust `file:` URI <-> path conversion, and `nova-vfs` models archive paths (JAR/JMOD), but LSP-facing canonical URIs for archives/virtual documents are still being standardized (ADR 0006).
+- **Incremental engine coverage (ADR 0001):**
+  - Salsa is implemented in `crates/nova-db/src/salsa.rs`, but many “shipping” features still bypass it:
+    - `crates/nova-lsp/src/main.rs` uses an in-memory `HashMap<String, String>` for open documents.
+    - Refactorings in the LSP stdio server run on `nova_refactor::InMemoryJavaDatabase` (see `crates/nova-lsp/src/main.rs`).
+    - CLI indexing/diagnostics in `crates/nova-workspace/` are largely heuristic/regex-based.
+- **Syntax tree usage (ADR 0002):**
+  - `crates/nova-syntax` provides both a token-level green tree (`parse`) and a rowan-based parser (`parse_java`).
+  - Several subsystems still use non-rowan parsing approaches (e.g. `crates/nova-framework-mapstruct/` uses Tree-sitter; `crates/nova-framework-web/` and `crates/nova-workspace/` use regex/text scans).
+- **LSP transport framework (ADR 0003):**
+  - ADR 0003 selects `lsp-server`, but the current `nova-lsp` binary is a hand-rolled stdio JSON-RPC loop in `crates/nova-lsp/src/main.rs` + `crates/nova-lsp/src/codec.rs`.
+  - The `nova-lsp` library crate already exposes transport-agnostic dispatch helpers (`crates/nova-lsp/src/lib.rs`), but the binary does not yet use `lsp-server`.
+- **Persistence formats (ADR 0005):**
+  - `rkyv` + validation is implemented in `crates/nova-storage/` and used by some persisted artifacts (e.g. dependency bundles in `crates/nova-deps-cache/`).
+  - Some persistence remains serde/bincode-based (e.g. parts of classpath caching in `crates/nova-classpath/`), and not all editor-facing schemas are versioned yet.
+- **URIs + VFS model (ADR 0006):**
+  - `crates/nova-vfs/` has archive path types + overlay support, but the current `nova-lsp` stdio server does not use `nova-vfs` yet.
+  - Virtual-document schemes exist in pieces (e.g. `crates/nova-decompile` defines `nova-decompile:`), but there is not yet a single canonical LSP-facing URI scheme for all virtual documents/archives.
+- **Distributed mode (docs/16-distributed-mode.md):**
+  - The router/worker stack exists (`crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`) but is not yet integrated into the shipped `nova-lsp` binary.
+- **Protocol extensions:**
+  - Custom `nova/*` methods exist (mostly implemented under `crates/nova-lsp/src/extensions/`), but the server does not currently advertise them in `initialize.capabilities.experimental`; clients must gate via “optimistic call + fallback” (see [`protocol-extensions.md`](protocol-extensions.md)).

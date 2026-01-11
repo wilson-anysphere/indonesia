@@ -1,0 +1,433 @@
+# Architecture map (docs ↔ code)
+
+This document maps Nova’s **intended** architecture (see [`AGENTS.md`](../AGENTS.md) + the design docs/ADRs under
+[`docs/`](./)) to the **current** Rust workspace in [`crates/`](../crates/).
+
+It is meant to answer, concretely:
+
+- “Where do I implement X?”
+- “Which crate owns this responsibility today?”
+- “Is this subsystem scaffolding, a prototype, or productionizing?”
+
+For the stable spec of Nova’s custom `nova/*` LSP methods, see
+[`protocol-extensions.md`](protocol-extensions.md).
+
+## Maturity levels
+
+- **scaffolding**: early skeletons; APIs and boundaries are still in flux and may not be wired into binaries.
+- **prototype**: works end-to-end for at least one scenario, but is not yet aligned with all ADR targets.
+- **productionizing**: used by `nova-lsp`/`nova`/`nova-dap` and has tests/fixtures; still evolving, but “real”.
+
+## If you’re looking for…
+
+- **LSP server + custom `nova/*` methods**: `crates/nova-lsp/` (`src/main.rs`, `src/lib.rs`, `src/extensions/*`)
+- **DAP server / debugger UX**: `crates/nova-dap/` (+ `crates/nova-jdwp/`)
+- **Project discovery (Maven/Gradle/Bazel)**: `crates/nova-project/` (+ `crates/nova-build/`, `crates/nova-build-bazel/`)
+- **Parsing / syntax trees**: `crates/nova-syntax/`
+- **Incremental database (Salsa)**: `crates/nova-db/src/salsa.rs`
+- **Indexing + persistence**: `crates/nova-index/`, `crates/nova-cache/`, `crates/nova-storage/`
+- **Refactorings**: `crates/nova-refactor/` (editor-facing wiring currently lives in `crates/nova-lsp/`)
+- **Framework support**: `crates/nova-framework-*` (Spring/Micronaut/JPA/Quarkus/MapStruct/etc)
+- **Distributed mode**: `crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`
+
+---
+
+## Crate-by-crate map (alphabetical)
+
+### `nova-ai`
+- **Purpose:** model-agnostic AI helpers (privacy, context building, completion ranking, cloud client scaffolding).
+- **Key entry points:** `crates/nova-ai/src/lib.rs` (`AiService`, `CloudLlmClient`, `AiConfig`, `PrivacyMode`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - AI features are opt-in and mostly wired through the `nova-lsp` binary, not the incremental query engine.
+
+### `nova-apt`
+- **Purpose:** annotation-processing support (discovering generated source roots; triggering APT builds).
+- **Key entry points:** `crates/nova-apt/src/lib.rs` (`AptManager`, `discover_generated_source_roots`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - No incremental/AP-aware compiler integration yet; currently shells out via `nova-build`.
+
+### `nova-archive`
+- **Purpose:** best-effort reading of JARs / exploded directories (used by metadata ingestion).
+- **Key entry points:** `crates/nova-archive/src/lib.rs` (`Archive::read`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Not yet integrated with the VFS archive path model from ADR 0006 (`nova-vfs::ArchivePath`).
+
+### `nova-bugreport`
+- **Purpose:** crash recording + on-demand bug report bundle creation (logs/config/crashes/perf).
+- **Key entry points:** `crates/nova-bugreport/src/lib.rs` (`install_panic_hook`, `create_bug_report_bundle`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Bundle schema is stable but currently Nova-specific; no cross-tool standardization.
+
+### `nova-build`
+- **Purpose:** Maven/Gradle build integration for classpaths + build diagnostics.
+- **Key entry points:** `crates/nova-build/src/lib.rs` (`BuildManager`, `BuildResult`, `Classpath`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - “Build status” is still stubbed at the LSP layer; no long-running build task tracking yet.
+
+### `nova-build-bazel`
+- **Purpose:** Bazel integration (workspace discovery + `query`/`aquery` extraction + caching).
+- **Key entry points:** `crates/nova-build-bazel/src/lib.rs` (`BazelWorkspace`, `JavaCompileInfo`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - BSP support exists behind a feature flag but is not yet the primary integration path.
+
+### `nova-cache`
+- **Purpose:** per-project persistent cache directory management + cache packaging (`tar.zst`).
+- **Key entry points:** `crates/nova-cache/src/lib.rs` (`CacheDir`, `AstArtifactCache`, `pack_cache_package`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Not all persisted artifacts are versioned/typed via `nova-storage` yet (some remain serde/bincode).
+
+### `nova-classfile`
+- **Purpose:** Java `.class` file parsing (constant pool, descriptors, signatures, stubs).
+- **Key entry points:** `crates/nova-classfile/src/lib.rs` (`ClassFile::parse`, `ClassStub`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - None known (standalone parser; consumers still decide how to integrate into the semantic DB).
+
+### `nova-classpath`
+- **Purpose:** indexing of classpath entries (dirs/JARs/JMODs) into stub models + search indexes.
+- **Key entry points:** `crates/nova-classpath/src/lib.rs` (`ClasspathIndex`, `ClasspathEntry`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Persistence uses a mix of custom formats and `bincode`; not fully aligned to ADR 0005 yet.
+
+### `nova-cli`
+- **Purpose:** `nova` CLI binary for CI smoke tests, indexing, diagnostics, cache management, perf tools.
+- **Key entry points:** `crates/nova-cli/src/main.rs` (subcommands wired to `nova-workspace`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - CLI indexing is currently heuristic/regex-based (see `nova-workspace`), not Salsa-backed.
+
+### `nova-config`
+- **Purpose:** Nova config model + tracing/log buffering (for bug reports and structured logging).
+- **Key entry points:** `crates/nova-config/src/lib.rs` (`NovaConfig`, `init_tracing_with_config`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Config loading is available, but many binaries currently rely on defaults/env vars.
+
+### `nova-config-metadata`
+- **Purpose:** Spring Boot configuration metadata ingestion (`spring-configuration-metadata.json`).
+- **Key entry points:** `crates/nova-config-metadata/src/lib.rs` (`MetadataIndex`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Not yet wired into `nova-lsp` completion/diagnostics paths; used by higher-level helpers only.
+
+### `nova-core`
+- **Purpose:** dependency-minimized core types (names, ranges, edits, IDs, URI/path helpers).
+- **Key entry points:** `crates/nova-core/src/lib.rs`, `crates/nova-core/src/path.rs`.
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - ADR 0006’s canonical URI model exists, but the `nova-lsp` stdio server mostly uses raw URI strings.
+
+### `nova-dap`
+- **Purpose:** Debug Adapter Protocol implementation + “debugger excellence” features (hot swap, stepping).
+- **Key entry points:** `crates/nova-dap/src/lib.rs` (`server`, `hot_swap`, `wire_debugger`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - DAP transport is implemented, but editor integrations are still minimal and evolving.
+
+### `nova-db`
+- **Purpose:** database layer; contains both a small in-memory store and a Salsa-based query DB.
+- **Key entry points:** `crates/nova-db/src/lib.rs` (`RootDatabase`, `AnalysisDatabase`),
+  `crates/nova-db/src/salsa.rs` (`NovaDatabase`, snapshots).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Salsa exists, but many “shipped” paths still use ad-hoc in-memory DBs (e.g. `nova-refactor::InMemoryJavaDatabase`).
+
+### `nova-decompile`
+- **Purpose:** decompile `.class` to Java-like stub source as a navigation fallback.
+- **Key entry points:** `crates/nova-decompile/src/lib.rs` (`decompile_classfile_cached`, `DECOMPILE_URI_SCHEME`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Decompile output isn’t yet integrated into a full virtual-document URI scheme for editors.
+
+### `nova-deps-cache`
+- **Purpose:** global dependency (JAR/JMOD) index cache stored as validated `rkyv` archives.
+- **Key entry points:** `crates/nova-deps-cache/src/lib.rs` (`DependencyIndexStore`, `DependencyIndexBundle`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Cache format is stable, but consumers still mix different indexing/persistence strategies.
+
+### `nova-ext`
+- **Purpose:** extension/plugin abstractions (code actions, diagnostics, completions) + registry.
+- **Key entry points:** `crates/nova-ext/src/lib.rs` (`ExtensionRegistry`, provider traits).
+- **Maturity:** scaffolding
+- **Known gaps vs intended docs:**
+  - Not currently the primary framework/plugin system used by `nova-lsp` or `nova-workspace`.
+
+### `nova-flow`
+- **Purpose:** flow analysis (CFG, definite assignment, null tracking) for Java method bodies.
+- **Key entry points:** `crates/nova-flow/src/lib.rs` (`analyze`, `ControlFlowGraph`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Not yet wired into the diagnostics pipeline (`nova-ide` / `nova-lsp`) as described in `docs/06-*`.
+
+### `nova-format`
+- **Purpose:** best-effort Java formatter and formatting edit helpers.
+- **Key entry points:** `crates/nova-format/src/lib.rs` (`edits_for_formatting`, `FormatPipeline`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Token-stream based formatter (not a full AST formatter yet).
+
+### `nova-framework`
+- **Purpose:** framework analyzer abstraction + registry (virtual members, diagnostics, completions hooks).
+- **Key entry points:** `crates/nova-framework/src/lib.rs` (`FrameworkAnalyzer`, `AnalyzerRegistry`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Integration into the core semantic DB is still partial; analyzers mostly run as standalone passes.
+
+### `nova-framework-dagger`
+- **Purpose:** best-effort Dagger DI graph extraction + diagnostics/navigation (text-based).
+- **Key entry points:** `crates/nova-framework-dagger/src/lib.rs` (`DaggerAnalyzer`, `analyze_java_files`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Uses text scanning, not HIR/typed resolution; not integrated into `nova-lsp` yet.
+
+### `nova-framework-jpa`
+- **Purpose:** JPA/Jakarta EE analysis + JPQL parsing/completions/diagnostics.
+- **Key entry points:** `crates/nova-framework-jpa/src/lib.rs` (`analyze_java_sources`, `jpql_*`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Mostly standalone; only partially surfaced via CLI diagnostics today.
+
+### `nova-framework-lombok`
+- **Purpose:** Lombok “virtual member” synthesis for common annotations (getters/setters/builders/etc).
+- **Key entry points:** `crates/nova-framework-lombok/src/lib.rs` (`LombokAnalyzer`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Virtual members are not yet integrated into a full type-checked HIR pipeline.
+
+### `nova-framework-mapstruct`
+- **Purpose:** MapStruct mapper discovery + navigation into generated sources (best-effort).
+- **Key entry points:** `crates/nova-framework-mapstruct/src/lib.rs` (`analyze_workspace`, `goto_definition`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Uses Tree-sitter and filesystem probing rather than Nova’s parser/DB.
+
+### `nova-framework-micronaut`
+- **Purpose:** Micronaut DI/endpoints/config analysis (best-effort).
+- **Key entry points:** `crates/nova-framework-micronaut/src/lib.rs` (`analyze_sources_with_config`, `Bean`, `Endpoint`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Primarily consumed via the custom LSP endpoints (`nova/micronaut/*`), not through a unified diagnostics engine.
+
+### `nova-framework-quarkus`
+- **Purpose:** Quarkus CDI + endpoints + config helpers (best-effort).
+- **Key entry points:** `crates/nova-framework-quarkus/src/lib.rs` (`analyze_java_sources`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Endpoint discovery currently delegates to `nova-framework-web`’s JAX-RS extractor only.
+
+### `nova-framework-spring`
+- **Purpose:** Spring “baseline IntelliJ” features (beans/DI diagnostics, config completions, navigation).
+- **Key entry points:** `crates/nova-framework-spring/src/lib.rs` (`SpringWorkspaceIndex`, `diagnostics_for_config_file`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Framework model is still heuristic and not backed by incremental semantic queries.
+
+### `nova-framework-web`
+- **Purpose:** JAX-RS style HTTP endpoint discovery (used by `nova/web/endpoints`).
+- **Key entry points:** `crates/nova-framework-web/src/lib.rs` (`extract_jaxrs_endpoints_in_dir`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Regex-based extraction; not tied to semantic resolution or framework models yet.
+
+### `nova-fuzzy`
+- **Purpose:** fuzzy matching primitives (trigram filtering + subsequence scoring).
+- **Key entry points:** `crates/nova-fuzzy/src/lib.rs` (`TrigramIndex`, `fuzzy_match`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - None known; shared utility.
+
+### `nova-hir`
+- **Purpose:** HIR (high-level intermediate representation) scaffolding + per-file `ItemTree`.
+- **Key entry points:** `crates/nova-hir/src/lib.rs` (`CompilationUnit`, `item_tree` module).
+- **Maturity:** scaffolding
+- **Known gaps vs intended docs:**
+  - Not a full Java HIR yet; current HIR is intentionally minimal and mostly used for tests.
+
+### `nova-ide`
+- **Purpose:** IDE-facing semantic helpers (completions, hover, navigation, debug config discovery).
+- **Key entry points:** `crates/nova-ide/src/lib.rs` (`completions`, `hover`, `Project`, `DebugConfiguration`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Many features run on in-memory snapshots rather than the Salsa DB described in `docs/04-*`.
+
+### `nova-index`
+- **Purpose:** in-memory indexes (symbols, annotations, classpath-derived indexes) + persistence helpers.
+- **Key entry points:** `crates/nova-index/src/lib.rs` (`ProjectIndexes`, `SymbolSearchIndex`, `load_indexes`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Indexing is currently heuristic (regex-based) in `nova-workspace`, not a full semantic index.
+
+### `nova-jdk`
+- **Purpose:** JDK discovery + JMOD ingestion + standard-library symbol stubs.
+- **Key entry points:** `crates/nova-jdk/src/lib.rs` (`JdkIndex`, `JdkInstallation`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Used mostly as a “good enough” index for resolution; not yet integrated with module graphs everywhere.
+
+### `nova-jdwp`
+- **Purpose:** Java Debug Wire Protocol client façade (used by `nova-dap` and hot swap).
+- **Key entry points:** `crates/nova-jdwp/src/lib.rs` (`TcpJdwpClient`, `JdwpClient` trait).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Implements only a subset of JDWP; many inspection APIs return `NotImplemented`.
+
+### `nova-lsp`
+- **Purpose:** LSP integration crate + `nova-lsp` binary.
+- **Key entry points:** `crates/nova-lsp/src/main.rs` (current stdio JSON-RPC loop),
+  `crates/nova-lsp/src/lib.rs` (custom method constants + dispatch helpers),
+  `crates/nova-lsp/src/extensions/*` (custom `nova/*` endpoints).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - ADR 0003 targets `lsp-server`; current binary is a hand-rolled transport (`crates/nova-lsp/src/codec.rs`).
+  - Custom `nova/*` methods are not advertised via `initialize.capabilities.experimental` yet.
+
+### `nova-memory`
+- **Purpose:** memory budgeting + accounting + cooperative eviction (used by `nova-lsp` telemetry endpoints).
+- **Key entry points:** `crates/nova-memory/src/lib.rs` (`MemoryManager`, `MemoryReport`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Only some components report usage today; accounting is opt-in and approximate by design.
+
+### `nova-modules`
+- **Purpose:** JPMS (Java Platform Module System) model (`ModuleGraph`, readability checks).
+- **Key entry points:** `crates/nova-modules/src/lib.rs` (`ModuleGraph`, `ModuleInfo`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Not yet used as the authoritative module model by `nova-project` / resolution.
+
+### `nova-perf`
+- **Purpose:** benchmark/performance report utilities (criterion parsing + regression comparison).
+- **Key entry points:** `crates/nova-perf/src/lib.rs` (`load_criterion_directory`, `compare_runs`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Focused on CI regressions; not yet integrated with runtime telemetry aggregation.
+
+### `nova-project`
+- **Purpose:** workspace discovery and project configuration (source roots, classpath, Java levels).
+- **Key entry points:** `crates/nova-project/src/lib.rs` (`load_project`, `ProjectConfig`, `LoadOptions`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Module graph construction is still limited; JPMS support is partial and evolving.
+
+### `nova-properties`
+- **Purpose:** range-preserving `.properties` parser (for framework config support).
+- **Key entry points:** `crates/nova-properties/src/lib.rs` (`parse`, `PropertiesFile`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Intentionally partial parser (not full `.properties` spec).
+
+### `nova-refactor`
+- **Purpose:** refactoring engine (safe delete, move, change signature, extract, inline, record conversion, etc).
+- **Key entry points:** `crates/nova-refactor/src/lib.rs` (`rename`, `organize_imports`, `WorkspaceEdit`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Refactorings mostly run on `InMemoryJavaDatabase`, not integrated with the incremental DB or VFS overlays.
+
+### `nova-remote-proto`
+- **Purpose:** on-the-wire message types for distributed mode (router ↔ worker RPC).
+- **Key entry points:** `crates/nova-remote-proto/src/lib.rs` (`RpcMessage`, `PROTOCOL_VERSION`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Protocol is still evolving; not yet integrated into `nova-lsp` (distributed mode is experimental).
+
+### `nova-resolve`
+- **Purpose:** name resolution + scope building (currently based on simplified `nova-hir`).
+- **Key entry points:** `crates/nova-resolve/src/lib.rs` (`Resolver`, `build_scopes`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Resolution operates on simplified HIR, not the rowan AST + full semantic model described in `docs/06-*`.
+
+### `nova-router`
+- **Purpose:** distributed “query router” prototype (sharding + worker coordination + symbol aggregation).
+- **Key entry points:** `crates/nova-router/src/lib.rs` (`QueryRouter`, `DistributedRouterConfig`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Distributed mode exists, but no end-to-end editor/LSP integration yet.
+
+### `nova-scheduler`
+- **Purpose:** concurrency helpers (scheduler pools, cancellation tokens, watchdog timeouts, debouncers).
+- **Key entry points:** `crates/nova-scheduler/src/lib.rs` (`Scheduler`, `CancellationToken`, `Watchdog`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Cancellation is cooperative; many current handlers don’t yet poll tokens.
+
+### `nova-storage`
+- **Purpose:** validated, mmap-friendly `rkyv` storage backend (schema+version headers, compression).
+- **Key entry points:** `crates/nova-storage/src/lib.rs` (`PersistedArchive`, `write_archive_atomic`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - None known; this is the primary “big artifact” persistence layer per ADR 0005.
+
+### `nova-stream-debug`
+- **Purpose:** stream pipeline analysis + debugger-adjacent helpers for Java streams.
+- **Key entry points:** `crates/nova-stream-debug/src/lib.rs` (`analyze_stream_expression`, `StreamChain`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Not yet surfaced as a stable editor feature; primarily used by DAP experiments.
+
+### `nova-syntax`
+- **Purpose:** parsing and syntax trees (token-level green tree + rowan-based `parse_java`).
+- **Key entry points:** `crates/nova-syntax/src/lib.rs` (`parse`, `parse_java`, `SyntaxNode`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - `parse()` is still token-level; the full Java grammar/typed AST wrappers are still under construction.
+
+### `nova-test-utils`
+- **Purpose:** shared test helpers (fixture loading, marker extraction, javac differential harness).
+- **Key entry points:** `crates/nova-test-utils/src/lib.rs`.
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Test-only crate; not part of shipped architecture.
+
+### `nova-testing`
+- **Purpose:** Java test discovery + execution with a **versioned** JSON schema for editor integrations.
+- **Key entry points:** `crates/nova-testing/src/lib.rs` (`discover_tests`, `run_tests`),
+  `crates/nova-testing/src/schema.rs` (request/response types).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Limited to JUnit 4/5 today; richer framework support is planned.
+
+### `nova-types`
+- **Purpose:** shared diagnostic/completion types + best-effort Java type system primitives (`Type`).
+- **Key entry points:** `crates/nova-types/src/lib.rs` (`Type`, `Diagnostic`, `CompletionItem`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Not a full JLS implementation; designed for IDE-grade approximations.
+
+### `nova-vfs`
+- **Purpose:** virtual filesystem layer (file IDs, overlays, archive paths, watcher abstractions).
+- **Key entry points:** `crates/nova-vfs/src/lib.rs` (`Vfs`, `OpenDocuments`, `VfsPath`).
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - `nova-lsp`’s stdio server currently does not use this VFS; it maintains its own open-document map.
+
+### `nova-worker`
+- **Purpose:** `nova-worker` binary for distributed mode (connects to `nova-router` and builds shard indexes).
+- **Key entry points:** `crates/nova-worker/src/main.rs`.
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - Distributed mode is not yet wired into editor-facing features; protocol/versioning is still evolving.
+
+### `nova-workspace`
+- **Purpose:** library-first workspace engine used by the `nova` CLI (indexing, diagnostics, cache mgmt, events).
+- **Key entry points:** `crates/nova-workspace/src/lib.rs` (`Workspace::open`, `Workspace::index_and_write_cache`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Indexing/diagnostics are still largely heuristic (regex + per-file parsing), not yet Salsa query-based.
+
+### `nova-yaml`
+- **Purpose:** minimal, range-preserving YAML parser (targeted at Spring/Micronaut config files).
+- **Key entry points:** `crates/nova-yaml/src/lib.rs` (`parse`, `YamlDocument`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - Intentionally partial YAML implementation (not YAML 1.2-complete).
+

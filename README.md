@@ -9,6 +9,8 @@ entry point for smoke-testing / CI usage.
 
 - High-level overview: [`AGENTS.md`](./AGENTS.md)
 - Architecture decisions (ADRs): [`docs/architecture.md`](./docs/architecture.md)
+- Architecture-to-code map (crate ownership/maturity): [`docs/architecture-map.md`](./docs/architecture-map.md)
+- Nova custom LSP methods (`nova/*`) spec: [`docs/protocol-extensions.md`](./docs/protocol-extensions.md)
 - Full document set: [`docs/`](./docs)
 
 ## Install
