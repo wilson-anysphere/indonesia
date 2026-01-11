@@ -693,7 +693,7 @@ fn build_section(
     always_include: bool,
 ) -> BuiltSection {
     if remaining == 0 {
-        let truncated = always_include && !raw_content.trim().is_empty();
+        let truncated = !raw_content.trim().is_empty();
         return BuiltSection {
             text: String::new(),
             token_estimate: 0,
@@ -711,14 +711,15 @@ fn build_section(
 
     if header_tokens >= remaining {
         if !always_include {
+            let truncated = !raw_content.trim().is_empty();
             return BuiltSection {
                 text: String::new(),
                 token_estimate: 0,
-                truncated: false,
+                truncated,
                 stat: ContextSectionStat {
                     title: title.to_string(),
                     token_estimate: 0,
-                    truncated: false,
+                    truncated,
                 },
             };
         }
@@ -1492,6 +1493,42 @@ class Foo {
 
         let built = builder.build(req);
         assert!(built.token_count <= 30);
+        assert!(built.truncated);
+    }
+
+    #[test]
+    fn truncated_when_section_skipped_due_to_header_budget() {
+        let builder = ContextBuilder::new();
+        let req = ContextRequest {
+            file_path: None,
+            focal_code: "x".to_string(),
+            enclosing_context: None,
+            related_symbols: Vec::new(),
+            related_code: Vec::new(),
+            cursor: None,
+            diagnostics: vec![ContextDiagnostic {
+                file: None,
+                range: None,
+                severity: ContextDiagnosticSeverity::Error,
+                message: "cannot find symbol: y".to_string(),
+                kind: Some(ContextDiagnosticKind::Type),
+            }],
+            extra_files: Vec::new(),
+            doc_comments: None,
+            include_doc_comments: false,
+            // Leaves some remaining tokens after the focal section, but not enough to include the
+            // full Diagnostics header.
+            token_budget: 7,
+            privacy: PrivacyMode {
+                anonymize_identifiers: false,
+                include_file_paths: false,
+                ..PrivacyMode::default()
+            },
+        };
+
+        let built = builder.build(req);
+        assert!(built.text.contains("## Focal code"));
+        assert!(!built.text.contains("## Diagnostics"));
         assert!(built.truncated);
     }
 }
