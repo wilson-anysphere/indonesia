@@ -198,8 +198,7 @@ impl AstArtifactCache {
         atomic_write(&artifact_path, &bytes)?;
 
         // Serialize read-modify-write updates to `metadata.bin` to avoid lost
-        // updates (and potential `.tmp` races inside `atomic_write`) under
-        // concurrent stores across threads and processes.
+        // updates under concurrent stores across threads and processes.
         let _guard = METADATA_UPDATE_MUTEX
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
