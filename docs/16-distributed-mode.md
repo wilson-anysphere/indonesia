@@ -295,6 +295,11 @@ Look for messages like:
 If you accidentally run a v3-capable worker against a legacy router, the router may reply with a
 v3 `Reject(unsupported_version, \"router only supports legacy_v2 protocol\")`.
 
+Notes:
+
+- The handshake timeout is currently **5s**.
+- The router limits concurrent pending handshakes (currently **128**) to avoid accept-loop stalls.
+
 For the intended “secure remote mode” requirements (TLS + authentication + shard-scoped
 authorization + DoS hardening), see
 [ADR 0008 — Distributed mode security](adr/0008-distributed-mode-security.md). The current

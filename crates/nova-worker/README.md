@@ -66,9 +66,9 @@ The current legacy protocol also enforces fixed hard limits to prevent OOM on un
 example: ~64MiB max RPC payload, ~8MiB max file text). If indexing fails with a “too large” style
 error, split large source roots into smaller shards.
 
-On the router, the initial handshake is subject to a short timeout and the listener caps the number
-of concurrent pending handshakes. If the worker’s connection is dropped immediately, check the
-router logs for handshake timeout / overload warnings.
+On the router, the initial handshake is subject to a short timeout (currently **5s**) and the
+listener caps the number of concurrent pending handshakes (currently **128**). If the worker’s
+connection is dropped immediately, check the router logs for handshake timeout / overload warnings.
 
 ## Usage
 
