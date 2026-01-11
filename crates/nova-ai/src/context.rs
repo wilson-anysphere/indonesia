@@ -548,7 +548,8 @@ fn analyze_java_context(
         exclude.insert(callable.name().to_string());
     }
 
-    let referenced = extract_referenced_identifiers(focal_code, &exclude);
+    let decl_names: HashSet<&str> = decls.iter().map(|decl| decl.name.as_str()).collect();
+    let referenced = extract_referenced_identifiers(focal_code, &exclude, &decl_names);
     let related_symbols = related_symbols_from_references(&referenced, &decls);
 
     ExtractedJavaContext {
@@ -1104,7 +1105,11 @@ fn collect_symbol_decls_for_type(
     }
 }
 
-fn extract_referenced_identifiers(code: &str, exclude: &HashSet<String>) -> Vec<String> {
+fn extract_referenced_identifiers(
+    code: &str,
+    exclude: &HashSet<String>,
+    decl_names: &HashSet<&str>,
+) -> Vec<String> {
     const MAX_IDENTIFIERS: usize = 12;
 
     let mut out = Vec::new();
@@ -1118,6 +1123,9 @@ fn extract_referenced_identifiers(code: &str, exclude: &HashSet<String>) -> Vec<
             continue;
         }
         if exclude.contains(ident) {
+            continue;
+        }
+        if !decl_names.contains(ident) {
             continue;
         }
         if seen.insert(ident.to_string()) {
