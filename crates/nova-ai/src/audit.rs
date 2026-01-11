@@ -30,7 +30,13 @@ fn sanitize_text(text: &str) -> String {
     });
     static HEADER_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(
-            r#"(?i)("?\b(?:authorization|x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|token)\b"?)\s*:\s*([^\r\n]+)"#,
+            r#"(?i)(['"]?\b(?:authorization|x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|token)\b['"]?)\s*:\s*([^\r\n]+)"#,
+        )
+        .expect("valid regex")
+    });
+    static ASSIGNMENT_RE: Lazy<Regex> = Lazy::new(|| {
+        Regex::new(
+            r"(?i)\b(authorization|x-[a-z0-9-]*api[-_]?key|api[-_]?key|access[_-]?token|token)\b\s*=\s*([^\s\r\n]+)",
         )
         .expect("valid regex")
     });
@@ -55,6 +61,11 @@ fn sanitize_text(text: &str) -> String {
     out = HEADER_VALUE_RE
         .replace_all(&out, |caps: &regex::Captures<'_>| {
             format!("{}: [REDACTED]", &caps[1])
+        })
+        .into_owned();
+    out = ASSIGNMENT_RE
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            format!("{}=[REDACTED]", &caps[1])
         })
         .into_owned();
     out = QUERY_PARAM_RE
@@ -198,12 +209,16 @@ mod tests {
         let input = r#"POST https://user:pass@example.com/path?access_token=abcd1234
 Basic abcdefghijklmnop
 {"api_key": "sh0rt"}
+api_key=sh0rt2
+api_key='sh0rt3'
 sk-proj-012345678901234567890123456789"#;
         let out = sanitize_prompt_for_audit(input);
         assert!(!out.contains("user:pass@"));
         assert!(!out.contains("access_token=abcd1234"));
         assert!(out.contains("[REDACTED]"));
         assert!(!out.contains("sh0rt"));
+        assert!(!out.contains("sh0rt2"));
+        assert!(!out.contains("sh0rt3"));
         assert!(!out.contains("abcdefghijklmnop"));
         assert!(!out.contains("sk-proj-012345678901234567890123456789"));
     }
