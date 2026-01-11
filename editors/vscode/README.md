@@ -52,9 +52,9 @@ npm run compile
   - Prints resolved paths + versions for `nova-lsp` and `nova-dap` to the **Nova** output channel.
 
 - **Nova: Organize Imports** (`nova.organizeImports`)
-  - Sends a custom LSP request: `nova/java/organizeImports`.
-  - Note: `nova-lsp` does not currently implement this request; prefer the standard LSP
-    `source.organizeImports` code action (see `docs/protocol-extensions.md`).
+  - Sends a custom LSP request: `nova/java/organizeImports` (the server applies edits via `workspace/applyEdit`).
+  - The server also supports the standard LSP `source.organizeImports` code action; see
+    `docs/protocol-extensions.md` for details.
 
 - **Nova: Generate Bug Report** (`nova.bugReport`)
   - Prompts for optional reproduction notes (multi-line) and an optional max number of log lines.

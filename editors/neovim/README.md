@@ -35,8 +35,9 @@ Nova defines custom LSP methods under the `nova/*` namespace. For the stable spe
 
 ### Organize imports
 
-`nova-lsp` does **not** currently implement the custom request `nova/java/organizeImports`; prefer
-the standard LSP code action kind `source.organizeImports`:
+`nova-lsp` supports the standard LSP code action kind `source.organizeImports` (recommended for
+portability). Nova also exposes a custom request `nova/java/organizeImports` for some clients; see
+[`docs/protocol-extensions.md`](../../docs/protocol-extensions.md) for details.
 
 ```lua
 vim.api.nvim_create_user_command('NovaOrganizeImports', function()

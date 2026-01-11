@@ -56,8 +56,10 @@ When in safe-mode, **all methods dispatched through** `nova_lsp::handle_custom_r
 
 > “Nova is running in safe-mode … Only `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` are available for now.”
 
-Note: the stdio server handles `nova/memoryStatus` directly in `crates/nova-lsp/src/main.rs`, so it
-remains available even while safe-mode is active.
+Note: safe-mode enforcement is currently implemented by `nova_lsp::hardening::guard_method()` and
+therefore only applies to methods dispatched via `nova_lsp::handle_custom_request()`. Some
+endpoints handled directly by the stdio server (e.g. `nova/memoryStatus`, `nova/java/organizeImports`,
+`nova/refactor/safeDelete`) currently bypass that guard and may still succeed during safe-mode.
 
 Safe-mode windows:
 
@@ -824,7 +826,7 @@ JSON string (the generated tests snippet).
 
 ## Performance / observability endpoints
 
-### `nova/metrics` (alias) / `nova/memoryStatus`
+### `nova/memoryStatus`
 
 - **Kind:** request
 - **Stability:** experimental
@@ -851,6 +853,8 @@ No params are required; clients should send `{}` or omit params.
 Notes:
 
 - This payload uses **snake_case** for many nested fields (it is a direct `serde` encoding of `nova-memory` types).
+- Historical note: some older Nova builds accepted `nova/metrics` as an alias for this endpoint. That
+  name is now used for request metrics; clients should always call `nova/memoryStatus`.
 
 ---
 
@@ -1140,12 +1144,100 @@ If/when implemented, the expected response is a standard LSP `WorkspaceEdit`.
 
 ---
 
-### `nova/java/organizeImports` (currently not implemented)
+### `nova/refactor/safeDelete`
 
-The VS Code extension currently sends this request (`editors/vscode/src/extension.ts`), but the
-`nova-lsp` stdio server does **not** implement it today.
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/refactor.rs` (`SafeDeleteParams`, `SafeDeleteResult`, `SafeDeleteTargetParam`)
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server; see `nova_lsp::SAFE_DELETE_METHOD`)
 
-Recommended alternative:
+This endpoint runs Safe Delete against a target symbol. In `"safe"` mode, the server may return a
+preview payload when usages exist. In `"deleteAnyway"` mode, the server applies the deletion
+regardless.
 
-- Use the standard LSP code action kind `source.organizeImports` (implemented by the server; see
-  `crates/nova-lsp/src/main.rs::organize_imports_code_action`).
+#### Request params
+
+```json
+{
+  "target": 123,
+  "mode": "safe"
+}
+```
+
+- `mode` is one of: `"safe" | "deleteAnyway"`.
+- `target` may be either:
+  - a raw symbol id (JSON number), or
+  - a tagged object: `{ "type": "symbol", "id": 123 }`.
+
+#### Response
+
+The response is **either**:
+
+1) A preview payload (custom tagged object):
+
+```json
+{
+  "type": "nova/refactor/preview",
+  "report": { /* see nova_refactor::SafeDeleteReport */ }
+}
+```
+
+2) A standard LSP `WorkspaceEdit` object (when the delete is applied).
+
+Notes:
+
+- Today, the stdio server builds a best-effort `nova-index::Index` from **open documents** only, so
+  clients should ensure relevant files are opened/synchronized before calling this endpoint.
+
+#### Errors
+
+- `-32602` for invalid params / missing target.
+- `-32603` for internal errors while computing or converting the edit.
+
+---
+
+### `nova/java/organizeImports`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/main.rs` (`JavaOrganizeImportsRequestParams`, `JavaOrganizeImportsResponse`)
+- **Implemented in:** `crates/nova-lsp/src/main.rs` (stdio server; see `nova_lsp::JAVA_ORGANIZE_IMPORTS_METHOD`)
+
+This endpoint is used by the VS Code extension to organize imports in the active document.
+
+#### Request params
+
+```json
+{ "uri": "file:///absolute/path/to/Foo.java" }
+```
+
+#### Response
+
+```json
+{
+  "applied": true,
+  "edit": { /* standard LSP WorkspaceEdit */ }
+}
+```
+
+If no edits are needed, the server returns:
+
+```json
+{ "applied": false }
+```
+
+#### Side effects
+
+When `applied` is `true`, the server also sends a `workspace/applyEdit` request to the client to
+apply the edit immediately (label: `"Organize imports"`). Clients should support `workspace/applyEdit`
+to use this endpoint reliably.
+
+#### Notes
+
+- Prefer the standard LSP code action kind `source.organizeImports` when possible; `nova-lsp` also
+  implements it via `textDocument/codeAction` (see `crates/nova-lsp/src/main.rs::organize_imports_code_action`).
+
+#### Errors
+
+- `-32602` for invalid params / unknown document.
+- `-32603` for internal errors (refactoring engine failures, serialization).
