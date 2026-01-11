@@ -385,3 +385,73 @@ async fn reserved_request_id_zero_closes_connection() {
         .expect_err("expected router to be closed");
     assert!(matches!(err, RpcTransportError::ProtocolViolation { .. }));
 }
+
+#[tokio::test]
+async fn cancel_sent_immediately_after_request_is_observed() {
+    use std::sync::{Arc, Mutex};
+
+    let (router_io, mut worker_io) = tokio::io::duplex(64 * 1024);
+
+    let router_task = tokio::spawn(async move {
+        RpcConnection::handshake_as_router(router_io, None)
+            .await
+            .unwrap()
+            .0
+    });
+
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(hello(None))).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    assert!(matches!(frame, WireFrame::Welcome(_)));
+
+    let router = router_task.await.unwrap();
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+    let done_tx = Arc::new(Mutex::new(Some(done_tx)));
+
+    router.set_request_handler(move |ctx, _req| {
+        let done_tx = done_tx.clone();
+        async move {
+            let mut token = ctx.cancellation();
+            if !token.is_cancelled() {
+                token.cancelled().await;
+            }
+
+            if let Some(done_tx) = done_tx.lock().unwrap().take() {
+                let _ = done_tx.send(());
+            }
+
+            Ok(Response::Ack)
+        }
+    });
+
+    let request = v3::encode_rpc_payload(&RpcPayload::Request(Request::GetWorkerStats)).unwrap();
+    let cancel = v3::encode_rpc_payload(&RpcPayload::Cancel).unwrap();
+
+    // Send Request and immediately send Cancel on the same request_id. Historically this could race
+    // such that Cancel arrived before the cancellation token was registered.
+    write_wire_frame(
+        &mut worker_io,
+        &WireFrame::Packet {
+            id: 1,
+            compression: CompressionAlgo::None,
+            data: request,
+        },
+    )
+    .await;
+    write_wire_frame(
+        &mut worker_io,
+        &WireFrame::Packet {
+            id: 1,
+            compression: CompressionAlgo::None,
+            data: cancel,
+        },
+    )
+    .await;
+
+    tokio::time::timeout(std::time::Duration::from_millis(200), done_rx)
+        .await
+        .expect("timed out waiting for handler to observe cancellation")
+        .unwrap();
+
+    router.shutdown().await.unwrap();
+}

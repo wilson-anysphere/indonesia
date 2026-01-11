@@ -955,15 +955,20 @@ async fn handle_payload(
                 });
             }
 
+            let (cancel_tx, cancel_rx) = watch::channel(false);
+            {
+                let mut map = inner.incoming_cancels.lock().await;
+                if map.contains_key(&request_id) {
+                    return Err(RpcTransportError::ProtocolViolation {
+                        message: format!("duplicate in-flight request_id {request_id}"),
+                    });
+                }
+                map.insert(request_id, cancel_tx);
+            }
+
             let handler = inner.request_handler.read().unwrap().clone();
             let inner_clone = inner.clone();
             tokio::spawn(async move {
-                let (cancel_tx, cancel_rx) = watch::channel(false);
-                {
-                    let mut map = inner_clone.incoming_cancels.lock().await;
-                    map.insert(request_id, cancel_tx);
-                }
-
                 let ctx = RequestContext {
                     request_id,
                     cancel: CancellationToken { rx: cancel_rx },
