@@ -31,6 +31,8 @@ async fn distributed_indexing_updates_only_one_shard() -> anyhow::Result<()> {
         worker_command: worker_bin,
         cache_dir,
         auth_token: None,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
 
@@ -93,6 +95,8 @@ async fn worker_restart_rehydrates_shard_files_from_cache() -> anyhow::Result<()
         worker_command: worker_bin.clone(),
         cache_dir: cache_dir.clone(),
         auth_token: None,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
 
@@ -106,6 +110,8 @@ async fn worker_restart_rehydrates_shard_files_from_cache() -> anyhow::Result<()
         worker_command: worker_bin,
         cache_dir,
         auth_token: None,
+        #[cfg(feature = "tls")]
+        tls_client_cert_fingerprint_allowlist: Default::default(),
         spawn_workers: true,
     };
 

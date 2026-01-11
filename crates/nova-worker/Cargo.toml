@@ -4,7 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-pemfile"]
+tls = [
+    "dep:tokio-rustls",
+    "dep:rustls",
+    "dep:rustls-pemfile",
+    # Keep nova-worker and nova-router TLS feature sets aligned for tests/benchmarks that construct
+    # `nova_router::DistributedRouterConfig` while building the workspace with `--all-features`.
+    "nova-router/tls",
+]
 
 [dependencies]
 anyhow.workspace = true
