@@ -59,6 +59,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_only_allows_code_edits_by_default() {
+        let cfg = AiPrivacyConfig {
+            local_only: true,
+            anonymize: None,
+            ..AiPrivacyConfig::default()
+        };
+        assert_eq!(enforce_code_edit_policy(&cfg), Ok(()));
+    }
+
+    #[test]
     fn local_only_allows_code_edits_even_when_anonymize_enabled() {
         let cfg = AiPrivacyConfig {
             local_only: true,
@@ -66,6 +76,21 @@ mod tests {
             ..AiPrivacyConfig::default()
         };
         assert_eq!(enforce_code_edit_policy(&cfg), Ok(()));
+    }
+
+    #[test]
+    fn cloud_without_anonymization_requires_cloud_opt_in() {
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize: Some(false),
+            // Still blocked without this explicit opt-in.
+            allow_cloud_code_edits: false,
+            ..AiPrivacyConfig::default()
+        };
+        assert_eq!(
+            enforce_code_edit_policy(&cfg),
+            Err(CodeEditPolicyError::CloudEditsDisabled)
+        );
     }
 
     #[test]
