@@ -582,7 +582,9 @@ TypeParameter {
   bounds: Type*
 }
 
-DefaultValue {}
+DefaultValue {
+  value: AnnotationElementValue?
+}
 
 ExpressionRoot {
   expression: Expression?

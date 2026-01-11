@@ -531,3 +531,79 @@ fn annotation_element_value_pairs() {
         .collect();
     assert_eq!(nested_pair_names, vec!["x"]);
 }
+
+#[test]
+fn annotation_default_values_are_element_values() {
+    let src = r#"
+        @interface A {
+          int value() default 1;
+          String[] names() default {"a", "b"};
+          B ann() default @B(x = 1);
+          int other();
+        }
+    "#;
+    let parse = parse_java(src);
+    assert!(parse.errors.is_empty());
+
+    let unit = CompilationUnit::cast(parse.syntax()).unwrap();
+    let anno = unit
+        .type_declarations()
+        .find_map(|decl| match decl {
+            TypeDeclaration::AnnotationTypeDeclaration(it) => Some(it),
+            _ => None,
+        })
+        .unwrap();
+
+    let methods: Vec<_> = anno
+        .body()
+        .unwrap()
+        .members()
+        .filter_map(|m| match m {
+            ClassMember::MethodDeclaration(method) => Some(method),
+            _ => None,
+        })
+        .collect();
+
+    let value_default = methods
+        .iter()
+        .find(|m| m.name_token().unwrap().text() == "value")
+        .unwrap()
+        .default_value()
+        .unwrap()
+        .value()
+        .unwrap()
+        .expression()
+        .unwrap();
+    assert_eq!(value_default.syntax().first_token().unwrap().text(), "1");
+
+    let names_default = methods
+        .iter()
+        .find(|m| m.name_token().unwrap().text() == "names")
+        .unwrap()
+        .default_value()
+        .unwrap()
+        .value()
+        .unwrap()
+        .array_initializer()
+        .unwrap();
+    assert_eq!(names_default.values().count(), 2);
+
+    let ann_default = methods
+        .iter()
+        .find(|m| m.name_token().unwrap().text() == "ann")
+        .unwrap()
+        .default_value()
+        .unwrap()
+        .value()
+        .unwrap()
+        .annotation()
+        .unwrap();
+    assert_eq!(ann_default.name().unwrap().text(), "B");
+    let pair_names: Vec<_> = ann_default
+        .arguments()
+        .unwrap()
+        .pairs()
+        .map(|pair| pair.name_token().unwrap().text().to_string())
+        .collect();
+    assert_eq!(pair_names, vec!["x"]);
+}

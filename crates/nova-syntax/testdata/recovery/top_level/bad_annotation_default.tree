@@ -23,6 +23,7 @@ CompilationUnit
         DefaultValue
           DefaultKw "default"
           Whitespace " "
+          AnnotationElementValue
         Semicolon ";"
       Whitespace " "
       MethodDeclaration

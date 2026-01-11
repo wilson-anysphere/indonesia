@@ -23,7 +23,9 @@ CompilationUnit
         DefaultValue
           DefaultKw "default"
           Whitespace " "
-          IntLiteral "1"
+          AnnotationElementValue
+            LiteralExpression
+              IntLiteral "1"
         Semicolon ";"
       Whitespace "\n  "
       MethodDeclaration
@@ -42,12 +44,18 @@ CompilationUnit
         DefaultValue
           DefaultKw "default"
           Whitespace " "
-          LBrace "{"
-          StringLiteral "\"a\""
-          Comma ","
-          Whitespace " "
-          StringLiteral "\"b\""
-          RBrace "}"
+          AnnotationElementValue
+            AnnotationElementValueArrayInitializer
+              LBrace "{"
+              AnnotationElementValue
+                LiteralExpression
+                  StringLiteral "\"a\""
+              Comma ","
+              Whitespace " "
+              AnnotationElementValue
+                LiteralExpression
+                  StringLiteral "\"b\""
+              RBrace "}"
         Semicolon ";"
       Whitespace "\n  "
       MethodDeclaration
@@ -64,15 +72,22 @@ CompilationUnit
         DefaultValue
           DefaultKw "default"
           Whitespace " "
-          At "@"
-          Identifier "B"
-          LParen "("
-          Identifier "x"
-          Whitespace " "
-          Eq "="
-          Whitespace " "
-          IntLiteral "1"
-          RParen ")"
+          AnnotationElementValue
+            Annotation
+              At "@"
+              Name
+                Identifier "B"
+              AnnotationElementValuePairList
+                LParen "("
+                AnnotationElementValuePair
+                  Identifier "x"
+                  Whitespace " "
+                  Eq "="
+                  Whitespace " "
+                  AnnotationElementValue
+                    LiteralExpression
+                      IntLiteral "1"
+                RParen ")"
         Semicolon ";"
       Whitespace "\n  "
       MethodDeclaration

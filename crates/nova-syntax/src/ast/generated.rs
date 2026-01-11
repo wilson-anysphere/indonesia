@@ -3050,6 +3050,13 @@ impl AstNode for DefaultValue {
     }
 }
 
+impl DefaultValue {
+    pub fn value(&self) -> Option<AnnotationElementValue> {
+        support::child::<AnnotationElementValue>(&self.syntax)
+    }
+
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpressionRoot {
     syntax: SyntaxNode,

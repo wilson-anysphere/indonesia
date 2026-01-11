@@ -1749,38 +1749,14 @@ impl<'a> Parser<'a> {
             SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::Eof
         ) {
             self.error_here("expected default value");
+            // Preserve a stable subtree shape for downstream consumers.
+            self.builder
+                .start_node(SyntaxKind::AnnotationElementValue.into());
+            self.builder.finish_node();
         } else {
-            while !matches!(
-                self.current(),
-                SyntaxKind::Semicolon | SyntaxKind::RBrace | SyntaxKind::Eof
-            ) {
-                match self.current() {
-                    SyntaxKind::LParen => {
-                        self.bump_balanced(SyntaxKind::LParen, SyntaxKind::RParen)
-                    }
-                    SyntaxKind::LBrace => {
-                        self.bump_balanced(SyntaxKind::LBrace, SyntaxKind::RBrace)
-                    }
-                    _ => self.bump_any(),
-                }
-            }
+            self.parse_annotation_element_value();
         }
         self.builder.finish_node();
-    }
-
-    fn bump_balanced(&mut self, open: SyntaxKind, close: SyntaxKind) {
-        let mut depth: usize = 0;
-        while !self.at(SyntaxKind::Eof) {
-            match self.current() {
-                kind if kind == open => depth += 1,
-                kind if kind == close => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-            self.bump_any();
-            if depth == 0 {
-                break;
-            }
-        }
     }
 
     fn parse_block(&mut self, stmt_ctx: StatementContext) {
