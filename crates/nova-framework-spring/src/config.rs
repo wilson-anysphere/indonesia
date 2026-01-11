@@ -613,6 +613,29 @@ pub fn completions_for_yaml_file(
     offset: usize,
     index: &SpringWorkspaceIndex,
 ) -> Vec<CompletionItem> {
+    // Value completion: `foo:\n  bar: <cursor>` -> suggest allowed values for `foo.bar`.
+    if let Some((key, prefix)) = yaml_value_completion_context(text, offset) {
+        if let Some(meta) = index.metadata.property_meta(&key) {
+            let mut candidates: Vec<String> = meta.allowed_values.clone();
+            if candidates.is_empty() && is_boolean_type(meta.ty.as_deref().unwrap_or("")) {
+                candidates.extend(["true".into(), "false".into()]);
+            }
+            candidates.sort();
+            candidates.dedup();
+
+            let prefix = prefix.trim_matches('"');
+            return candidates
+                .into_iter()
+                .filter(|value| value.starts_with(prefix))
+                .map(|value| CompletionItem {
+                    label: value,
+                    detail: None,
+                })
+                .collect();
+        }
+        return Vec::new();
+    }
+
     let Some((parent_prefix, typed_prefix)) = yaml_completion_context(text, offset) else {
         return Vec::new();
     };
@@ -856,6 +879,102 @@ fn yaml_completion_context(text: &str, offset: usize) -> Option<(String, String)
     Some((parent_prefix, typed))
 }
 
+fn yaml_value_completion_context(text: &str, offset: usize) -> Option<(String, String)> {
+    let (line_start, _line_end) = line_bounds(text, offset);
+    let current_line = text.get(line_start..)?;
+    let current_line = current_line
+        .split_once('\n')
+        .map(|(l, _)| l)
+        .unwrap_or(current_line);
+    let current_line = current_line.strip_suffix('\r').unwrap_or(current_line);
+
+    let current_indent = current_line.bytes().take_while(|b| *b == b' ').count();
+
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    for raw in text[..line_start].lines() {
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let indent = raw.bytes().take_while(|b| *b == b' ').count();
+        let trimmed = raw[indent..].trim_end();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        // Only track mapping keys that open a nested block (`key:` with no value).
+        let Some((key, rest)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim_end();
+        if key.is_empty() {
+            continue;
+        }
+
+        while stack
+            .last()
+            .is_some_and(|(prev_indent, _)| *prev_indent >= indent)
+        {
+            stack.pop();
+        }
+
+        if rest.trim().is_empty() {
+            stack.push((indent, key.to_string()));
+        }
+    }
+
+    while stack
+        .last()
+        .is_some_and(|(prev_indent, _)| *prev_indent >= current_indent)
+    {
+        stack.pop();
+    }
+
+    let mut parent_prefix = stack
+        .iter()
+        .map(|(_, key)| key.as_str())
+        .collect::<Vec<_>>()
+        .join(".");
+    if !parent_prefix.is_empty() {
+        parent_prefix.push('.');
+    }
+
+    // Adjust for sequences (`- key: value`).
+    let mut base_offset = line_start + current_indent;
+    let mut after_indent = &current_line[current_indent..];
+    if let Some(rest) = after_indent.strip_prefix('-') {
+        base_offset += 1;
+        after_indent = rest;
+        if let Some(rest) = after_indent.strip_prefix(' ') {
+            base_offset += 1;
+            after_indent = rest;
+        }
+    }
+
+    let rel_cursor = offset.saturating_sub(base_offset);
+    let colon_rel = after_indent.find(':')?;
+    if rel_cursor <= colon_rel {
+        return None;
+    }
+
+    let key = after_indent[..colon_rel].trim_end();
+    if key.is_empty() {
+        return None;
+    }
+
+    let mut value_rel_start = colon_rel + 1;
+    while value_rel_start < after_indent.len() && after_indent.as_bytes()[value_rel_start] == b' '
+    {
+        value_rel_start += 1;
+    }
+
+    let value_abs_start = base_offset + value_rel_start;
+    let prefix = if offset >= value_abs_start {
+        text[value_abs_start..offset].trim().to_string()
+    } else {
+        String::new()
+    };
+
+    Some((format!("{parent_prefix}{key}"), prefix))
+}
+
 fn next_yaml_segment(full_key: &str, parent_prefix: &str) -> Option<String> {
     let remainder = full_key.strip_prefix(parent_prefix).unwrap_or(full_key);
     let end = remainder
@@ -999,6 +1118,16 @@ class C {
         let items =
             completions_for_yaml_file(Path::new("application.yml"), text, offset, &workspace);
         assert!(items.iter().any(|i| i.label == "port"));
+    }
+
+    #[test]
+    fn completes_yaml_values_from_metadata_hints() {
+        let workspace = SpringWorkspaceIndex::new(Arc::new(test_metadata()));
+        let text = "spring:\n  main:\n    banner-mode: c";
+        let offset = text.len();
+        let items =
+            completions_for_yaml_file(Path::new("application.yml"), text, offset, &workspace);
+        assert!(items.iter().any(|i| i.label == "console"));
     }
 
     #[test]
