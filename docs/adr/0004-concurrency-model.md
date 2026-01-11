@@ -60,7 +60,7 @@ Salsa provides a cooperative cancellation mechanism:
 - query implementations should call `db.unwind_if_cancelled()` at well-defined checkpoints,
 - the writer path can request cancellation by issuing a (synthetic) write, causing other threads to unwind.
 
-In this repository, the Salsa database in `crates/nova-db` exposes `QueryDatabase::request_cancellation()` to trigger that behavior. Protocol-layer cancellation (e.g., `$/cancelRequest`) should generally:
+In this repository, the Salsa database in `crates/nova-db` exposes `RootDatabase::request_cancellation()` (and the thread-safe `Database` wrapper method of the same name) to trigger that behavior. Protocol-layer cancellation (e.g., `$/cancelRequest`) should generally:
 
 1. mark the request’s cancellation token, and
 2. request Salsa cancellation so in-flight queries unwind promptly.

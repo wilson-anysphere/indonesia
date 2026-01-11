@@ -25,7 +25,7 @@ For the stable spec of Nova’s custom `nova/*` LSP methods, see
 - **Project discovery (Maven/Gradle/Bazel)**: `crates/nova-project/` (+ `crates/nova-build/`, `crates/nova-build-bazel/`)
 - **AI (completion ranking, semantic search, anonymization)**: `crates/nova-ai/` (wired into `nova-ide`/`nova-lsp`)
 - **Parsing / syntax trees**: `crates/nova-syntax/`
-- **Incremental database (Salsa)**: `crates/nova-db/src/salsa.rs`
+- **Incremental database (Salsa)**: `crates/nova-db/src/salsa/` (see `mod.rs`)
 - **Indexing + persistence**: `crates/nova-index/`, `crates/nova-cache/`, `crates/nova-storage/`
 - **Refactorings**: `crates/nova-refactor/` (editor-facing wiring currently lives in `crates/nova-lsp/`)
 - **Framework support**: `crates/nova-framework-*` (Spring/Micronaut/JPA/Quarkus/MapStruct/etc)
@@ -137,8 +137,8 @@ For the stable spec of Nova’s custom `nova/*` LSP methods, see
 
 ### `nova-db`
 - **Purpose:** database layer; contains both a small in-memory store and a Salsa-based query DB.
-- **Key entry points:** `crates/nova-db/src/lib.rs` (`RootDatabase`, `AnalysisDatabase`),
-  `crates/nova-db/src/salsa.rs` (`NovaDatabase`, snapshots).
+- **Key entry points:** `crates/nova-db/src/lib.rs` (`InMemoryFileStore`, `AnalysisDatabase`),
+  `crates/nova-db/src/salsa/mod.rs` (`RootDatabase`, `Database` wrapper, snapshots).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - Salsa exists, but many “shipped” paths still use ad-hoc in-memory DBs (e.g. `nova-refactor::InMemoryJavaDatabase`).

@@ -42,7 +42,7 @@ The ADRs are normative; these pointers are only meant to make it easy to find th
 - **Crate-by-crate ownership map (current reality):** [`architecture-map.md`](architecture-map.md)
 - **Custom LSP methods (`nova/*`) spec:** [`protocol-extensions.md`](protocol-extensions.md)
 - **ADR 0001 (Salsa / incremental engine)**:
-  - `crates/nova-db/src/salsa.rs` — `ra_ap_salsa` query groups, snapshots, cancellation checkpoints
+  - `crates/nova-db/src/salsa/mod.rs` — `ra_ap_salsa` query groups, snapshots, cancellation checkpoints
 - **ADR 0002 (Rowan syntax trees)**:
   - `crates/nova-syntax/` — parser/lexer + `rowan` integration (`syntax_kind.rs`, `parser.rs`, `ast.rs`)
 - **ADR 0003 (LSP/DAP transport)**:
@@ -79,7 +79,7 @@ This repository contains working code **and** forward-looking design docs. Some 
 Notable “delta” areas to be aware of:
 
 - **Incremental engine coverage (ADR 0001):**
-  - Salsa is implemented in `crates/nova-db/src/salsa.rs`, but many “shipping” features still bypass it:
+  - Salsa is implemented in `crates/nova-db/src/salsa/` (see `mod.rs`), but many “shipping” features still bypass it:
     - `crates/nova-lsp/src/main.rs` uses an in-memory `HashMap<String, String>` for open documents.
     - Refactorings in the LSP stdio server run on `nova_refactor::InMemoryJavaDatabase` (see `crates/nova-lsp/src/main.rs`).
     - CLI indexing/diagnostics in `crates/nova-workspace/` are largely heuristic/regex-based.
