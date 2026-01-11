@@ -34,6 +34,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Framework support**: `crates/nova-framework-*` (Spring/Micronaut/JPA/Quarkus/MapStruct/etc)
 - **Distributed mode**: `crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`
 - **Codegen / developer tasks**: `crates/xtask/` (`cargo run -p xtask -- codegen`)
+- **Crate layering / dependency boundaries (ADR 0007)**: `crate-layers.toml`, `crates/nova-devtools/`, `scripts/check-deps.sh`
 
 ---
 
@@ -162,7 +163,11 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 
 ### `nova-devtools`
 - **Purpose:** developer tooling for Nova’s Rust workspace (currently: enforcing ADR 0007 crate layering / dependency boundaries).
-- **Key entry points:** `crates/nova-devtools/src/check_deps.rs` (`check_deps::run`), `crates/nova-devtools/src/main.rs` (`nova-devtools check-deps`).
+- **Key entry points:**
+  - `crates/nova-devtools/src/check_deps.rs` (`check_deps::run`) — validates `cargo metadata` edges against `crate-layers.toml`.
+  - `crates/nova-devtools/src/main.rs` (`nova-devtools check-deps`) — CLI wrapper used by CI.
+  - `crate-layers.toml` — policy + layer mapping configuration.
+  - `scripts/check-deps.sh` — convenience wrapper (`cargo run -p nova-devtools -- check-deps`).
 - **Maturity:** productionizing
 - **Known gaps vs intended docs:**
   - Only the `check-deps` command exists today; additional “repo hygiene” tooling still lives in ad-hoc scripts / `xtask`.
