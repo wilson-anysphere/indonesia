@@ -586,6 +586,7 @@ fn is_build_file(path: &Path) -> bool {
     };
 
     if name == "pom.xml"
+        || name == "nova.toml"
         || name == ".bazelrc"
         || name.starts_with(".bazelrc.")
         || name == ".bazelversion"
@@ -598,6 +599,10 @@ fn is_build_file(path: &Path) -> bool {
             "BUILD" | "BUILD.bazel" | "WORKSPACE" | "WORKSPACE.bazel" | "MODULE.bazel"
         )
     {
+        return true;
+    }
+
+    if name == "config.toml" && path.ends_with(Path::new(".nova/config.toml")) {
         return true;
     }
 
@@ -791,6 +796,8 @@ mod tests {
 
         let build_files = [
             root.join("pom.xml"),
+            root.join("nova.toml"),
+            root.join(".nova").join("config.toml"),
             root.join(".bazelrc"),
             root.join(".bazelrc.user"),
             root.join(".bazelversion"),
