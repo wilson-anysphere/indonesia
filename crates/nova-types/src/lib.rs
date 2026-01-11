@@ -1177,6 +1177,9 @@ pub fn is_subtype(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
             *def == wk.object || *def == wk.cloneable || *def == wk.serializable
         }
 
+        // Every class/interface type is a subtype of `Object` (JLS 4.10.2).
+        (Type::Class(_), Type::Class(ClassType { def, .. })) if *def == env.well_known().object => true,
+
         (Type::Intersection(types), other) => types.iter().any(|t| is_subtype(env, t, other)),
 
         (other, Type::Intersection(types)) => types.iter().all(|t| is_subtype(env, other, t)),
@@ -1801,6 +1804,352 @@ fn reference_castable(env: &dyn TypeEnv, from: &Type, to: &Type) -> bool {
     matches!(from_kind, Some(ClassKind::Interface)) || matches!(to_kind, Some(ClassKind::Interface))
 }
 
+fn wildcard_upper_bound(env: &dyn TypeEnv, bound: &WildcardBound) -> Type {
+    match bound {
+        WildcardBound::Unbounded => Type::class(env.well_known().object, vec![]),
+        WildcardBound::Extends(upper) => (**upper).clone(),
+        // Wildcards with a lower bound (`? super T`) have `Object` as their upper bound.
+        WildcardBound::Super(_) => Type::class(env.well_known().object, vec![]),
+    }
+}
+
+fn type_arg_upper_bound_for_lub(env: &dyn TypeEnv, ty: &Type) -> Type {
+    match ty {
+        Type::Wildcard(bound) => wildcard_upper_bound(env, bound),
+        other => other.clone(),
+    }
+}
+
+fn canonicalize_for_lub(env: &dyn TypeEnv, ty: &Type) -> Type {
+    match ty {
+        Type::Named(name) => env
+            .lookup_class(name)
+            .map(|id| Type::class(id, vec![]))
+            .unwrap_or_else(|| ty.clone()),
+        Type::Wildcard(bound) => wildcard_upper_bound(env, bound),
+        other => other.clone(),
+    }
+}
+
+fn is_object_class(env: &dyn TypeEnv, ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Class(ClassType { def, args }) if *def == env.well_known().object && args.is_empty()
+    )
+}
+
+fn type_sort_key(env: &dyn TypeEnv, ty: &Type) -> String {
+    match ty {
+        Type::Void => "void".to_string(),
+        Type::Null => "null".to_string(),
+        Type::Unknown => "<unknown>".to_string(),
+        Type::Error => "<error>".to_string(),
+        Type::Primitive(p) => format!("{p:?}"),
+        Type::TypeVar(id) => format!("T{}", id.0),
+        Type::Named(name) => format!("named:{name}"),
+        Type::VirtualInner { owner, name } => format!("virtual:{}:{name}", owner.0),
+        Type::Array(elem) => format!("{}[]", type_sort_key(env, elem)),
+        Type::Wildcard(WildcardBound::Unbounded) => "?".to_string(),
+        Type::Wildcard(WildcardBound::Extends(upper)) => format!("? extends {}", type_sort_key(env, upper)),
+        Type::Wildcard(WildcardBound::Super(lower)) => format!("? super {}", type_sort_key(env, lower)),
+        Type::Class(ClassType { def, args }) => {
+            let mut out = env
+                .class(*def)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("<class:{}>", def.0));
+            if !args.is_empty() {
+                out.push('<');
+                for (idx, arg) in args.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&type_sort_key(env, arg));
+                }
+                out.push('>');
+            }
+            out
+        }
+        Type::Intersection(types) => types
+            .iter()
+            .map(|t| type_sort_key(env, t))
+            .collect::<Vec<_>>()
+            .join(" & "),
+    }
+}
+
+fn make_intersection(env: &dyn TypeEnv, types: Vec<Type>) -> Type {
+    let mut flat = Vec::new();
+    for t in types {
+        match t {
+            Type::Intersection(parts) => flat.extend(parts),
+            other => flat.push(other),
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut uniq = Vec::new();
+    for t in flat {
+        if seen.insert(t.clone()) {
+            uniq.push(t);
+        }
+    }
+
+    if uniq.len() == 1 {
+        return uniq.into_iter().next().unwrap();
+    }
+
+    uniq.sort_by(|a, b| type_sort_key(env, a).cmp(&type_sort_key(env, b)));
+    Type::Intersection(uniq)
+}
+
+fn lub_same_generic_class(env: &dyn TypeEnv, def: ClassId, a_args: &[Type], b_args: &[Type]) -> Type {
+    // Raw types behave like erasure: any instantiation is a subtype of the raw form,
+    // and the raw form is the most useful LUB for IDE recovery.
+    if is_raw_class(env, def, a_args) || is_raw_class(env, def, b_args) {
+        return Type::class(def, vec![]);
+    }
+
+    if a_args.len() != b_args.len() {
+        return Type::class(def, vec![]);
+    }
+
+    let mut out_args = Vec::with_capacity(a_args.len());
+    for (a, b) in a_args.iter().zip(b_args) {
+        if a == b {
+            out_args.push(a.clone());
+            continue;
+        }
+
+        let a_bound = type_arg_upper_bound_for_lub(env, a);
+        let b_bound = type_arg_upper_bound_for_lub(env, b);
+        let bound_lub = lub(env, &a_bound, &b_bound);
+        if is_object_class(env, &bound_lub) {
+            out_args.push(Type::Wildcard(WildcardBound::Unbounded));
+        } else {
+            out_args.push(Type::Wildcard(WildcardBound::Extends(Box::new(bound_lub))));
+        }
+    }
+
+    Type::class(def, out_args)
+}
+
+fn collect_class_supertypes(env: &dyn TypeEnv, start_def: ClassId, start_args: Vec<Type>) -> HashMap<ClassId, Type> {
+    let mut bucket: HashMap<ClassId, Vec<Type>> = HashMap::new();
+    let mut queue = VecDeque::new();
+    let mut seen = HashSet::new();
+    queue.push_back(Type::class(start_def, start_args));
+
+    while let Some(current) = queue.pop_front() {
+        let Type::Class(ClassType { def, args }) = current.clone() else {
+            continue;
+        };
+        if !seen.insert((def, args.clone())) {
+            continue;
+        }
+
+        bucket.entry(def).or_default().push(Type::class(def, args.clone()));
+
+        let Some(class_def) = env.class(def) else {
+            continue;
+        };
+
+        let raw = is_raw_class(env, def, &args);
+        let subst = class_def
+            .type_params
+            .iter()
+            .copied()
+            .zip(args.into_iter())
+            .collect::<HashMap<_, _>>();
+
+        if let Some(sc) = &class_def.super_class {
+            let next = substitute(sc, &subst);
+            queue.push_back(if raw { erasure(env, &next) } else { next });
+        }
+        for iface in &class_def.interfaces {
+            let next = substitute(iface, &subst);
+            queue.push_back(if raw { erasure(env, &next) } else { next });
+        }
+    }
+
+    // Reduce multiple instantiations of the same class/interface to a single "best" representative.
+    // (This is rare in practice but can happen in incomplete/erroneous environments.)
+    let mut out = HashMap::new();
+    for (def, insts) in bucket {
+        let mut rep = insts.first().cloned().unwrap_or_else(|| Type::class(def, vec![]));
+        for t in insts.iter().skip(1) {
+            let (Type::Class(ClassType { def: a_def, args: a_args }), Type::Class(ClassType { def: b_def, args: b_args })) =
+                (&rep, t)
+            else {
+                continue;
+            };
+            if a_def == b_def {
+                rep = lub_same_generic_class(env, *a_def, a_args, b_args);
+            }
+        }
+        out.insert(def, rep);
+    }
+    out
+}
+
+fn collect_supertypes_for_lub(env: &dyn TypeEnv, ty: &Type) -> HashMap<ClassId, Type> {
+    let object = Type::class(env.well_known().object, vec![]);
+
+    match ty {
+        Type::Class(ClassType { def, args }) => {
+            let mut out = collect_class_supertypes(env, *def, args.clone());
+            out.insert(env.well_known().object, object);
+            out
+        }
+        Type::Array(_) => {
+            let wk = env.well_known();
+            HashMap::from([
+                (wk.object, Type::class(wk.object, vec![])),
+                (wk.cloneable, Type::class(wk.cloneable, vec![])),
+                (wk.serializable, Type::class(wk.serializable, vec![])),
+            ])
+        }
+        Type::TypeVar(id) => {
+            let mut out = HashMap::new();
+            if let Some(tp) = env.type_param(*id) {
+                for ub in &tp.upper_bounds {
+                    let ub = canonicalize_for_lub(env, ub);
+                    out.extend(collect_supertypes_for_lub(env, &ub));
+                }
+            }
+            out.insert(env.well_known().object, object);
+            out
+        }
+        Type::Intersection(parts) => {
+            let mut out = HashMap::new();
+            for p in parts {
+                let p = canonicalize_for_lub(env, p);
+                out.extend(collect_supertypes_for_lub(env, &p));
+            }
+            out.insert(env.well_known().object, object);
+            out
+        }
+        Type::Named(name) => env
+            .lookup_class(name)
+            .map(|id| collect_supertypes_for_lub(env, &Type::class(id, vec![])))
+            .unwrap_or_else(|| HashMap::from([(env.well_known().object, object)])),
+        Type::VirtualInner { .. } => HashMap::from([(env.well_known().object, object)]),
+        // `null` is always handled by the `a <: b` / `b <: a` fast-path.
+        _ => HashMap::new(),
+    }
+}
+
+fn minimal_common_supertypes(env: &dyn TypeEnv, candidates: &[Type]) -> Vec<Type> {
+    let mut out = Vec::new();
+    'outer: for t in candidates {
+        for other in candidates {
+            if t == other {
+                continue;
+            }
+            // `t` is not minimal if there's a more specific common supertype.
+            if is_subtype(env, other, t) {
+                continue 'outer;
+            }
+        }
+        out.push(t.clone());
+    }
+    out
+}
+
+fn lub_via_supertypes(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
+    let object = Type::class(env.well_known().object, vec![]);
+    let sups_a = collect_supertypes_for_lub(env, a);
+    let sups_b = collect_supertypes_for_lub(env, b);
+
+    let mut common_defs: Vec<ClassId> = sups_a
+        .keys()
+        .filter(|d| sups_b.contains_key(d))
+        .copied()
+        .collect();
+    common_defs.sort_by_key(|id| id.0);
+
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    for def in common_defs {
+        let Some(Type::Class(ClassType { args: a_args, .. })) = sups_a.get(&def) else {
+            continue;
+        };
+        let Some(Type::Class(ClassType { args: b_args, .. })) = sups_b.get(&def) else {
+            continue;
+        };
+        let cand = lub_same_generic_class(env, def, a_args, b_args);
+        if seen.insert(cand.clone()) {
+            candidates.push(cand);
+        }
+    }
+
+    if candidates.is_empty() {
+        return object;
+    }
+
+    let mut minimals = minimal_common_supertypes(env, &candidates);
+    if minimals.is_empty() {
+        return object;
+    }
+    if minimals.len() == 1 {
+        return minimals.pop().unwrap();
+    }
+
+    minimals.sort_by(|a, b| type_sort_key(env, a).cmp(&type_sort_key(env, b)));
+    make_intersection(env, minimals)
+}
+
+/// Best-effort least-upper-bound computation for Java reference types.
+///
+/// This is intentionally not a full JLS 4.10.4 implementation, but it aims to
+/// produce useful results for IDE scenarios (generic inference, conditional
+/// expressions, etc.).
+pub fn lub(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
+    // Error recovery: don't try to build synthetic intersection/wildcard types on top of
+    // already-unknown data.
+    if a.is_errorish() {
+        return a.clone();
+    }
+    if b.is_errorish() {
+        return b.clone();
+    }
+
+    // Preserve exact equality (including unresolved `Named` types).
+    if a == b {
+        return a.clone();
+    }
+
+    let a = canonicalize_for_lub(env, a);
+    let b = canonicalize_for_lub(env, b);
+
+    if is_subtype(env, &a, &b) {
+        return b;
+    }
+    if is_subtype(env, &b, &a) {
+        return a;
+    }
+
+    match (&a, &b) {
+        (Type::Array(a_elem), Type::Array(b_elem)) => {
+            if a_elem.is_reference() && b_elem.is_reference() {
+                Type::Array(Box::new(lub(env, a_elem, b_elem)))
+            } else {
+                // Arrays of primitive types (or mixed primitive/reference) only share the
+                // `Object`, `Cloneable`, and `Serializable` supertypes.
+                let wk = env.well_known();
+                let cloneable = Type::class(wk.cloneable, vec![]);
+                let serializable = Type::class(wk.serializable, vec![]);
+                make_intersection(env, vec![cloneable, serializable])
+            }
+        }
+        (Type::Class(ClassType { def: a_def, args: a_args }), Type::Class(ClassType { def: b_def, args: b_args }))
+            if a_def == b_def =>
+        {
+            lub_same_generic_class(env, *a_def, a_args, b_args)
+        }
+        _ => lub_via_supertypes(env, &a, &b),
+    }
+}
+
 fn glb(env: &dyn TypeEnv, a: &Type, b: &Type) -> Type {
     if is_subtype(env, a, b) {
         return a.clone();
@@ -2362,19 +2711,9 @@ fn lub_all(env: &dyn TypeEnv, tys: &[Type], object: &Type) -> Type {
     };
     let mut acc = first.clone();
     for t in it {
-        acc = lub2(env, &acc, t, object);
+        acc = lub(env, &acc, t);
     }
     acc
-}
-
-fn lub2(env: &dyn TypeEnv, a: &Type, b: &Type, object: &Type) -> Type {
-    if is_subtype(env, a, b) {
-        return b.clone();
-    }
-    if is_subtype(env, b, a) {
-        return a.clone();
-    }
-    object.clone()
 }
 
 fn push_lower_bound(bounds: &mut HashMap<TypeVarId, InferenceBounds>, tv: TypeVarId, ty: Type) {
