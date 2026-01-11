@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use crate::discover::{LoadOptions, ProjectError};
 use crate::{
@@ -23,8 +23,9 @@ pub(crate) fn load_maven_project(
     let mut classpath = Vec::new();
     let mut module_path = Vec::new();
 
-    let root_effective = EffectivePom::from_raw(&root_pom, None);
-    let mut discovered_modules = discover_modules_recursive(root, &root_pom, &root_effective)?;
+    let root_effective = Arc::new(EffectivePom::from_raw(&root_pom, None));
+    let mut discovered_modules =
+        discover_modules_recursive(root, &root_pom, Arc::clone(&root_effective))?;
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
 
@@ -36,7 +37,7 @@ pub(crate) fn load_maven_project(
 
     for module in &discovered_modules {
         let module_root = &module.root;
-        let effective = &module.effective;
+        let effective = module.effective.as_ref();
         let module_java = effective
             .java
             .unwrap_or(root_effective.java.unwrap_or_default());
@@ -154,13 +155,13 @@ pub(crate) fn load_maven_project(
 struct DiscoveredModule {
     root: PathBuf,
     raw_pom: RawPom,
-    effective: EffectivePom,
+    effective: Arc<EffectivePom>,
 }
 
 fn discover_modules_recursive(
     workspace_root: &Path,
     root_pom: &RawPom,
-    root_effective: &EffectivePom,
+    root_effective: Arc<EffectivePom>,
 ) -> Result<Vec<DiscoveredModule>, ProjectError> {
     let mut visited: HashSet<PathBuf> = HashSet::new();
     // `workspace_root` is canonicalized by `load_project_with_options`.
@@ -169,14 +170,14 @@ fn discover_modules_recursive(
     let mut out = vec![DiscoveredModule {
         root: workspace_root.to_path_buf(),
         raw_pom: root_pom.clone(),
-        effective: root_effective.clone(),
+        effective: Arc::clone(&root_effective),
     }];
-    let mut queue: VecDeque<(PathBuf, EffectivePom)> = VecDeque::new();
+    let mut queue: VecDeque<(PathBuf, Arc<EffectivePom>)> = VecDeque::new();
 
     let mut root_modules = root_pom.modules.clone();
     root_modules.sort();
     for module in root_modules {
-        queue.push_back((workspace_root.join(module), root_effective.clone()));
+        queue.push_back((workspace_root.join(module), Arc::clone(&root_effective)));
     }
 
     while let Some((module_root, parent_effective)) = queue.pop_front() {
@@ -192,12 +193,13 @@ fn discover_modules_recursive(
             RawPom::default()
         };
 
-        let effective = EffectivePom::from_raw(&raw_pom, Some(&parent_effective));
+        let effective =
+            Arc::new(EffectivePom::from_raw(&raw_pom, Some(parent_effective.as_ref())));
 
         let mut child_modules = raw_pom.modules.clone();
         child_modules.sort();
         for child in child_modules {
-            queue.push_back((module_root.join(child), effective.clone()));
+            queue.push_back((module_root.join(child), Arc::clone(&effective)));
         }
 
         out.push(DiscoveredModule {
