@@ -29,10 +29,17 @@ All commands below are run from the repository root.
 > faster.
 >
 > If you see `Blocking waiting for file lock on ...`, another Cargo process is likely building at
-> the same time. Either wait, or use a separate target directory:
+> the same time. Either wait, or use a separate target directory (avoids contention on build
+> artifacts):
 >
 > ```bash
 > cargo +nightly fuzz run --target-dir fuzz/target-local fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
+> ```
+>
+> If the lock is on the *package cache*, you can also use a separate `CARGO_HOME`:
+>
+> ```bash
+> CARGO_HOME=/tmp/nova-cargo-home cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60 -max_len=262144
 > ```
 
 ### Parse Java (syntax)
