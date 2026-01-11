@@ -7,50 +7,72 @@ use crate::item_tree::{
     Annotation, Class, Constructor, Enum, Field, Import, Initializer, Interface, Item, ItemTree,
     Member, Method, PackageDecl, Param, Record,
 };
+use nova_syntax::java::ast as syntax;
 use nova_types::Span;
 use nova_vfs::FileId;
-use nova_syntax::java::ast as syntax;
 
 #[must_use]
 pub fn lower_item_tree(file: FileId, unit: &syntax::CompilationUnit) -> ItemTree {
+    lower_item_tree_with(file, unit, &mut || {})
+}
+
+#[must_use]
+pub fn lower_item_tree_with(
+    file: FileId,
+    unit: &syntax::CompilationUnit,
+    check_cancelled: &mut dyn FnMut(),
+) -> ItemTree {
     let mut ctx = ItemTreeLower {
         file,
         tree: ItemTree::default(),
+        check_cancelled,
     };
     ctx.lower_compilation_unit(unit);
     ctx.tree
 }
 
-struct ItemTreeLower {
+struct ItemTreeLower<'a> {
     file: FileId,
     tree: ItemTree,
+    check_cancelled: &'a mut dyn FnMut(),
 }
 
-impl ItemTreeLower {
+impl ItemTreeLower<'_> {
+    fn check_cancelled(&mut self) {
+        let check = &mut *self.check_cancelled;
+        check();
+    }
+
     fn lower_compilation_unit(&mut self, unit: &syntax::CompilationUnit) {
+        self.check_cancelled();
         self.tree.package = unit.package.as_ref().map(|pkg| PackageDecl {
             name: pkg.name.clone(),
             range: pkg.range,
         });
 
-        self.tree.imports = unit
-            .imports
-            .iter()
-            .map(|import| Import {
-                is_static: import.is_static,
-                is_star: import.is_star,
-                path: import.path.clone(),
-                range: import.range,
-            })
-            .collect();
+        self.tree.imports = {
+            let mut imports = Vec::with_capacity(unit.imports.len());
+            for import in &unit.imports {
+                self.check_cancelled();
+                imports.push(Import {
+                    is_static: import.is_static,
+                    is_star: import.is_star,
+                    path: import.path.clone(),
+                    range: import.range,
+                });
+            }
+            imports
+        };
 
         for decl in &unit.types {
+            self.check_cancelled();
             let item = self.lower_type_decl(decl);
             self.tree.items.push(item);
         }
     }
 
     fn lower_type_decl(&mut self, decl: &syntax::TypeDecl) -> Item {
+        self.check_cancelled();
         match decl {
             syntax::TypeDecl::Class(class) => {
                 let id = ClassId::new(self.file, self.tree.classes.len() as u32);
@@ -116,13 +138,18 @@ impl ItemTreeLower {
     }
 
     fn lower_members(&mut self, members: &[syntax::MemberDecl]) -> Vec<Member> {
-        members
-            .iter()
-            .filter_map(|member| self.lower_member(member))
-            .collect()
+        let mut lowered = Vec::new();
+        for member in members {
+            self.check_cancelled();
+            if let Some(member) = self.lower_member(member) {
+                lowered.push(member);
+            }
+        }
+        lowered
     }
 
     fn lower_member(&mut self, member: &syntax::MemberDecl) -> Option<Member> {
+        self.check_cancelled();
         match member {
             syntax::MemberDecl::Field(field) => {
                 let id = FieldId::new(self.file, self.tree.fields.len() as u32);
@@ -136,7 +163,14 @@ impl ItemTreeLower {
             }
             syntax::MemberDecl::Method(method) => {
                 let id = MethodId::new(self.file, self.tree.methods.len() as u32);
-                let params = method.params.iter().map(lower_param).collect();
+                let params = {
+                    let mut params = Vec::with_capacity(method.params.len());
+                    for param in &method.params {
+                        self.check_cancelled();
+                        params.push(lower_param(param));
+                    }
+                    params
+                };
                 self.tree.methods.push(Method {
                     return_ty: method.return_ty.text.clone(),
                     name: method.name.clone(),
@@ -149,7 +183,14 @@ impl ItemTreeLower {
             }
             syntax::MemberDecl::Constructor(cons) => {
                 let id = ConstructorId::new(self.file, self.tree.constructors.len() as u32);
-                let params = cons.params.iter().map(lower_param).collect();
+                let params = {
+                    let mut params = Vec::with_capacity(cons.params.len());
+                    for param in &cons.params {
+                        self.check_cancelled();
+                        params.push(lower_param(param));
+                    }
+                    params
+                };
                 self.tree.constructors.push(Constructor {
                     name: cons.name.clone(),
                     range: cons.range,
@@ -184,7 +225,12 @@ fn lower_param(param: &syntax::ParamDecl) -> Param {
 
 #[must_use]
 pub fn lower_body(block: &syntax::Block) -> Body {
-    let mut ctx = BodyLower::default();
+    lower_body_with(block, &mut || {})
+}
+
+#[must_use]
+pub fn lower_body_with(block: &syntax::Block, check_cancelled: &mut dyn FnMut()) -> Body {
+    let mut ctx = BodyLower::new(check_cancelled);
     let root = ctx.lower_block(block);
     Body {
         root,
@@ -194,14 +240,28 @@ pub fn lower_body(block: &syntax::Block) -> Body {
     }
 }
 
-#[derive(Default)]
-struct BodyLower {
+struct BodyLower<'a> {
     stmts: Arena<Stmt>,
     exprs: Arena<Expr>,
     locals: Arena<Local>,
+    check_cancelled: &'a mut dyn FnMut(),
 }
 
-impl BodyLower {
+impl<'a> BodyLower<'a> {
+    fn new(check_cancelled: &'a mut dyn FnMut()) -> Self {
+        Self {
+            stmts: Arena::default(),
+            exprs: Arena::default(),
+            locals: Arena::default(),
+            check_cancelled,
+        }
+    }
+
+    fn check_cancelled(&mut self) {
+        let check = &mut *self.check_cancelled;
+        check();
+    }
+
     fn alloc_stmt(&mut self, stmt: Stmt) -> StmtId {
         StmtId::from_raw(self.stmts.alloc(stmt))
     }
@@ -215,11 +275,14 @@ impl BodyLower {
     }
 
     fn lower_block(&mut self, block: &syntax::Block) -> StmtId {
-        let statements = block
-            .statements
-            .iter()
-            .filter_map(|stmt| self.lower_stmt(stmt))
-            .collect();
+        self.check_cancelled();
+        let mut statements = Vec::new();
+        for stmt in &block.statements {
+            self.check_cancelled();
+            if let Some(stmt) = self.lower_stmt(stmt) {
+                statements.push(stmt);
+            }
+        }
         self.alloc_stmt(Stmt::Block {
             statements,
             range: block.range,
@@ -227,6 +290,7 @@ impl BodyLower {
     }
 
     fn lower_stmt(&mut self, stmt: &syntax::Stmt) -> Option<StmtId> {
+        self.check_cancelled();
         match stmt {
             syntax::Stmt::LocalVar(local) => {
                 let local_id = self.alloc_local(Local {
@@ -261,6 +325,7 @@ impl BodyLower {
     }
 
     fn lower_expr(&mut self, expr: &syntax::Expr) -> ExprId {
+        self.check_cancelled();
         match expr {
             syntax::Expr::Name(name) => self.alloc_expr(Expr::Name {
                 name: name.name.clone(),
@@ -283,7 +348,11 @@ impl BodyLower {
             }
             syntax::Expr::Call(call) => {
                 let callee = self.lower_expr(&call.callee);
-                let args = call.args.iter().map(|arg| self.lower_expr(arg)).collect();
+                let mut args = Vec::with_capacity(call.args.len());
+                for arg in &call.args {
+                    self.check_cancelled();
+                    args.push(self.lower_expr(arg));
+                }
                 self.alloc_expr(Expr::Call {
                     callee,
                     args,

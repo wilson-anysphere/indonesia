@@ -30,12 +30,14 @@
 //! ```
 
 mod cancellation;
+mod hir;
 mod ide;
 mod inputs;
 mod semantic;
 mod stats;
 mod syntax;
 
+pub use hir::NovaHir;
 pub use ide::NovaIde;
 pub use inputs::NovaInputs;
 pub use semantic::NovaSemantic;
@@ -130,6 +132,7 @@ pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
     inputs::NovaInputsStorage,
     syntax::NovaSyntaxStorage,
     semantic::NovaSemanticStorage,
+    hir::NovaHirStorage,
     ide::NovaIdeStorage
 )]
 pub struct RootDatabase {
@@ -329,9 +332,9 @@ impl Database {
 }
 
 /// Convenience trait alias that composes Nova's query groups.
-pub trait NovaDatabase: NovaInputs + NovaSyntax + NovaSemantic + NovaIde {}
+pub trait NovaDatabase: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir {}
 
-impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax + NovaSemantic + NovaIde {}
+impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax + NovaSemantic + NovaIde + NovaHir {}
 
 #[cfg(test)]
 fn assert_query_is_cancelled<T, F>(mut db: RootDatabase, run_query: F)
@@ -470,6 +473,86 @@ mod tests {
         );
         assert_eq!(
             executions(&db, "symbol_count"),
+            1,
+            "dependent query should be reused due to early-cutoff"
+        );
+    }
+
+    #[test]
+    fn hir_item_tree_contains_expected_member_names() {
+        use nova_hir::item_tree::{Item as HirItem, Member as HirMember};
+
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+
+        db.set_file_exists(file, true);
+        db.set_file_content(
+            file,
+            Arc::new("class Foo { int x; void bar() {} }".to_string()),
+        );
+
+        let tree = db.hir_item_tree(file);
+        assert_eq!(tree.items.len(), 1);
+
+        let class_id = match tree.items[0] {
+            HirItem::Class(id) => id,
+            other => panic!("expected top-level class, got {other:?}"),
+        };
+        let class = tree.class(class_id);
+        assert_eq!(class.name, "Foo");
+
+        let mut saw_field = false;
+        let mut saw_method = false;
+        for member in &class.members {
+            match member {
+                HirMember::Field(id) => {
+                    saw_field = true;
+                    assert_eq!(tree.field(*id).name, "x");
+                }
+                HirMember::Method(id) => {
+                    saw_method = true;
+                    assert_eq!(tree.method(*id).name, "bar");
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_field, "expected to find field `x` in class members");
+        assert!(saw_method, "expected to find method `bar` in class members");
+    }
+
+    #[test]
+    fn hir_body_edit_early_cutoff_preserves_structural_name_queries() {
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+
+        db.set_file_exists(file, true);
+        db.set_file_content(
+            file,
+            Arc::new("class Foo { int x; void bar() { int y = 1; } }".to_string()),
+        );
+
+        let first = db.hir_symbol_names(file);
+        assert_eq!(
+            &*first,
+            &["Foo".to_string(), "x".to_string(), "bar".to_string()]
+        );
+
+        assert_eq!(executions(&db, "java_parse"), 1);
+        assert_eq!(executions(&db, "hir_item_tree"), 1);
+        assert_eq!(executions(&db, "hir_symbol_names"), 1);
+
+        db.set_file_content(
+            file,
+            Arc::new("class Foo { int x; void bar() { int y = 2; } }".to_string()),
+        );
+        let second = db.hir_symbol_names(file);
+
+        assert_eq!(&*second, &*first);
+        assert_eq!(executions(&db, "java_parse"), 2);
+        assert_eq!(executions(&db, "hir_item_tree"), 2);
+        assert_eq!(
+            executions(&db, "hir_symbol_names"),
             1,
             "dependent query should be reused due to early-cutoff"
         );

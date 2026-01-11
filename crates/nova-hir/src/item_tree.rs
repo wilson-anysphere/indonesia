@@ -88,19 +88,37 @@ impl Default for ItemTree {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct PackageDecl {
     pub name: String,
     pub range: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for PackageDecl {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for PackageDecl {}
+
+#[derive(Debug, Clone)]
 pub struct Import {
     pub is_static: bool,
     pub is_star: bool,
     pub path: String,
     pub range: Span,
 }
+
+impl PartialEq for Import {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_static == other.is_static
+            && self.is_star == other.is_star
+            && self.path == other.path
+    }
+}
+
+impl Eq for Import {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
@@ -111,7 +129,7 @@ pub enum Item {
     Annotation(AnnotationId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Class {
     pub name: String,
     pub range: Span,
@@ -119,7 +137,15 @@ pub struct Class {
     pub members: Vec<Member>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for Class {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.members == other.members
+    }
+}
+
+impl Eq for Class {}
+
+#[derive(Debug, Clone)]
 pub struct Interface {
     pub name: String,
     pub range: Span,
@@ -127,7 +153,15 @@ pub struct Interface {
     pub members: Vec<Member>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for Interface {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.members == other.members
+    }
+}
+
+impl Eq for Interface {}
+
+#[derive(Debug, Clone)]
 pub struct Enum {
     pub name: String,
     pub range: Span,
@@ -135,7 +169,15 @@ pub struct Enum {
     pub members: Vec<Member>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for Enum {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.members == other.members
+    }
+}
+
+impl Eq for Enum {}
+
+#[derive(Debug, Clone)]
 pub struct Record {
     pub name: String,
     pub range: Span,
@@ -143,13 +185,29 @@ pub struct Record {
     pub members: Vec<Member>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for Record {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.members == other.members
+    }
+}
+
+impl Eq for Record {}
+
+#[derive(Debug, Clone)]
 pub struct Annotation {
     pub name: String,
     pub range: Span,
     pub body_range: Span,
     pub members: Vec<Member>,
 }
+
+impl PartialEq for Annotation {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.members == other.members
+    }
+}
+
+impl Eq for Annotation {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Member {
@@ -160,7 +218,7 @@ pub enum Member {
     Type(Item),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Field {
     pub ty: String,
     pub name: String,
@@ -168,7 +226,15 @@ pub struct Field {
     pub name_range: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for Field {
+    fn eq(&self, other: &Self) -> bool {
+        self.ty == other.ty && self.name == other.name
+    }
+}
+
+impl Eq for Field {}
+
+#[derive(Debug, Clone)]
 pub struct Param {
     pub ty: String,
     pub name: String,
@@ -176,7 +242,15 @@ pub struct Param {
     pub name_range: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for Param {
+    fn eq(&self, other: &Self) -> bool {
+        self.ty == other.ty && self.name == other.name
+    }
+}
+
+impl Eq for Param {}
+
+#[derive(Debug, Clone)]
 pub struct Method {
     pub return_ty: String,
     pub name: String,
@@ -186,7 +260,18 @@ pub struct Method {
     pub body_range: Option<Span>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for Method {
+    fn eq(&self, other: &Self) -> bool {
+        self.return_ty == other.return_ty
+            && self.name == other.name
+            && self.params == other.params
+            && self.body_range.is_some() == other.body_range.is_some()
+    }
+}
+
+impl Eq for Method {}
+
+#[derive(Debug, Clone)]
 pub struct Constructor {
     pub name: String,
     pub range: Span,
@@ -195,9 +280,25 @@ pub struct Constructor {
     pub body_range: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for Constructor {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.params == other.params
+    }
+}
+
+impl Eq for Constructor {}
+
+#[derive(Debug, Clone)]
 pub struct Initializer {
     pub is_static: bool,
     pub range: Span,
     pub body_range: Span,
 }
+
+impl PartialEq for Initializer {
+    fn eq(&self, other: &Self) -> bool {
+        self.is_static == other.is_static
+    }
+}
+
+impl Eq for Initializer {}

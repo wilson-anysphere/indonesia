@@ -1,0 +1,246 @@
+use std::sync::Arc;
+use std::time::Instant;
+
+use nova_hir::{
+    hir::Body as HirBody,
+    ids::{ConstructorId, InitializerId, MethodId},
+    item_tree::{Item as HirItem, ItemTree as HirItemTree, Member as HirMember},
+    lowering::{lower_body_with, lower_item_tree_with},
+};
+
+use crate::FileId;
+
+use super::cancellation as cancel;
+use super::inputs::NovaInputs;
+use super::stats::HasQueryStats;
+
+#[ra_salsa::query_group(NovaHirStorage)]
+pub trait NovaHir: NovaInputs + HasQueryStats {
+    /// Parse a file using the lightweight syntax layer used by semantic lowering.
+    fn java_parse(&self, file: FileId) -> Arc<nova_syntax::java::Parse>;
+
+    /// File-level item tree lowered into Nova's stable semantic substrate.
+    fn hir_item_tree(&self, file: FileId) -> Arc<HirItemTree>;
+
+    /// Lower the body of a method into HIR.
+    fn hir_body(&self, method: MethodId) -> Arc<HirBody>;
+
+    /// Lower the body of a constructor into HIR.
+    fn hir_constructor_body(&self, constructor: ConstructorId) -> Arc<HirBody>;
+
+    /// Lower the body of a class/instance initializer block into HIR.
+    fn hir_initializer_body(&self, initializer: InitializerId) -> Arc<HirBody>;
+
+    /// Derived query used by tests to validate early-cutoff behavior.
+    fn hir_symbol_names(&self, file: FileId) -> Arc<Vec<String>>;
+}
+
+fn java_parse(db: &dyn NovaHir, file: FileId) -> Arc<nova_syntax::java::Parse> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "java_parse", ?file).entered();
+
+    cancel::check_cancelled(db);
+
+    let text = if db.file_exists(file) {
+        db.file_content(file)
+    } else {
+        Arc::new(String::new())
+    };
+
+    let parsed = nova_syntax::java::parse(text.as_str());
+    let result = Arc::new(parsed);
+    db.record_query_stat("java_parse", start.elapsed());
+    result
+}
+
+fn hir_item_tree(db: &dyn NovaHir, file: FileId) -> Arc<HirItemTree> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "hir_item_tree", ?file).entered();
+
+    cancel::check_cancelled(db);
+
+    let parse = db.java_parse(file);
+    let mut check_cancelled = || cancel::check_cancelled(db);
+    let tree = lower_item_tree_with(file, parse.compilation_unit(), &mut check_cancelled);
+
+    let result = Arc::new(tree);
+    db.record_query_stat("hir_item_tree", start.elapsed());
+    result
+}
+
+fn hir_body(db: &dyn NovaHir, method: MethodId) -> Arc<HirBody> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "hir_body", ?method).entered();
+
+    cancel::check_cancelled(db);
+
+    let tree = db.hir_item_tree(method.file);
+    let method_data = tree.method(method);
+    let Some(body_range) = method_data.body_range else {
+        let result = Arc::new(HirBody::empty(method_data.range));
+        db.record_query_stat("hir_body", start.elapsed());
+        return result;
+    };
+
+    let text = if db.file_exists(method.file) {
+        db.file_content(method.file)
+    } else {
+        Arc::new(String::new())
+    };
+
+    let Some(block_text) = text.get(body_range.start..body_range.end) else {
+        let result = Arc::new(HirBody::empty(method_data.range));
+        db.record_query_stat("hir_body", start.elapsed());
+        return result;
+    };
+
+    let block = nova_syntax::java::parse_block(block_text, body_range.start);
+    let mut check_cancelled = || cancel::check_cancelled(db);
+    let body = lower_body_with(&block, &mut check_cancelled);
+
+    let result = Arc::new(body);
+    db.record_query_stat("hir_body", start.elapsed());
+    result
+}
+
+fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<HirBody> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "hir_constructor_body", ?constructor).entered();
+
+    cancel::check_cancelled(db);
+
+    let tree = db.hir_item_tree(constructor.file);
+    let data = tree.constructor(constructor);
+    let body_range = data.body_range;
+
+    let text = if db.file_exists(constructor.file) {
+        db.file_content(constructor.file)
+    } else {
+        Arc::new(String::new())
+    };
+
+    let Some(block_text) = text.get(body_range.start..body_range.end) else {
+        let result = Arc::new(HirBody::empty(data.range));
+        db.record_query_stat("hir_constructor_body", start.elapsed());
+        return result;
+    };
+
+    let block = nova_syntax::java::parse_block(block_text, body_range.start);
+    let mut check_cancelled = || cancel::check_cancelled(db);
+    let body = lower_body_with(&block, &mut check_cancelled);
+
+    let result = Arc::new(body);
+    db.record_query_stat("hir_constructor_body", start.elapsed());
+    result
+}
+
+fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<HirBody> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "hir_initializer_body", ?initializer).entered();
+
+    cancel::check_cancelled(db);
+
+    let tree = db.hir_item_tree(initializer.file);
+    let data = tree.initializer(initializer);
+    let body_range = data.body_range;
+
+    let text = if db.file_exists(initializer.file) {
+        db.file_content(initializer.file)
+    } else {
+        Arc::new(String::new())
+    };
+
+    let Some(block_text) = text.get(body_range.start..body_range.end) else {
+        let result = Arc::new(HirBody::empty(data.range));
+        db.record_query_stat("hir_initializer_body", start.elapsed());
+        return result;
+    };
+
+    let block = nova_syntax::java::parse_block(block_text, body_range.start);
+    let mut check_cancelled = || cancel::check_cancelled(db);
+    let body = lower_body_with(&block, &mut check_cancelled);
+
+    let result = Arc::new(body);
+    db.record_query_stat("hir_initializer_body", start.elapsed());
+    result
+}
+
+fn hir_symbol_names(db: &dyn NovaHir, file: FileId) -> Arc<Vec<String>> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "hir_symbol_names", ?file).entered();
+
+    cancel::check_cancelled(db);
+
+    let tree = db.hir_item_tree(file);
+    let mut names = Vec::new();
+    for (i, item) in tree.items.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, i as u32, 16);
+        collect_hir_item_names(db, &tree, *item, &mut names);
+    }
+
+    let result = Arc::new(names);
+    db.record_query_stat("hir_symbol_names", start.elapsed());
+    result
+}
+
+fn collect_hir_item_names(db: &dyn NovaHir, tree: &HirItemTree, item: HirItem, names: &mut Vec<String>) {
+    cancel::check_cancelled(db);
+    match item {
+        HirItem::Class(id) => {
+            let data = tree.class(id);
+            names.push(data.name.clone());
+            collect_hir_member_names(db, tree, &data.members, names);
+        }
+        HirItem::Interface(id) => {
+            let data = tree.interface(id);
+            names.push(data.name.clone());
+            collect_hir_member_names(db, tree, &data.members, names);
+        }
+        HirItem::Enum(id) => {
+            let data = tree.enum_(id);
+            names.push(data.name.clone());
+            collect_hir_member_names(db, tree, &data.members, names);
+        }
+        HirItem::Record(id) => {
+            let data = tree.record(id);
+            names.push(data.name.clone());
+            collect_hir_member_names(db, tree, &data.members, names);
+        }
+        HirItem::Annotation(id) => {
+            let data = tree.annotation(id);
+            names.push(data.name.clone());
+            collect_hir_member_names(db, tree, &data.members, names);
+        }
+    }
+}
+
+fn collect_hir_member_names(
+    db: &dyn NovaHir,
+    tree: &HirItemTree,
+    members: &[HirMember],
+    names: &mut Vec<String>,
+) {
+    for (i, member) in members.iter().enumerate() {
+        cancel::checkpoint_cancelled_every(db, i as u32, 16);
+        match member {
+            HirMember::Field(id) => names.push(tree.field(*id).name.clone()),
+            HirMember::Method(id) => names.push(tree.method(*id).name.clone()),
+            HirMember::Constructor(id) => names.push(tree.constructor(*id).name.clone()),
+            HirMember::Initializer(_) => {}
+            HirMember::Type(item) => collect_hir_item_names(db, tree, *item, names),
+        }
+    }
+}
+
