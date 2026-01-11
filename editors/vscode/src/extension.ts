@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { LanguageClient, type LanguageClientOptions, type ServerOptions } from 'vscode-languageclient/node';
 import * as path from 'path';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
+import { ServerManager, type NovaServerSettings } from './serverManager';
+import type { DocumentSelector as ProtocolDocumentSelector } from 'vscode-languageserver-protocol';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
@@ -60,21 +62,46 @@ interface RunResponse {
   summary: { total: number; passed: number; failed: number; skipped: number };
 }
 
-export function activate(context: vscode.ExtensionContext) {
-  const serverOptions: ServerOptions = {
-    command: 'nova-lsp',
-    args: ['--stdio'],
+export async function activate(context: vscode.ExtensionContext) {
+  const serverOutput = vscode.window.createOutputChannel('Nova Server');
+  context.subscriptions.push(serverOutput);
+
+  const serverManager = new ServerManager(context.globalStorageUri.fsPath, serverOutput);
+
+  const readServerSettings = (): NovaServerSettings => {
+    const cfg = vscode.workspace.getConfiguration('nova');
+    const rawPath = cfg.get<string | null>('server.path', null);
+    const rawChannel = cfg.get<string>('server.releaseChannel', 'stable');
+    const rawVersion = cfg.get<string>('server.version', 'latest');
+    const rawReleaseUrl = cfg.get<string>('server.releaseUrl', 'https://github.com/wilson-anysphere/indonesia');
+    return {
+      path: typeof rawPath === 'string' && rawPath.trim().length > 0 ? rawPath.trim() : null,
+      autoDownload: cfg.get<boolean>('server.autoDownload', true),
+      releaseChannel: rawChannel === 'prerelease' ? 'prerelease' : 'stable',
+      version: typeof rawVersion === 'string' && rawVersion.trim().length > 0 ? rawVersion.trim() : 'latest',
+      releaseUrl:
+        typeof rawReleaseUrl === 'string' && rawReleaseUrl.trim().length > 0
+          ? rawReleaseUrl.trim()
+          : 'https://github.com/wilson-anysphere/indonesia',
+    };
   };
 
-  const documentSelector: vscode.DocumentSelector = [
+  const setServerPath = async (value: string | null): Promise<void> => {
+    await vscode.workspace.getConfiguration('nova').update('server.path', value, vscode.ConfigurationTarget.Global);
+  };
+
+  const documentSelector: ProtocolDocumentSelector = [
     { scheme: 'file', language: 'java' },
     { scheme: 'untitled', language: 'java' },
   ];
 
+  const fileWatcher = vscode.workspace.createFileSystemWatcher('**/*.java');
+  context.subscriptions.push(fileWatcher);
+
   const clientOptions: LanguageClientOptions = {
     documentSelector,
     synchronize: {
-      fileEvents: vscode.workspace.createFileSystemWatcher('**/*.java'),
+      fileEvents: fileWatcher,
     },
     middleware: {
       provideCompletionItem: async (document, position, completionContext, token, next) => {
@@ -138,16 +165,177 @@ export function activate(context: vscode.ExtensionContext) {
     },
   };
 
-  client = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
-  // vscode-languageclient v9+ starts asynchronously.
-  clientStart = client.start();
-  clientStart.catch((err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    void vscode.window.showErrorMessage(`Nova: failed to start nova-lsp: ${message}`);
-  });
+  const stopLanguageClient = async (): Promise<void> => {
+    if (!client) {
+      return;
+    }
+    try {
+      await client.stop();
+    } catch {
+      // Best-effort: stopping can fail if the server never started cleanly.
+    } finally {
+      client = undefined;
+      clientStart = undefined;
+    }
+  };
 
-  // Ensure the client is stopped when the extension is deactivated.
-  context.subscriptions.push(client);
+  const startLanguageClient = async (serverCommand: string): Promise<void> => {
+    const serverOptions: ServerOptions = { command: serverCommand, args: ['--stdio'] };
+    client = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
+    // vscode-languageclient v9+ starts asynchronously.
+    clientStart = client.start();
+    clientStart.catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      void vscode.window.showErrorMessage(`Nova: failed to start nova-lsp: ${message}`);
+    });
+
+    // Ensure the client is stopped when the extension is deactivated.
+    context.subscriptions.push(client);
+  };
+
+  const ensureLanguageClientStarted = async (opts?: { promptForInstall?: boolean }): Promise<void> => {
+    const settings = readServerSettings();
+    const resolved = await serverManager.resolveServerPath({ path: settings.path });
+    if (resolved) {
+      await stopLanguageClient();
+      await startLanguageClient(resolved);
+      return;
+    }
+
+    if (settings.path) {
+      const actions = ['Use Local Server Binary...', 'Clear Setting'];
+      if (settings.autoDownload) {
+        actions.push('Install/Update Server');
+      }
+      const choice = await vscode.window.showErrorMessage(
+        `Nova: nova.server.path points to a missing file: ${settings.path}`,
+        ...actions,
+      );
+      if (choice === 'Use Local Server Binary...') {
+        await vscode.commands.executeCommand('nova.useLocalServerBinary');
+      } else if (choice === 'Clear Setting') {
+        await setServerPath(null);
+        await ensureLanguageClientStarted(opts);
+      } else if (choice === 'Install/Update Server') {
+        await vscode.commands.executeCommand('nova.installOrUpdateServer');
+      }
+      return;
+    }
+
+    if (!opts?.promptForInstall || !settings.autoDownload) {
+      return;
+    }
+
+    const installChoice = await vscode.window.showInformationMessage(
+      'Nova: nova-lsp is not installed. Install it now?',
+      'Install',
+      'Use Local Server Binary...',
+    );
+    if (installChoice === 'Use Local Server Binary...') {
+      await vscode.commands.executeCommand('nova.useLocalServerBinary');
+      return;
+    }
+    if (installChoice !== 'Install') {
+      return;
+    }
+
+    await vscode.commands.executeCommand('nova.installOrUpdateServer');
+  };
+
+  const installOrUpdateServer = async (): Promise<void> => {
+    let settings = readServerSettings();
+    if (settings.path) {
+      const choice = await vscode.window.showInformationMessage(
+        `Nova: nova.server.path is set to "${settings.path}". Clear it to use the downloaded server?`,
+        'Clear and Install',
+        'Install (keep setting)',
+        'Cancel',
+      );
+      if (!choice || choice === 'Cancel') {
+        return;
+      }
+      if (choice === 'Clear and Install') {
+        await setServerPath(null);
+        settings = { ...settings, path: null };
+      }
+    }
+
+    serverOutput.show(true);
+    try {
+      const installed = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'Nova: Installing/Updating nova-lsp…',
+          cancellable: false,
+        },
+        async () => serverManager.installOrUpdate({ ...settings, path: null }),
+      );
+      vscode.window.showInformationMessage(`Nova: Installed nova-lsp ${installed.version}.`);
+      await ensureLanguageClientStarted({ promptForInstall: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      serverOutput.appendLine(`Install failed: ${message}`);
+      if (err instanceof Error && err.stack) {
+        serverOutput.appendLine(err.stack);
+      }
+      serverOutput.show(true);
+
+      const action = await vscode.window.showErrorMessage(
+        `Nova: Failed to install nova-lsp: ${message}`,
+        'Show Output',
+        'Use Local Server Binary...',
+      );
+      if (action === 'Show Output') {
+        serverOutput.show(true);
+      } else if (action === 'Use Local Server Binary...') {
+        await vscode.commands.executeCommand('nova.useLocalServerBinary');
+      }
+    }
+  };
+
+  const useLocalServerBinary = async (): Promise<void> => {
+    const picked = await vscode.window.showOpenDialog({
+      title: 'Select nova-lsp binary',
+      canSelectMany: false,
+      canSelectFolders: false,
+      canSelectFiles: true,
+    });
+    if (!picked?.length) {
+      return;
+    }
+
+    await setServerPath(picked[0].fsPath);
+    await ensureLanguageClientStarted({ promptForInstall: false });
+  };
+
+  const showServerVersion = async (): Promise<void> => {
+    const settings = readServerSettings();
+    const resolved = await serverManager.resolveServerPath({ path: settings.path });
+    if (!resolved) {
+      const message = settings.path
+        ? `Nova: nova.server.path points to a missing file: ${settings.path}`
+        : 'Nova: nova-lsp is not installed.';
+      const action = await vscode.window.showErrorMessage(message, 'Install/Update Server', 'Use Local Server Binary...');
+      if (action === 'Install/Update Server') {
+        await vscode.commands.executeCommand('nova.installOrUpdateServer');
+      } else if (action === 'Use Local Server Binary...') {
+        await vscode.commands.executeCommand('nova.useLocalServerBinary');
+      }
+      return;
+    }
+
+    try {
+      const version = await serverManager.getServerVersion(resolved);
+      vscode.window.showInformationMessage(`Nova: ${version}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      vscode.window.showErrorMessage(`Nova: failed to run nova-lsp --version: ${message}`);
+    }
+  };
+
+  context.subscriptions.push(vscode.commands.registerCommand('nova.installOrUpdateServer', installOrUpdateServer));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.useLocalServerBinary', useLocalServerBinary));
+  context.subscriptions.push(vscode.commands.registerCommand('nova.showServerVersion', showServerVersion));
 
   testController = vscode.tests.createTestController('novaTests', 'Nova Tests');
   context.subscriptions.push(testController);
@@ -298,6 +486,8 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
   );
+
+  await ensureLanguageClientStarted({ promptForInstall: true });
 }
 
 export function deactivate(): Thenable<void> | undefined {

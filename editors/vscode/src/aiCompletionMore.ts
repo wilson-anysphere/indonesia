@@ -12,7 +12,7 @@ type NovaCompletionData = {
 
 export function getCompletionContextId(items: readonly vscode.CompletionItem[]): string | undefined {
   for (const item of items) {
-    const data = item.data as NovaCompletionData | undefined;
+    const data = (item as unknown as { data?: unknown }).data as NovaCompletionData | undefined;
     const id = data?.nova?.completion_context_id;
     if (typeof id === 'string' && id.length > 0) {
       return id;

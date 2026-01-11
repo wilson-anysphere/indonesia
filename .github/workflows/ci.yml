@@ -44,8 +44,13 @@ jobs:
         run: |
           ./scripts/sync-versions.sh
           git diff --exit-code
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: npm ci
+      - name: Run unit tests
+        working-directory: editors/vscode
+        run: npm test
       - name: Package VSIX
         working-directory: editors/vscode
         run: |
-          npm ci
           npm run package
