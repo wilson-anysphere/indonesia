@@ -63,6 +63,17 @@ jobs:
           mkdir -p real-project-logs
           ./scripts/javac-validate.sh 2>&1 | tee real-project-logs/javac-validate.log
 
+      - name: Clean fixture build outputs
+        if: always()
+        run: |
+          set -euxo pipefail
+          # Keep the cache focused on the checked-out source trees, not build outputs.
+          if [[ -d test-projects ]]; then
+            find test-projects \
+              -path '*/.git' -prune -o \
+              -type d -name target -prune -exec rm -rf {} +
+          fi
+
       - name: Save test projects cache
         if: always() && steps.test-projects-cache.outputs.cache-hit != 'true'
         continue-on-error: true
