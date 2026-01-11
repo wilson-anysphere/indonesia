@@ -80,6 +80,26 @@ action {
 }
 
 #[test]
+fn windows_drive_classpath_with_forward_slashes_is_not_split_on_colon() {
+    let output = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:win"
+  arguments: "external/local_jdk/bin/javac"
+  arguments: "-classpath"
+  arguments: "C:/foo/bar.jar"
+  arguments: "C:/src/Hello.java"
+}
+"#;
+
+    let actions = parse_aquery_textproto(output);
+    assert_eq!(actions.len(), 1);
+
+    let info = extract_java_compile_info(&actions[0]);
+    assert_eq!(info.classpath, vec!["C:/foo/bar.jar".to_string()]);
+}
+
+#[test]
 fn windows_path_lists_split_on_semicolon() {
     let output = r#"
 action {

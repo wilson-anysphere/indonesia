@@ -674,7 +674,10 @@ fn looks_like_windows_absolute_path(value: &str) -> bool {
 
 fn is_windows_drive_absolute_path(value: &str) -> bool {
     let bytes = value.as_bytes();
-    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'\\' | b'/')
 }
 
 fn split_windows_drive_list(value: &str) -> Option<Vec<String>> {
@@ -688,7 +691,7 @@ fn split_windows_drive_list(value: &str) -> Option<Vec<String>> {
         if bytes[i] == b':'
             && bytes[i + 1].is_ascii_alphabetic()
             && bytes[i + 2] == b':'
-            && bytes[i + 3] == b'\\'
+            && matches!(bytes[i + 3], b'\\' | b'/')
         {
             split_points.push(i);
         }
