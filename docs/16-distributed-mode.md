@@ -245,9 +245,10 @@ Distributed mode currently prioritizes correctness and simplicity over throughpu
 - **Full shard rebuilds.** `UpdateFile` triggers a full rebuild of the shard index (not an
   incremental update).
 - **Large payloads / memory spikes.** The router and worker both hold full file texts in memory.
-  Very large shards can cause high peak memory usage. The v3 transport mitigates this with
-  negotiated frame/payload size limits and optional `PacketChunk` chunking (and, optionally,
-  compression) to avoid unbounded allocations.
+  Very large shards can cause high peak memory usage. The planned v3 transport is intended to
+  mitigate this with negotiated frame/payload size limits and optional `PacketChunk` chunking (and
+  compression) to avoid unbounded allocations, but it is not yet wired into
+  `nova-router`/`nova-worker`.
 - **Sequential indexing.** `index_workspace` currently indexes shards in a straightforward loop,
   rather than aggressively parallelizing shard RPCs.
 
@@ -268,9 +269,9 @@ Remote mode is **not hardened** and should not be exposed to untrusted networks.
 - For stronger authentication/authorization guarantees, configure **mTLS** (client certificate
   verification) and shard-scoped authorization (e.g. the router’s client-cert fingerprint allowlist).
 - Even with TLS/mTLS enabled, remote deployments still need DoS hardening (connection limits, rate
-  limiting, etc.). The v3 transport provides hooks for this (negotiated max frame/payload sizes,
-  handshake timeouts, keepalive/idle timeouts), but it is not a substitute for network-level
-  controls.
+  limiting, etc.). The planned v3 transport is intended to help via negotiated max frame/payload
+  sizes (see `docs/17-remote-rpc-protocol.md`) and strict handshake framing, but it is not a
+  substitute for network-level controls.
 
 ## Future work (not implemented yet)
 
