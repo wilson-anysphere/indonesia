@@ -28,6 +28,11 @@ struct HirDbAdapter<'a>(&'a dyn NovaResolve);
 
 impl HirDatabase for HirDbAdapter<'_> {
     fn file_text(&self, file: FileId) -> Arc<str> {
+        // `nova-hir`'s standalone query helpers use `Arc<str>`. The Salsa DB keeps
+        // file content as an `Arc<String>`, so we downcast by copying.
+        //
+        // This keeps `nova-resolve` independent of Salsa while still allowing
+        // us to use it from queries.
         Arc::from(self.0.file_content(file).as_str())
     }
 
