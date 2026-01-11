@@ -363,14 +363,14 @@ impl<'a> Lexer<'a> {
             if self
                 .input
                 .get(after_dash..)
-                .map_or(false, |s| s.starts_with("sealed"))
+                .is_some_and(|s| s.starts_with("sealed"))
             {
                 let sealed_end = after_dash + "sealed".len();
                 if self
                     .input
                     .get(sealed_end..)
                     .and_then(|rest| rest.chars().next())
-                    .map_or(true, |ch| !is_ident_continue(ch))
+                    .is_none_or(|ch| !is_ident_continue(ch))
                 {
                     self.pos = sealed_end;
                     return SyntaxKind::NonSealedKw;

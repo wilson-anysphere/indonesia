@@ -84,6 +84,11 @@ impl TextRange {
     pub fn len(self) -> u32 {
         self.end - self.start
     }
+
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.start == self.end
+    }
 }
 
 /// A single edit to a UTF-8 source buffer.

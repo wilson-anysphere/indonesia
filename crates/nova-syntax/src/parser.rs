@@ -1068,7 +1068,7 @@ impl<'a> Parser<'a> {
         while self.at(SyntaxKind::Dot)
             && self
                 .nth(1)
-                .map_or(false, |k| k.is_identifier_like() || k == SyntaxKind::Star)
+                .is_some_and(|k| k.is_identifier_like() || k == SyntaxKind::Star)
         {
             self.bump(); // .
             if self.at(SyntaxKind::Star) {
@@ -1929,8 +1929,7 @@ impl<'a> Parser<'a> {
         } else {
             self.builder.start_node(SyntaxKind::NamedType.into());
             self.expect_ident_like("expected type name");
-            while self.at(SyntaxKind::Dot) && self.nth(1).map_or(false, |k| k.is_identifier_like())
-            {
+            while self.at(SyntaxKind::Dot) && self.nth(1).is_some_and(|k| k.is_identifier_like()) {
                 self.bump();
                 self.expect_ident_like("expected type name segment");
             }
@@ -2135,7 +2134,7 @@ impl<'a> Parser<'a> {
                         .start_node_at(checkpoint, SyntaxKind::NameExpression.into());
                     self.bump();
                     while self.at(SyntaxKind::Dot)
-                        && self.nth(1).map_or(false, |k| k.is_identifier_like())
+                        && self.nth(1).is_some_and(|k| k.is_identifier_like())
                     {
                         self.bump();
                         self.bump();
@@ -2198,7 +2197,7 @@ impl<'a> Parser<'a> {
                     if min_bp > 120 {
                         break;
                     }
-                    if self.nth(1).map_or(false, |k| k.is_identifier_like()) {
+                    if self.nth(1).is_some_and(|k| k.is_identifier_like()) {
                         self.builder
                             .start_node_at(checkpoint, SyntaxKind::FieldAccessExpression.into());
                         self.bump();
@@ -2306,9 +2305,7 @@ impl<'a> Parser<'a> {
         if self.at(SyntaxKind::LParen) {
             self.bump();
             while !self.at(SyntaxKind::RParen) && !self.at(SyntaxKind::Eof) {
-                if self.at_ident_like() {
-                    self.bump();
-                } else if self.at(SyntaxKind::Comma) {
+                if self.at_ident_like() || self.at(SyntaxKind::Comma) {
                     self.bump();
                 } else {
                     self.bump_any();
@@ -2409,7 +2406,7 @@ impl<'a> Parser<'a> {
                     if self
                         .tokens
                         .get(i)
-                        .map_or(false, |t| t.kind.is_identifier_like())
+                        .is_some_and(|t| t.kind.is_identifier_like())
                     {
                         i += 1;
                         loop {
@@ -2422,7 +2419,7 @@ impl<'a> Parser<'a> {
                             if !self
                                 .tokens
                                 .get(seg)
-                                .map_or(false, |t| t.kind.is_identifier_like())
+                                .is_some_and(|t| t.kind.is_identifier_like())
                             {
                                 i = dot;
                                 break;
@@ -2451,7 +2448,7 @@ impl<'a> Parser<'a> {
             return self
                 .tokens
                 .get(j)
-                .map_or(false, |t| t.kind.is_identifier_like());
+                .is_some_and(|t| t.kind.is_identifier_like());
         }
 
         if is_primitive_type(first) {
@@ -2469,7 +2466,7 @@ impl<'a> Parser<'a> {
                 if !self
                     .tokens
                     .get(seg)
-                    .map_or(false, |t| t.kind.is_identifier_like())
+                    .is_some_and(|t| t.kind.is_identifier_like())
                 {
                     i = dot;
                     break;
@@ -2503,7 +2500,7 @@ impl<'a> Parser<'a> {
         i = skip_trivia(&self.tokens, i);
         self.tokens
             .get(i)
-            .map_or(false, |t| t.kind.is_identifier_like())
+            .is_some_and(|t| t.kind.is_identifier_like())
     }
 
     fn recover_top_level(&mut self) {
@@ -2678,7 +2675,7 @@ impl<'a> Parser<'a> {
     }
 
     fn eat_trivia(&mut self) {
-        while self.tokens.front().map_or(false, |t| t.kind.is_trivia()) {
+        while self.tokens.front().is_some_and(|t| t.kind.is_trivia()) {
             self.bump_any();
         }
     }
@@ -2836,7 +2833,7 @@ impl<'a> Parser<'a> {
 }
 
 fn skip_trivia(tokens: &VecDeque<Token>, mut idx: usize) -> usize {
-    while tokens.get(idx).map_or(false, |t| t.kind.is_trivia()) {
+    while tokens.get(idx).is_some_and(|t| t.kind.is_trivia()) {
         idx += 1;
     }
     idx
@@ -2881,7 +2878,7 @@ fn skip_annotation(tokens: &VecDeque<Token>, idx: usize) -> usize {
     i = skip_trivia(tokens, i);
 
     // Annotation name.
-    if !tokens.get(i).map_or(false, |t| t.kind.is_identifier_like()) {
+    if !tokens.get(i).is_some_and(|t| t.kind.is_identifier_like()) {
         return i;
     }
     i += 1;
@@ -2893,10 +2890,7 @@ fn skip_annotation(tokens: &VecDeque<Token>, idx: usize) -> usize {
             break;
         }
         let seg = skip_trivia(tokens, dot + 1);
-        if !tokens
-            .get(seg)
-            .map_or(false, |t| t.kind.is_identifier_like())
-        {
+        if !tokens.get(seg).is_some_and(|t| t.kind.is_identifier_like()) {
             i = dot;
             break;
         }
