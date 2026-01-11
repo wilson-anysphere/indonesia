@@ -896,6 +896,15 @@ fn needs_space_to_avoid_token_merge(last: &SigToken, next_kind: SyntaxKind) -> b
         (SyntaxKind::Bang, SyntaxKind::Eq) => true,
         (SyntaxKind::Less, SyntaxKind::Less) => true,
         (SyntaxKind::Greater, SyntaxKind::Greater) => true,
+        // Avoid collapsing separated shift tokens like `> >>` or `>> >` into the unsigned-shift
+        // operator `>>>` (or similarly `> >=` -> `>>=`).
+        (SyntaxKind::Greater, SyntaxKind::RightShift)
+        | (SyntaxKind::RightShift, SyntaxKind::Greater)
+        | (SyntaxKind::Greater, SyntaxKind::GreaterEq)
+        | (SyntaxKind::RightShift, SyntaxKind::GreaterEq)
+        | (SyntaxKind::Greater, SyntaxKind::RightShiftEq) => true,
+        // Similarly for left-shift assignment: `< <=` would become `<<=`.
+        (SyntaxKind::Less, SyntaxKind::LessEq) => true,
 
         // Avoid forming assignment operators like `+=` / `>>=` from separated tokens.
         (
