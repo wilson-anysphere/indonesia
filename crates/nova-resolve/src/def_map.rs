@@ -155,12 +155,20 @@ impl DefMap {
         self.top_level_types.get(name).copied()
     }
 
+    pub fn top_level_types(&self) -> impl Iterator<Item = (&Name, ItemId)> + '_ {
+        self.top_level_types.iter().map(|(name, &id)| (name, id))
+    }
+
     #[must_use]
     pub fn lookup_nested(&self, owner: ItemId, name: &Name) -> Option<ItemId> {
         self.types
             .get(&owner)
             .and_then(|owner| owner.nested_types.get(name))
             .copied()
+    }
+
+    pub fn types(&self) -> impl Iterator<Item = (ItemId, &TypeDef)> + '_ {
+        self.types.iter().map(|(&id, def)| (id, def))
     }
 
     #[must_use]

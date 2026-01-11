@@ -534,3 +534,174 @@ class Use {
         "expected exported import to be resolved, got diagnostics: {diags:?}"
     );
 }
+
+#[test]
+fn same_package_resolves_workspace_type_across_files() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let foo_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/p/Foo.java",
+        r#"
+package p;
+class Foo {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/p/Bar.java",
+        r#"
+package p;
+
+class Bar {
+    Foo field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![foo_file, use_file]));
+
+    let foo_item = db
+        .def_map(foo_file)
+        .lookup_top_level(&Name::from("Foo"))
+        .expect("Foo should be declared in workspace file");
+
+    let scopes = db.scope_graph(use_file);
+    let resolved = db.resolve_name(use_file, scopes.file_scope, Name::from("Foo"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::Source(foo_item)))
+    );
+}
+
+#[test]
+fn star_import_resolves_workspace_type() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let foo_file = FileId::from_raw(1);
+    let use_file = FileId::from_raw(2);
+    set_file(
+        &mut db,
+        project,
+        foo_file,
+        "src/q/Foo.java",
+        r#"
+package q;
+class Foo {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/p/Bar.java",
+        r#"
+package p;
+import q.*;
+
+class Bar {
+    Foo field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![foo_file, use_file]));
+
+    let foo_item = db
+        .def_map(foo_file)
+        .lookup_top_level(&Name::from("Foo"))
+        .expect("Foo should be declared in workspace file");
+
+    let scopes = db.scope_graph(use_file);
+    let resolved = db.resolve_name(use_file, scopes.file_scope, Name::from("Foo"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::Source(foo_item)))
+    );
+}
+
+#[test]
+fn duplicate_top_level_type_keeps_deterministic_winner() {
+    let mut db = SalsaRootDatabase::default();
+    let project = ProjectId::from_raw(0);
+    let tmp = TempDir::new().unwrap();
+
+    db.set_jdk_index(project, ArcEq::new(Arc::new(JdkIndex::new())));
+    db.set_classpath_index(project, None);
+    db.set_project_config(
+        project,
+        Arc::new(base_project_config(tmp.path().to_path_buf())),
+    );
+
+    let foo_a = FileId::from_raw(1);
+    let foo_b = FileId::from_raw(2);
+    let use_file = FileId::from_raw(3);
+    set_file(
+        &mut db,
+        project,
+        foo_a,
+        "src/p/FooA.java",
+        r#"
+package p;
+class Foo {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        foo_b,
+        "src/p/FooB.java",
+        r#"
+package p;
+class Foo {}
+"#,
+    );
+    set_file(
+        &mut db,
+        project,
+        use_file,
+        "src/p/Bar.java",
+        r#"
+package p;
+
+class Bar {
+    Foo field;
+}
+"#,
+    );
+    db.set_project_files(project, Arc::new(vec![foo_a, foo_b, use_file]));
+
+    let foo_item = db
+        .def_map(foo_a)
+        .lookup_top_level(&Name::from("Foo"))
+        .expect("Foo should be declared in first file");
+
+    let scopes = db.scope_graph(use_file);
+    let resolved = db.resolve_name(use_file, scopes.file_scope, Name::from("Foo"));
+    assert_eq!(
+        resolved,
+        Some(Resolution::Type(TypeResolution::Source(foo_item)))
+    );
+}

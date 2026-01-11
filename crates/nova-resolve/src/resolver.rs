@@ -922,7 +922,6 @@ mod tests {
         let mut index = TestIndex::default();
         let foo_a = index.add_type("a", "Foo");
         let foo_b = index.add_type("b", "Foo");
-        index.add_type("java.lang", "Foo");
 
         let resolver = Resolver::new(&jdk).with_classpath(&index);
 

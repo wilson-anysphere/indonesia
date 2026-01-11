@@ -15,6 +15,7 @@ pub mod jpms;
 pub mod jpms_env;
 pub mod members;
 pub mod scopes;
+pub mod source_index;
 pub mod type_ref;
 pub mod types;
 pub mod workspace;
@@ -38,5 +39,6 @@ pub use scopes::{
     build_scopes, build_scopes_for_item_tree, ItemTreeScopeBuildResult, ScopeBuildResult,
     ScopeData, ScopeGraph, ScopeId, ScopeKind,
 };
+pub use source_index::SourceTypeIndex;
 pub use types::{TypeDef, TypeKind};
 pub use workspace::WorkspaceDefMap;
