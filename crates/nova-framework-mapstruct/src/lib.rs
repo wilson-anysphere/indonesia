@@ -17,9 +17,12 @@ use nova_apt::discover_generated_source_roots;
 use nova_core::ProjectId;
 use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
 use nova_types::{ClassId, Diagnostic, Span};
+use nova_framework_parse::{
+    collect_annotations, find_named_child, node_text, parse_java, visit_nodes, ParsedAnnotation,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComponentModel {
@@ -369,157 +372,6 @@ fn collect_java_files_inner(root: &Path, out: &mut Vec<PathBuf>) -> std::io::Res
     Ok(())
 }
 
-fn parse_java(source: &str) -> Result<tree_sitter::Tree, String> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(tree_sitter_java::language())
-        .map_err(|_| "tree-sitter-java language load failed".to_string())?;
-    parser
-        .parse(source, None)
-        .ok_or_else(|| "tree-sitter failed to produce a syntax tree".to_string())
-}
-
-fn visit_nodes<'a, F: FnMut(Node<'a>)>(node: Node<'a>, f: &mut F) {
-    f(node);
-    if node.child_count() == 0 {
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        visit_nodes(child, f);
-    }
-}
-
-fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
-    &source[node.byte_range()]
-}
-
-#[derive(Clone, Debug)]
-struct Annotation {
-    simple_name: String,
-    args: HashMap<String, String>,
-    span: Span,
-    text: String,
-}
-
-fn collect_annotations(modifiers: Node<'_>, source: &str) -> Vec<Annotation> {
-    let mut anns = Vec::new();
-    let mut cursor = modifiers.walk();
-    for child in modifiers.named_children(&mut cursor) {
-        if child.kind().ends_with("annotation") {
-            if let Some(ann) = parse_annotation(child, source) {
-                anns.push(ann);
-            }
-        }
-    }
-    anns
-}
-
-fn parse_annotation(node: Node<'_>, source: &str) -> Option<Annotation> {
-    let text = node_text(source, node).trim().to_string();
-    let span = Span::new(node.start_byte(), node.end_byte());
-    parse_annotation_text(&text, span)
-}
-
-fn parse_annotation_text(text: &str, span: Span) -> Option<Annotation> {
-    let text = text.trim();
-    if !text.starts_with('@') {
-        return None;
-    }
-    let rest = &text[1..];
-    let (name_part, args_part) = match rest.split_once('(') {
-        Some((name, args)) => (name.trim(), Some(args)),
-        None => (rest.trim(), None),
-    };
-
-    let simple_name = name_part
-        .rsplit('.')
-        .next()
-        .unwrap_or(name_part)
-        .trim()
-        .to_string();
-
-    let mut args = HashMap::new();
-    if let Some(args_part) = args_part {
-        let args_part = args_part.trim_end_matches(')').trim();
-        parse_annotation_args(args_part, &mut args);
-    }
-
-    Some(Annotation {
-        simple_name,
-        args,
-        span,
-        text: text.to_string(),
-    })
-}
-
-fn parse_annotation_args(args_part: &str, out: &mut HashMap<String, String>) {
-    for segment in split_top_level_commas(args_part) {
-        let seg = segment.trim();
-        if seg.is_empty() {
-            continue;
-        }
-
-        if !seg.contains('=') {
-            if let Some(value) = parse_literal(seg) {
-                out.insert("value".to_string(), value);
-            }
-            continue;
-        }
-
-        let Some((key, value)) = seg.split_once('=') else {
-            continue;
-        };
-        let key = key.trim().to_string();
-        let value = value.trim();
-        if let Some(parsed) = parse_literal(value) {
-            out.insert(key, parsed);
-        }
-    }
-}
-
-fn split_top_level_commas(input: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut depth = 0u32;
-    let mut in_string = false;
-    let mut current = String::new();
-
-    for ch in input.chars() {
-        match ch {
-            '"' => {
-                in_string = !in_string;
-                current.push(ch);
-            }
-            '(' if !in_string => {
-                depth += 1;
-                current.push(ch);
-            }
-            ')' if !in_string => {
-                depth = depth.saturating_sub(1);
-                current.push(ch);
-            }
-            ',' if !in_string && depth == 0 => {
-                out.push(current);
-                current = String::new();
-            }
-            _ => current.push(ch),
-        }
-    }
-    out.push(current);
-    out
-}
-
-fn parse_literal(input: &str) -> Option<String> {
-    let input = input.trim();
-    if input.starts_with('"') && input.ends_with('"') && input.len() >= 2 {
-        return Some(input[1..input.len() - 1].to_string());
-    }
-    if input.starts_with('\'') && input.ends_with('\'') && input.len() >= 2 {
-        return Some(input[1..input.len() - 1].to_string());
-    }
-    Some(input.to_string())
-}
-
 fn discover_mappers_in_source(
     file: &Path,
     source: &str,
@@ -825,7 +677,7 @@ fn parse_formal_parameters(
     out
 }
 
-fn parse_mapping_annotation(annotation: &Annotation) -> Option<PropertyMappingModel> {
+fn parse_mapping_annotation(annotation: &ParsedAnnotation) -> Option<PropertyMappingModel> {
     let (target, target_span) = annotation_string_value_span(annotation, "target")?;
     let source = annotation.args.get("source").cloned();
     Some(PropertyMappingModel {
@@ -835,7 +687,7 @@ fn parse_mapping_annotation(annotation: &Annotation) -> Option<PropertyMappingMo
     })
 }
 
-fn annotation_string_value_span(annotation: &Annotation, key: &str) -> Option<(String, Span)> {
+fn annotation_string_value_span(annotation: &ParsedAnnotation, key: &str) -> Option<(String, Span)> {
     let haystack = annotation.text.as_str();
     let idx = haystack.find(key)?;
     let after_key = &haystack[idx + key.len()..];
@@ -898,14 +750,6 @@ fn parse_java_type(raw: &str, default_package: Option<&str>) -> JavaType {
     };
 
     JavaType { package: pkg, name }
-}
-
-fn find_named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
-    let mut cursor = node.walk();
-    let result = node
-        .named_children(&mut cursor)
-        .find(|child| child.kind() == kind);
-    result
 }
 
 fn infer_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {

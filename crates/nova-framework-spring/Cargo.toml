@@ -14,9 +14,9 @@ nova-types = { path = "../nova-types" }
 nova-config-metadata = { path = "../nova-config-metadata" }
 nova-properties = { path = "../nova-properties" }
 nova-yaml = { path = "../nova-yaml" }
+nova-framework-parse = { path = "../nova-framework-parse" }
 
 tree-sitter = "0.20"
-tree-sitter-java = "0.20"
 zip = "0.6"
 
 [dev-dependencies]

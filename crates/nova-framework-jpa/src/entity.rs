@@ -1,7 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
+use nova_framework_parse::{
+    clean_type, collect_annotations, find_named_child, node_text, parse_java, visit_nodes,
+    ParsedAnnotation,
+};
 use nova_types::{Diagnostic, Span};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 pub const JPA_PARSE_ERROR: &str = "JPA_PARSE_ERROR";
 pub const JPA_MISSING_ID: &str = "JPA_MISSING_ID";
@@ -149,27 +153,6 @@ fn parse_entities(source: &str, source_idx: usize) -> Result<Vec<Entity>, String
     });
 
     Ok(out)
-}
-
-fn parse_java(source: &str) -> Result<tree_sitter::Tree, String> {
-    let mut parser = Parser::new();
-    parser
-        .set_language(tree_sitter_java::language())
-        .map_err(|_| "tree-sitter-java language load failed".to_string())?;
-    parser
-        .parse(source, None)
-        .ok_or_else(|| "tree-sitter failed to produce a syntax tree".to_string())
-}
-
-fn visit_nodes<'a, F: FnMut(Node<'a>)>(node: Node<'a>, f: &mut F) {
-    f(node);
-    if node.child_count() == 0 {
-        return;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        visit_nodes(child, f);
-    }
 }
 
 fn parse_entity_class(node: Node<'_>, source: &str, source_idx: usize) -> Option<Entity> {
@@ -528,14 +511,6 @@ fn decapitalize_java_bean(name: &str) -> String {
     out
 }
 
-fn find_named_child<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
-    let mut cursor = node.walk();
-    let result = node
-        .named_children(&mut cursor)
-        .find(|child| child.kind() == kind);
-    result
-}
-
 fn infer_field_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
     // Field declarations are roughly: [modifiers] <type> <declarator> ...
     let mut cursor = node.walk();
@@ -549,11 +524,7 @@ fn infer_field_type_node<'a>(node: Node<'a>) -> Option<Node<'a>> {
     None
 }
 
-fn clean_type(raw: &str) -> String {
-    raw.split_whitespace().collect::<String>()
-}
-
-fn relationship_from_annotation(ann: &Annotation, _source: &str) -> Option<Relationship> {
+fn relationship_from_annotation(ann: &ParsedAnnotation, _source: &str) -> Option<Relationship> {
     let kind = match ann.simple_name.as_str() {
         "OneToMany" => RelationshipKind::OneToMany,
         "ManyToOne" => RelationshipKind::ManyToOne,
@@ -575,139 +546,7 @@ fn relationship_from_annotation(ann: &Annotation, _source: &str) -> Option<Relat
         span: ann.span,
     })
 }
-
-#[derive(Clone, Debug)]
-struct Annotation {
-    simple_name: String,
-    args: HashMap<String, String>,
-    span: Span,
-}
-
-fn collect_annotations(modifiers: Node<'_>, source: &str) -> Vec<Annotation> {
-    let mut anns = Vec::new();
-    let mut cursor = modifiers.walk();
-    for child in modifiers.named_children(&mut cursor) {
-        if child.kind().ends_with("annotation") {
-            if let Some(ann) = parse_annotation(child, source) {
-                anns.push(ann);
-            }
-        }
-    }
-    anns
-}
-
-fn parse_annotation(node: Node<'_>, source: &str) -> Option<Annotation> {
-    let text = node_text(source, node);
-    let span = Span::new(node.start_byte(), node.end_byte());
-    parse_annotation_text(text, span)
-}
-
-fn parse_annotation_text(text: &str, span: Span) -> Option<Annotation> {
-    let text = text.trim();
-    if !text.starts_with('@') {
-        return None;
-    }
-    let rest = &text[1..];
-    let (name_part, args_part) = match rest.split_once('(') {
-        Some((name, args)) => (name.trim(), Some(args)),
-        None => (rest.trim(), None),
-    };
-
-    let simple_name = name_part
-        .rsplit('.')
-        .next()
-        .unwrap_or(name_part)
-        .trim()
-        .to_string();
-
-    let mut args = HashMap::new();
-    if let Some(args_part) = args_part {
-        let args_part = args_part.trim_end_matches(')').trim();
-        parse_annotation_args(args_part, &mut args);
-    }
-
-    Some(Annotation {
-        simple_name,
-        args,
-        span,
-    })
-}
-
-fn parse_annotation_args(args_part: &str, out: &mut HashMap<String, String>) {
-    // Very small, best-effort parser for named arguments.
-    //
-    // Example: `name = "users", schema="public"`
-    for segment in split_top_level_commas(args_part) {
-        let seg = segment.trim();
-        if seg.is_empty() {
-            continue;
-        }
-
-        // When the annotation uses a single positional argument, JPA commonly
-        // treats it as `value`. We record it as `value`.
-        if !seg.contains('=') {
-            if let Some(value) = parse_literal(seg) {
-                out.insert("value".to_string(), value);
-            }
-            continue;
-        }
-
-        let Some((key, value)) = seg.split_once('=') else {
-            continue;
-        };
-        let key = key.trim().to_string();
-        let value = value.trim();
-        if let Some(parsed) = parse_literal(value) {
-            out.insert(key, parsed);
-        }
-    }
-}
-
-fn split_top_level_commas(input: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut depth = 0u32;
-    let mut in_string = false;
-    let mut current = String::new();
-
-    for ch in input.chars() {
-        match ch {
-            '"' => {
-                in_string = !in_string;
-                current.push(ch);
-            }
-            '(' if !in_string => {
-                depth += 1;
-                current.push(ch);
-            }
-            ')' if !in_string => {
-                depth = depth.saturating_sub(1);
-                current.push(ch);
-            }
-            ',' if !in_string && depth == 0 => {
-                out.push(current);
-                current = String::new();
-            }
-            _ => current.push(ch),
-        }
-    }
-    out.push(current);
-    out
-}
-
-fn parse_literal(input: &str) -> Option<String> {
-    let input = input.trim();
-    if input.starts_with('"') && input.ends_with('"') && input.len() >= 2 {
-        return Some(input[1..input.len() - 1].to_string());
-    }
-    if input.starts_with('\'') && input.ends_with('\'') && input.len() >= 2 {
-        return Some(input[1..input.len() - 1].to_string());
-    }
-    Some(input.to_string())
-}
-
-fn node_text<'a>(source: &'a str, node: Node<'_>) -> &'a str {
-    &source[node.byte_range()]
-}
+// (tree-sitter helpers live in `nova-framework-parse`)
 
 fn validate_model(model: &EntityModel) -> Vec<SourceDiagnostic> {
     let mut diags = Vec::new();

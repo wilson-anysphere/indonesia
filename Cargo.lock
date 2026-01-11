@@ -3527,6 +3527,7 @@ version = "0.1.0"
 dependencies = [
  "nova-core",
  "nova-framework",
+ "nova-framework-parse",
  "nova-hir",
  "nova-resolve",
  "nova-types",
@@ -3535,7 +3536,6 @@ dependencies = [
  "regex",
  "tempfile",
  "tree-sitter",
- "tree-sitter-java",
  "zip 0.6.6",
 ]
 
@@ -3557,10 +3557,10 @@ dependencies = [
  "nova-apt",
  "nova-core",
  "nova-framework",
+ "nova-framework-parse",
  "nova-hir",
  "nova-types",
  "tree-sitter",
- "tree-sitter-java",
 ]
 
 [[package]]
@@ -3569,6 +3569,7 @@ version = "0.1.0"
 dependencies = [
  "nova-core",
  "nova-framework",
+ "nova-framework-parse",
  "nova-hir",
  "nova-index",
  "nova-properties",
@@ -3577,8 +3578,16 @@ dependencies = [
  "nova-yaml",
  "pretty_assertions",
  "tree-sitter",
- "tree-sitter-java",
  "zip 0.6.6",
+]
+
+[[package]]
+name = "nova-framework-parse"
+version = "0.1.0"
+dependencies = [
+ "nova-types",
+ "tree-sitter",
+ "tree-sitter-java",
 ]
 
 [[package]]
@@ -3602,6 +3611,7 @@ dependencies = [
  "nova-config-metadata",
  "nova-core",
  "nova-framework",
+ "nova-framework-parse",
  "nova-hir",
  "nova-index",
  "nova-project",
@@ -3612,7 +3622,6 @@ dependencies = [
  "pretty_assertions",
  "tempfile",
  "tree-sitter",
- "tree-sitter-java",
  "zip 0.6.6",
 ]
 

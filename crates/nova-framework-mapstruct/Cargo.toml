@@ -9,8 +9,8 @@ nova-core = { path = "../nova-core" }
 nova-framework = { path = "../nova-framework" }
 nova-hir = { path = "../nova-hir" }
 nova-types = { path = "../nova-types" }
+nova-framework-parse = { path = "../nova-framework-parse" }
 
 tree-sitter = "0.20"
-tree-sitter-java = "0.20"
 
 [dev-dependencies]

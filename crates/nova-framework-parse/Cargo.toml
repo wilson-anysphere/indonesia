@@ -1,0 +1,11 @@
+[package]
+name = "nova-framework-parse"
+version.workspace = true
+edition = "2021"
+
+[dependencies]
+nova-types = { path = "../nova-types" }
+
+tree-sitter = "0.20"
+tree-sitter-java = "0.20"
+
