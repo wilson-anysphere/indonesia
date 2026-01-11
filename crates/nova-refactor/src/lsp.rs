@@ -5,6 +5,7 @@ use lsp_types::{
     OptionalVersionedTextDocumentIdentifier, Position, Range, ResourceOp, TextDocumentEdit,
     TextEdit as LspTextEdit, Uri, WorkspaceEdit as LspWorkspaceEdit,
 };
+use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_index::Index;
 use thiserror::Error;
 
@@ -130,6 +131,7 @@ where
     normalized.normalize()?;
 
     let mut changes: HashMap<Uri, Vec<LspTextEdit>> = HashMap::new();
+    let mut line_indexes: HashMap<FileId, LineIndex> = HashMap::new();
 
     for e in &normalized.text_edits {
         let text = db
@@ -137,9 +139,13 @@ where
             .ok_or_else(|| LspConversionError::UnknownFile(e.file.clone()))?;
         let uri = file_id_to_uri(&e.file)?;
 
+        let line_index = line_indexes
+            .entry(e.file.clone())
+            .or_insert_with(|| LineIndex::new(text));
+
         let range = Range {
-            start: offset_to_position(text, e.range.start),
-            end: offset_to_position(text, e.range.end),
+            start: offset_to_position(line_index, text, e.range.start),
+            end: offset_to_position(line_index, text, e.range.end),
         };
 
         changes.entry(uri).or_default().push(LspTextEdit {
@@ -261,14 +267,15 @@ where
             .get(&file)
             .ok_or_else(|| LspConversionError::UnknownFile(file.clone()))?;
         let uri = file_id_to_uri(&file)?;
+        let line_index = LineIndex::new(text);
 
         // Convert byte offsets -> UTF-16 positions.
         let mut lsp_edits: Vec<lsp_types::OneOf<LspTextEdit, lsp_types::AnnotatedTextEdit>> = edits
             .drain(..)
             .map(|e| {
                 let range = Range {
-                    start: offset_to_position(text, e.range.start),
-                    end: offset_to_position(text, e.range.end),
+                    start: offset_to_position(&line_index, text, e.range.start),
+                    end: offset_to_position(&line_index, text, e.range.end),
                 };
                 lsp_types::OneOf::Left(LspTextEdit {
                     range,
@@ -329,34 +336,25 @@ fn file_id_to_uri(file: &FileId) -> Result<Uri, LspConversionError> {
         .map_err(|_| LspConversionError::InvalidUri(file.clone()))
 }
 
-fn offset_to_position(text: &str, offset: usize) -> Position {
-    let mut line: u32 = 0;
-    let mut col_utf16: u32 = 0;
+pub fn position_to_offset_utf16(text: &str, position: Position) -> Option<usize> {
+    let index = LineIndex::new(text);
+    let core_position = CorePosition::new(position.line, position.character);
+    index
+        .offset_of_position(text, core_position)
+        .map(|offset| u32::from(offset) as usize)
+}
 
-    let mut i = 0;
-    for ch in text.chars() {
-        if i >= offset {
-            break;
-        }
-
-        if ch == '\n' {
-            line += 1;
-            col_utf16 = 0;
-        } else {
-            col_utf16 += ch.len_utf16() as u32;
-        }
-
-        i += ch.len_utf8();
-    }
-
+fn offset_to_position(line_index: &LineIndex, text: &str, offset: usize) -> Position {
+    let position = line_index.position(text, TextSize::from(offset as u32));
     Position {
-        line,
-        character: col_utf16,
+        line: position.line,
+        character: position.character,
     }
 }
 
 fn full_document_range(contents: &str) -> Range {
-    let end = offset_to_position(contents, contents.len());
+    let line_index = LineIndex::new(contents);
+    let end = offset_to_position(&line_index, contents, contents.len());
     Range {
         start: Position {
             line: 0,
@@ -428,10 +426,11 @@ fn _lsp_text_edit(
     let text = db
         .file_text(&edit.file)
         .ok_or_else(|| LspConversionError::UnknownFile(edit.file.clone()))?;
+    let line_index = LineIndex::new(text);
     Ok(LspTextEdit {
         range: Range {
-            start: offset_to_position(text, edit.range.start),
-            end: offset_to_position(text, edit.range.end),
+            start: offset_to_position(&line_index, text, edit.range.start),
+            end: offset_to_position(&line_index, text, edit.range.end),
         },
         new_text: edit.replacement.clone(),
     })
