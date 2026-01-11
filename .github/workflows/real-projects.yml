@@ -145,6 +145,33 @@ jobs:
               -type d -name target -prune -exec rm -rf {} +
           fi
 
+      - name: Check fixture cache completeness
+        id: fixture-cache
+        if: always()
+        run: |
+          set -euo pipefail
+          complete=true
+          if [[ -f test-projects/pins.toml ]]; then
+            while read -r name; do
+              [[ -z "$name" ]] && continue
+              if [[ ! -f "test-projects/$name/.git/HEAD" ]]; then
+                complete=false
+                break
+              fi
+            done < <(
+              awk '
+              /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+                name = $0
+                sub(/^[[:space:]]*\[/, "", name)
+                sub(/\][[:space:]]*$/, "", name)
+                print name
+              }' test-projects/pins.toml
+            )
+          else
+            complete=false
+          fi
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+
       - name: Save Maven cache (best-effort)
         if: always() && steps.maven-cache.outputs.cache-hit != 'true' && env.NOVA_TEST_PROJECTS == ''
         continue-on-error: true
@@ -156,7 +183,7 @@ jobs:
           key: m2-${{ runner.os }}-java17-${{ hashFiles('test-projects/pins.toml') }}
 
       - name: Save test projects cache
-        if: always() && steps.test-projects-cache.outputs.cache-hit != 'true' && hashFiles('test-projects/*/.git/HEAD') != '' && env.NOVA_TEST_PROJECTS == ''
+        if: always() && steps.test-projects-cache.outputs.cache-hit != 'true' && steps.fixture-cache.outputs.complete == 'true' && env.NOVA_TEST_PROJECTS == ''
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
