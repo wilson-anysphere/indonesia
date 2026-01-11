@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,8 +59,7 @@ pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
         });
     }
 
-    let cache_dir = project_root.join(".nova").join("build-cache");
-    let build_manager = BuildManager::new(cache_dir);
+    let build_manager = super::build_manager_for_root(&project_root, Duration::from_secs(120));
     let build = ProjectHotSwapBuild {
         project_root: project_root.clone(),
         project,

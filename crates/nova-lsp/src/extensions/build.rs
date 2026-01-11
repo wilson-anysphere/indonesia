@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     env,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use super::config::load_workspace_config;
@@ -153,7 +154,8 @@ impl From<nova_core::Diagnostic> for NovaDiagnostic {
 
 pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Value> {
     let params = parse_params(params)?;
-    let manager = build_manager(&params);
+    let project_root = PathBuf::from(&params.project_root);
+    let manager = super::build_manager_for_root(&project_root, Duration::from_secs(120));
     let result = run_build(&manager, &params)?;
     let resp = NovaBuildProjectResponse {
         diagnostics: result
@@ -167,7 +169,8 @@ pub fn handle_build_project(params: serde_json::Value) -> Result<serde_json::Val
 
 pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Value> {
     let params = parse_params(params)?;
-    let manager = build_manager(&params);
+    let project_root = PathBuf::from(&params.project_root);
+    let manager = super::build_manager_for_root(&project_root, Duration::from_secs(60));
     let cp = run_classpath(&manager, &params)?;
     let metadata = load_build_metadata(&params);
     let resp = NovaClasspathResponse {
@@ -187,21 +190,16 @@ pub fn handle_java_classpath(params: serde_json::Value) -> Result<serde_json::Va
 
 pub fn handle_reload_project(params: serde_json::Value) -> Result<serde_json::Value> {
     let params = parse_params(params)?;
-    let manager = build_manager(&params);
+    let project_root = PathBuf::from(&params.project_root);
+    let manager = super::build_manager_for_root(&project_root, Duration::from_secs(60));
     manager
-        .reload_project(Path::new(&params.project_root))
+        .reload_project(&project_root)
         .map_err(map_build_error)?;
     Ok(serde_json::Value::Null)
 }
 
 fn parse_params(value: serde_json::Value) -> Result<NovaProjectParams> {
     serde_json::from_value(value).map_err(|err| NovaLspError::InvalidParams(err.to_string()))
-}
-
-fn build_manager(params: &NovaProjectParams) -> BuildManager {
-    let root = PathBuf::from(&params.project_root);
-    let cache_dir = root.join(".nova").join("build-cache");
-    BuildManager::new(cache_dir)
 }
 
 fn run_build(build: &BuildManager, params: &NovaProjectParams) -> Result<BuildResult> {
@@ -494,8 +492,7 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
             .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
         let project_root = config.workspace_root.clone();
-        let cache_dir = project_root.join(".nova").join("build-cache");
-        let manager = BuildManager::new(cache_dir);
+        let manager = super::build_manager_for_root(&project_root, Duration::from_secs(60));
 
         let normalized_target = req
             .target
@@ -706,8 +703,7 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
         .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
     let project_root = config.workspace_root.clone();
 
-    let cache_dir = project_root.join(".nova").join("build-cache");
-    let manager = BuildManager::new(cache_dir);
+    let manager = super::build_manager_for_root(&project_root, Duration::from_secs(120));
 
     let language_level = Some(JavaLanguageLevel {
         source: Some(config.java.source.0.to_string()),
@@ -1013,7 +1009,7 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
         module: None,
         project_path: None,
     };
-    let manager = build_manager(&params);
+    let manager = super::build_manager_for_root(&requested_root, Duration::from_secs(120));
     let result = run_build(&manager, &params)?;
     let resp = BuildDiagnosticsResult {
         target: req.target,

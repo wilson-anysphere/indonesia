@@ -1,10 +1,10 @@
 use crate::{NovaLspError, Result};
 use nova_apt::{AptManager, GeneratedSourcesFreshness, ProgressReporter};
-use nova_build::BuildManager;
 use nova_config::NovaConfig;
 use nova_project::{load_project_with_options, LoadOptions, SourceRootKind};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use super::build::NovaDiagnostic;
 use super::config::load_workspace_config;
@@ -110,8 +110,7 @@ pub fn handle_run_annotation_processing(params: serde_json::Value) -> Result<ser
     let params = parse_params(params)?;
     let root = PathBuf::from(&params.project_root);
 
-    let cache_dir = root.join(".nova").join("build-cache");
-    let build = BuildManager::new(cache_dir);
+    let build = super::build_manager_for_root(&root, Duration::from_secs(300));
 
     let (project, config) = load_project_with_workspace_config(&root)?;
     let apt = AptManager::new(project, config);

@@ -2,8 +2,9 @@ use crate::{
     NovaLspError, Result, BUG_REPORT_METHOD, BUILD_DIAGNOSTICS_METHOD, BUILD_PROJECT_METHOD,
     BUILD_STATUS_METHOD, BUILD_TARGET_CLASSPATH_METHOD, DEBUG_CONFIGURATIONS_METHOD,
     DEBUG_HOT_SWAP_METHOD, JAVA_CLASSPATH_METHOD, JAVA_GENERATED_SOURCES_METHOD, METRICS_METHOD,
-    RELOAD_PROJECT_METHOD, RESET_METRICS_METHOD, RUN_ANNOTATION_PROCESSING_METHOD,
-    TEST_DEBUG_CONFIGURATION_METHOD, TEST_DISCOVER_METHOD, TEST_RUN_METHOD,
+    PROJECT_MODEL_METHOD, RELOAD_PROJECT_METHOD, RESET_METRICS_METHOD,
+    RUN_ANNOTATION_PROCESSING_METHOD, TEST_DEBUG_CONFIGURATION_METHOD, TEST_DISCOVER_METHOD,
+    TEST_RUN_METHOD,
 };
 use nova_bugreport::{
     create_bug_report_bundle, global_crash_store, install_panic_hook, BugReportOptions,
@@ -172,6 +173,7 @@ fn deadline_for_method(method: &str) -> Duration {
         BUILD_TARGET_CLASSPATH_METHOD => Duration::from_secs(60),
         BUILD_STATUS_METHOD => Duration::from_secs(5),
         BUILD_DIAGNOSTICS_METHOD => Duration::from_secs(120),
+        PROJECT_MODEL_METHOD => Duration::from_secs(120),
         _ => Duration::from_secs(2),
     }
 }
@@ -191,6 +193,7 @@ fn timeout_enters_safe_mode(method: &str) -> bool {
             | DEBUG_HOT_SWAP_METHOD
             | BUILD_TARGET_CLASSPATH_METHOD
             | BUILD_DIAGNOSTICS_METHOD
+            | PROJECT_MODEL_METHOD
     )
 }
 
