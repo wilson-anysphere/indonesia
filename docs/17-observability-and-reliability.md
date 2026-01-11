@@ -7,7 +7,7 @@ This document describes Nova’s **operational** tooling for understanding and r
 - logging (where it goes, how to turn it up)
 - safe mode (what it is, what triggers it, how to exit)
 - bug report bundles (how to generate and share them safely)
-- runtime metrics (memory pressure + throttling)
+- runtime metrics (request counts/latencies + memory pressure/throttling)
 
 > Note: Nova is still evolving. This document is written to match the behavior implemented in this
 > repository (not just the design docs).
@@ -18,24 +18,29 @@ This document describes Nova’s **operational** tooling for understanding and r
 
 ### Where logs go
 
-Nova uses `tracing` for structured logs. By default, Nova installs a `tracing-subscriber` that writes
-formatted log lines into an **in-memory ring buffer**. This is intentional:
+Nova uses `tracing` for structured logs. Nova always records formatted log lines into an
+**in-memory ring buffer** (used by bug reports). Logs can also be mirrored to:
 
-- LSP/DAP servers communicate over **stdio**, so printing arbitrary logs to `stdout` would corrupt
-  the protocol stream.
-- The in-memory buffer is used to power **bug report bundles** (see below).
+- `stderr` (`logging.stderr = true`, default) — safe for stdio-based LSP/DAP transports; editors
+  usually capture this as “server stderr”
+- a file (`logging.file = "/path/to/nova.log"`) — appended log lines (same format as the in-memory
+  buffer)
 
-What this means in practice:
+`stdout` is reserved for the LSP/DAP protocol stream, so Nova avoids writing logs there.
 
-- **You usually won’t see Nova logs live.** (Panics still print a user-facing message to `stderr`.)
-- To inspect logs, generate a bug report bundle and open `logs.txt`.
+To inspect historical logs (including after a crash), generate a bug report bundle and open
+`logs.txt`.
 
 ### Logging config (`NovaConfig.logging`)
 
 Nova’s logging configuration lives in `nova_config::LoggingConfig`:
 
-- `logging.level` (`"error" | "warn" | "info" | "debug" | "trace"`)
-- `logging.json` (`bool`) – emit JSON-formatted log lines
+- `logging.level` (`string`)
+  - either a simple level (`"error" | "warn" | "info" | "debug" | "trace"`)
+  - **or** a full `tracing_subscriber::EnvFilter` directive string (e.g. `"info,nova.lsp=debug"`)
+- `logging.json` (`bool`) – emit JSON-formatted log lines (affects the ring buffer + stderr/file)
+- `logging.stderr` (`bool`) – mirror logs to `stderr` (default: `true`)
+- `logging.file` (`string`, optional) – append logs to a file
 - `logging.include_backtrace` (`bool`) – include backtraces in recorded panic reports
 - `logging.buffer_lines` (`usize`) – size of the in-memory log ring buffer (lines)
 
@@ -43,8 +48,10 @@ Example `nova.toml` (workspace root):
 
 ```toml
 [logging]
-level = "debug"
+level = "info,nova=debug"
 json = false
+stderr = true
+file = "/tmp/nova.log"
 include_backtrace = true
 buffer_lines = 5000
 ```
@@ -52,20 +59,30 @@ buffer_lines = 5000
 ### Supplying config (standalone binaries vs embedders)
 
 Nova’s logging “knobs” are part of `NovaConfig`. Nova supports loading config from disk via
-`nova_config::load_for_workspace`:
+`nova_config::load_for_workspace(workspace_root)`.
 
-- preferred: `nova.toml` in the workspace root
-- override: `NOVA_CONFIG_PATH` (absolute or relative to the workspace root)
-- legacy fallback: `.nova/config.toml` (workspace-local; often gitignored)
+Config discovery (first match wins, in the workspace root):
 
-Practical implications:
+1. `NOVA_CONFIG_PATH` (absolute, or relative to the workspace root)
+2. `nova.toml`
+3. `.nova.toml`
+4. `nova.config.toml`
+5. `.nova/config.toml` (legacy fallback)
 
-- `nova-lsp` and `nova` (CLI) will best-effort load workspace config when starting up, so
-  `logging.json`, `logging.buffer_lines`, and similar settings can be controlled via `nova.toml`.
-- `nova-dap` currently starts with `NovaConfig::default()` (it will still respect `RUST_LOG` for
-  verbosity).
-- Embedding applications (editor plugins/hosts) can still construct a `NovaConfig` directly and call
-  the appropriate init hook (for example `nova_lsp::hardening::init(&config, ...)`).
+Entry points:
+
+- `nova-lsp` (binary)
+  - `--config <path>` (or `--config=<path>`) loads a TOML config file and sets `NOVA_CONFIG_PATH`
+    so other crates see the same config.
+  - otherwise, it detects the workspace root from the current working directory and loads config
+    using the discovery order above.
+- `nova` (CLI) supports a global `--config <path>` flag (and otherwise loads config from a workspace
+  root derived from the command’s `--path`/`<path>` arguments or the current working directory).
+- `nova-dap` currently starts with `NovaConfig::default()` (no on-disk config loading yet).
+- Embedders (editor plugins/hosts) can construct a `NovaConfig` programmatically and call
+  `nova_config::init_tracing_with_config(&config)` / `nova_lsp::hardening::init(&config, ...)`.
+
+In all cases, `RUST_LOG` is still supported (it is merged with `logging.level`).
 
 > Note: `nova-lsp` also has a legacy environment-variable based AI mode (`NOVA_AI_PROVIDER=...`).
 > When `NOVA_AI_AUDIT_LOGGING` is enabled in that mode, `nova-lsp` will best-effort enable the
@@ -92,11 +109,13 @@ include backtraces when `logging.include_backtrace = true`.
 ### stderr vs file logging
 
 - **stderr**:
-  - used for protocol safety (editors often capture this as “server stderr”)
-  - panic hooks emit a short user-facing message here
+  - controlled by `logging.stderr` (default: `true`)
+  - safe for LSP/DAP-over-stdio (editors often capture this as “server stderr”)
+  - panic hooks also emit a short user-facing message here
 - **file logging**:
-  - Nova does **not** currently write general logs to a file
-  - the only file-backed log channel today is the optional **AI audit log** (below)
+  - controlled by `logging.file` (optional)
+  - best-effort: if the file can’t be opened, file logging is disabled while other sinks remain
+    active
 
 ### AI audit log channel (privacy-sensitive)
 
@@ -210,8 +229,11 @@ completions, etc). This is Nova’s “overload” response and is distinct from
 While safe mode is active:
 
 - Most `nova/*` extension requests will return an error like:
-  - “Nova is running in safe-mode … Only `nova/bugReport` is available for now.”
-- `nova/bugReport` remains available so you can capture diagnostics.
+  - “Nova is running in safe-mode … Only `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` are available for now.”
+- `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics` remain available so you can capture
+  diagnostics.
+- `nova/memoryStatus` remains available (it is handled directly by the stdio server, not the
+  hardened dispatcher).
 
 Depending on the embedding/editor, core LSP/DAP functionality may continue to work; safe mode is
 primarily meant to block Nova’s **custom** extension endpoints.
@@ -239,7 +261,7 @@ Nova exposes a custom LSP request:
   - `maxLogLines` (`number`, optional; default `500`)
   - `reproduction` (`string`, optional)
 - result:
-  - `{ "path": "/path/to/nova-bugreport-...", "archivePath": "/path/to/nova-bugreport-....zip" }`
+  - `{ "path": "/path/to/nova-bugreport-...", "archivePath": "/path/to/nova-bugreport-....zip" | null }`
 
 Example raw request:
 
@@ -302,7 +324,7 @@ Useful flags:
   - `maxLogLines` (`number`, optional; default `500`)
   - `reproduction` (`string`, optional)
 - response body:
-  - `{ "path": "/path/to/nova-bugreport-...", "archivePath": "/path/to/nova-bugreport-....zip" }`
+  - `{ "path": "/path/to/nova-bugreport-...", "archivePath": "/path/to/nova-bugreport-....zip" | null }`
 
 Example request (DAP JSON over stdio):
 
@@ -339,9 +361,13 @@ A bug report bundle is a directory containing:
 - `config.json` – serialized `NovaConfig`, with secrets redacted (by key and value patterns)
 - `logs.txt` – recent log lines (from the in-memory ring buffer, redacted)
 - `performance.json` – counters (requests/timeouts/panics/safe-mode entries, optional safe-mode state)
-- `metrics.json` – per-method request metrics (counts + latency summaries; best-effort)
 - `crashes.json` – recent panic records (in-memory + last persisted crash log entries)
 - `repro.txt` – reproduction text (only if provided, redacted)
+
+Entry points may also attach additional files:
+
+- `metrics.json` – per-method request metrics (counts + latency summaries). The LSP/DAP `nova/bugReport`
+  handlers attach this best-effort.
 
 ### Privacy / redaction guarantees
 
@@ -432,7 +458,7 @@ When diagnosing performance/reliability issues, start with:
 Bug report bundles already include:
 
 - `performance.json` (request/timeout/panic counters)
-- `metrics.json` (per-method request metrics + latency summaries)
+- `metrics.json` (per-method request metrics + latency summaries; LSP/DAP bundles)
 
 To include memory metrics:
 

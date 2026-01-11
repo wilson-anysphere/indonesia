@@ -326,7 +326,7 @@ async fn handle_request_inner(
                     );
                 }
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
-            }
+            };
         }
         "cancel" => {
             let Some(request_id) = request.arguments.get("requestId").and_then(|v| v.as_i64())

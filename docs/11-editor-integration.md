@@ -608,8 +608,8 @@ Nova is designed to be resilient under editor workloads:
 - Nova’s custom `nova/*` extension endpoints (e.g. build/test integration) run under a watchdog
   (`nova_scheduler::Watchdog`) with per-method deadlines. If a request panics or times out, Nova can
   temporarily enter **safe mode** to avoid repeatedly triggering the same failure.
-- When safe mode is active, Nova keeps `nova/bugReport` available so clients can collect a
-  diagnostic bundle.
+- When safe mode is active, Nova keeps `nova/bugReport`, `nova/metrics`, and `nova/resetMetrics`
+  available so clients can collect a diagnostic bundle and inspect request-level metrics.
 
 For practical operational guidance (where logs go, how to generate bug report bundles, and how safe
 mode behaves), see:
