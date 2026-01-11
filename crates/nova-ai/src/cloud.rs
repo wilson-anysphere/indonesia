@@ -450,7 +450,20 @@ impl CloudLlmClient {
                         attempt,
                         "llm request failed, retrying"
                     );
-                    backoff_sleep(attempt, &self.cfg.retry, &cancel).await?;
+                    if let Err(err) = backoff_sleep(attempt, &self.cfg.retry, &cancel).await {
+                        if self.cfg.audit_logging {
+                            audit::log_llm_error(
+                                request_id,
+                                provider,
+                                &self.cfg.model,
+                                &err.to_string(),
+                                overall_started_at.elapsed(),
+                                attempt,
+                                /*stream=*/ false,
+                            );
+                        }
+                        return Err(err);
+                    }
                     continue;
                 }
                 if self.cfg.audit_logging {
@@ -1024,5 +1037,92 @@ mod tests {
                 assert!(!value.contains(query_secret));
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn audit_logging_emits_error_when_cancelled_during_retry_backoff() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST).path("/complete");
+            then.status(429).body("rate limited");
+        });
+
+        let events = Arc::new(Mutex::new(Vec::<CapturedEvent>::new()));
+        let layer = CapturingLayer {
+            events: events.clone(),
+        };
+
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let cfg = CloudLlmConfig {
+            provider: ProviderKind::Http,
+            endpoint: Url::parse(&format!("{}/complete", server.base_url())).unwrap(),
+            api_key: None,
+            model: "default".to_string(),
+            timeout: Duration::from_secs(1),
+            retry: RetryConfig {
+                max_retries: 1,
+                initial_backoff: Duration::from_millis(500),
+                max_backoff: Duration::from_millis(500),
+            },
+            audit_logging: true,
+            cache_enabled: false,
+            cache_max_entries: 256,
+            cache_ttl: Duration::from_secs(300),
+        };
+
+        let client = CloudLlmClient::new(cfg).unwrap();
+        let cancel = CancellationToken::new();
+        let cancel_clone = cancel.clone();
+        let handle = tokio::spawn(async move {
+            client
+                .generate(
+                    GenerateRequest {
+                        prompt: "hello".to_string(),
+                        max_tokens: 5,
+                        temperature: 0.2,
+                    },
+                    cancel,
+                )
+                .await
+        });
+
+        // Ensure the first request has been observed by the mock server, then cancel while the
+        // client is sleeping for retry backoff.
+        for _ in 0..50 {
+            if mock.hits() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cancel_clone.cancel();
+
+        let result = handle.await.expect("task join");
+        assert!(
+            matches!(result, Err(CloudLlmError::Cancelled)),
+            "expected cancellation during retry backoff"
+        );
+
+        let events = events.lock().unwrap();
+        let audit = audit_events(&events);
+
+        let request = audit
+            .iter()
+            .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_request"))
+            .expect("request audit event emitted");
+        let request_id = request.fields.get("request_id").expect("request_id present");
+
+        let error = audit
+            .iter()
+            .find(|event| event.fields.get("event").map(String::as_str) == Some("llm_error"))
+            .expect("error audit event emitted");
+        assert_eq!(
+            error.fields.get("request_id").map(String::as_str),
+            Some(request_id.as_str()),
+            "request_id should correlate request/error"
+        );
+
+        mock.assert_hits(1);
     }
 }
