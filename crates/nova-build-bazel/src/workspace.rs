@@ -1,6 +1,6 @@
 use crate::{
     aquery::{
-        compile_info_by_owner, extract_java_compile_info, parse_aquery_textproto, JavaCompileInfo,
+        extract_java_compile_info, parse_aquery_textproto_streaming, JavaCompileInfo,
     },
     cache::{digest_file, BazelCache, CacheEntry},
     command::CommandRunner,
@@ -80,30 +80,15 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             return Ok(entry.info.clone());
         }
 
-        let aquery = self.runner.run(
-            &self.root,
-            "bazel",
-            &[
-                "aquery",
-                "--output=textproto",
-                &format!(r#"mnemonic("Javac", deps({target}))"#),
-            ],
-        )?;
+        let direct_expr = format!(r#"mnemonic("Javac", {target})"#);
+        let mut info = self.aquery_compile_info(target, &direct_expr)?;
 
-        // `deps(target)` returns `Javac` actions for the target _and_ its dependencies. Prefer the
-        // action owned by `target` if present; otherwise fall back to the first available action.
-        let by_owner = compile_info_by_owner(&aquery.stdout);
-        let info = if let Some(info) = by_owner.get(target) {
-            info.clone()
-        } else if let Some((_, info)) = by_owner.into_iter().next() {
-            info
-        } else {
-            let action = parse_aquery_textproto(&aquery.stdout)
-                .into_iter()
-                .next()
-                .with_context(|| format!("no Javac actions found for {target}"))?;
-            extract_java_compile_info(&action)
-        };
+        if info.is_none() {
+            let deps_expr = format!(r#"mnemonic("Javac", deps({target}))"#);
+            info = self.aquery_compile_info(target, &deps_expr)?;
+        }
+
+        let info = info.with_context(|| format!("no Javac actions found for {target}"))?;
 
         self.cache.insert(CacheEntry {
             target: target.to_string(),
@@ -154,6 +139,31 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         let hash = blake3::hash(output.stdout.as_bytes());
         self.last_query_hash = Some(hash);
         Ok(hash)
+    }
+
+    fn aquery_compile_info(&self, target: &str, expr: &str) -> Result<Option<JavaCompileInfo>> {
+        self.runner.run_with_stdout(
+            &self.root,
+            "bazel",
+            &["aquery", "--output=textproto", expr],
+            |stdout| {
+                let mut first_info: Option<JavaCompileInfo> = None;
+                let mut selected: Option<JavaCompileInfo> = None;
+
+                for action in parse_aquery_textproto_streaming(stdout) {
+                    if action.owner.as_deref() == Some(target) {
+                        selected = Some(extract_java_compile_info(&action));
+                        break;
+                    }
+
+                    if first_info.is_none() {
+                        first_info = Some(extract_java_compile_info(&action));
+                    }
+                }
+
+                Ok(selected.or(first_info))
+            },
+        )
     }
 }
 

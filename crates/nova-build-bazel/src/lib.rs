@@ -18,7 +18,10 @@ mod workspace;
 pub mod bsp;
 
 pub use crate::{
-    aquery::{extract_java_compile_info, parse_aquery_textproto, JavaCompileInfo, JavacAction},
+    aquery::{
+        extract_java_compile_info, parse_aquery_textproto, parse_aquery_textproto_streaming,
+        JavaCompileInfo, JavacAction,
+    },
     cache::{digest_file, BazelCache, BuildFileDigest, CacheEntry},
     command::{CommandOutput, CommandRunner, DefaultCommandRunner},
     workspace::{BazelWorkspace, BazelWorkspaceDiscovery},

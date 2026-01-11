@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
+use std::io::BufRead;
 
 /// A parsed `Javac` action from `bazel aquery --output=textproto`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,61 +39,123 @@ pub struct JavaCompileInfo {
 
 /// Parse a textproto `aquery` output and return all `Javac` actions.
 pub fn parse_aquery_textproto(output: &str) -> Vec<JavacAction> {
-    let mut actions = Vec::new();
-    let mut current: Option<Vec<String>> = None;
-    let mut depth: i32 = 0;
-    for line in output.lines() {
-        let trimmed = line.trim_start();
+    parse_aquery_textproto_streaming(std::io::BufReader::new(std::io::Cursor::new(
+        output.as_bytes(),
+    )))
+    .collect()
+}
 
-        if trimmed.starts_with("action {") {
-            depth = 0;
-            current = Some(Vec::new());
+/// Parse `bazel aquery --output=textproto` output in a streaming fashion.
+///
+/// This iterator scans the output line-by-line and yields `Javac` actions without buffering the
+/// entire output string in memory. Only `mnemonic`, `owner`, and `arguments` fields from each
+/// `action { ... }` block are retained.
+pub fn parse_aquery_textproto_streaming<R: BufRead>(reader: R) -> impl Iterator<Item = JavacAction> {
+    AqueryTextprotoStreamingParser::new(reader)
+}
+
+struct AqueryTextprotoStreamingParser<R: BufRead> {
+    reader: R,
+    line_buf: String,
+    in_action: bool,
+    depth: i32,
+    mnemonic: Option<String>,
+    owner: Option<String>,
+    arguments: Vec<String>,
+    done: bool,
+}
+
+impl<R: BufRead> AqueryTextprotoStreamingParser<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            line_buf: String::new(),
+            in_action: false,
+            depth: 0,
+            mnemonic: None,
+            owner: None,
+            arguments: Vec::new(),
+            done: false,
+        }
+    }
+}
+
+impl<R: BufRead> Iterator for AqueryTextprotoStreamingParser<R> {
+    type Item = JavacAction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
         }
 
-        if let Some(buf) = current.as_mut() {
-            buf.push(line.to_string());
-
-            // Keep track of nested braces in the block. textproto uses braces for nested messages.
-            // This is not a complete parser, but it's sufficient to extract repeated scalar fields.
-            let open = line.matches('{').count() as i32;
-            let close = line.matches('}').count() as i32;
-            depth += open - close;
-            if depth == 0 {
-                let block = std::mem::take(buf);
-                current = None;
-                if let Some(action) = parse_action_block(&block.join("\n")) {
-                    actions.push(action);
+        loop {
+            self.line_buf.clear();
+            let bytes = match self.reader.read_line(&mut self.line_buf) {
+                Ok(0) => {
+                    self.done = true;
+                    return None;
                 }
+                Ok(bytes) => bytes,
+                Err(_) => {
+                    self.done = true;
+                    return None;
+                }
+            };
+
+            if bytes == 0 {
+                self.done = true;
+                return None;
+            }
+
+            let line = self.line_buf.trim_end_matches(['\n', '\r']);
+            let trimmed_start = line.trim_start();
+
+            if !self.in_action {
+                if trimmed_start.starts_with("action {") {
+                    self.in_action = true;
+                    self.depth = brace_delta_unquoted(trimmed_start);
+                    self.mnemonic = None;
+                    self.owner = None;
+                    self.arguments.clear();
+
+                    if self.depth <= 0 {
+                        // Malformed (or single-line) action block. Reset and keep scanning.
+                        self.in_action = false;
+                        self.depth = 0;
+                    }
+                }
+                continue;
+            }
+
+            let trimmed = trimmed_start.trim();
+            if self.depth == 1 {
+                if let Some(value) = parse_quoted_field(trimmed, "mnemonic:") {
+                    self.mnemonic = Some(value);
+                } else if let Some(value) = parse_quoted_field(trimmed, "owner:") {
+                    self.owner = Some(value);
+                } else if let Some(value) = parse_quoted_field(trimmed, "arguments:") {
+                    self.arguments.push(value);
+                }
+            }
+
+            self.depth += brace_delta_unquoted(trimmed_start);
+            if self.depth <= 0 {
+                self.in_action = false;
+                self.depth = 0;
+
+                if self.mnemonic.as_deref() == Some("Javac") {
+                    return Some(JavacAction {
+                        owner: self.owner.take(),
+                        arguments: std::mem::take(&mut self.arguments),
+                    });
+                }
+
+                self.mnemonic = None;
+                self.owner = None;
+                self.arguments.clear();
             }
         }
     }
-    actions
-}
-
-fn parse_action_block(block: &str) -> Option<JavacAction> {
-    let mut mnemonic = None::<String>;
-    let mut owner = None::<String>;
-    let mut args = Vec::new();
-
-    for line in block.lines() {
-        let line = line.trim();
-        if let Some(value) = parse_quoted_field(line, "mnemonic:") {
-            mnemonic = Some(value);
-        } else if let Some(value) = parse_quoted_field(line, "owner:") {
-            owner = Some(value);
-        } else if let Some(value) = parse_quoted_field(line, "arguments:") {
-            args.push(value);
-        }
-    }
-
-    if mnemonic.as_deref() != Some("Javac") {
-        return None;
-    }
-
-    Some(JavacAction {
-        owner,
-        arguments: args,
-    })
 }
 
 fn parse_quoted_field(line: &str, prefix: &str) -> Option<String> {
@@ -128,6 +191,37 @@ fn unescape_textproto(value: &str) -> String {
         }
     }
     out
+}
+
+fn brace_delta_unquoted(line: &str) -> i32 {
+    let mut delta = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for c in line.chars() {
+        if in_string {
+            if escape {
+                escape = false;
+                continue;
+            }
+
+            match c {
+                '\\' => escape = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match c {
+            '"' => in_string = true,
+            '{' => delta += 1,
+            '}' => delta -= 1,
+            _ => {}
+        }
+    }
+
+    delta
 }
 
 /// Extract the classpath/module-path/source roots from a parsed `Javac` action.
@@ -290,13 +384,6 @@ fn split_windows_drive_list(value: &str) -> Option<Vec<String>> {
     Some(parts)
 }
 
-/// Convenience helper: parse a textproto output and return compile info keyed by action owner.
-pub fn compile_info_by_owner(output: &str) -> HashMap<String, JavaCompileInfo> {
-    let mut map = HashMap::new();
-    for action in parse_aquery_textproto(output) {
-        if let Some(owner) = action.owner.clone() {
-            map.insert(owner, extract_java_compile_info(&action));
-        }
-    }
-    map
-}
+// NOTE: this module intentionally avoids building a full in-memory representation of the
+// `bazel aquery` output. The consumer (e.g. `BazelWorkspace`) should scan the stream and retain
+// only the actions it needs.
