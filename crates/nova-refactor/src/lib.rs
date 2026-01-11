@@ -77,8 +77,11 @@ pub use edit::{
     TextEdit as WorkspaceTextEdit, TextRange as WorkspaceTextRange, WorkspaceEdit,
 };
 pub use java::{InMemoryJavaDatabase, JavaSymbolKind, SymbolId};
-pub use lsp::{code_action_for_edit, workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes};
-pub use lsp::{code_action_for_edit, workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes, TextDatabase};
+pub use lsp::{
+    code_action_for_edit, workspace_edit_to_lsp, workspace_edit_to_lsp_document_changes,
+    workspace_edit_to_lsp_document_changes_with_uri_mapper, workspace_edit_to_lsp_with_uri_mapper,
+    TextDatabase,
+};
 pub use materialize::{materialize, MaterializeError};
 pub use preview::{generate_preview, FilePreview, RefactoringPreview};
 pub use refactorings::{

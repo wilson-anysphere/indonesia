@@ -70,6 +70,22 @@ pub fn workspace_edit_to_lsp(
     db: &dyn RefactorDatabase,
     edit: &WorkspaceEdit,
 ) -> Result<LspWorkspaceEdit, LspConversionError> {
+    workspace_edit_to_lsp_with_uri_mapper(db, edit, file_id_to_uri)
+}
+
+/// Convert an internal [`WorkspaceEdit`] into an LSP [`WorkspaceEdit`] using a caller-provided
+/// `FileId -> Uri` mapping.
+///
+/// This is useful when Nova uses workspace-relative paths as file identifiers but LSP requires
+/// document URIs.
+pub fn workspace_edit_to_lsp_with_uri_mapper<F>(
+    db: &dyn RefactorDatabase,
+    edit: &WorkspaceEdit,
+    mut file_id_to_uri: F,
+) -> Result<LspWorkspaceEdit, LspConversionError>
+where
+    F: FnMut(&FileId) -> Result<Uri, LspConversionError>,
+{
     if !edit.file_ops.is_empty() {
         return Err(LspConversionError::FileOpsRequireDocumentChanges);
     }
@@ -124,6 +140,19 @@ pub fn workspace_edit_to_lsp_document_changes(
     db: &dyn RefactorDatabase,
     edit: &WorkspaceEdit,
 ) -> Result<LspWorkspaceEdit, LspConversionError> {
+    workspace_edit_to_lsp_document_changes_with_uri_mapper(db, edit, file_id_to_uri)
+}
+
+/// Convert a [`WorkspaceEdit`] into an LSP [`WorkspaceEdit`] using `documentChanges` and a
+/// caller-provided `FileId -> Uri` mapping.
+pub fn workspace_edit_to_lsp_document_changes_with_uri_mapper<F>(
+    db: &dyn RefactorDatabase,
+    edit: &WorkspaceEdit,
+    mut file_id_to_uri: F,
+) -> Result<LspWorkspaceEdit, LspConversionError>
+where
+    F: FnMut(&FileId) -> Result<Uri, LspConversionError>,
+{
     let mut normalized = edit.clone();
     normalized.normalize()?;
 
@@ -463,5 +492,67 @@ mod tests {
         assert_eq!(edit.range.start, Position { line: 0, character: 1 });
         assert_eq!(edit.range.end, Position { line: 0, character: 3 });
         assert_eq!(edit.new_text, "X");
+    }
+
+    #[test]
+    fn custom_uri_mapper_allows_non_uri_file_ids() {
+        let file = FileId::new("src/Test.java");
+
+        let mut db = TestDb::default();
+        db.files.insert(file.clone(), "😀\n".to_string());
+
+        let edit = WorkspaceEdit::new(vec![TextEdit::replace(
+            file.clone(),
+            crate::edit::TextRange::new(0, 4),
+            "X",
+        )]);
+
+        let root: Uri = "file:///workspace/".parse().unwrap();
+        let lsp = workspace_edit_to_lsp_with_uri_mapper(&db, &edit, |f| {
+            let uri: Uri = format!("{}{}", root.as_str(), f.0).parse().unwrap();
+            Ok(uri)
+        })
+        .unwrap();
+
+        let changes = lsp.changes.expect("expected changes map");
+        let uri: Uri = "file:///workspace/src/Test.java".parse().unwrap();
+        assert!(changes.contains_key(&uri));
+
+        // Also ensure documentChanges conversion can map file ops that use non-URI file ids.
+        let old_file = FileId::new("old.txt");
+        let new_file = FileId::new("new.txt");
+        let mut db = TestDb::default();
+        db.files.insert(old_file.clone(), "a😀b\n".to_string());
+
+        let edit = WorkspaceEdit {
+            file_ops: vec![FileOp::Rename {
+                from: old_file.clone(),
+                to: new_file.clone(),
+            }],
+            text_edits: vec![TextEdit::replace(
+                new_file.clone(),
+                crate::edit::TextRange::new(1, 5),
+                "X",
+            )],
+        };
+
+        let root: Uri = "file:///workspace/".parse().unwrap();
+        let lsp = workspace_edit_to_lsp_document_changes_with_uri_mapper(&db, &edit, |f| {
+            let uri: Uri = format!("{}{}", root.as_str(), f.0).parse().unwrap();
+            Ok(uri)
+        })
+        .unwrap();
+
+        let Some(DocumentChanges::Operations(ops)) = lsp.document_changes else {
+            panic!("expected DocumentChanges::Operations");
+        };
+
+        let rename_op = ops.iter().find_map(|op| match op {
+            DocumentChangeOperation::Op(ResourceOp::Rename(op)) => Some(op),
+            _ => None,
+        });
+        let rename_op = rename_op.expect("expected rename operation");
+        assert_eq!(rename_op.old_uri.as_str(), "file:///workspace/old.txt");
+        assert_eq!(rename_op.new_uri.as_str(), "file:///workspace/new.txt");
     }
 }
