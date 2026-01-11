@@ -1,0 +1,66 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      FieldDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "xs"
+            LBracket "["
+            RBracket "]"
+        Semicolon ";"
+      Whitespace "\n  "
+      FieldDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+          Annotation
+            At "@"
+            Name
+              Identifier "A"
+              Whitespace " "
+          LBracket "["
+          RBracket "]"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "ys"
+        Semicolon ";"
+      Whitespace "\n  "
+      FieldDeclaration
+        Modifiers
+        Type
+          PrimitiveType
+            IntKw "int"
+          Whitespace " "
+          Annotation
+            At "@"
+            Name
+              Identifier "B"
+              Whitespace " "
+          LBracket "["
+          RBracket "]"
+          Whitespace " "
+        VariableDeclaratorList
+          VariableDeclarator
+            Identifier "zs"
+            LBracket "["
+            RBracket "]"
+        Semicolon ";"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

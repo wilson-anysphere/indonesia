@@ -2660,6 +2660,24 @@ impl<'a> Parser<'a> {
         } else {
             self.expect_ident_like("expected variable name");
         }
+
+        // Support Java's `int x[]` style dims (and dimension annotations) after the declarator
+        // identifier, for both fields and local variables.
+        loop {
+            self.eat_trivia();
+            while self.at_type_annotation_start() {
+                self.parse_annotation();
+                self.eat_trivia();
+            }
+
+            if self.at(SyntaxKind::LBracket) && self.nth(1) == Some(SyntaxKind::RBracket) {
+                self.bump();
+                self.bump();
+                continue;
+            }
+            break;
+        }
+
         if self.at(SyntaxKind::Eq) {
             self.bump();
             if self.at(SyntaxKind::Semicolon) || self.at(SyntaxKind::Comma) {
@@ -3675,14 +3693,25 @@ impl<'a> Parser<'a> {
 
         // Array dims: `[]`*
         loop {
-            let j = skip_trivia(&self.tokens, i);
-            if self.tokens.get(j).map(|t| t.kind) != Some(SyntaxKind::LBracket) {
-                i = j;
+            i = skip_trivia(&self.tokens, i);
+
+            // Dimension annotations: `int @A [] x;`
+            if self.tokens.get(i).map(|t| t.kind) == Some(SyntaxKind::At) {
+                let j = skip_trivia(&self.tokens, i + 1);
+                if self.tokens.get(j).map(|t| t.kind) != Some(SyntaxKind::InterfaceKw) {
+                    let after = skip_annotation(&self.tokens, i);
+                    if after > i {
+                        i = after;
+                        continue;
+                    }
+                }
+            }
+
+            if self.tokens.get(i).map(|t| t.kind) != Some(SyntaxKind::LBracket) {
                 break;
             }
-            let after_l = skip_trivia(&self.tokens, j + 1);
+            let after_l = skip_trivia(&self.tokens, i + 1);
             if self.tokens.get(after_l).map(|t| t.kind) != Some(SyntaxKind::RBracket) {
-                i = j;
                 break;
             }
             i = after_l + 1;
