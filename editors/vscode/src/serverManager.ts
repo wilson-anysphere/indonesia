@@ -335,11 +335,23 @@ export function parseChecksumsFile(contents: string): Map<string, string> {
     if (!trimmed) {
       continue;
     }
-    const match = /^(?<sha>[a-fA-F0-9]{64})\s+\*?(?<name>.+)$/.exec(trimmed);
-    if (!match?.groups?.sha || !match.groups.name) {
+    const shaSumMatch = /^(?<sha>[a-fA-F0-9]{64})\s+\*?(?<name>.+)$/.exec(trimmed);
+    if (shaSumMatch?.groups?.sha && shaSumMatch.groups.name) {
+      const sha = shaSumMatch.groups.sha.toLowerCase();
+      const name = shaSumMatch.groups.name.trim();
+      out.set(name, sha);
+      out.set(path.basename(name), sha);
       continue;
     }
-    out.set(match.groups.name.trim(), match.groups.sha.toLowerCase());
+
+    // `shasum -a 256` on macOS can emit this format: `SHA256 (file) = <sha>`.
+    const shasumMatch = /^SHA256 \((?<name>.+)\) = (?<sha>[a-fA-F0-9]{64})$/.exec(trimmed);
+    if (shasumMatch?.groups?.sha && shasumMatch.groups.name) {
+      const sha = shasumMatch.groups.sha.toLowerCase();
+      const name = shasumMatch.groups.name.trim();
+      out.set(name, sha);
+      out.set(path.basename(name), sha);
+    }
   }
   return out;
 }

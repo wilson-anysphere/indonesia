@@ -47,9 +47,14 @@ describe('serverManager helpers', () => {
     const { parseChecksumsFile } = await import('./serverManager');
 
     const sha = 'a'.repeat(64);
-    const map = parseChecksumsFile(`${sha}  file-one.tar.xz\n${sha} *file-two.zip\n`);
+    const map = parseChecksumsFile(
+      `${sha}  file-one.tar.xz\n${sha} *file-two.zip\n${sha}  ./file-three.tar.xz\nSHA256 (file-four.zip) = ${sha}\n`,
+    );
     expect(map.get('file-one.tar.xz')).toBe(sha);
     expect(map.get('file-two.zip')).toBe(sha);
+    expect(map.get('./file-three.tar.xz')).toBe(sha);
+    expect(map.get('file-three.tar.xz')).toBe(sha);
+    expect(map.get('file-four.zip')).toBe(sha);
   });
 });
 
