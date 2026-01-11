@@ -562,10 +562,10 @@ fn collect_nova_diagnostics(
     let mut by_file = BTreeMap::<PathBuf, Vec<NovaDiagnostic>>::new();
 
     for params in raw {
-        let path = match file_uri_to_path(&params.text_document.uri) {
-            Ok(path) => path.into_path_buf(),
-            Err(_) => continue,
-        };
+        let uri = params.text_document.uri;
+        let path = file_uri_to_path(&uri)
+            .map(|path| path.into_path_buf())
+            .unwrap_or_else(|_| PathBuf::from(uri));
 
         let mut converted = Vec::with_capacity(params.diagnostics.len());
         for diag in params.diagnostics {
