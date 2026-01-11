@@ -11,6 +11,7 @@ mod feature_gate;
 mod incremental;
 mod language_level;
 mod lexer;
+mod literals;
 mod parser;
 mod syntax_kind;
 mod tree_store;
@@ -18,6 +19,10 @@ mod util;
 
 pub use ast::*;
 pub use lexer::{lex, lex_with_errors, LexError, Lexer, Token};
+pub use literals::{
+    parse_double_literal, parse_float_literal, parse_int_literal, parse_literal, parse_long_literal,
+    unescape_char_literal, unescape_string_literal, unescape_text_block, LiteralError, LiteralValue,
+};
 pub use incremental::{parse_java_incremental, reparse_java};
 pub use parser::{parse_expression, parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
