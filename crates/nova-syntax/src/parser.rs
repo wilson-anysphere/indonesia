@@ -263,6 +263,101 @@ impl JavaParseResult {
     }
 }
 
+/// Result of parsing a Java fragment extracted from a larger source file.
+///
+/// The returned rowan tree is **fragment-relative**: all node/token
+/// `text_range()` values start at `0` and are relative to the provided `text`
+/// slice. Use the `*_in_file` helpers to convert ranges/offsets back to the
+/// original file coordinates using [`JavaFragmentParseResult::offset`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JavaFragmentParseResult {
+    pub parse: JavaParseResult,
+    /// Byte offset of the fragment within the original source file.
+    pub offset: u32,
+}
+
+impl JavaFragmentParseResult {
+    fn fragment_len(&self) -> u32 {
+        u32::from(self.parse.syntax().text_range().end())
+    }
+
+    /// Converts a file-relative byte offset to a fragment-relative offset.
+    ///
+    /// Returns `None` when the file offset lies outside this fragment.
+    pub fn file_to_fragment_offset(&self, file: u32) -> Option<u32> {
+        if file < self.offset {
+            return None;
+        }
+        let fragment = file - self.offset;
+        if fragment <= self.fragment_len() {
+            Some(fragment)
+        } else {
+            None
+        }
+    }
+
+    /// Converts a fragment-relative byte offset to a file-relative offset.
+    #[inline]
+    pub fn fragment_to_file_offset(&self, fragment: u32) -> u32 {
+        self.offset.saturating_add(fragment)
+    }
+
+    /// Converts a file-relative range into a fragment-relative range.
+    ///
+    /// Returns `None` when the input range lies outside this fragment.
+    pub fn file_to_fragment_range(&self, range: TextRange) -> Option<TextRange> {
+        let len = self.fragment_len();
+        if range.start < self.offset || range.end < self.offset {
+            return None;
+        }
+        let start = range.start - self.offset;
+        let end = range.end - self.offset;
+        if end <= len {
+            Some(TextRange { start, end })
+        } else {
+            None
+        }
+    }
+
+    /// Converts a fragment-relative range into a file-relative range.
+    #[inline]
+    pub fn fragment_to_file_range(&self, range: TextRange) -> TextRange {
+        TextRange {
+            start: self.fragment_to_file_offset(range.start),
+            end: self.fragment_to_file_offset(range.end),
+        }
+    }
+
+    /// Returns the token at a file-relative byte offset, or `None` when the
+    /// offset lies outside the fragment.
+    pub fn token_at_file_offset(&self, file: u32) -> rowan::TokenAtOffset<SyntaxToken> {
+        let Some(fragment) = self.file_to_fragment_offset(file) else {
+            return rowan::TokenAtOffset::None;
+        };
+        self.parse.token_at_offset(fragment)
+    }
+
+    /// Returns the covering syntax element for a file-relative range.
+    ///
+    /// Returns `None` when the range lies outside the fragment.
+    pub fn covering_element_in_file(&self, range: TextRange) -> Option<SyntaxElement> {
+        let fragment = self.file_to_fragment_range(range)?;
+        Some(self.parse.covering_element(fragment))
+    }
+
+    /// Returns a node's range in file coordinates.
+    ///
+    /// `SyntaxNode::text_range()` is fragment-relative; this helper adds
+    /// [`JavaFragmentParseResult::offset`].
+    pub fn node_range_in_file(&self, node: &SyntaxNode) -> TextRange {
+        let range = node.text_range();
+        TextRange {
+            start: self.fragment_to_file_offset(u32::from(range.start())),
+            end: self.fragment_to_file_offset(u32::from(range.end())),
+        }
+    }
+}
+
 pub fn parse_java(input: &str) -> JavaParseResult {
     Parser::new(input).parse()
 }
@@ -282,6 +377,44 @@ pub fn parse_java_expression(input: &str) -> JavaParseResult {
 /// Compatibility alias for [`parse_java_expression`].
 pub fn parse_expression(input: &str) -> JavaParseResult {
     parse_java_expression(input)
+}
+
+pub fn parse_java_block_fragment(text: &str, offset: u32) -> JavaFragmentParseResult {
+    parse_java_fragment(text, offset, SyntaxKind::BlockFragment, |parser| {
+        parser.parse_block(StatementContext::Normal);
+    })
+}
+
+pub fn parse_java_statement_fragment(text: &str, offset: u32) -> JavaFragmentParseResult {
+    parse_java_fragment(text, offset, SyntaxKind::StatementFragment, |parser| {
+        parser.parse_statement(StatementContext::Normal);
+    })
+}
+
+pub fn parse_java_expression_fragment(text: &str, offset: u32) -> JavaFragmentParseResult {
+    parse_java_fragment(text, offset, SyntaxKind::ExpressionFragment, |parser| {
+        parser.parse_expression(0);
+    })
+}
+
+pub fn parse_java_class_member_fragment(text: &str, offset: u32) -> JavaFragmentParseResult {
+    parse_java_fragment(text, offset, SyntaxKind::ClassMemberFragment, |parser| {
+        parser.parse_class_member();
+    })
+}
+
+fn parse_java_fragment(
+    text: &str,
+    offset: u32,
+    root_kind: SyntaxKind,
+    parse_inner: impl FnOnce(&mut Parser<'_>),
+) -> JavaFragmentParseResult {
+    let mut parse = Parser::new(text).parse_fragment(root_kind, parse_inner);
+    for err in &mut parse.errors {
+        err.range.start = err.range.start.saturating_add(offset);
+        err.range.end = err.range.end.saturating_add(offset);
+    }
+    JavaFragmentParseResult { parse, offset }
 }
 
 pub(crate) fn parse_block_fragment(input: &str, stmt_ctx: StatementContext) -> JavaParseResult {
@@ -444,6 +577,38 @@ impl<'a> Parser<'a> {
 
         self.eat_trivia();
         self.expect(SyntaxKind::Eof, "expected end of expression");
+        self.builder.finish_node();
+
+        JavaParseResult {
+            green: self.builder.finish(),
+            errors: self.errors,
+        }
+    }
+
+    fn parse_fragment(
+        mut self,
+        root_kind: SyntaxKind,
+        parse_inner: impl FnOnce(&mut Parser<'a>),
+    ) -> JavaParseResult {
+        self.builder.start_node(root_kind.into());
+        self.eat_trivia();
+
+        parse_inner(&mut self);
+
+        // Ensure we build a lossless tree: if the fragment parser stops early,
+        // wrap remaining tokens in an `Error` node so everything is represented
+        // in the syntax tree.
+        self.eat_trivia();
+        if !self.at(SyntaxKind::Eof) {
+            self.builder.start_node(SyntaxKind::Error.into());
+            while !self.at(SyntaxKind::Eof) {
+                self.bump_any();
+            }
+            self.builder.finish_node();
+        }
+
+        self.eat_trivia();
+        self.expect(SyntaxKind::Eof, "expected end of file");
         self.builder.finish_node();
 
         JavaParseResult {
@@ -3331,10 +3496,9 @@ fn infix_binding_power(op: SyntaxKind) -> Option<(u8, u8, SyntaxKind)> {
         SyntaxKind::LeftShift | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift => {
             (55, 56, SyntaxKind::BinaryExpression)
         }
-        SyntaxKind::Less
-        | SyntaxKind::LessEq
-        | SyntaxKind::Greater
-        | SyntaxKind::GreaterEq => (50, 51, SyntaxKind::BinaryExpression),
+        SyntaxKind::Less | SyntaxKind::LessEq | SyntaxKind::Greater | SyntaxKind::GreaterEq => {
+            (50, 51, SyntaxKind::BinaryExpression)
+        }
         SyntaxKind::EqEq | SyntaxKind::BangEq => (45, 46, SyntaxKind::BinaryExpression),
         SyntaxKind::Amp => (40, 41, SyntaxKind::BinaryExpression),
         SyntaxKind::Caret => (39, 40, SyntaxKind::BinaryExpression),

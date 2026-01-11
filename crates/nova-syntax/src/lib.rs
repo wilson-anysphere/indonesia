@@ -30,8 +30,9 @@ pub use literals::{
     LiteralError, LiteralValue,
 };
 pub use parser::{
-    parse_expression, parse_java, parse_java_expression, JavaParseResult, SyntaxElement,
-    SyntaxNode, SyntaxToken,
+    parse_expression, parse_java, parse_java_block_fragment, parse_java_class_member_fragment,
+    parse_java_expression, parse_java_expression_fragment, parse_java_statement_fragment,
+    JavaFragmentParseResult, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken,
 };
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
 pub use tree_store::SyntaxTreeStore;
@@ -196,7 +197,6 @@ impl TextEdit {
         self.replacement.len() as isize - self.range.len() as isize
     }
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GreenToken {
     pub kind: SyntaxKind,

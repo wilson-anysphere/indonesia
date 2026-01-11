@@ -1,10 +1,11 @@
 use pretty_assertions::assert_eq;
 
 use crate::{
-    lex, lex_with_errors, parse_expression, parse_java, parse_java_expression,
-    parse_java_with_options, reparse_java, AstNode, CompilationUnit, ExportsDirective,
-    JavaLanguageLevel, OpensDirective, ParseOptions, ProvidesDirective, RequiresDirective,
-    SyntaxKind, TextEdit, TextRange, UsesDirective,
+    lex, lex_with_errors, parse_expression, parse_java, parse_java_block_fragment,
+    parse_java_class_member_fragment, parse_java_expression, parse_java_expression_fragment,
+    parse_java_statement_fragment, parse_java_with_options, reparse_java, AstNode, CompilationUnit,
+    ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions, ProvidesDirective,
+    RequiresDirective, SyntaxKind, TextEdit, TextRange, UsesDirective,
 };
 
 fn bless_enabled() -> bool {
@@ -410,13 +411,15 @@ fn lexer_rejects_invalid_char_literals() {
     );
 
     assert!(
-        errors.iter().any(|e| e.message.contains("empty character literal")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("empty character literal")),
         "expected empty literal error, got: {errors:?}"
     );
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("character literal must contain exactly one character")),
+        errors.iter().any(|e| e
+            .message
+            .contains("character literal must contain exactly one character")),
         "expected too-long literal error, got: {errors:?}"
     );
 }
@@ -2478,7 +2481,7 @@ fn syntax_kind_schema_fingerprint() -> u64 {
 
 // NOTE: If this fails, update the constant and *consider* bumping
 // `SYNTAX_SCHEMA_VERSION` in `syntax_kind.rs`.
-const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0x85a2_2c06_8c5e_6cb8;
+const EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT: u64 = 0x22d7_381f_5f64_849e;
 
 #[test]
 fn syntax_kind_schema_fingerprint_guardrail() {
@@ -2486,8 +2489,7 @@ fn syntax_kind_schema_fingerprint_guardrail() {
     let expected = EXPECTED_SYNTAX_KIND_SCHEMA_FINGERPRINT;
 
     assert_eq!(
-        actual,
-        expected,
+        actual, expected,
         "SyntaxKind schema fingerprint changed.\n\
 \n\
 This is a guardrail for Nova's on-disk AST cache:\n\
@@ -2499,5 +2501,113 @@ This is a guardrail for Nova's on-disk AST cache:\n\
 \n\
 expected: {expected:#018x}\n\
 actual:   {actual:#018x}\n"
+    );
+}
+
+#[test]
+fn parse_expression_fragment_binary_expression() {
+    let result = parse_java_expression_fragment("a + b", 0);
+    assert_eq!(result.parse.syntax().kind(), SyntaxKind::ExpressionFragment);
+    assert_eq!(result.parse.errors, Vec::new());
+
+    let has_binary = result
+        .parse
+        .syntax()
+        .descendants()
+        .any(|n| n.kind() == SyntaxKind::BinaryExpression);
+    assert!(has_binary);
+}
+
+#[test]
+fn parse_statement_fragment_return_statement() {
+    let result = parse_java_statement_fragment("return 1;", 0);
+    assert_eq!(result.parse.syntax().kind(), SyntaxKind::StatementFragment);
+    assert_eq!(result.parse.errors, Vec::new());
+
+    let has_return = result
+        .parse
+        .syntax()
+        .descendants()
+        .any(|n| n.kind() == SyntaxKind::ReturnStatement);
+    assert!(has_return);
+}
+
+#[test]
+fn parse_block_fragment_contains_block_and_local_var_decl() {
+    let result = parse_java_block_fragment("{ int x = 1; }", 0);
+    assert_eq!(result.parse.syntax().kind(), SyntaxKind::BlockFragment);
+    assert_eq!(result.parse.errors, Vec::new());
+
+    let kinds: Vec<_> = result
+        .parse
+        .syntax()
+        .descendants()
+        .map(|n| n.kind())
+        .collect();
+    assert!(kinds.contains(&SyntaxKind::Block));
+    assert!(kinds.contains(&SyntaxKind::LocalVariableDeclarationStatement));
+}
+
+#[test]
+fn parse_class_member_fragment_field_declaration() {
+    let result = parse_java_class_member_fragment("int x = 1;", 0);
+    assert_eq!(
+        result.parse.syntax().kind(),
+        SyntaxKind::ClassMemberFragment
+    );
+    assert_eq!(result.parse.errors, Vec::new());
+
+    let has_field = result
+        .parse
+        .syntax()
+        .descendants()
+        .any(|n| n.kind() == SyntaxKind::FieldDeclaration);
+    assert!(has_field);
+}
+
+#[test]
+fn fragment_parse_errors_are_file_relative() {
+    let offset = 100;
+    let text = "return";
+    let result = parse_java_statement_fragment(text, offset);
+    assert_eq!(result.parse.syntax().kind(), SyntaxKind::StatementFragment);
+    assert!(
+        !result.parse.errors.is_empty(),
+        "expected at least one error"
+    );
+
+    let expected = offset + text.len() as u32;
+    assert!(
+        result
+            .parse
+            .errors
+            .iter()
+            .any(|e| e.range.start == expected && e.range.end == expected),
+        "expected an error at EOF ({}), got: {:?}",
+        expected,
+        result.parse.errors
+    );
+    assert!(result
+        .parse
+        .errors
+        .iter()
+        .all(|e| e.range.start >= offset && e.range.end >= offset));
+}
+
+#[test]
+fn fragment_node_range_in_file_adds_offset() {
+    let offset = 50;
+    let result = parse_java_expression_fragment("a + b", offset);
+    let node = result
+        .parse
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::BinaryExpression)
+        .expect("expected a BinaryExpression node");
+
+    let file_range = result.node_range_in_file(&node);
+    assert_eq!(
+        file_range.start,
+        offset + u32::from(node.text_range().start())
     );
 }

@@ -422,6 +422,11 @@ pub enum SyntaxKind {
     ConstantPattern,
     NullPattern,
     UnnamedPattern,
+    // Synthetic roots used when parsing fragments (blocks/expressions/etc.).
+    BlockFragment,
+    StatementFragment,
+    ExpressionFragment,
+    ClassMemberFragment,
 
     __Last,
 }
