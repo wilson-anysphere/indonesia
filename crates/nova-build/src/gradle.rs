@@ -1117,16 +1117,17 @@ fn collect_gradle_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf
             continue;
         }
 
-        match file_name.as_ref() {
-            "build.gradle"
-            | "build.gradle.kts"
-            | "settings.gradle"
-            | "settings.gradle.kts"
-            | "gradle.properties"
-            | "gradlew"
-            | "gradlew.bat" => {
-                out.push(path);
-            }
+        let name = file_name.as_ref();
+
+        // Match `nova-workspace` build-file watcher semantics by including any
+        // `build.gradle*` / `settings.gradle*` variants.
+        if name.starts_with("build.gradle") || name.starts_with("settings.gradle") {
+            out.push(path);
+            continue;
+        }
+
+        match name {
+            "gradle.properties" | "gradlew" | "gradlew.bat" => out.push(path),
             "gradle-wrapper.properties" => {
                 if path.ends_with(Path::new("gradle/wrapper/gradle-wrapper.properties")) {
                     out.push(path);
