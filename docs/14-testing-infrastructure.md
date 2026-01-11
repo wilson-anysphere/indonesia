@@ -102,6 +102,11 @@ cargo test -p nova-refactor move_static_method_updates_call_sites
 
 **Expectation:** unit tests should be deterministic and should not require network access.
 
+**Note on ignored tests:** Rust’s test harness supports two commonly confused flags:
+
+- `-- --ignored` runs **only** ignored tests
+- `-- --include-ignored` runs **both** ignored and non-ignored tests
+
 ---
 
 ### 2) Fixture / golden tests (file-based expectations)
