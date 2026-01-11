@@ -13,6 +13,14 @@ Shared helpers live in `nova_remote_proto::transport`.
 
 `MAX_FRAME_BYTES` caps the payload length prefix to prevent OOM from a hostile length.
 
+You can further lower the framed transport limit at runtime by setting:
+
+```bash
+export NOVA_RPC_MAX_MESSAGE_SIZE=33554432  # 32 MiB
+```
+
+The value is read once (on first use) and clamped to `MAX_FRAME_BYTES`.
+
 ## Testing
 
 ```bash
