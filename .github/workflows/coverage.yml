@@ -2,6 +2,11 @@ name: Coverage
 
 on:
   workflow_dispatch:
+    inputs:
+      min_line_coverage:
+        description: "Warn (non-blocking) if total line coverage is below this percentage"
+        required: false
+        default: "0"
   schedule:
     # Weekly run to track coverage drift on `main` without slowing down PR CI.
     - cron: "0 3 * * 0"
@@ -19,6 +24,9 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # Optional soft gate. Set via workflow_dispatch input or change the default here.
+      MIN_LINE_COVERAGE: ${{ github.event.inputs.min_line_coverage || '0' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -51,13 +59,57 @@ jobs:
       - name: Coverage summary
         run: |
           set -euxo pipefail
+          cargo llvm-cov report -p nova-core -p nova-syntax -p nova-ide --color never \
+            | tee coverage-report.txt
           {
             echo "## Test coverage"
             echo
             echo '```text'
-            cargo llvm-cov report -p nova-core -p nova-syntax -p nova-ide --color never
+            awk 'NR==1 || $1=="TOTAL"' coverage-report.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Coverage gate (warn only)
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          min_cov_raw = os.environ.get("MIN_LINE_COVERAGE", "0") or "0"
+          try:
+            min_cov = float(min_cov_raw)
+          except ValueError:
+            print(f"::warning::Invalid MIN_LINE_COVERAGE={min_cov_raw!r}; skipping coverage gate")
+            sys.exit(0)
+
+          if min_cov <= 0:
+            sys.exit(0)
+
+          try:
+            report = open("coverage-report.txt", encoding="utf-8").read().splitlines()
+          except FileNotFoundError:
+            print("::warning::coverage-report.txt not found; skipping coverage gate")
+            sys.exit(0)
+
+          total_line = next((l for l in report if l.strip().startswith("TOTAL")), None)
+          if not total_line:
+            print("::warning::TOTAL line not found in coverage-report.txt; skipping coverage gate")
+            sys.exit(0)
+
+          # llvm-cov prints multiple percentages; the final one corresponds to line coverage.
+          matches = re.findall(r"([0-9]+(?:\\.[0-9]+)?)%", total_line)
+          if not matches:
+            print(f"::warning::Could not parse coverage percentage from TOTAL line: {total_line}")
+            sys.exit(0)
+
+          line_cov = float(matches[-1])
+          if line_cov < min_cov:
+            print(
+              f"::warning::Total line coverage {line_cov:.2f}% is below configured threshold {min_cov:.2f}%"
+            )
+          PY
 
       - name: Upload coverage artifacts
         uses: actions/upload-artifact@v4
@@ -66,4 +118,5 @@ jobs:
           if-no-files-found: error
           path: |
             lcov.info
+            coverage-report.txt
             target/llvm-cov/html
