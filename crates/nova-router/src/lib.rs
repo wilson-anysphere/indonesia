@@ -917,6 +917,27 @@ async fn accept_loop_unix(
             }
             res = listener.accept() => {
                 let (stream, _) = res.with_context(|| format!("accept unix socket {path:?}"))?;
+                #[cfg(all(unix, target_os = "linux"))]
+                {
+                    match ipc_security::unix_peer_uid_matches_current_user(&stream) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            warn!(
+                                socket_path = %path.display(),
+                                "rejecting unix socket connection from different uid"
+                            );
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!(
+                                socket_path = %path.display(),
+                                error = ?err,
+                                "failed to read unix peer credentials"
+                            );
+                            continue;
+                        }
+                    }
+                }
                 let boxed: BoxedStream = Box::new(stream);
                 let Ok(permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
                     warn!(

@@ -56,6 +56,40 @@ pub(crate) fn ensure_unix_socket_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(all(unix, target_os = "linux"))]
+pub(crate) fn unix_peer_uid_matches_current_user(stream: &tokio::net::UnixStream) -> Result<bool> {
+    use std::os::unix::io::AsRawFd;
+
+    let fd = stream.as_raw_fd();
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    let rc = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(cred).cast(),
+            std::ptr::addr_of_mut!(len),
+        )
+    };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error()).context("getsockopt(SO_PEERCRED)");
+    }
+
+    if len as usize != std::mem::size_of::<libc::ucred>() {
+        return Err(anyhow!(
+            "getsockopt(SO_PEERCRED) returned unexpected size {len}"
+        ));
+    }
+
+    let euid = unsafe { libc::geteuid() } as u32;
+    Ok(cred.uid == euid)
+}
+
 #[cfg(unix)]
 pub(crate) fn restrict_unix_socket_permissions(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;

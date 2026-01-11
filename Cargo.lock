@@ -4081,6 +4081,7 @@ dependencies = [
  "anyhow",
  "getrandom 0.2.16",
  "hex",
+ "libc",
  "nova-bugreport",
  "nova-cache",
  "nova-config",
