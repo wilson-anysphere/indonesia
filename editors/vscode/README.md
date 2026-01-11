@@ -61,8 +61,8 @@ npm run compile
   - Generates a diagnostic bundle via `nova/bugReport`.
   - On success, Nova:
     - reveals the bundle folder in your OS file explorer
-    - copies the bundle path to your clipboard
-    - prints the path to the **Nova Bug Report** output channel
+    - copies the bundle **archive path** (if available) or folder path to your clipboard
+    - prints both paths to the **Nova Bug Report** output channel
 
 - **Nova: Discover Tests** (`nova.discoverTests`)
   - Sends `nova/test/discover` and prints discovered test IDs.
@@ -84,6 +84,9 @@ Bug report bundles are created in your system temporary directory as folders nam
 ```
 nova-bugreport-*
 ```
+
+The language server may also emit a best-effort `.zip` archive next to the folder. When present, the
+VS Code extension will copy the archive path to the clipboard (falls back to the directory path).
 
 Each bundle contains sanitized config, recent logs, performance stats, crash reports, and (optionally) your reproduction notes.
 
