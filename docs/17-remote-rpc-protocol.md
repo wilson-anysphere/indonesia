@@ -11,7 +11,7 @@ It is intended to be implementable without reading Nova’s source code. Where w
 > **Implementation status (important):**
 >
 > - `nova-router` and `nova-worker` currently use the legacy lockstep protocol
->   (`nova_remote_proto::legacy_v2`, length-prefixed bincode encoding, lockstep request/response).
+>   (`nova_remote_proto::legacy_v2`, length-prefixed binary encoding, lockstep request/response).
 > - The v3 CBOR envelope types/codecs live in `nova_remote_proto::v3`.
 > - A reference v3 transport implementation (handshake + multiplexed calls + per-packet compression)
 >   exists in `crates/nova-remote-rpc`, but `nova-router`/`nova-worker` have not migrated yet.
@@ -86,8 +86,8 @@ There are two distinct guards:
 2. **Post-handshake guard**:
    - After a successful handshake, the negotiated limit is
      `chosen_capabilities.max_frame_len` (see §4.4).
-    - If `length > chosen_capabilities.max_frame_len`, the receiver MUST treat this as a protocol
-      violation and close the connection.
+   - If `length > chosen_capabilities.max_frame_len`, the receiver MUST treat this as a protocol
+     violation and close the connection.
 
 Suggested defaults (informative):
 
