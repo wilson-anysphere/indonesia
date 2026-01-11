@@ -5,14 +5,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use nova_remote_proto::RpcMessage;
+use nova_remote_proto::v3::{Request, Response};
+use nova_remote_rpc::{RouterConfig, RpcConnection};
 use nova_router::tls::TlsServerConfig;
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
-    KeyUsagePurpose, SanType,
+    KeyPair, KeyUsagePurpose, SanType,
 };
 use tempfile::TempDir;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::time::timeout;
@@ -88,29 +88,26 @@ async fn router_mtls_accepts_worker_with_valid_client_cert() -> Result<()> {
     let accept_task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.context("accept tcp")?;
         let accepted = nova_router::tls::accept(stream, server_cfg).await?;
-        let mut stream = accepted.stream;
 
-        let hello = read_message(&mut stream).await?;
-        let shard_id = match hello {
-            RpcMessage::WorkerHello { shard_id, .. } => shard_id,
-            other => return Err(anyhow!("expected WorkerHello, got {other:?}")),
+        let cfg = RouterConfig {
+            worker_id: 1,
+            revision: 0,
+            ..RouterConfig::default()
         };
 
-        write_message(
-            &mut stream,
-            &RpcMessage::RouterHello {
-                worker_id: 1,
-                shard_id,
-                revision: 0,
-                protocol_version: nova_remote_proto::PROTOCOL_VERSION,
-            },
-        )
-        .await?;
+        let (conn, welcome) = RpcConnection::handshake_as_router_with_config(accepted.stream, cfg)
+            .await
+            .map_err(|err| anyhow!("handshake failed: {err}"))?;
 
-        write_message(&mut stream, &RpcMessage::GetWorkerStats).await?;
-        let stats = read_message(&mut stream).await?;
-        match stats {
-            RpcMessage::WorkerStats(ws) => {
+        let shard_id = welcome.shard_id;
+
+        let resp = conn
+            .call(Request::GetWorkerStats)
+            .await
+            .map_err(|err| anyhow!("GetWorkerStats failed: {err:?}"))?;
+
+        match resp {
+            Response::WorkerStats(ws) => {
                 if ws.shard_id != shard_id {
                     return Err(anyhow!(
                         "expected worker stats for shard {shard_id}, got {}",
@@ -121,7 +118,15 @@ async fn router_mtls_accepts_worker_with_valid_client_cert() -> Result<()> {
             other => return Err(anyhow!("expected WorkerStats, got {other:?}")),
         }
 
-        write_message(&mut stream, &RpcMessage::Shutdown).await?;
+        let resp = conn
+            .call(Request::Shutdown)
+            .await
+            .map_err(|err| anyhow!("Shutdown failed: {err:?}"))?;
+        match resp {
+            Response::Shutdown => {}
+            other => return Err(anyhow!("expected Shutdown response, got {other:?}")),
+        }
+
         Ok::<_, anyhow::Error>(())
     });
 
@@ -144,12 +149,12 @@ async fn router_mtls_accepts_worker_with_valid_client_cert() -> Result<()> {
         .spawn()
         .context("spawn nova-worker")?;
 
-    timeout(Duration::from_secs(5), accept_task)
+    timeout(Duration::from_secs(10), accept_task)
         .await
         .context("wait for accept task")?
-        .context("join accept task")?;
+        .context("join accept task")??;
 
-    let status = timeout(Duration::from_secs(5), child.wait())
+    let status = timeout(Duration::from_secs(10), child.wait())
         .await
         .context("wait for worker exit")?
         .context("join worker")?;
@@ -166,20 +171,29 @@ struct TestPkiPaths {
     client_key: PathBuf,
 }
 
+struct GeneratedCert {
+    cert: Certificate,
+    key: KeyPair,
+}
+
 fn generate_test_pki(dir: &Path) -> Result<TestPkiPaths> {
     let ca = generate_ca()?;
 
     let server = generate_leaf_cert(
         "localhost",
-        &[
-            SanType::DnsName("localhost".into()),
-            SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-        ],
+        vec!["localhost".to_string()],
+        vec![SanType::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST))],
         ExtendedKeyUsagePurpose::ServerAuth,
         &ca,
     )?;
 
-    let client = generate_leaf_cert("nova-worker", &[], ExtendedKeyUsagePurpose::ClientAuth, &ca)?;
+    let client = generate_leaf_cert(
+        "nova-worker",
+        Vec::new(),
+        Vec::new(),
+        ExtendedKeyUsagePurpose::ClientAuth,
+        &ca,
+    )?;
 
     let ca_cert = dir.join("ca.pem");
     let server_cert = dir.join("server.pem");
@@ -187,13 +201,11 @@ fn generate_test_pki(dir: &Path) -> Result<TestPkiPaths> {
     let client_cert = dir.join("client.pem");
     let client_key = dir.join("client.key");
 
-    std::fs::write(&ca_cert, ca.serialize_pem()?).context("write ca cert")?;
-    std::fs::write(&server_cert, server.serialize_pem_with_signer(&ca)?)
-        .context("write server cert")?;
-    std::fs::write(&server_key, server.serialize_private_key_pem()).context("write server key")?;
-    std::fs::write(&client_cert, client.serialize_pem_with_signer(&ca)?)
-        .context("write client cert")?;
-    std::fs::write(&client_key, client.serialize_private_key_pem()).context("write client key")?;
+    std::fs::write(&ca_cert, ca.cert.pem()).context("write ca cert")?;
+    std::fs::write(&server_cert, server.cert.pem()).context("write server cert")?;
+    std::fs::write(&server_key, server.key.serialize_pem()).context("write server key")?;
+    std::fs::write(&client_cert, client.cert.pem()).context("write client cert")?;
+    std::fs::write(&client_key, client.key.serialize_pem()).context("write client key")?;
 
     Ok(TestPkiPaths {
         ca_cert,
@@ -204,23 +216,27 @@ fn generate_test_pki(dir: &Path) -> Result<TestPkiPaths> {
     })
 }
 
-fn generate_ca() -> Result<Certificate> {
+fn generate_ca() -> Result<GeneratedCert> {
     let mut params = CertificateParams::default();
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
     params
         .distinguished_name
         .push(DnType::CommonName, "nova-test-ca");
-    Certificate::from_params(params).context("generate CA cert")
+
+    let key = KeyPair::generate().context("generate CA key")?;
+    let cert = params.self_signed(&key).context("self-sign CA cert")?;
+    Ok(GeneratedCert { cert, key })
 }
 
 fn generate_leaf_cert(
     common_name: &str,
-    subject_alt_names: &[SanType],
+    dns_names: Vec<String>,
+    mut extra_sans: Vec<SanType>,
     eku: ExtendedKeyUsagePurpose,
-    ca: &Certificate,
-) -> Result<Certificate> {
-    let mut params = CertificateParams::default();
+    ca: &GeneratedCert,
+) -> Result<GeneratedCert> {
+    let mut params = CertificateParams::new(dns_names).context("create certificate params")?;
     params.is_ca = IsCa::NoCa;
     params.key_usages = vec![
         KeyUsagePurpose::DigitalSignature,
@@ -230,42 +246,12 @@ fn generate_leaf_cert(
     params
         .distinguished_name
         .push(DnType::CommonName, common_name);
-    params.subject_alt_names = subject_alt_names.to_vec();
-    Certificate::from_params(params)
-        .context("generate leaf cert")
-        .and_then(|cert| {
-            // Ensure it can be signed by the CA (serialization happens when writing files).
-            cert.serialize_der_with_signer(ca)
-                .context("sign leaf cert")?;
-            Ok(cert)
-        })
-}
 
-async fn write_message(stream: &mut (impl AsyncWrite + Unpin), message: &RpcMessage) -> Result<()> {
-    let payload = nova_remote_proto::encode_message(message)?;
-    let len: u32 = payload
-        .len()
-        .try_into()
-        .map_err(|_| anyhow!("message too large"))?;
+    params.subject_alt_names.append(&mut extra_sans);
 
-    stream
-        .write_u32_le(len)
-        .await
-        .context("write message len")?;
-    stream
-        .write_all(&payload)
-        .await
-        .context("write message payload")?;
-    stream.flush().await.context("flush message")?;
-    Ok(())
-}
-
-async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessage> {
-    let len = stream.read_u32_le().await.context("read message len")?;
-    let mut buf = vec![0u8; len as usize];
-    stream
-        .read_exact(&mut buf)
-        .await
-        .context("read message payload")?;
-    nova_remote_proto::decode_message(&buf)
+    let key = KeyPair::generate().context("generate leaf key")?;
+    let cert = params
+        .signed_by(&key, &ca.cert, &ca.key)
+        .context("sign leaf cert")?;
+    Ok(GeneratedCert { cert, key })
 }

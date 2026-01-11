@@ -22,11 +22,14 @@ nova-cache = { path = "../nova-cache" }
 nova-bugreport = { path = "../nova-bugreport" }
 nova-config = { path = "../nova-config" }
 nova-db = { path = "../nova-db" }
-nova-fuzzy = { path = "../nova-fuzzy" }
 nova-remote-proto = { path = "../nova-remote-proto", features = ["tokio"] }
+nova-remote-rpc = { path = "../nova-remote-rpc" }
 
-tokio-rustls = { version = "0.26.0", optional = true }
-rustls = { version = "0.23.18", default-features = false, features = ["std"], optional = true }
+# tokio-rustls defaults to the aws-lc-rs crypto provider, but other transitive dependencies (e.g.
+# `ureq`) use the ring provider. rustls 0.23+ requires selecting *exactly one* provider, so we opt
+# into ring across the workspace feature graph here.
+tokio-rustls = { version = "0.26.0", default-features = false, features = ["ring", "logging", "tls12"], optional = true }
+rustls = { version = "0.23.18", default-features = false, features = ["std", "ring"], optional = true }
 rustls-pemfile = { version = "2.2.0", optional = true }
 
 [dev-dependencies]
@@ -34,5 +37,5 @@ tempfile.workspace = true
 tokio.workspace = true
 rcgen = "0.13.2"
 
-nova-lsp = { path = "../nova-lsp" }
+nova-fuzzy = { path = "../nova-fuzzy" }
 nova-router = { path = "../nova-router" }

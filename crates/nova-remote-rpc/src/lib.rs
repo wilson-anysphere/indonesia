@@ -13,7 +13,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 use bytes::Bytes;
 use nova_remote_proto::v3::{
@@ -97,6 +97,14 @@ type RequestHandler = Arc<
 >;
 type NotificationHandler = Arc<dyn Fn(Notification) -> BoxFuture<()> + Send + Sync + 'static>;
 type CancelHandler = Arc<dyn Fn(RequestId) + Send + Sync + 'static>;
+
+const MAX_PENDING_NOTIFICATIONS: usize = 16;
+
+#[derive(Default)]
+struct NotificationState {
+    handler: Option<NotificationHandler>,
+    pending: Vec<Notification>,
+}
 
 /// A lightweight cancellation token for incoming requests.
 #[derive(Debug, Clone)]
@@ -494,7 +502,24 @@ impl RpcConnection {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let handler: NotificationHandler = Arc::new(move |n| Box::pin(handler(n)));
-        *self.inner.notification_handler.write().unwrap() = Some(handler);
+        let pending = {
+            let mut state = self.inner.notification_state.lock().unwrap();
+            state.handler = Some(handler.clone());
+            std::mem::take(&mut state.pending)
+        };
+
+        if pending.is_empty() {
+            return;
+        }
+
+        // Drain notifications that arrived before the handler was installed. This avoids a race
+        // where `read_loop` starts running on another runtime thread immediately after handshake.
+        for n in pending {
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                handler(n).await;
+            });
+        }
     }
 
     pub fn set_cancel_handler<H>(&self, handler: H)
@@ -585,7 +610,7 @@ impl RpcConnection {
             pending: Mutex::new(HashMap::new()),
             incoming_cancels: Mutex::new(HashMap::new()),
             request_handler: RwLock::new(None),
-            notification_handler: RwLock::new(None),
+            notification_state: StdMutex::new(NotificationState::default()),
             cancel_handler: RwLock::new(None),
             max_inflight_chunked_packets: MAX_INFLIGHT_CHUNKED_PACKETS,
             max_reassembly_bytes: MAX_REASSEMBLY_BYTES,
@@ -614,8 +639,8 @@ struct Inner {
     incoming_cancels: Mutex<HashMap<RequestId, watch::Sender<bool>>>,
 
     request_handler: RwLock<Option<RequestHandler>>,
-    notification_handler: RwLock<Option<NotificationHandler>>,
     cancel_handler: RwLock<Option<CancelHandler>>,
+    notification_state: StdMutex<NotificationState>,
 
     max_inflight_chunked_packets: usize,
     max_reassembly_bytes: usize,
@@ -1163,12 +1188,28 @@ async fn handle_payload(
             Ok(())
         }
         RpcPayload::Notification(notification) => {
-            let handler = inner.notification_handler.read().unwrap().clone();
-            if let Some(handler) = handler {
-                tokio::spawn(async move {
-                    handler(notification).await;
-                });
+            if matches!(notification, Notification::Unknown) {
+                return Ok(());
             }
+
+            let handler = {
+                let mut state = inner.notification_state.lock().unwrap();
+                if let Some(handler) = state.handler.clone() {
+                    handler
+                } else {
+                    if state.pending.len() == MAX_PENDING_NOTIFICATIONS {
+                        // Keep the most recent notifications; older ones are unlikely to be
+                        // relevant once the application eventually installs a handler.
+                        state.pending.remove(0);
+                    }
+                    state.pending.push(notification);
+                    return Ok(());
+                }
+            };
+
+            tokio::spawn(async move {
+                handler(notification).await;
+            });
             Ok(())
         }
         RpcPayload::Cancel => {

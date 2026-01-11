@@ -26,6 +26,10 @@ isolated dev setups.
 
 Nova’s router↔worker transport uses **nova remote RPC v3** (see
 [`docs/17-remote-rpc-protocol.md`](../../docs/17-remote-rpc-protocol.md)).
+`nova-worker` speaks v3 end-to-end. v3 is implemented by:
+
+- schema/types: `nova_remote_proto::v3`
+- tokio transport/runtime: `crates/nova-remote-rpc`
 
 The legacy lockstep protocol (`nova_remote_proto::legacy_v2`) is deprecated, not wire-compatible
 with v3, and is kept primarily for compatibility/tests.
@@ -46,8 +50,10 @@ v3 is a framed stream (a `u32` little-endian length prefix followed by a CBOR `W
 ### Configuration knobs (defaults)
 
 The v3 handshake carries capability and limit negotiation (frame/payload size bounds, compression
-algorithms, etc.). `nova-worker` does not currently expose v3-specific CLI flags for tuning these;
-it uses built-in defaults and the router chooses the final negotiated settings.
+algorithms, etc.). `nova-worker` exposes a small set of knobs:
+
+- `--max-rpc-bytes` caps the `max_frame_len` / `max_packet_len` offered in `WorkerHello.capabilities`
+  (and therefore the negotiated limits).
 
 The current v3 reference implementation (`crates/nova-remote-rpc`) defaults to:
 

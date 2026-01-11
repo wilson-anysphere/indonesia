@@ -4,20 +4,23 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_db::salsa::Database as SalsaDatabase;
 use nova_db::{FileId, NovaSemantic, SourceRootId};
-use nova_fuzzy::{FuzzyMatcher, MatchKind, MatchScore, TrigramIndex, TrigramIndexBuilder};
-use nova_remote_proto::{
-    transport, FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo,
-    SymbolRankKey, WorkerStats,
+use nova_remote_proto::v3::{
+    Capabilities, CachedIndexInfo, CompressionAlgo, Notification, ProtocolVersion, Request,
+    Response, RpcError as ProtoRpcError, RpcErrorCode, SupportedVersions,
 };
+use nova_remote_proto::{FileText, ShardId, ShardIndex, WorkerStats};
+use nova_remote_rpc::{RequestContext, RpcConnection, WorkerConfig};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
-use tracing::{error, info, warn};
+use tokio::sync::{watch, Mutex};
+use tracing::{info, warn};
 
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -28,10 +31,9 @@ use tokio::net::windows::named_pipe::ClientOptions;
 #[cfg(feature = "tls")]
 mod tls;
 
-const FALLBACK_SCAN_LIMIT: usize = 50_000;
-const MAX_ROUTER_HELLO_BYTES: usize = 64 * 1024;
 const DEFAULT_MAX_RPC_BYTES: usize = nova_remote_proto::MAX_MESSAGE_BYTES;
-#[tokio::main]
+
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse()?;
 
@@ -83,7 +85,7 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
         _ => {}
     }
 
-    let mut stream: BoxedStream = match args.connect {
+    let stream: BoxedStream = match args.connect {
         #[cfg(unix)]
         ConnectAddr::Unix(path) => Box::new(
             UnixStream::connect(path)
@@ -99,12 +101,10 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
                     Ok(client) => break client,
                     Err(err) if attempts < 50 => {
                         attempts += 1;
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     }
-                    Err(err) => {
-                        return Err(err).with_context(|| format!("connect named pipe {name}"))
-                    }
+                    Err(err) => return Err(err).with_context(|| format!("connect named pipe {name}")),
                 }
             };
             Box::new(client)
@@ -134,62 +134,178 @@ Use `tcp+tls:` or pass `--allow-insecure` for local testing."
         }
     };
 
-    let has_cached_index = cached_index.is_some();
-    transport::write_message(
-        &mut stream,
-        &RpcMessage::WorkerHello {
-            shard_id: args.shard_id,
-            auth_token: args.auth_token.clone(),
-            has_cached_index,
-        },
-    )
-    .await?;
+    let max_rpc_bytes = clamp_max_rpc_bytes(args.max_rpc_bytes);
+    let max_rpc_len: u32 = max_rpc_bytes
+        .try_into()
+        .unwrap_or_else(|_| u32::MAX.min(nova_remote_proto::MAX_MESSAGE_BYTES as u32));
 
-    let max_rpc_bytes = args
-        .max_rpc_bytes
-        .min(nova_remote_proto::MAX_MESSAGE_BYTES)
-        .max(1);
-    let ack = transport::read_message_limited(&mut stream, MAX_ROUTER_HELLO_BYTES)
-        .await
-        .with_context(|| format!("read RouterHello for shard {}", args.shard_id))?;
-    let (worker_id, shard_id, revision, protocol_version) = match ack {
-        RpcMessage::RouterHello {
-            worker_id,
-            shard_id,
-            revision,
-            protocol_version,
-            ..
-        } => (worker_id, shard_id, revision, protocol_version),
-        other => return Err(anyhow!("unexpected router hello: {other:?}")),
+    let hello = nova_remote_proto::v3::WorkerHello {
+        shard_id: args.shard_id,
+        auth_token: args.auth_token.clone(),
+        supported_versions: SupportedVersions {
+            min: ProtocolVersion::CURRENT,
+            max: ProtocolVersion::CURRENT,
+        },
+        capabilities: Capabilities {
+            supports_chunking: true,
+            supports_cancel: true,
+            supported_compression: vec![CompressionAlgo::None],
+            max_frame_len: max_rpc_len,
+            max_packet_len: max_rpc_len,
+        },
+        cached_index_info: cached_index.as_ref().map(CachedIndexInfo::from_index),
+        worker_build: None,
     };
 
-    if shard_id != args.shard_id {
+    let mut worker_cfg = WorkerConfig::new(hello);
+    // If the user configured a smaller post-handshake frame cap, apply it pre-handshake as well.
+    worker_cfg.pre_handshake_max_frame_len = worker_cfg.pre_handshake_max_frame_len.min(max_rpc_len);
+
+    let (conn, welcome) = RpcConnection::handshake_as_worker_with_config(stream, worker_cfg)
+        .await
+        .map_err(|err| anyhow!("v3 handshake failed: {err}"))?;
+
+    if welcome.shard_id != args.shard_id {
         return Err(anyhow!(
-            "router hello shard mismatch: expected {}, got {}",
+            "welcome shard mismatch: expected {}, got {}",
             args.shard_id,
-            shard_id
+            welcome.shard_id
         ));
     }
 
-    if protocol_version != nova_remote_proto::PROTOCOL_VERSION {
-        return Err(anyhow!(
-            "router hello protocol version mismatch: expected {}, got {}",
-            nova_remote_proto::PROTOCOL_VERSION,
-            protocol_version
-        ));
+    span.record("worker_id", welcome.worker_id);
+    info!(
+        worker_id = welcome.worker_id,
+        revision = welcome.revision,
+        chosen_version = ?welcome.chosen_version,
+        chosen_capabilities = ?welcome.chosen_capabilities,
+        "connected to router"
+    );
+
+    let state = Arc::new(Mutex::new(WorkerState::new(
+        args.shard_id,
+        args.cache_dir.clone(),
+        cached_index.as_ref(),
+    )));
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+
+    conn.set_request_handler({
+        let state = state.clone();
+        let shutdown_tx = shutdown_tx.clone();
+        move |ctx, request| {
+            let state = state.clone();
+            let shutdown_tx = shutdown_tx.clone();
+            async move { handle_request(state, shutdown_tx, ctx, request).await }
+        }
+    });
+
+    if let Some(index) = cached_index {
+        if let Err(err) = conn.notify(Notification::CachedIndex(index)).await {
+            warn!(error = ?err, "failed to send cached index notification");
+        }
     }
 
-    span.record("worker_id", worker_id);
-    info!(worker_id, revision, protocol_version, "connected to router");
-
-    let mut state = WorkerState::new(args.shard_id, args.cache_dir, cached_index);
-    if let Err(err) = state.run(&mut stream, max_rpc_bytes).await {
-        error!(error = ?err, "worker terminated with error");
-        return Err(err);
+    while shutdown_rx.changed().await.is_ok() {
+        if *shutdown_rx.borrow() {
+            break;
+        }
     }
+
+    // Best-effort: allow in-flight responses to flush before tearing down the runtime.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    if let Err(err) = conn.shutdown().await {
+        warn!(error = ?err, "failed to close rpc connection");
+    }
+
     info!("worker shutdown");
-
     Ok(())
+}
+
+async fn handle_request(
+    state: Arc<Mutex<WorkerState>>,
+    shutdown_tx: watch::Sender<bool>,
+    ctx: RequestContext,
+    request: Request,
+) -> std::result::Result<Response, ProtoRpcError> {
+    if ctx.cancellation().is_cancelled() {
+        return Err(cancelled_error());
+    }
+
+    match request {
+        Request::LoadFiles { revision, files } => {
+            let mut state = state.lock().await;
+            state.revision = revision;
+            state.apply_file_snapshot(files);
+            Ok(Response::Ack)
+        }
+        Request::IndexShard { revision, files } => {
+            let mut state = state.lock().await;
+            state.revision = revision;
+            state.apply_file_snapshot(files);
+
+            if ctx.cancellation().is_cancelled() {
+                return Err(cancelled_error());
+            }
+            let index = state.build_index().await.map_err(internal_error)?;
+            if ctx.cancellation().is_cancelled() {
+                return Err(cancelled_error());
+            }
+            Ok(Response::ShardIndex(index))
+        }
+        Request::UpdateFile { revision, file } => {
+            let mut state = state.lock().await;
+            state.revision = revision;
+            state.apply_file_update(file);
+
+            if ctx.cancellation().is_cancelled() {
+                return Err(cancelled_error());
+            }
+            let index = state.build_index().await.map_err(internal_error)?;
+            if ctx.cancellation().is_cancelled() {
+                return Err(cancelled_error());
+            }
+            Ok(Response::ShardIndex(index))
+        }
+        Request::GetWorkerStats => {
+            let state = state.lock().await;
+            Ok(Response::WorkerStats(state.worker_stats()))
+        }
+        Request::Shutdown => {
+            let _ = shutdown_tx.send(true);
+            Ok(Response::Shutdown)
+        }
+        Request::Unknown => Err(ProtoRpcError {
+            code: RpcErrorCode::InvalidRequest,
+            message: "unknown request".into(),
+            retryable: false,
+            details: None,
+        }),
+    }
+}
+
+fn cancelled_error() -> ProtoRpcError {
+    ProtoRpcError {
+        code: RpcErrorCode::Cancelled,
+        message: "request cancelled".into(),
+        retryable: true,
+        details: None,
+    }
+}
+
+fn internal_error(err: anyhow::Error) -> ProtoRpcError {
+    ProtoRpcError {
+        code: RpcErrorCode::Internal,
+        message: err.to_string(),
+        retryable: false,
+        details: Some(format!("{err:#}")),
+    }
+}
+
+fn clamp_max_rpc_bytes(max_rpc_bytes: usize) -> usize {
+    max_rpc_bytes
+        .min(u32::MAX as usize)
+        .min(nova_remote_proto::MAX_MESSAGE_BYTES)
+        .max(1)
 }
 
 #[derive(Clone)]
@@ -482,20 +598,13 @@ struct WorkerState {
     next_file_id: u32,
     path_to_file_id: HashMap<String, FileId>,
     files: BTreeMap<String, FileId>,
-    symbol_index: Option<ShardSymbolSearchIndex>,
 }
 
 impl WorkerState {
-    fn new(shard_id: ShardId, cache_dir: PathBuf, cached_index: Option<ShardIndex>) -> Self {
-        let (index_generation, symbol_index) = match cached_index {
-            Some(index) => {
-                let index_generation = index.index_generation;
-                let index = Arc::new(index);
-                (index_generation, Some(ShardSymbolSearchIndex::new(index)))
-            }
-            None => (0, None),
-        };
-
+    fn new(shard_id: ShardId, cache_dir: PathBuf, cached_index: Option<&ShardIndex>) -> Self {
+        let index_generation = cached_index
+            .map(|index| index.index_generation)
+            .unwrap_or(0);
         Self {
             shard_id,
             cache_dir,
@@ -505,64 +614,15 @@ impl WorkerState {
             next_file_id: 0,
             path_to_file_id: HashMap::new(),
             files: BTreeMap::new(),
-            symbol_index,
         }
     }
 
-    async fn run(&mut self, stream: &mut BoxedStream, max_rpc_bytes: usize) -> Result<()> {
-        loop {
-            let msg = transport::read_message_limited(stream, max_rpc_bytes)
-                .await
-                .with_context(|| format!("read message from router (shard {})", self.shard_id))?;
-
-            match msg {
-                RpcMessage::IndexShard { revision, files } => {
-                    self.revision = revision;
-                    self.apply_file_snapshot(files);
-                    let info = self.build_index().await?;
-                    transport::write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
-                }
-                RpcMessage::LoadFiles { revision, files } => {
-                    self.revision = revision;
-                    self.apply_file_snapshot(files);
-                    transport::write_message(stream, &RpcMessage::Ack).await?;
-                }
-                RpcMessage::UpdateFile { revision, file } => {
-                    self.revision = revision;
-                    self.apply_file_update(file);
-                    let info = self.build_index().await?;
-                    transport::write_message(stream, &RpcMessage::ShardIndexInfo(info)).await?;
-                }
-                RpcMessage::GetWorkerStats => {
-                    let stats = WorkerStats {
-                        shard_id: self.shard_id,
-                        revision: self.revision,
-                        index_generation: self.index_generation,
-                        file_count: self.files.len().try_into().unwrap_or(u32::MAX),
-                    };
-                    transport::write_message(stream, &RpcMessage::WorkerStats(stats)).await?;
-                }
-                RpcMessage::SearchSymbols { query, limit } => {
-                    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
-                    let items = self
-                        .symbol_index
-                        .as_ref()
-                        .map(|index| index.search(&query, limit))
-                        .unwrap_or_default();
-                    transport::write_message(stream, &RpcMessage::SearchSymbolsResult { items })
-                        .await?;
-                }
-                RpcMessage::Shutdown => return Ok(()),
-                other => {
-                    transport::write_message(
-                        stream,
-                        &RpcMessage::Error {
-                            message: format!("unexpected message: {other:?}"),
-                        },
-                    )
-                    .await?;
-                }
-            }
+    fn worker_stats(&self) -> WorkerStats {
+        WorkerStats {
+            shard_id: self.shard_id,
+            revision: self.revision,
+            index_generation: self.index_generation,
+            file_count: self.files.len().try_into().unwrap_or(u32::MAX),
         }
     }
 
@@ -613,7 +673,7 @@ impl WorkerState {
         file_id
     }
 
-    async fn build_index(&mut self) -> Result<ShardIndexInfo> {
+    async fn build_index(&mut self) -> Result<ShardIndex> {
         self.index_generation += 1;
         let shard_id = self.shard_id;
         let revision = self.revision;
@@ -626,30 +686,21 @@ impl WorkerState {
             .map(|(path, file_id)| (path.clone(), *file_id))
             .collect();
 
-        let (symbol_index, symbol_count) = tokio::task::spawn_blocking(move || {
+        let index = tokio::task::spawn_blocking(move || {
             let symbols = build_symbols(&db, &files);
-            let symbol_count = symbols.len();
-            let index = Arc::new(ShardIndex {
+            let index = ShardIndex {
                 shard_id,
                 revision,
                 index_generation,
                 symbols,
-            });
-            nova_cache::save_shard_index(&cache_dir, index.as_ref())
-                .context("write shard cache")?;
-            Ok::<_, anyhow::Error>((ShardSymbolSearchIndex::new(index), symbol_count))
+            };
+            nova_cache::save_shard_index(&cache_dir, &index).context("write shard cache")?;
+            Ok::<_, anyhow::Error>(index)
         })
         .await
         .context("join shard index task")??;
 
-        self.symbol_index = Some(symbol_index);
-
-        Ok(ShardIndexInfo {
-            shard_id,
-            revision,
-            index_generation,
-            symbol_count: symbol_count.try_into().unwrap_or(u32::MAX),
-        })
+        Ok(index)
     }
 }
 
@@ -670,167 +721,11 @@ fn build_symbols(db: &SalsaDatabase, files: &[(String, FileId)]) -> Vec<nova_rem
     symbols
 }
 
-struct ShardSymbolSearchIndex {
-    index: Arc<ShardIndex>,
-    trigram: TrigramIndex,
-    prefix1: Vec<Vec<u32>>,
-}
-
-impl ShardSymbolSearchIndex {
-    fn new(index: Arc<ShardIndex>) -> Self {
-        let mut prefix1: Vec<Vec<u32>> = vec![Vec::new(); 256];
-        let mut builder = TrigramIndexBuilder::new();
-
-        for (id, sym) in index.symbols.iter().enumerate() {
-            let id_u32: u32 = id
-                .try_into()
-                .unwrap_or_else(|_| panic!("symbol index too large: {id}"));
-
-            builder.insert(id_u32, &sym.name);
-
-            if let Some(&b0) = sym.name.as_bytes().first() {
-                prefix1[b0.to_ascii_lowercase() as usize].push(id_u32);
-            }
-        }
-
-        Self {
-            index,
-            trigram: builder.build(),
-            prefix1,
-        }
-    }
-
-    fn search(&self, query: &str, limit: usize) -> Vec<ScoredSymbol> {
-        if limit == 0 || self.index.symbols.is_empty() {
-            return Vec::new();
-        }
-
-        if query.is_empty() {
-            return self
-                .index
-                .symbols
-                .iter()
-                .take(limit)
-                .map(|sym| ScoredSymbol {
-                    name: sym.name.clone(),
-                    path: sym.path.clone(),
-                    rank_key: SymbolRankKey {
-                        kind_rank: 0,
-                        score: 0,
-                    },
-                })
-                .collect();
-        }
-
-        let query_bytes = query.as_bytes();
-        let query_first = query_bytes.first().copied().map(|b| b.to_ascii_lowercase());
-        let mut matcher = FuzzyMatcher::new(query);
-
-        let mut scored = Vec::new();
-
-        if query_bytes.len() < 3 {
-            if let Some(b0) = query_first {
-                let bucket = &self.prefix1[b0 as usize];
-                if !bucket.is_empty() {
-                    self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
-                    return self.finish(scored, limit);
-                }
-            }
-
-            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.index.symbols.len());
-            self.score_candidates(
-                (0..scan_limit).map(|id| id as u32),
-                &mut matcher,
-                &mut scored,
-            );
-            return self.finish(scored, limit);
-        }
-
-        let mut candidates = self.trigram.candidates(query);
-        if candidates.is_empty() {
-            if let Some(b0) = query_first {
-                let bucket = &self.prefix1[b0 as usize];
-                if !bucket.is_empty() {
-                    self.score_candidates(bucket.iter().copied(), &mut matcher, &mut scored);
-                    return self.finish(scored, limit);
-                }
-            }
-
-            let scan_limit = FALLBACK_SCAN_LIMIT.min(self.index.symbols.len());
-            candidates = (0..scan_limit as u32).collect();
-        }
-
-        self.score_candidates(candidates.into_iter(), &mut matcher, &mut scored);
-        self.finish(scored, limit)
-    }
-
-    fn score_candidates(
-        &self,
-        ids: impl IntoIterator<Item = u32>,
-        matcher: &mut FuzzyMatcher,
-        out: &mut Vec<ScoredSymbolInternal>,
-    ) {
-        for id in ids {
-            let Some(sym) = self.index.symbols.get(id as usize) else {
-                continue;
-            };
-            if let Some(score) = matcher.score(&sym.name) {
-                out.push(ScoredSymbolInternal { id, score });
-            }
-        }
-    }
-
-    fn finish(&self, mut scored: Vec<ScoredSymbolInternal>, limit: usize) -> Vec<ScoredSymbol> {
-        scored.sort_by(|a, b| {
-            b.score.rank_key().cmp(&a.score.rank_key()).then_with(|| {
-                let a_sym = &self.index.symbols[a.id as usize];
-                let b_sym = &self.index.symbols[b.id as usize];
-                a_sym
-                    .name
-                    .len()
-                    .cmp(&b_sym.name.len())
-                    .then_with(|| a_sym.name.cmp(&b_sym.name))
-                    .then_with(|| a_sym.path.cmp(&b_sym.path))
-                    .then_with(|| a.id.cmp(&b.id))
-            })
-        });
-
-        scored
-            .into_iter()
-            .take(limit)
-            .filter_map(|s| {
-                let sym = self.index.symbols.get(s.id as usize)?;
-                Some(ScoredSymbol {
-                    name: sym.name.clone(),
-                    path: sym.path.clone(),
-                    rank_key: match_score_rank_key(s.score),
-                })
-            })
-            .collect()
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ScoredSymbolInternal {
-    id: u32,
-    score: MatchScore,
-}
-
-fn match_score_rank_key(score: MatchScore) -> SymbolRankKey {
-    let kind_rank = match score.kind {
-        MatchKind::Prefix => 2,
-        MatchKind::Fuzzy => 1,
-    };
-    SymbolRankKey {
-        kind_rank,
-        score: score.score,
-    }
-}
-
 type BoxedStream = Box<dyn AsyncReadWrite>;
 
-trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send {}
-impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
+impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
