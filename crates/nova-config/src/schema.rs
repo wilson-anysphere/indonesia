@@ -181,6 +181,57 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
         })),
     );
 
+    // When `local_only=true`, HTTP-backed providers must point at a loopback address.
+    // This is a best-effort approximation of the runtime check in `nova-ai` (URL host parsing is
+    // not something JSON Schema can do robustly).
+    push_all_of(
+        schema,
+        schema_from_json(json!({
+            "if": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["enabled", "privacy", "provider"],
+                        "properties": {
+                            "enabled": { "const": true },
+                            "privacy": {
+                                "required": ["local_only"],
+                                "properties": {
+                                    "local_only": { "const": true }
+                                }
+                            },
+                            "provider": {
+                                "required": ["kind"],
+                                "properties": {
+                                    "kind": { "enum": ["ollama", "open_ai_compatible", "http"] }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "then": {
+                "required": ["ai"],
+                "properties": {
+                    "ai": {
+                        "required": ["provider"],
+                        "properties": {
+                            "provider": {
+                                "required": ["url"],
+                                "properties": {
+                                    "url": {
+                                        "type": "string",
+                                        "pattern": "^https?://(localhost|127\\\\.0\\\\.0\\\\.1|\\\\[::1\\\\])(:[0-9]+)?(/|\\\\?|#|$)"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })),
+    );
+
     allow_deprecated_aliases(schema);
 
     // Minor semantic constraints that are easier to express by post-processing the generated schema.

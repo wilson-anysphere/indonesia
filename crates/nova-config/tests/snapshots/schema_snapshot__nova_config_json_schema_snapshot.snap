@@ -229,6 +229,76 @@ expression: schema
           }
         }
       }
+    },
+    {
+      "if": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "enabled",
+              "privacy",
+              "provider"
+            ],
+            "properties": {
+              "enabled": {
+                "const": true
+              },
+              "privacy": {
+                "required": [
+                  "local_only"
+                ],
+                "properties": {
+                  "local_only": {
+                    "const": true
+                  }
+                }
+              },
+              "provider": {
+                "required": [
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "ollama",
+                      "open_ai_compatible",
+                      "http"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "ai"
+        ],
+        "properties": {
+          "ai": {
+            "required": [
+              "provider"
+            ],
+            "properties": {
+              "provider": {
+                "required": [
+                  "url"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "pattern": "^https?://(localhost|127\\\\.0\\\\.0\\\\.1|\\\\[::1\\\\])(:[0-9]+)?(/|\\\\?|#|$)"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "properties": {
