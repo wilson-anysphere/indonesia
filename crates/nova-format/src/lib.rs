@@ -563,7 +563,18 @@ pub fn minimal_text_edits(original: &str, formatted: &str) -> Vec<TextEdit> {
 
             let original_block = &original[original_start..original_end];
             let formatted_block = &formatted[formatted_start..formatted_end];
-            if let Some(edit) = minimal_text_edit(original_block, formatted_block) {
+            const MAX_MYERS_BLOCK_CHARS: usize = 8192;
+            if let Some(block_edits) = minimal_text_edits_for_small_text(
+                original_block,
+                formatted_block,
+                MAX_MYERS_BLOCK_CHARS,
+            ) {
+                let base = TextSize::from(original_start as u32);
+                for edit in block_edits {
+                    let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
+                    edits.push(TextEdit::new(range, edit.replacement));
+                }
+            } else if let Some(edit) = minimal_text_edit(original_block, formatted_block) {
                 let base = TextSize::from(original_start as u32);
                 let range = TextRange::new(base + edit.range.start(), base + edit.range.end());
                 edits.push(TextEdit::new(range, edit.replacement));
@@ -580,13 +591,28 @@ fn minimal_text_edits_for_line(original: &str, formatted: &str) -> Vec<TextEdit>
         return Vec::new();
     }
 
-    const MAX_MYERS_CHARS: usize = 2048;
+    const MAX_MYERS_LINE_CHARS: usize = 2048;
+    minimal_text_edits_for_small_text(original, formatted, MAX_MYERS_LINE_CHARS)
+        .unwrap_or_else(|| minimal_text_edit(original, formatted).into_iter().collect())
+}
+
+fn minimal_text_edits_for_small_text(
+    original: &str,
+    formatted: &str,
+    max_chars: usize,
+) -> Option<Vec<TextEdit>> {
+    if original == formatted {
+        return Some(Vec::new());
+    }
+
+    let orig_len = original.chars().count();
+    let fmt_len = formatted.chars().count();
+    if orig_len.saturating_add(fmt_len) > max_chars {
+        return None;
+    }
+
     let (orig_chars, orig_offsets) = chars_with_offsets(original);
     let (fmt_chars, fmt_offsets) = chars_with_offsets(formatted);
-
-    if orig_chars.len().saturating_add(fmt_chars.len()) > MAX_MYERS_CHARS {
-        return minimal_text_edit(original, formatted).into_iter().collect();
-    }
 
     let ops = myers_diff_ops(&orig_chars, &fmt_chars);
     let mut chunks = Vec::new();
@@ -651,7 +677,7 @@ fn minimal_text_edits_for_line(original: &str, formatted: &str) -> Vec<TextEdit>
         ));
     }
 
-    edits
+    Some(edits)
 }
 
 fn minimal_text_edit(original: &str, formatted: &str) -> Option<TextEdit> {
