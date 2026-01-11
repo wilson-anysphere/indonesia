@@ -266,6 +266,7 @@ export async function activate(context: vscode.ExtensionContext) {
   let missingServerPrompted = false;
   let ensureTask: Promise<void> | undefined;
   let ensurePromptRequested = false;
+  let ensurePending = false;
 
   async function stopLanguageClient(): Promise<void> {
     if (!client) {
@@ -443,27 +444,33 @@ export async function activate(context: vscode.ExtensionContext) {
     if (opts?.promptForInstall) {
       ensurePromptRequested = true;
     }
+    ensurePending = true;
 
-    if (ensureTask) {
-      await ensureTask;
-      return;
-    }
-
-    ensureTask = (async () => {
-      while (true) {
-        const promptForInstall = ensurePromptRequested;
-        ensurePromptRequested = false;
-        await doEnsureLanguageClientStarted(promptForInstall);
-        if (!ensurePromptRequested) {
-          break;
-        }
+    while (true) {
+      if (!ensureTask) {
+        ensureTask = (async () => {
+          while (true) {
+            const promptForInstall = ensurePromptRequested;
+            const shouldRun = ensurePending || promptForInstall;
+            ensurePromptRequested = false;
+            ensurePending = false;
+            if (!shouldRun) {
+              break;
+            }
+            await doEnsureLanguageClientStarted(promptForInstall);
+          }
+        })();
       }
-    })();
 
-    try {
-      await ensureTask;
-    } finally {
-      ensureTask = undefined;
+      try {
+        await ensureTask;
+      } finally {
+        ensureTask = undefined;
+      }
+
+      if (!ensurePending && !ensurePromptRequested) {
+        return;
+      }
     }
   }
 
