@@ -65,6 +65,10 @@ impl FileSystem for LocalFs {
         match path {
             VfsPath::Local(path) => fs::read_to_string(path),
             VfsPath::Archive(path) => self.archive.read_to_string(path),
+            VfsPath::Decompiled { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("cannot read decompiled document: {path}"),
+            )),
             VfsPath::Uri(uri) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("cannot read URI path: {uri}"),
@@ -76,6 +80,7 @@ impl FileSystem for LocalFs {
         match path {
             VfsPath::Local(path) => path.exists(),
             VfsPath::Archive(path) => self.archive.exists(path),
+            VfsPath::Decompiled { .. } => false,
             VfsPath::Uri(_) => false,
         }
     }
@@ -86,6 +91,10 @@ impl FileSystem for LocalFs {
             VfsPath::Archive(path) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("archive metadata not implemented ({path})"),
+            )),
+            VfsPath::Decompiled { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("decompiled document metadata not supported ({path})"),
             )),
             VfsPath::Uri(uri) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -100,6 +109,10 @@ impl FileSystem for LocalFs {
             VfsPath::Archive(path) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("archive directory listing not implemented ({path})"),
+            )),
+            VfsPath::Decompiled { .. } => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("decompiled document directory listing not supported ({path})"),
             )),
             VfsPath::Uri(uri) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,

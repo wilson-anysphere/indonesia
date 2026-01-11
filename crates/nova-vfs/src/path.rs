@@ -16,6 +16,11 @@ pub enum VfsPath {
     Local(PathBuf),
     /// A file inside an archive such as a `.jar` or `.jmod`.
     Archive(ArchivePath),
+    /// A virtual document produced by Nova, identified by the content hash of the binary input
+    /// and the binary name it was decompiled as.
+    ///
+    /// Canonical URI form: `nova:///decompiled/<hash>/<binary-name>.java`.
+    Decompiled { content_hash: String, binary_name: String },
     /// A generic URI string that an external implementation can resolve.
     Uri(String),
 }
@@ -51,6 +56,15 @@ impl VfsPath {
         }
     }
 
+    pub fn decompiled(content_hash: impl Into<String>, binary_name: impl Into<String>) -> Self {
+        let content_hash = content_hash.into();
+        let binary_name = binary_name.into();
+        Self::Decompiled {
+            content_hash: normalize_decompiled_segment(content_hash),
+            binary_name: normalize_decompiled_binary_name(binary_name),
+        }
+    }
+
     pub fn uri(uri: impl Into<String>) -> Self {
         let uri = uri.into();
         if let Some(archive) = parse_archive_uri(&uri) {
@@ -62,6 +76,9 @@ impl VfsPath {
             if let Ok(path) = file_uri_to_path(&uri) {
                 return Self::Local(normalize_local_path(path.as_path()));
             }
+        }
+        if let Some(decompiled) = parse_decompiled_uri(&uri) {
+            return decompiled;
         }
         Self::Uri(uri)
     }
@@ -102,7 +119,23 @@ impl VfsPath {
                 let entry = path.entry.strip_prefix('/').unwrap_or(&path.entry);
                 Some(format!("{scheme}:{archive_uri}!/{entry}"))
             }
+            VfsPath::Decompiled {
+                content_hash,
+                binary_name,
+            } => Some(format!(
+                "nova:///decompiled/{content_hash}/{binary_name}.java"
+            )),
             VfsPath::Uri(uri) => Some(uri.clone()),
+        }
+    }
+
+    pub fn as_decompiled(&self) -> Option<(&str, &str)> {
+        match self {
+            VfsPath::Decompiled {
+                content_hash,
+                binary_name,
+            } => Some((content_hash, binary_name)),
+            _ => None,
         }
     }
 
@@ -129,6 +162,10 @@ impl fmt::Display for VfsPath {
         match self {
             VfsPath::Local(path) => write!(f, "{}", path.display()),
             VfsPath::Archive(archive) => write!(f, "{archive}"),
+            VfsPath::Decompiled {
+                content_hash,
+                binary_name,
+            } => write!(f, "nova:///decompiled/{content_hash}/{binary_name}.java"),
             VfsPath::Uri(uri) => write!(f, "{uri}"),
         }
     }
@@ -219,6 +256,34 @@ fn normalize_local_path(path: &Path) -> PathBuf {
     out
 }
 
+fn normalize_decompiled_segment(segment: String) -> String {
+    segment
+        .trim_matches(|c| c == '/' || c == '\\')
+        .to_string()
+}
+
+fn normalize_decompiled_binary_name(binary_name: String) -> String {
+    let binary_name = binary_name.replace('\\', "/");
+    let binary_name = binary_name.trim_matches('/');
+
+    let mut out = String::with_capacity(binary_name.len());
+    let mut last_slash = false;
+    for ch in binary_name.chars() {
+        if ch == '/' {
+            if last_slash {
+                continue;
+            }
+            last_slash = true;
+            out.push('/');
+        } else {
+            last_slash = false;
+            out.push(ch);
+        }
+    }
+
+    out.strip_suffix(".java").unwrap_or(&out).to_string()
+}
+
 fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
     let (kind, rest) = if let Some(rest) = uri.strip_prefix("jar:") {
         (ArchiveKind::Jar, rest)
@@ -233,6 +298,62 @@ fn parse_archive_uri(uri: &str) -> Option<ArchivePath> {
     let archive = normalize_local_path(archive.as_path());
     let entry = normalize_archive_entry(entry)?;
     Some(ArchivePath::new(kind, archive, entry))
+}
+
+fn parse_decompiled_uri(uri: &str) -> Option<VfsPath> {
+    let rest = uri.strip_prefix("nova:")?;
+    // The canonical form does not include query/fragment; treat those as non-matching.
+    if rest.contains('?') || rest.contains('#') {
+        return None;
+    }
+
+    // Extract the path component, rejecting URIs with a non-empty authority (e.g. `nova://host/...`).
+    let path = if let Some(after_slashes) = rest.strip_prefix("//") {
+        // `nova:///...` has an empty authority; the first character of the remainder is `/`.
+        if !after_slashes.starts_with('/') {
+            return None;
+        }
+        after_slashes
+    } else if rest.starts_with('/') {
+        rest
+    } else {
+        return None;
+    };
+
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.len() < 3 {
+        return None;
+    }
+    if segments[0] != "decompiled" {
+        return None;
+    }
+    if segments.iter().any(|seg| *seg == "..") {
+        return None;
+    }
+
+    let content_hash = segments[1];
+    if content_hash.is_empty() {
+        return None;
+    }
+
+    let filename = *segments.last()?;
+    let Some(filename_stem) = filename.strip_suffix(".java") else {
+        return None;
+    };
+    if filename_stem.is_empty() {
+        return None;
+    }
+
+    let mut binary_name_parts: Vec<&str> = segments[2..].to_vec();
+    if let Some(last) = binary_name_parts.last_mut() {
+        *last = filename_stem;
+    }
+    let binary_name = binary_name_parts.join("/");
+    if binary_name.is_empty() {
+        return None;
+    }
+
+    Some(VfsPath::decompiled(content_hash.to_string(), binary_name))
 }
 
 #[cfg(test)]
@@ -293,6 +414,35 @@ mod tests {
 
         let uri = format!("jar:{archive_uri}!/a/../evil.class");
         assert!(matches!(VfsPath::uri(uri), VfsPath::Uri(_)));
+    }
+
+    #[test]
+    fn decompiled_uri_roundtrips() {
+        let path = VfsPath::decompiled("abc123", "com/example/Foo");
+        let uri = path.to_uri().expect("decompiled uri");
+        let round = VfsPath::uri(uri);
+        assert_eq!(round, path);
+    }
+
+    #[test]
+    fn decompiled_uri_normalizes_multiple_slashes_when_printing() {
+        let parsed = VfsPath::uri("nova:////decompiled//abc123//com//example///Foo.java");
+        assert_eq!(
+            parsed.to_uri().as_deref(),
+            Some("nova:///decompiled/abc123/com/example/Foo.java")
+        );
+    }
+
+    #[test]
+    fn decompiled_uri_rejects_dotdot_segments() {
+        let uri = "nova:///decompiled/abc123/../X.java";
+        assert_eq!(VfsPath::uri(uri), VfsPath::Uri(uri.to_string()));
+    }
+
+    #[test]
+    fn unknown_nova_uri_stays_uri() {
+        let uri = "nova:///something/else";
+        assert_eq!(VfsPath::uri(uri), VfsPath::Uri(uri.to_string()));
     }
 
     #[cfg(feature = "lsp")]
