@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use nova_ai::AiClient;
-use nova_bugreport::{global_crash_store, BugReportBuilder, BugReportOptions, PerfStats};
+use nova_bugreport::{
+    global_crash_store, install_panic_hook, BugReportBuilder, BugReportOptions, PanicHookConfig,
+    PerfStats,
+};
 use nova_cache::{
     atomic_write, fetch_cache_package, install_cache_package, pack_cache_package, CacheConfig,
     CacheDir, CacheGcPolicy, CachePackageInstallOutcome,
@@ -31,6 +34,7 @@ use std::{
     collections::BTreeMap,
     env, fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -385,6 +389,13 @@ fn main() {
     let config = load_config_from_cli(&cli);
 
     let _ = init_tracing_with_config(&config);
+    install_panic_hook(
+        PanicHookConfig {
+            include_backtrace: config.logging.include_backtrace,
+            ..Default::default()
+        },
+        Arc::new(|_| {}),
+    );
 
     let exit_code = match run(cli, &config) {
         Ok(code) => code,

@@ -379,3 +379,46 @@ api_key = "SUPER-SECRET"
         "expected logs to mention bugreport creation, got:\n{logs}"
     );
 }
+
+#[test]
+fn bugreport_json_creates_archive_when_requested() {
+    let temp = TempDir::new().unwrap();
+    temp.child("config.toml")
+        .write_str(
+            r#"
+[logging]
+level = "debug"
+
+[ai]
+enabled = true
+api_key = "SUPER-SECRET"
+"#,
+        )
+        .unwrap();
+
+    let out_dir = temp.child("bugreport-out");
+
+    let output = nova()
+        .arg("--config")
+        .arg(temp.child("config.toml").path())
+        .arg("bugreport")
+        .arg("--out")
+        .arg(out_dir.path())
+        .arg("--archive")
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let bundle_path = std::path::Path::new(v["path"].as_str().unwrap());
+    let archive_path = std::path::Path::new(v["archive"].as_str().unwrap());
+    assert!(bundle_path.is_dir());
+    assert!(archive_path.is_file());
+    assert_eq!(archive_path, &bundle_path.with_extension("zip"));
+}
