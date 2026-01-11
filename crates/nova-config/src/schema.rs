@@ -140,6 +140,8 @@ fn apply_semantic_constraints(schema: &mut RootSchema) {
             }
         })),
     );
+
+    allow_deprecated_aliases(schema);
 }
 
 fn push_all_of(root: &mut RootSchema, schema: Schema) {
@@ -149,4 +151,40 @@ fn push_all_of(root: &mut RootSchema, schema: Schema) {
 
 fn schema_from_json(value: serde_json::Value) -> Schema {
     serde_json::from_value(value).expect("valid json schema")
+}
+
+fn allow_deprecated_aliases(schema: &mut RootSchema) {
+    // Keep the schema aligned with what the runtime accepts (serde aliases), while still steering
+    // users away from legacy keys.
+    add_deprecated_property(
+        schema,
+        "JdkConfig",
+        "jdk_home",
+        schema_from_json(json!({
+            "deprecated": true,
+            "description": "Deprecated alias for `jdk.home`.",
+            "default": null,
+            "type": ["string", "null"]
+        })),
+    );
+}
+
+fn add_deprecated_property(
+    schema: &mut RootSchema,
+    definition_name: &str,
+    property_name: &str,
+    property_schema: Schema,
+) {
+    let Some(definition) = schema.definitions.get_mut(definition_name) else {
+        return;
+    };
+
+    let Schema::Object(obj) = definition else {
+        return;
+    };
+
+    let object_validation = obj.object();
+    object_validation
+        .properties
+        .insert(property_name.to_string(), property_schema);
 }

@@ -824,6 +824,15 @@ expression: schema
             "string",
             "null"
           ]
+        },
+        "jdk_home": {
+          "description": "Deprecated alias for `jdk.home`.",
+          "default": null,
+          "deprecated": true,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "additionalProperties": false
