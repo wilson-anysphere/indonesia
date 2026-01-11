@@ -1,17 +1,20 @@
 use crate::anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
+use crate::patch::{Position, Range as PositionRange};
 use crate::privacy::PrivacyMode;
+use crate::types::CodeSnippet;
 use nova_core::ProjectDatabase;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
-
+ 
 #[derive(Debug, Clone)]
 pub struct ContextBuilder;
-
+ 
 impl ContextBuilder {
     pub fn new() -> Self {
         Self
     }
-
+ 
     /// Build a context bundle while populating `related_code` from a semantic search engine.
     pub fn build_with_semantic_search(
         &self,
@@ -21,12 +24,13 @@ impl ContextBuilder {
     ) -> BuiltContext {
         self.build(req.with_related_code_from_focal(search, max_related))
     }
-
+ 
     pub fn build(&self, req: ContextRequest) -> BuiltContext {
         let mut remaining = req.token_budget;
         let mut out = String::new();
+        let mut sections = Vec::new();
         let mut truncated = false;
-
+ 
         let options = CodeAnonymizerOptions {
             anonymize_identifiers: req.privacy.anonymize_identifiers,
             redact_sensitive_strings: req.privacy.redaction.redact_string_literals,
@@ -36,37 +40,69 @@ impl ContextBuilder {
             strip_or_redact_comments: req.privacy.anonymize_identifiers,
         };
         let mut anonymizer = CodeAnonymizer::new(options);
-
-        // Focal code is always included, even if it needs truncation.
-        let (section, section_truncated, used) = build_section(
+ 
+        // Focal code is always highest priority.
+        let built = build_section(
             "Focal code",
             &req.focal_code,
             remaining,
             &mut anonymizer,
             /*always_include=*/ true,
         );
-        out.push_str(&section);
-        truncated |= section_truncated;
-        remaining = remaining.saturating_sub(used);
-
-        // Enclosing context is next most useful.
+        remaining = remaining.saturating_sub(built.token_estimate);
+        truncated |= built.truncated;
+        if !built.text.is_empty() {
+            out.push_str(&built.text);
+            sections.push(built.stat);
+        }
+ 
+        // Diagnostics are high-signal; include early.
+        if !req.diagnostics.is_empty() {
+            if let Some(diag_text) = format_diagnostics(&req) {
+                let built = build_section(
+                    "Diagnostics",
+                    &diag_text,
+                    remaining,
+                    &mut anonymizer,
+                    /*always_include=*/ false,
+                );
+                if built.text.is_empty() && remaining == 0 {
+                    truncated = true;
+                }
+                remaining = remaining.saturating_sub(built.token_estimate);
+                truncated |= built.truncated;
+                if !built.text.is_empty() {
+                    out.push_str(&built.text);
+                    sections.push(built.stat);
+                }
+            }
+        }
+ 
+        // Enclosing semantic skeleton/context.
         if let Some(enclosing) = req.enclosing_context.as_deref() {
-            let (section, section_truncated, used) = build_section(
+            let built = build_section(
                 "Enclosing context",
                 enclosing,
                 remaining,
                 &mut anonymizer,
                 /*always_include=*/ false,
             );
-            out.push_str(&section);
-            truncated |= section_truncated;
-            remaining = remaining.saturating_sub(used);
+            if built.text.is_empty() && remaining == 0 {
+                truncated = true;
+            }
+            remaining = remaining.saturating_sub(built.token_estimate);
+            truncated |= built.truncated;
+            if !built.text.is_empty() {
+                out.push_str(&built.text);
+                sections.push(built.stat);
+            }
         }
-
+ 
         // Related symbols in provided order (caller can pre-sort by relevance).
-        if !req.related_symbols.is_empty() && remaining > 0 {
+        if !req.related_symbols.is_empty() {
             for symbol in &req.related_symbols {
                 if remaining == 0 {
+                    truncated = true;
                     break;
                 }
                 let title = if req.privacy.anonymize_identifiers {
@@ -74,26 +110,31 @@ impl ContextBuilder {
                 } else {
                     format!("Related symbol: {} ({})", symbol.name, symbol.kind)
                 };
-                let (section, section_truncated, used) = build_section(
+ 
+                let built = build_section(
                     &title,
                     &symbol.snippet,
                     remaining,
                     &mut anonymizer,
                     /*always_include=*/ false,
                 );
-                out.push_str(&section);
-                truncated |= section_truncated;
-                remaining = remaining.saturating_sub(used);
+                remaining = remaining.saturating_sub(built.token_estimate);
+                truncated |= built.truncated;
+                if !built.text.is_empty() {
+                    out.push_str(&built.text);
+                    sections.push(built.stat);
+                }
             }
         }
-
+ 
         // Related code snippets (typically supplied by semantic search).
-        if !req.related_code.is_empty() && remaining > 0 {
+        if !req.related_code.is_empty() {
             for related in &req.related_code {
                 if remaining == 0 {
+                    truncated = true;
                     break;
                 }
-
+ 
                 let title = if req.privacy.include_file_paths {
                     format!(
                         "Related code: {} ({})",
@@ -103,76 +144,123 @@ impl ContextBuilder {
                 } else {
                     format!("Related code ({})", related.kind)
                 };
-
-                let (section, section_truncated, used) = build_section(
+ 
+                let built = build_section(
                     &title,
                     &related.snippet,
                     remaining,
                     &mut anonymizer,
                     /*always_include=*/ false,
                 );
-                out.push_str(&section);
-                truncated |= section_truncated;
-                remaining = remaining.saturating_sub(used);
+                remaining = remaining.saturating_sub(built.token_estimate);
+                truncated |= built.truncated;
+                if !built.text.is_empty() {
+                    out.push_str(&built.text);
+                    sections.push(built.stat);
+                }
             }
         }
-
+ 
         if req.include_doc_comments {
             if let Some(docs) = req.doc_comments.as_deref() {
-                let (section, section_truncated, used) = build_section(
+                let built = build_section(
                     "Doc comments",
                     docs,
                     remaining,
                     &mut anonymizer,
                     /*always_include=*/ false,
                 );
-                out.push_str(&section);
-                truncated |= section_truncated;
-                remaining = remaining.saturating_sub(used);
+                if built.text.is_empty() && remaining == 0 {
+                    truncated = true;
+                }
+                remaining = remaining.saturating_sub(built.token_estimate);
+                truncated |= built.truncated;
+                if !built.text.is_empty() {
+                    out.push_str(&built.text);
+                    sections.push(built.stat);
+                }
             }
         }
-
+ 
+        // Explicit extra files (e.g., related test file, interface, etc).
+        if !req.extra_files.is_empty() {
+            for (idx, snippet) in req.extra_files.iter().enumerate() {
+                if remaining == 0 {
+                    truncated = true;
+                    break;
+                }
+ 
+                let title = match (req.privacy.include_file_paths, snippet.path.as_ref()) {
+                    (true, Some(path)) => format!("Extra file: {}", path.display()),
+                    _ => format!("Extra file {}", idx + 1),
+                };
+ 
+                let built = build_section(
+                    &title,
+                    &snippet.content,
+                    remaining,
+                    &mut anonymizer,
+                    /*always_include=*/ false,
+                );
+                remaining = remaining.saturating_sub(built.token_estimate);
+                truncated |= built.truncated;
+                if !built.text.is_empty() {
+                    out.push_str(&built.text);
+                    sections.push(built.stat);
+                }
+            }
+        }
+ 
         // Optional path metadata (kept last so it doesn't crowd out code).
         if req.privacy.include_file_paths {
             if let Some(path) = req.file_path.as_deref() {
-                let (section, section_truncated, _used) = build_section(
+                let built = build_section(
                     "File",
                     path,
                     remaining,
                     &mut anonymizer,
                     /*always_include=*/ false,
                 );
-                out.push_str(&section);
-                truncated |= section_truncated;
+                if built.text.is_empty() && remaining == 0 {
+                    truncated = true;
+                }
+                remaining = remaining.saturating_sub(built.token_estimate);
+                truncated |= built.truncated;
+                if !built.text.is_empty() {
+                    out.push_str(&built.text);
+                    sections.push(built.stat);
+                }
             }
         }
-
-        let token_count = count_tokens(&out);
+ 
+        let mut text = out;
+        let mut token_count = estimate_tokens(&text);
         // Hard budget enforcement: never exceed the requested budget.
         if token_count > req.token_budget {
-            out = truncate_to_tokens(&out, req.token_budget);
+            text = truncate_to_tokens(&text, req.token_budget);
+            token_count = estimate_tokens(&text);
             truncated = true;
         }
-
-        let token_count = count_tokens(&out);
+ 
         BuiltContext {
-            text: out,
+            text,
             token_count,
             truncated,
+            sections,
         }
     }
 }
-
+ 
 /// A context builder that can populate `related_code` automatically using a configured
 /// [`crate::SemanticSearch`] implementation.
 ///
-/// This is a convenience wrapper for callers that want \"semantic aware\" context building
+/// This is a convenience wrapper for callers that want "semantic aware" context building
 /// without wiring up the search index manually on each request.
 pub struct SemanticContextBuilder {
     builder: ContextBuilder,
     search: Box<dyn crate::SemanticSearch>,
 }
-
+ 
 impl SemanticContextBuilder {
     /// Construct a semantic context builder from the global AI configuration.
     ///
@@ -184,17 +272,17 @@ impl SemanticContextBuilder {
             search: crate::semantic_search_from_config(config),
         }
     }
-
+ 
     pub fn index_project(&mut self, db: &dyn ProjectDatabase) {
         self.search.index_project(db);
     }
-
+ 
     pub fn build(&self, req: ContextRequest, max_related: usize) -> BuiltContext {
         self.builder
             .build_with_semantic_search(req, self.search.as_ref(), max_related)
     }
 }
-
+ 
 #[derive(Debug, Clone)]
 pub struct ContextRequest {
     pub file_path: Option<String>,
@@ -202,12 +290,15 @@ pub struct ContextRequest {
     pub enclosing_context: Option<String>,
     pub related_symbols: Vec<RelatedSymbol>,
     pub related_code: Vec<RelatedCode>,
+    pub cursor: Option<Position>,
+    pub diagnostics: Vec<ContextDiagnostic>,
+    pub extra_files: Vec<CodeSnippet>,
     pub doc_comments: Option<String>,
     pub include_doc_comments: bool,
     pub token_budget: usize,
     pub privacy: PrivacyMode,
 }
-
+ 
 impl ContextRequest {
     /// Build a context request from a Java source buffer + a byte-range selection.
     ///
@@ -226,22 +317,25 @@ impl ContextRequest {
     ) -> Self {
         let selection = clamp_range(selection, source.len());
         let focal_code = source[selection.clone()].to_string();
-
-        let extracted = extract_java_context(source, selection.clone(), include_doc_comments);
-
+ 
+        let extracted = analyze_java_context(source, selection.clone(), &focal_code, include_doc_comments);
+ 
         Self {
             file_path: None,
             focal_code,
             enclosing_context: extracted.enclosing_context,
-            related_symbols: Vec::new(),
+            related_symbols: extracted.related_symbols,
             related_code: Vec::new(),
+            cursor: Some(position_for_offset(source, selection.start)),
+            diagnostics: Vec::new(),
+            extra_files: Vec::new(),
             doc_comments: extracted.doc_comment,
             include_doc_comments,
             token_budget,
             privacy,
         }
     }
-
+ 
     /// Populate `related_code` using a [`crate::SemanticSearch`] implementation.
     ///
     /// Callers decide whether the underlying search engine is embedding-backed
@@ -265,7 +359,7 @@ impl ContextRequest {
             .collect();
         self
     }
-
+ 
     /// Convenience wrapper around [`ContextRequest::with_related_code_from_search`] that uses the
     /// current `focal_code` contents as the query text.
     pub fn with_related_code_from_focal(
@@ -277,14 +371,14 @@ impl ContextRequest {
         self.with_related_code_from_search(search, &query, max_results)
     }
 }
-
+ 
 #[derive(Debug, Clone)]
 pub struct RelatedSymbol {
     pub name: String,
     pub kind: String,
     pub snippet: String,
 }
-
+ 
 #[derive(Debug, Clone)]
 pub struct RelatedCode {
     pub path: PathBuf,
@@ -292,128 +386,153 @@ pub struct RelatedCode {
     pub kind: String,
     pub snippet: String,
 }
-
-#[derive(Debug, Clone)]
+ 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextDiagnosticSeverity {
+    Error,
+    Warning,
+    Info,
+}
+ 
+impl ContextDiagnosticSeverity {
+    fn as_str(self) -> &'static str {
+        match self {
+            ContextDiagnosticSeverity::Error => "error",
+            ContextDiagnosticSeverity::Warning => "warning",
+            ContextDiagnosticSeverity::Info => "info",
+        }
+    }
+}
+ 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextDiagnosticKind {
+    Syntax,
+    Type,
+    Lint,
+    Other,
+}
+ 
+impl ContextDiagnosticKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ContextDiagnosticKind::Syntax => "syntax",
+            ContextDiagnosticKind::Type => "type",
+            ContextDiagnosticKind::Lint => "lint",
+            ContextDiagnosticKind::Other => "other",
+        }
+    }
+}
+ 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextDiagnostic {
+    pub file: Option<String>,
+    pub range: Option<PositionRange>,
+    pub severity: ContextDiagnosticSeverity,
+    pub message: String,
+    pub kind: Option<ContextDiagnosticKind>,
+}
+ 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContextSectionStat {
+    pub title: String,
+    pub token_estimate: usize,
+    pub truncated: bool,
+}
+ 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltContext {
     pub text: String,
     pub token_count: usize,
     pub truncated: bool,
+    pub sections: Vec<ContextSectionStat>,
 }
-
+ 
 #[derive(Debug, Clone)]
 struct ExtractedJavaContext {
     enclosing_context: Option<String>,
     doc_comment: Option<String>,
+    related_symbols: Vec<RelatedSymbol>,
 }
-
+ 
 fn clamp_range(range: Range<usize>, len: usize) -> Range<usize> {
     let start = range.start.min(len);
     let end = range.end.min(len).max(start);
     start..end
 }
-
-fn extract_java_context(
+ 
+fn analyze_java_context(
     source: &str,
     selection: Range<usize>,
+    focal_code: &str,
     include_doc_comments: bool,
 ) -> ExtractedJavaContext {
-    use nova_syntax::{parse_java, AstNode, CompilationUnit, SyntaxElement, SyntaxKind};
-
+    use nova_syntax::java;
+ 
     if source.is_empty() {
         return ExtractedJavaContext {
             enclosing_context: None,
             doc_comment: None,
+            related_symbols: Vec::new(),
         };
     }
-
-    let parse = parse_java(source);
-    let range = nova_syntax::TextRange::new(selection.start, selection.end);
-    let element = parse.covering_element(range);
-
-    let node = match element {
-        SyntaxElement::Node(n) => n,
-        SyntaxElement::Token(t) => match t.parent() {
-            Some(p) => p,
-            None => {
-                return ExtractedJavaContext {
-                    enclosing_context: None,
-                    doc_comment: None,
-                }
-            }
-        },
-    };
-
-    let mut method = None;
-    let mut ty = None;
-    for anc in node.ancestors() {
-        match anc.kind() {
-            SyntaxKind::MethodDeclaration if method.is_none() => method = Some(anc.clone()),
-            SyntaxKind::ClassDeclaration
-            | SyntaxKind::InterfaceDeclaration
-            | SyntaxKind::EnumDeclaration
-            | SyntaxKind::RecordDeclaration
-                if ty.is_none() =>
-            {
-                ty = Some(anc.clone())
-            }
-            _ => {}
-        }
-        if method.is_some() && ty.is_some() {
-            break;
-        }
-    }
-
+ 
+    let selection = clamp_range(selection, source.len());
+    let offset = selection.start.min(source.len());
+    let parsed = java::parse(source);
+    let unit = parsed.compilation_unit();
+ 
+    let enclosing_type = find_enclosing_type(&unit.types, offset);
+    let enclosing_callable = enclosing_type.and_then(|ty| find_enclosing_callable(ty, offset));
+ 
     let mut parts: Vec<String> = Vec::new();
-
-    let root = parse.syntax();
-    if let Some(unit) = CompilationUnit::cast(root) {
-        if let Some(pkg) = unit.package() {
-            parts.push(format!(
-                "// Package\n{}",
-                slice_node_without_leading_trivia(source, pkg.syntax(), true).trim()
-            ));
-        }
-
-        let imports: Vec<_> = unit
-            .imports()
-            .map(|imp| {
-                slice_node_without_leading_trivia(source, imp.syntax(), true)
-                    .trim()
-                    .to_string()
-            })
-            .collect();
-        if !imports.is_empty() {
-            parts.push(format!("// Imports\n{}", imports.join("\n")));
-        }
+    if let Some(pkg) = unit.package.as_ref() {
+        parts.push(format!("// Package\npackage {};", pkg.name));
     }
-
-    if let Some(ty) = &ty {
+ 
+    if !unit.imports.is_empty() {
+        let imports: Vec<String> = unit.imports.iter().map(render_import_decl).collect();
+        parts.push(format!("// Imports\n{}", imports.join("\n")));
+    }
+ 
+    if let Some(ty) = enclosing_type {
         parts.push(format!(
-            "// Enclosing type\n{}",
-            slice_node_without_leading_trivia(source, ty, include_doc_comments).trim()
+            "// Enclosing type (skeleton)\n{}",
+            render_type_skeleton(ty)
         ));
     }
-
-    if let Some(method) = &method {
+ 
+    if let Some(callable) = enclosing_callable.as_ref() {
         parts.push(format!(
-            "// Enclosing method\n{}",
-            slice_node_without_leading_trivia(source, method, include_doc_comments).trim()
+            "// Enclosing member (skeleton)\n{}",
+            render_callable_skeleton(callable)
         ));
     }
-
+ 
     let doc_comment = if include_doc_comments {
-        // Prefer method doc, else type doc.
-        method
+        enclosing_callable
             .as_ref()
-            .and_then(|n| find_doc_comment_before_node(source, n))
+            .and_then(|callable| find_doc_comment_before_offset(source, callable.range_start()))
             .or_else(|| {
-                ty.as_ref()
-                    .and_then(|n| find_doc_comment_before_node(source, n))
+                enclosing_type.and_then(|ty| find_doc_comment_before_offset(source, ty.range().start))
             })
     } else {
         None
     };
-
+ 
+    let mut decls = Vec::new();
+    collect_symbol_decls(&unit.types, &mut decls, None);
+ 
+    let mut exclude = HashSet::new();
+    if let Some(ty) = enclosing_type {
+        exclude.insert(ty.name().to_string());
+    }
+    if let Some(callable) = enclosing_callable.as_ref() {
+        exclude.insert(callable.name().to_string());
+    }
+ 
+    let referenced = extract_referenced_identifiers(focal_code, &exclude);
+    let related_symbols = related_symbols_from_references(&referenced, &decls);
+ 
     ExtractedJavaContext {
         enclosing_context: if parts.is_empty() {
             None
@@ -421,47 +540,13 @@ fn extract_java_context(
             Some(parts.join("\n\n"))
         },
         doc_comment,
+        related_symbols,
     }
 }
-
-fn slice_node_without_leading_trivia<'a>(
-    source: &'a str,
-    node: &nova_syntax::SyntaxNode,
-    include_doc_comments: bool,
-) -> &'a str {
-    let range = node.text_range();
-    let mut start = u32::from(range.start()) as usize;
-    let end = u32::from(range.end()) as usize;
-
-    if !include_doc_comments {
-        // Skip leading trivia (including doc comments) so doc inclusion is controlled
-        // exclusively via `doc_comments`.
-        if let Some(mut tok) = node.first_token() {
-            let node_end = range.end();
-            while tok.text_range().start() < node_end && tok.kind().is_trivia() {
-                start = u32::from(tok.text_range().end()) as usize;
-                if let Some(next) = tok.next_token() {
-                    tok = next;
-                } else {
-                    break;
-                }
-            }
-        }
-    }
-
-    start = start.min(source.len());
-    let end = end.min(source.len()).max(start);
-    &source[start..end]
-}
-
-fn find_doc_comment_before_node(source: &str, node: &nova_syntax::SyntaxNode) -> Option<String> {
-    let offset = u32::from(node.text_range().start()) as usize;
-    find_doc_comment_before_offset(source, offset)
-}
-
+ 
 fn find_doc_comment_before_offset(source: &str, offset: usize) -> Option<String> {
     use nova_syntax::SyntaxKind;
-
+ 
     let tokens = nova_syntax::lex(source);
     let mut idx = 0usize;
     while idx < tokens.len() {
@@ -471,7 +556,7 @@ fn find_doc_comment_before_offset(source: &str, offset: usize) -> Option<String>
         }
         idx += 1;
     }
-
+ 
     while idx > 0 {
         idx -= 1;
         let tok = &tokens[idx];
@@ -481,84 +566,657 @@ fn find_doc_comment_before_offset(source: &str, offset: usize) -> Option<String>
             _ => break,
         }
     }
-
+ 
     None
 }
-
+ 
+fn format_diagnostics(req: &ContextRequest) -> Option<String> {
+    let mut out = String::new();
+    let mut first = true;
+ 
+    for diag in req.diagnostics.iter().filter(|diag| {
+        diagnostic_is_relevant(diag, req.file_path.as_deref(), req.cursor)
+    }) {
+        if !first {
+            out.push('\n');
+        }
+        first = false;
+ 
+        out.push('[');
+        out.push_str(diag.severity.as_str());
+        out.push(']');
+        if let Some(kind) = diag.kind {
+            out.push('[');
+            out.push_str(kind.as_str());
+            out.push(']');
+        }
+ 
+        if req.privacy.include_file_paths {
+            if let Some(file) = diag.file.as_deref() {
+                out.push(' ');
+                out.push_str(file);
+            }
+        }
+ 
+        if let Some(range) = diag.range.as_ref() {
+            out.push_str(&format!(
+                " L{}:{}-L{}:{}",
+                range.start.line + 1,
+                range.start.character + 1,
+                range.end.line + 1,
+                range.end.character + 1
+            ));
+        }
+ 
+        out.push_str(": ");
+        out.push_str(&diag.message);
+    }
+ 
+    if out.trim().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+ 
+fn diagnostic_is_relevant(
+    diag: &ContextDiagnostic,
+    file_path: Option<&str>,
+    cursor: Option<Position>,
+) -> bool {
+    if let Some(file_path) = file_path {
+        if let Some(file) = diag.file.as_deref() {
+            if file != file_path {
+                return false;
+            }
+        }
+    }
+ 
+    let Some(cursor) = cursor else {
+        return true;
+    };
+    let Some(range) = diag.range.as_ref() else {
+        return true;
+    };
+    range_contains(range, cursor)
+}
+ 
+fn range_contains(range: &PositionRange, pos: Position) -> bool {
+    if pos.line < range.start.line || pos.line > range.end.line {
+        return false;
+    }
+ 
+    if pos.line == range.start.line && pos.character < range.start.character {
+        return false;
+    }
+ 
+    if pos.line == range.end.line && pos.character > range.end.character {
+        return false;
+    }
+ 
+    true
+}
+ 
+#[derive(Debug, Clone)]
+struct BuiltSection {
+    text: String,
+    token_estimate: usize,
+    truncated: bool,
+    stat: ContextSectionStat,
+}
+ 
 fn build_section(
     title: &str,
     raw_content: &str,
     remaining: usize,
     anonymizer: &mut CodeAnonymizer,
     always_include: bool,
-) -> (String, bool, usize) {
-    if remaining == 0 && !always_include {
-        return (String::new(), false, 0);
+) -> BuiltSection {
+    if remaining == 0 {
+        let truncated = always_include && !raw_content.trim().is_empty();
+        return BuiltSection {
+            text: String::new(),
+            token_estimate: 0,
+            truncated,
+            stat: ContextSectionStat {
+                title: title.to_string(),
+                token_estimate: 0,
+                truncated,
+            },
+        };
     }
-
+ 
     let header = format!("## {title}\n");
-    let header_tokens = count_tokens(&header);
-
-    if !always_include && header_tokens >= remaining {
-        return (String::new(), false, 0);
+    let header_tokens = estimate_tokens(&header);
+ 
+    if header_tokens >= remaining {
+        if !always_include {
+            return BuiltSection {
+                text: String::new(),
+                token_estimate: 0,
+                truncated: false,
+                stat: ContextSectionStat {
+                    title: title.to_string(),
+                    token_estimate: 0,
+                    truncated: false,
+                },
+            };
+        }
+ 
+        let text = truncate_to_tokens(&header, remaining);
+        let token_estimate = estimate_tokens(&text);
+        let stat = ContextSectionStat {
+            title: title.to_string(),
+            token_estimate,
+            truncated: true,
+        };
+        return BuiltSection {
+            text,
+            token_estimate,
+            truncated: true,
+            stat,
+        };
     }
-
+ 
     let content = anonymizer.anonymize(raw_content);
-
     let allowed_tokens = remaining.saturating_sub(header_tokens);
-    let current_tokens = count_tokens(&content);
-    let truncated = current_tokens > allowed_tokens;
+    let current_tokens = estimate_tokens(&content);
+    let content_truncated = current_tokens > allowed_tokens;
     let content = truncate_to_tokens(&content, allowed_tokens);
-    let section = format!("{header}{content}\n\n");
-
-    let used = count_tokens(&section);
-    (section, truncated, used)
+    let text = format!("{header}{content}\n\n");
+ 
+    let token_estimate = estimate_tokens(&text);
+    let stat = ContextSectionStat {
+        title: title.to_string(),
+        token_estimate,
+        truncated: content_truncated,
+    };
+    BuiltSection {
+        text,
+        token_estimate,
+        truncated: content_truncated,
+        stat,
+    }
 }
-
-fn count_tokens(text: &str) -> usize {
-    text.split_whitespace().count()
+ 
+fn estimate_tokens(text: &str) -> usize {
+    let mut tokens = 0usize;
+    let mut in_word = false;
+ 
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            in_word = false;
+            continue;
+        }
+ 
+        if is_word_char(ch) {
+            if !in_word {
+                tokens += 1;
+                in_word = true;
+            }
+        } else {
+            tokens += 1;
+            in_word = false;
+        }
+    }
+ 
+    tokens
 }
-
+ 
 fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
     if max_tokens == 0 {
         return String::new();
     }
-
+ 
     let mut token_count = 0usize;
-    let mut in_token = false;
+    let mut in_word = false;
     let mut last_good_end = 0usize;
-
+ 
     for (idx, ch) in text.char_indices() {
         if ch.is_whitespace() {
-            in_token = false;
+            in_word = false;
             continue;
         }
-
-        if !in_token {
+ 
+        if is_word_char(ch) {
+            if !in_word {
+                token_count += 1;
+                if token_count > max_tokens {
+                    break;
+                }
+                in_word = true;
+            }
+        } else {
             token_count += 1;
             if token_count > max_tokens {
                 break;
             }
-            in_token = true;
+            in_word = false;
         }
-
+ 
         last_good_end = idx + ch.len_utf8();
     }
-
+ 
     text[..last_good_end].to_string()
 }
-
+ 
+fn is_word_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '$'
+}
+ 
+fn position_for_offset(text: &str, offset: usize) -> Position {
+    let offset = offset.min(text.len());
+    let mut line = 0u32;
+    let mut last_line_start = 0usize;
+ 
+    for (idx, ch) in text.char_indices() {
+        if idx >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            last_line_start = idx + ch.len_utf8();
+        }
+    }
+ 
+    let mut character = 0u32;
+    for _ch in text[last_line_start..offset].chars() {
+        character += 1;
+    }
+ 
+    Position { line, character }
+}
+ 
+fn render_import_decl(imp: &nova_syntax::java::ast::ImportDecl) -> String {
+    let mut out = String::new();
+    out.push_str("import ");
+    if imp.is_static {
+        out.push_str("static ");
+    }
+    out.push_str(&imp.path);
+    if imp.is_star {
+        out.push_str(".*");
+    }
+    out.push(';');
+    out
+}
+ 
+fn find_enclosing_type<'a>(
+    types: &'a [nova_syntax::java::ast::TypeDecl],
+    offset: usize,
+) -> Option<&'a nova_syntax::java::ast::TypeDecl> {
+    for ty in types {
+        let range = ty.range();
+        if !span_contains(range.start, range.end, offset) {
+            continue;
+        }
+ 
+        if let Some(nested) = find_enclosing_type_in_members(ty.members(), offset) {
+            return Some(nested);
+        }
+        return Some(ty);
+    }
+    None
+}
+ 
+fn find_enclosing_type_in_members<'a>(
+    members: &'a [nova_syntax::java::ast::MemberDecl],
+    offset: usize,
+) -> Option<&'a nova_syntax::java::ast::TypeDecl> {
+    for member in members {
+        let nova_syntax::java::ast::MemberDecl::Type(ty) = member else {
+            continue;
+        };
+        let range = ty.range();
+        if !span_contains(range.start, range.end, offset) {
+            continue;
+        }
+        if let Some(nested) = find_enclosing_type_in_members(ty.members(), offset) {
+            return Some(nested);
+        }
+        return Some(ty);
+    }
+    None
+}
+ 
+#[derive(Debug, Clone, Copy)]
+enum EnclosingCallable<'a> {
+    Method(&'a nova_syntax::java::ast::MethodDecl),
+    Constructor(&'a nova_syntax::java::ast::ConstructorDecl),
+}
+ 
+impl<'a> EnclosingCallable<'a> {
+    fn name(self) -> &'a str {
+        match self {
+            EnclosingCallable::Method(m) => &m.name,
+            EnclosingCallable::Constructor(c) => &c.name,
+        }
+    }
+ 
+    fn range_start(self) -> usize {
+        match self {
+            EnclosingCallable::Method(m) => m.range.start,
+            EnclosingCallable::Constructor(c) => c.range.start,
+        }
+    }
+}
+ 
+fn find_enclosing_callable<'a>(
+    ty: &'a nova_syntax::java::ast::TypeDecl,
+    offset: usize,
+) -> Option<EnclosingCallable<'a>> {
+    for member in ty.members() {
+        match member {
+            nova_syntax::java::ast::MemberDecl::Method(method) => {
+                if span_contains(method.range.start, method.range.end, offset) {
+                    return Some(EnclosingCallable::Method(method));
+                }
+            }
+            nova_syntax::java::ast::MemberDecl::Constructor(cons) => {
+                if span_contains(cons.range.start, cons.range.end, offset) {
+                    return Some(EnclosingCallable::Constructor(cons));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+ 
+fn span_contains(span_start: usize, span_end: usize, offset: usize) -> bool {
+    offset >= span_start && offset < span_end
+}
+ 
+fn render_type_skeleton(ty: &nova_syntax::java::ast::TypeDecl) -> String {
+    let mut out = String::new();
+    out.push_str(type_kind_keyword(ty));
+    out.push(' ');
+    out.push_str(ty.name());
+    out.push_str(" {\n");
+ 
+    let mut wrote_member = false;
+    for member in ty.members() {
+        match member {
+            nova_syntax::java::ast::MemberDecl::Field(field) => {
+                wrote_member = true;
+                out.push_str("  ");
+                out.push_str(&field.ty.text);
+                out.push(' ');
+                out.push_str(&field.name);
+                out.push_str(";\n");
+            }
+            nova_syntax::java::ast::MemberDecl::Type(nested) => {
+                wrote_member = true;
+                out.push_str("  ");
+                out.push_str(type_kind_keyword(nested));
+                out.push(' ');
+                out.push_str(nested.name());
+                out.push_str(" { ... }\n");
+            }
+            _ => {}
+        }
+    }
+ 
+    if !wrote_member {
+        out.push_str("  // ...\n");
+    }
+ 
+    out.push('}');
+    out
+}
+ 
+fn type_kind_keyword(ty: &nova_syntax::java::ast::TypeDecl) -> &'static str {
+    match ty {
+        nova_syntax::java::ast::TypeDecl::Class(_) => "class",
+        nova_syntax::java::ast::TypeDecl::Interface(_) => "interface",
+        nova_syntax::java::ast::TypeDecl::Enum(_) => "enum",
+        nova_syntax::java::ast::TypeDecl::Record(_) => "record",
+        nova_syntax::java::ast::TypeDecl::Annotation(_) => "@interface",
+    }
+}
+ 
+fn type_kind_label(ty: &nova_syntax::java::ast::TypeDecl) -> &'static str {
+    match ty {
+        nova_syntax::java::ast::TypeDecl::Class(_) => "class",
+        nova_syntax::java::ast::TypeDecl::Interface(_) => "interface",
+        nova_syntax::java::ast::TypeDecl::Enum(_) => "enum",
+        nova_syntax::java::ast::TypeDecl::Record(_) => "record",
+        nova_syntax::java::ast::TypeDecl::Annotation(_) => "annotation",
+    }
+}
+ 
+fn render_callable_skeleton(callable: &EnclosingCallable<'_>) -> String {
+    match *callable {
+        EnclosingCallable::Method(method) => {
+            let params = render_param_list(&method.params);
+            let body = if method.body.is_some() { " { ... }" } else { ";" };
+            format!("{} {}({}){}", method.return_ty.text, method.name, params, body)
+        }
+        EnclosingCallable::Constructor(cons) => {
+            let params = render_param_list(&cons.params);
+            format!("{}({}) {{ ... }}", cons.name, params)
+        }
+    }
+}
+ 
+fn render_param_list(params: &[nova_syntax::java::ast::ParamDecl]) -> String {
+    params
+        .iter()
+        .map(|p| format!("{} {}", p.ty.text, p.name))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+ 
+#[derive(Debug, Clone)]
+struct SymbolDecl {
+    name: String,
+    kind: String,
+    snippet: String,
+    range_start: usize,
+}
+ 
+fn collect_symbol_decls(
+    types: &[nova_syntax::java::ast::TypeDecl],
+    out: &mut Vec<SymbolDecl>,
+    owner: Option<&str>,
+) {
+    for ty in types {
+        collect_symbol_decls_for_type(ty, out, owner);
+    }
+}
+ 
+fn collect_symbol_decls_for_type(
+    ty: &nova_syntax::java::ast::TypeDecl,
+    out: &mut Vec<SymbolDecl>,
+    owner: Option<&str>,
+) {
+    let ty_kind = type_kind_label(ty).to_string();
+    let mut type_snippet = String::new();
+    if let Some(owner) = owner {
+        type_snippet.push_str(&format!("// nested in {owner}\n"));
+    }
+    type_snippet.push_str(&render_type_skeleton(ty));
+ 
+    out.push(SymbolDecl {
+        name: ty.name().to_string(),
+        kind: ty_kind,
+        snippet: type_snippet,
+        range_start: ty.range().start,
+    });
+ 
+    let this_owner = ty.name();
+    for member in ty.members() {
+        match member {
+            nova_syntax::java::ast::MemberDecl::Field(field) => {
+                let snippet = format!("// in {this_owner}\n{} {};", field.ty.text, field.name);
+                out.push(SymbolDecl {
+                    name: field.name.clone(),
+                    kind: "field".to_string(),
+                    snippet,
+                    range_start: field.range.start,
+                });
+            }
+            nova_syntax::java::ast::MemberDecl::Method(method) => {
+                let snippet = format!(
+                    "// in {this_owner}\n{}",
+                    render_callable_skeleton(&EnclosingCallable::Method(method))
+                );
+                out.push(SymbolDecl {
+                    name: method.name.clone(),
+                    kind: "method".to_string(),
+                    snippet,
+                    range_start: method.range.start,
+                });
+            }
+            nova_syntax::java::ast::MemberDecl::Constructor(cons) => {
+                let snippet = format!(
+                    "// in {this_owner}\n{}",
+                    render_callable_skeleton(&EnclosingCallable::Constructor(cons))
+                );
+                out.push(SymbolDecl {
+                    name: cons.name.clone(),
+                    kind: "constructor".to_string(),
+                    snippet,
+                    range_start: cons.range.start,
+                });
+            }
+            nova_syntax::java::ast::MemberDecl::Type(nested) => {
+                collect_symbol_decls_for_type(nested, out, Some(this_owner));
+            }
+            _ => {}
+        }
+    }
+}
+ 
+fn extract_referenced_identifiers(code: &str, exclude: &HashSet<String>) -> Vec<String> {
+    const MAX_IDENTIFIERS: usize = 12;
+ 
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for tok in nova_syntax::lex(code) {
+        if tok.kind != nova_syntax::SyntaxKind::Identifier {
+            continue;
+        }
+        let ident = tok.text(code);
+        if ident.is_empty() || is_java_keyword(ident) {
+            continue;
+        }
+        if exclude.contains(ident) {
+            continue;
+        }
+        if seen.insert(ident.to_string()) {
+            out.push(ident.to_string());
+            if out.len() >= MAX_IDENTIFIERS {
+                break;
+            }
+        }
+    }
+    out
+}
+ 
+fn is_java_keyword(ident: &str) -> bool {
+    matches!(
+        ident,
+        "abstract"
+            | "assert"
+            | "boolean"
+            | "break"
+            | "byte"
+            | "case"
+            | "catch"
+            | "char"
+            | "class"
+            | "const"
+            | "continue"
+            | "default"
+            | "do"
+            | "double"
+            | "else"
+            | "enum"
+            | "extends"
+            | "final"
+            | "finally"
+            | "float"
+            | "for"
+            | "goto"
+            | "if"
+            | "implements"
+            | "import"
+            | "instanceof"
+            | "int"
+            | "interface"
+            | "long"
+            | "native"
+            | "new"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "return"
+            | "short"
+            | "static"
+            | "strictfp"
+            | "super"
+            | "switch"
+            | "synchronized"
+            | "this"
+            | "throw"
+            | "throws"
+            | "transient"
+            | "try"
+            | "void"
+            | "volatile"
+            | "while"
+            | "null"
+            | "true"
+            | "false"
+    )
+}
+ 
+fn related_symbols_from_references(referenced: &[String], decls: &[SymbolDecl]) -> Vec<RelatedSymbol> {
+    const MAX_RELATED: usize = 8;
+    const MAX_PER_NAME: usize = 3;
+ 
+    let mut by_name: HashMap<&str, Vec<&SymbolDecl>> = HashMap::new();
+    for decl in decls {
+        by_name.entry(decl.name.as_str()).or_default().push(decl);
+    }
+ 
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for name in referenced {
+        let Some(mut matches) = by_name.get(name.as_str()).cloned() else {
+            continue;
+        };
+        matches.sort_by_key(|decl| decl.range_start);
+        for decl in matches.into_iter().take(MAX_PER_NAME) {
+            let key = (decl.name.clone(), decl.kind.clone(), decl.range_start);
+            if !seen.insert(key) {
+                continue;
+            }
+            out.push(RelatedSymbol {
+                name: decl.name.clone(),
+                kind: decl.kind.clone(),
+                snippet: decl.snippet.clone(),
+            });
+            if out.len() >= MAX_RELATED {
+                return out;
+            }
+        }
+    }
+    out
+}
+ 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+ 
     #[test]
     fn context_builder_enforces_budget_and_privacy() {
         let builder = ContextBuilder::new();
         let req = ContextRequest {
             file_path: Some("/home/user/project/Secret.java".to_string()),
-            focal_code: r#"class Secret { String apiKey = "sk-verysecretstringthatislong"; }"#
-                .to_string(),
+            focal_code: r#"class Secret { String apiKey = "sk-verysecretstringthatislong"; }"#.to_string(),
             enclosing_context: Some("package com.example;\n".to_string()),
             related_symbols: vec![RelatedSymbol {
                 name: "Secret".to_string(),
@@ -566,6 +1224,21 @@ mod tests {
                 snippet: "class Secret {}".to_string(),
             }],
             related_code: vec![],
+            cursor: Some(Position { line: 0, character: 0 }),
+            diagnostics: vec![ContextDiagnostic {
+                file: Some("/home/user/project/Secret.java".to_string()),
+                range: Some(PositionRange {
+                    start: Position { line: 0, character: 0 },
+                    end: Position { line: 0, character: 10 },
+                }),
+                severity: ContextDiagnosticSeverity::Error,
+                message: "cannot find symbol: Secret".to_string(),
+                kind: Some(ContextDiagnosticKind::Type),
+            }],
+            extra_files: vec![CodeSnippet::new(
+                "/home/user/project/Other.java",
+                r#"class Other { String password = "supersecretpassword"; }"#,
+            )],
             doc_comments: Some("/** Javadoc mentioning Secret */".to_string()),
             include_doc_comments: true,
             token_budget: 20,
@@ -575,29 +1248,30 @@ mod tests {
                 ..PrivacyMode::default()
             },
         };
-
+ 
         let built = builder.build(req.clone());
         assert!(built.token_count <= 20);
-
+ 
         // Paths excluded.
         assert!(!built.text.contains("/home/user"));
-
+ 
         // Suspicious string redacted.
         assert!(built.text.contains("\"[REDACTED]\""));
-
+ 
         // Identifiers anonymized.
         assert!(!built.text.contains("Secret"));
-
+ 
         // Stability: same input yields same output.
         let built2 = builder.build(req);
         assert_eq!(built.text, built2.text);
+        assert_eq!(built.sections, built2.sections);
     }
-
+ 
     #[test]
     fn java_source_range_extracts_enclosing_context_and_docs() {
         let source = r#"
 package com.example;
-
+ 
 /** Class docs */
 public class Foo {
   /** Method docs */
@@ -606,10 +1280,10 @@ public class Foo {
   }
 }
 "#;
-
+ 
         let start = source.find("int x").unwrap();
         let end = start + "int x = 0;".len();
-
+ 
         let req = ContextRequest::for_java_source_range(
             source,
             start..end,
@@ -621,13 +1295,135 @@ public class Foo {
             },
             /*include_doc_comments=*/ true,
         );
-
+ 
         let enclosing = req.enclosing_context.as_deref().unwrap();
         assert!(enclosing.contains("package com.example"));
         assert!(enclosing.contains("class Foo"));
-        assert!(enclosing.contains("void bar"));
-
+        assert!(enclosing.contains("void bar("));
+ 
         let docs = req.doc_comments.as_deref().unwrap();
         assert!(docs.contains("Method docs"));
+    }
+ 
+    #[test]
+    fn symbol_extraction_populates_related_symbols_deterministically() {
+        let source = r#"
+package com.example;
+ 
+class Foo {
+  int count;
+ 
+  void helper() {}
+ 
+  void increment() {
+    count++;
+    helper();
+  }
+}
+"#;
+ 
+        let start = source.find("count++;").unwrap();
+        let end = source.find("helper();").unwrap() + "helper();".len();
+ 
+        let req = ContextRequest::for_java_source_range(
+            source,
+            start..end,
+            400,
+            PrivacyMode {
+                anonymize_identifiers: false,
+                include_file_paths: false,
+                ..PrivacyMode::default()
+            },
+            /*include_doc_comments=*/ false,
+        );
+ 
+        assert_eq!(
+            req.related_symbols
+                .iter()
+                .map(|s| (s.name.as_str(), s.kind.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("count", "field"), ("helper", "method")]
+        );
+ 
+        let builder = ContextBuilder::new();
+        let built1 = builder.build(req.clone());
+        let built2 = builder.build(req);
+        assert_eq!(built1.text, built2.text);
+    }
+ 
+    #[test]
+    fn diagnostics_section_included_when_provided() {
+        let builder = ContextBuilder::new();
+        let req = ContextRequest {
+            file_path: None,
+            focal_code: "x = y;".to_string(),
+            enclosing_context: None,
+            related_symbols: Vec::new(),
+            related_code: Vec::new(),
+            cursor: Some(Position { line: 0, character: 0 }),
+            diagnostics: vec![ContextDiagnostic {
+                file: None,
+                range: None,
+                severity: ContextDiagnosticSeverity::Error,
+                message: "cannot find symbol: y".to_string(),
+                kind: Some(ContextDiagnosticKind::Type),
+            }],
+            extra_files: Vec::new(),
+            doc_comments: None,
+            include_doc_comments: false,
+            token_budget: 200,
+            privacy: PrivacyMode {
+                anonymize_identifiers: false,
+                include_file_paths: false,
+                ..PrivacyMode::default()
+            },
+        };
+ 
+        let built = builder.build(req.clone());
+        assert!(built.text.contains("## Diagnostics"));
+        assert!(built.text.contains("cannot find symbol"));
+ 
+        let built2 = builder.build(req);
+        assert_eq!(built.text, built2.text);
+        assert_eq!(built.sections, built2.sections);
+    }
+ 
+    #[test]
+    fn budget_enforced_with_many_sections() {
+        let builder = ContextBuilder::new();
+        let req = ContextRequest {
+            file_path: None,
+            focal_code: "class Foo { void bar() { int x = 0; int y = 1; } }".to_string(),
+            enclosing_context: Some("class Foo { int a; int b; int c; }".to_string()),
+            related_symbols: vec![RelatedSymbol {
+                name: "bar".to_string(),
+                kind: "method".to_string(),
+                snippet: "void bar(int x, int y) { ... }".to_string(),
+            }],
+            related_code: Vec::new(),
+            cursor: None,
+            diagnostics: vec![ContextDiagnostic {
+                file: None,
+                range: None,
+                severity: ContextDiagnosticSeverity::Warning,
+                message: "unused variable: y".to_string(),
+                kind: None,
+            }],
+            extra_files: vec![CodeSnippet::ad_hoc(
+                "class Extra { String s = \"sk-verysecretstringthatislong\"; }",
+            )],
+            doc_comments: Some("/** docs */".to_string()),
+            include_doc_comments: true,
+            token_budget: 30,
+            privacy: PrivacyMode {
+                anonymize_identifiers: false,
+                include_file_paths: false,
+                ..PrivacyMode::default()
+            },
+        };
+ 
+        let built = builder.build(req);
+        assert!(built.token_count <= 30);
+        assert!(built.truncated);
     }
 }

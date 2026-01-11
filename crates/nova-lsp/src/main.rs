@@ -6,7 +6,9 @@ use lsp_types::{
     Position as LspTypesPosition, Range as LspTypesRange, RenameParams as LspRenameParams,
     TextDocumentPositionParams, Uri as LspUri, WorkspaceEdit as LspWorkspaceEdit,
 };
-use nova_ai::context::ContextRequest;
+use nova_ai::context::{
+    ContextDiagnostic, ContextDiagnosticKind, ContextDiagnosticSeverity, ContextRequest,
+};
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
 #[cfg(feature = "ai")]
 use nova_ai::{CloudMultiTokenCompletionProvider, CompletionContextBuilder, MultiTokenCompletionProvider};
@@ -1674,7 +1676,7 @@ fn run_ai_explain_error(
     send_progress_begin(writer, work_done_token.as_ref(), "AI: Explain this error")?;
     send_progress_report(writer, work_done_token.as_ref(), "Building context…", None)?;
     send_log_message(writer, "AI: explaining error…")?;
-    let ctx = build_context_request_from_args(
+    let mut ctx = build_context_request_from_args(
         state,
         args.uri.as_deref(),
         args.range,
@@ -1682,6 +1684,22 @@ fn run_ai_explain_error(
         /*fallback_enclosing=*/ None,
         /*include_doc_comments=*/ true,
     );
+    ctx.diagnostics.push(ContextDiagnostic {
+        file: args.uri.clone(),
+        range: args.range.map(|range| nova_ai::patch::Range {
+            start: nova_ai::patch::Position {
+                line: range.start.line,
+                character: range.start.character,
+            },
+            end: nova_ai::patch::Position {
+                line: range.end.line,
+                character: range.end.character,
+            },
+        }),
+        severity: ContextDiagnosticSeverity::Error,
+        message: args.diagnostic_message.clone(),
+        kind: Some(ContextDiagnosticKind::Other),
+    });
     send_progress_report(writer, work_done_token.as_ref(), "Calling model…", None)?;
     let out = runtime
         .block_on(ai.explain_error(&args.diagnostic_message, ctx, CancellationToken::new()))
@@ -1917,6 +1935,9 @@ fn build_context_request(
         enclosing_context: enclosing,
         related_symbols: Vec::new(),
         related_code: Vec::new(),
+        cursor: None,
+        diagnostics: Vec::new(),
+        extra_files: Vec::new(),
         doc_comments: None,
         include_doc_comments: false,
         token_budget: 800,
@@ -1944,6 +1965,10 @@ fn build_context_request_from_args(
                 );
                 // Include the URI only when the caller explicitly opted in to paths.
                 req.file_path = Some(uri.to_string());
+                req.cursor = Some(nova_ai::patch::Position {
+                    line: range.start.line,
+                    character: range.start.character,
+                });
                 return req;
             }
         }

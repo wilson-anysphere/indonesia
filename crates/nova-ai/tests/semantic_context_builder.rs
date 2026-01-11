@@ -41,6 +41,9 @@ fn request() -> ContextRequest {
         enclosing_context: None,
         related_symbols: Vec::new(),
         related_code: Vec::new(),
+        cursor: None,
+        diagnostics: Vec::new(),
+        extra_files: Vec::new(),
         doc_comments: None,
         include_doc_comments: false,
         token_budget: 200,
@@ -89,4 +92,3 @@ fn semantic_context_builder_skips_related_code_when_disabled() {
     assert!(!ctx.text.contains("## Related code"));
     assert!(!ctx.text.contains("helloWorld"));
 }
-
