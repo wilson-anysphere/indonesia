@@ -703,10 +703,12 @@ fn handle_code_action(
                     if let lsp_types::CodeActionOrCommand::CodeAction(code_action) = &mut action {
                         if let Some(data) = code_action.data.as_mut() {
                             if let Some(obj) = data.as_object_mut() {
-                                obj.insert(
-                                    "uri".to_string(),
-                                    serde_json::Value::String(uri_string.clone()),
-                                );
+                                if !obj.contains_key("uri") {
+                                    obj.insert(
+                                        "uri".to_string(),
+                                        serde_json::Value::String(uri_string.clone()),
+                                    );
+                                }
                             }
                         }
                     }
@@ -780,7 +782,7 @@ fn handle_code_action_resolve(
     state: &ServerState,
 ) -> Result<serde_json::Value, String> {
     let mut action: CodeAction = serde_json::from_value(params).map_err(|e| e.to_string())?;
-    let Some(data) = action.data.clone() else {
+    let Some(mut data) = action.data.take() else {
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
 
@@ -789,18 +791,30 @@ fn handle_code_action_resolve(
         .and_then(|v| v.as_str())
         .is_some_and(|t| t == "ExtractMember");
     if !is_extract_member {
+        action.data = Some(data);
         return serde_json::to_value(action).map_err(|e| e.to_string());
     }
 
     let Some(uri) = data.get("uri").and_then(|v| v.as_str()) else {
+        action.data = Some(data);
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
     let Ok(uri) = uri.parse::<LspUri>() else {
+        action.data = Some(data);
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
     let Some(source) = load_document_text(state, uri.as_str()) else {
+        action.data = Some(data);
         return serde_json::to_value(action).map_err(|e| e.to_string());
     };
+
+    // We inject `data.uri` for `codeAction/resolve` so the server can locate the open document.
+    // Strip it before forwarding to `nova_ide`, so the underlying payload stays stable even if
+    // `nova_ide` switches to strict (deny-unknown-fields) deserialization later.
+    if let Some(obj) = data.as_object_mut() {
+        obj.remove("uri");
+    }
+    action.data = Some(data);
 
     nova_ide::refactor::resolve_extract_member_code_action(&uri, &source, &mut action, None)
         .map_err(|e| e.to_string())?;

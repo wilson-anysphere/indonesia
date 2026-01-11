@@ -104,6 +104,15 @@ fn stdio_server_resolves_extract_constant_code_action() {
         extract_constant.get("data").is_some(),
         "expected extract constant to carry `data`"
     );
+    let uri_string = uri.to_string();
+    assert_eq!(
+        extract_constant
+            .get("data")
+            .and_then(|data| data.get("uri"))
+            .and_then(|uri| uri.as_str()),
+        Some(uri_string.as_str()),
+        "expected extract constant `data.uri` to round-trip for codeAction/resolve"
+    );
     assert!(
         extract_constant.get("edit").is_none(),
         "expected extract constant to be unresolved (no `edit`)"
