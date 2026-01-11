@@ -66,8 +66,25 @@ fn javac_corpus_ok() {
             .to_string();
         let src = fs::read_to_string(&path).expect("fixture readable");
 
-        let out = run_javac_files_with_options(&[(&filename, &src)], &opts)
-            .expect("javac invocation succeeds");
+        let out = if filename == "module-info.java" {
+            // `module-info.java` is only valid as part of a module, so when we
+            // test it we include a minimal package from this corpus. This lets
+            // us exercise directives like `exports foo;` without forcing every
+            // other corpus file into a named module.
+            let packaged = fs::read_to_string(dir.join("PackagedClass.java"))
+                .expect("PackagedClass.java fixture readable");
+            let package_info = fs::read_to_string(dir.join("package-info.java"))
+                .expect("package-info.java fixture readable");
+            let files = vec![
+                ("module-info.java", src.as_str()),
+                ("PackagedClass.java", packaged.as_str()),
+                ("package-info.java", package_info.as_str()),
+            ];
+            run_javac_files_with_options(files.as_slice(), &opts).expect("javac invocation succeeds")
+        } else {
+            run_javac_files_with_options(&[(&filename, &src)], &opts)
+                .expect("javac invocation succeeds")
+        };
         assert!(
             out.success(),
             "javac failed for {}:\n{}",
