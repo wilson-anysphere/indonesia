@@ -174,8 +174,11 @@ impl<'a> TypeStoreLoader<'a> {
         let mut type_params: Vec<TypeVarId> = Vec::new();
         let object = self.object_type()?;
 
-        let (super_class, interfaces) = if let Some(sig) = stub.signature.as_deref() {
-            let sig = parse_class_signature(sig)?;
+        let (super_class, interfaces) = if let Some(sig) = stub
+            .signature
+            .as_deref()
+            .and_then(|sig| parse_class_signature(sig).ok())
+        {
 
             for tp in &sig.type_parameters {
                 let id = self
@@ -261,8 +264,11 @@ impl<'a> TypeStoreLoader<'a> {
         const ACC_STATIC: u16 = 0x0008;
         const ACC_FINAL: u16 = 0x0010;
 
-        let ty = if let Some(sig) = stub.signature.as_deref() {
-            let sig = parse_field_signature(sig)?;
+        let ty = if let Some(sig) = stub
+            .signature
+            .as_deref()
+            .and_then(|sig| parse_field_signature(sig).ok())
+        {
             self.type_sig_to_type(&sig, type_vars)?
         } else {
             let desc = parse_field_descriptor(&stub.descriptor)?;
@@ -288,8 +294,11 @@ impl<'a> TypeStoreLoader<'a> {
         let is_varargs = stub.access_flags & ACC_VARARGS != 0;
         let is_accessible = stub.access_flags & ACC_PRIVATE == 0;
 
-        let params = if let Some(sig) = stub.signature.as_deref() {
-            let sig = parse_method_signature(sig)?;
+        let params = if let Some(sig) = stub
+            .signature
+            .as_deref()
+            .and_then(|sig| parse_method_signature(sig).ok())
+        {
 
             let object = self.object_type()?;
             let mut type_vars = class_type_vars.clone();
@@ -343,8 +352,11 @@ impl<'a> TypeStoreLoader<'a> {
         let is_varargs = stub.access_flags & ACC_VARARGS != 0;
         let is_abstract = stub.access_flags & ACC_ABSTRACT != 0;
 
-        if let Some(sig) = stub.signature.as_deref() {
-            let sig = parse_method_signature(sig)?;
+        if let Some(sig) = stub
+            .signature
+            .as_deref()
+            .and_then(|sig| parse_method_signature(sig).ok())
+        {
 
             let object = self.object_type()?;
             let mut type_vars = class_type_vars.clone();
