@@ -106,6 +106,37 @@ fn cache_roundtrips_via_disk() {
 }
 
 #[test]
+fn cache_deserializes_legacy_compile_info_fields() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bazel.json");
+
+    // Historical cache payloads used `enable_preview` and `output_directory` field names inside the
+    // `JavaCompileInfo` struct. Ensure we can still read those caches.
+    let json = r#"
+{
+  "entries": {
+    "//:hello": {
+      "target": "//:hello",
+      "expr_version_hex": "expr-v1",
+      "files": [],
+      "info": {
+        "classpath": ["a.jar"],
+        "enable_preview": true,
+        "output_directory": "out/classes"
+      }
+    }
+  }
+}
+"#;
+    std::fs::write(&path, json).unwrap();
+
+    let cache = BazelCache::load(&path).unwrap();
+    let entry = cache.get("//:hello", "expr-v1").expect("missing cache entry");
+    assert!(entry.info.preview);
+    assert_eq!(entry.info.output_dir.as_deref(), Some("out/classes"));
+}
+
+#[test]
 fn invalidate_changed_files_drops_matching_entries() {
     let dir = tempdir().unwrap();
     let build = dir.path().join("BUILD");
