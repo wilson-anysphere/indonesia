@@ -44,6 +44,18 @@ describe('serverManager helpers', () => {
       repo: 'indonesia',
       apiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
     });
+
+    expect(parseGitHubRepo('https://github.example.com/wilson-anysphere/indonesia')).toEqual({
+      owner: 'wilson-anysphere',
+      repo: 'indonesia',
+      apiBaseUrl: 'https://github.example.com/api/v3/repos/wilson-anysphere/indonesia',
+    });
+
+    expect(parseGitHubRepo('git@github.example.com:wilson-anysphere/indonesia.git')).toEqual({
+      owner: 'wilson-anysphere',
+      repo: 'indonesia',
+      apiBaseUrl: 'https://github.example.com/api/v3/repos/wilson-anysphere/indonesia',
+    });
   });
 
   it('detects supported targets', async () => {

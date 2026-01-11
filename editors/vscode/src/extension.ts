@@ -9,7 +9,14 @@ import { registerNovaHotSwap } from './hotSwap';
 import { registerNovaTestDebugRunProfile } from './testDebug';
 import { ServerManager, type NovaServerSettings } from './serverManager';
 import { buildNovaLspLaunchConfig, resolveNovaConfigPath } from './lspArgs';
-import { findOnPath, getBinaryVersion, getExtensionVersion, openInstallDocs, type DownloadMode } from './binaries';
+import {
+  deriveReleaseUrlFromBaseUrl,
+  findOnPath,
+  getBinaryVersion,
+  getExtensionVersion,
+  openInstallDocs,
+  type DownloadMode,
+} from './binaries';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
@@ -217,14 +224,7 @@ export async function activate(context: vscode.ExtensionContext) {
     );
     const fallbackReleaseUrl = 'https://github.com/wilson-anysphere/indonesia';
 
-    const derivedReleaseUrl = (() => {
-      const trimmed = rawBaseUrl.trim().replace(/\/+$/, '');
-      const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\/download$/.exec(trimmed);
-      if (match) {
-        return `https://github.com/${match[1]}/${match[2]}`;
-      }
-      return trimmed.length > 0 ? trimmed : fallbackReleaseUrl;
-    })();
+    const derivedReleaseUrl = deriveReleaseUrlFromBaseUrl(rawBaseUrl, fallbackReleaseUrl);
 
     const version = typeof rawTag === 'string' && rawTag.trim().length > 0 ? rawTag.trim() : 'latest';
 

@@ -10,6 +10,26 @@ export type DownloadMode = 'auto' | 'prompt' | 'off';
 
 const VERSION_REGEX = /\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/;
 
+export function deriveReleaseUrlFromBaseUrl(downloadBaseUrl: string, fallbackReleaseUrl: string): string {
+  const trimmed = downloadBaseUrl.trim().replace(/\/+$/, '');
+  if (!trimmed) {
+    return fallbackReleaseUrl;
+  }
+
+  try {
+    const url = new URL(trimmed);
+    const suffix = '/releases/download';
+    if (url.pathname.endsWith(suffix)) {
+      const repoPath = url.pathname.slice(0, -suffix.length);
+      return `${url.origin}${repoPath}`;
+    }
+  } catch {
+    // Not a URL; fall through.
+  }
+
+  return trimmed;
+}
+
 export function getExtensionVersion(context: vscode.ExtensionContext): string {
   try {
     const pkgPath = path.join(context.extensionPath, 'package.json');
@@ -73,4 +93,3 @@ export async function openInstallDocs(context: vscode.ExtensionContext): Promise
     await vscode.commands.executeCommand('vscode.open', readmeUri);
   }
 }
-

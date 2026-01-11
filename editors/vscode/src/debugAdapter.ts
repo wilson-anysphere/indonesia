@@ -2,7 +2,14 @@ import * as vscode from 'vscode';
 import * as fs from 'node:fs/promises';
 import { resolveNovaConfigPath } from './lspArgs';
 import type { ServerManager, NovaServerSettings } from './serverManager';
-import { findOnPath, getBinaryVersion, getExtensionVersion, openInstallDocs, type DownloadMode } from './binaries';
+import {
+  deriveReleaseUrlFromBaseUrl,
+  findOnPath,
+  getBinaryVersion,
+  getExtensionVersion,
+  openInstallDocs,
+  type DownloadMode,
+} from './binaries';
 
 export const NOVA_DEBUG_TYPE = 'nova';
 
@@ -73,14 +80,7 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
     );
     const fallbackReleaseUrl = 'https://github.com/wilson-anysphere/indonesia';
 
-    const derivedReleaseUrl = (() => {
-      const trimmed = rawBaseUrl.trim().replace(/\/+$/, '');
-      const match = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\/download$/.exec(trimmed);
-      if (match) {
-        return `https://github.com/${match[1]}/${match[2]}`;
-      }
-      return trimmed.length > 0 ? trimmed : fallbackReleaseUrl;
-    })();
+    const derivedReleaseUrl = deriveReleaseUrlFromBaseUrl(rawBaseUrl, fallbackReleaseUrl);
 
     const version = typeof rawTag === 'string' && rawTag.trim().length > 0 ? rawTag.trim() : 'latest';
 

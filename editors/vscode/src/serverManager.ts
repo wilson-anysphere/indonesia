@@ -294,10 +294,15 @@ export function parseGitHubRepo(input: string): GitHubRepo | undefined {
   }
 
   const scpMatch = /^(?<user>[^@]+)@(?<host>[^:]+):(?<owner>[^/]+)\/(?<repo>.+)$/.exec(trimmed);
-  if (scpMatch?.groups?.host === 'github.com' && scpMatch.groups.owner && scpMatch.groups.repo) {
+  if (scpMatch?.groups?.host && scpMatch.groups.owner && scpMatch.groups.repo) {
+    const host = scpMatch.groups.host;
     const owner = scpMatch.groups.owner;
     const repo = stripDotGit(scpMatch.groups.repo);
-    return { owner, repo, apiBaseUrl: `https://api.github.com/repos/${owner}/${repo}` };
+    if (host === 'github.com') {
+      return { owner, repo, apiBaseUrl: `https://api.github.com/repos/${owner}/${repo}` };
+    }
+    // Assume GitHub Enterprise Server API lives under `/api/v3`.
+    return { owner, repo, apiBaseUrl: `https://${host}/api/v3/repos/${owner}/${repo}` };
   }
 
   const repoMatch = /^(?<owner>[^/]+)\/(?<repo>[^/]+)$/.exec(trimmed);
@@ -325,6 +330,14 @@ export function parseGitHubRepo(input: string): GitHubRepo | undefined {
       const repo = stripDotGit(parts[reposIndex + 2]);
       const apiBase = `${url.origin}/${parts.slice(0, reposIndex + 3).join('/')}`;
       return { owner, repo, apiBaseUrl: apiBase };
+    }
+
+    // GitHub Enterprise Server typically hosts repos at `https://<host>/<owner>/<repo>`.
+    // Derive the API base as `https://<host>/api/v3/repos/<owner>/<repo>`.
+    if (parts.length === 2) {
+      const [owner, rawRepo] = parts;
+      const repo = stripDotGit(rawRepo);
+      return { owner, repo, apiBaseUrl: `${url.origin}/api/v3/repos/${owner}/${repo}` };
     }
 
     return undefined;
