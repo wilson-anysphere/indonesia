@@ -8,18 +8,18 @@ use lsp_types::{
 };
 use nova_ai::context::ContextRequest;
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
-use nova_index::Index;
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
     CODE_ACTION_KIND_AI_TESTS, CODE_ACTION_KIND_EXPLAIN, COMMAND_EXPLAIN_ERROR,
     COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
+use nova_index::{Index, SymbolKind};
 use nova_memory::{MemoryBudget, MemoryCategory, MemoryEvent, MemoryManager};
 use nova_refactor::{
     code_action_for_edit, organize_imports, rename as semantic_rename, workspace_edit_to_lsp,
     FileId, InMemoryJavaDatabase, OrganizeImportsParams, RenameParams as RefactorRenameParams,
-    SemanticRefactorError,
+    SafeDeleteTarget, SemanticRefactorError,
 };
 use nova_vfs::{ContentChange, Document};
 use serde::Deserialize;
@@ -507,7 +507,9 @@ fn handle_request(
             Ok(match nova_lsp::handle_safe_delete(&index, params) {
                 Ok(result) => match serde_json::to_value(result) {
                     Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
-                    Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } }),
+                    Err(err) => {
+                        json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } })
+                    }
                 },
                 Err(err) => {
                     let (code, message) = match err {
@@ -556,7 +558,10 @@ fn handle_request(
     }
 }
 
-fn resolve_completion_item_with_state(item: lsp_types::CompletionItem, state: &ServerState) -> lsp_types::CompletionItem {
+fn resolve_completion_item_with_state(
+    item: lsp_types::CompletionItem,
+    state: &ServerState,
+) -> lsp_types::CompletionItem {
     let uri = completion_item_uri(&item);
     let text = uri
         .and_then(|uri| load_document_text(state, uri))
@@ -796,6 +801,40 @@ fn handle_code_action(
                     nova_lsp::refactor::convert_to_record_code_action(uri.clone(), text, cursor)
                 {
                     actions.push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                }
+
+                // Best-effort Safe Delete code action: only available for open documents because
+                // the stdio server does not maintain a project-wide index. This keeps SymbolIds
+                // stable across the code-action → safeDelete request flow.
+                if let Some(doc) = state.documents.get(uri.as_str()) {
+                    if let Some(offset) = position_to_offset_utf16(doc.text(), cursor) {
+                        let files: BTreeMap<String, String> = state
+                            .documents
+                            .iter()
+                            .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
+                            .collect();
+                        let index = Index::new(files);
+                        let target = index
+                            .symbols()
+                            .iter()
+                            .filter(|sym| sym.file == uri.as_str())
+                            .filter(|sym| sym.kind == SymbolKind::Method)
+                            .filter(|sym| {
+                                offset >= sym.decl_range.start && offset <= sym.decl_range.end
+                            })
+                            .min_by_key(|sym| sym.decl_range.len())
+                            .map(|sym| sym.id);
+
+                        if let Some(target) = target {
+                            if let Some(action) = nova_lsp::safe_delete_code_action(
+                                &index,
+                                SafeDeleteTarget::Symbol(target),
+                            ) {
+                                actions
+                                    .push(serde_json::to_value(action).map_err(|e| e.to_string())?);
+                            }
+                        }
+                    }
                 }
             } else {
                 let uri_string = uri.to_string();
