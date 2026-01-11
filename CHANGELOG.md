@@ -16,3 +16,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release engineering scaffolding (cargo workspace, cargo-dist config, CI/workflows).
 - Documentation: add an architecture-to-code crate map and a stable spec for Nova custom `nova/*`
   protocol extensions; update architecture reconciliation and surface the new docs from `README.md`.
+- AI privacy: gate cloud code-editing (patch/apply) behind explicit opt-in flags and refuse edits
+  when anonymization is enabled (patches cannot be applied reliably).
