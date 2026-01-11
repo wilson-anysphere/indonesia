@@ -141,6 +141,64 @@ fn fingerprint_ignores_maven_wrapper_script_edit() {
 }
 
 #[test]
+fn fingerprint_ignores_misplaced_maven_wrapper_properties() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    // Only `.mvn/wrapper/maven-wrapper.properties` should affect the fingerprint.
+    let misplaced = root.join("maven-wrapper.properties");
+    std::fs::write(&misplaced, "distributionUrl=https://example.invalid/a.zip\n").unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+    std::fs::write(&misplaced, "distributionUrl=https://example.invalid/b.zip\n").unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
+fn fingerprint_ignores_misplaced_maven_config_and_extensions_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><modelVersion>4.0.0</modelVersion></project>",
+    )
+    .unwrap();
+
+    let misplaced_config = root.join("maven.config");
+    std::fs::write(&misplaced_config, "-DskipTests\n").unwrap();
+    let misplaced_extensions = root.join("extensions.xml");
+    std::fs::write(&misplaced_extensions, "<extensions></extensions>\n").unwrap();
+
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    std::fs::write(&misplaced_config, "-DskipTests -Dfoo=bar\n").unwrap();
+    std::fs::write(
+        &misplaced_extensions,
+        "<extensions><!--changed--></extensions>\n",
+    )
+    .unwrap();
+
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+
+    assert_eq!(fp1.digest, fp2.digest);
+}
+
+#[test]
 fn fingerprint_changes_on_gradle_wrapper_edit() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("proj");
