@@ -154,9 +154,16 @@ impl fmt::Display for Violation {
     }
 }
 
-pub fn run(config_path: &Path, manifest_path: Option<&Path>) -> anyhow::Result<()> {
+pub fn run(
+    config_path: &Path,
+    manifest_path: Option<&Path>,
+    metadata_path: Option<&Path>,
+) -> anyhow::Result<()> {
     let config = load_config(config_path)?;
-    let graph = load_workspace_graph(manifest_path)?;
+    let graph = match metadata_path {
+        Some(path) => load_workspace_graph_from_file(path)?,
+        None => load_workspace_graph(manifest_path)?,
+    };
 
     ensure_workspace_is_mapped(config_path, &graph, &config)?;
 
@@ -292,6 +299,18 @@ fn load_workspace_graph(manifest_path: Option<&Path>) -> anyhow::Result<Workspac
     let metadata: CargoMetadata =
         serde_json::from_slice(&output.stdout).context("failed to parse cargo metadata JSON")?;
 
+    Ok(workspace_graph_from_metadata(metadata))
+}
+
+fn load_workspace_graph_from_file(path: &Path) -> anyhow::Result<WorkspaceGraph> {
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("failed to read cargo metadata JSON from {}", path.display()))?;
+    let metadata: CargoMetadata =
+        serde_json::from_slice(&bytes).context("failed to parse cargo metadata JSON")?;
+    Ok(workspace_graph_from_metadata(metadata))
+}
+
+fn workspace_graph_from_metadata(metadata: CargoMetadata) -> WorkspaceGraph {
     let workspace_crates: BTreeSet<String> =
         metadata.packages.iter().map(|p| p.name.clone()).collect();
 
@@ -315,7 +334,7 @@ fn load_workspace_graph(manifest_path: Option<&Path>) -> anyhow::Result<Workspac
         }
     }
 
-    Ok(WorkspaceGraph { packages, edges })
+    WorkspaceGraph { packages, edges }
 }
 
 fn metadata_target_dir(manifest_path: Option<&Path>) -> anyhow::Result<PathBuf> {
@@ -568,5 +587,36 @@ mod tests {
             metadata_target_dir(Some(path)).unwrap(),
             PathBuf::from("/workspace/target/nova-devtools-metadata")
         );
+    }
+
+    #[test]
+    fn workspace_graph_from_metadata_tracks_workspace_edges_only() {
+        let metadata = CargoMetadata {
+            packages: vec![
+                CargoPackage {
+                    name: "a".to_string(),
+                    manifest_path: PathBuf::from("a/Cargo.toml"),
+                    dependencies: vec![CargoDependency {
+                        name: "b".to_string(),
+                        kind: None,
+                    }],
+                },
+                CargoPackage {
+                    name: "b".to_string(),
+                    manifest_path: PathBuf::from("b/Cargo.toml"),
+                    dependencies: vec![CargoDependency {
+                        name: "serde".to_string(),
+                        kind: None,
+                    }],
+                },
+            ],
+        };
+
+        let graph = workspace_graph_from_metadata(metadata);
+        assert_eq!(graph.packages.len(), 2);
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].from, "a");
+        assert_eq!(graph.edges[0].to, "b");
+        assert_eq!(graph.edges[0].kind, DepKind::Normal);
     }
 }

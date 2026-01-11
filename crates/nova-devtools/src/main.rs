@@ -11,9 +11,13 @@ fn main() -> anyhow::Result<()> {
 
     match cmd.as_str() {
         "check-deps" => {
-            let (config, manifest_path) = parse_check_deps_args(args)?;
-            nova_devtools::check_deps::run(&config, manifest_path.as_deref())
-                .with_context(|| format!("check-deps failed using config {}", config.display()))
+            let (config, manifest_path, metadata_path) = parse_check_deps_args(args)?;
+            nova_devtools::check_deps::run(
+                &config,
+                manifest_path.as_deref(),
+                metadata_path.as_deref(),
+            )
+            .with_context(|| format!("check-deps failed using config {}", config.display()))
         }
         "-h" | "--help" => {
             print_help();
@@ -25,12 +29,15 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn parse_check_deps_args<I>(mut args: I) -> anyhow::Result<(PathBuf, Option<PathBuf>)>
+fn parse_check_deps_args<I>(
+    mut args: I,
+) -> anyhow::Result<(PathBuf, Option<PathBuf>, Option<PathBuf>)>
 where
     I: Iterator<Item = String>,
 {
     let mut config = PathBuf::from("crate-layers.toml");
     let mut manifest_path = None;
+    let mut metadata_path = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -46,6 +53,12 @@ where
                     .ok_or_else(|| anyhow!("--manifest-path requires a value"))?;
                 manifest_path = Some(PathBuf::from(value));
             }
+            "--metadata-path" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| anyhow!("--metadata-path requires a value"))?;
+                metadata_path = Some(PathBuf::from(value));
+            }
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
@@ -58,7 +71,7 @@ where
         }
     }
 
-    Ok((config, manifest_path))
+    Ok((config, manifest_path, metadata_path))
 }
 
 fn print_help() {
@@ -67,7 +80,7 @@ fn print_help() {
 nova-devtools
 
 USAGE:
-  nova-devtools check-deps [--config <path>] [--manifest-path <path>]
+  nova-devtools check-deps [--config <path>] [--manifest-path <path>] [--metadata-path <path>]
 
 COMMANDS:
   check-deps    Validate workspace crate dependencies against ADR 0007 layering rules
@@ -75,6 +88,7 @@ COMMANDS:
 OPTIONS:
   --config <path>         Path to crate-layers.toml (default: crate-layers.toml)
   --manifest-path <path>  Optional workspace Cargo.toml to run `cargo metadata` against
+  --metadata-path <path>  Pre-generated `cargo metadata --format-version=1 --no-deps` JSON to read instead of spawning cargo
   -h, --help              Print help
 "
     );
