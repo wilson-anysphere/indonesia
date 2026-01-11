@@ -177,6 +177,29 @@ There is also an ignored large-file regression/stress test:
 cargo test -p nova-format formats_large_file_regression -- --ignored
 ```
 
+#### 2e) In-memory fixture helpers (`nova-test-utils`)
+
+Some tests use small “inline fixture DSLs” rather than on-disk golden directories.
+
+**Where:**
+
+- Helper crate: `crates/nova-test-utils/`
+- Multi-file + cursor markers: `nova_test_utils::Fixture`
+  - used in e.g. `crates/nova-lsp/tests/navigation.rs`
+- Range selection markers: `nova_test_utils::extract_range` (`/*start*/ ... /*end*/`)
+  - used in e.g. `crates/nova-lsp/tests/extract_method.rs`
+
+**Example (`Fixture::parse`):**
+
+```rust
+let fixture = nova_test_utils::Fixture::parse(r#"
+//- /A.java
+class A { void $0m() {} }
+//- /B.java
+class B { void f() { new A().$1m(); } }
+"#);
+```
+
 ---
 
 ### 3) Protocol E2E tests
