@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use nova_ai::AiClient;
-use nova_bugreport::{create_bug_report_bundle, global_crash_store, BugReportOptions, PerfStats};
+use nova_bugreport::{global_crash_store, BugReportBuilder, BugReportOptions, PerfStats};
 use nova_cache::{
     atomic_write, fetch_cache_package, install_cache_package, pack_cache_package, CacheConfig,
     CacheDir, CachePackageInstallOutcome,
@@ -687,30 +687,32 @@ fn run(cli: Cli, config: &NovaConfig) -> Result<i32> {
             let perf = PerfStats::default();
             let log_buffer = global_log_buffer();
             let crash_store = global_crash_store();
-            let bundle = create_bug_report_bundle(
-                config,
-                log_buffer.as_ref(),
-                crash_store.as_ref(),
-                &perf,
-                options,
-            )
-            .map_err(|err| anyhow::anyhow!(err))
-            .context("failed to create bug report bundle")?;
+            let bundle =
+                BugReportBuilder::new(config, log_buffer.as_ref(), crash_store.as_ref(), &perf)
+                    .options(options)
+                    .create_archive(args.archive)
+                    .build()
+                    .map_err(|err| anyhow::anyhow!(err))
+                    .context("failed to create bug report bundle")?;
 
             let mut bundle_path = bundle.path().to_path_buf();
+            let mut archive_path = bundle.archive_path().map(|path| path.to_path_buf());
             if let Some(out) = args.out.as_ref() {
                 let dest = resolve_bugreport_output_path(out, &bundle_path)?;
                 move_dir(&bundle_path, &dest)?;
                 bundle_path = dest;
-            }
 
-            let archive_path = if args.archive {
-                let archive_path = bundle_path.with_extension("tar.zst");
-                write_tar_zst(&bundle_path, &archive_path)?;
-                Some(archive_path)
-            } else {
-                None
-            };
+                if let Some(old_archive) = archive_path.as_ref() {
+                    let dest_archive = bundle_path.with_extension(
+                        old_archive
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("zip"),
+                    );
+                    move_file(old_archive, &dest_archive)?;
+                    archive_path = Some(dest_archive);
+                }
+            }
 
             if args.json {
                 let mut payload = serde_json::json!({ "path": bundle_path });
@@ -1560,6 +1562,35 @@ fn move_dir(src: &PathBuf, dest: &PathBuf) -> Result<()> {
     }
 }
 
+fn move_file(src: &PathBuf, dest: &PathBuf) -> Result<()> {
+    if dest.exists() {
+        anyhow::bail!("bugreport destination {} already exists", dest.display());
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    match std::fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::CrossDeviceLink => {
+            std::fs::copy(src, dest).with_context(|| {
+                format!("failed to copy {} to {}", src.display(), dest.display())
+            })?;
+            std::fs::remove_file(src)
+                .with_context(|| format!("failed to remove {}", src.display()))?;
+            Ok(())
+        }
+        Err(err) => Err(err).with_context(|| {
+            format!(
+                "failed to move bugreport archive from {} to {}",
+                src.display(),
+                dest.display()
+            )
+        }),
+    }
+}
+
 fn copy_dir_all(src: &PathBuf, dest: &PathBuf) -> Result<()> {
     std::fs::create_dir_all(dest)
         .with_context(|| format!("failed to create {}", dest.display()))?;
@@ -1576,29 +1607,5 @@ fn copy_dir_all(src: &PathBuf, dest: &PathBuf) -> Result<()> {
             })?;
         }
     }
-    Ok(())
-}
-
-fn write_tar_zst(src_dir: &PathBuf, out_file: &PathBuf) -> Result<()> {
-    use std::fs::File;
-
-    if let Some(parent) = out_file.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-
-    let out = File::create(out_file)
-        .with_context(|| format!("failed to create archive {}", out_file.display()))?;
-    let encoder = zstd::Encoder::new(out, 19)?;
-    let mut builder = tar::Builder::new(encoder);
-
-    let dir_name = src_dir
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("nova-bugreport");
-    builder.append_dir_all(dir_name, src_dir)?;
-
-    let encoder = builder.into_inner()?;
-    encoder.finish()?;
     Ok(())
 }
