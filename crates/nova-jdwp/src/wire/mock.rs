@@ -47,6 +47,11 @@ pub struct MockJdwpServerConfig {
     /// If set, the mock VM replies to `VirtualMachine.Capabilities (1/12)` with
     /// `NOT_IMPLEMENTED` (JDWP error 99).
     pub capabilities_legacy_not_implemented: bool,
+    /// JDWP identifier sizes returned by `VirtualMachine.IDSizes`.
+    ///
+    /// Most modern JVMs use 8-byte ids; keeping this configurable lets tests
+    /// exercise non-default sizes.
+    pub id_sizes: JdwpIdSizes,
     /// JDWP reference type signature returned by `VirtualMachine.AllClasses` and
     /// `ReferenceType.Signature`.
     ///
@@ -73,6 +78,7 @@ impl Default for MockJdwpServerConfig {
             capabilities: vec![false; 32],
             capabilities_new_not_implemented: false,
             capabilities_legacy_not_implemented: false,
+            id_sizes: JdwpIdSizes::default(),
             class_signature: "LMain;".to_string(),
             source_file: "Main.java".to_string(),
             // Preserve historical behavior: keep emitting stop events after every resume
@@ -365,6 +371,11 @@ const HASHMAP_NODE_FIELD_KEY_ID: u64 = 0x7013;
 const HASHMAP_NODE_FIELD_VALUE_ID: u64 = 0x7014;
 const HASHMAP_NODE_FIELD_NEXT_ID: u64 = 0x7015;
 
+// Monitor objects used by thread/lock introspection commands.
+const OWNED_MONITOR_A_OBJECT_ID: u64 = 0x5201;
+const OWNED_MONITOR_B_OBJECT_ID: u64 = 0x5202;
+const CONTENDED_MONITOR_OBJECT_ID: u64 = 0x5203;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MockExceptionRequest {
     pub request_id: i32,
@@ -402,7 +413,7 @@ async fn run(
             }
             socket.write_all(HANDSHAKE).await?;
 
-            let id_sizes = JdwpIdSizes::default();
+            let id_sizes = state.config.id_sizes;
             let (mut reader, writer) = socket.into_split();
             let writer = Arc::new(tokio::sync::Mutex::new(writer));
 
@@ -469,6 +480,7 @@ async fn handle_packet(
 ) -> std::io::Result<()> {
     let sizes = id_sizes;
     let mut r = JdwpReader::new(&packet.payload);
+    let cap = |idx: usize| state.capabilities.get(idx).copied().unwrap_or(false);
 
     let (reply_error_code, reply_payload) = match (packet.command_set, packet.command) {
         // VirtualMachine.IDSizes
@@ -619,6 +631,15 @@ async fn handle_packet(
             state.thread_resume_calls.fetch_add(1, Ordering::Relaxed);
             (0, Vec::new())
         }
+        // ThreadReference.Status
+        (11, 4) => {
+            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            // `ThreadStatus.MONITOR` + `SuspendStatus.SUSPENDED`.
+            w.write_u32(3);
+            w.write_u32(1);
+            (0, w.into_vec())
+        }
         // ThreadReference.Frames
         (11, 6) => {
             if *state.breakpoint_suspend_policy.lock().await == Some(0) {
@@ -632,6 +653,59 @@ async fn handle_packet(
                 w.write_u32(1);
                 w.write_id(FRAME_ID, sizes.frame_id);
                 w.write_location(&default_location(), sizes);
+                (0, w.into_vec())
+            }
+        }
+        // ThreadReference.FrameCount
+        (11, 7) => {
+            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            w.write_u32(1);
+            (0, w.into_vec())
+        }
+        // ThreadReference.OwnedMonitors
+        (11, 8) => {
+            if !cap(4) {
+                (ERROR_NOT_IMPLEMENTED, Vec::new())
+            } else {
+                let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+                let mut w = JdwpWriter::new();
+                w.write_u32(2);
+                w.write_object_id(OWNED_MONITOR_A_OBJECT_ID, sizes);
+                w.write_object_id(OWNED_MONITOR_B_OBJECT_ID, sizes);
+                (0, w.into_vec())
+            }
+        }
+        // ThreadReference.CurrentContendedMonitor
+        (11, 9) => {
+            if !cap(5) {
+                (ERROR_NOT_IMPLEMENTED, Vec::new())
+            } else {
+                let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+                let mut w = JdwpWriter::new();
+                w.write_object_id(CONTENDED_MONITOR_OBJECT_ID, sizes);
+                (0, w.into_vec())
+            }
+        }
+        // ThreadReference.SuspendCount
+        (11, 12) => {
+            let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+            let mut w = JdwpWriter::new();
+            w.write_u32(2);
+            (0, w.into_vec())
+        }
+        // ThreadReference.OwnedMonitorsStackDepthInfo
+        (11, 13) => {
+            if !cap(21) {
+                (ERROR_NOT_IMPLEMENTED, Vec::new())
+            } else {
+                let _thread_id = r.read_object_id(sizes).unwrap_or(0);
+                let mut w = JdwpWriter::new();
+                w.write_u32(2);
+                w.write_object_id(OWNED_MONITOR_A_OBJECT_ID, sizes);
+                w.write_i32(0);
+                w.write_object_id(OWNED_MONITOR_B_OBJECT_ID, sizes);
+                w.write_i32(2);
                 (0, w.into_vec())
             }
         }
@@ -924,6 +998,35 @@ async fn handle_packet(
                 }
             }
             (0, w.into_vec())
+        }
+        // ObjectReference.MonitorInfo
+        (9, 5) => {
+            if !cap(6) {
+                (ERROR_NOT_IMPLEMENTED, Vec::new())
+            } else {
+                let object_id = r.read_object_id(sizes).unwrap_or(0);
+                let mut w = JdwpWriter::new();
+                match object_id {
+                    CONTENDED_MONITOR_OBJECT_ID => {
+                        w.write_object_id(WORKER_THREAD_ID, sizes); // owner
+                        w.write_i32(1); // entry count
+                        w.write_u32(1); // waiter count
+                        w.write_object_id(THREAD_ID, sizes); // waiters
+                    }
+                    OWNED_MONITOR_A_OBJECT_ID | OWNED_MONITOR_B_OBJECT_ID => {
+                        w.write_object_id(THREAD_ID, sizes); // owner
+                        w.write_i32(2); // entry count
+                        w.write_u32(0); // waiter count
+                    }
+                    _ => {
+                        // Unknown objects: report a "no owner" monitor with no waiters.
+                        w.write_object_id(0, sizes);
+                        w.write_i32(0);
+                        w.write_u32(0);
+                    }
+                }
+                (0, w.into_vec())
+            }
         }
         // ObjectReference.InvokeMethod
         (9, 6) => {

@@ -9,6 +9,104 @@ pub type MethodId = u64;
 pub type FieldId = u64;
 pub type FrameId = u64;
 
+/// Thread status as reported by `ThreadReference.Status` (command 11/4).
+///
+/// The JDWP spec defines a small, fixed set of statuses, but VMs may return
+/// values outside that set (future extensions or vendor-specific values).
+/// `ThreadStatus::Other` preserves the raw value for forward compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadStatus {
+    Zombie,
+    Running,
+    Sleeping,
+    Monitor,
+    Wait,
+    NotStarted,
+    Other(u32),
+}
+
+impl ThreadStatus {
+    pub fn as_raw(self) -> u32 {
+        match self {
+            ThreadStatus::Zombie => 0,
+            ThreadStatus::Running => 1,
+            ThreadStatus::Sleeping => 2,
+            ThreadStatus::Monitor => 3,
+            ThreadStatus::Wait => 4,
+            ThreadStatus::NotStarted => 5,
+            ThreadStatus::Other(v) => v,
+        }
+    }
+}
+
+impl From<u32> for ThreadStatus {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => ThreadStatus::Zombie,
+            1 => ThreadStatus::Running,
+            2 => ThreadStatus::Sleeping,
+            3 => ThreadStatus::Monitor,
+            4 => ThreadStatus::Wait,
+            5 => ThreadStatus::NotStarted,
+            other => ThreadStatus::Other(other),
+        }
+    }
+}
+
+impl From<ThreadStatus> for u32 {
+    fn from(value: ThreadStatus) -> Self {
+        value.as_raw()
+    }
+}
+
+/// Suspension bitflags as reported by `ThreadReference.Status` (command 11/4).
+///
+/// The only standardized flag is `SUSPENDED` (bit 0), but VMs may return
+/// additional bits in the future.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct SuspendStatus {
+    bits: u32,
+}
+
+impl SuspendStatus {
+    pub const SUSPENDED: u32 = 0x1;
+
+    pub fn new(bits: u32) -> Self {
+        Self { bits }
+    }
+
+    pub fn bits(self) -> u32 {
+        self.bits
+    }
+
+    pub fn is_suspended(self) -> bool {
+        (self.bits & Self::SUSPENDED) != 0
+    }
+}
+
+impl From<u32> for SuspendStatus {
+    fn from(bits: u32) -> Self {
+        Self { bits }
+    }
+}
+
+impl From<SuspendStatus> for u32 {
+    fn from(status: SuspendStatus) -> Self {
+        status.bits
+    }
+}
+
+/// Reply payload of `ObjectReference.MonitorInfo` (command 9/5).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonitorInfo {
+    /// The thread that currently owns the monitor, or 0 if there is no owner.
+    pub owner: ThreadId,
+    /// The number of times the owning thread has entered the monitor.
+    pub entry_count: i32,
+    /// Threads currently waiting on the monitor (`Object.wait()`).
+    pub waiters: Vec<ThreadId>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct JdwpIdSizes {
     pub field_id: usize,
@@ -141,6 +239,22 @@ impl JdwpCapabilitiesNew {
 
     pub fn supports_method_return_values(&self) -> bool {
         self.can_get_method_return_values
+    }
+
+    pub fn supports_monitor_info(&self) -> bool {
+        self.can_get_monitor_info
+    }
+
+    pub fn supports_owned_monitor_info(&self) -> bool {
+        self.can_get_owned_monitor_info
+    }
+
+    pub fn supports_current_contended_monitor(&self) -> bool {
+        self.can_get_current_contended_monitor
+    }
+
+    pub fn supports_owned_monitor_stack_depth_info(&self) -> bool {
+        self.can_get_owned_monitor_stack_depth_info
     }
 
     /// Maps the legacy `VirtualMachine.Capabilities` (command 1/12) boolean list

@@ -23,7 +23,8 @@ use super::{
     types::{
         ClassInfo, FieldId, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError,
         JdwpEvent, JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId,
-        MethodInfo, ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo, VmClassPaths,
+        MethodInfo, MonitorInfo, ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo,
+        VmClassPaths,
     },
 };
 
@@ -366,6 +367,83 @@ impl JdwpClient {
         w.write_object_id(thread, &sizes);
         let _ = self.send_command_raw(11, 3, w.into_vec()).await?;
         Ok(())
+    }
+
+    /// ThreadReference.Status (11, 4)
+    pub async fn thread_status(&self, thread: ThreadId) -> Result<(u32, u32)> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let payload = self.send_command_raw(11, 4, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let thread_status = r.read_u32()?;
+        let suspend_status = r.read_u32()?;
+        Ok((thread_status, suspend_status))
+    }
+
+    /// ThreadReference.FrameCount (11, 7)
+    pub async fn thread_frame_count(&self, thread: ThreadId) -> Result<u32> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let payload = self.send_command_raw(11, 7, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_u32()
+    }
+
+    /// ThreadReference.OwnedMonitors (11, 8)
+    pub async fn thread_owned_monitors(&self, thread: ThreadId) -> Result<Vec<ObjectId>> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let payload = self.send_command_raw(11, 8, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let count = r.read_u32()? as usize;
+        let mut monitors = Vec::with_capacity(count);
+        for _ in 0..count {
+            monitors.push(r.read_object_id(&sizes)?);
+        }
+        Ok(monitors)
+    }
+
+    /// ThreadReference.CurrentContendedMonitor (11, 9)
+    pub async fn thread_current_contended_monitor(&self, thread: ThreadId) -> Result<ObjectId> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let payload = self.send_command_raw(11, 9, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_object_id(&sizes)
+    }
+
+    /// ThreadReference.SuspendCount (11, 12)
+    pub async fn thread_suspend_count(&self, thread: ThreadId) -> Result<u32> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let payload = self.send_command_raw(11, 12, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        r.read_u32()
+    }
+
+    /// ThreadReference.OwnedMonitorsStackDepthInfo (11, 13)
+    pub async fn thread_owned_monitors_stack_depth_info(
+        &self,
+        thread: ThreadId,
+    ) -> Result<Vec<(ObjectId, i32)>> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(thread, &sizes);
+        let payload = self.send_command_raw(11, 13, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+        let count = r.read_u32()? as usize;
+        let mut monitors = Vec::with_capacity(count);
+        for _ in 0..count {
+            let monitor = r.read_object_id(&sizes)?;
+            let stack_depth = r.read_i32()?;
+            monitors.push((monitor, stack_depth));
+        }
+        Ok(monitors)
     }
     pub async fn frames(
         &self,
@@ -839,6 +917,29 @@ impl JdwpClient {
         Ok((return_value, exception))
     }
 
+    /// ObjectReference.MonitorInfo (9, 5)
+    pub async fn object_reference_monitor_info(&self, object: ObjectId) -> Result<MonitorInfo> {
+        let sizes = self.id_sizes().await;
+        let mut w = JdwpWriter::new();
+        w.write_object_id(object, &sizes);
+        let payload = self.send_command_raw(9, 5, w.into_vec()).await?;
+        let mut r = JdwpReader::new(&payload);
+
+        let owner = r.read_object_id(&sizes)?;
+        let entry_count = r.read_i32()?;
+        let waiter_count = r.read_u32()? as usize;
+        let mut waiters = Vec::with_capacity(waiter_count);
+        for _ in 0..waiter_count {
+            waiters.push(r.read_object_id(&sizes)?);
+        }
+
+        Ok(MonitorInfo {
+            owner,
+            entry_count,
+            waiters,
+        })
+    }
+
     pub async fn array_reference_length(&self, array_id: ObjectId) -> Result<i32> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
@@ -1217,7 +1318,16 @@ mod tests {
 
     use super::{JdwpClient, JdwpClientConfig};
     use crate::wire::mock::{DelayedReply, MockJdwpServer, MockJdwpServerConfig};
-    use crate::wire::types::JdwpCapabilitiesNew;
+    use crate::wire::types::{JdwpCapabilitiesNew, JdwpError, JdwpIdSizes};
+
+    fn monitor_capabilities() -> Vec<bool> {
+        let mut caps = vec![false; 32];
+        caps[4] = true; // canGetOwnedMonitorInfo
+        caps[5] = true; // canGetCurrentContendedMonitor
+        caps[6] = true; // canGetMonitorInfo
+        caps[21] = true; // canGetOwnedMonitorStackDepthInfo
+        caps
+    }
 
     #[tokio::test]
     async fn pending_entries_are_removed_when_request_future_is_dropped() {
@@ -1334,5 +1444,107 @@ mod tests {
         assert!(caps.can_get_bytecodes);
         // Missing booleans should be treated as false.
         assert!(!caps.can_get_monitor_info);
+    }
+
+    #[tokio::test]
+    async fn thread_status_and_suspension_accounting_are_decoded() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let thread = client.all_threads().await.unwrap()[0];
+
+        let (thread_status, suspend_status) = client.thread_status(thread).await.unwrap();
+        assert_eq!(thread_status, 3);
+        assert_eq!(suspend_status, 1);
+
+        let suspend_count = client.thread_suspend_count(thread).await.unwrap();
+        assert_eq!(suspend_count, 2);
+
+        let frame_count = client.thread_frame_count(thread).await.unwrap();
+        assert_eq!(frame_count, 1);
+    }
+
+    #[tokio::test]
+    async fn monitor_and_lock_information_are_decoded() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            capabilities: monitor_capabilities(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let caps = client.capabilities().await;
+        assert!(caps.supports_monitor_info());
+        assert!(caps.supports_owned_monitor_info());
+        assert!(caps.supports_current_contended_monitor());
+        assert!(caps.supports_owned_monitor_stack_depth_info());
+
+        let thread = client.all_threads().await.unwrap()[0];
+
+        let owned = client.thread_owned_monitors(thread).await.unwrap();
+        assert_eq!(owned, vec![0x5201, 0x5202]);
+
+        let owned_depth = client
+            .thread_owned_monitors_stack_depth_info(thread)
+            .await
+            .unwrap();
+        assert_eq!(owned_depth, vec![(0x5201, 0), (0x5202, 2)]);
+
+        let contended = client
+            .thread_current_contended_monitor(thread)
+            .await
+            .unwrap();
+        assert_eq!(contended, 0x5203);
+
+        let info = client.object_reference_monitor_info(contended).await.unwrap();
+        assert_eq!(info.owner, 0x1002);
+        assert_eq!(info.entry_count, 1);
+        assert_eq!(info.waiters, vec![thread]);
+    }
+
+    #[tokio::test]
+    async fn monitor_commands_propagate_not_implemented() {
+        let server = MockJdwpServer::spawn().await.unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let thread = client.all_threads().await.unwrap()[0];
+        let err = client.thread_owned_monitors(thread).await.unwrap_err();
+
+        match err {
+            JdwpError::VmError(code) => assert_eq!(code, 99),
+            other => panic!("expected VmError(99), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn monitor_introspection_respects_non_default_id_sizes() {
+        let server = MockJdwpServer::spawn_with_config(MockJdwpServerConfig {
+            capabilities: monitor_capabilities(),
+            id_sizes: JdwpIdSizes {
+                field_id: 4,
+                method_id: 4,
+                object_id: 4,
+                reference_type_id: 4,
+                frame_id: 4,
+            },
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+        let thread = client.all_threads().await.unwrap()[0];
+        assert_eq!(thread, 0x1001);
+
+        let contended = client
+            .thread_current_contended_monitor(thread)
+            .await
+            .unwrap();
+        assert_eq!(contended, 0x5203);
+
+        let info = client.object_reference_monitor_info(contended).await.unwrap();
+        assert_eq!(info.owner, 0x1002);
+        assert_eq!(info.waiters, vec![thread]);
     }
 }
