@@ -3972,6 +3972,7 @@ dependencies = [
  "nova-format",
  "nova-index",
  "nova-project",
+ "nova-syntax",
  "nova-test-utils",
  "nova-types",
  "pretty_assertions",

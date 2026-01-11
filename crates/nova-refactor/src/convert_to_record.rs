@@ -124,34 +124,24 @@ pub fn convert_to_record(
 }
 
 fn maybe_nova_format(text: &str) -> String {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let mut child = match Command::new("nova-format")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return text.to_string(),
+    let prefix_end = text
+        .char_indices()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(idx, _)| idx)
+        .unwrap_or(text.len());
+    let prefix = &text[..prefix_end];
+    let prefix = match prefix.rfind(|c| c == '\n' || c == '\r') {
+        Some(idx) => &prefix[..idx + 1],
+        None => prefix,
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(text.as_bytes());
-    }
+    let formatted = std::panic::catch_unwind(|| {
+        let tree = nova_syntax::parse(text);
+        nova_format::format_java(&tree, text, &nova_format::FormatConfig::default())
+    });
 
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(_) => return text.to_string(),
-    };
-
-    if !output.status.success() {
-        return text.to_string();
-    }
-
-    match String::from_utf8(output.stdout) {
-        Ok(formatted) if !formatted.is_empty() => formatted,
+    match formatted {
+        Ok(formatted) if !formatted.is_empty() => format!("{prefix}{formatted}"),
         _ => text.to_string(),
     }
 }
