@@ -147,13 +147,29 @@ public class Foo {
 
         // Line 4 is exactly a statement start.
         let resolved = map_line_breakpoints(&db, file_id, &[4]);
-        assert_eq!(resolved[0].resolved_line, 4);
-        assert!(resolved[0].verified);
+        assert_eq!(
+            resolved,
+            vec![ResolvedBreakpoint {
+                requested_line: 4,
+                resolved_line: 4,
+                verified: true,
+                enclosing_class: Some("C".to_string()),
+                enclosing_method: Some("f".to_string()),
+            }]
+        );
 
         // Line 5 is not executable (closing brace); nearest is line 4.
         let resolved = map_line_breakpoints(&db, file_id, &[5]);
-        assert_eq!(resolved[0].resolved_line, 4);
-        assert!(resolved[0].verified);
+        assert_eq!(
+            resolved,
+            vec![ResolvedBreakpoint {
+                requested_line: 5,
+                resolved_line: 4,
+                verified: true,
+                enclosing_class: Some("C".to_string()),
+                enclosing_method: Some("f".to_string()),
+            }]
+        );
     }
 
     #[test]
