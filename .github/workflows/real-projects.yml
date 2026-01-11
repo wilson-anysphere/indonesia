@@ -103,14 +103,27 @@ jobs:
           mkdir -p real-project-logs
           {
             echo "fixture head"
-            shopt -s nullglob
-            for repo_dir in test-projects/*; do
-              if [[ -d "$repo_dir/.git" ]]; then
-                repo="$(basename "$repo_dir")"
-                sha="$(git -C "$repo_dir" rev-parse HEAD)"
-                echo "$repo $sha"
-              fi
-            done
+            if [[ -n "${NOVA_TEST_PROJECTS:-}" ]]; then
+              only="${NOVA_TEST_PROJECTS//[[:space:]]/}"
+              IFS=',' read -r -a fixtures <<<"$only"
+              for repo in "${fixtures[@]}"; do
+                [[ -z "$repo" ]] && continue
+                repo_dir="test-projects/$repo"
+                if [[ -d "$repo_dir/.git" ]]; then
+                  sha="$(git -C "$repo_dir" rev-parse HEAD)"
+                  echo "$repo $sha"
+                fi
+              done
+            else
+              shopt -s nullglob
+              for repo_dir in test-projects/*; do
+                if [[ -d "$repo_dir/.git" ]]; then
+                  repo="$(basename "$repo_dir")"
+                  sha="$(git -C "$repo_dir" rev-parse HEAD)"
+                  echo "$repo $sha"
+                fi
+              done
+            fi
           } | tee real-project-logs/fixture-revisions.log
 
       - name: javac validate (best-effort)
