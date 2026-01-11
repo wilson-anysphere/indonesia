@@ -225,6 +225,9 @@ def check_perf_docs() -> list[str]:
             )
 
     bench_path_re = re.compile(r"crates/[A-Za-z0-9_-]+/benches/[A-Za-z0-9_-]+\.rs")
+    bench_cmd_re = re.compile(
+        r"cargo bench[^\n]*\s-p\s+([^\s]+)[^\n]*\s--bench\s+([^\s`]+)"
+    )
     for doc_path in docs_require_paths:
         if not doc_path.exists():
             errors.append(f"expected {doc_path.relative_to(REPO_ROOT)} to exist")
@@ -242,6 +245,20 @@ def check_perf_docs() -> list[str]:
             errors.append(
                 f"{doc_path.relative_to(REPO_ROOT)} mentions bench paths not gated by `.github/workflows/perf.yml`: "
                 + ", ".join(extra)
+            )
+
+        present_cmds = set(bench_cmd_re.findall(doc))
+        missing_cmds = sorted(set(suites) - present_cmds)
+        extra_cmds = sorted(present_cmds - set(suites))
+        if missing_cmds:
+            errors.append(
+                f"{doc_path.relative_to(REPO_ROOT)} is missing CI perf bench commands for: "
+                + ", ".join(f"{crate}::{bench}" for crate, bench in missing_cmds)
+            )
+        if extra_cmds:
+            errors.append(
+                f"{doc_path.relative_to(REPO_ROOT)} includes bench commands not gated by `.github/workflows/perf.yml`: "
+                + ", ".join(f"{crate}::{bench}" for crate, bench in extra_cmds)
             )
         for rel in threshold_paths:
             if rel not in doc:
