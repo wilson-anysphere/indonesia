@@ -9,7 +9,7 @@ It is intended to be implementable without reading Nova’s source code. Where w
 **SHOULD**, and **MAY** are used, they are normative (RFC 2119 style).
 
 > **Implementation status (important):** At the time of writing, `nova-router` and `nova-worker`
-> still speak the legacy v2 protocol (`nova_remote_proto::legacy_v2`, bincode-encoded, lockstep).
+> still speak the legacy **bincode** protocol (`nova_remote_proto::legacy_v2`, lockstep request/response).
 > The **v3 CBOR envelope** is implemented in `nova_remote_proto::v3` (codec + types) but is not yet
 > wired into the router/worker transport. This document matches the current
 > `nova_remote_proto::v3` wire types and is the target on-the-wire format for the v3 rollout.
@@ -246,9 +246,12 @@ Negotiation rules (normative):
 - The router is authoritative and sends the final `chosen_capabilities` in `Welcome`.
 - `chosen_capabilities.max_frame_len` MUST be `<=` both sides’ offered `max_frame_len`.
 - `chosen_capabilities.max_packet_len` MUST be `<=` both sides’ offered `max_packet_len`.
-- `chosen_capabilities.supported_compression` MUST be the intersection of both sides’ lists.
+- `chosen_capabilities.supported_compression` MUST be a **non-empty subset** of the intersection of
+  both sides’ `supported_compression` lists.
   - Order SHOULD reflect router preference (best-first).
   - `"none"` SHOULD be included if supported by both peers.
+  - The router MAY intentionally restrict the set (e.g. advertise only `["none"]` to disable `zstd`).
+  - The list MUST NOT include `"unknown"`.
 - `chosen_capabilities.supports_cancel` MUST be `true` only if **both** sides offered
   `supports_cancel = true`.
 - `chosen_capabilities.supports_chunking` MUST be `true` only if **both** sides offered
@@ -399,6 +402,12 @@ Rules:
 - `request_id = 0` is reserved and MUST NOT be used.
 - A requester MUST NOT reuse a `request_id` while a prior request with that ID is still in flight.
 
+Notes:
+
+- `RpcPayload::Notification` is one-way (no response is expected), but still carries an `id` on the
+  wire. Senders SHOULD choose notification IDs from their parity range and avoid collisions with any
+  in-flight request IDs.
+
 #### Parity rule (required for multiplexing)
 
 To prevent collisions when both peers can initiate requests:
@@ -458,8 +467,10 @@ Cancellation is supported if and only if `chosen_capabilities.supports_cancel = 
 
 Representation (normative):
 
-- To cancel request `X`, the requester sends a packet with:
-  - `WireFrame::Packet { id: X, compression: "none", data: cbor(RpcPayload::Cancel) }`
+- To cancel request `X`, the requester sends a packet with `id = X` whose decoded payload is
+  `RpcPayload::Cancel`.
+- Senders SHOULD use `compression = "none"` for cancellation (the payload is tiny), but receivers
+  MUST honor the per-packet `compression` field as usual.
 
 Rules:
 
