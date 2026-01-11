@@ -423,6 +423,7 @@ expression: schema
         "api_key": {
           "description": "API key for the configured provider. This should never be included in bug report bundles.",
           "default": null,
+          "writeOnly": true,
           "type": [
             "string",
             "null"

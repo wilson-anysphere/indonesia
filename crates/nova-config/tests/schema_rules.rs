@@ -27,3 +27,14 @@ fn json_schema_includes_deprecated_ai_privacy_anonymize_alias() {
         Some(true)
     );
 }
+
+#[test]
+fn json_schema_marks_ai_api_key_as_write_only() {
+    let schema = json_schema();
+    let value = serde_json::to_value(schema).expect("schema serializes");
+
+    let api_key = value
+        .pointer("/definitions/AiConfig/properties/api_key")
+        .expect("api_key schema property exists");
+    assert_eq!(api_key.get("writeOnly").and_then(|v| v.as_bool()), Some(true));
+}
