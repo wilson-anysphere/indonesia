@@ -310,6 +310,7 @@ impl CloudLlmClient {
                         request_id,
                         provider,
                         &self.cfg.model,
+                        Some(&safe_url),
                         &hit,
                         Duration::ZERO,
                         /*retry_count=*/ 0,
@@ -441,7 +442,9 @@ impl CloudLlmClient {
             };
 
             if !status.is_success() {
-                let body = String::from_utf8_lossy(&bytes).to_string();
+                // Provider error bodies may include request URLs or echoed tokens. Avoid returning
+                // secrets that could be logged by callers.
+                let body = audit::sanitize_prompt_for_audit(&String::from_utf8_lossy(&bytes));
                 if attempt < self.cfg.retry.max_retries && should_retry(status) {
                     attempt += 1;
                     warn!(
@@ -502,6 +505,7 @@ impl CloudLlmClient {
                     request_id,
                     provider,
                     &self.cfg.model,
+                    Some(&safe_url),
                     &completion,
                     overall_started_at.elapsed(),
                     attempt,
@@ -850,6 +854,11 @@ mod tests {
             .contains("/v1beta/models/gemini-1.5-flash:generateContent"));
         assert!(parts.url.as_str().contains("key=test-key"));
         assert_eq!(parts.body["contents"][0]["parts"][0]["text"], "Hello");
+
+        let safe_url = audit::sanitize_url_for_log(&parts.url);
+        assert!(!safe_url.contains("test-key"));
+        assert!(!safe_url.to_lowercase().contains("key="));
+        assert!(!safe_url.contains('?'));
     }
 
     #[test]
@@ -1006,6 +1015,15 @@ mod tests {
         let prompt = request.fields.get("prompt").expect("prompt field present");
         assert!(prompt.contains("[REDACTED]"));
         assert!(!prompt.contains(secret));
+        let prompt_len: u64 = request
+            .fields
+            .get("prompt_len")
+            .expect("prompt_len field present")
+            .parse()
+            .expect("prompt_len should be numeric");
+        let expected_prompt_len =
+            audit::sanitize_prompt_for_audit(&format!("hello {secret}")).len() as u64;
+        assert_eq!(prompt_len, expected_prompt_len);
 
         let endpoint = request
             .fields
@@ -1030,6 +1048,13 @@ mod tests {
             .expect("completion field present");
         assert!(completion.contains("[REDACTED]"));
         assert!(!completion.contains(secret));
+        let completion_len: u64 = response
+            .fields
+            .get("completion_len")
+            .expect("completion_len field present")
+            .parse()
+            .expect("completion_len should be numeric");
+        assert_eq!(completion_len, out.len() as u64);
 
         for event in audit {
             for value in event.fields.values() {

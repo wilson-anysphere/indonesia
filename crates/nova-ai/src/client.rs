@@ -237,6 +237,7 @@ impl AiClient {
                         request_id,
                         self.provider_label,
                         &self.model,
+                        safe_endpoint.as_deref(),
                         &hit,
                         started_at.elapsed(),
                         /*retry_count=*/ 0,
@@ -282,6 +283,7 @@ impl AiClient {
                             request_id,
                             self.provider_label,
                             &self.model,
+                            safe_endpoint.as_deref(),
                             &completion,
                             started_at.elapsed(),
                             /*retry_count=*/ 0,
@@ -423,6 +425,7 @@ impl AiClient {
         let provider_label = self.provider_label;
         let model = self.model.clone();
         let started_at_for_stream = started_at;
+        let safe_endpoint_for_stream = safe_endpoint.clone();
 
         let stream = async_stream::try_stream! {
             let _permit = permit;
@@ -458,6 +461,7 @@ impl AiClient {
                     request_id_for_stream,
                     provider_label,
                     &model,
+                    safe_endpoint_for_stream.as_deref(),
                     &completion,
                     started_at_for_stream.elapsed(),
                     /*retry_count=*/ 0,

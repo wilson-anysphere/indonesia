@@ -138,6 +138,7 @@ pub(crate) fn log_llm_request(
     attempt: usize,
     stream: bool,
 ) {
+    let prompt_len = prompt.len() as u64;
     let prompt = sanitize_prompt_for_audit(prompt);
     info!(
         target: nova_config::AI_AUDIT_TARGET,
@@ -146,6 +147,8 @@ pub(crate) fn log_llm_request(
         provider = provider,
         model = model,
         endpoint = endpoint,
+        url = endpoint,
+        prompt_len = prompt_len,
         attempt = attempt,
         stream = stream,
         prompt = %prompt,
@@ -156,12 +159,14 @@ pub(crate) fn log_llm_response(
     request_id: u64,
     provider: &str,
     model: &str,
+    endpoint: Option<&str>,
     completion: &str,
     latency: Duration,
     retry_count: usize,
     stream: bool,
     chunk_count: Option<usize>,
 ) {
+    let completion_len = completion.len() as u64;
     let completion = sanitize_completion_for_audit(completion);
     info!(
         target: nova_config::AI_AUDIT_TARGET,
@@ -169,10 +174,13 @@ pub(crate) fn log_llm_response(
         request_id = request_id,
         provider = provider,
         model = model,
+        endpoint = endpoint,
+        url = endpoint,
         latency_ms = latency.as_millis() as u64,
         retry_count = retry_count,
         stream = stream,
         chunk_count = chunk_count,
+        completion_len = completion_len,
         completion = %completion,
     );
 }
