@@ -110,6 +110,7 @@ pub const BUG_REPORT_METHOD: &str = "nova/bugReport";
 pub const BUILD_TARGET_CLASSPATH_METHOD: &str = "nova/build/targetClasspath";
 pub const BUILD_STATUS_METHOD: &str = "nova/build/status";
 pub const BUILD_DIAGNOSTICS_METHOD: &str = "nova/build/diagnostics";
+pub const PROJECT_MODEL_METHOD: &str = "nova/projectModel";
 // Performance / memory custom endpoints.
 pub const MEMORY_STATUS_METHOD: &str = "nova/memoryStatus";
 pub const MEMORY_STATUS_NOTIFICATION: &str = "nova/memoryStatusChanged";
@@ -184,6 +185,9 @@ fn handle_custom_request_inner(method: &str, params: serde_json::Value) -> Resul
         }
         BUILD_DIAGNOSTICS_METHOD => {
             hardening::run_with_watchdog(method, params, extensions::build::handle_build_diagnostics)
+        }
+        PROJECT_MODEL_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::build::handle_project_model)
         }
         MICRONAUT_ENDPOINTS_METHOD => {
             hardening::run_with_watchdog(method, params, extensions::micronaut::handle_endpoints)

@@ -235,7 +235,7 @@ pub struct TargetClasspathParams {
     pub target: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetClasspathResult {
     pub project_root: String,
@@ -300,15 +300,70 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         let config = nova_project::load_project(&requested_root)
             .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
+        let project_root = config.workspace_root.clone();
+        let cache_dir = project_root.join(".nova").join("build-cache");
+        let manager = BuildManager::new(cache_dir);
+
+        let normalized_target = req
+            .target
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+
+        let cp = match config.build_system {
+            nova_project::BuildSystem::Maven => {
+                let module_relative = normalized_target
+                    .as_deref()
+                    .filter(|t| *t != ".")
+                    .map(Path::new);
+                manager
+                    .classpath_maven(&project_root, module_relative)
+                    .map_err(map_build_error)?
+            }
+            nova_project::BuildSystem::Gradle => {
+                let project_path = normalized_target.as_deref().map(|t| {
+                    if t.starts_with(':') {
+                        t.to_string()
+                    } else {
+                        format!(":{t}")
+                    }
+                });
+                let project_path = project_path.as_deref().filter(|t| *t != ":");
+
+                manager
+                    .classpath_gradle(&project_root, project_path)
+                    .map_err(map_build_error)?
+            }
+            // For simple projects, `nova-project` is already the source of truth.
+            nova_project::BuildSystem::Simple => Classpath::new(
+                config
+                    .classpath
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect(),
+            ),
+            // Bazel workspaces are handled above via `bazel_workspace_root`.
+            nova_project::BuildSystem::Bazel => {
+                return Err(NovaLspError::InvalidParams(
+                    "Bazel workspace was not detected at the requested root".to_string(),
+                ));
+            }
+        };
+
         let result = TargetClasspathResult {
-            project_root: config.workspace_root.to_string_lossy().to_string(),
-            target: req.target,
-            classpath: config
-                .classpath
+            project_root: project_root.to_string_lossy().to_string(),
+            target: normalized_target,
+            classpath: cp
+                .entries
+                .into_iter()
+                .map(|entry| entry.to_string_lossy().to_string())
+                .collect(),
+            module_path: config
+                .module_path
                 .iter()
                 .map(|entry| entry.path.to_string_lossy().to_string())
                 .collect(),
-            module_path: Vec::new(),
             source_roots: config
                 .source_roots
                 .iter()
@@ -319,6 +374,283 @@ pub fn handle_target_classpath(params: serde_json::Value) -> Result<serde_json::
         };
         serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
     }
+}
+
+// -----------------------------------------------------------------------------
+// Unified project model (Maven/Gradle/Bazel)
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectModelParams {
+    #[serde(alias = "root")]
+    pub project_root: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct JavaLanguageLevel {
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub release: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectModelResult {
+    pub project_root: String,
+    pub units: Vec<ProjectModelUnit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum ProjectModelUnit {
+    Maven {
+        /// Maven module directory relative to the workspace root (e.g. `.`, `module-a`).
+        module: String,
+        compile_classpath: Vec<String>,
+        #[serde(default)]
+        module_path: Vec<String>,
+        #[serde(default)]
+        source_roots: Vec<String>,
+        #[serde(default)]
+        language_level: Option<JavaLanguageLevel>,
+    },
+    Gradle {
+        /// Gradle project path (e.g. `:`, `:app`, `:lib:core`).
+        project_path: String,
+        compile_classpath: Vec<String>,
+        #[serde(default)]
+        module_path: Vec<String>,
+        #[serde(default)]
+        source_roots: Vec<String>,
+        #[serde(default)]
+        language_level: Option<JavaLanguageLevel>,
+    },
+    Bazel {
+        /// Bazel label (e.g. `//java/com/example:lib`).
+        target: String,
+        compile_classpath: Vec<String>,
+        #[serde(default)]
+        module_path: Vec<String>,
+        #[serde(default)]
+        source_roots: Vec<String>,
+        #[serde(default)]
+        language_level: Option<JavaLanguageLevel>,
+    },
+    Simple {
+        module: String,
+        compile_classpath: Vec<String>,
+        #[serde(default)]
+        module_path: Vec<String>,
+        #[serde(default)]
+        source_roots: Vec<String>,
+        #[serde(default)]
+        language_level: Option<JavaLanguageLevel>,
+    },
+}
+
+pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Value> {
+    let req: ProjectModelParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+
+    if req.project_root.trim().is_empty() {
+        return Err(NovaLspError::InvalidParams(
+            "`projectRoot` must not be empty".to_string(),
+        ));
+    }
+
+    let requested_root = PathBuf::from(&req.project_root);
+    let requested_root = requested_root
+        .canonicalize()
+        .unwrap_or_else(|_| requested_root.clone());
+
+    if let Some(workspace_root) = nova_project::bazel_workspace_root(&requested_root) {
+        let cache_path = CacheDir::new(&workspace_root, CacheConfig::from_env())
+            .map(|dir| dir.queries_dir().join("bazel.json"))
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+        let runner = nova_build_bazel::DefaultCommandRunner::default();
+        let mut workspace = nova_build_bazel::BazelWorkspace::new(workspace_root.clone(), runner)
+            .and_then(|ws| ws.with_cache_path(cache_path))
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+
+        let targets = workspace
+            .java_targets()
+            .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+
+        let mut units = Vec::with_capacity(targets.len());
+        for target in targets {
+            let info = workspace
+                .target_compile_info(&target)
+                .map_err(|err| NovaLspError::Internal(err.to_string()))?;
+            units.push(ProjectModelUnit::Bazel {
+                target,
+                compile_classpath: info.classpath,
+                module_path: info.module_path,
+                source_roots: info.source_roots,
+                language_level: Some(JavaLanguageLevel {
+                    source: info.source,
+                    target: info.target,
+                    release: None,
+                }),
+            });
+        }
+
+        let result = ProjectModelResult {
+            project_root: workspace_root.to_string_lossy().to_string(),
+            units,
+        };
+        return serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()));
+    }
+
+    let config = nova_project::load_project(&requested_root)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let project_root = config.workspace_root.clone();
+
+    let cache_dir = project_root.join(".nova").join("build-cache");
+    let manager = BuildManager::new(cache_dir);
+
+    let language_level = Some(JavaLanguageLevel {
+        source: Some(config.java.source.0.to_string()),
+        target: Some(config.java.target.0.to_string()),
+        release: None,
+    });
+
+    let units = match config.build_system {
+        nova_project::BuildSystem::Maven => config
+            .modules
+            .iter()
+            .map(|module| {
+                let rel = module
+                    .root
+                    .strip_prefix(&project_root)
+                    .unwrap_or(module.root.as_path());
+                let rel = if rel.as_os_str().is_empty() {
+                    ".".to_string()
+                } else {
+                    rel.to_string_lossy().to_string()
+                };
+
+                let module_relative = if rel == "." { None } else { Some(Path::new(&rel)) };
+                let cp = manager
+                    .classpath_maven(&project_root, module_relative)
+                    .map_err(map_build_error)?;
+
+                let source_roots = config
+                    .source_roots
+                    .iter()
+                    .filter(|root| root.path.starts_with(&module.root))
+                    .map(|root| root.path.to_string_lossy().to_string())
+                    .collect();
+
+                Ok(ProjectModelUnit::Maven {
+                    module: rel,
+                    compile_classpath: cp
+                        .entries
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect(),
+                    module_path: Vec::new(),
+                    source_roots,
+                    language_level: language_level.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        nova_project::BuildSystem::Gradle => config
+            .modules
+            .iter()
+            .map(|module| {
+                let rel = module
+                    .root
+                    .strip_prefix(&project_root)
+                    .unwrap_or(module.root.as_path());
+                let project_path = if rel.as_os_str().is_empty() {
+                    ":".to_string()
+                } else {
+                    let mut out = String::from(":");
+                    let mut first = true;
+                    for component in rel.components() {
+                        let part = component.as_os_str().to_string_lossy();
+                        if part.is_empty() {
+                            continue;
+                        }
+                        if !first {
+                            out.push(':');
+                        }
+                        first = false;
+                        out.push_str(&part);
+                    }
+                    out
+                };
+
+                let cp = manager
+                    .classpath_gradle(
+                        &project_root,
+                        if project_path == ":" {
+                            None
+                        } else {
+                            Some(project_path.as_str())
+                        },
+                    )
+                    .map_err(map_build_error)?;
+
+                let source_roots = config
+                    .source_roots
+                    .iter()
+                    .filter(|root| root.path.starts_with(&module.root))
+                    .map(|root| root.path.to_string_lossy().to_string())
+                    .collect();
+
+                Ok(ProjectModelUnit::Gradle {
+                    project_path,
+                    compile_classpath: cp
+                        .entries
+                        .into_iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect(),
+                    module_path: Vec::new(),
+                    source_roots,
+                    language_level: language_level.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+        nova_project::BuildSystem::Simple => {
+            let source_roots = config
+                .source_roots
+                .iter()
+                .map(|root| root.path.to_string_lossy().to_string())
+                .collect();
+            vec![ProjectModelUnit::Simple {
+                module: ".".to_string(),
+                compile_classpath: config
+                    .classpath
+                    .iter()
+                    .map(|entry| entry.path.to_string_lossy().to_string())
+                    .collect(),
+                module_path: config
+                    .module_path
+                    .iter()
+                    .map(|entry| entry.path.to_string_lossy().to_string())
+                    .collect(),
+                source_roots,
+                language_level,
+            }]
+        }
+        nova_project::BuildSystem::Bazel => {
+            return Err(NovaLspError::InvalidParams(
+                "Bazel workspace was not detected at the requested root".to_string(),
+            ));
+        }
+    };
+
+    let result = ProjectModelResult {
+        project_root: project_root.to_string_lossy().to_string(),
+        units,
+    };
+    serde_json::to_value(result).map_err(|err| NovaLspError::Internal(err.to_string()))
 }
 
 #[derive(Debug, Deserialize)]
@@ -498,6 +830,13 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+    use tempfile::TempDir;
+    #[cfg(unix)]
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+    };
 
     #[test]
     fn params_accepts_project_root_aliases() {
@@ -511,5 +850,150 @@ mod tests {
         assert_eq!(params.project_root, "/tmp/project");
         assert_eq!(params.build_tool, Some(BuildTool::Maven));
         assert_eq!(params.project_path.as_deref(), Some(":app"));
+    }
+
+    #[test]
+    fn project_model_params_accepts_project_root_aliases() {
+        let params: ProjectModelParams = serde_json::from_value(serde_json::json!({
+            "root": "/tmp/project",
+        }))
+        .unwrap();
+
+        assert_eq!(params.project_root, "/tmp/project");
+    }
+
+    #[test]
+    fn project_model_result_roundtrips_through_json() {
+        let result = ProjectModelResult {
+            project_root: "/workspace".into(),
+            units: vec![
+                ProjectModelUnit::Maven {
+                    module: ".".into(),
+                    compile_classpath: vec!["/workspace/target/classes".into()],
+                    module_path: vec![],
+                    source_roots: vec!["/workspace/src/main/java".into()],
+                    language_level: Some(JavaLanguageLevel {
+                        source: Some("17".into()),
+                        target: Some("17".into()),
+                        release: None,
+                    }),
+                },
+                ProjectModelUnit::Gradle {
+                    project_path: ":app".into(),
+                    compile_classpath: vec!["/workspace/app/build/classes/java/main".into()],
+                    module_path: vec![],
+                    source_roots: vec!["/workspace/app/src/main/java".into()],
+                    language_level: Some(JavaLanguageLevel {
+                        source: Some("17".into()),
+                        target: Some("17".into()),
+                        release: Some("17".into()),
+                    }),
+                },
+                ProjectModelUnit::Bazel {
+                    target: "//java/com/example:lib".into(),
+                    compile_classpath: vec!["/workspace/bazel-out/lib.jar".into()],
+                    module_path: vec!["/workspace/bazel-out/module.jar".into()],
+                    source_roots: vec!["/workspace/java/com/example".into()],
+                    language_level: Some(JavaLanguageLevel {
+                        source: Some("17".into()),
+                        target: Some("17".into()),
+                        release: None,
+                    }),
+                },
+            ],
+        };
+
+        let value = serde_json::to_value(&result).unwrap();
+        let decoded: ProjectModelResult = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, result);
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, contents: &str) {
+        fs::write(path, contents).unwrap();
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn target_classpath_uses_build_manager_for_maven() {
+        let _guard = env_lock().lock().unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Minimal Maven marker.
+        fs::write(root.join("pom.xml"), "<project></project>").unwrap();
+
+        // Mock `mvn` executable returning a stable classpath entry.
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let fake_jar = root.join("fake-maven.jar");
+        let fake_jar_str = fake_jar.to_string_lossy().to_string();
+        write_executable(
+            &bin_dir.join("mvn"),
+            &format!("#!/bin/sh\n\necho {}\n", &fake_jar_str),
+        );
+
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+
+        let resp = handle_target_classpath(serde_json::json!({
+            "projectRoot": root.to_string_lossy().to_string(),
+        }))
+        .unwrap();
+
+        std::env::set_var("PATH", original_path);
+
+        let result: TargetClasspathResult = serde_json::from_value(resp).unwrap();
+        assert!(
+            result.classpath.iter().any(|p| p == &fake_jar_str),
+            "classpath should include entry from mocked `mvn`"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn target_classpath_uses_build_manager_for_gradle() {
+        let _guard = env_lock().lock().unwrap();
+        let original_path = std::env::var("PATH").unwrap_or_default();
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Minimal Gradle markers.
+        fs::write(root.join("build.gradle"), "plugins {}").unwrap();
+
+        // Mock `gradle` executable returning a stable classpath entry.
+        let bin_dir = root.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let fake_jar = root.join("fake-gradle.jar");
+        let fake_jar_str = fake_jar.to_string_lossy().to_string();
+        write_executable(
+            &bin_dir.join("gradle"),
+            &format!("#!/bin/sh\n\necho {}\n", &fake_jar_str),
+        );
+
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+
+        let resp = handle_target_classpath(serde_json::json!({
+            "projectRoot": root.to_string_lossy().to_string(),
+        }))
+        .unwrap();
+
+        std::env::set_var("PATH", original_path);
+
+        let result: TargetClasspathResult = serde_json::from_value(resp).unwrap();
+        assert!(
+            result.classpath.iter().any(|p| p == &fake_jar_str),
+            "classpath should include entry from mocked `gradle`"
+        );
     }
 }
