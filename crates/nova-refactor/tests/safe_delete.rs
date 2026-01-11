@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use nova_index::Index;
 use nova_refactor::{
-    apply_text_edits, safe_delete, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, UsageKind,
-    WorkspaceEdit, WorkspaceTextEdit,
+    FileId, safe_delete, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, UsageKind,
+    WorkspaceEdit,
 };
 use pretty_assertions::assert_eq;
 
@@ -11,18 +11,12 @@ fn apply_workspace_edit(
     files: &BTreeMap<String, String>,
     edit: &WorkspaceEdit,
 ) -> BTreeMap<String, String> {
-    let mut out = files.clone();
-
-    for (file, edits) in edit.edits_by_file() {
-        let Some(text) = out.get(file.0.as_str()).cloned() else {
-            continue;
-        };
-        let edits: Vec<WorkspaceTextEdit> = edits.into_iter().cloned().collect();
-        let updated = apply_text_edits(&text, &edits).expect("edits apply");
-        out.insert(file.0.clone(), updated);
-    }
-
-    out
+    let input: BTreeMap<FileId, String> = files
+        .iter()
+        .map(|(file, text)| (FileId::new(file.clone()), text.clone()))
+        .collect();
+    let out = nova_refactor::apply_workspace_edit(&input, edit).expect("apply workspace edit");
+    out.into_iter().map(|(file, text)| (file.0, text)).collect()
 }
 
 #[test]
