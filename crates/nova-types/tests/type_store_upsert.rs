@@ -24,6 +24,8 @@ fn define_class_overwrites_placeholder() {
             type_params: vec![ty_param],
             super_class: None,
             interfaces: vec![],
+            fields: vec![],
+            constructors: vec![],
             methods: vec![MethodDef {
                 name: "m".to_string(),
                 type_params: vec![],
@@ -53,6 +55,8 @@ fn upsert_class_overwrites_without_changing_id() {
         type_params: vec![],
         super_class: None,
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![],
     });
 
@@ -62,6 +66,8 @@ fn upsert_class_overwrites_without_changing_id() {
         type_params: vec![],
         super_class: None,
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![MethodDef {
             name: "f".to_string(),
             type_params: vec![],
@@ -79,4 +85,3 @@ fn upsert_class_overwrites_without_changing_id() {
     assert_eq!(def.methods.len(), 1);
     assert_eq!(def.methods[0].name, "f");
 }
-

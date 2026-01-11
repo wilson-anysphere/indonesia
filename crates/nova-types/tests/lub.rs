@@ -64,6 +64,8 @@ fn inference_uses_lub_for_generic_instances() {
         type_params: vec![],
         super_class: Some(Type::class(object, vec![])),
         interfaces: vec![],
+        fields: vec![],
+        constructors: vec![],
         methods: vec![MethodDef {
             name: "pick".to_string(),
             type_params: vec![t],
