@@ -765,6 +765,8 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     }
 
+    // Clear workspace/workspaceFolder overrides so the selected user setting takes effect.
+    await clearSettingAtAllTargets('server.path');
     await setServerPath(serverPath);
     missingServerPrompted = false;
     await ensureLanguageClientRunning(serverPath);

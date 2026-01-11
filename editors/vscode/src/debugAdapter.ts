@@ -112,8 +112,8 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
         throw new Error('cancelled');
       }
       if (choice === 'Clear and Install') {
-        await clearSettingAtAllTargets(config, 'dap.path');
-        await clearSettingAtAllTargets(config, 'debug.adapterPath');
+        await clearSettingAtAllTargets('dap.path');
+        await clearSettingAtAllTargets('debug.adapterPath');
       }
     }
 
@@ -134,9 +134,12 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
     }
 
     const cfg = vscode.workspace.getConfiguration('nova');
-    await cfg.update('dap.path', picked[0].fsPath, vscode.ConfigurationTarget.Global);
+    const pickedPath = picked[0].fsPath;
+    // Clear higher-precedence workspace/workspaceFolder overrides so the selected user setting takes effect.
+    await clearSettingAtAllTargets('dap.path');
     // Clear deprecated alias to avoid confusing precedence rules.
-    await cfg.update('debug.adapterPath', undefined, vscode.ConfigurationTarget.Global);
+    await clearSettingAtAllTargets('debug.adapterPath');
+    await cfg.update('dap.path', pickedPath, vscode.ConfigurationTarget.Global);
   }
 
   async showDebugAdapterVersion(workspaceFolder: vscode.WorkspaceFolder | undefined): Promise<void> {
@@ -526,20 +529,25 @@ class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
 
 class UserFacingError extends Error {}
 
-async function clearSettingAtAllTargets(config: vscode.WorkspaceConfiguration, key: string): Promise<void> {
+async function clearSettingAtAllTargets(key: string): Promise<void> {
+  const config = vscode.workspace.getConfiguration('nova');
   const inspected = config.inspect(key);
-  if (!inspected) {
+  if (inspected) {
+    if (typeof inspected.workspaceValue !== 'undefined') {
+      await config.update(key, undefined, vscode.ConfigurationTarget.Workspace);
+    }
+    if (typeof inspected.globalValue !== 'undefined') {
+      await config.update(key, undefined, vscode.ConfigurationTarget.Global);
+    }
+  } else {
     await config.update(key, undefined, vscode.ConfigurationTarget.Global);
-    return;
   }
 
-  if (typeof inspected.workspaceFolderValue !== 'undefined') {
-    await config.update(key, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
-  }
-  if (typeof inspected.workspaceValue !== 'undefined') {
-    await config.update(key, undefined, vscode.ConfigurationTarget.Workspace);
-  }
-  if (typeof inspected.globalValue !== 'undefined') {
-    await config.update(key, undefined, vscode.ConfigurationTarget.Global);
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const folderConfig = vscode.workspace.getConfiguration('nova', folder.uri);
+    const folderInspected = folderConfig.inspect(key);
+    if (folderInspected && typeof folderInspected.workspaceFolderValue !== 'undefined') {
+      await folderConfig.update(key, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+    }
   }
 }
