@@ -7,9 +7,13 @@ Clone them with:
 ./scripts/clone-test-projects.sh
 ```
 
-Pinned revisions are recorded in `pins.toml`.
+Pinned revisions are recorded in `pins.toml` (single source of truth).
 
-Currently pinned fixtures:
-- `spring-petclinic`
-- `guava`
-- `maven-resolver`
+To clone/update only a subset of fixtures:
+
+```bash
+./scripts/clone-test-projects.sh --only guava,spring-petclinic
+
+# or:
+NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/clone-test-projects.sh
+```
