@@ -225,6 +225,12 @@ pub mod body;
 // ---------------------------------------------------------------------
 // ItemTree (persisted, per-file structural summary)
 
+/// Version of the on-disk HIR schema used by `nova-cache`.
+///
+/// Bump this whenever the serialized `ItemTree`/`SymbolSummary` format changes
+/// in an incompatible way.
+pub const HIR_SCHEMA_VERSION: u32 = 1;
+
 use nova_syntax::{ParseResult, SyntaxKind, TextRange};
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};

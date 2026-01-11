@@ -13,7 +13,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-pub const AST_ARTIFACT_SCHEMA_VERSION: u32 = 3;
+pub const AST_ARTIFACT_SCHEMA_VERSION: u32 = 4;
 
 const METADATA_LOCK_FILE_NAME: &str = "metadata.lock";
 
@@ -34,6 +34,8 @@ pub struct FileAstArtifacts {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct AstCacheMetadata {
     schema_version: u32,
+    syntax_schema_version: u32,
+    hir_schema_version: u32,
     nova_version: String,
     files: BTreeMap<String, AstCacheFileEntry>,
 }
@@ -42,6 +44,8 @@ impl AstCacheMetadata {
     fn empty() -> Self {
         Self {
             schema_version: AST_ARTIFACT_SCHEMA_VERSION,
+            syntax_schema_version: nova_syntax::SYNTAX_SCHEMA_VERSION,
+            hir_schema_version: nova_hir::HIR_SCHEMA_VERSION,
             nova_version: nova_core::NOVA_VERSION.to_string(),
             files: BTreeMap::new(),
         }
@@ -49,6 +53,8 @@ impl AstCacheMetadata {
 
     fn is_compatible(&self) -> bool {
         self.schema_version == AST_ARTIFACT_SCHEMA_VERSION
+            && self.syntax_schema_version == nova_syntax::SYNTAX_SCHEMA_VERSION
+            && self.hir_schema_version == nova_hir::HIR_SCHEMA_VERSION
             && self.nova_version == nova_core::NOVA_VERSION
     }
 }
@@ -63,6 +69,8 @@ struct AstCacheFileEntry {
 #[derive(Debug, Serialize)]
 struct PersistedAstArtifacts<'a> {
     schema_version: u32,
+    syntax_schema_version: u32,
+    hir_schema_version: u32,
     nova_version: String,
     saved_at_millis: u64,
     file_path: String,
@@ -73,6 +81,8 @@ struct PersistedAstArtifacts<'a> {
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedAstArtifactsOwned {
     schema_version: u32,
+    syntax_schema_version: u32,
+    hir_schema_version: u32,
     nova_version: String,
     saved_at_millis: u64,
     file_path: String,
@@ -142,6 +152,12 @@ impl AstArtifactCache {
         if persisted.schema_version != AST_ARTIFACT_SCHEMA_VERSION {
             return Ok(None);
         }
+        if persisted.syntax_schema_version != nova_syntax::SYNTAX_SCHEMA_VERSION {
+            return Ok(None);
+        }
+        if persisted.hir_schema_version != nova_hir::HIR_SCHEMA_VERSION {
+            return Ok(None);
+        }
         if persisted.nova_version != nova_core::NOVA_VERSION {
             return Ok(None);
         }
@@ -169,6 +185,8 @@ impl AstArtifactCache {
 
         let persisted = PersistedAstArtifacts {
             schema_version: AST_ARTIFACT_SCHEMA_VERSION,
+            syntax_schema_version: nova_syntax::SYNTAX_SCHEMA_VERSION,
+            hir_schema_version: nova_hir::HIR_SCHEMA_VERSION,
             nova_version: nova_core::NOVA_VERSION.to_string(),
             saved_at_millis: now_millis(),
             file_path: file_path.clone(),
@@ -295,6 +313,8 @@ mod tests {
         // Deterministic serialization.
         let persisted = PersistedAstArtifacts {
             schema_version: AST_ARTIFACT_SCHEMA_VERSION,
+            syntax_schema_version: nova_syntax::SYNTAX_SCHEMA_VERSION,
+            hir_schema_version: nova_hir::HIR_SCHEMA_VERSION,
             nova_version: nova_core::NOVA_VERSION.to_string(),
             saved_at_millis: 0,
             file_path: "src/Foo.java".to_string(),
@@ -311,6 +331,34 @@ mod tests {
 
         let fp2 = Fingerprint::from_bytes(b"class Foo { }");
         assert!(cache.load("src/Foo.java", &fp2).unwrap().is_none());
+    }
+
+    #[test]
+    fn syntax_schema_mismatch_is_cache_miss() {
+        let tmp = TempDir::new().unwrap();
+        let cache = AstArtifactCache::new(tmp.path());
+
+        let text = "class Foo {}";
+        let parsed = parse(text);
+        let it = item_tree(&parsed, text);
+        let artifacts = FileAstArtifacts {
+            parse: parsed,
+            item_tree: it,
+            symbol_summary: None,
+        };
+        let fp = Fingerprint::from_bytes(text.as_bytes());
+
+        cache.store("src/Foo.java", &fp, &artifacts).unwrap();
+
+        let artifact_name = artifact_file_name("src/Foo.java");
+        let artifact_path = tmp.path().join(&artifact_name);
+        let bytes = std::fs::read(&artifact_path).unwrap();
+        let mut persisted: PersistedAstArtifactsOwned = bincode_deserialize(&bytes).unwrap();
+        persisted.syntax_schema_version = nova_syntax::SYNTAX_SCHEMA_VERSION + 1;
+        let bytes = encode(&persisted).unwrap();
+        std::fs::write(artifact_path, bytes).unwrap();
+
+        assert!(cache.load("src/Foo.java", &fp).unwrap().is_none());
     }
 
     #[test]

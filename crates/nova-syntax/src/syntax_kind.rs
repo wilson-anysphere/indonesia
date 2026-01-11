@@ -1,6 +1,13 @@
 use rowan::Language;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
+/// Version of the on-disk syntax schema used by `nova-cache`.
+///
+/// Bump this whenever serialized syntax artifacts become incompatible with
+/// previously persisted data (e.g. `SyntaxKind` numeric values change, new token
+/// kinds are inserted, node kinds are renamed/reordered, etc.).
+pub const SYNTAX_SCHEMA_VERSION: u32 = 1;
+
 /// Unified syntax kind for both tokens and AST nodes.
 ///
 /// This enum is intentionally "fat": having a stable set of kinds is a

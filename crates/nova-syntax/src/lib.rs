@@ -16,7 +16,7 @@ mod util;
 pub use ast::*;
 pub use lexer::{lex, Lexer, Token};
 pub use parser::{parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
-pub use syntax_kind::{JavaLanguage, SyntaxKind};
+pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
 pub use tree_store::SyntaxTreeStore;
 
 use serde::{Deserialize, Serialize};
