@@ -647,9 +647,18 @@ pub fn completions_for_yaml_file(
     for meta in index.metadata.known_properties(&full_prefix) {
         if let Some(segment) = next_yaml_segment(&meta.name, &parent_prefix) {
             if segment.starts_with(&typed_prefix) && seen.insert(segment.clone()) {
+                let is_leaf = meta
+                    .name
+                    .strip_prefix(&parent_prefix)
+                    .is_some_and(|remainder| remainder == segment);
+                let detail = if is_leaf {
+                    property_completion_detail(meta)
+                } else {
+                    None
+                };
                 items.push(CompletionItem {
                     label: segment,
-                    detail: None,
+                    detail,
                 });
             }
         }
@@ -1116,7 +1125,8 @@ class C {
         let offset = text.len();
         let items =
             completions_for_yaml_file(Path::new("application.yml"), text, offset, &workspace);
-        assert!(items.iter().any(|i| i.label == "port"));
+        let port = items.iter().find(|i| i.label == "port").expect("port item");
+        assert_eq!(port.detail.as_deref(), Some("java.lang.Integer"));
     }
 
     #[test]
