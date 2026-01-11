@@ -118,7 +118,13 @@ impl VirtualWorkspace {
         }
 
         if !patch.edits.is_empty() {
-            let edit_ranges = apply_text_edits_into(&mut out, &patch.edits)?;
+            let edit_ranges = apply_text_edits_into(
+                &mut out,
+                &patch.edits,
+                config,
+                &mut created_files,
+                &mut deleted_files,
+            )?;
             for (file, ranges) in edit_ranges {
                 touched_ranges.entry(file).or_default().extend(ranges);
             }
@@ -367,6 +373,9 @@ fn apply_edits_to_text(
 fn apply_text_edits_into(
     workspace: &mut VirtualWorkspace,
     edits: &[TextEdit],
+    config: &PatchApplyConfig,
+    created_files: &mut BTreeSet<String>,
+    deleted_files: &mut BTreeSet<String>,
 ) -> Result<BTreeMap<String, Vec<TextRange>>, PatchApplyError> {
     let mut files: BTreeMap<String, Vec<&TextEdit>> = BTreeMap::new();
     for edit in edits {
@@ -375,11 +384,17 @@ fn apply_text_edits_into(
 
     let mut touched_ranges: BTreeMap<String, Vec<TextRange>> = BTreeMap::new();
     for (file, file_edits) in files {
-        let original = workspace
-            .files
-            .get(&file)
-            .map(String::as_str)
-            .ok_or_else(|| PatchApplyError::MissingFile { file: file.clone() })?;
+        let original = match workspace.files.get(&file) {
+            Some(text) => text.as_str(),
+            None => {
+                if !config.allow_new_files {
+                    return Err(PatchApplyError::MissingFile { file: file.clone() });
+                }
+                created_files.insert(file.clone());
+                deleted_files.remove(&file);
+                ""
+            }
+        };
         let (new_text, ranges) = apply_edits_to_text(original, file_edits)?;
         workspace.files.insert(file.clone(), new_text);
         touched_ranges.insert(file, ranges);

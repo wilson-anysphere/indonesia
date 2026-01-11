@@ -1,6 +1,6 @@
 use nova_ai::patch::parse_structured_patch;
 use nova_ai::safety::{enforce_patch_safety, PatchSafetyConfig, SafetyError};
-use nova_ai::workspace::VirtualWorkspace;
+use nova_ai::workspace::{PatchApplyConfig, VirtualWorkspace};
 
 fn has_lone_lf(text: &str) -> bool {
     let bytes = text.as_bytes();
@@ -117,7 +117,14 @@ fn json_patch_ops_create_rename_delete() {
 }"#;
 
     let patch = parse_structured_patch(patch).expect("parse json ops");
-    let applied = ws.apply_patch(&patch).expect("apply json ops");
+    let applied = ws
+        .apply_patch_with_config(
+            &patch,
+            &PatchApplyConfig {
+                allow_new_files: true,
+            },
+        )
+        .expect("apply json ops");
 
     assert!(applied.workspace.get("Foo.java").is_none());
     assert!(applied.workspace.get("New.java").is_none());
