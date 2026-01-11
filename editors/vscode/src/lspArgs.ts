@@ -17,6 +17,21 @@ export interface NovaLspArgsOptions {
   workspaceRoot?: string | null;
 }
 
+export interface NovaLspLaunchConfigOptions {
+  configPath?: string | null;
+  extraArgs?: readonly string[] | null;
+  workspaceRoot?: string | null;
+  /**
+   * Master toggle for AI features. When false, `NOVA_AI_*` environment variables
+   * are stripped before launching `nova-lsp` so server-side AI stays disabled.
+   */
+  aiEnabled?: boolean;
+  /**
+   * Base environment for the child process. Defaults to `process.env`.
+   */
+  baseEnv?: NodeJS.ProcessEnv;
+}
+
 export function resolveNovaConfigPath(
   options: Pick<NovaLspArgsOptions, 'configPath' | 'workspaceRoot'> = {},
 ): string | undefined {
@@ -38,6 +53,44 @@ export function resolveNovaConfigPath(
   }
 
   return workspaceRoot && !path.isAbsolute(candidate) ? path.join(workspaceRoot, candidate) : candidate;
+}
+
+export function buildNovaLspLaunchConfig(options: NovaLspLaunchConfigOptions = {}): { args: string[]; env: NodeJS.ProcessEnv } {
+  const resolvedConfigPath = resolveNovaConfigPath(options);
+  const args = buildNovaLspArgs({
+    configPath: resolvedConfigPath ?? null,
+    extraArgs: options.extraArgs,
+    // `configPath` is already resolved, so we no longer need `workspaceRoot` for argument construction.
+    workspaceRoot: null,
+  });
+
+  const aiEnabled = options.aiEnabled ?? true;
+  const baseEnv = options.baseEnv ?? process.env;
+
+  let env: NodeJS.ProcessEnv = baseEnv;
+  // Only allocate a copy of the environment when we need to mutate it.
+  if (resolvedConfigPath || !aiEnabled) {
+    env = { ...baseEnv };
+
+    // `nova-config` supports `NOVA_CONFIG_PATH`; set it when a config path is
+    // configured so users don't have to manually export env vars.
+    if (resolvedConfigPath) {
+      env.NOVA_CONFIG_PATH = resolvedConfigPath;
+    }
+
+    // If AI is disabled in VS Code settings, ensure we don't leak any NOVA_AI_*
+    // environment variables to the server process. This guarantees AI stays off
+    // even if the user has set global env vars in their shell.
+    if (!aiEnabled) {
+      for (const key of Object.keys(env)) {
+        if (key.startsWith('NOVA_AI_')) {
+          delete env[key];
+        }
+      }
+    }
+  }
+
+  return { args, env };
 }
 
 export function buildNovaLspArgs(options: NovaLspArgsOptions = {}): string[] {

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { buildNovaLspArgs, resolveNovaConfigPath } from '../lspArgs';
+import { buildNovaLspArgs, buildNovaLspLaunchConfig, resolveNovaConfigPath } from '../lspArgs';
 
 test('buildNovaLspArgs always includes --stdio', () => {
   assert.deepEqual(buildNovaLspArgs(), ['--stdio']);
@@ -47,4 +47,32 @@ test('resolveNovaConfigPath expands ${workspaceFolder}', () => {
     resolveNovaConfigPath({ configPath: '${workspaceFolder}/nova.toml', workspaceRoot: '/workspace' }),
     '/workspace/nova.toml',
   );
+});
+
+test('buildNovaLspLaunchConfig sets NOVA_CONFIG_PATH when configPath is provided', () => {
+  const baseEnv: NodeJS.ProcessEnv = { FOO: 'bar' };
+  const config = buildNovaLspLaunchConfig({ configPath: 'nova.toml', workspaceRoot: '/workspace', aiEnabled: true, baseEnv });
+
+  assert.deepEqual(config.args, ['--stdio', '--config', '/workspace/nova.toml']);
+  assert.equal(config.env.NOVA_CONFIG_PATH, '/workspace/nova.toml');
+  assert.equal(config.env.FOO, 'bar');
+  assert.equal(baseEnv.NOVA_CONFIG_PATH, undefined);
+});
+
+test('buildNovaLspLaunchConfig strips NOVA_AI_* env vars when aiEnabled is false', () => {
+  const baseEnv: NodeJS.ProcessEnv = { NOVA_AI_PROVIDER: 'http', NOVA_AI_MODEL: 'default', OTHER: 'x' };
+  const config = buildNovaLspLaunchConfig({ aiEnabled: false, baseEnv });
+
+  assert.equal(config.env.NOVA_AI_PROVIDER, undefined);
+  assert.equal(config.env.NOVA_AI_MODEL, undefined);
+  assert.equal(config.env.OTHER, 'x');
+  assert.equal(baseEnv.NOVA_AI_PROVIDER, 'http');
+});
+
+test('buildNovaLspLaunchConfig reuses baseEnv when no env changes are required', () => {
+  const baseEnv: NodeJS.ProcessEnv = { FOO: 'bar' };
+  const config = buildNovaLspLaunchConfig({ aiEnabled: true, baseEnv });
+
+  assert.equal(config.env, baseEnv);
+  assert.deepEqual(config.args, ['--stdio']);
 });

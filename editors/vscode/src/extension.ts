@@ -4,7 +4,7 @@ import * as path from 'path';
 import type { TextDocumentFilter as LspTextDocumentFilter } from 'vscode-languageserver-protocol';
 import { getCompletionContextId, requestMoreCompletions } from './aiCompletionMore';
 import { ServerManager, type NovaServerSettings } from './serverManager';
-import { buildNovaLspArgs, resolveNovaConfigPath } from './lspArgs';
+import { buildNovaLspLaunchConfig } from './lspArgs';
 
 let client: LanguageClient | undefined;
 let clientStart: Promise<void> | undefined;
@@ -86,37 +86,13 @@ function clearAiCompletionCache(): void {
 
 function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
   const config = vscode.workspace.getConfiguration('nova');
-  const aiEnabled = config.get<boolean>('ai.enabled', true);
   const configPath = config.get<string | null>('lsp.configPath', null);
   const extraArgs = config.get<string[]>('lsp.extraArgs', []);
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
 
-  const resolvedConfigPath = resolveNovaConfigPath({ configPath, workspaceRoot });
-  const args = buildNovaLspArgs({ configPath: resolvedConfigPath ?? null, extraArgs, workspaceRoot: null });
+  const aiEnabled = config.get<boolean>('ai.enabled', true);
 
-  let env: NodeJS.ProcessEnv = process.env;
-  // Only allocate a copy of the environment when we need to mutate it.
-  if (resolvedConfigPath || !aiEnabled) {
-    env = { ...process.env };
-    // `nova-config` already supports `NOVA_CONFIG_PATH`; set it when a config
-    // path is configured so users don't have to manually export env vars.
-    if (resolvedConfigPath) {
-      env.NOVA_CONFIG_PATH = resolvedConfigPath;
-    }
-
-    // If AI is disabled in VS Code settings, ensure we don't leak any NOVA_AI_*
-    // environment variables to the server process. This guarantees AI stays off
-    // even if the user has set global env vars in their shell.
-    if (!aiEnabled) {
-      for (const key of Object.keys(env)) {
-        if (key.startsWith('NOVA_AI_')) {
-          delete env[key];
-        }
-      }
-    }
-  }
-
-  return { args, env };
+  return buildNovaLspLaunchConfig({ configPath, extraArgs, workspaceRoot, aiEnabled, baseEnv: process.env });
 }
 
 interface BugReportResponse {

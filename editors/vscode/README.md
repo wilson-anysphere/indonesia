@@ -83,7 +83,7 @@ Tests are discovered via `nova/test/discover` and can be run from the Test Explo
 - `nova.lsp.configPath` (string | null): path to a Nova TOML config file. The extension passes this to `nova-lsp` via:
   - `--config <path>` (for future compatibility), and
   - `NOVA_CONFIG_PATH=<path>` (works with current `nova-config` behaviour).
-  Relative paths are resolved against the first workspace folder.
+  Relative paths are resolved against the first workspace folder. The extension also expands `~` and `${workspaceFolder}`.
 - `nova.lsp.extraArgs` (string[]): additional CLI arguments appended to `nova-lsp`.
 
 Changing these settings requires restarting the language server; the extension prompts you automatically.
