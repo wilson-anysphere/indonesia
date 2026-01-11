@@ -1217,6 +1217,28 @@ pub fn find_references(
         }
     }
 
+    // Spring config references from `@Value("${foo.bar}")` -> config definitions + other Java usages.
+    if db
+        .file_path(file)
+        .is_some_and(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
+        && cursor_inside_value_placeholder(text, offset)
+        && spring_value_completion_applicable(db, file, text)
+    {
+        if let Some(index) = spring_config::workspace_index(db, file) {
+            let targets = nova_framework_spring::find_references_for_value_placeholder(
+                text,
+                offset,
+                index.as_ref(),
+                include_declaration,
+            );
+            return targets
+                .iter()
+                .filter_map(|t| spring_location_to_lsp(db, t))
+                .collect();
+        }
+        return Vec::new();
+    }
+
     // Spring DI references from bean definition -> injection sites.
     if db
         .file_path(file)

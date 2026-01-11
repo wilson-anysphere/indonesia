@@ -215,6 +215,39 @@ class C {
 }
 
 #[test]
+fn spring_find_references_from_value_placeholder_to_config_key() {
+    let config_path = PathBuf::from("/workspace/src/main/resources/application.properties");
+    let java_path = PathBuf::from("/workspace/src/main/java/C.java");
+
+    let config_text = "server.port=8080\n".to_string();
+    let java_text = r#"
+import org.springframework.beans.factory.annotation.Value;
+class C {
+  @Value("${server.<|>port}")
+  String port;
+}
+"#;
+
+    let (db, java_file, pos) = fixture_multi(
+        java_path.clone(),
+        java_text,
+        vec![(config_path.clone(), config_text)],
+    );
+
+    let refs = find_references(&db, java_file, pos, true);
+    assert_eq!(refs.len(), 2, "expected 2 references; got {refs:#?}");
+    assert!(
+        refs.iter()
+            .any(|loc| loc.uri.as_str().contains("application.properties")),
+        "expected references to include config definition; got {refs:#?}"
+    );
+    assert!(
+        refs.iter().any(|loc| loc.uri.as_str().contains("C.java")),
+        "expected references to include Java usage; got {refs:#?}"
+    );
+}
+
+#[test]
 fn spring_config_diagnostics_include_duplicate_keys() {
     let config_path = PathBuf::from("/workspace/src/main/resources/application.properties");
     let mut db = InMemoryFileStore::new();

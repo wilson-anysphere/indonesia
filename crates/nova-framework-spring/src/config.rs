@@ -508,6 +508,29 @@ pub fn goto_definition_for_value_placeholder(
     index.definitions_for(&ctx.key).to_vec()
 }
 
+/// Best-effort "find references" for a config key inside `@Value("${...}")`.
+///
+/// When `include_definitions` is `true`, this returns config-file definitions
+/// (e.g. from `application.properties`) in addition to all observed Java usages.
+#[must_use]
+pub fn find_references_for_value_placeholder(
+    java_source: &str,
+    offset: usize,
+    index: &SpringWorkspaceIndex,
+    include_definitions: bool,
+) -> Vec<ConfigLocation> {
+    let Some(ctx) = placeholder_context_at(java_source, offset) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    if include_definitions {
+        out.extend(index.definitions_for(&ctx.key).iter().cloned());
+    }
+    out.extend(index.usages_for(&ctx.key).iter().cloned());
+    out
+}
+
 /// Completion inside `application.properties` (key and value positions).
 #[must_use]
 pub fn completions_for_properties_file(
