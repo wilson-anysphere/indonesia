@@ -99,8 +99,13 @@ impl Workspace {
         self.engine.subscribe()
     }
 
-    pub fn open_document(&self, path: nova_vfs::VfsPath, text: String, version: i32) {
-        self.engine.open_document(path, text, version);
+    pub fn open_document(
+        &self,
+        path: nova_vfs::VfsPath,
+        text: String,
+        version: i32,
+    ) -> nova_vfs::FileId {
+        self.engine.open_document(path, text, version)
     }
 
     pub fn close_document(&self, path: &nova_vfs::VfsPath) {
@@ -647,6 +652,13 @@ impl Workspace {
         nova_cache::atomic_write(&path, &json)
             .with_context(|| format!("failed to write {}", path.display()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl Workspace {
+    pub(crate) fn engine_for_tests(&self) -> &engine::WorkspaceEngine {
+        self.engine.as_ref()
     }
 }
 

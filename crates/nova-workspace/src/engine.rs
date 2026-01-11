@@ -1,17 +1,16 @@
-use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
 use async_channel::{Receiver, Sender};
 use nova_config::EffectiveConfig;
 use nova_core::TextEdit;
-use nova_db::InMemoryFileStore;
+use nova_db::salsa;
 use nova_ide::{DebugConfiguration, Project};
 use nova_index::{ProjectIndexes, SymbolLocation};
 use nova_scheduler::Scheduler;
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
 use nova_vfs::{
-    ContentChange, DocumentError, FileIdRegistry, FileSystem, LocalFs, OverlayFs, VfsPath,
+    ChangeEvent, ContentChange, DocumentError, FileId, FileSystem, LocalFs, Vfs, VfsPath,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,11 +40,8 @@ pub enum WorkspaceEvent {
 }
 
 pub(crate) struct WorkspaceEngine {
-    vfs: OverlayFs<LocalFs>,
-    file_ids: Mutex<FileIdRegistry>,
-    known_files: Mutex<HashSet<VfsPath>>,
-
-    db: Mutex<InMemoryFileStore>,
+    vfs: Vfs<LocalFs>,
+    query_db: salsa::Database,
     indexes: Arc<Mutex<ProjectIndexes>>,
 
     config: RwLock<EffectiveConfig>,
@@ -58,10 +54,8 @@ pub(crate) struct WorkspaceEngine {
 impl WorkspaceEngine {
     pub fn new() -> Self {
         Self {
-            vfs: OverlayFs::new(LocalFs::new()),
-            file_ids: Mutex::new(FileIdRegistry::new()),
-            known_files: Mutex::new(HashSet::new()),
-            db: Mutex::new(InMemoryFileStore::new()),
+            vfs: Vfs::new(LocalFs::new()),
+            query_db: salsa::Database::new(),
             indexes: Arc::new(Mutex::new(ProjectIndexes::default())),
             config: RwLock::new(EffectiveConfig::default()),
             scheduler: Scheduler::default(),
@@ -79,17 +73,29 @@ impl WorkspaceEngine {
         rx
     }
 
-    pub fn open_document(&self, path: VfsPath, text: String, version: i32) {
-        self.track_file(&path);
-        self.update_db_text(&path, &text);
-        self.vfs.open(path.clone(), text, version);
+    pub fn open_document(&self, path: VfsPath, text: String, version: i32) -> FileId {
+        let text_for_db = text.clone();
+        let file_id = self.vfs.open_document(path.clone(), text, version);
+        self.query_db.set_file_text(file_id, text_for_db);
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
         self.publish_diagnostics(path);
+        file_id
     }
 
     pub fn close_document(&self, path: &VfsPath) {
-        self.vfs.close(path);
+        let file_id = self.vfs.get_id(path);
+        self.vfs.close_document(path);
+
+        if let Some(file_id) = file_id {
+            let exists = self.vfs.exists(path);
+            self.query_db.set_file_exists(file_id, exists);
+            if exists {
+                if let Ok(text) = self.vfs.read_to_string(path) {
+                    self.query_db.set_file_text(file_id, text);
+                }
+            }
+        }
     }
 
     pub fn apply_changes(
@@ -98,10 +104,16 @@ impl WorkspaceEngine {
         new_version: i32,
         changes: &[ContentChange],
     ) -> Result<Vec<TextEdit>, DocumentError> {
-        let edits = self.vfs.apply_changes(path, new_version, changes)?;
+        let evt = self
+            .vfs
+            .apply_document_changes(path, new_version, changes)?;
+        let (file_id, edits) = match evt {
+            ChangeEvent::DocumentChanged { file_id, edits, .. } => (file_id, edits),
+            other => unreachable!("apply_document_changes only returns DocumentChanged ({other:?})"),
+        };
 
-        if let Some(text) = self.vfs.document_text(path) {
-            self.update_db_text(path, &text);
+        if let Ok(text) = self.vfs.read_to_string(path) {
+            self.query_db.set_file_text(file_id, text);
         }
 
         self.publish(WorkspaceEvent::FileChanged { file: path.clone() });
@@ -127,11 +139,10 @@ impl WorkspaceEngine {
         }
 
         let files: Vec<VfsPath> = self
-            .known_files
-            .lock()
-            .expect("workspace known files lock poisoned")
-            .iter()
-            .cloned()
+            .vfs
+            .all_file_ids()
+            .into_iter()
+            .filter_map(|id| self.vfs.path_for_id(id))
             .collect();
 
         self.publish(WorkspaceEvent::Status(WorkspaceStatus::IndexingStarted));
@@ -181,26 +192,6 @@ impl WorkspaceEngine {
             .as_ref()
             .map(Project::discover_debug_configurations)
             .unwrap_or_default()
-    }
-
-    fn track_file(&self, path: &VfsPath) {
-        self.known_files
-            .lock()
-            .expect("workspace known files lock poisoned")
-            .insert(path.clone());
-        self.file_ids
-            .lock()
-            .expect("workspace file id registry poisoned")
-            .file_id(path.clone());
-    }
-
-    fn update_db_text(&self, path: &VfsPath, text: &str) {
-        let Some(local) = path.as_local_path() else {
-            return;
-        };
-        let mut db = self.db.lock().expect("workspace db lock poisoned");
-        let file_id = db.file_id_for_path(local);
-        db.set_file_text(file_id, text.to_string());
     }
 
     fn publish_diagnostics(&self, file: VfsPath) {
@@ -259,5 +250,47 @@ fn index_symbols(indexes: &mut ProjectIndexes, file: &VfsPath, text: &str) {
                 column: 0,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nova_db::NovaInputs;
+
+    use super::*;
+
+    #[test]
+    fn file_id_mapping_is_stable_and_drives_salsa_inputs() {
+        let workspace = crate::Workspace::new_in_memory();
+        let path = VfsPath::uri("file:///Main.java");
+
+        let file_id = workspace.open_document(path.clone(), "class Main {}".to_string(), 1);
+
+        // Ensure VFS round-trips between FileId and VfsPath.
+        let engine = workspace.engine_for_tests();
+        assert_eq!(engine.vfs.get_id(&path), Some(file_id));
+        assert_eq!(engine.vfs.path_for_id(file_id), Some(path.clone()));
+
+        // Salsa inputs should be keyed by the *same* FileId.
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(file_id));
+            assert_eq!(snap.file_content(file_id).as_str(), "class Main {}");
+        });
+
+        workspace
+            .apply_changes(
+                &path,
+                2,
+                &[ContentChange::full("class Main { int x; }".to_string())],
+            )
+            .unwrap();
+
+        // FileId must remain stable after edits.
+        assert_eq!(engine.vfs.get_id(&path), Some(file_id));
+        assert_eq!(engine.vfs.path_for_id(file_id), Some(path.clone()));
+        engine.query_db.with_snapshot(|snap| {
+            assert!(snap.file_exists(file_id));
+            assert_eq!(snap.file_content(file_id).as_str(), "class Main { int x; }");
+        });
     }
 }
