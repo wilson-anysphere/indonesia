@@ -940,7 +940,6 @@ async fn dap_emits_thread_start_and_death_events() {
         .get("success")
         .and_then(|v| v.as_bool())
         .unwrap_or(false));
-    // Initialized event.
     let initialized = read_next(&mut reader).await;
     assert_eq!(
         initialized.get("event").and_then(|v| v.as_str()),
@@ -1005,6 +1004,73 @@ async fn dap_emits_thread_start_and_death_events() {
 
     send_request(&mut writer, 4, "disconnect", json!({})).await;
     let _disc_resp = read_response(&mut reader, 4).await;
+
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_feature_requests_are_guarded_by_jdwp_capabilities() {
+    // Mock VM reports all capabilities as `false` by default.
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let init_resp = read_response(&mut reader, 1).await;
+    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    // Initialized event.
+    let _initialized = read_next(&mut reader).await;
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+
+    // Watchpoints / data breakpoints are gated by canWatchField* capabilities.
+    send_request(&mut writer, 3, "dataBreakpointInfo", json!({})).await;
+    let watch_resp = read_response(&mut reader, 3).await;
+    assert!(!watch_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(true));
+    let watch_msg = watch_resp.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(watch_msg.contains("canWatchFieldModification"));
+
+    // Hot swap is gated by canRedefineClasses.
+    send_request(&mut writer, 4, "redefineClasses", json!({})).await;
+    let hot_swap_resp = read_response(&mut reader, 4).await;
+    assert!(
+        !hot_swap_resp
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true)
+    );
+    let hot_swap_msg = hot_swap_resp
+        .get("message")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert!(hot_swap_msg.contains("canRedefineClasses"));
+
+    // Method return values are gated by canGetMethodReturnValues.
+    send_request(&mut writer, 5, "nova/enableMethodReturnValues", json!({})).await;
+    let ret_resp = read_response(&mut reader, 5).await;
+    assert!(!ret_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(true));
+    let ret_msg = ret_resp.get("message").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(ret_msg.contains("canGetMethodReturnValues"));
+
+    send_request(&mut writer, 6, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 6).await;
 
     server_task.await.unwrap().unwrap();
 }

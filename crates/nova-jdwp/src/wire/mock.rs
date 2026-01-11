@@ -29,13 +29,27 @@ pub struct MockJdwpServer {
     state: Arc<State>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct MockJdwpServerConfig {
     /// Reply delays keyed by `(command_set, command)`.
     ///
     /// The server will still accept and respond to other commands while a delayed reply
     /// is pending.
     pub delayed_replies: Vec<DelayedReply>,
+    /// Raw `VirtualMachine.CapabilitiesNew` booleans returned by the mock VM.
+    ///
+    /// The order must match the JDWP spec. Most HotSpot VMs return 32 booleans, so the
+    /// default mirrors that for realism.
+    pub capabilities: Vec<bool>,
+}
+
+impl Default for MockJdwpServerConfig {
+    fn default() -> Self {
+        Self {
+            delayed_replies: Vec::new(),
+            capabilities: vec![false; 32],
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +62,12 @@ pub struct DelayedReply {
 impl MockJdwpServer {
     pub async fn spawn() -> std::io::Result<Self> {
         Self::spawn_with_config(MockJdwpServerConfig::default()).await
+    }
+
+    pub async fn spawn_with_capabilities(capabilities: Vec<bool>) -> std::io::Result<Self> {
+        let mut config = MockJdwpServerConfig::default();
+        config.capabilities = capabilities;
+        Self::spawn_with_config(config).await
     }
 
     pub async fn spawn_with_config(config: MockJdwpServerConfig) -> std::io::Result<Self> {
@@ -124,6 +144,7 @@ struct State {
     pinned_object_ids: tokio::sync::Mutex<BTreeSet<ObjectId>>,
     last_classes_by_signature: tokio::sync::Mutex<Option<String>>,
     delayed_replies: HashMap<(u8, u8), Duration>,
+    capabilities: Vec<bool>,
 }
 
 impl Default for State {
@@ -134,8 +155,13 @@ impl Default for State {
 
 impl State {
     fn new(config: MockJdwpServerConfig) -> Self {
+        let MockJdwpServerConfig {
+            delayed_replies: delayed_entries,
+            capabilities,
+        } = config;
+
         let mut delayed_replies = HashMap::new();
-        for entry in config.delayed_replies {
+        for entry in delayed_entries {
             delayed_replies.insert((entry.command_set, entry.command), entry.delay);
         }
 
@@ -155,6 +181,7 @@ impl State {
             pinned_object_ids: tokio::sync::Mutex::new(BTreeSet::new()),
             last_classes_by_signature: tokio::sync::Mutex::new(None),
             delayed_replies,
+            capabilities,
         }
     }
 
@@ -310,10 +337,9 @@ async fn handle_packet(
         }
         // VirtualMachine.CapabilitiesNew
         (1, 17) => {
-            // 32 capabilities is common in older JDWP; we keep it simple.
             let mut w = JdwpWriter::new();
-            for _ in 0..32 {
-                w.write_bool(false);
+            for cap in &state.capabilities {
+                w.write_bool(*cap);
             }
             (0, w.into_vec())
         }

@@ -5,6 +5,9 @@ async fn jdwp_client_can_handshake_and_fetch_values() {
     let server = MockJdwpServer::spawn().await.unwrap();
     let client = JdwpClient::connect(server.addr()).await.unwrap();
 
+    let caps = client.capabilities().await;
+    assert!(!caps.supports_redefine_classes());
+
     let threads = client.all_threads().await.unwrap();
     assert_eq!(threads.len(), 1);
 

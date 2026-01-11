@@ -31,6 +31,119 @@ impl Default for JdwpIdSizes {
     }
 }
 
+/// Typed view of `VirtualMachine.CapabilitiesNew` (command 1/17).
+///
+/// The JDWP spec defines a fixed-order list of booleans returned by the target VM.
+/// Keeping this as a struct (instead of a raw `Vec<bool>`) makes capability checks
+/// self-documenting and less error-prone.
+///
+/// Note: historically HotSpot returns 32 booleans. The Nova wire client is
+/// defensive and treats missing entries as `false` so older/partial
+/// implementations degrade gracefully.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct JdwpCapabilitiesNew {
+    pub can_watch_field_modification: bool,
+    pub can_watch_field_access: bool,
+    pub can_get_bytecodes: bool,
+    pub can_get_synthetic_attribute: bool,
+    pub can_get_owned_monitor_info: bool,
+    pub can_get_current_contended_monitor: bool,
+    pub can_get_monitor_info: bool,
+    pub can_redefine_classes: bool,
+    pub can_add_method: bool,
+    pub can_unrestrictedly_redefine_classes: bool,
+    pub can_pop_frames: bool,
+    pub can_use_instance_filters: bool,
+    pub can_get_source_debug_extension: bool,
+    pub can_request_vm_death_event: bool,
+    pub can_set_default_stratum: bool,
+    pub can_get_instance_info: bool,
+    pub can_request_monitor_events: bool,
+    pub can_get_monitor_frame_info: bool,
+    pub can_use_source_name_filters: bool,
+    pub can_get_constant_pool: bool,
+    pub can_force_early_return: bool,
+    pub can_get_owned_monitor_stack_depth_info: bool,
+    pub can_get_method_return_values: bool,
+
+    // The JDWP spec includes additional capability booleans beyond the commonly
+    // used set above. We keep them as reserved fields so we preserve the on-wire
+    // order even if Nova doesn't use them yet.
+    #[allow(dead_code)]
+    pub reserved_23: bool,
+    #[allow(dead_code)]
+    pub reserved_24: bool,
+    #[allow(dead_code)]
+    pub reserved_25: bool,
+    #[allow(dead_code)]
+    pub reserved_26: bool,
+    #[allow(dead_code)]
+    pub reserved_27: bool,
+    #[allow(dead_code)]
+    pub reserved_28: bool,
+    #[allow(dead_code)]
+    pub reserved_29: bool,
+    #[allow(dead_code)]
+    pub reserved_30: bool,
+    #[allow(dead_code)]
+    pub reserved_31: bool,
+}
+
+impl JdwpCapabilitiesNew {
+    pub fn from_vec(v: Vec<bool>) -> Self {
+        fn get(v: &[bool], idx: usize) -> bool {
+            v.get(idx).copied().unwrap_or(false)
+        }
+
+        Self {
+            can_watch_field_modification: get(&v, 0),
+            can_watch_field_access: get(&v, 1),
+            can_get_bytecodes: get(&v, 2),
+            can_get_synthetic_attribute: get(&v, 3),
+            can_get_owned_monitor_info: get(&v, 4),
+            can_get_current_contended_monitor: get(&v, 5),
+            can_get_monitor_info: get(&v, 6),
+            can_redefine_classes: get(&v, 7),
+            can_add_method: get(&v, 8),
+            can_unrestrictedly_redefine_classes: get(&v, 9),
+            can_pop_frames: get(&v, 10),
+            can_use_instance_filters: get(&v, 11),
+            can_get_source_debug_extension: get(&v, 12),
+            can_request_vm_death_event: get(&v, 13),
+            can_set_default_stratum: get(&v, 14),
+            can_get_instance_info: get(&v, 15),
+            can_request_monitor_events: get(&v, 16),
+            can_get_monitor_frame_info: get(&v, 17),
+            can_use_source_name_filters: get(&v, 18),
+            can_get_constant_pool: get(&v, 19),
+            can_force_early_return: get(&v, 20),
+            can_get_owned_monitor_stack_depth_info: get(&v, 21),
+            can_get_method_return_values: get(&v, 22),
+            reserved_23: get(&v, 23),
+            reserved_24: get(&v, 24),
+            reserved_25: get(&v, 25),
+            reserved_26: get(&v, 26),
+            reserved_27: get(&v, 27),
+            reserved_28: get(&v, 28),
+            reserved_29: get(&v, 29),
+            reserved_30: get(&v, 30),
+            reserved_31: get(&v, 31),
+        }
+    }
+
+    pub fn supports_redefine_classes(&self) -> bool {
+        self.can_redefine_classes || self.can_unrestrictedly_redefine_classes
+    }
+
+    pub fn supports_watchpoints(&self) -> bool {
+        self.can_watch_field_access || self.can_watch_field_modification
+    }
+
+    pub fn supports_method_return_values(&self) -> bool {
+        self.can_get_method_return_values
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Location {
     pub type_tag: u8,
@@ -186,3 +299,30 @@ pub enum JdwpError {
 }
 
 pub type Result<T> = std::result::Result<T, JdwpError>;
+
+#[cfg(test)]
+mod tests {
+    use super::JdwpCapabilitiesNew;
+
+    #[test]
+    fn capabilities_new_from_vec_maps_known_fields() {
+        let mut caps = vec![false; 32];
+        caps[0] = true; // canWatchFieldModification
+        caps[7] = true; // canRedefineClasses
+        caps[22] = true; // canGetMethodReturnValues
+        caps[31] = true; // reserved
+
+        let typed = JdwpCapabilitiesNew::from_vec(caps);
+
+        assert!(typed.can_watch_field_modification);
+        assert!(typed.supports_watchpoints());
+
+        assert!(typed.can_redefine_classes);
+        assert!(typed.supports_redefine_classes());
+
+        assert!(typed.can_get_method_return_values);
+        assert!(typed.supports_method_return_values());
+
+        assert!(typed.reserved_31);
+    }
+}

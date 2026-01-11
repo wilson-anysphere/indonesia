@@ -20,9 +20,9 @@ use super::{
         encode_command, signature_to_tag, JdwpReader, JdwpWriter, FLAG_REPLY, HANDSHAKE, HEADER_LEN,
     },
     types::{
-        ClassInfo, FieldInfo, FrameId, FrameInfo, JdwpError, JdwpEvent, JdwpIdSizes, JdwpValue,
-        LineTable, LineTableEntry, Location, MethodId, MethodInfo, ObjectId, ReferenceTypeId,
-        Result, ThreadId, VariableInfo,
+        ClassInfo, FieldInfo, FrameId, FrameInfo, JdwpCapabilitiesNew, JdwpError, JdwpEvent,
+        JdwpIdSizes, JdwpValue, LineTable, LineTableEntry, Location, MethodId, MethodInfo,
+        ObjectId, ReferenceTypeId, Result, ThreadId, VariableInfo,
     },
 };
 
@@ -57,6 +57,7 @@ struct Inner {
     pending: Mutex<HashMap<u32, oneshot::Sender<std::result::Result<Reply, JdwpError>>>>,
     next_id: AtomicU32,
     id_sizes: Mutex<JdwpIdSizes>,
+    capabilities: Mutex<JdwpCapabilitiesNew>,
     events: broadcast::Sender<JdwpEvent>,
     shutdown: CancellationToken,
     config: JdwpClientConfig,
@@ -100,6 +101,7 @@ impl JdwpClient {
             pending: Mutex::new(HashMap::with_capacity(config.pending_channel_size)),
             next_id: AtomicU32::new(1),
             id_sizes: Mutex::new(JdwpIdSizes::default()),
+            capabilities: Mutex::new(JdwpCapabilitiesNew::default()),
             events,
             shutdown: CancellationToken::new(),
             config,
@@ -110,8 +112,8 @@ impl JdwpClient {
         let client = Self { inner };
         // ID sizes are required for correct parsing of most replies/events.
         let _ = client.idsizes().await?;
-        // Capabilities are not strictly required but help feature detection.
-        let _ = client.capabilities_new().await?;
+        // Capabilities are used for feature detection (hot swap, watchpoints, etc.).
+        let _ = client.refresh_capabilities().await?;
 
         Ok(client)
     }
@@ -191,6 +193,15 @@ impl JdwpClient {
         *self.inner.id_sizes.lock().await = sizes;
     }
 
+    async fn set_capabilities(&self, caps: JdwpCapabilitiesNew) {
+        *self.inner.capabilities.lock().await = caps;
+    }
+
+    /// Returns the cached set of JDWP capabilities reported by the target VM.
+    pub async fn capabilities(&self) -> JdwpCapabilitiesNew {
+        *self.inner.capabilities.lock().await
+    }
+
     pub async fn idsizes(&self) -> Result<JdwpIdSizes> {
         let payload = self.send_command_raw(1, 7, Vec::new()).await?;
         let mut r = JdwpReader::new(&payload);
@@ -206,17 +217,15 @@ impl JdwpClient {
     }
 
     /// VirtualMachine.CapabilitiesNew (1, 17)
-    ///
-    /// Returns the raw set of capability booleans in the order defined by the JDWP spec.
-    /// The client currently uses this for feature detection but does not expose a stable
-    /// typed struct yet (this project is still early).
-    pub async fn capabilities_new(&self) -> Result<Vec<bool>> {
+    pub async fn refresh_capabilities(&self) -> Result<JdwpCapabilitiesNew> {
         let payload = self.send_command_raw(1, 17, Vec::new()).await?;
         let mut r = JdwpReader::new(&payload);
         let mut caps = Vec::with_capacity(r.remaining());
         while r.remaining() > 0 {
             caps.push(r.read_bool()?);
         }
+        let caps = JdwpCapabilitiesNew::from_vec(caps);
+        self.set_capabilities(caps).await;
         Ok(caps)
     }
 

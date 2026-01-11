@@ -1219,6 +1219,143 @@ async fn handle_request_inner(
                 Err(err) => send_response(out_tx, seq, request, false, None, Some(err.to_string())),
             }
         }
+        // Data breakpoints / watchpoints (requires JDWP canWatchField* capabilities).
+        "dataBreakpointInfo" | "setDataBreakpoints" => {
+            if cancel.is_cancelled() {
+                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                return;
+            }
+
+            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+
+            let Some(dbg) = guard.as_ref() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            let caps = dbg.capabilities().await;
+            if !caps.supports_watchpoints() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some(format!(
+                        "watchpoints are not supported by the target VM (JDWP canWatchFieldModification={}, canWatchFieldAccess={})",
+                        caps.can_watch_field_modification, caps.can_watch_field_access
+                    )),
+                );
+                return;
+            }
+
+            // The wire adapter doesn't implement watchpoint event requests yet, but we can still
+            // provide a capability-accurate error message for better UX.
+            send_response(
+                out_tx,
+                seq,
+                request,
+                false,
+                None,
+                Some("watchpoints are not implemented in the wire adapter yet".to_string()),
+            );
+        }
+        // Hot swap support (class redefinition).
+        "redefineClasses" | "hotCodeReplace" | "nova/hotSwap" => {
+            if cancel.is_cancelled() {
+                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                return;
+            }
+
+            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+
+            let Some(dbg) = guard.as_ref() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            let caps = dbg.capabilities().await;
+            if !caps.supports_redefine_classes() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some(format!(
+                        "hot swap is not supported by the target VM (JDWP canRedefineClasses={}, canUnrestrictedlyRedefineClasses={})",
+                        caps.can_redefine_classes, caps.can_unrestrictedly_redefine_classes
+                    )),
+                );
+                return;
+            }
+
+            send_response(
+                out_tx,
+                seq,
+                request,
+                false,
+                None,
+                Some("hot swap is not implemented in the wire adapter yet".to_string()),
+            );
+        }
+        // Method return values (e.g. step-out with return value).
+        "nova/enableMethodReturnValues" => {
+            if cancel.is_cancelled() {
+                send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                return;
+            }
+
+            let guard = match lock_or_cancel(cancel, debugger.as_ref()).await {
+                Some(guard) => guard,
+                None => {
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+            };
+
+            let Some(dbg) = guard.as_ref() else {
+                send_response(out_tx, seq, request, false, None, Some("not attached".to_string()));
+                return;
+            };
+
+            let caps = dbg.capabilities().await;
+            if !caps.supports_method_return_values() {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some(format!(
+                        "method return values are not supported by the target VM (JDWP canGetMethodReturnValues={})",
+                        caps.can_get_method_return_values
+                    )),
+                );
+                return;
+            }
+
+            send_response(
+                out_tx,
+                seq,
+                request,
+                false,
+                None,
+                Some("method return values are not implemented in the wire adapter yet".to_string()),
+            );
+        }
         "disconnect" => {
             let mut guard = debugger.lock().await;
             if let Some(mut dbg) = guard.take() {

@@ -239,6 +239,10 @@ impl Debugger {
         self.jdwp.subscribe_events()
     }
 
+    pub async fn capabilities(&self) -> nova_jdwp::wire::types::JdwpCapabilitiesNew {
+        self.jdwp.capabilities().await
+    }
+
     pub fn jdwp_shutdown_token(&self) -> CancellationToken {
         self.jdwp.shutdown_token()
     }
