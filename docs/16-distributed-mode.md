@@ -201,6 +201,10 @@ An authentication token is supported as a stub (a shared secret sent by the work
 initial handshake). Because the token is sent on the wire, remote TCP deployments MUST use TLS
 (`tcp+tls:`) to avoid leaking it.
 
+The token is currently a **single shared secret** for all shards (see
+`DistributedRouterConfig.auth_token`). For shard-scoped authorization, use mTLS + the router’s
+client certificate fingerprint allowlist.
+
 **Security note:** Plaintext TCP (`tcp:`) is insecure because it sends shard source code (and, when
 enabled, authentication tokens) in cleartext. By default, the router **refuses** to start with
 plaintext TCP when listening on a non-loopback address. If an authentication token is configured,
@@ -270,7 +274,7 @@ nova-worker \
   --tls-domain router.example.com \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache \
-  --auth-token-file ./shard-0.token
+  --auth-token-file ./auth.token
 ```
 
 Example (mTLS; router must be configured with a client CA bundle):
@@ -283,8 +287,7 @@ nova-worker \
   --tls-client-cert ./worker.pem \
   --tls-client-key ./worker.key \
   --shard-id 0 \
-  --cache-dir /tmp/nova-cache \
-  --auth-token-file ./shard-0.token
+  --cache-dir /tmp/nova-cache
 ```
 
 #### Debugging connection issues

@@ -96,10 +96,10 @@ nova-worker \
   - Remote (TLS, feature-gated): `tcp+tls:127.0.0.1:9000`
 - `--shard-id <id>`: numeric shard identifier (assigned by the router).
 - `--cache-dir <dir>`: directory used to persist the shard index across restarts.
-- `--auth-token-file <path>`: read a shard-scoped bearer token from a file.
+- `--auth-token-file <path>`: read a bearer auth token (shared secret) from a file.
 - `--auth-token-env <VAR>`: read the token from an environment variable (the router uses
   `NOVA_WORKER_AUTH_TOKEN` when spawning local workers).
-- `--auth-token <token>`: legacy/insecure bearer token used during the initial handshake (router must
+- `--auth-token <token>`: bearer token used during the initial handshake (router must
   be configured with the same token).
   - ⚠️ The token is sent in cleartext unless the transport is encrypted (use `tcp+tls:` for remote
     connections).
@@ -109,6 +109,10 @@ nova-worker \
   plaintext TCP.
 
 `--auth-token`, `--auth-token-file`, and `--auth-token-env` are mutually exclusive.
+
+Note: the auth token is currently a single shared secret (the same value for all shards). It does
+not provide shard-scoped authorization; for that, use mTLS + the router’s client cert fingerprint
+allowlist.
 
 ### TLS (optional)
 
@@ -128,7 +132,7 @@ nova-worker \
   --tls-domain router.example.com \
   --shard-id 0 \
   --cache-dir /tmp/nova-cache \
-  --auth-token-file ./shard-0.token
+  --auth-token-file ./auth.token
 ```
 
 TLS-related flags:
