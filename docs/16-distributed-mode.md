@@ -173,6 +173,8 @@ access controls:
     maximum safety in shared environments prefer placing the socket under a private directory (e.g.
     `$XDG_RUNTIME_DIR`, `$HOME/.cache`, or another per-user directory) rather than a shared location
     like `/tmp`.
+  - On Linux, the router also checks the Unix socket peer credentials (`SO_PEERCRED`) and rejects
+    connections from a different UID (logs: `rejecting unix socket connection from different uid`).
 - **Windows**: the named pipe is created with a DACL that restricts access to the **current user**
   (and LocalSystem) and rejects remote clients.
 

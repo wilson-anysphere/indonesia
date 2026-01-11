@@ -181,6 +181,8 @@ Common failures:
 - **Authentication failed**: if the router expects an auth token and the worker’s token (provided via
   `--auth-token`, `--auth-token-file`, or `--auth-token-env`) does not match, the router will send an
   `Error` and close the connection.
+- **Different OS user (Linux + Unix sockets)**: the router rejects Unix socket connections from a
+  different UID (it checks `SO_PEERCRED`). Run the worker as the same OS user as the router.
 - **mTLS required / shard authorization failed** (remote TLS deployments): if the router is
   configured to require a client certificate identity and/or uses a shard-scoped certificate
   allowlist, it may reject the worker with an `Error` message like:
