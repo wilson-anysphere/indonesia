@@ -1249,15 +1249,15 @@ fn make_stop_event_packet(
     w.write_location(&default_location(), id_sizes);
     if kind == 4 {
         w.write_object_id(EXCEPTION_ID, id_sizes);
-        let catch_location = if exception_request.map(|r| r.uncaught).unwrap_or(false) {
+        let catch_location = if exception_request.map(|r| r.caught).unwrap_or(false) {
+            default_location()
+        } else {
             Location {
                 type_tag: 0,
                 class_id: 0,
                 method_id: 0,
                 index: 0,
             }
-        } else {
-            default_location()
         };
         w.write_location(&catch_location, id_sizes);
     }
