@@ -938,7 +938,7 @@ impl Debugger {
             return Ok(None);
         }
         check_cancel(cancel)?;
-        let class_id =
+        let (_ref_type_tag, class_id) =
             cancellable_jdwp(cancel, self.jdwp.object_reference_reference_type(object_id)).await?;
         let sig = cancellable_jdwp(cancel, self.jdwp.reference_type_signature(class_id)).await?;
         Ok(signature_to_object_type_name(&sig))

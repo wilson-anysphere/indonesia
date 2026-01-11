@@ -500,15 +500,16 @@ impl JdwpClient {
     pub async fn object_reference_reference_type(
         &self,
         object_id: ObjectId,
-    ) -> Result<ReferenceTypeId> {
+    ) -> Result<(u8, ReferenceTypeId)> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_object_id(object_id, &sizes);
         let payload = self.send_command_raw(9, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);
         // JDWP spec: ObjectReference.ReferenceType reply starts with a `refTypeTag` byte.
-        let _ref_type_tag = r.read_u8()?;
-        r.read_reference_type_id(&sizes)
+        let ref_type_tag = r.read_u8()?;
+        let type_id = r.read_reference_type_id(&sizes)?;
+        Ok((ref_type_tag, type_id))
     }
 
     /// StringReference.Value (10, 1)

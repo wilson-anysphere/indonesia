@@ -38,10 +38,8 @@ async fn jdwp_client_can_handshake_and_fetch_values() {
         _ => panic!("expected object value"),
     };
 
-    let class_id = client
-        .object_reference_reference_type(object_id)
-        .await
-        .unwrap();
+    let (ref_type_tag, class_id) = client.object_reference_reference_type(object_id).await.unwrap();
+    assert_eq!(ref_type_tag, 1);
     let fields = client.reference_type_fields(class_id).await.unwrap();
     assert_eq!(fields.len(), 1);
 
@@ -164,4 +162,20 @@ async fn jdwp_client_object_reference_collection_controls() {
         .await
         .unwrap();
     assert!(!server.pinned_object_ids().await.contains(&object_id));
+}
+
+#[tokio::test]
+async fn jdwp_client_can_fetch_array_values() {
+    let server = MockJdwpServer::spawn().await.unwrap();
+    let client = JdwpClient::connect(server.addr()).await.unwrap();
+
+    let array_id = server.sample_int_array_id();
+    let len = client.array_reference_length(array_id).await.unwrap();
+    assert_eq!(len, 5);
+
+    let values = client.array_reference_get_values(array_id, 1, 3).await.unwrap();
+    assert_eq!(
+        values,
+        vec![JdwpValue::Int(20), JdwpValue::Int(30), JdwpValue::Int(40)]
+    );
 }

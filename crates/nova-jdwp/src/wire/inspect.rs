@@ -76,7 +76,7 @@ impl Inspector {
     }
 
     pub async fn runtime_type_name(&mut self, object_id: ObjectId) -> Result<String> {
-        let type_id = self.client().object_reference_reference_type(object_id).await?;
+        let (_ref_type_tag, type_id) = self.client().object_reference_reference_type(object_id).await?;
         let signature = self.client().reference_type_signature_cached(type_id).await?;
         Ok(signature_to_type_name(&signature))
     }
@@ -99,7 +99,7 @@ impl Inspector {
 }
 
 pub async fn preview_object(jdwp: &JdwpClient, object_id: ObjectId) -> Result<ObjectPreview> {
-    let type_id = jdwp.object_reference_reference_type(object_id).await?;
+    let (_ref_type_tag, type_id) = jdwp.object_reference_reference_type(object_id).await?;
     let signature = jdwp.reference_type_signature_cached(type_id).await?;
     let runtime_type = signature_to_type_name(&signature);
 
@@ -315,7 +315,7 @@ pub async fn object_children(
     jdwp: &JdwpClient,
     object_id: ObjectId,
 ) -> Result<Vec<(String, JdwpValue, Option<String>)>> {
-    let type_id = jdwp.object_reference_reference_type(object_id).await?;
+    let (_ref_type_tag, type_id) = jdwp.object_reference_reference_type(object_id).await?;
     let signature = jdwp.reference_type_signature_cached(type_id).await?;
 
     if signature.starts_with('[') {
@@ -492,7 +492,7 @@ async fn sort_key(jdwp: &JdwpClient, value: &JdwpValue) -> SortKey {
             }
 
             let is_string = match jdwp.object_reference_reference_type(*id).await {
-                Ok(type_id) => jdwp
+                Ok((_ref_type_tag, type_id)) => jdwp
                     .reference_type_signature_cached(type_id)
                     .await
                     .map(|sig| sig == "Ljava/lang/String;")
@@ -568,4 +568,3 @@ pub fn signature_to_type_name(signature: &str) -> String {
     }
     out
 }
-
