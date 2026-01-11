@@ -119,8 +119,12 @@ just crashed or timed out.
 Safe mode can be entered by Nova’s hardened request wrapper (`nova-lsp` custom endpoints):
 
 - **panic** in a guarded `nova/*` request handler → safe mode for **60s**
-- **watchdog timeout** (deadline exceeded) → safe mode for **30s**
-  - timeouts are enforced by `nova_scheduler::Watchdog`
+- **watchdog timeout** (deadline exceeded) → the request fails fast with an error (timeouts are
+  enforced by `nova_scheduler::Watchdog`)
+  - some endpoints may also trigger a **short safe-mode cooldown** (30s) when a timeout is treated
+    as a “this code path is unhealthy” signal
+  - in this repository snapshot, the built-in `nova/*` endpoints are configured to **not** enter
+    safe mode on timeouts (because build/test/debug integration can legitimately be slow)
 
 Separately, Nova may **degrade** behavior under memory pressure (reduced indexing, capped
 completions, etc). That is not “safe mode” (see [Metrics](#metrics)).
@@ -140,7 +144,8 @@ primarily meant to block Nova’s **custom** extension endpoints.
 
 Safe mode is **automatic and time-limited**:
 
-- wait for the cooldown to expire (30s/60s depending on the trigger), then retry the request
+- wait for the cooldown to expire (typically 60s after panics; some configurations use 30s after
+  timeouts), then retry the request
 - or restart the server process (recommended if you suspect a wedged watchdog thread)
 
 ---
@@ -182,12 +187,20 @@ Example response:
 
 ### CLI / DAP equivalents
 
-This repository’s primary bug-report surface area is the LSP request above. If you’re integrating
-Nova into a CLI or a DAP host, the same `nova-bugreport` library can be used to create bundles using
-the in-memory log buffer and crash store.
+This repository’s primary bug-report surface area is the LSP request above.
 
-> If your Nova distribution exposes additional entry points (for example a `nova bugreport`
-> subcommand, or a DAP custom request), they should produce the same bundle format described below.
+- **CLI**: the `nova` CLI does not currently expose a `bugreport` subcommand in this repository
+  snapshot.
+- **DAP**: `nova-dap` installs the same panic hook (so crashes are recorded), but it does not
+  currently expose a DAP request to emit a bug report bundle.
+
+If you’re embedding Nova into another application (CLI, editor plugin, debug adapter host), you can
+use the `nova-bugreport` library directly to create a bundle from:
+
+- the in-memory log buffer (`nova_config::global_log_buffer()`)
+- the crash store (`nova_bugreport::global_crash_store()`)
+
+Any additional entry point should produce the same bundle format described below.
 
 ### Bundle contents
 
