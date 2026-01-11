@@ -30,11 +30,15 @@
 //! ```
 
 mod cancellation;
+mod ide;
 mod inputs;
+mod semantic;
 mod stats;
 mod syntax;
 
+pub use ide::NovaIde;
 pub use inputs::NovaInputs;
+pub use semantic::NovaSemantic;
 pub use stats::{HasQueryStats, QueryStat, QueryStats};
 pub use syntax::{NovaSyntax, SyntaxTree};
 
@@ -63,7 +67,12 @@ where
 pub type Snapshot = ra_salsa::Snapshot<RootDatabase>;
 
 /// The concrete Salsa database for Nova (the ADR 0001 "RootDatabase").
-#[ra_salsa::database(inputs::NovaInputsStorage, syntax::NovaSyntaxStorage)]
+#[ra_salsa::database(
+    inputs::NovaInputsStorage,
+    syntax::NovaSyntaxStorage,
+    semantic::NovaSemanticStorage,
+    ide::NovaIdeStorage
+)]
 pub struct RootDatabase {
     storage: ra_salsa::Storage<RootDatabase>,
     stats: QueryStatsCollector,
@@ -234,9 +243,9 @@ impl Database {
 }
 
 /// Convenience trait alias that composes Nova's query groups.
-pub trait NovaDatabase: NovaInputs + NovaSyntax {}
+pub trait NovaDatabase: NovaInputs + NovaSyntax + NovaSemantic + NovaIde {}
 
-impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax {}
+impl<T> NovaDatabase for T where T: NovaInputs + NovaSyntax + NovaSemantic + NovaIde {}
 
 #[cfg(test)]
 fn assert_query_is_cancelled<T, F>(mut db: RootDatabase, run_query: F)
@@ -416,7 +425,9 @@ mod tests {
         db.set_source_root(file, SourceRootId::from_raw(0));
         db.set_file_content(file, Arc::new("class Foo {}".to_string()));
 
-        assert_query_is_cancelled(db, move |snap| snap.synthetic_semantic_work(file, 5_000_000));
+        assert_query_is_cancelled(db, move |snap| {
+            snap.synthetic_semantic_work(file, 5_000_000)
+        });
     }
 
     #[test]
@@ -432,4 +443,3 @@ mod tests {
         });
     }
 }
-

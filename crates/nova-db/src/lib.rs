@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use nova_cache::{
-    AstArtifactCache, CacheConfig, CacheDir, CacheError, FileAstArtifacts, Fingerprint,
-    normalize_rel_path,
+    normalize_rel_path, AstArtifactCache, CacheConfig, CacheDir, CacheError, FileAstArtifacts,
+    Fingerprint,
 };
 pub use nova_core::{FileId, ProjectId, SourceRootId};
 use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
@@ -343,6 +343,6 @@ mod tests {
 pub mod salsa;
 
 pub use salsa::{
-    catch_cancelled, Database as SalsaDatabase, NovaDatabase, NovaInputs, NovaSyntax, QueryStat,
-    QueryStats, RootDatabase as SalsaRootDatabase, Snapshot, SyntaxTree,
+    catch_cancelled, Database as SalsaDatabase, NovaDatabase, NovaIde, NovaInputs, NovaSemantic,
+    NovaSyntax, QueryStat, QueryStats, RootDatabase as SalsaRootDatabase, Snapshot, SyntaxTree,
 };
