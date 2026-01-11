@@ -1,6 +1,8 @@
 use std::fmt;
 
-use crate::{ClassId, ClassType, Type, TypeEnv, TypeParamDef, TypeVarId, WildcardBound};
+use crate::{
+    CallKind, ClassId, ClassType, FieldDef, Type, TypeEnv, TypeParamDef, TypeVarId, WildcardBound,
+};
 
 /// Per-invocation typing context used by overload resolution and related algorithms.
 ///
@@ -116,6 +118,18 @@ impl<'env> TyContext<'env> {
         }
 
         Type::class(*def, new_args)
+    }
+
+    /// Resolve a field access against `receiver`, applying capture conversion first.
+    pub fn resolve_field(&mut self, receiver: &Type, name: &str, call_kind: CallKind) -> Option<FieldDef> {
+        let mut receiver = receiver.clone();
+        if let Type::Named(n) = &receiver {
+            if let Some(id) = self.lookup_class(n) {
+                receiver = Type::class(id, vec![]);
+            }
+        }
+        let receiver = self.capture_conversion(&receiver);
+        crate::resolve_field(self, &receiver, name, call_kind)
     }
 }
 

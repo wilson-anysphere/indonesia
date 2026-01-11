@@ -1,6 +1,6 @@
 use nova_types::{
-    is_assignable, is_subtype, resolve_method_call, CallKind, ClassType, MethodCall,
-    MethodResolution, TyContext, Type, TypeEnv, TypeStore, WildcardBound,
+    is_assignable, is_subtype, resolve_method_call, CallKind, ClassDef, ClassKind, ClassType,
+    FieldDef, MethodCall, MethodResolution, TyContext, Type, TypeEnv, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -303,4 +303,103 @@ fn method_resolution_is_order_independent() {
 
     assert_eq!(res_a1, res_a2);
     assert_eq!(res_b1, res_b2);
+}
+
+#[test]
+fn field_resolution_applies_capture_conversion_for_extends_wildcard() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let number = env.class_id("java.lang.Number").unwrap();
+
+    let t = env.add_type_param("T", vec![Type::class(object, vec![])]);
+    let boxed = env.add_class(ClassDef {
+        name: "com.example.Box".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![t],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![FieldDef {
+            name: "value".to_string(),
+            ty: Type::TypeVar(t),
+            is_static: false,
+            is_final: false,
+        }],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let receiver = Type::class(
+        boxed,
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
+            number, vec![],
+        ))))],
+    );
+
+    let mut ctx = TyContext::new(&env);
+    let field = ctx
+        .resolve_field(&receiver, "value", CallKind::Instance)
+        .expect("field should resolve");
+
+    let Type::TypeVar(cap) = field.ty.clone() else {
+        panic!("expected captured type var, got {:?}", field.ty);
+    };
+    let cap_def = ctx.type_param(cap).unwrap();
+    assert_eq!(cap_def.upper_bounds, vec![Type::class(number, vec![])]);
+    assert_eq!(cap_def.lower_bound, None);
+
+    // Reading is safe (capture <: Number), but writing is not (Number is not necessarily <: capture).
+    assert!(is_assignable(&ctx, &field.ty, &Type::class(number, vec![])));
+    assert!(!is_assignable(&ctx, &Type::class(number, vec![]), &field.ty));
+}
+
+#[test]
+fn field_resolution_applies_capture_conversion_for_super_wildcard() {
+    let mut env = TypeStore::with_minimal_jdk();
+    let object = env.well_known().object;
+    let integer = env.well_known().integer;
+
+    let t = env.add_type_param("T", vec![Type::class(object, vec![])]);
+    let boxed = env.add_class(ClassDef {
+        name: "com.example.Box2".to_string(),
+        kind: ClassKind::Class,
+        type_params: vec![t],
+        super_class: Some(Type::class(object, vec![])),
+        interfaces: vec![],
+        fields: vec![FieldDef {
+            name: "value".to_string(),
+            ty: Type::TypeVar(t),
+            is_static: false,
+            is_final: false,
+        }],
+        constructors: vec![],
+        methods: vec![],
+    });
+
+    let receiver = Type::class(
+        boxed,
+        vec![Type::Wildcard(WildcardBound::Super(Box::new(Type::class(
+            integer, vec![],
+        ))))],
+    );
+
+    let mut ctx = TyContext::new(&env);
+    let field = ctx
+        .resolve_field(&receiver, "value", CallKind::Instance)
+        .expect("field should resolve");
+
+    let Type::TypeVar(cap) = field.ty.clone() else {
+        panic!("expected captured type var, got {:?}", field.ty);
+    };
+    let cap_def = ctx.type_param(cap).unwrap();
+    assert_eq!(cap_def.upper_bounds, vec![Type::class(object, vec![])]);
+    assert_eq!(cap_def.lower_bound, Some(Type::class(integer, vec![])));
+
+    // Reading is only safe as Object, writing Integer is safe.
+    assert!(is_assignable(&ctx, &field.ty, &Type::class(object, vec![])));
+    assert!(!is_assignable(&ctx, &field.ty, &Type::class(integer, vec![])));
+    assert!(is_assignable(
+        &ctx,
+        &Type::class(integer, vec![]),
+        &field.ty
+    ));
 }
