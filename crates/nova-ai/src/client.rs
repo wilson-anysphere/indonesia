@@ -11,8 +11,8 @@ use nova_config::{AiConfig, AiProviderKind};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::Semaphore;
+use std::time::{Duration, Instant};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 use url::Host;
 
@@ -24,6 +24,7 @@ pub struct AiClient {
     semaphore: Arc<Semaphore>,
     privacy: PrivacyFilter,
     default_max_tokens: u32,
+    request_timeout: Duration,
     audit_enabled: bool,
     provider_label: &'static str,
     model: String,
@@ -121,6 +122,7 @@ impl AiClient {
             semaphore: Arc::new(Semaphore::new(concurrency)),
             privacy: PrivacyFilter::new(&config.privacy)?,
             default_max_tokens: config.provider.max_tokens,
+            request_timeout: config.provider.timeout(),
             audit_enabled: config.enabled && config.audit_log.enabled,
             provider_label: provider_label(&config.provider.kind),
             model,
@@ -136,6 +138,17 @@ impl AiClient {
 
     pub fn is_excluded_path(&self, path: &Path) -> bool {
         self.privacy.is_excluded(path)
+    }
+
+    async fn acquire_permit(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<OwnedSemaphorePermit, AiError> {
+        tokio::select! {
+            _ = cancel.cancelled() => Err(AiError::Cancelled),
+            permit = self.semaphore.clone().acquire_owned() => permit
+                .map_err(|_| AiError::UnexpectedResponse("ai client shutting down".into())),
+        }
     }
 
     pub async fn chat(
@@ -235,12 +248,15 @@ impl AiClient {
             }
         }
 
-        let _permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
+        let timeout = self.request_timeout;
+        let operation_start = Instant::now();
+        let _permit = tokio::time::timeout(timeout, self.acquire_permit(cancel.clone()))
             .await
-            .map_err(|_| AiError::UnexpectedResponse("ai client shutting down".into()))?;
+            .map_err(|_| AiError::Timeout)??;
+        let remaining = timeout.saturating_sub(operation_start.elapsed());
+        if remaining == Duration::ZERO {
+            return Err(AiError::Timeout);
+        }
 
         let started_at = Instant::now();
         if let Some(prompt) = prompt_for_log.as_deref() {
@@ -255,38 +271,54 @@ impl AiClient {
             );
         }
 
-        match self.provider.chat(request, cancel).await {
-            Ok(completion) => {
-                if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
-                    cache.insert(key, completion.clone()).await;
+        match tokio::time::timeout(remaining, self.provider.chat(request, cancel)).await {
+            Ok(result) => match result {
+                Ok(completion) => {
+                    if let (Some(cache), Some(key)) = (&self.cache, cache_key) {
+                        cache.insert(key, completion.clone()).await;
+                    }
+                    if self.audit_enabled {
+                        audit::log_llm_response(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            &completion,
+                            started_at.elapsed(),
+                            /*retry_count=*/ 0,
+                            /*stream=*/ false,
+                            /*chunk_count=*/ None,
+                        );
+                    }
+                    Ok(completion)
                 }
-                if self.audit_enabled {
-                    audit::log_llm_response(
-                        request_id,
-                        self.provider_label,
-                        &self.model,
-                        &completion,
-                        started_at.elapsed(),
-                        /*retry_count=*/ 0,
-                        /*stream=*/ false,
-                        /*chunk_count=*/ None,
-                    );
+                Err(err) => {
+                    if self.audit_enabled {
+                        audit::log_llm_error(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            &err.to_string(),
+                            started_at.elapsed(),
+                            /*retry_count=*/ 0,
+                            /*stream=*/ false,
+                        );
+                    }
+                    Err(err)
                 }
-                Ok(completion)
-            }
-            Err(err) => {
+            },
+            Err(_) => {
                 if self.audit_enabled {
                     audit::log_llm_error(
                         request_id,
                         self.provider_label,
                         &self.model,
-                        &err.to_string(),
+                        &AiError::Timeout.to_string(),
                         started_at.elapsed(),
                         /*retry_count=*/ 0,
                         /*stream=*/ false,
                     );
                 }
-                Err(err)
+                Err(AiError::Timeout)
             }
         }
     }
@@ -312,12 +344,15 @@ impl AiClient {
             };
         }
 
-        let permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
+        let timeout = self.request_timeout;
+        let operation_start = Instant::now();
+        let permit = tokio::time::timeout(timeout, self.acquire_permit(cancel.clone()))
             .await
-            .map_err(|_| AiError::UnexpectedResponse("ai client shutting down".into()))?;
+            .map_err(|_| AiError::Timeout)??;
+        let remaining = timeout.saturating_sub(operation_start.elapsed());
+        if remaining == Duration::ZERO {
+            return Err(AiError::Timeout);
+        }
 
         let prompt_for_log = if self.audit_enabled {
             Some(audit::format_chat_prompt(&request.messages))
@@ -347,21 +382,38 @@ impl AiClient {
             );
         }
 
-        let inner = match self.provider.chat_stream(request, cancel).await {
-            Ok(stream) => stream,
-            Err(err) => {
+        let inner = match tokio::time::timeout(remaining, self.provider.chat_stream(request, cancel)).await
+        {
+            Ok(result) => match result {
+                Ok(stream) => stream,
+                Err(err) => {
+                    if self.audit_enabled {
+                        audit::log_llm_error(
+                            request_id,
+                            self.provider_label,
+                            &self.model,
+                            &err.to_string(),
+                            started_at.elapsed(),
+                            /*retry_count=*/ 0,
+                            /*stream=*/ true,
+                        );
+                    }
+                    return Err(err);
+                }
+            },
+            Err(_) => {
                 if self.audit_enabled {
                     audit::log_llm_error(
                         request_id,
                         self.provider_label,
                         &self.model,
-                        &err.to_string(),
+                        &AiError::Timeout.to_string(),
                         started_at.elapsed(),
                         /*retry_count=*/ 0,
                         /*stream=*/ true,
                     );
                 }
-                return Err(err);
+                return Err(AiError::Timeout);
             }
         };
 
@@ -419,13 +471,19 @@ impl AiClient {
     }
 
     pub async fn list_models(&self, cancel: CancellationToken) -> Result<Vec<String>, AiError> {
-        let _permit = self
-            .semaphore
-            .clone()
-            .acquire_owned()
+        let timeout = self.request_timeout;
+        let operation_start = Instant::now();
+        let _permit = tokio::time::timeout(timeout, self.acquire_permit(cancel.clone()))
             .await
-            .map_err(|_| AiError::UnexpectedResponse("ai client shutting down".into()))?;
-        self.provider.list_models(cancel).await
+            .map_err(|_| AiError::Timeout)??;
+        let remaining = timeout.saturating_sub(operation_start.elapsed());
+        if remaining == Duration::ZERO {
+            return Err(AiError::Timeout);
+        }
+
+        tokio::time::timeout(remaining, self.provider.list_models(cancel))
+            .await
+            .map_err(|_| AiError::Timeout)?
     }
 }
 
@@ -607,6 +665,7 @@ mod tests {
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
             default_max_tokens: 128,
+            request_timeout: Duration::from_secs(30),
             audit_enabled: true,
             provider_label: "dummy",
             model: "dummy-model".to_string(),
@@ -826,6 +885,7 @@ mod tests {
             semaphore: Arc::new(Semaphore::new(1)),
             privacy,
             default_max_tokens: 16,
+            request_timeout: Duration::from_secs(30),
             audit_enabled: false,
             provider_label: "dummy",
             model: "dummy-model".to_string(),

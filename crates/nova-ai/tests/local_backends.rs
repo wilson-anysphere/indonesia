@@ -7,8 +7,17 @@ use hyper::{
 use nova_ai::{AiClient, AiError, ChatMessage, ChatRequest, CodeSnippet, NovaAi};
 use nova_config::{AiConfig, AiPrivacyConfig, AiProviderConfig, AiProviderKind};
 use serde_json::Value;
-use std::{convert::Infallible, net::SocketAddr, time::Duration};
+use std::{
+    convert::Infallible,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -471,6 +480,110 @@ async fn cancellation_stops_in_flight_request() {
     assert!(matches!(result, Err(AiError::Cancelled)));
 
     cancel_task.abort();
+    handle.abort();
+}
+
+#[tokio::test]
+async fn cancellation_while_waiting_for_client_semaphore() {
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new(Notify::new());
+    let (started_tx, mut started_rx) = mpsc::channel::<()>(1);
+
+    let handler = move |req: Request<Body>| {
+        let request_count = request_count.clone();
+        let gate = gate.clone();
+        let started_tx = started_tx.clone();
+
+        async move {
+            if req.uri().path() != "/v1/chat/completions" {
+                return Response::builder()
+                    .status(StatusCode::NOT_FOUND)
+                    .body(Body::empty())
+                    .unwrap();
+            }
+
+            let _ = hyper::body::to_bytes(req.into_body())
+                .await
+                .expect("read request body");
+
+            let request_number = request_count.fetch_add(1, Ordering::SeqCst);
+            if request_number == 0 {
+                let _ = started_tx.send(()).await;
+
+                // Hold the first request open so the client's concurrency semaphore is occupied.
+                gate.notified().await;
+            }
+
+            Response::new(Body::from(
+                r#"{"choices":[{"message":{"content":"hello"}}]}"#,
+            ))
+        }
+    };
+
+    let (addr, handle) = spawn_server(handler);
+    let url = Url::parse(&format!("http://{addr}")).unwrap();
+
+    let mut config = openai_config(url);
+    config.provider.timeout_ms = 5_000;
+    config.provider.concurrency = Some(1);
+    let client = Arc::new(AiClient::from_config(&config).unwrap());
+
+    let first = {
+        let client = client.clone();
+        tokio::spawn(async move {
+            client
+                .chat(
+                    ChatRequest {
+                        messages: vec![ChatMessage::user("hi")],
+                        max_tokens: Some(5),
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+        })
+    };
+
+    started_rx.recv().await.expect("first request started");
+
+    let cancel = CancellationToken::new();
+    let second = {
+        let client = client.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            client
+                .chat(
+                    ChatRequest {
+                        messages: vec![ChatMessage::user("hi")],
+                        max_tokens: Some(5),
+                    },
+                    cancel,
+                )
+                .await
+        })
+    };
+
+    tokio::task::yield_now().await;
+    cancel.cancel();
+
+    let result = tokio::time::timeout(Duration::from_secs(1), second)
+        .await
+        .expect("cancelled request should not hang waiting for permit")
+        .expect("join task");
+    assert!(matches!(result, Err(AiError::Cancelled)));
+    assert_eq!(
+        request_count.load(Ordering::SeqCst),
+        1,
+        "cancelled request should not reach the backend"
+    );
+
+    gate.notify_one();
+
+    let first_result = tokio::time::timeout(Duration::from_secs(1), first)
+        .await
+        .expect("first request should complete once gate opens")
+        .expect("join task");
+    assert_eq!(first_result.unwrap(), "hello");
+
     handle.abort();
 }
 
