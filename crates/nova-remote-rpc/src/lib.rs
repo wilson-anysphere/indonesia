@@ -1477,6 +1477,58 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn packet_tracing_does_not_log_payload_contents() -> Result<()> {
+        let buf = Arc::new(StdMutex::new(Vec::new()));
+        let writer = BufferWriter(buf.clone());
+
+        let subscriber = tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::new("nova.remote_rpc=trace"))
+            .with_writer(writer)
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (client_stream, server_stream) = tokio::io::duplex(64 * 1024);
+
+        let secret_payload = "very-secret-payload-contents-12345".to_string();
+        let request = Request::LoadFiles {
+            revision: 1,
+            files: vec![FileText {
+                path: "a.java".into(),
+                text: secret_payload.clone(),
+            }],
+        };
+
+        let server_task = tokio::spawn(async move {
+            let mut server = Server::accept(server_stream, ServerConfig::default()).await?;
+            let req = server
+                .recv_request()
+                .await
+                .ok_or_else(|| anyhow!("missing request"))?;
+            assert!(matches!(req.request, Request::LoadFiles { .. }));
+            server.respond_ok(req.request_id, Response::Ack).await?;
+            Ok::<_, anyhow::Error>(())
+        });
+
+        let client = Client::connect(client_stream, ClientConfig::default()).await?;
+        let resp = client.call(request).await?;
+        match resp {
+            RpcResult::Ok { value } => assert!(matches!(value, Response::Ack)),
+            other => return Err(anyhow!("unexpected response: {other:?}")),
+        }
+
+        server_task.await??;
+
+        let output = String::from_utf8(buf.lock().unwrap().clone()).context("decode output")?;
+        assert!(
+            !output.contains(&secret_payload),
+            "tracing output unexpectedly contained request payload text; output was:\n{output}"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn compression_roundtrip_logs_compressed_packets() -> Result<()> {
         let buf = Arc::new(StdMutex::new(Vec::new()));
         let writer = BufferWriter(buf.clone());
