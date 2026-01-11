@@ -447,7 +447,12 @@ impl<'a> WireReader<'a> {
             self.remaining()
         );
 
-        let mut out = Vec::with_capacity(len);
+        // Avoid `Vec::with_capacity(len)` here: even with length validation, allocation failure would
+        // abort the process. `try_reserve_exact` lets us surface allocation failures as a normal
+        // decode error instead.
+        let mut out = Vec::new();
+        out.try_reserve_exact(len)
+            .map_err(|err| anyhow!("failed to reserve {len} elements for {field}: {err:?}"))?;
         for _ in 0..len {
             out.push(read(self)?);
         }
