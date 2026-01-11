@@ -35,6 +35,7 @@ thiserror = "1"
 nova-framework-spring = { path = "../nova-framework-spring" }
 nova-framework-micronaut = { path = "../nova-framework-micronaut" }
 nova-framework-jpa = { path = "../nova-framework-jpa" }
+nova-framework-dagger = { path = "../nova-framework-dagger" }
 tree-sitter = "0.20"
 tree-sitter-java = "0.20"
 

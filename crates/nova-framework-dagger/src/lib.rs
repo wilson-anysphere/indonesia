@@ -539,7 +539,7 @@ fn parse_java_file(path: &PathBuf, text: &str) -> ParsedJavaFile {
                         || has_annotation(&pending_annotations, "Binds")
                     {
                         if let Some(method) =
-                            parse_method_signature(raw_line, line_idx as u32, path)
+                            parse_method_signature_with_lookahead(&lines, line_idx, path)
                         {
                             let qualifier = extract_qualifier(&pending_annotations);
                             let scope = extract_scope(&pending_annotations);
@@ -866,6 +866,106 @@ struct ParsedMethodSig {
     name_span: Location,
 }
 
+fn parse_method_signature_with_lookahead(
+    lines: &[&str],
+    line_idx: usize,
+    path: &PathBuf,
+) -> Option<ParsedMethodSig> {
+    let raw_line = *lines.get(line_idx)?;
+    let line = raw_line.trim();
+    if !line.contains('(') {
+        return None;
+    }
+
+    // Fast path: common single-line signature.
+    if line.contains(')') {
+        return parse_method_signature(raw_line, line_idx as u32, path);
+    }
+
+    parse_method_signature_multiline(lines, line_idx, path)
+}
+
+fn parse_method_signature_multiline(
+    lines: &[&str],
+    line_idx: usize,
+    path: &PathBuf,
+) -> Option<ParsedMethodSig> {
+    let raw_line = *lines.get(line_idx)?;
+    let line = raw_line.trim();
+
+    // Ignore control flow.
+    if line.starts_with("if ") || line.starts_with("for ") || line.starts_with("while ") {
+        return None;
+    }
+
+    let before_paren = line.split('(').next()?.trim();
+    let mut tokens: Vec<&str> = before_paren.split_whitespace().collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let name = tokens.pop()?.to_string();
+    let return_type = tokens.pop()?.to_string();
+
+    let name_span = span_for_token(path, line_idx as u32, raw_line, &name)
+        .unwrap_or_else(|| fallback_span(path, line_idx as u32));
+
+    let start_paren = raw_line.find('(')?;
+    let mut params = Vec::new();
+
+    // Consume any params that appear after '(' on the opening line.
+    let mut first_segment = &raw_line[start_paren + 1..];
+    if let Some(end) = first_segment.find(')') {
+        first_segment = &first_segment[..end];
+        params.extend(parse_params_from_segment(
+            raw_line,
+            line_idx as u32,
+            path,
+            start_paren + 1,
+            first_segment,
+        )?);
+        return Some(ParsedMethodSig {
+            name,
+            return_type,
+            params,
+            name_span,
+        });
+    }
+    params.extend(parse_params_from_segment(
+        raw_line,
+        line_idx as u32,
+        path,
+        start_paren + 1,
+        first_segment,
+    )?);
+
+    // Consume subsequent lines until we find the closing ')'.
+    for next_idx in (line_idx + 1)..lines.len() {
+        let raw = lines[next_idx];
+        let mut seg = raw;
+        let mut done = false;
+        if let Some(end) = raw.find(')') {
+            seg = &raw[..end];
+            done = true;
+        }
+
+        if let Some(extra) = parse_params_from_segment(raw, next_idx as u32, path, 0, seg) {
+            params.extend(extra);
+        }
+
+        if done {
+            break;
+        }
+    }
+
+    Some(ParsedMethodSig {
+        name,
+        return_type,
+        params,
+        name_span,
+    })
+}
+
 fn parse_method_signature(
     raw_line: &str,
     line_idx: u32,
@@ -901,6 +1001,69 @@ fn parse_method_signature(
         params,
         name_span,
     })
+}
+
+fn parse_params_from_segment(
+    raw_line: &str,
+    line_idx: u32,
+    path: &PathBuf,
+    segment_start: usize,
+    segment: &str,
+) -> Option<Vec<ParsedParam>> {
+    let mut params = Vec::new();
+    let mut search_start = segment_start;
+
+    for raw_param in segment.split(',') {
+        let param = raw_param.trim();
+        if param.is_empty() {
+            continue;
+        }
+
+        // Parse leading annotations (qualifiers) and modifiers.
+        let mut qualifier: Option<String> = None;
+        let mut ty: Option<String> = None;
+        for token in param.split_whitespace() {
+            if token.starts_with('@') {
+                let ann = token.trim_start_matches('@');
+                let name = ann.split('(').next().unwrap_or(ann);
+                if name == "Named" {
+                    qualifier = Some(match ann.split_once('(') {
+                        Some((_name, rest)) => {
+                            format!("Named({})", rest.trim_end_matches(')'))
+                        }
+                        None => "Named".to_string(),
+                    });
+                }
+                continue;
+            }
+            if token == "final" {
+                continue;
+            }
+            // First non-annotation token is the type.
+            ty = Some(token.to_string());
+            break;
+        }
+        let ty = ty?;
+        let ty_normalized = ty.clone();
+
+        let col = find_token_column(raw_line, &ty, search_start)?;
+        search_start = col as usize + ty.len();
+        let span = Location::new(
+            path.clone(),
+            Range::new(
+                Position::new(line_idx, col as u32),
+                Position::new(line_idx, (col + ty.len()) as u32),
+            ),
+        );
+
+        params.push(ParsedParam {
+            ty: ty_normalized,
+            qualifier,
+            span,
+        });
+    }
+
+    Some(params)
 }
 
 fn parse_constructor_signature(

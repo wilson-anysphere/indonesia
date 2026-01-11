@@ -137,3 +137,36 @@ fn successful_resolution_produces_navigation_links() {
         "expected provider -> injection navigation link"
     );
 }
+
+#[test]
+fn multiline_provides_signature_produces_navigation_links() {
+    let files = load_fixture("navigation_multiline");
+    let analysis = analyze_java_files(&files);
+
+    assert!(
+        analysis.diagnostics.is_empty(),
+        "expected no diagnostics, got: {:#?}",
+        analysis.diagnostics
+    );
+
+    let consumer_file = files
+        .iter()
+        .find(|f| f.path.ends_with("Consumer.java"))
+        .expect("Consumer.java");
+    let module_file = files
+        .iter()
+        .find(|f| f.path.ends_with("FooModule.java"))
+        .expect("FooModule.java");
+
+    let injection_to_provider = analysis.navigation.iter().any(|link| {
+        link.kind == NavigationKind::InjectionToProvider
+            && link.from.file == consumer_file.path
+            && slice_range(&consumer_file.text, link.from.range) == "Foo"
+            && link.to.file == module_file.path
+            && slice_range(&module_file.text, link.to.range) == "provideFoo"
+    });
+    assert!(
+        injection_to_provider,
+        "expected injection -> provider navigation link for multiline @Provides signature"
+    );
+}

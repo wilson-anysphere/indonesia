@@ -320,9 +320,12 @@ pub fn file_diagnostics(db: &dyn Database, file: FileId) -> Vec<Diagnostic> {
 
         // 4) Spring DI diagnostics (missing / ambiguous beans, circular deps).
         diagnostics.extend(spring_di::diagnostics_for_file(db, file));
+
+        // 5) Dagger/Hilt binding graph diagnostics (best-effort, workspace-scoped).
+        diagnostics.extend(crate::dagger_intel::diagnostics_for_file(db, file));
     }
 
-    // 5) Micronaut framework diagnostics (DI + validation).
+    // 6) Micronaut framework diagnostics (DI + validation).
     if let Some(path) = db
         .file_path(file)
         .filter(|path| path.extension().and_then(|e| e.to_str()) == Some("java"))
@@ -845,6 +848,21 @@ pub fn goto_definition(db: &dyn Database, file: FileId, position: Position) -> O
         }
     }
 
+    // Dagger/Hilt navigation from an injection site (constructor parameter) to
+    // its resolved provider.
+    if let Some((target_path, target_span)) = crate::dagger_intel::goto_definition(db, file, offset)
+    {
+        let uri = uri_from_path(&target_path)?;
+        let target_text = db
+            .file_id(&target_path)
+            .map(|id| db.file_content(id).to_string())
+            .or_else(|| std::fs::read_to_string(&target_path).ok())?;
+        return Some(Location {
+            uri,
+            range: span_to_lsp_range(&target_text, target_span),
+        });
+    }
+
     let analysis = analyze(text);
     let token = token_at_offset(&analysis.tokens, offset)?;
     if token.kind != TokenKind::Ident {
@@ -906,6 +924,26 @@ pub fn find_references(
             );
             return out;
         }
+    }
+
+    // Dagger/Hilt "find references" from a provider to all known injection sites.
+    if let Some(targets) =
+        crate::dagger_intel::find_references(db, file, offset, include_declaration)
+    {
+        return targets
+            .into_iter()
+            .filter_map(|(path, span)| {
+                let uri = uri_from_path(&path)?;
+                let text = db
+                    .file_id(&path)
+                    .map(|id| db.file_content(id).to_string())
+                    .or_else(|| std::fs::read_to_string(&path).ok())?;
+                Some(Location {
+                    uri,
+                    range: span_to_lsp_range(&text, span),
+                })
+            })
+            .collect();
     }
 
     let analysis = analyze(text);
@@ -2093,6 +2131,61 @@ fn span_contains(span: Span, offset: usize) -> bool {
 fn span_within(inner: Span, outer: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
+
+pub(crate) fn position_to_offset(text: &str, position: Position) -> Option<usize> {
+    let mut line: u32 = 0;
+    let mut col_utf16: u32 = 0;
+    let mut offset: usize = 0;
+
+    for ch in text.chars() {
+        if line == position.line && col_utf16 == position.character {
+            return Some(offset);
+        }
+
+        offset += ch.len_utf8();
+        if ch == '\n' {
+            line += 1;
+            col_utf16 = 0;
+        } else {
+            col_utf16 += ch.len_utf16() as u32;
+        }
+    }
+
+    if line == position.line && col_utf16 == position.character {
+        Some(offset)
+    } else {
+        None
+    }
+}
+
+fn offset_to_position(text: &str, offset: usize) -> Position {
+    let mut line: u32 = 0;
+    let mut col_utf16: u32 = 0;
+    let mut cur: usize = 0;
+
+    for ch in text.chars() {
+        if cur >= offset {
+            break;
+        }
+        cur += ch.len_utf8();
+        if ch == '\n' {
+            line += 1;
+            col_utf16 = 0;
+        } else {
+            col_utf16 += ch.len_utf16() as u32;
+        }
+    }
+
+    Position::new(line, col_utf16)
+}
+
+fn span_to_lsp_range(text: &str, span: Span) -> Range {
+    Range::new(
+        offset_to_position(text, span.start),
+        offset_to_position(text, span.end),
+    )
+}
+
 fn identifier_prefix(text: &str, offset: usize) -> (usize, String) {
     let bytes = text.as_bytes();
     let mut start = offset;
