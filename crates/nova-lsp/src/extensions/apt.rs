@@ -197,18 +197,31 @@ fn resolve_target(
         BuildSystem::Maven => params
             .module
             .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty() && *m != ".")
             .map(|m| AptRunTarget::MavenModule(PathBuf::from(m)))
             .unwrap_or(AptRunTarget::Workspace),
         BuildSystem::Gradle => params
             .project_path
             .as_deref()
             .or(params.module.as_deref())
-            .map(|p| AptRunTarget::GradleProject(p.to_string()))
+            .map(str::trim)
+            .filter(|p| !p.is_empty() && *p != ":")
+            .map(|p| {
+                let path = if p.starts_with(':') {
+                    p.to_string()
+                } else {
+                    format!(":{p}")
+                };
+                AptRunTarget::GradleProject(path)
+            })
             .unwrap_or(AptRunTarget::Workspace),
         BuildSystem::Bazel => params
             .target
             .as_deref()
             .or(params.module.as_deref())
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
             .map(|t| AptRunTarget::BazelTarget(t.to_string()))
             .unwrap_or(AptRunTarget::Workspace),
         BuildSystem::Simple => AptRunTarget::Workspace,
@@ -487,6 +500,68 @@ mod tests {
         assert_eq!(
             selected_module_root(&project, &params),
             Some(PathBuf::from("/workspace/lib/core"))
+        );
+    }
+
+    #[test]
+    fn resolve_target_normalizes_maven_root_module() {
+        let project = nova_project::ProjectConfig {
+            workspace_root: PathBuf::from("/workspace"),
+            build_system: nova_project::BuildSystem::Maven,
+            java: nova_project::JavaConfig::default(),
+            modules: Vec::new(),
+            jpms_modules: Vec::new(),
+            jpms_workspace: None,
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+            workspace_model: None,
+        };
+
+        let apt = AptManager::new(project, NovaConfig::default());
+        let params = NovaRunAnnotationProcessingParams {
+            project_root: "/workspace".into(),
+            module: Some(".".into()),
+            project_path: None,
+            target: None,
+        };
+
+        assert_eq!(
+            resolve_target(&apt, &params).unwrap(),
+            AptRunTarget::Workspace
+        );
+    }
+
+    #[test]
+    fn resolve_target_normalizes_gradle_root_project() {
+        let project = nova_project::ProjectConfig {
+            workspace_root: PathBuf::from("/workspace"),
+            build_system: nova_project::BuildSystem::Gradle,
+            java: nova_project::JavaConfig::default(),
+            modules: Vec::new(),
+            jpms_modules: Vec::new(),
+            jpms_workspace: None,
+            source_roots: Vec::new(),
+            module_path: Vec::new(),
+            classpath: Vec::new(),
+            output_dirs: Vec::new(),
+            dependencies: Vec::new(),
+            workspace_model: None,
+        };
+
+        let apt = AptManager::new(project, NovaConfig::default());
+        let params = NovaRunAnnotationProcessingParams {
+            project_root: "/workspace".into(),
+            module: None,
+            project_path: Some(":".into()),
+            target: None,
+        };
+
+        assert_eq!(
+            resolve_target(&apt, &params).unwrap(),
+            AptRunTarget::Workspace
         );
     }
 
