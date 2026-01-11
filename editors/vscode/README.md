@@ -66,6 +66,11 @@ npm run compile
   - The server also supports the standard LSP `source.organizeImports` code action; see
     `docs/protocol-extensions.md` for details.
 
+- **Safe Delete (code action)**
+  - Nova exposes a refactor code action `Safe delete …` for Java methods.
+  - When the delete is unsafe (usages exist), the extension shows a confirmation prompt derived
+    from the server-provided preview report before applying the deletion.
+
 - **Nova: Generate Bug Report** (`nova.bugReport`)
   - Prompts for optional reproduction notes (multi-line) and an optional max number of log lines.
   - Generates a diagnostic bundle via `nova/bugReport`.
