@@ -167,6 +167,7 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   let installTask: Promise<{ path: string; version: string }> | undefined;
+  let currentServerCommand: string | undefined;
 
   async function stopLanguageClient(): Promise<void> {
     if (!client) {
@@ -179,10 +180,12 @@ export async function activate(context: vscode.ExtensionContext) {
     } finally {
       client = undefined;
       clientStart = undefined;
+      currentServerCommand = undefined;
     }
   }
 
   async function startLanguageClient(serverCommand: string): Promise<void> {
+    currentServerCommand = serverCommand;
     const serverOptions: ServerOptions = { command: serverCommand, args: ['--stdio'] };
     client = new LanguageClient('nova', 'Nova Java Language Server', serverOptions, clientOptions);
     // vscode-languageclient v9+ starts asynchronously.
@@ -301,6 +304,9 @@ export async function activate(context: vscode.ExtensionContext) {
     const settings = readServerSettings();
     const resolved = await serverManager.resolveServerPath({ path: settings.path });
     if (resolved) {
+      if (client && currentServerCommand === resolved) {
+        return;
+      }
       await stopLanguageClient();
       await startLanguageClient(resolved);
       return;
@@ -505,6 +511,18 @@ export async function activate(context: vscode.ExtensionContext) {
           serverOutput.appendLine(`Failed to restart nova-lsp: ${message}`);
         });
       }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidOpenTextDocument((doc) => {
+      if (doc.languageId !== 'java') {
+        return;
+      }
+      void ensureLanguageClientStarted({ promptForInstall: true }).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        serverOutput.appendLine(`Failed to initialize nova-lsp: ${message}`);
+      });
     }),
   );
 
