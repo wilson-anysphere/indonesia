@@ -165,6 +165,16 @@ impl IndexManager {
 
 ### Query Cache
 
+Nova currently uses a **two-tier in-memory query cache** (`nova-db::QueryCache`) with
+best-effort on-disk persistence for warm starts:
+  - Hot tier: LRU
+  - Warm tier: clock/second-chance
+  - Optional disk tier: `nova-cache::QueryDiskCache` (versioned, best-effort)
+
+For *semantic* query-result persistence keyed by query name + arguments + input
+fingerprints, Nova uses `nova-cache::DerivedArtifactCache` (see
+`nova-db::PersistentQueryCache`).
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                    QUERY CACHE STRATEGY                          │
@@ -184,10 +194,10 @@ impl IndexManager {
 │  • Eviction: frequency-based                                    │
 │  • Lookup: O(1) hash table                                      │
 │                                                                  │
-│  L3: COLD CACHE (memory-mapped)                                 │
-│  • Persistent across restarts                                   │
-│  • Size: project-dependent                                      │
-│  • Lookup: O(log n) B-tree                                      │
+│  L3: COLD CACHE (best-effort on disk)                           │
+│  • Persistent across restarts (optional)                        │
+│  • Version-gated: schema + Nova version                         │
+│  • Corruption/mismatch ⇒ cache miss (never correctness)         │
 │                                                                  │
 │  INVALIDATION                                                   │
 │  • Fine-grained: only affected queries                          │
@@ -201,54 +211,44 @@ impl IndexManager {
 
 ```rust
 pub struct QueryCache {
-    /// Hot cache for recently accessed
-    hot: LruCache<QueryKey, CachedValue>,
-    
-    /// Warm cache for current working set
-    warm: HashMap<QueryKey, CachedValue>,
-    
-    /// Memory-mapped persistent cache
-    cold: MmapCache,
-    
-    /// Dependency tracking
-    deps: DependencyGraph,
+    /// Hot cache for recently accessed entries.
+    hot: LruTier,
+
+    /// Warm cache for the current working set.
+    warm: ClockTier,
+
+    /// Optional best-effort disk cache for warm starts.
+    disk: Option<QueryDiskCache>,
 }
 
 impl QueryCache {
-    pub fn get(&self, key: &QueryKey) -> Option<&CachedValue> {
-        // Check L1
+    pub fn get(&self, key: &str) -> Option<Arc<Vec<u8>>> {
+        // Check hot tier (L1).
         if let Some(value) = self.hot.get(key) {
             return Some(value);
         }
-        
-        // Check L2
+
+        // Check warm tier (L2) and promote.
         if let Some(value) = self.warm.get(key) {
-            // Promote to L1
-            self.hot.put(key.clone(), value.clone());
+            self.hot.insert(key.to_string(), value.clone());
             return Some(value);
         }
-        
-        // Check L3
-        if let Some(value) = self.cold.get(key) {
-            // Promote to L2 and L1
-            self.warm.insert(key.clone(), value.clone());
-            self.hot.put(key.clone(), value.clone());
-            return Some(value);
+
+        // Optional best-effort disk tier (L3) and promote.
+        if let Some(disk) = &self.disk {
+            if let Ok(Some(bytes)) = disk.load(key) {
+                let value = Arc::new(bytes);
+                self.warm.insert(key.to_string(), value.clone());
+                self.hot.insert(key.to_string(), value.clone());
+                return Some(value);
+            }
         }
-        
+
         None
     }
-    
-    pub fn invalidate(&mut self, key: &QueryKey) {
-        // Remove from all levels
-        self.hot.pop(key);
-        self.warm.remove(key);
-        self.cold.remove(key);
-        
-        // Invalidate dependents
-        for dependent in self.deps.dependents(key) {
-            self.invalidate(&dependent);
-        }
+
+    pub fn insert(&self, key: String, value: Arc<Vec<u8>>) {
+        self.hot.insert(key, value);
     }
 }
 ```
