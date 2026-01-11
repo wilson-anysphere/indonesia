@@ -267,9 +267,20 @@ Same as `nova/buildProject` (`NovaProjectParams`).
 
 ```json
 {
-  "classpath": ["/path/to/dependency.jar", "/path/to/target/classes"]
+  "classpath": ["/path/to/dependency.jar", "/path/to/target/classes"],
+  "modulePath": [],
+  "sourceRoots": ["src/main/java"],
+  "generatedSourceRoots": [],
+  "languageLevel": { "major": 17, "preview": false },
+  "outputDirs": { "main": ["/path/to/target/classes"], "test": ["/path/to/target/test-classes"] }
 }
 ```
+
+Notes:
+
+- The response is **backwards compatible** with early clients that only expect `classpath`.
+- New fields are always present; when Nova cannot determine a value, it falls back to an empty
+  list / default language level.
 
 ---
 
@@ -452,10 +463,22 @@ their own internal module/target graph without having to re-implement Maven/Grad
 #### Request params
 
 ```json
-{ "projectRoot": "/absolute/path/to/workspace" }
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "module": null,
+  "projectPath": null,
+  "target": null
+}
 ```
 
 `projectRoot` also accepts the legacy alias `root`.
+
+Notes:
+
+- `module` (Maven): module path relative to `projectRoot` (e.g. `"."`, `"module-a"`).
+- `projectPath` (Gradle): Gradle project path (e.g. `":"`, `":app"`).
+- `target` (Bazel): Bazel label (e.g. `"//app:lib"`). Currently accepted for symmetry but does not
+  change behavior for Bazel workspaces (Nova reports generated roots at the workspace/module level).
 
 #### Response
 
@@ -493,10 +516,22 @@ Same as `nova/java/generatedSources`.
 ```json
 {
   "progress": ["Running annotation processing", "Invoking build tool", "Build finished", "done"],
+  "progressEvents": [
+    { "kind": "begin", "message": "Running annotation processing" },
+    { "kind": "report", "message": "Invoking build tool" },
+    { "kind": "report", "message": "Build finished" },
+    { "kind": "end", "message": "done" }
+  ],
   "diagnostics": [],
+  "moduleDiagnostics": [],
   "generatedSources": { "enabled": true, "modules": [] }
 }
 ```
+
+Notes:
+
+- `progressEvents` and `moduleDiagnostics` are newer structured fields. They are always present but
+  may be empty when the underlying build tool does not provide sufficient metadata.
 
 ---
 
