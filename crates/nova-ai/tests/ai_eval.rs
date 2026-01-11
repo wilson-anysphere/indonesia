@@ -3,7 +3,8 @@ use std::collections::HashSet;
 use nova_ai::context::{ContextBuilder, ContextRequest, RelatedSymbol};
 use nova_ai::{
     filter_duplicates_against_insert_text_set, parse_structured_patch,
-    safety::enforce_patch_safety, validate_multi_token_completion, AdditionalEdit, AiClient,
+    safety::{enforce_no_new_imports, enforce_patch_safety}, validate_multi_token_completion,
+    AdditionalEdit, AiClient,
     MultiTokenCompletion, MultiTokenCompletionContext, MultiTokenInsertTextFormat,
     PatchSafetyConfig, PrivacyMode, SafetyError, VirtualWorkspace,
 };
@@ -139,7 +140,7 @@ public class Main {
     let patch = parse_structured_patch(raw_patch).expect("parse patch");
 
     let safety_cfg = PatchSafetyConfig::default();
-    enforce_patch_safety(&patch, &safety_cfg).expect("patch safety");
+    enforce_patch_safety(&patch, &ws, &safety_cfg).expect("patch safety");
 
     let applied = ws.apply_patch(&patch).expect("apply patch");
     let after = applied.workspace.get("src/Main.java").expect("file exists");
@@ -167,7 +168,7 @@ fn patch_pipeline_parses_and_applies_unified_diff() {
 "#;
 
     let patch = parse_structured_patch(raw_patch).expect("parse patch");
-    enforce_patch_safety(&patch, &PatchSafetyConfig::default()).expect("patch safety");
+    enforce_patch_safety(&patch, &ws, &PatchSafetyConfig::default()).expect("patch safety");
 
     let applied = ws.apply_patch(&patch).expect("apply patch");
     let after = applied.workspace.get("src/Main.java").expect("file exists");
@@ -176,6 +177,10 @@ fn patch_pipeline_parses_and_applies_unified_diff() {
 
 #[test]
 fn patch_safety_rejects_new_imports_when_configured() {
+    let ws = VirtualWorkspace::new([(
+        "src/Main.java".to_string(),
+        "package com.example;\n\npublic class Main {}\n".to_string(),
+    )]);
     let raw_patch = r#"
 {
   "edits": [
@@ -192,12 +197,16 @@ fn patch_safety_rejects_new_imports_when_configured() {
     let mut cfg = PatchSafetyConfig::default();
     cfg.no_new_imports = true;
 
-    let err = enforce_patch_safety(&patch, &cfg).expect_err("should reject import insertion");
+    enforce_patch_safety(&patch, &ws, &cfg).expect("patch safety");
+    let applied = ws.apply_patch(&patch).expect("apply patch");
+    let err = enforce_no_new_imports(&ws, &applied.workspace, &applied)
+        .expect_err("should reject import insertion");
     assert!(matches!(err, SafetyError::NewImports { .. }));
 }
 
 #[test]
 fn patch_safety_enforces_file_and_size_limits() {
+    let ws = VirtualWorkspace::default();
     let raw_patch = r#"
 {
   "edits": [
@@ -218,13 +227,13 @@ fn patch_safety_enforces_file_and_size_limits() {
 
     let mut cfg = PatchSafetyConfig::default();
     cfg.max_files = 1;
-    let err = enforce_patch_safety(&patch, &cfg).expect_err("should reject too many files");
+    let err = enforce_patch_safety(&patch, &ws, &cfg).expect_err("should reject too many files");
     assert!(matches!(err, SafetyError::TooManyFiles { .. }));
 
     let mut cfg = PatchSafetyConfig::default();
     cfg.max_total_inserted_chars = 4;
     let err =
-        enforce_patch_safety(&patch, &cfg).expect_err("should reject patch that inserts too much");
+        enforce_patch_safety(&patch, &ws, &cfg).expect_err("should reject patch that inserts too much");
     assert!(matches!(err, SafetyError::TooManyInsertedChars { .. }));
 }
 

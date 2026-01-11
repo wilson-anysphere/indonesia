@@ -49,7 +49,21 @@ fn main() -> std::io::Result<()> {
     // Install panic hook + structured logging early. The stdio transport does
     // not currently emit `window/showMessage` notifications on panic, but
     // `nova/bugReport` can be used to generate a diagnostic bundle.
-    let config = nova_config::NovaConfig::default();
+    let mut config = nova_config::NovaConfig::default();
+    // When the legacy env-var based AI wiring is enabled (NOVA_AI_PROVIDER=...),
+    // users can opt into prompt/response audit logging via NOVA_AI_AUDIT_LOGGING.
+    //
+    // Best-effort: also enable the dedicated file-backed audit log channel so
+    // these privacy-sensitive events are kept out of the normal in-memory log
+    // buffer (and therefore out of bug report bundles).
+    let audit_logging = matches!(
+        std::env::var("NOVA_AI_AUDIT_LOGGING").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
+    if audit_logging {
+        config.ai.enabled = true;
+        config.ai.audit_log.enabled = true;
+    }
     nova_lsp::hardening::init(&config, Arc::new(|message| eprintln!("{message}")));
 
     // Accept `--stdio` for compatibility with editor templates. For now we only

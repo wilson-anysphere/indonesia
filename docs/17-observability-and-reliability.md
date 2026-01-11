@@ -62,6 +62,10 @@ Practical implications:
   require an embedding application (editor plugin/host) to construct a `NovaConfig` and call the
   appropriate init hook (for example `nova_lsp::hardening::init(&config, ...)`).
 
+> Note: `nova-lsp` also has a legacy environment-variable based AI mode (`NOVA_AI_PROVIDER=...`).
+> When `NOVA_AI_AUDIT_LOGGING` is enabled in that mode, `nova-lsp` will best-effort enable the
+> dedicated AI audit log file channel so prompts/results are not captured in the normal log buffer.
+
 ### Environment variables
 
 Nova uses `tracing_subscriber::EnvFilter`, so the standard `RUST_LOG` environment variable can be
@@ -162,6 +166,10 @@ When enabled, Nova emits **prompts and model responses** as `INFO` tracing event
   `ai.audit_log.enabled = true`), these events go to the audit log file.
 - Otherwise (for example, `nova-lsp` started with defaults), the events are captured by the normal
   in-memory log buffer and may appear in bug report bundles (`logs.txt`).
+
+In `nova-lsp`’s env-var based AI mode, enabling `NOVA_AI_AUDIT_LOGGING` will also best-effort enable
+the file-backed audit log channel, so the above “otherwise” case should be rare (only if the audit
+file cannot be opened).
 
 Audit events are sanitized to redact common credential patterns, but may still contain code/context.
 Enable only when you explicitly want this level of visibility and can safely handle the resulting
