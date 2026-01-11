@@ -4,11 +4,25 @@ use serde::{Deserialize, Serialize};
 ///
 /// These are intentionally conservative: they cap both the maximum frame size and the maximum
 /// size/count of nested collections so a small input cannot trigger an outsized allocation.
+///
+/// NOTE: these limits are enforced in both the legacy lockstep codec (`legacy_v2`) and the v3 CBOR
+/// decoder (via a non-allocating CBOR preflight validator).
+/// Maximum size of a single RPC payload (not including the outer 4-byte length prefix).
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+
+/// Maximum number of files allowed in a single `LoadFiles`/`IndexShard` request.
 pub const MAX_FILES_PER_MESSAGE: usize = 100_000;
+
+/// Maximum number of items allowed in a `SearchSymbolsResult` response (legacy lockstep protocol).
 pub const MAX_SEARCH_RESULTS_PER_MESSAGE: usize = 10_000;
+
+/// Maximum number of symbols allowed in a single `ShardIndex` message (v3 protocol).
 pub const MAX_SYMBOLS_PER_SHARD_INDEX: usize = 1_000_000;
+
+/// Maximum UTF-8 byte length of an individual file's contents (`FileText::text`).
 pub const MAX_FILE_TEXT_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
+
+/// Maximum UTF-8 byte length for small identifier strings (paths, names, tokens, etc).
 pub const MAX_SMALL_STRING_BYTES: usize = 16 * 1024; // 16 KiB
 
 pub type Revision = u64;

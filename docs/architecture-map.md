@@ -362,7 +362,7 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 ### `nova-remote-proto`
 - **Purpose:** on-the-wire message types for distributed mode (router ↔ worker RPC).
 - **Key entry points:**
-  - `crates/nova-remote-proto/src/lib.rs` — legacy bincode protocol (`RpcMessage`, `PROTOCOL_VERSION`)
+  - `crates/nova-remote-proto/src/lib.rs` — legacy lockstep protocol (length-delimited binary encoding; `RpcMessage`, `PROTOCOL_VERSION`)
   - `crates/nova-remote-proto/src/v3.rs` — v3 CBOR envelope (`WireFrame`, `RpcPayload`)
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**

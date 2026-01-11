@@ -64,9 +64,9 @@ The ADRs are normative; these pointers are only meant to make it easy to find th
   - `crates/nova-router/src/tls.rs` and `crates/nova-worker/src/tls.rs` — TLS helpers (feature-gated today)
   - `crates/nova-router/src/lib.rs` and `crates/nova-worker/src/main.rs` — router/worker connection setup + auth token plumbing (MVP)
 - **ADR 0009 (remote RPC protocol)**:
-  - `crates/nova-router/src/lib.rs` and `crates/nova-worker/src/main.rs` — router/worker transport (legacy bincode protocol today; will be migrated to v3)
-  - `crates/nova-remote-proto/src/lib.rs` — RPC message model + codec (legacy bincode protocol today; v3 CBOR codec/types exist in `crates/nova-remote-proto/src/v3.rs`)
-  - `crates/nova-remote-rpc/` — v3 negotiated transport (handshake, framing, optional compression) intended to supersede the legacy bincode transport
+  - `crates/nova-router/src/lib.rs` and `crates/nova-worker/src/main.rs` — router/worker transport (legacy lockstep protocol today; will be migrated to v3)
+  - `crates/nova-remote-proto/src/lib.rs` — RPC message model + codec (legacy lockstep protocol today; v3 CBOR codec/types exist in `crates/nova-remote-proto/src/v3.rs`)
+  - `crates/nova-remote-rpc/` — v3 negotiated transport (handshake, framing, optional compression) intended to supersede the legacy lockstep transport
 - **ADR 0010 (extension system)**:
   - `crates/nova-ext/` — extension traits, registry, WASM ABI scaffolding
   - `crates/nova-ide/src/extensions.rs` — IDE integration and aggregation

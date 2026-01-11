@@ -9,7 +9,8 @@ It is intended to be implementable without reading Nova’s source code. Where w
 **SHOULD**, and **MAY** are used, they are normative (RFC 2119 style).
 
 > **Implementation status (important):** At the time of writing, `nova-router` and `nova-worker`
-> still speak the legacy **bincode** protocol (`nova_remote_proto::legacy_v2`, lockstep request/response).
+> still speak the legacy lockstep protocol (`nova_remote_proto::legacy_v2`, length-delimited binary
+> encoding, lockstep request/response).
 > The **v3 CBOR envelope** is implemented in `nova_remote_proto::v3` (codec + types) but is not yet
 > wired into the router/worker transport. This document matches the current
 > `nova_remote_proto::v3` wire types and is the target on-the-wire format for the v3 rollout.
@@ -629,13 +630,14 @@ as a CBOR byte string. The compressed bytes are **not** CBOR.
 
 ---
 
-## 8. Backward compatibility with the legacy bincode protocol (`legacy_v2`)
+## 8. Backward compatibility with the legacy lockstep protocol (`legacy_v2`)
 
-Protocol v3 is **not wire-compatible** with the legacy bincode protocol currently used by
+Protocol v3 is **not wire-compatible** with the legacy lockstep protocol currently used by
 `nova-router`/`nova-worker` (`nova_remote_proto::legacy_v2`, re-exported as
 `nova_remote_proto::PROTOCOL_VERSION`).
 
-- Legacy (bincode): length-prefixed stream of `bincode`-encoded `RpcMessage` enums (lockstep request/response).
+- Legacy (lockstep): length-prefixed stream of `legacy_v2::RpcMessage` enums encoded via a
+  fixed-width, length-checked binary codec (lockstep request/response).
 - v3 (this document): length-prefixed stream of CBOR `WireFrame` envelopes, with negotiation + multiplexing.
 
 The planned rollout is a coordinated upgrade of router and worker. If mixed-version support is

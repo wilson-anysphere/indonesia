@@ -145,7 +145,7 @@ In v3, the router may reject the initial handshake with `Reject { code, message 
   Upgrade/downgrade one side so their supported version ranges overlap.
 - `unauthorized`: authentication failed (missing/invalid `--auth-token`, or worker is not authorized
   for the claimed `--shard-id`).
-- `invalid_request`: protocol mismatch (e.g. trying to connect a legacy bincode worker to a v3 router,
+- `invalid_request`: protocol mismatch (e.g. trying to connect a legacy lockstep worker to a v3 router,
   or vice versa), malformed frames, or invalid capability values.
 
 ### TLS connect errors
