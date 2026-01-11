@@ -29,6 +29,10 @@ pub(crate) fn load_maven_project(
     discovered_modules.sort_by(|a, b| a.root.cmp(&b.root));
     discovered_modules.dedup_by(|a, b| a.root == b.root);
 
+    // Workspace-level Java config: take the maximum across modules so we don't
+    // under-report language features used anywhere in the workspace.
+    let mut workspace_java = root_effective.java.unwrap_or_default();
+
     let maven_repo = options
         .maven_repo
         .clone()
@@ -41,6 +45,13 @@ pub(crate) fn load_maven_project(
         let module_java = effective
             .java
             .unwrap_or(root_effective.java.unwrap_or_default());
+
+        if module_java.source > workspace_java.source {
+            workspace_java.source = module_java.source;
+        }
+        if module_java.target > workspace_java.target {
+            workspace_java.target = module_java.target;
+        }
 
         let module_display_name = if module_root == root {
             module
@@ -116,16 +127,12 @@ pub(crate) fn load_maven_project(
             }
         }
 
-        // Track the most restrictive Java level as workspace-level.
-        // (For now: pick the max so we don't under-report features used across modules.)
-        // We'll compute final java at end.
-        let _ = module_java;
     }
 
     // Compute workspace Java config:
     // - prefer explicit root config
     // - otherwise default (17)
-    let java = root_effective.java.unwrap_or_default();
+    let java = workspace_java;
 
     // Sort/dedup for stability.
     sort_dedup_modules(&mut modules);
