@@ -310,7 +310,7 @@ pub enum SyntaxKind {
 
     DefaultValue,
 
-    /// Root node produced by [`crate::parse_java_expression`].
+    /// Root node produced by [`crate::parse_expression`].
     ExpressionRoot,
     ModuleDirective,
 
