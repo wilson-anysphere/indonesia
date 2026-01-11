@@ -47,6 +47,15 @@ def check_architecture_map() -> list[str]:
             "docs/architecture-map.md contains headings for crates that no longer exist: "
             + ", ".join(extra)
         )
+
+    if not duplicates and not missing and not extra and doc_crates_list != crates:
+        for idx, (actual, expected) in enumerate(zip(doc_crates_list, crates), start=1):
+            if actual != expected:
+                errors.append(
+                    "docs/architecture-map.md crate headings are not in alphabetical order: "
+                    f"entry {idx} is `{actual}` but expected `{expected}`"
+                )
+                break
     return errors
 
 
