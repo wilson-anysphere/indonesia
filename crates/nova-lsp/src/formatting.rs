@@ -5,10 +5,10 @@ use lsp_types::{
 };
 use nova_core::{LineIndex, Position, Range, TextEdit as CoreTextEdit};
 use nova_format::{
-    edits_for_formatting_ast, edits_for_on_type_formatting, edits_for_range_formatting,
+    edits_for_document_formatting, edits_for_on_type_formatting, edits_for_range_formatting,
     FormatConfig, IndentStyle,
 };
-use nova_syntax::{parse, parse_java};
+use nova_syntax::parse;
 
 fn to_lsp_edits(source: &str, edits: Vec<CoreTextEdit>) -> Vec<LspTextEdit> {
     let index = LineIndex::new(source);
@@ -61,8 +61,7 @@ pub fn handle_document_formatting(
     let _ = req.text_document.uri;
     let config = config_from_lsp(&req.options);
 
-    let parse = parse_java(text);
-    let edits = edits_for_formatting_ast(&parse, text, &config);
+    let edits = edits_for_document_formatting(text, &config);
     let lsp_edits = to_lsp_edits(text, edits);
     serde_json::to_value(lsp_edits).map_err(|err| NovaLspError::Internal(err.to_string()))
 }

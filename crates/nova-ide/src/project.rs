@@ -247,10 +247,16 @@ impl Project {
 }
 
 fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), ProjectDiscoveryError> {
-    let entries = fs::read_dir(dir).map_err(|source| ProjectDiscoveryError::ReadDir {
-        path: dir.to_path_buf(),
-        source,
-    })?;
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(ProjectDiscoveryError::ReadDir {
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    };
 
     for entry in entries {
         let entry = entry.map_err(|source| ProjectDiscoveryError::ReadDir {

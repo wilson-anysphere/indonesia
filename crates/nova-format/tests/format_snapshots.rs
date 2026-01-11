@@ -1,9 +1,10 @@
 use insta::assert_snapshot;
 use nova_core::{apply_text_edits, LineIndex, Position, Range};
 use nova_format::{
+    edits_for_document_formatting, edits_for_document_formatting_with_strategy,
     edits_for_formatting, edits_for_formatting_ast, edits_for_on_type_formatting,
     edits_for_range_formatting, format_java, format_java_ast, format_member_insertion_with_newline,
-    FormatConfig, IndentStyle, NewlineStyle,
+    FormatConfig, FormatStrategy, IndentStyle, NewlineStyle,
 };
 use nova_syntax::{parse, parse_java};
 use pretty_assertions::assert_eq;
@@ -53,6 +54,68 @@ class Foo {
 }
 "###
     );
+}
+
+#[test]
+fn canonical_document_formatting_matches_expected_output() {
+    let input = r#"
+ class  Foo{
+public static void main(String[]args){
+System.out.println("hi"); // comment
+if(true){System.out.println("x");}
+}
+}
+"#;
+
+    let edits = edits_for_document_formatting(input, &FormatConfig::default());
+    let formatted = apply_text_edits(input, &edits).unwrap();
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    public static void main(String[] args) {
+        System.out.println("hi"); // comment
+        if (true) {
+            System.out.println("x");
+        }
+    }
+}
+"###
+    );
+}
+
+#[test]
+fn lsp_cli_parity_for_canonical_document_formatting() {
+    let input = "class Foo{String s=\"\"\"\nhello\n\"\"\";}\n";
+    let config = FormatConfig::default();
+
+    // "LSP": uses the canonical entrypoint directly.
+    let lsp_edits = edits_for_document_formatting(input, &config);
+    let lsp_formatted = apply_text_edits(input, &lsp_edits).unwrap();
+
+    // "CLI": uses the same formatter but performs additional normalization for deterministic
+    // JSON output (e.g. stable edit ordering).
+    let mut cli_edits =
+        edits_for_document_formatting_with_strategy(input, &config, FormatStrategy::default());
+    cli_edits.retain(|edit| {
+        let start = u32::from(edit.range.start()) as usize;
+        let end = u32::from(edit.range.end()) as usize;
+        input
+            .get(start..end)
+            .map(|slice| slice != edit.replacement)
+            .unwrap_or(true)
+    });
+    cli_edits.sort_by(|a, b| {
+        a.range
+            .start()
+            .cmp(&b.range.start())
+            .then_with(|| a.range.end().cmp(&b.range.end()))
+            .then_with(|| a.replacement.cmp(&b.replacement))
+    });
+    let cli_formatted = apply_text_edits(input, &cli_edits).unwrap();
+
+    assert_eq!(lsp_formatted, cli_formatted);
 }
 
 #[test]

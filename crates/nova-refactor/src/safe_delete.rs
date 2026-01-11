@@ -363,13 +363,45 @@ fn parse_receiver_expression(text: &str, ident_start: usize) -> Receiver {
         return Receiver::Unknown;
     }
 
-    // Handle `new Foo()`
-    // Find start of the receiver expression by scanning back through identifier chars.
+    // Handle `new Foo().bar()` / `foo().bar()` by skipping the trailing call suffix so we can
+    // capture the identifier before the argument list.
+    if bytes.get(end - 1) == Some(&b')') {
+        let mut depth = 0usize;
+        let mut j = end;
+        while j > 0 {
+            j -= 1;
+            match bytes[j] {
+                b')' => depth += 1,
+                b'(' => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        end = j;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        if end == 0 {
+            return Receiver::Unknown;
+        }
+    }
+
+    // Find start of the receiver identifier by scanning back through identifier chars.
     let mut start = end;
     while start > 0 && is_ident_continue(bytes[start - 1]) {
         start -= 1;
     }
     let token = &text[start..end];
+    if token.is_empty() {
+        return Receiver::Unknown;
+    }
     if token == "this" {
         return Receiver::This;
     }

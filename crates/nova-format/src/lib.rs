@@ -138,6 +138,32 @@ pub struct FormatConfig {
     pub trim_final_newlines: Option<bool>,
 }
 
+/// Strategy to use for full-document formatting.
+///
+/// Nova currently maintains multiple formatters as the implementation evolves. The intent is that
+/// callers funnel full-document formatting through [`edits_for_document_formatting`] (or
+/// [`edits_for_document_formatting_with_strategy`]) so the CLI + LSP stay in lockstep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormatStrategy {
+    /// Legacy, token-only formatter (`nova_syntax::parse` + [`format_java`]).
+    LegacyToken,
+    /// AST-aware formatter based on the rowan Java parser (`nova_syntax::parse_java`) with a
+    /// token-walk formatter (`format_java_ast`).
+    JavaTokenWalkAst,
+    /// Reserved for a future pretty-printer based on the Java AST.
+    ///
+    /// For now this behaves the same as [`FormatStrategy::JavaTokenWalkAst`].
+    JavaPrettyAst,
+}
+
+impl Default for FormatStrategy {
+    fn default() -> Self {
+        // Default to the AST-aware formatter so Nova's full-document formatting stays consistent
+        // across the CLI and LSP.
+        Self::JavaTokenWalkAst
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndentStyle {
     Spaces,
@@ -235,6 +261,36 @@ pub enum FormatError {
     InvalidPosition,
     #[error("invalid range")]
     InvalidRange,
+}
+
+/// Canonical entrypoint for full-document formatting.
+///
+/// This parses `source` internally and returns minimal edits that transform it into its formatted
+/// representation. Both Nova's CLI and LSP should use this function so they don't diverge in
+/// formatter strategy, newline detection, or final-newline policy.
+pub fn edits_for_document_formatting(source: &str, config: &FormatConfig) -> Vec<TextEdit> {
+    edits_for_document_formatting_with_strategy(source, config, FormatStrategy::default())
+}
+
+/// Full-document formatting with an explicit formatter strategy.
+///
+/// This is useful for experiments and incremental migrations, but most callers should use
+/// [`edits_for_document_formatting`] so they share the workspace-wide default.
+pub fn edits_for_document_formatting_with_strategy(
+    source: &str,
+    config: &FormatConfig,
+    strategy: FormatStrategy,
+) -> Vec<TextEdit> {
+    match strategy {
+        FormatStrategy::LegacyToken => {
+            let tree = nova_syntax::parse(source);
+            edits_for_formatting(&tree, source, config)
+        }
+        FormatStrategy::JavaTokenWalkAst | FormatStrategy::JavaPrettyAst => {
+            let parse = nova_syntax::parse_java(source);
+            edits_for_formatting_ast(&parse, source, config)
+        }
+    }
 }
 
 /// Format an entire Java source file.

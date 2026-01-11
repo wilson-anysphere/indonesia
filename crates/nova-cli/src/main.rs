@@ -17,7 +17,7 @@ use nova_core::{
 mod diagnostics_output;
 use diagnostics_output::{print_github_annotations, print_sarif, write_sarif, DiagnosticsFormat};
 use nova_deps_cache::DependencyIndexStore;
-use nova_format::{edits_for_range_formatting, format_java, minimal_text_edits, FormatConfig};
+use nova_format::{edits_for_document_formatting, edits_for_range_formatting, FormatConfig};
 use nova_perf::{
     compare_runs, compare_runtime_runs, load_criterion_directory, BenchRun, RuntimeRun,
     RuntimeThresholdConfig, ThresholdConfig,
@@ -1132,38 +1132,39 @@ fn refactor_edits_to_json(
 fn handle_format(args: FormatArgs) -> Result<i32> {
     let source = fs::read_to_string(&args.file)
         .with_context(|| format!("failed to read {}", args.file.display()))?;
-    let newline_style = detect_newline_style(&source);
 
-    let tree = parse(&source);
     let config = FormatConfig::default();
 
     let mut edits: Vec<CoreTextEdit> = match args.range.as_deref() {
         Some(range) => {
             let range = parse_cli_range(range)?;
-            let mut edits = edits_for_range_formatting(&tree, &source, range, &config)?;
-            for edit in &mut edits {
-                edit.replacement = convert_newlines(&edit.replacement, newline_style);
-            }
-            // Drop no-op edits (commonly caused by newline normalization).
-            edits.retain(|edit| {
-                let start = u32::from(edit.range.start()) as usize;
-                let end = u32::from(edit.range.end()) as usize;
-                source
-                    .get(start..end)
-                    .map(|slice| slice != edit.replacement)
-                    .unwrap_or(true)
-            });
-            edits
+            let tree = parse(&source);
+            edits_for_range_formatting(&tree, &source, range, &config)?
         }
         None => {
-            let formatted = format_java(&tree, &source, &config);
-            let formatted = convert_newlines(&formatted, newline_style);
-            minimal_text_edits(&source, &formatted)
+            edits_for_document_formatting(&source, &config)
         }
     };
 
+    // Drop no-op edits to keep CLI output stable (and to defend against future
+    // formatter/diff edge cases).
+    edits.retain(|edit| {
+        let start = u32::from(edit.range.start()) as usize;
+        let end = u32::from(edit.range.end()) as usize;
+        source
+            .get(start..end)
+            .map(|slice| slice != edit.replacement)
+            .unwrap_or(true)
+    });
+
     // Normalize edits for deterministic JSON output.
-    edits.sort_by_key(|e| (e.range.start(), e.range.end(), e.replacement.clone()));
+    edits.sort_by(|a, b| {
+        a.range
+            .start()
+            .cmp(&b.range.start())
+            .then_with(|| a.range.end().cmp(&b.range.end()))
+            .then_with(|| a.replacement.cmp(&b.replacement))
+    });
 
     let new_text = apply_core_text_edits(&source, &edits).map_err(|err| anyhow::anyhow!(err))?;
     let changed = new_text != source;

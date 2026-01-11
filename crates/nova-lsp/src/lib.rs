@@ -551,28 +551,37 @@ fn find_project_root(path: &Path) -> PathBuf {
     nova_project::workspace_root(start).unwrap_or_else(|| start.to_path_buf())
 }
 
-fn looks_like_project_root(path: &Path) -> bool {
-    // `nova_project::workspace_root` falls back to the filesystem root for ad-hoc file URIs, and
-    // `RefactorWorkspaceSnapshot` uses this heuristic to decide whether it is safe to scan the
-    // workspace recursively.
-    //
-    // Keep this check intentionally conservative: if we can't confidently identify the directory
-    // as a project root, skip the scan and only operate on the focused file.
+fn looks_like_project_root(root: &Path) -> bool {
+    if !root.is_dir() {
+        return false;
+    }
+
+    // `nova_project::workspace_root` can fall back to very large directories (including filesystem
+    // roots) for ad-hoc URIs. `RefactorWorkspaceSnapshot` uses this heuristic to decide whether it
+    // is safe to recursively scan the filesystem. Returning `false` falls back to single-file
+    // refactoring behavior (focus file + overlays), which is preferable to accidentally scanning
+    // something like `/` or a user's home directory.
     [
+        // VCS
+        ".git",
+        ".hg",
+        // Maven / Gradle
         "pom.xml",
+        "mvnw",
         "build.gradle",
         "build.gradle.kts",
         "settings.gradle",
         "settings.gradle.kts",
         "gradlew",
-        "mvnw",
+        // Bazel
         "WORKSPACE",
         "WORKSPACE.bazel",
         "MODULE.bazel",
-        ".git",
+        // Nova workspace config
+        ".nova",
     ]
     .iter()
-    .any(|marker| path.join(marker).exists())
+    .any(|marker| root.join(marker).exists())
 }
 
 fn uri_from_file_path(path: &Path) -> Option<lsp_types::Uri> {
