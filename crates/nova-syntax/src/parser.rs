@@ -2257,6 +2257,7 @@ impl<'a> Parser<'a> {
     fn at_pattern_start(&mut self) -> bool {
         self.at_record_pattern_start()
             || self.at_type_pattern_start()
+            || self.at_underscore_identifier()
             || self.at(SyntaxKind::FinalKw)
             || (self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw))
     }
@@ -2368,7 +2369,9 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern(&mut self, allow_guard: bool) {
         self.builder.start_node(SyntaxKind::Pattern.into());
-        if self.at_record_pattern_start() {
+        if self.at_underscore_identifier() {
+            self.parse_unnamed_pattern();
+        } else if self.at_record_pattern_start() {
             self.parse_record_pattern();
         } else {
             self.parse_type_pattern(allow_guard);

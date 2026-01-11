@@ -1,0 +1,72 @@
+CompilationUnit
+  ClassDeclaration
+    Modifiers
+    ClassKw "class"
+    Whitespace " "
+    Identifier "Foo"
+    Whitespace " "
+    ClassBody
+      LBrace "{"
+      Whitespace "\n  "
+      MethodDeclaration
+        Modifiers
+        VoidKw "void"
+        Whitespace " "
+        Identifier "m"
+        ParameterList
+          LParen "("
+          Parameter
+            Modifiers
+            Type
+              NamedType
+                Identifier "Object"
+                Whitespace " "
+            Identifier "o"
+          RParen ")"
+        Whitespace " "
+        Block
+          LBrace "{"
+          Whitespace "\n    "
+          SwitchStatement
+            SwitchKw "switch"
+            Whitespace " "
+            LParen "("
+            NameExpression
+              Identifier "o"
+            RParen ")"
+            SwitchBlock
+              Whitespace " "
+              LBrace "{"
+              Whitespace "\n      "
+              SwitchRule
+                SwitchLabel
+                  CaseKw "case"
+                  Whitespace " "
+                  CaseLabelElement
+                    Pattern
+                      UnnamedPattern
+                        Identifier "_"
+                    Whitespace " "
+                  Arrow "->"
+                Whitespace " "
+                Block
+                  LBrace "{"
+                  RBrace "}"
+              Whitespace "\n      "
+              SwitchRule
+                SwitchLabel
+                  DefaultKw "default"
+                  Whitespace " "
+                  Arrow "->"
+                Whitespace " "
+                Block
+                  LBrace "{"
+                  RBrace "}"
+              Whitespace "\n    "
+              RBrace "}"
+          Whitespace "\n  "
+          RBrace "}"
+      Whitespace "\n"
+      RBrace "}"
+  Whitespace "\n"
+  Eof ""

@@ -1295,6 +1295,10 @@ impl Pattern {
         support::child::<RecordPattern>(&self.syntax)
     }
 
+    pub fn unnamed_pattern(&self) -> Option<UnnamedPattern> {
+        support::child::<UnnamedPattern>(&self.syntax)
+    }
+
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

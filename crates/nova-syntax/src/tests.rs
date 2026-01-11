@@ -1535,6 +1535,68 @@ class Foo {
 }
 
 #[test]
+fn feature_gate_unnamed_variables_applies_to_wildcard_patterns() {
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case _ -> {}
+      default -> {}
+    }
+  }
+}
+"#;
+
+    let java21_no_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21,
+        },
+    );
+    assert_eq!(java21_no_preview.result.errors, Vec::new());
+    assert_eq!(
+        java21_no_preview
+            .diagnostics
+            .iter()
+            .map(|d| d.code.as_ref())
+            .collect::<Vec<_>>(),
+        vec!["JAVA_FEATURE_UNNAMED_VARIABLES"]
+    );
+
+    let java21_preview = parse_java_with_options(
+        input,
+        ParseOptions {
+            language_level: JavaLanguageLevel::JAVA_21.with_preview(true),
+        },
+    );
+    assert_eq!(java21_preview.result.errors, Vec::new());
+    assert!(java21_preview.diagnostics.is_empty());
+}
+
+#[test]
+fn parse_switch_unnamed_wildcard_pattern() {
+    let input = r#"
+class Foo {
+  void m(Object o) {
+    switch (o) {
+      case _ -> {}
+      default -> {}
+    }
+  }
+}
+"#;
+
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let has_unnamed_pattern = result
+        .syntax()
+        .descendants()
+        .any(|n| n.kind() == SyntaxKind::UnnamedPattern);
+    assert!(has_unnamed_pattern);
+}
+
+#[test]
 fn parse_instanceof_type_patterns() {
     let input = r#"
 class Foo {

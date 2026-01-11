@@ -312,6 +312,7 @@ Guard {
 Pattern {
   type_pattern: TypePattern?
   record_pattern: RecordPattern?
+  unnamed_pattern: UnnamedPattern?
 }
 
 TypePattern {
