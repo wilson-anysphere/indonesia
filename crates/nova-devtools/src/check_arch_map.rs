@@ -247,6 +247,24 @@ fn validate_quick_links(
                     );
                 }
 
+                if !span.contains('*') {
+                    if let Some(krate) = crate_name_from_crates_path(&span) {
+                        if !workspace_crates.contains(krate) {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "stale-quick-link-crate",
+                                    format!(
+                                        "quick-link path `{}` refers to non-workspace crate `{}`",
+                                        span, krate
+                                    ),
+                                )
+                                .with_file(doc_path.display().to_string())
+                                .with_line(line_no),
+                            );
+                        }
+                    }
+                }
+
                 let base_path = repo_root.join(trim_glob(&span));
                 if span.ends_with('/') || base_path.is_dir() {
                     base = Some(base_path);
@@ -318,6 +336,16 @@ fn looks_like_crate_ref(span: &str) -> bool {
     // We only validate things that look like workspace crates to avoid flagging documentation
     // terms like `nova/*` method names.
     span == "xtask" || span.starts_with("nova-")
+}
+
+fn crate_name_from_crates_path(span: &str) -> Option<&str> {
+    let span = span.trim_end_matches('/');
+    let rest = span.strip_prefix("crates/")?;
+    let (krate, _) = rest.split_once('/').unwrap_or((rest, ""));
+    if krate.is_empty() {
+        return None;
+    }
+    Some(krate)
 }
 
 fn glob_exists(repo_root: &Path, pattern: &str) -> bool {
@@ -544,5 +572,46 @@ mod tests {
         );
 
         assert!(diags.iter().any(|d| d.code == "stale-quick-link-crate"));
+    }
+
+    #[test]
+    fn quick_links_validate_crates_paths_against_workspace() {
+        let doc = r#"
+# Architecture map
+
+## If you're looking for...
+- Missing crate: `crates/crate-missing/` (`src/lib.rs`)
+
+## Crate-by-crate map (alphabetical)
+
+### `crate-a`
+- **Purpose:** example
+- **Key entry points:** `crates/crate-a/src/lib.rs`
+- **Maturity:** prototype
+- **Known gaps vs intended docs:**
+  - none
+"#;
+
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir_all(tmp.path().join("crates/crate-a/src")).unwrap();
+        fs::write(tmp.path().join("crates/crate-a/src/lib.rs"), "").unwrap();
+
+        // Make the path exist, so we specifically test the workspace membership check.
+        fs::create_dir_all(tmp.path().join("crates/crate-missing/src")).unwrap();
+        fs::write(tmp.path().join("crates/crate-missing/src/lib.rs"), "").unwrap();
+
+        let workspace = BTreeSet::from(["crate-a".to_string()]);
+        let diags = validate_architecture_map(
+            doc,
+            tmp.path(),
+            Path::new("docs/architecture-map.md"),
+            &workspace,
+            false,
+        );
+
+        assert!(
+            diags.iter().any(|d| d.code == "stale-quick-link-crate"),
+            "expected stale-quick-link-crate, got: {diags:#?}"
+        );
     }
 }
