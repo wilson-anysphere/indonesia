@@ -249,7 +249,6 @@ class Consumer {
 
     let bean_path = PathBuf::from("/spring-nav-type/src/main/java/FooService.java");
     let bean_text = r#"import org.springframework.stereotype.Component;
-
 @Component
 class FooService {}
 "#;

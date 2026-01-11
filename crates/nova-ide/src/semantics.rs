@@ -1,9 +1,7 @@
-use nova_core::Line;
-use nova_core::{LineIndex, TextSize};
-use nova_syntax::{
-    AstNode, ClassDeclaration, ClassMember, CompilationUnit, FieldDeclaration, LambdaBody,
-    LambdaExpression, Modifiers, Name, SyntaxKind, SyntaxNode,
-};
+use std::collections::HashSet;
+
+use nova_core::{Line, LineIndex};
+use nova_syntax::{parse_java, SyntaxKind, SyntaxNode, SyntaxToken};
 
 /// A valid location for a line breakpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,256 +14,509 @@ pub struct BreakpointSite {
 /// Collect a conservative set of executable line breakpoint sites from a Java
 /// source file.
 ///
-/// This uses Nova's Java syntax tree to find conservative breakpoint sites. The
-/// returned sites are stable and sorted in source order.
+/// Breakpoint sites are discovered by walking Nova's error-resilient syntax tree
+/// (`nova_syntax::parse_java`) and extracting statement-level line starts in a
+/// way that is compatible with JDWP's notion of breakable line numbers.
 pub fn collect_breakpoint_sites(java_source: &str) -> Vec<BreakpointSite> {
-    let line_index = LineIndex::new(java_source);
-    let parse = nova_syntax::parse_java(java_source);
+    let parse = parse_java(java_source);
     let root = parse.syntax();
-    let Some(unit) = CompilationUnit::cast(root) else {
-        return Vec::new();
-    };
+    let line_index = LineIndex::new(java_source);
 
-    let package = unit
-        .package()
-        .and_then(|pkg| pkg.name())
-        .map(|name| name_to_string(&name));
+    let package = extract_package_name(&root);
 
-    let mut acc = Vec::new();
-    let mut class_stack: Vec<String> = Vec::new();
+    let mut sites = Vec::new();
+    let mut type_stack = Vec::new();
 
-    for decl in unit.type_declarations() {
-        match decl {
-            nova_syntax::TypeDeclaration::ClassDeclaration(class) => {
-                collect_class_sites(&class, package.as_deref(), &mut class_stack, &mut acc)
-            }
-            _ => {}
-        }
+    for top_level in root.children().filter(is_type_declaration) {
+        collect_in_type(
+            &top_level,
+            &package,
+            &line_index,
+            &mut type_stack,
+            &mut sites,
+        );
     }
 
-    acc.sort_by_key(|site| site.offset);
-    acc.into_iter()
-        .map(|site| BreakpointSite {
-            line: dap_line(&line_index, site.offset),
-            enclosing_class: site.enclosing_class,
-            enclosing_method: site.enclosing_method,
+    // Output ordering: by line (ascending) while preserving source insertion
+    // order within a line, then globally de-duplicate identical sites.
+    sites.sort_by_key(|site| site.line);
+
+    let mut seen = HashSet::new();
+    sites
+        .into_iter()
+        .filter(|site| {
+            seen.insert((
+                site.line,
+                site.enclosing_class.clone(),
+                site.enclosing_method.clone(),
+            ))
         })
         .collect()
 }
 
-#[derive(Debug, Clone)]
-struct Site {
-    offset: TextSize,
-    enclosing_class: Option<String>,
-    enclosing_method: Option<String>,
-}
-
-fn collect_class_sites(
-    class: &ClassDeclaration,
-    package: Option<&str>,
-    class_stack: &mut Vec<String>,
-    out: &mut Vec<Site>,
+fn collect_in_type(
+    type_decl: &SyntaxNode,
+    package: &Option<String>,
+    line_index: &LineIndex,
+    type_stack: &mut Vec<String>,
+    sites: &mut Vec<BreakpointSite>,
 ) {
-    let Some(name) = class.name_token().map(|tok| tok.text().to_string()) else {
+    let type_name = extract_type_name(type_decl);
+    if let Some(name) = &type_name {
+        type_stack.push(name.clone());
+    }
+
+    let enclosing_class = build_binary_class_name(package, type_stack);
+
+    let Some(body) = type_decl.children().find(is_type_body) else {
+        if type_name.is_some() {
+            type_stack.pop();
+        }
         return;
     };
 
-    class_stack.push(name);
-    let enclosing_class = Some(qualify_class_name(package, class_stack));
-
-    let Some(body) = class.body() else {
-        class_stack.pop();
-        return;
-    };
-
-    for member in body.members() {
-        match member {
-            ClassMember::FieldDeclaration(field) => {
-                collect_field_sites(&field, enclosing_class.as_ref(), out);
+    for member in body.children() {
+        match member.kind() {
+            SyntaxKind::MethodDeclaration => {
+                let method_name = extract_method_name(&member);
+                if let Some(block) = member.children().find(|n| n.kind() == SyntaxKind::Block) {
+                    scan_executable_region(
+                        &block,
+                        line_index,
+                        enclosing_class.as_deref(),
+                        method_name.as_deref(),
+                        sites,
+                    );
+                }
             }
-            ClassMember::MethodDeclaration(method) => collect_method_like_sites(
-                enclosing_class.as_ref(),
-                method.name_token().map(|tok| tok.text().to_string()),
-                method.body().map(|b| b.syntax().clone()),
-                out,
-            ),
-            ClassMember::ConstructorDeclaration(ctor) => collect_method_like_sites(
-                enclosing_class.as_ref(),
-                Some("<init>".to_string()),
-                ctor.body().map(|b| b.syntax().clone()),
-                out,
-            ),
-            ClassMember::InitializerBlock(init) => collect_method_like_sites(
-                enclosing_class.as_ref(),
-                Some(if is_static(init.modifiers()) {
-                    "<clinit>".to_string()
+            SyntaxKind::ConstructorDeclaration => {
+                if let Some(block) = member.children().find(|n| n.kind() == SyntaxKind::Block) {
+                    scan_executable_region(
+                        &block,
+                        line_index,
+                        enclosing_class.as_deref(),
+                        Some("<init>"),
+                        sites,
+                    );
+                }
+            }
+            SyntaxKind::InitializerBlock => {
+                let method = if has_static_modifier(&member) {
+                    "<clinit>"
                 } else {
-                    "<init>".to_string()
-                }),
-                init.body().map(|b| b.syntax().clone()),
-                out,
-            ),
-            ClassMember::ClassDeclaration(inner) => {
-                collect_class_sites(&inner, package, class_stack, out);
+                    "<init>"
+                };
+                if let Some(block) = member.children().find(|n| n.kind() == SyntaxKind::Block) {
+                    scan_executable_region(
+                        &block,
+                        line_index,
+                        enclosing_class.as_deref(),
+                        Some(method),
+                        sites,
+                    );
+                }
+            }
+            SyntaxKind::FieldDeclaration => {
+                let method = if has_static_modifier(&member) {
+                    "<clinit>"
+                } else {
+                    "<init>"
+                };
+                for declarator in member
+                    .descendants()
+                    .filter(|n| n.kind() == SyntaxKind::VariableDeclarator)
+                {
+                    if has_initializer(&declarator) {
+                        scan_executable_region(
+                            &declarator,
+                            line_index,
+                            enclosing_class.as_deref(),
+                            Some(method),
+                            sites,
+                        );
+                    }
+                }
+            }
+            kind if is_type_declaration(&member) => {
+                collect_in_type(&member, package, line_index, type_stack, sites);
             }
             _ => {}
         }
     }
 
-    class_stack.pop();
-}
-
-fn collect_field_sites(
-    field: &FieldDeclaration,
-    enclosing_class: Option<&String>,
-    out: &mut Vec<Site>,
-) {
-    let Some(enclosing_class) = enclosing_class else {
-        return;
-    };
-
-    let method = if is_static(field.modifiers()) {
-        Some("<clinit>".to_string())
-    } else {
-        Some("<init>".to_string())
-    };
-
-    let Some(decls) = field.declarators() else {
-        return;
-    };
-
-    for decl in decls.declarators() {
-        let Some(init) = decl.initializer() else {
-            continue;
-        };
-
-        // Field initializers execute as part of <clinit> / <init>.
-        out.push(Site {
-            offset: init.syntax().text_range().start(),
-            enclosing_class: Some(enclosing_class.clone()),
-            enclosing_method: method.clone(),
-        });
-
-        // If the initializer contains a lambda, statements inside the lambda body
-        // should not be attributed to the enclosing method.
-        collect_executable_sites_in_node(init.syntax(), enclosing_class, method.as_deref(), out);
+    if type_name.is_some() {
+        type_stack.pop();
     }
 }
 
-fn collect_method_like_sites(
-    enclosing_class: Option<&String>,
-    enclosing_method: Option<String>,
-    body: Option<SyntaxNode>,
-    out: &mut Vec<Site>,
-) {
-    let (Some(enclosing_class), Some(body)) = (enclosing_class, body) else {
-        return;
-    };
+fn extract_package_name(root: &SyntaxNode) -> Option<String> {
+    let package_decl = root
+        .children()
+        .find(|n| n.kind() == SyntaxKind::PackageDeclaration)?;
+    let name_node = package_decl
+        .children()
+        .find(|n| n.kind() == SyntaxKind::Name)?;
 
-    collect_executable_sites_in_node(&body, enclosing_class, enclosing_method.as_deref(), out);
+    let segments: Vec<String> = name_node
+        .descendants_with_tokens()
+        .filter_map(|e| e.into_token())
+        .filter(|t| t.kind().is_identifier_like())
+        .map(|t| t.text().to_string())
+        .collect();
+
+    match segments.as_slice() {
+        [] => None,
+        segs => Some(segs.join(".")),
+    }
 }
 
-fn collect_executable_sites_in_node(
-    node: &SyntaxNode,
-    enclosing_class: &str,
-    enclosing_method: Option<&str>,
-    out: &mut Vec<Site>,
-) {
-    for child in node.children() {
-        match child.kind() {
-            SyntaxKind::LambdaExpression => {
-                if let Some(lambda) = LambdaExpression::cast(child.clone()) {
-                    if let Some(body) = lambda.body() {
-                        collect_lambda_body_sites(&body, enclosing_class, out);
-                    }
-                }
-                continue;
-            }
-            SyntaxKind::ClassDeclaration
+fn is_type_declaration(node: &SyntaxNode) -> bool {
+    matches!(
+        node.kind(),
+        SyntaxKind::ClassDeclaration
             | SyntaxKind::InterfaceDeclaration
             | SyntaxKind::EnumDeclaration
             | SyntaxKind::RecordDeclaration
-            | SyntaxKind::AnnotationTypeDeclaration => {
-                // Nested type declarations are their own JVM classes.
-                continue;
-            }
-            kind if is_executable_statement_kind(kind) => out.push(Site {
-                offset: child.text_range().start(),
-                enclosing_class: Some(enclosing_class.to_string()),
-                enclosing_method: enclosing_method.map(|s| s.to_string()),
-            }),
-            _ => {}
-        }
-
-        collect_executable_sites_in_node(&child, enclosing_class, enclosing_method, out);
-    }
-}
-
-fn collect_lambda_body_sites(body: &LambdaBody, enclosing_class: &str, out: &mut Vec<Site>) {
-    match body {
-        LambdaBody::Block(block) => {
-            collect_executable_sites_in_node(block.syntax(), enclosing_class, None, out)
-        }
-        LambdaBody::Expression(expr) => {
-            out.push(Site {
-                offset: expr.syntax().text_range().start(),
-                enclosing_class: Some(enclosing_class.to_string()),
-                enclosing_method: None,
-            });
-            collect_executable_sites_in_node(expr.syntax(), enclosing_class, None, out);
-        }
-    }
-}
-
-fn is_static(modifiers: Option<Modifiers>) -> bool {
-    modifiers.is_some_and(|mods| {
-        mods.syntax()
-            .children_with_tokens()
-            .filter_map(|it| it.into_token())
-            .any(|tok| tok.kind() == SyntaxKind::StaticKw)
-    })
-}
-
-fn is_executable_statement_kind(kind: SyntaxKind) -> bool {
-    matches!(
-        kind,
-        SyntaxKind::LabeledStatement
-            | SyntaxKind::IfStatement
-            | SyntaxKind::SwitchStatement
-            | SyntaxKind::ForStatement
-            | SyntaxKind::WhileStatement
-            | SyntaxKind::DoWhileStatement
-            | SyntaxKind::SynchronizedStatement
-            | SyntaxKind::TryStatement
-            | SyntaxKind::AssertStatement
-            | SyntaxKind::ReturnStatement
-            | SyntaxKind::ThrowStatement
-            | SyntaxKind::BreakStatement
-            | SyntaxKind::ContinueStatement
-            | SyntaxKind::LocalVariableDeclarationStatement
-            | SyntaxKind::ExpressionStatement
+            | SyntaxKind::AnnotationTypeDeclaration
     )
 }
 
-fn qualify_class_name(package: Option<&str>, class_stack: &[String]) -> String {
-    let nested = class_stack.join("$");
-    match package {
-        Some(pkg) if !pkg.is_empty() => format!("{pkg}.{nested}"),
-        _ => nested,
+fn is_type_body(node: &SyntaxNode) -> bool {
+    matches!(
+        node.kind(),
+        SyntaxKind::ClassBody
+            | SyntaxKind::InterfaceBody
+            | SyntaxKind::EnumBody
+            | SyntaxKind::RecordBody
+            | SyntaxKind::AnnotationBody
+    )
+}
+
+fn extract_type_name(type_decl: &SyntaxNode) -> Option<String> {
+    type_decl
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind().is_identifier_like())
+        .map(|t| t.text().to_string())
+}
+
+fn build_binary_class_name(package: &Option<String>, type_stack: &[String]) -> Option<String> {
+    let binary = match type_stack {
+        [] => return None,
+        segs => segs.join("$"),
+    };
+
+    match package.as_deref() {
+        Some(pkg) if !pkg.is_empty() => Some(format!("{pkg}.{binary}")),
+        _ => Some(binary),
     }
 }
 
-fn name_to_string(name: &Name) -> String {
-    name.syntax()
+fn extract_method_name(method_decl: &SyntaxNode) -> Option<String> {
+    method_decl
         .children_with_tokens()
-        .filter_map(|it| it.into_token())
-        .filter(|tok| tok.kind() == SyntaxKind::Dot || tok.kind().is_identifier_like())
-        .fold(String::new(), |mut acc, tok| {
-            acc.push_str(tok.text());
-            acc
-        })
+        .filter_map(|e| e.into_token())
+        .find(|t| t.kind().is_identifier_like())
+        .map(|t| t.text().to_string())
 }
 
-fn dap_line(line_index: &LineIndex, offset: TextSize) -> Line {
-    line_index.line_col(offset).line.saturating_add(1)
+fn has_static_modifier(node: &SyntaxNode) -> bool {
+    node.children()
+        .find(|n| n.kind() == SyntaxKind::Modifiers)
+        .map(|mods| {
+            mods.descendants_with_tokens()
+                .filter_map(|e| e.into_token())
+                .any(|t| t.kind() == SyntaxKind::StaticKw)
+        })
+        .unwrap_or(false)
+}
+
+fn has_initializer(declarator: &SyntaxNode) -> bool {
+    declarator
+        .children_with_tokens()
+        .filter_map(|e| e.into_token())
+        .any(|t| t.kind() == SyntaxKind::Eq)
+}
+
+fn scan_executable_region(
+    region: &SyntaxNode,
+    line_index: &LineIndex,
+    enclosing_class: Option<&str>,
+    enclosing_method: Option<&str>,
+    sites: &mut Vec<BreakpointSite>,
+) {
+    let mut marked_lines = HashSet::<Line>::new();
+    scan_node(
+        region,
+        line_index,
+        enclosing_class,
+        enclosing_method,
+        sites,
+        &mut marked_lines,
+        None,
+    );
+}
+
+fn scan_node(
+    node: &SyntaxNode,
+    line_index: &LineIndex,
+    enclosing_class: Option<&str>,
+    enclosing_method: Option<&str>,
+    sites: &mut Vec<BreakpointSite>,
+    marked_lines: &mut HashSet<Line>,
+    skip_line: Option<Line>,
+) {
+    for element in node.children_with_tokens() {
+        if let Some(token) = element.as_token() {
+            mark_token(
+                token,
+                line_index,
+                enclosing_class,
+                enclosing_method,
+                sites,
+                marked_lines,
+                skip_line,
+            );
+            continue;
+        }
+
+        let Some(child) = element.as_node() else {
+            continue;
+        };
+
+        if child.kind() == SyntaxKind::LambdaExpression {
+            scan_lambda_expression(
+                child,
+                line_index,
+                enclosing_class,
+                enclosing_method,
+                sites,
+                marked_lines,
+                skip_line,
+            );
+            continue;
+        }
+
+        scan_node(
+            child,
+            line_index,
+            enclosing_class,
+            enclosing_method,
+            sites,
+            marked_lines,
+            skip_line,
+        );
+    }
+}
+
+fn scan_lambda_expression(
+    lambda: &SyntaxNode,
+    line_index: &LineIndex,
+    enclosing_class: Option<&str>,
+    enclosing_method: Option<&str>,
+    sites: &mut Vec<BreakpointSite>,
+    marked_lines: &mut HashSet<Line>,
+    skip_line: Option<Line>,
+) {
+    let mut arrow_line: Option<Line> = None;
+
+    // Header: parameters + `->` stay in the current method context.
+    for element in lambda.children_with_tokens() {
+        if let Some(token) = element.as_token() {
+            if arrow_line.is_none() && token.kind() == SyntaxKind::Arrow {
+                arrow_line = Some(token_line(line_index, token));
+            }
+            mark_token(
+                token,
+                line_index,
+                enclosing_class,
+                enclosing_method,
+                sites,
+                marked_lines,
+                skip_line,
+            );
+        }
+    }
+
+    let lambda_body_skip_line = match (enclosing_method, arrow_line) {
+        (Some(_), Some(line)) if marked_lines.contains(&line) => Some(line),
+        _ => None,
+    };
+    let lambda_body_skip_line = lambda_body_skip_line.or(skip_line);
+
+    for body in lambda.children() {
+        let mut lambda_lines = HashSet::<Line>::new();
+        scan_node(
+            &body,
+            line_index,
+            enclosing_class,
+            None,
+            sites,
+            &mut lambda_lines,
+            lambda_body_skip_line,
+        );
+    }
+}
+
+fn mark_token(
+    token: &SyntaxToken,
+    line_index: &LineIndex,
+    enclosing_class: Option<&str>,
+    enclosing_method: Option<&str>,
+    sites: &mut Vec<BreakpointSite>,
+    marked_lines: &mut HashSet<Line>,
+    skip_line: Option<Line>,
+) {
+    let kind = token.kind();
+    if kind.is_trivia() || is_structural_punctuation(kind) {
+        return;
+    }
+
+    let line = token_line(line_index, token);
+    if skip_line == Some(line) {
+        return;
+    }
+
+    if !marked_lines.insert(line) {
+        return;
+    }
+
+    sites.push(BreakpointSite {
+        line,
+        enclosing_class: enclosing_class.map(str::to_string),
+        enclosing_method: enclosing_method.map(str::to_string),
+    });
+}
+
+fn token_line(line_index: &LineIndex, token: &SyntaxToken) -> Line {
+    let start = token.text_range().start();
+    let lc = line_index.line_col(start);
+    lc.line + 1
+}
+
+fn is_structural_punctuation(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::LBrace
+            | SyntaxKind::RBrace
+            | SyntaxKind::LParen
+            | SyntaxKind::RParen
+            | SyntaxKind::LBracket
+            | SyntaxKind::RBracket
+            | SyntaxKind::Semicolon
+            | SyntaxKind::Comma
+            | SyntaxKind::Dot
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_class_uses_binary_name() {
+        let java = r#"package p;
+class Outer {
+  class Inner {
+    void m(){
+      int x=0;
+    }
+  }
+}"#;
+
+        let sites = collect_breakpoint_sites(java);
+        assert!(
+            sites.iter().any(|site| {
+                site.line == 5
+                    && site.enclosing_class.as_deref() == Some("p.Outer$Inner")
+                    && site.enclosing_method.as_deref() == Some("m")
+            }),
+            "expected breakpoint site inside nested method: {sites:?}"
+        );
+    }
+
+    #[test]
+    fn constructor_uses_init_name() {
+        let java = r#"class C {
+  C(){
+    int x=0;
+  }
+}"#;
+
+        let sites = collect_breakpoint_sites(java);
+        assert!(
+            sites.iter().any(|site| {
+                site.line == 3
+                    && site.enclosing_class.as_deref() == Some("C")
+                    && site.enclosing_method.as_deref() == Some("<init>")
+            }),
+            "expected <init> breakpoint site: {sites:?}"
+        );
+    }
+
+    #[test]
+    fn static_initializer_uses_clinit_name() {
+        let java = r#"class C {
+  static {
+    int x=0;
+  }
+}"#;
+
+        let sites = collect_breakpoint_sites(java);
+        assert!(
+            sites.iter().any(|site| {
+                site.line == 3
+                    && site.enclosing_class.as_deref() == Some("C")
+                    && site.enclosing_method.as_deref() == Some("<clinit>")
+            }),
+            "expected <clinit> breakpoint site: {sites:?}"
+        );
+    }
+
+    #[test]
+    fn field_initializers_map_to_clinit_or_init() {
+        let java = r#"class C {
+  static int X = foo();
+  int y = bar();
+}"#;
+
+        let sites = collect_breakpoint_sites(java);
+        assert!(
+            sites.iter().any(|site| {
+                site.line == 2
+                    && site.enclosing_class.as_deref() == Some("C")
+                    && site.enclosing_method.as_deref() == Some("<clinit>")
+            }),
+            "expected static field initializer in <clinit>: {sites:?}"
+        );
+        assert!(
+            sites.iter().any(|site| {
+                site.line == 3
+                    && site.enclosing_class.as_deref() == Some("C")
+                    && site.enclosing_method.as_deref() == Some("<init>")
+            }),
+            "expected instance field initializer in <init>: {sites:?}"
+        );
+    }
+
+    #[test]
+    fn lambda_body_has_no_enclosing_method() {
+        let java = r#"class C {
+  void f(){
+    Runnable r = () -> {
+      int x=0;
+    };
+  }
+}"#;
+
+        let sites = collect_breakpoint_sites(java);
+        assert!(
+            sites.iter().any(|site| {
+                site.line == 4
+                    && site.enclosing_class.as_deref() == Some("C")
+                    && site.enclosing_method.is_none()
+            }),
+            "expected lambda body breakpoint with method None: {sites:?}"
+        );
+    }
 }
