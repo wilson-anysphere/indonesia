@@ -11,6 +11,7 @@ pub mod code_action;
 pub mod decompile;
 pub mod diagnostics;
 pub mod extensions;
+pub mod framework_cache;
 pub mod format;
 pub mod semantics;
 

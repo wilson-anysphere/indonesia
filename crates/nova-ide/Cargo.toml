@@ -6,11 +6,13 @@ edition = "2021"
 [dependencies]
 nova-ai = { path = "../nova-ai", optional = true }
 nova-config = { path = "../nova-config" }
+nova-config-metadata = { path = "../nova-config-metadata" }
 nova-core = { path = "../nova-core" }
 nova-decompile = { path = "../nova-decompile" }
 futures = "0.3"
 tokio = { workspace = true, optional = true }
 tokio-util = { version = "0.7", optional = true }
+nova-classpath = { path = "../nova-classpath" }
 nova-project = { path = "../nova-project" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-db = { path = "../nova-db" }
@@ -40,3 +42,7 @@ ai = ["dep:nova-ai", "dep:tokio", "dep:tokio-util"]
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+tempfile = "3"
+zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
