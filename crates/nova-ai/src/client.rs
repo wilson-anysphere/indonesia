@@ -425,6 +425,7 @@ fn provider_label(kind: &AiProviderKind) -> &'static str {
     match kind {
         AiProviderKind::Ollama => "ollama",
         AiProviderKind::OpenAiCompatible => "openai_compatible",
+        AiProviderKind::InProcessLlama => "in_process_llama",
     }
 }
 

@@ -116,6 +116,8 @@ path = "/tmp/nova-ai-audit.log"
 Privacy implications:
 
 - Audit logs may contain **source code**, **file paths**, and **model output**.
+- Audit logs are **sanitized** to redact common credential patterns (API keys/tokens), but you should
+  still treat them as sensitive and review before sharing.
 - Audit logging is **off by default**; enable it only when you explicitly need an on-disk record.
 - Audit logs are **not** automatically included in Nova’s bug report bundles. If you attach them to
   a bug report, review them first.
@@ -127,10 +129,17 @@ Separately from the dedicated `nova.ai.audit` file channel, Nova’s cloud-backe
 
 - `NOVA_AI_AUDIT_LOGGING=1|true`
 
-When enabled, Nova logs **prompts and model responses** at `INFO` level via regular tracing events.
-Because Nova’s bug report bundles include recent logs (`logs.txt`), enabling this may cause prompts
-and completions to be captured in bug reports. Enable only when you explicitly want that level of
-visibility and you can safely share the resulting logs.
+When enabled, Nova emits **prompts and model responses** as `INFO` tracing events on the dedicated
+`nova.ai.audit` target. Depending on how logging is initialized:
+
+- If the **file-backed AI audit log channel** is configured (`ai.enabled = true` and
+  `ai.audit_log.enabled = true`), these events go to the audit log file.
+- Otherwise (for example, `nova-lsp` started with defaults), the events are captured by the normal
+  in-memory log buffer and may appear in bug report bundles (`logs.txt`).
+
+Audit events are sanitized to redact common credential patterns, but may still contain code/context.
+Enable only when you explicitly want this level of visibility and can safely handle the resulting
+logs.
 
 ---
 

@@ -3958,6 +3958,8 @@ dependencies = [
 name = "nova-project"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "nova-build-bazel",
  "nova-config",
  "nova-hir",
  "nova-modules",
