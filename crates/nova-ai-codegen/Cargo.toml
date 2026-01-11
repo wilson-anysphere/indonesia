@@ -18,3 +18,6 @@ nova-ai = { path = "../nova-ai" }
 nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-ide = { path = "../nova-ide" }
+
+[dev-dependencies]
+futures = "0.3"

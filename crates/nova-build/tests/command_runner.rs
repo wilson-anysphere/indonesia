@@ -119,10 +119,10 @@ fn gradle_classpath_caches_result() {
     std::fs::write(root.join("build.gradle"), "plugins { id 'java' }").unwrap();
 
     let dep = root.join("dep.jar");
-    let stdout = format!(
-        "NOVA_JSON_BEGIN\n{{\"compileClasspath\":[\"{}\"]}}\nNOVA_JSON_END\n",
-        dep.to_string_lossy()
-    );
+    let payload = serde_json::json!({
+        "compileClasspath": [dep.to_string_lossy().to_string()],
+    });
+    let stdout = format!("NOVA_JSON_BEGIN\n{}\nNOVA_JSON_END\n", payload);
     let runner = Arc::new(FakeCommandRunner::new(CommandOutput {
         status: success_status(),
         stdout,

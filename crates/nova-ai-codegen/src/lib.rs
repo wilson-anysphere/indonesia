@@ -13,7 +13,6 @@ use nova_core::{LineIndex, TextRange};
 use nova_ide::diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
 use nova_ide::format::Formatter;
 use thiserror::Error;
-use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 pub struct ValidationConfig {
@@ -643,6 +642,7 @@ fn render_context(source: &str, range: TextRange, context_lines: usize) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::executor::block_on;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
@@ -661,12 +661,13 @@ mod tests {
         }
     }
 
-    impl AiProvider for BlockingProvider {
-        fn complete(
+    #[async_trait]
+    impl PromptCompletionProvider for BlockingProvider {
+        async fn complete(
             &self,
             _prompt: &str,
             _cancel: &CancellationToken,
-        ) -> Result<String, AiProviderError> {
+        ) -> Result<String, PromptCompletionError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
 
             if let Some(tx) = self.started_tx.lock().expect("poisoned mutex").take() {
@@ -704,14 +705,15 @@ mod tests {
             let provider = Arc::clone(&provider);
             let workspace = workspace.clone();
             move || {
-                let result = run_code_generation(
+                let result = block_on(generate_patch(
                     provider.as_ref(),
                     &workspace,
                     "Generate a patch.",
                     &config,
                     &AiPrivacyConfig::default(),
                     &cancel_for_thread,
-                );
+                    None,
+                ));
                 let _ = result_tx.send(result);
             }
         });

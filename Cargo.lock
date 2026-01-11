@@ -3296,6 +3296,7 @@ name = "nova-ai-codegen"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "futures",
  "nova-ai",
  "nova-config",
  "nova-core",
@@ -3920,6 +3921,7 @@ dependencies = [
  "nova-syntax",
  "nova-test-utils",
  "nova-testing",
+ "nova-types",
  "nova-vfs",
  "nova-workspace",
  "pretty_assertions",

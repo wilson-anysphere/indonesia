@@ -114,7 +114,7 @@ fn json_patch_ops_create_rename_delete() {
       "text": "// renamed\n"
     }
   ]
-}"#;
+    }"#;
 
     let patch = parse_structured_patch(patch).expect("parse json ops");
     let applied = ws

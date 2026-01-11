@@ -205,7 +205,7 @@ pub fn extract_variable_code_actions(
     let Some(expr_range) = lsp_range_to_workspace_text_range(source, selection) else {
         return Vec::new();
     };
-    if expr_range.is_empty() {
+    if expr_range.len() == 0 {
         return Vec::new();
     }
 
@@ -378,7 +378,7 @@ pub fn inline_variable_code_actions(
             }
         };
 
-        if edit.edits.is_empty() {
+        if edit.is_empty() {
             continue;
         }
 

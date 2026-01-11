@@ -638,7 +638,7 @@ fn stdio_server_handles_completion_and_more_completions_request() {
         }),
     );
 
-    let completion_resp = read_jsonrpc_response_with_id(&mut stdout, 2);
+    let completion_resp = read_response_with_id(&mut stdout, 2);
     let result = completion_resp.get("result").cloned().expect("result");
     let items = result
         .get("items")
@@ -669,7 +669,7 @@ fn stdio_server_handles_completion_and_more_completions_request() {
         }),
     );
 
-    let more_resp = read_jsonrpc_response_with_id(&mut stdout, 3);
+    let more_resp = read_response_with_id(&mut stdout, 3);
     let more_result = more_resp.get("result").cloned().expect("result");
     assert_eq!(
         more_result

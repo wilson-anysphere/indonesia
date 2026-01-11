@@ -224,7 +224,12 @@ fn load_config_from_args(args: &[String]) -> nova_config::NovaConfig {
     let root = nova_project::workspace_root(&cwd).unwrap_or(cwd);
 
     match nova_config::load_for_workspace(&root) {
-        Ok((config, _path)) => config,
+        Ok((config, path)) => {
+            if let Some(path) = path {
+                env::set_var("NOVA_CONFIG_PATH", &path);
+            }
+            config
+        }
         Err(err) => {
             eprintln!(
                 "nova-lsp: failed to load workspace config from {}: {err}",

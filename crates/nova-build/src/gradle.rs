@@ -512,6 +512,17 @@ fn gradle_test_output_dir_from_main(main_output_dir: &Path) -> PathBuf {
     path
 }
 
+fn collect_source_roots(project_dir: &Path, source_set: &str) -> Vec<PathBuf> {
+    // Best-effort fallback when Gradle's `sourceSets` extension isn't available
+    // (e.g. aggregator roots without the Java plugin applied).
+    let dir = project_dir.join("src").join(source_set).join("java");
+    if dir.is_dir() {
+        vec![dir]
+    } else {
+        Vec::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -869,27 +880,6 @@ fn extract_sentinel_block(output: &str, begin: &str, end: &str) -> Option<String
         lines.push(line);
     }
     None
-}
-
-fn collect_source_roots(project_dir: &Path, source_set: &str) -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    let candidates = [
-        project_dir.join("src").join(source_set).join("java"),
-        project_dir
-            .join("build")
-            .join("generated")
-            .join("sources")
-            .join("annotationProcessor")
-            .join("java")
-            .join(source_set),
-    ];
-
-    for path in candidates {
-        if path.exists() {
-            roots.push(path);
-        }
-    }
-    roots
 }
 
 #[derive(Debug, Deserialize)]
