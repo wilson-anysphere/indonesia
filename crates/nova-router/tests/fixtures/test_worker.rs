@@ -202,6 +202,8 @@ impl Args {
         let mut shard_id = None;
         let mut cache_dir = None;
         let mut auth_token = None;
+        let mut auth_token_file: Option<PathBuf> = None;
+        let mut auth_token_env: Option<String> = None;
 
         let mut iter = std::env::args().skip(1);
         while let Some(arg) = iter.next() {
@@ -232,6 +234,18 @@ impl Args {
                             .ok_or_else(|| anyhow!("--auth-token requires value"))?,
                     )
                 }
+                "--auth-token-file" => {
+                    auth_token_file = Some(PathBuf::from(
+                        iter.next()
+                            .ok_or_else(|| anyhow!("--auth-token-file requires value"))?,
+                    ))
+                }
+                "--auth-token-env" => {
+                    auth_token_env = Some(
+                        iter.next()
+                            .ok_or_else(|| anyhow!("--auth-token-env requires value"))?,
+                    )
+                }
                 other => return Err(anyhow!("unknown argument: {other}")),
             }
         }
@@ -239,6 +253,34 @@ impl Args {
         let connect = connect.ok_or_else(|| anyhow!("--connect is required"))?;
         let shard_id = shard_id.ok_or_else(|| anyhow!("--shard-id is required"))?;
         let cache_dir = cache_dir.ok_or_else(|| anyhow!("--cache-dir is required"))?;
+
+        let auth_token = match (auth_token, auth_token_file, auth_token_env) {
+            (None, None, None) => None,
+            (Some(token), None, None) => Some(token),
+            (None, Some(path), None) => {
+                let token = std::fs::read_to_string(&path)
+                    .with_context(|| format!("read --auth-token-file {}", path.display()))?;
+                let token = token.trim().to_string();
+                if token.is_empty() {
+                    return Err(anyhow!("--auth-token-file {} was empty", path.display()));
+                }
+                Some(token)
+            }
+            (None, None, Some(var)) => {
+                let token =
+                    std::env::var(&var).with_context(|| format!("read --auth-token-env {var}"))?;
+                let token = token.trim().to_string();
+                if token.is_empty() {
+                    return Err(anyhow!("--auth-token-env {var} was empty"));
+                }
+                Some(token)
+            }
+            _ => {
+                return Err(anyhow!(
+                    "--auth-token, --auth-token-file, and --auth-token-env are mutually exclusive"
+                ))
+            }
+        };
 
         Ok(Self {
             connect: parse_connect_addr(&connect)?,
