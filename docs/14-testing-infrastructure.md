@@ -81,7 +81,7 @@ cargo test -p nova-types --test javac_differential -- --ignored
 # assert stable diagnostic *keys* instead of brittle human-readable strings.
 
 # perf.yml (criterion benchmarks; see below for capture/compare)
-rm -rf target/criterion
+rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
 cargo bench -p nova-core --bench critical_paths
 cargo bench -p nova-syntax --bench parse_java
 cargo bench -p nova-format --bench format
@@ -438,7 +438,7 @@ NOVA_REAL_PROJECT=spring-petclinic,maven-resolver ./scripts/clone-test-projects.
 **Run locally (benchmark):**
 
 ```bash
-rm -rf target/criterion
+rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
 cargo bench -p nova-core --bench critical_paths
 cargo bench -p nova-syntax --bench parse_java
 cargo bench -p nova-format --bench format
@@ -449,13 +449,12 @@ cargo bench -p nova-classpath --bench index
 **Capture + compare locally (same tooling CI uses):**
 
 ```bash
-# Note: delete `target/criterion` between runs (baseline vs current) so stale `new/sample.json`
-# files from removed benchmarks don't get picked up by `perf capture`.
+# Note: delete "${CARGO_TARGET_DIR:-target}/criterion" between runs (baseline vs current) so stale
+# `new/sample.json` files from removed benchmarks don't get picked up by `perf capture`.
 
 # capture criterion output
-# (if you set `CARGO_TARGET_DIR`, use `--criterion-dir "$CARGO_TARGET_DIR/criterion"` instead)
 cargo run -p nova-cli --release -- perf capture \
-  --criterion-dir target/criterion \
+  --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion" \
   --out perf-current.json
 
 # compare two captured runs

@@ -6,7 +6,7 @@ detect benchmark regressions in critical paths.
 ## Running benchmarks locally
 
 ```bash
-rm -rf target/criterion
+rm -rf "${CARGO_TARGET_DIR:-target}/criterion"
 cargo bench -p nova-core --bench critical_paths
 cargo bench -p nova-syntax --bench parse_java
 cargo bench -p nova-format --bench format
@@ -16,7 +16,7 @@ cargo bench -p nova-classpath --bench index
 
 Criterion writes results to `$CARGO_TARGET_DIR/criterion` (defaults to `target/criterion`).
 
-Note: When capturing runs for comparison, start from a clean `target/criterion` directory (as CI
+Note: When capturing runs for comparison, start from a clean `$CARGO_TARGET_DIR/criterion` directory (as CI
 does) so removed benchmarks don’t leave stale `**/new/sample.json` files that `nova perf capture`
 would otherwise pick up.
 
@@ -32,11 +32,9 @@ would otherwise pick up.
 
 ```bash
 cargo run -p nova-cli --release -- perf capture \
-  --criterion-dir target/criterion \
+  --criterion-dir "${CARGO_TARGET_DIR:-target}/criterion" \
   --out perf-current.json
 ```
-
-If you set `CARGO_TARGET_DIR`, pass `--criterion-dir "$CARGO_TARGET_DIR/criterion"` instead.
 
 ## Comparing two runs
 
