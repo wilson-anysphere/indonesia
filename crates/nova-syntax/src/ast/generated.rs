@@ -899,8 +899,166 @@ impl AstNode for SwitchLabel {
 }
 
 impl SwitchLabel {
-    pub fn expressions(&self) -> impl Iterator<Item = Expression> + '_ {
-        support::children::<Expression>(&self.syntax)
+    pub fn elements(&self) -> impl Iterator<Item = CaseLabelElement> + '_ {
+        support::children::<CaseLabelElement>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaseLabelElement {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for CaseLabelElement {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::CaseLabelElement
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl CaseLabelElement {
+    pub fn pattern(&self) -> Option<Pattern> {
+        support::child::<Pattern>(&self.syntax)
+    }
+
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+    pub fn guard(&self) -> Option<Guard> {
+        support::child::<Guard>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Guard {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for Guard {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Guard
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl Guard {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pattern {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for Pattern {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::Pattern
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl Pattern {
+    pub fn type_pattern(&self) -> Option<TypePattern> {
+        support::child::<TypePattern>(&self.syntax)
+    }
+
+    pub fn record_pattern(&self) -> Option<RecordPattern> {
+        support::child::<RecordPattern>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypePattern {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for TypePattern {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::TypePattern
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl TypePattern {
+    pub fn modifiers(&self) -> Option<Modifiers> {
+        support::child::<Modifiers>(&self.syntax)
+    }
+
+    pub fn ty(&self) -> Option<Type> {
+        support::child::<Type>(&self.syntax)
+    }
+
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::ident_token(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordPattern {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for RecordPattern {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::RecordPattern
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl RecordPattern {
+    pub fn modifiers(&self) -> Option<Modifiers> {
+        support::child::<Modifiers>(&self.syntax)
+    }
+
+    pub fn ty(&self) -> Option<Type> {
+        support::child::<Type>(&self.syntax)
+    }
+
+    pub fn components(&self) -> impl Iterator<Item = Pattern> + '_ {
+        support::children::<Pattern>(&self.syntax)
     }
 
 }
@@ -1905,6 +2063,14 @@ impl BinaryExpression {
 
     pub fn rhs(&self) -> Option<Expression> {
         support::children::<Expression>(&self.syntax).nth(1)
+    }
+
+    pub fn ty(&self) -> Option<Type> {
+        support::child::<Type>(&self.syntax)
+    }
+
+    pub fn pattern(&self) -> Option<Pattern> {
+        support::child::<Pattern>(&self.syntax)
     }
 
 }

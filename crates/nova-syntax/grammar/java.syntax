@@ -219,7 +219,34 @@ SwitchBlock {
 }
 
 SwitchLabel {
-  expressions: Expression*
+  elements: CaseLabelElement*
+}
+
+CaseLabelElement {
+  pattern: Pattern?
+  expression: Expression?
+  guard: Guard?
+}
+
+Guard {
+  expression: Expression?
+}
+
+Pattern {
+  type_pattern: TypePattern?
+  record_pattern: RecordPattern?
+}
+
+TypePattern {
+  modifiers: Modifiers?
+  ty: Type?
+  name_token: Ident?
+}
+
+RecordPattern {
+  modifiers: Modifiers?
+  ty: Type?
+  components: Pattern*
 }
 
 ForStatement {
@@ -371,6 +398,8 @@ UnaryExpression {
 BinaryExpression {
   lhs: Expression?
   rhs: Expression?
+  ty: Type?
+  pattern: Pattern?
 }
 
 AssignmentExpression {

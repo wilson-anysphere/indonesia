@@ -74,6 +74,16 @@ macro_rules! ast_node {
     };
 }
 
+impl SwitchLabel {
+    /// Returns the constant-expression label elements (if any).
+    ///
+    /// Note: switch pattern labels are represented as [`CaseLabelElement`] nodes, so
+    /// expressions are no longer direct children of the switch label.
+    pub fn expressions(&self) -> impl Iterator<Item = Expression> + '_ {
+        self.elements().filter_map(|el| el.expression())
+    }
+}
+
 // --- JPMS module-info.java nodes ---------------------------------------------------------------
 
 ast_node!(ModuleDeclaration, SyntaxKind::ModuleDeclaration);
