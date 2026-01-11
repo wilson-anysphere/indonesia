@@ -326,6 +326,7 @@ CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manua
 - Fixtures directory (local-only clones): `test-projects/`
   - managed by: `./scripts/clone-test-projects.sh`
   - pinned revisions live in: `test-projects/pins.toml` (single source of truth)
+  - note: `test-projects/**` is gitignored (only `README.md` + `pins.toml` are checked in)
 - Tests:
   - `crates/nova-project/tests/real_projects.rs`
   - `crates/nova-cli/tests/real_projects.rs`
