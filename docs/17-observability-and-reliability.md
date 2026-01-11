@@ -239,7 +239,7 @@ Nova exposes a custom LSP request:
   - `maxLogLines` (`number`, optional; default `500`)
   - `reproduction` (`string`, optional)
 - result:
-  - `{ "path": "/path/to/nova-bugreport-..." }`
+  - `{ "path": "/path/to/nova-bugreport-...", "archivePath": "/path/to/nova-bugreport-....zip" }`
 
 Example raw request:
 
@@ -258,7 +258,14 @@ Example raw request:
 Example response:
 
 ```json
-{ "jsonrpc": "2.0", "id": 1, "result": { "path": "/tmp/nova-bugreport-abc123" } }
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "path": "/tmp/nova-bugreport-abc123",
+    "archivePath": "/tmp/nova-bugreport-abc123.zip"
+  }
+}
 ```
 
 ### CLI / DAP equivalents
@@ -277,8 +284,10 @@ nova bugreport --json
 Useful flags:
 
 - `--config <path>`: load a TOML `NovaConfig` (otherwise defaults are used)
-- `--reproduction <text>` or `--reproduction-file <path>`: attach repro steps
+- `--repro-text <text>` or `--repro <path>`: attach repro steps
 - `--max-log-lines <n>`: cap included log lines (default: 500)
+- `--out <dir>`: move the resulting bundle directory (and optional archive) to a known location
+- `--archive`: also emit a `.zip` archive (recommended for sharing)
 
 > Note: `nova bugreport` captures diagnostics for the **CLI process**. If you are troubleshooting a
 > running editor integration, prefer the in-process LSP request (`nova/bugReport`) so the bundle
@@ -293,7 +302,7 @@ Useful flags:
   - `maxLogLines` (`number`, optional; default `500`)
   - `reproduction` (`string`, optional)
 - response body:
-  - `{ "path": "/path/to/nova-bugreport-..." }`
+  - `{ "path": "/path/to/nova-bugreport-...", "archivePath": "/path/to/nova-bugreport-....zip" }`
 
 Example request (DAP JSON over stdio):
 
@@ -324,30 +333,35 @@ include a `metrics.json` snapshot from `nova-metrics`).
 
 A bug report bundle is a directory containing:
 
-- `meta.json` – Nova crate version
-- `config.json` – serialized `NovaConfig`, with secrets redacted
-- `logs.txt` – recent log lines (from the in-memory ring buffer)
-- `performance.json` – counters (requests/timeouts/panics/safe-mode entries)
+- `meta.json` – Nova version(s), timestamp, target triple, optional git SHA
+- `system.json` – best-effort system/process metadata (CPU count, memory/RSS on Linux, uptime)
+- `env.json` – curated subset of environment variables (redacted)
+- `config.json` – serialized `NovaConfig`, with secrets redacted (by key and value patterns)
+- `logs.txt` – recent log lines (from the in-memory ring buffer, redacted)
+- `performance.json` – counters (requests/timeouts/panics/safe-mode entries, optional safe-mode state)
 - `metrics.json` – per-method request metrics (counts + latency summaries; best-effort)
-- `crashes.json` – recent panic records (message/location/backtrace if enabled)
-- `repro.txt` – reproduction text (only if provided)
+- `crashes.json` – recent panic records (in-memory + last persisted crash log entries)
+- `repro.txt` – reproduction text (only if provided, redacted)
 
 ### Privacy / redaction guarantees
 
-Nova applies **best-effort redaction** to `config.json`:
+Nova applies **best-effort redaction** to bug report contents:
 
-- keys containing `password`, `secret`, `token`, `api_key`/`apikey`, or `authorization` are replaced
-  with `"<redacted>"`
+- `config.json` is redacted by **key** and **value patterns** (URLs with sensitive query params, bearer tokens, etc.)
+- `logs.txt`, `repro.txt`, and crash messages/backtraces are also value-redacted line-by-line
+- `env.json` contains only a curated subset of variables and is redacted
 
 Important caveats:
 
-- `logs.txt` and `repro.txt` may still contain sensitive information (file paths, code snippets,
+- Even after redaction, bundles may contain sensitive information (file paths, code snippets,
   prompt text, etc). **Review before sharing.**
 - Bug report bundles do **not** include your full project sources.
 
 ### Sharing a bundle
 
-The generated `path` is a directory. Compress it before attaching to an issue:
+If `archivePath` is present, you can attach the `.zip` directly.
+
+Otherwise, the generated `path` is a directory. Compress it before attaching to an issue:
 
 ```bash
 tar -czf nova-bugreport.tar.gz -C "/tmp/nova-bugreport-abc123" .

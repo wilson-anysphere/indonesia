@@ -233,6 +233,7 @@ If Nova hits an internal error (panic) or enters safe mode, generate a diagnosti
 custom LSP request:
 
 - `nova/bugReport` → returns `{ "path": "/tmp/nova-bugreport-..." }`
+  - also returns `"archivePath"` (best-effort) pointing at a single `.zip` file for easy sharing
 
 If you are troubleshooting the headless CLI itself, you can also generate a bundle directly:
 
