@@ -732,6 +732,28 @@ pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
         name: "local_type_declaration_statement".to_string(),
         text: "class Foo { void m() { class Local {} } }".to_string(),
     });
+    // Fragment entry points are used by incremental reparsing and debugger evaluation; they emit
+    // additional root node kinds that aren't covered by parsing full compilation units.
+    sources.push(SyntaxLintSource::ExpressionRoot {
+        name: "expression_root".to_string(),
+        text: "a + b".to_string(),
+    });
+    sources.push(SyntaxLintSource::ExpressionFragment {
+        name: "expression_fragment".to_string(),
+        text: "a + b".to_string(),
+    });
+    sources.push(SyntaxLintSource::StatementFragment {
+        name: "statement_fragment".to_string(),
+        text: "return 1;".to_string(),
+    });
+    sources.push(SyntaxLintSource::BlockFragment {
+        name: "block_fragment".to_string(),
+        text: "{ int x = 1; }".to_string(),
+    });
+    sources.push(SyntaxLintSource::ClassMemberFragment {
+        name: "class_member_fragment".to_string(),
+        text: "int x = 1;".to_string(),
+    });
 
     let (emitted_node_kinds, first_seen) = collect_emitted_node_kinds(repo_root, &sources)
         .context("failed to collect parser nodes")?;
@@ -767,6 +789,11 @@ pub fn syntax_lint_report(repo_root: &Path) -> Result<SyntaxLintReport> {
 enum SyntaxLintSource {
     Path(PathBuf),
     Inline { name: String, text: String },
+    ExpressionRoot { name: String, text: String },
+    ExpressionFragment { name: String, text: String },
+    StatementFragment { name: String, text: String },
+    BlockFragment { name: String, text: String },
+    ClassMemberFragment { name: String, text: String },
 }
 
 fn collect_java_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
@@ -805,7 +832,7 @@ fn collect_emitted_node_kinds(
         std::collections::BTreeMap::new();
 
     for source in sources {
-        let (name, text) = match source {
+        let (name, parsed) = match source {
             SyntaxLintSource::Path(path) => {
                 let rel = path
                     .strip_prefix(repo_root)
@@ -814,12 +841,32 @@ fn collect_emitted_node_kinds(
                     .to_string();
                 let text = std::fs::read_to_string(path)
                     .with_context(|| format!("failed to read `{}`", path.display()))?;
-                (rel, text)
+                (rel, nova_syntax::parse_java(&text))
             }
-            SyntaxLintSource::Inline { name, text } => (format!("<inline:{name}>"), text.clone()),
+            SyntaxLintSource::Inline { name, text } => {
+                (format!("<inline:{name}>"), nova_syntax::parse_java(text))
+            }
+            SyntaxLintSource::ExpressionRoot { name, text } => (
+                format!("<expr-root:{name}>"),
+                nova_syntax::parse_java_expression(text),
+            ),
+            SyntaxLintSource::ExpressionFragment { name, text } => (
+                format!("<expr-fragment:{name}>"),
+                nova_syntax::parse_java_expression_fragment(text, 0).parse,
+            ),
+            SyntaxLintSource::StatementFragment { name, text } => (
+                format!("<stmt-fragment:{name}>"),
+                nova_syntax::parse_java_statement_fragment(text, 0).parse,
+            ),
+            SyntaxLintSource::BlockFragment { name, text } => (
+                format!("<block-fragment:{name}>"),
+                nova_syntax::parse_java_block_fragment(text, 0).parse,
+            ),
+            SyntaxLintSource::ClassMemberFragment { name, text } => (
+                format!("<member-fragment:{name}>"),
+                nova_syntax::parse_java_class_member_fragment(text, 0).parse,
+            ),
         };
-
-        let parsed = nova_syntax::parse_java(&text);
         let root = parsed.syntax();
 
         record_emitted_kind(root.kind(), &name, &mut emitted, &mut first_seen);
