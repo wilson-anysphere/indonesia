@@ -199,6 +199,9 @@ impl Debugger {
             .await?;
         dbg.class_prepare_request = Some(req);
 
+        dbg.jdwp.event_request_set(6, 0, Vec::new()).await?;
+        dbg.jdwp.event_request_set(7, 0, Vec::new()).await?;
+
         Ok(dbg)
     }
 

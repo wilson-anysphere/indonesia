@@ -809,6 +809,14 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                     catch_location,
                 });
             }
+            6 => {
+                let thread = r.read_object_id(&sizes)?;
+                let _ = inner.events.send(JdwpEvent::ThreadStart { request_id, thread });
+            }
+            7 => {
+                let thread = r.read_object_id(&sizes)?;
+                let _ = inner.events.send(JdwpEvent::ThreadDeath { request_id, thread });
+            }
             8 => {
                 let thread = r.read_object_id(&sizes)?;
                 let ref_type_tag = r.read_u8()?;

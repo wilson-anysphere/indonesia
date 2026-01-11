@@ -1011,6 +1011,12 @@ fn spawn_event_task(
                         ),
                     );
                 }
+                nova_jdwp::wire::JdwpEvent::ThreadStart { thread, .. } => {
+                    send_event(&tx, &seq, "thread", Some(json!({"reason": "started", "threadId": thread as i64})));
+                }
+                nova_jdwp::wire::JdwpEvent::ThreadDeath { thread, .. } => {
+                    send_event(&tx, &seq, "thread", Some(json!({"reason": "exited", "threadId": thread as i64})));
+                }
                 nova_jdwp::wire::JdwpEvent::VmDeath => {
                     send_terminated_once(&tx, &seq, &terminated_sent);
                     server_shutdown.cancel();

@@ -128,6 +128,14 @@ pub enum JdwpEvent {
         request_id: i32,
         thread: ThreadId,
     },
+    ThreadStart {
+        request_id: i32,
+        thread: ThreadId,
+    },
+    ThreadDeath {
+        request_id: i32,
+        thread: ThreadId,
+    },
     Breakpoint {
         request_id: i32,
         thread: ThreadId,

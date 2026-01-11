@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::time::Duration;
 
 use nova_dap::dap_tokio::{DapReader, DapWriter};
 use nova_dap::wire_server;
@@ -531,6 +532,81 @@ async fn dap_exception_info_includes_type_name() {
 
     send_request(&mut writer, 7, "disconnect", json!({})).await;
     let _disc_resp = read_response(&mut reader, 7).await;
+
+    server_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn dap_emits_thread_start_and_death_events() {
+    let jdwp = MockJdwpServer::spawn().await.unwrap();
+
+    let (client, server_stream) = tokio::io::duplex(64 * 1024);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+
+    let (client_read, client_write) = tokio::io::split(client);
+    let mut reader = DapReader::new(client_read);
+    let mut writer = DapWriter::new(client_write);
+
+    send_request(&mut writer, 1, "initialize", json!({})).await;
+    let init_resp = read_response(&mut reader, 1).await;
+    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    // Initialized event.
+    let initialized = read_next(&mut reader).await;
+    assert_eq!(initialized.get("event").and_then(|v| v.as_str()), Some("initialized"));
+
+    send_request(
+        &mut writer,
+        2,
+        "attach",
+        json!({
+            "host": "127.0.0.1",
+            "port": jdwp.addr().port()
+        }),
+    )
+    .await;
+    let attach_resp = read_response(&mut reader, 2).await;
+    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+
+    // Trigger the mock VM to emit thread lifecycle events.
+    send_request(&mut writer, 3, "continue", json!({})).await;
+
+    let mut started_thread_id: Option<i64> = None;
+    let mut exited_thread_id: Option<i64> = None;
+    let mut continue_ok = false;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while started_thread_id.is_none() || exited_thread_id.is_none() || !continue_ok {
+            let msg = read_next(&mut reader).await;
+            match msg.get("type").and_then(|v| v.as_str()) {
+                Some("response") => {
+                    if msg.get("request_seq").and_then(|v| v.as_i64()) == Some(3) {
+                        continue_ok = msg.get("success").and_then(|v| v.as_bool()).unwrap_or(false);
+                    }
+                }
+                Some("event") => {
+                    if msg.get("event").and_then(|v| v.as_str()) != Some("thread") {
+                        continue;
+                    }
+                    let reason = msg.pointer("/body/reason").and_then(|v| v.as_str());
+                    let thread_id = msg.pointer("/body/threadId").and_then(|v| v.as_i64());
+                    match reason {
+                        Some("started") => started_thread_id = thread_id,
+                        Some("exited") => exited_thread_id = thread_id,
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for thread events");
+
+    assert_eq!(started_thread_id, exited_thread_id);
+
+    send_request(&mut writer, 4, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 4).await;
 
     server_task.await.unwrap().unwrap();
 }

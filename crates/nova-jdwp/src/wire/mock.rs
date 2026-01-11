@@ -105,6 +105,9 @@ struct State {
     next_packet_id: AtomicU32,
     breakpoint_request: tokio::sync::Mutex<Option<i32>>,
     step_request: tokio::sync::Mutex<Option<i32>>,
+    thread_start_request: tokio::sync::Mutex<Option<i32>>,
+    thread_death_request: tokio::sync::Mutex<Option<i32>>,
+    threads: tokio::sync::Mutex<Vec<u64>>,
     exception_request: tokio::sync::Mutex<Option<MockExceptionRequest>>,
     redefine_classes_error_code: AtomicU16,
     redefine_classes_calls: tokio::sync::Mutex<Vec<RedefineClassesCall>>,
@@ -131,6 +134,9 @@ impl State {
             next_packet_id: AtomicU32::new(0),
             breakpoint_request: tokio::sync::Mutex::new(None),
             step_request: tokio::sync::Mutex::new(None),
+            thread_start_request: tokio::sync::Mutex::new(None),
+            thread_death_request: tokio::sync::Mutex::new(None),
+            threads: tokio::sync::Mutex::new(vec![THREAD_ID]),
             exception_request: tokio::sync::Mutex::new(None),
             redefine_classes_error_code: AtomicU16::new(0),
             redefine_classes_calls: tokio::sync::Mutex::new(Vec::new()),
@@ -160,6 +166,7 @@ pub struct RedefineClassesCall {
 }
 
 const THREAD_ID: u64 = 0x1001;
+const WORKER_THREAD_ID: u64 = 0x1002;
 const FRAME_ID: u64 = 0x2001;
 const CLASS_ID: u64 = 0x3001;
 const FOO_CLASS_ID: u64 = 0x3002;
@@ -292,9 +299,12 @@ async fn handle_packet(
         }
         // VirtualMachine.AllThreads
         (1, 4) => {
+            let threads = state.threads.lock().await;
             let mut w = JdwpWriter::new();
-            w.write_u32(1);
-            w.write_object_id(THREAD_ID, sizes);
+            w.write_u32(threads.len() as u32);
+            for thread in threads.iter().copied() {
+                w.write_object_id(thread, sizes);
+            }
             (0, w.into_vec())
         }
         // VirtualMachine.ClassesBySignature
@@ -647,6 +657,8 @@ async fn handle_packet(
                         uncaught: exception_uncaught,
                     })
                 }
+                6 => *state.thread_start_request.lock().await = Some(request_id),
+                7 => *state.thread_death_request.lock().await = Some(request_id),
                 _ => {}
             }
             let mut w = JdwpWriter::new();
@@ -676,6 +688,18 @@ async fn handle_packet(
                         *guard = None;
                     }
                 }
+                6 => {
+                    let mut guard = state.thread_start_request.lock().await;
+                    if guard.map(|v| v == request_id).unwrap_or(false) {
+                        *guard = None;
+                    }
+                }
+                7 => {
+                    let mut guard = state.thread_death_request.lock().await;
+                    if guard.map(|v| v == request_id).unwrap_or(false) {
+                        *guard = None;
+                    }
+                }
                 _ => {}
             }
             (0, Vec::new())
@@ -700,13 +724,34 @@ async fn handle_packet(
         let breakpoint_request = { *state.breakpoint_request.lock().await };
         let step_request = { *state.step_request.lock().await };
         let exception_request = { *state.exception_request.lock().await };
-        make_stop_event_packet(
-            state,
-            id_sizes,
-            breakpoint_request,
-            step_request,
-            exception_request,
-        )
+        let thread_start_request = { *state.thread_start_request.lock().await };
+        let thread_death_request = { *state.thread_death_request.lock().await };
+
+        let mut follow_up = Vec::new();
+
+        if let Some(request_id) = thread_start_request {
+            {
+                let mut threads = state.threads.lock().await;
+                if !threads.contains(&WORKER_THREAD_ID) {
+                    threads.push(WORKER_THREAD_ID);
+                }
+            }
+            follow_up.extend(make_thread_event_packet(state, id_sizes, 6, request_id, WORKER_THREAD_ID));
+        }
+
+        if let Some(request_id) = thread_death_request {
+            {
+                let mut threads = state.threads.lock().await;
+                threads.retain(|t| *t != WORKER_THREAD_ID);
+            }
+            follow_up.extend(make_thread_event_packet(state, id_sizes, 7, request_id, WORKER_THREAD_ID));
+        }
+
+        if let Some(stop_packet) = make_stop_event_packet(state, id_sizes, breakpoint_request, step_request, exception_request) {
+            follow_up.extend(stop_packet);
+        }
+
+        if follow_up.is_empty() { None } else { Some(follow_up) }
     } else {
         None
     };
@@ -752,6 +797,24 @@ async fn write_reply(
         guard.write_all(&follow_up).await?;
     }
     Ok(())
+}
+
+fn make_thread_event_packet(
+    state: &State,
+    id_sizes: &JdwpIdSizes,
+    event_kind: u8,
+    request_id: i32,
+    thread_id: u64,
+) -> Vec<u8> {
+    let mut w = JdwpWriter::new();
+    w.write_u8(0); // suspend policy: none
+    w.write_u32(1); // event count
+    w.write_u8(event_kind);
+    w.write_i32(request_id);
+    w.write_object_id(thread_id, id_sizes);
+    let payload = w.into_vec();
+    let packet_id = state.alloc_packet_id();
+    encode_command(packet_id, 64, 100, &payload)
 }
 
 fn make_stop_event_packet(
