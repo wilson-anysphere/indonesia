@@ -35,11 +35,12 @@ For the stable spec of Nova’s custom `nova/*` LSP methods, see
 ## Crate-by-crate map (alphabetical)
 
 ### `nova-ai`
-- **Purpose:** model-agnostic AI helpers (privacy, context building, completion ranking, cloud client scaffolding).
-- **Key entry points:** `crates/nova-ai/src/lib.rs` (`AiService`, `CloudLlmClient`, `AiConfig`, `PrivacyMode`).
+- **Purpose:** model-agnostic AI helpers (privacy/anonymization, context building, completion ranking, semantic search, optional cloud LLM client).
+- **Key entry points:** `crates/nova-ai/src/lib.rs` (`AiService`, `CloudLlmClient`, `CloudLlmConfig`, `ContextBuilder`, `SemanticSearch`, `TrigramSemanticSearch`, `PrivacyMode`).
 - **Maturity:** prototype
 - **Known gaps vs intended docs:**
   - AI features are opt-in and mostly wired through the `nova-lsp` binary, not the incremental query engine.
+  - Embeddings-backed semantic search is feature-gated (`embeddings`) and still experimental.
 
 ### `nova-apt`
 - **Purpose:** annotation-processing support (discovering generated source roots; triggering APT builds).
