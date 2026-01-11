@@ -111,6 +111,10 @@ pub struct ScopeBuildResult {
     pub expr_scopes: HashMap<hir::ExprId, ScopeId>,
 }
 
+mod item_tree_scopes;
+
+pub use item_tree_scopes::{build_scopes_for_item_tree, ItemTreeScopeBuildResult};
+
 /// Build a scope graph for a Java file.
 ///
 /// The resulting `ScopeGraph` is derived solely from the file's HIR (and its

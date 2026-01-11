@@ -33,5 +33,8 @@ pub use resolver::{
     BodyOwner, LocalRef, NameResolution, ParamOwner, ParamRef, Resolution, Resolver,
     StaticMemberResolution, TypeResolution,
 };
-pub use scopes::{build_scopes, ScopeBuildResult, ScopeData, ScopeGraph, ScopeId, ScopeKind};
+pub use scopes::{
+    build_scopes, build_scopes_for_item_tree, ItemTreeScopeBuildResult, ScopeBuildResult,
+    ScopeData, ScopeGraph, ScopeId, ScopeKind,
+};
 pub use types::{TypeDef, TypeKind};
