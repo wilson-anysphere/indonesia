@@ -455,3 +455,136 @@ async fn cancel_sent_immediately_after_request_is_observed() {
 
     router.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn chunking_reassembles_interleaved_packets() {
+    use std::collections::HashMap;
+
+    let (router_io, mut worker_io) = tokio::io::duplex(1024 * 1024);
+
+    // Use small frames so the request payloads must be chunked.
+    let mut worker_hello = hello(None);
+    worker_hello.capabilities.max_frame_len = 4096;
+    worker_hello.capabilities.max_packet_len = 2 * 1024 * 1024;
+    worker_hello.capabilities.supported_compression = vec![CompressionAlgo::None];
+    worker_hello.capabilities.supports_cancel = false;
+    worker_hello.capabilities.supports_chunking = true;
+
+    let router_task = tokio::spawn(async move {
+        RpcConnection::handshake_as_router(router_io, None)
+            .await
+            .unwrap()
+            .0
+    });
+
+    // Manual worker handshake.
+    write_wire_frame(&mut worker_io, &WireFrame::Hello(worker_hello)).await;
+    let frame = read_wire_frame(&mut worker_io, DEFAULT_PRE_HANDSHAKE_MAX_FRAME_LEN).await;
+    let welcome = match frame {
+        WireFrame::Welcome(welcome) => welcome,
+        other => panic!("expected welcome frame, got {other:?}"),
+    };
+    assert!(welcome.chosen_capabilities.supports_chunking);
+    assert_eq!(welcome.chosen_capabilities.max_frame_len, 4096);
+
+    let router = router_task.await.unwrap();
+
+    router.set_request_handler(|ctx, req| async move {
+        // For this test we only care that both interleaved packets get reassembled and dispatched.
+        assert!(matches!(req, Request::LoadFiles { .. }));
+        // Inbound requests are initiated by the worker, so IDs must be odd.
+        assert_eq!(ctx.request_id() % 2, 1);
+        Ok(Response::Ack)
+    });
+
+    let payload_a = "a".repeat(120_000);
+    let payload_b = "b".repeat(100_000);
+
+    let req_a = Request::LoadFiles {
+        revision: 1,
+        files: vec![FileText {
+            path: "a.java".into(),
+            text: payload_a,
+        }],
+    };
+    let req_b = Request::LoadFiles {
+        revision: 2,
+        files: vec![FileText {
+            path: "b.java".into(),
+            text: payload_b,
+        }],
+    };
+
+    let bytes_a = v3::encode_rpc_payload(&RpcPayload::Request(req_a)).unwrap();
+    let bytes_b = v3::encode_rpc_payload(&RpcPayload::Request(req_b)).unwrap();
+
+    // Chunk size chosen to comfortably fit into `max_frame_len` once CBOR overhead is included.
+    let chunk_size = 1024usize;
+    let chunks_a: Vec<Vec<u8>> = bytes_a.chunks(chunk_size).map(|c| c.to_vec()).collect();
+    let chunks_b: Vec<Vec<u8>> = bytes_b.chunks(chunk_size).map(|c| c.to_vec()).collect();
+
+    // Worker request IDs are odd; use two distinct IDs and interleave the chunk streams.
+    let id_a: u64 = 1;
+    let id_b: u64 = 3;
+
+    let max_chunks = chunks_a.len().max(chunks_b.len());
+    for seq in 0..max_chunks {
+        if let Some(chunk) = chunks_a.get(seq) {
+            write_wire_frame(
+                &mut worker_io,
+                &WireFrame::PacketChunk {
+                    id: id_a,
+                    compression: CompressionAlgo::None,
+                    seq: seq as u32,
+                    last: seq + 1 == chunks_a.len(),
+                    data: chunk.clone(),
+                },
+            )
+            .await;
+        }
+        if let Some(chunk) = chunks_b.get(seq) {
+            write_wire_frame(
+                &mut worker_io,
+                &WireFrame::PacketChunk {
+                    id: id_b,
+                    compression: CompressionAlgo::None,
+                    seq: seq as u32,
+                    last: seq + 1 == chunks_b.len(),
+                    data: chunk.clone(),
+                },
+            )
+            .await;
+        }
+    }
+
+    // Expect two Ack responses, one per request id, in any order.
+    let mut seen: HashMap<u64, Response> = HashMap::new();
+    while seen.len() < 2 {
+        let frame = read_wire_frame(&mut worker_io, welcome.chosen_capabilities.max_frame_len).await;
+        match frame {
+            WireFrame::Packet {
+                id,
+                compression,
+                data,
+            } => {
+                assert_eq!(compression, CompressionAlgo::None);
+                let payload = v3::decode_rpc_payload(&data).unwrap();
+                match payload {
+                    RpcPayload::Response(result) => match result {
+                        nova_remote_proto::v3::RpcResult::Ok { value } => {
+                            seen.insert(id, value);
+                        }
+                        other => panic!("unexpected rpc result: {other:?}"),
+                    },
+                    other => panic!("unexpected payload: {other:?}"),
+                }
+            }
+            other => panic!("unexpected frame: {other:?}"),
+        }
+    }
+
+    assert!(matches!(seen.get(&id_a), Some(Response::Ack)));
+    assert!(matches!(seen.get(&id_b), Some(Response::Ack)));
+
+    router.shutdown().await.unwrap();
+}
