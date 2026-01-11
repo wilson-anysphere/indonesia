@@ -1,9 +1,12 @@
 use httpmock::prelude::*;
+use lsp_types::{Position, Range};
 mod support;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use std::io::BufReader;
 use std::process::{Command, Stdio};
+
+use nova_lsp::text_pos::TextPos;
 
 use support::{read_jsonrpc_message, read_response_with_id, write_jsonrpc_message};
 
@@ -167,6 +170,226 @@ fn stdio_server_handles_ai_explain_error_code_action() {
     );
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
 
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_extracts_utf16_ranges_for_ai_code_actions() {
+    let mock_server = MockServer::start();
+    // The code action request itself should not invoke the provider, but we need
+    // a valid endpoint so the server considers AI configured.
+    let _mock = mock_server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "unused in this test" }));
+    });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", mock_server.base_url()),
+        )
+        .env("NOVA_AI_MODEL", "default")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    // initialize
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+
+    let uri = "file:///Test.java";
+    let text = "class Test { void run() { String s = \"😀\"; } }\n";
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let emoji_offset = text.find('😀').expect("emoji present");
+    let pos = TextPos::new(text);
+    let start = pos.lsp_position(emoji_offset).expect("start pos");
+    let end = pos
+        .lsp_position(emoji_offset + '😀'.len_utf8())
+        .expect("end pos");
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": Range::new(start, end),
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let actions = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    let gen_tests = actions
+        .iter()
+        .find(|a| a.get("title").and_then(|t| t.as_str()) == Some("Generate tests with AI"))
+        .expect("generate tests action");
+    let cmd = gen_tests
+        .get("command")
+        .and_then(|c| c.get("command"))
+        .and_then(|v| v.as_str())
+        .expect("command string");
+    assert_eq!(cmd, nova_ide::COMMAND_GENERATE_TESTS);
+
+    let args = gen_tests
+        .get("command")
+        .and_then(|c| c.get("arguments"))
+        .and_then(|v| v.as_array())
+        .expect("arguments");
+    let target = args[0]
+        .get("target")
+        .and_then(|v| v.as_str())
+        .expect("target");
+    assert_eq!(target, "😀");
+
+    // shutdown + exit
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
+    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
+    drop(stdin);
+
+    let status = child.wait().expect("wait");
+    assert!(status.success());
+}
+
+#[test]
+fn stdio_server_rejects_surrogate_pair_interior_ranges_for_ai_code_actions() {
+    let mock_server = MockServer::start();
+    let _mock = mock_server.mock(|when, then| {
+        when.method(POST).path("/complete");
+        then.status(200)
+            .json_body(json!({ "completion": "unused in this test" }));
+    });
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nova-lsp"))
+        .arg("--stdio")
+        .env("NOVA_AI_PROVIDER", "http")
+        .env(
+            "NOVA_AI_ENDPOINT",
+            format!("{}/complete", mock_server.base_url()),
+        )
+        .env("NOVA_AI_MODEL", "default")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("spawn nova-lsp");
+
+    let mut stdin = child.stdin.take().expect("stdin");
+    let stdout = child.stdout.take().expect("stdout");
+    let mut stdout = BufReader::new(stdout);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": { "capabilities": {} }
+        }),
+    );
+    let _initialize_resp = read_response_with_id(&mut stdout, 1);
+
+    let uri = "file:///Test.java";
+    let text = "class Test { String s = \"😀\"; }\n";
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "java",
+                    "version": 1,
+                    "text": text
+                }
+            }
+        }),
+    );
+
+    let emoji_offset = text.find('😀').expect("emoji present");
+    let pos = TextPos::new(text);
+    let start = pos.lsp_position(emoji_offset).expect("start pos");
+    let inside = Position::new(start.line, start.character + 1);
+    let end = Position::new(start.line, start.character + 2);
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": { "uri": uri },
+                "range": Range::new(inside, end),
+                "context": { "diagnostics": [] }
+            }
+        }),
+    );
+
+    let resp = read_response_with_id(&mut stdout, 2);
+    let actions = resp
+        .get("result")
+        .and_then(|v| v.as_array())
+        .expect("code actions array");
+
+    assert!(
+        actions
+            .iter()
+            .all(|a| a.get("title").and_then(|t| t.as_str()) != Some("Generate tests with AI")),
+        "expected no generate tests action for invalid UTF-16 range, got: {actions:#?}"
+    );
+
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
+    let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);
 
