@@ -329,6 +329,22 @@ fn parse_switch_assert_synchronized_and_labels() {
 }
 
 #[test]
+fn parse_switch_arrow_labels_with_identifier_constants() {
+    let input =
+        "class Foo { void m(int x) { switch (x) { case FOO -> { return; } case BAR, BAZ -> { return; } default -> { return; } } } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+}
+
+#[test]
+fn parse_switch_arrow_labels_with_parenthesized_expressions() {
+    let input =
+        "class Foo { void m(int x) { switch (x) { case (1 + 2) -> { return; } default -> { return; } } } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+}
+
+#[test]
 fn cache_parse_detects_doc_comments() {
     let parsed = crate::parse("/** doc */ class Foo {}");
     let kinds: Vec<_> = parsed.tokens().map(|t| t.kind).collect();

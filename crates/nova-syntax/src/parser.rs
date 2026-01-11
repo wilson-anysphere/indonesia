@@ -1512,7 +1512,7 @@ impl<'a> Parser<'a> {
                     is_pattern = true;
                     self.parse_pattern(true);
                 } else {
-                    self.parse_expression(0);
+                    self.parse_expression_no_lambda(0);
                 }
             }
         }
@@ -2055,6 +2055,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self, min_bp: u8) {
+        self.parse_expression_inner(min_bp, true);
+    }
+
+    fn parse_expression_no_lambda(&mut self, min_bp: u8) {
+        self.parse_expression_inner(min_bp, false);
+    }
+
+    fn parse_expression_inner(&mut self, min_bp: u8, allow_lambda: bool) {
         self.eat_trivia();
         let checkpoint = self.builder.checkpoint();
 
@@ -2106,7 +2114,7 @@ impl<'a> Parser<'a> {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::UnaryExpression.into());
                 self.bump();
-                self.parse_expression(100);
+                self.parse_expression_inner(100, allow_lambda);
                 self.builder.finish_node();
             }
             SyntaxKind::Identifier
@@ -2127,7 +2135,7 @@ impl<'a> Parser<'a> {
             | SyntaxKind::UsesKw
             | SyntaxKind::ProvidesKw
             | SyntaxKind::WithKw => {
-                if self.nth(1) == Some(SyntaxKind::Arrow) {
+                if allow_lambda && self.nth(1) == Some(SyntaxKind::Arrow) {
                     self.parse_lambda_expression(checkpoint);
                 } else {
                     self.builder
@@ -2143,7 +2151,7 @@ impl<'a> Parser<'a> {
                 }
             }
             SyntaxKind::LParen => {
-                if self.is_lambda_paren() {
+                if allow_lambda && self.is_lambda_paren() {
                     self.parse_lambda_expression(checkpoint);
                 } else if self.is_cast_expression() {
                     self.builder
@@ -2151,13 +2159,13 @@ impl<'a> Parser<'a> {
                     self.bump();
                     self.parse_type();
                     self.expect(SyntaxKind::RParen, "expected `)` in cast");
-                    self.parse_expression(100);
+                    self.parse_expression_inner(100, allow_lambda);
                     self.builder.finish_node();
                 } else {
                     self.builder
                         .start_node_at(checkpoint, SyntaxKind::ParenthesizedExpression.into());
                     self.bump();
-                    self.parse_expression(0);
+                    self.parse_expression_inner(0, allow_lambda);
                     self.expect(SyntaxKind::RParen, "expected `)`");
                     self.builder.finish_node();
                 }
@@ -2215,7 +2223,7 @@ impl<'a> Parser<'a> {
                         .start_node_at(checkpoint, SyntaxKind::ArrayAccessExpression.into());
                     self.bump();
                     if !self.at(SyntaxKind::RBracket) {
-                        self.parse_expression(0);
+                        self.parse_expression_inner(0, allow_lambda);
                     }
                     self.expect(SyntaxKind::RBracket, "expected `]`");
                     self.builder.finish_node();
@@ -2243,7 +2251,7 @@ impl<'a> Parser<'a> {
                 if op == SyntaxKind::InstanceofKw {
                     self.parse_instanceof_type_or_pattern();
                 } else {
-                    self.parse_expression(r_bp);
+                    self.parse_expression_inner(r_bp, allow_lambda);
                 }
                 self.builder.finish_node();
                 continue;
@@ -2258,9 +2266,9 @@ impl<'a> Parser<'a> {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::ConditionalExpression.into());
                 self.bump(); // ?
-                self.parse_expression(0);
+                self.parse_expression_inner(0, allow_lambda);
                 self.expect(SyntaxKind::Colon, "expected `:` in conditional expression");
-                self.parse_expression(r_bp);
+                self.parse_expression_inner(r_bp, allow_lambda);
                 self.builder.finish_node();
                 continue;
             }
