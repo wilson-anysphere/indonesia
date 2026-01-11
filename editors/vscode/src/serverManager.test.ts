@@ -133,6 +133,74 @@ describe('ServerManager install flow', () => {
     expect(extractor.extractBinaryFromArchive).not.toHaveBeenCalled();
   });
 
+  it('restores the requested version from the download cache when available', async () => {
+    const { Volume, createFsFromVolume } = await import('memfs');
+    const vol = new Volume();
+    const memfs = createFsFromVolume(vol) as typeof import('node:fs');
+
+    vi.doMock('node:fs/promises', () => memfs.promises as unknown as typeof import('node:fs/promises'));
+    vi.doMock('node:fs', () => memfs);
+
+    const { ServerManager } = await import('./serverManager');
+
+    await memfs.promises.mkdir('/storage/server/v0.1.0', { recursive: true });
+    await memfs.promises.writeFile('/storage/server/v0.1.0/nova-lsp', 'cached-binary');
+    await memfs.promises.writeFile(
+      '/storage/server/v0.1.0/nova-lsp.json',
+      JSON.stringify(
+        {
+          version: 'v0.1.0',
+          target: 'x86_64-unknown-linux-gnu',
+          releaseApiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
+          releaseUrl: 'wilson-anysphere/indonesia',
+        },
+        null,
+        2,
+      ),
+    );
+
+    await memfs.promises.mkdir('/storage/server', { recursive: true });
+    await memfs.promises.writeFile('/storage/server/nova-lsp', 'active-binary');
+    await memfs.promises.writeFile(
+      '/storage/server/nova-lsp.json',
+      JSON.stringify(
+        {
+          version: 'v0.2.0',
+          target: 'x86_64-unknown-linux-gnu',
+          releaseApiBaseUrl: 'https://api.github.com/repos/wilson-anysphere/indonesia',
+          releaseUrl: 'wilson-anysphere/indonesia',
+        },
+        null,
+        2,
+      ),
+    );
+
+    const fetchMock = vi.fn(async () => {
+      throw new Error('fetch should not be called when restoring from cache');
+    });
+
+    const manager = new ServerManager('/storage', undefined, {
+      fetch: fetchMock as unknown as typeof fetch,
+      platform: 'linux',
+      arch: 'x64',
+      extractor: { extractBinaryFromArchive: vi.fn() },
+    });
+
+    const result = await manager.installOrUpdate({
+      path: null,
+      autoDownload: true,
+      releaseChannel: 'stable',
+      version: 'v0.1.0',
+      releaseUrl: 'wilson-anysphere/indonesia',
+    });
+
+    expect(result).toEqual({ path: '/storage/server/nova-lsp', version: 'v0.1.0' });
+    expect(await memfs.promises.readFile('/storage/server/nova-lsp', 'utf8')).toBe('cached-binary');
+    const metadata = JSON.parse(await memfs.promises.readFile('/storage/server/nova-lsp.json', 'utf8'));
+    expect(metadata.version).toBe('v0.1.0');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('selects the latest prerelease when version is latest and releaseChannel is prerelease', async () => {
     const { Volume, createFsFromVolume } = await import('memfs');
     const vol = new Volume();

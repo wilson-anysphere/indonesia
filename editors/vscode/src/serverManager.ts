@@ -145,6 +145,58 @@ export class ServerManager {
     const finalBinaryPath = path.join(installDir, opts.binaryName);
     const metadataPath = path.join(installDir, opts.metadataFileName);
 
+    const activateFromCache = async (tagToActivate: string): Promise<{ path: string; version: string } | undefined> => {
+      const cachedDir = path.join(installDir, tagToActivate);
+      const cachedBinaryPath = path.join(cachedDir, opts.binaryName);
+      const cachedMetadataPath = path.join(cachedDir, opts.metadataFileName);
+
+      const installed = await readInstalledMetadata(cachedMetadataPath);
+      if (
+        installed &&
+        installed.version === tagToActivate &&
+        installed.target === target &&
+        (installed.releaseApiBaseUrl ?? parseGitHubRepo(installed.releaseUrl ?? '')?.apiBaseUrl) === repo.apiBaseUrl &&
+        (await fileExists(fs, cachedBinaryPath))
+      ) {
+        const tmpId = randomBytes(8).toString('hex');
+        const tmpInstallBinaryPath = path.join(installDir, `${opts.binaryName}.install.tmp.${tmpId}`);
+
+        // Best-effort cleanup of crashed partial installs.
+        await cleanupTmpFiles(fs, installDir, [`${opts.binaryName}.install.tmp`]);
+        await safeRm(fs, tmpInstallBinaryPath);
+
+        try {
+          await fs.copyFile(cachedBinaryPath, tmpInstallBinaryPath);
+          if (this.platform !== 'win32') {
+            await fs.chmod(tmpInstallBinaryPath, 0o755);
+          }
+
+          await safeRm(fs, finalBinaryPath);
+          await fs.rename(tmpInstallBinaryPath, finalBinaryPath);
+
+          const metadataJson = JSON.stringify(
+            {
+              installedAt: new Date().toISOString(),
+              version: tagToActivate,
+              target,
+              releaseUrl: settings.releaseUrl,
+              releaseApiBaseUrl: repo.apiBaseUrl,
+            },
+            null,
+            2,
+          );
+
+          await fs.writeFile(metadataPath, metadataJson);
+          this.log(`Activated ${opts.binaryId} ${tagToActivate} from cache`);
+          return { path: finalBinaryPath, version: tagToActivate };
+        } finally {
+          await safeRm(fs, tmpInstallBinaryPath);
+        }
+      }
+
+      return undefined;
+    };
+
     const desiredTag = normalizeVersionTag(settings.version);
     if (desiredTag !== 'latest') {
       const installed = await readInstalledMetadata(metadataPath);
@@ -157,6 +209,11 @@ export class ServerManager {
       ) {
         this.log(`${opts.binaryId} ${desiredTag} is already installed`);
         return { path: finalBinaryPath, version: desiredTag };
+      }
+
+      const cached = await activateFromCache(desiredTag);
+      if (cached) {
+        return cached;
       }
     }
 
@@ -179,6 +236,11 @@ export class ServerManager {
         this.log(`${opts.binaryId} ${tag} is already installed`);
         return { path: finalBinaryPath, version: tag };
       }
+    }
+
+    const cached = await activateFromCache(tag);
+    if (cached) {
+      return cached;
     }
 
     const release = await fetchReleaseByTag({ fetchImpl: this.fetchImpl, repo, tag });
