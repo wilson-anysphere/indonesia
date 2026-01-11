@@ -90,12 +90,20 @@ impl CommandRunner for DefaultCommandRunner {
 }
 
 pub(crate) fn format_command(program: &Path, args: &[String]) -> String {
-    let mut out = program.to_string_lossy().to_string();
+    let mut out = format_command_part(&program.to_string_lossy());
     for arg in args {
         out.push(' ');
-        out.push_str(arg);
+        out.push_str(&format_command_part(arg));
     }
     out
+}
+
+fn format_command_part(part: &str) -> String {
+    if part.contains(' ') || part.contains('\t') {
+        format!("\"{}\"", part.replace('"', "\\\""))
+    } else {
+        part.to_string()
+    }
 }
 
 #[cfg(test)]
