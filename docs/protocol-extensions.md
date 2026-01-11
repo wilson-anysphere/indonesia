@@ -634,8 +634,11 @@ their own internal module/target graph without having to re-implement Maven/Grad
 
 Notes:
 
-- `module` (Maven): module path relative to `projectRoot` (e.g. `"."`, `"module-a"`).
-- `projectPath` (Gradle): Gradle project path (e.g. `":"`, `":app"`).
+- `module` (Maven): module path relative to `projectRoot` (e.g. `"module-a"`). `"."` / empty means
+  “workspace” (no filtering; include all modules).
+- `projectPath` (Gradle): Gradle project path (e.g. `":app"`). `":"` / empty means “workspace” (no
+  filtering; include all modules). Nova accepts project paths without the leading `:` and will
+  normalize them.
 - `target` (Bazel): Bazel label (e.g. `"//app:lib"`). Currently accepted for symmetry but does not
   change behavior for Bazel workspaces (Nova reports generated roots at the workspace/module level).
 
