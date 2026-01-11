@@ -7,8 +7,11 @@ use crate::segments::{build_file_to_newest_segment_map, build_segment_files, seg
 use nova_cache::{
     CacheDir, CacheLock, CacheMetadata, CacheMetadataArchive, Fingerprint, ProjectSnapshot,
 };
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 pub const INDEX_SCHEMA_VERSION: u32 = 2;
 
@@ -1458,10 +1461,70 @@ where
         .unwrap_or_default()
 }
 
-fn acquire_index_write_lock(indexes_dir: &Path) -> Result<CacheLock, IndexPersistenceError> {
-    Ok(CacheLock::lock_exclusive(
-        &indexes_dir.join(INDEX_WRITE_LOCK_NAME),
-    )?)
+struct IndexWriteLock {
+    path: PathBuf,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl Drop for IndexWriteLock {
+    fn drop(&mut self) {
+        INDEX_WRITE_LOCKS.with(|locks_cell| {
+            let mut locks = locks_cell.borrow_mut();
+            let Some(entry) = locks.get_mut(&self.path) else {
+                return;
+            };
+
+            entry.count = entry.count.saturating_sub(1);
+            if entry.count == 0 {
+                locks.remove(&self.path);
+            }
+        });
+    }
+}
+
+struct ReentrantWriteLockEntry {
+    lock: CacheLock,
+    count: usize,
+}
+
+thread_local! {
+    static INDEX_WRITE_LOCKS: RefCell<std::collections::HashMap<PathBuf, ReentrantWriteLockEntry>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+fn acquire_index_write_lock(indexes_dir: &Path) -> Result<IndexWriteLock, IndexPersistenceError> {
+    let lock_path = indexes_dir.join(INDEX_WRITE_LOCK_NAME);
+
+    let already_held = INDEX_WRITE_LOCKS.with(|locks_cell| {
+        let mut locks = locks_cell.borrow_mut();
+        if let Some(existing) = locks.get_mut(&lock_path) {
+            existing.count = existing.count.saturating_add(1);
+            true
+        } else {
+            false
+        }
+    });
+
+    if already_held {
+        return Ok(IndexWriteLock {
+            path: lock_path,
+            _not_send: PhantomData,
+        });
+    }
+
+    let lock = CacheLock::lock_exclusive(&lock_path)?;
+
+    INDEX_WRITE_LOCKS.with(|locks_cell| {
+        locks_cell.borrow_mut().insert(
+            lock_path.clone(),
+            ReentrantWriteLockEntry { lock, count: 1 },
+        );
+    });
+
+    Ok(IndexWriteLock {
+        path: lock_path,
+        _not_send: PhantomData,
+    })
 }
 
 fn next_generation(previous_generation: u64) -> u64 {
