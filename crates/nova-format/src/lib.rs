@@ -21,8 +21,23 @@ pub use nova_core::LineIndex;
 mod formatter;
 mod java_ast;
 pub use java_ast::{edits_for_formatting_ast, format_java_ast};
+mod java_pretty;
 
 pub mod doc;
+
+/// Experimental doc-based, AST-aware Java formatter.
+///
+/// This currently provides only minimal formatting (brace blocks) with a verbatim fallback for
+/// unsupported nodes. It is intentionally separate from [`format_java_ast`] while the pretty
+/// printer architecture is being built out.
+#[doc(hidden)]
+pub fn format_java_pretty(
+    parse: &nova_syntax::JavaParseResult,
+    source: &str,
+    config: &FormatConfig,
+) -> String {
+    java_pretty::format_java_pretty(parse, source, config)
+}
 
 /// Indents each non-empty line in `block` with `indent`.
 #[must_use]

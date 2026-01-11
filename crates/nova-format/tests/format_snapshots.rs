@@ -4,7 +4,7 @@ use nova_format::{
     edits_for_document_formatting, edits_for_document_formatting_with_strategy,
     edits_for_formatting, edits_for_formatting_ast, edits_for_on_type_formatting,
     edits_for_range_formatting, format_java, format_java_ast, format_member_insertion_with_newline,
-    FormatConfig, FormatStrategy, IndentStyle, NewlineStyle,
+    format_java_pretty, FormatConfig, FormatStrategy, IndentStyle, NewlineStyle,
 };
 use nova_syntax::{parse, parse_java};
 use pretty_assertions::assert_eq;
@@ -694,6 +694,46 @@ fn preserves_cr_line_endings_for_full_ast_formatting() {
     let out = apply_text_edits(input, &edits).unwrap();
     assert_eq!(out, formatted);
     assert_cr_only(&out);
+}
+
+#[test]
+fn pretty_formats_trivial_class_block() {
+    let input = "class Foo{int x;}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_pretty(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    int x;
+}
+"###
+    );
+}
+
+#[test]
+fn pretty_preserves_newline_style_and_final_newline() {
+    let input = "class Foo{int x;}\r\n";
+    let parse = parse_java(input);
+    let formatted = format_java_pretty(&parse, input, &FormatConfig::default());
+
+    assert_crlf_only(&formatted);
+    assert_eq!(formatted, "class Foo {\r\n    int x;\r\n}\r\n");
+
+    let input_no_newline = "class Foo{int x;}";
+    let parse = parse_java(input_no_newline);
+    let formatted = format_java_pretty(&parse, input_no_newline, &FormatConfig::default());
+    assert_eq!(formatted, "class Foo {\n    int x;\n}");
+}
+
+#[test]
+fn pretty_formats_broken_syntax_without_panicking() {
+    let input = "class A{void m(){";
+    let parse = parse_java(input);
+    let formatted = format_java_pretty(&parse, input, &FormatConfig::default());
+
+    assert_snapshot!(formatted, @"class A{void m(){");
 }
 
 #[test]
