@@ -203,7 +203,8 @@ pub fn load_shard_index(
 }
 
 fn read_shard_cache_bytes(path: &Path, shard_id: ShardId) -> Option<Vec<u8>> {
-    let meta = match std::fs::metadata(path) {
+    // Avoid following symlinks out of the cache directory.
+    let meta = match std::fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
         Err(err) => {
@@ -215,6 +216,16 @@ fn read_shard_cache_bytes(path: &Path, shard_id: ShardId) -> Option<Vec<u8>> {
             return None;
         }
     };
+
+    if meta.file_type().is_symlink() {
+        let _ = std::fs::remove_file(path);
+        emit_cache_diagnostic(shard_id, path, format_args!("shard cache path is a symlink"));
+        return None;
+    }
+
+    if !meta.is_file() {
+        return None;
+    }
 
     if meta.len() > BINCODE_PAYLOAD_LIMIT_BYTES as u64 {
         emit_cache_diagnostic(

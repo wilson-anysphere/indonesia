@@ -197,3 +197,26 @@ fn shard_index_oversized_payload_is_cache_miss() {
     let loaded = load_shard_index(tmp.path(), shard_id).unwrap();
     assert!(loaded.is_none());
 }
+
+#[cfg(unix)]
+#[test]
+fn shard_index_symlink_is_cache_miss() {
+    use std::os::unix::fs::symlink;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let shard_id: ShardId = 7;
+    let index = sample_index(shard_id);
+
+    save_shard_index(tmp.path(), &index).unwrap();
+    let path = shard_cache_path(tmp.path(), shard_id);
+    let bytes = std::fs::read(&path).unwrap();
+
+    let target = tmp.path().join("real_shard.bin");
+    std::fs::write(&target, bytes).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    symlink(&target, &path).unwrap();
+
+    let loaded = load_shard_index(tmp.path(), shard_id).unwrap();
+    assert!(loaded.is_none());
+    assert!(!path.exists());
+}
