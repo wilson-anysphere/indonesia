@@ -368,10 +368,14 @@ async function fetchJson<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
       'User-Agent': 'nova-vscode',
       'X-GitHub-Api-Version': '2022-11-28',
     },
+    signal: abortSignalTimeout(20_000),
   });
 
   if (!resp.ok) {
-    throw new Error(`GitHub API request failed (${resp.status}): ${url}`);
+    const extra = await readErrorBody(resp);
+    throw new Error(
+      `GitHub API request failed (${resp.status}${resp.statusText ? ` ${resp.statusText}` : ''}): ${url}${extra ? `\n${extra}` : ''}`,
+    );
   }
 
   return (await resp.json()) as T;
@@ -382,9 +386,13 @@ async function downloadBytes(fetchImpl: typeof fetch, url: string): Promise<Arra
     headers: {
       'User-Agent': 'nova-vscode',
     },
+    signal: abortSignalTimeout(30_000),
   });
   if (!resp.ok) {
-    throw new Error(`Download failed (${resp.status}): ${url}`);
+    const extra = await readErrorBody(resp);
+    throw new Error(
+      `Download failed (${resp.status}${resp.statusText ? ` ${resp.statusText}` : ''}): ${url}${extra ? `\n${extra}` : ''}`,
+    );
   }
   return await resp.arrayBuffer();
 }
@@ -488,9 +496,13 @@ async function downloadToFileAndSha256(fetchImpl: typeof fetch, url: string, des
     headers: {
       'User-Agent': 'nova-vscode',
     },
+    signal: abortSignalTimeout(5 * 60_000),
   });
   if (!resp.ok) {
-    throw new Error(`Download failed (${resp.status}): ${url}`);
+    const extra = await readErrorBody(resp);
+    throw new Error(
+      `Download failed (${resp.status}${resp.statusText ? ` ${resp.statusText}` : ''}): ${url}${extra ? `\n${extra}` : ''}`,
+    );
   }
 
   const hash = createHash('sha256');
@@ -513,6 +525,39 @@ async function downloadToFileAndSha256(fetchImpl: typeof fetch, url: string, des
   hash.update(buf);
   await fs.writeFile(destPath, buf);
   return hash.digest('hex');
+}
+
+function abortSignalTimeout(ms: number): AbortSignal | undefined {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return undefined;
+  }
+
+  const anyAbortSignal = AbortSignal as unknown as { timeout?: (ms: number) => AbortSignal };
+  if (typeof anyAbortSignal.timeout === 'function') {
+    return anyAbortSignal.timeout(ms);
+  }
+  return undefined;
+}
+
+async function readErrorBody(resp: Response): Promise<string | undefined> {
+  try {
+    const text = (await resp.text()).trim();
+    if (!text) {
+      return undefined;
+    }
+    let message = text;
+    try {
+      const json = JSON.parse(text) as { message?: unknown };
+      if (typeof json?.message === 'string' && json.message.trim().length > 0) {
+        message = json.message.trim();
+      }
+    } catch {
+      // ignore
+    }
+    return message.length > 400 ? `${message.slice(0, 400)}…` : message;
+  } catch {
+    return undefined;
+  }
 }
 
 type ExtractBinaryOptions = {
