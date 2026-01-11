@@ -55,12 +55,13 @@ Nova also has additional fuzz targets for deeper invariants / higher-level smoke
 ```bash
 cargo +nightly fuzz run parse_java -- -max_total_time=60
 cargo +nightly fuzz run format_java -- -max_total_time=60
-cargo +nightly fuzz run refactor_smoke -- -max_total_time=60
+cargo +nightly fuzz run --features refactor refactor_smoke -- -max_total_time=60
 ```
 
 - `format_java` asserts formatter idempotence (`format(format(x)) == format(x)`).
-- `refactor_smoke` treats refactoring errors as expected and ignored; the target only enforces that
-  Nova never panics or hangs while attempting a small set of best-effort refactorings.
+- `refactor_smoke` (requires the `refactor` Cargo feature) treats refactoring errors as expected and
+  ignored; the target only enforces that Nova never panics or hangs while attempting a small set of
+  best-effort refactorings.
 
 Seed corpora live under `fuzz/corpus/<target>/`.
 

@@ -11,8 +11,11 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 nova-classfile = { path = "../crates/nova-classfile" }
 nova-format = { path = "../crates/nova-format" }
-nova-refactor = { path = "../crates/nova-refactor" }
+nova-refactor = { path = "../crates/nova-refactor", optional = true }
 nova-syntax = { path = "../crates/nova-syntax" }
+
+[features]
+refactor = ["dep:nova-refactor"]
 
 [[bin]]
 name = "fuzz_classfile"
@@ -55,6 +58,7 @@ path = "fuzz_targets/refactor_smoke.rs"
 test = false
 doc = false
 bench = false
+required-features = ["refactor"]
 
 [workspace]
 members = ["."]

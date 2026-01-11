@@ -12,7 +12,7 @@ permissions:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       RUST_BACKTRACE: "1"
     steps:
@@ -22,17 +22,23 @@ jobs:
         with:
           components: llvm-tools-preview
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            fuzz -> fuzz/target
+
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
 
       - name: fuzz_syntax_parse
-        run: cargo fuzz run fuzz_syntax_parse -- -max_total_time=60
+        run: cargo fuzz run fuzz_syntax_parse --codegen-units 16 -- -max_total_time=60
 
       - name: fuzz_format
-        run: cargo fuzz run fuzz_format -- -max_total_time=60
+        run: cargo fuzz run fuzz_format --codegen-units 16 -- -max_total_time=60
 
       - name: fuzz_classfile
-        run: cargo fuzz run fuzz_classfile -- -max_total_time=60
+        run: cargo fuzz run fuzz_classfile --codegen-units 16 -- -max_total_time=60
 
       - name: Upload fuzz artifacts
         if: failure()
