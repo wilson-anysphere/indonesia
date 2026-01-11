@@ -4,13 +4,15 @@ use nova_index::{Index, ReferenceCandidate, ReferenceKind, SymbolId, SymbolKind,
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum SafeDeleteMode {
     Safe,
     DeleteAnyway,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "id", rename_all = "camelCase")]
 pub enum SafeDeleteTarget {
     Symbol(SymbolId),
 }

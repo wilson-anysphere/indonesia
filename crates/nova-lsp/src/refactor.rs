@@ -4,6 +4,7 @@ use lsp_types::{
 };
 use nova_core::{LineIndex, Position as CorePosition, TextSize};
 use nova_index::Index;
+use nova_index::SymbolId;
 use nova_refactor::{
     change_signature as refactor_change_signature, convert_to_record, safe_delete, workspace_edit_to_lsp,
     ChangeSignature, ConvertToRecordError, ConvertToRecordOptions, FileId, InMemoryJavaDatabase,
@@ -16,6 +17,7 @@ use serde::{Deserialize, Serialize};
 pub const CHANGE_SIGNATURE_METHOD: &str = "nova/refactor/changeSignature";
 pub const MOVE_METHOD_METHOD: &str = "nova/refactor/moveMethod";
 pub const MOVE_STATIC_MEMBER_METHOD: &str = "nova/refactor/moveStaticMember";
+pub const SAFE_DELETE_METHOD: &str = "nova/refactor/safeDelete";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +33,45 @@ pub struct MoveStaticMemberParams {
     pub from_class: String,
     pub member_name: String,
     pub to_class: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SafeDeleteParams {
+    pub target: SafeDeleteTargetParam,
+    pub mode: SafeDeleteMode,
+}
+
+/// Safe delete target passed over the wire.
+///
+/// Clients may pass either:
+/// - a raw `SymbolId` (serialized as a JSON number), or
+/// - a fully-tagged [`SafeDeleteTarget`] (for forward compatibility).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SafeDeleteTargetParam {
+    SymbolId(SymbolId),
+    Target(SafeDeleteTarget),
+}
+
+impl SafeDeleteTargetParam {
+    fn into_target(self) -> SafeDeleteTarget {
+        match self {
+            SafeDeleteTargetParam::SymbolId(id) => SafeDeleteTarget::Symbol(id),
+            SafeDeleteTargetParam::Target(target) => target,
+        }
+    }
+}
+
+/// Result payload for `nova/refactor/safeDelete`.
+///
+/// - In `safe` mode, the server returns a preview payload when usages exist.
+/// - Otherwise, the server returns a standard LSP `WorkspaceEdit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SafeDeleteResult {
+    Preview(RefactorResponse),
+    WorkspaceEdit(WorkspaceEdit),
 }
 
 pub fn change_signature_schema() -> RootSchema {
@@ -85,49 +126,12 @@ pub fn safe_delete_code_action(
 
     let outcome = safe_delete(index, target, SafeDeleteMode::Safe).ok()?;
     match outcome {
-        SafeDeleteOutcome::Applied { edits } => {
-            // Convert refactor edits into an LSP WorkspaceEdit (best-effort).
-            let mut changes = std::collections::HashMap::new();
-            for edit in edits {
-                let uri: Uri = edit.file.parse().ok()?;
-                let range = index
-                    .file_text(&edit.file)
-                    .and_then(|text| {
-                        let start = u32::try_from(edit.range.start).ok()?;
-                        let end = u32::try_from(edit.range.end).ok()?;
-                        let line_index = LineIndex::new(text);
-                        let start = line_index.position(text, TextSize::from(start));
-                        let end = line_index.position(text, TextSize::from(end));
-                        Some(Range::new(
-                            Position::new(start.line, start.character),
-                            Position::new(end.line, end.character),
-                        ))
-                    })
-                    .unwrap_or_else(|| {
-                        Range::new(
-                            Position::new(0, edit.range.start as u32),
-                            Position::new(0, edit.range.end as u32),
-                        )
-                    });
-                changes
-                    .entry(uri)
-                    .or_insert_with(Vec::new)
-                    .push(lsp_types::TextEdit {
-                        range,
-                        new_text: edit.replacement,
-                    });
-            }
-
-            Some(CodeActionOrCommand::CodeAction(CodeAction {
-                title: title_base,
-                kind: Some(CodeActionKind::REFACTOR),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                    ..WorkspaceEdit::default()
-                }),
-                ..CodeAction::default()
-            }))
-        }
+        SafeDeleteOutcome::Applied { edits } => Some(CodeActionOrCommand::CodeAction(CodeAction {
+            title: title_base,
+            kind: Some(CodeActionKind::REFACTOR),
+            edit: Some(workspace_edit_from_safe_delete(index, &edits).ok()?),
+            ..CodeAction::default()
+        })),
         SafeDeleteOutcome::Preview { report } => {
             Some(CodeActionOrCommand::CodeAction(CodeAction {
                 title: format!("{title_base}…"),
@@ -222,6 +226,77 @@ pub fn convert_to_record_code_action(
     }
 }
 
+pub fn handle_safe_delete(
+    index: &Index,
+    params: SafeDeleteParams,
+) -> crate::Result<SafeDeleteResult> {
+    let outcome = safe_delete(index, params.target.into_target(), params.mode)
+        .map_err(|err| crate::NovaLspError::InvalidParams(err.to_string()))?;
+
+    match outcome {
+        SafeDeleteOutcome::Preview { report } => {
+            Ok(SafeDeleteResult::Preview(RefactorResponse::Preview { report }))
+        }
+        SafeDeleteOutcome::Applied { edits } => Ok(SafeDeleteResult::WorkspaceEdit(
+            workspace_edit_from_safe_delete(index, &edits)?,
+        )),
+    }
+}
+
+fn workspace_edit_from_safe_delete(
+    index: &Index,
+    edits: &[nova_refactor::TextEdit],
+) -> crate::Result<WorkspaceEdit> {
+    let mut changes: std::collections::HashMap<Uri, Vec<lsp_types::TextEdit>> =
+        std::collections::HashMap::new();
+
+    for edit in edits {
+        let text = index.file_text(&edit.file).ok_or_else(|| {
+            crate::NovaLspError::InvalidParams(format!("file `{}` not found in index", edit.file))
+        })?;
+        let uri: Uri = edit.file.parse().map_err(|_| {
+            crate::NovaLspError::InvalidParams(format!("invalid uri: `{}`", edit.file))
+        })?;
+
+        let start = u32::try_from(edit.range.start).map_err(|_| {
+            crate::NovaLspError::InvalidParams("edit range start out of bounds".into())
+        })?;
+        let end = u32::try_from(edit.range.end)
+            .map_err(|_| crate::NovaLspError::InvalidParams("edit range end out of bounds".into()))?;
+
+        let line_index = LineIndex::new(text);
+        let start = line_index.position(text, TextSize::from(start));
+        let end = line_index.position(text, TextSize::from(end));
+        let range = Range::new(
+            Position::new(start.line, start.character),
+            Position::new(end.line, end.character),
+        );
+
+        changes.entry(uri).or_default().push(lsp_types::TextEdit {
+            range,
+            new_text: edit.replacement.clone(),
+        });
+    }
+
+    // LSP clients tend to apply edits sequentially. Provide them in reverse
+    // order to avoid offset shifting even if a client ignores the spec.
+    for edits in changes.values_mut() {
+        edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then_with(|| b.range.start.character.cmp(&a.range.start.character))
+                .then_with(|| b.range.end.line.cmp(&a.range.end.line))
+                .then_with(|| b.range.end.character.cmp(&a.range.end.character))
+        });
+    }
+
+    Ok(WorkspaceEdit {
+        changes: Some(changes),
+        ..WorkspaceEdit::default()
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,5 +320,82 @@ public final class Point {
             _ => panic!("expected CodeAction"),
         };
         assert!(action.edit.is_some());
+    }
+
+    #[test]
+    fn safe_delete_request_returns_preview_then_workspace_edit() {
+        let mut files = std::collections::BTreeMap::new();
+        let uri: Uri = "file:///A.java".parse().unwrap();
+        let source = r#"
+class A {
+    public void used() {
+    }
+
+    public void entry() {
+        if ("𝄞".isEmpty() && used()) {
+        }
+    }
+}
+"#;
+        files.insert(uri.to_string(), source.to_string());
+        let index = Index::new(files);
+        let target = index.find_method("A", "used").expect("method exists").id;
+
+        let preview = handle_safe_delete(
+            &index,
+            SafeDeleteParams {
+                target: SafeDeleteTargetParam::SymbolId(target),
+                mode: SafeDeleteMode::Safe,
+            },
+        )
+        .expect("safe delete preview");
+        let report = match preview {
+            SafeDeleteResult::Preview(RefactorResponse::Preview { report }) => report,
+            other => panic!("expected preview result, got {other:?}"),
+        };
+        assert_eq!(report.usages.len(), 1);
+
+        let applied = handle_safe_delete(
+            &index,
+            SafeDeleteParams {
+                target: SafeDeleteTargetParam::SymbolId(target),
+                mode: SafeDeleteMode::DeleteAnyway,
+            },
+        )
+        .expect("safe delete apply");
+        let edit = match applied {
+            SafeDeleteResult::WorkspaceEdit(edit) => edit,
+            other => panic!("expected workspace edit result, got {other:?}"),
+        };
+
+        let Some(changes) = edit.changes else {
+            panic!("expected changes map");
+        };
+        let edits = changes.get(&uri).expect("expected edits for A.java");
+        assert!(
+            edits.len() >= 2,
+            "expected at least usage + declaration edit, got {}",
+            edits.len()
+        );
+
+        // Ensure our LSP range conversion uses UTF-16 code units (not UTF-8 bytes).
+        let usage_offset = source.find("&& used").expect("usage site") + "&& ".len();
+        let prefix = &source[..usage_offset];
+        let expected_line = prefix.chars().filter(|&ch| ch == '\n').count() as u32;
+        let line_start = prefix.rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let expected_character_utf16 =
+            source[line_start..usage_offset].encode_utf16().count() as u32;
+        let expected_character_bytes = (usage_offset - line_start) as u32;
+        assert_ne!(
+            expected_character_utf16, expected_character_bytes,
+            "fixture should include a non-BMP character so UTF-16 != byte offsets"
+        );
+
+        let usage_edit = edits
+            .iter()
+            .find(|e| e.range.start.line == expected_line && e.new_text.is_empty())
+            .expect("usage delete edit");
+        assert_eq!(usage_edit.range.start.character, expected_character_utf16);
+        assert_ne!(usage_edit.range.start.character, expected_character_bytes);
     }
 }

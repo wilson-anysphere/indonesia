@@ -67,8 +67,9 @@ pub use diagnostics::DiagnosticsDebouncer;
 pub use distributed::NovaLspFrontend;
 pub use refactor::{
     change_signature_schema, change_signature_workspace_edit, convert_to_record_code_action,
-    extract_member_code_actions, inline_method_code_actions, resolve_extract_member_code_action,
-    safe_delete_code_action, RefactorResponse,
+    extract_member_code_actions, handle_safe_delete, inline_method_code_actions,
+    resolve_extract_member_code_action, safe_delete_code_action, RefactorResponse, SafeDeleteParams,
+    SafeDeleteResult, SafeDeleteTargetParam, SAFE_DELETE_METHOD,
 };
 #[cfg(feature = "ai")]
 pub use requests::{MoreCompletionsParams, MoreCompletionsResult, NOVA_COMPLETION_MORE_METHOD};

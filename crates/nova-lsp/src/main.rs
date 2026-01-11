@@ -8,6 +8,7 @@ use lsp_types::{
 };
 use nova_ai::context::ContextRequest;
 use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
+use nova_index::Index;
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
@@ -23,7 +24,7 @@ use nova_refactor::{
 use nova_vfs::{ContentChange, Document};
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{BufReader, BufWriter, Write};
 use std::path::PathBuf;
@@ -413,6 +414,44 @@ fn handle_request(
             Ok(match result {
                 Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
                 Err((code, message)) => {
+                    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+                }
+            })
+        }
+        nova_lsp::SAFE_DELETE_METHOD => {
+            if state.shutdown_requested {
+                return Ok(server_shutting_down_error(id));
+            }
+
+            let params: nova_lsp::SafeDeleteParams = match serde_json::from_value(params) {
+                Ok(params) => params,
+                Err(err) => {
+                    return Ok(json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": { "code": -32602, "message": err.to_string() }
+                    }));
+                }
+            };
+
+            // Best-effort: build an in-memory index from open documents.
+            let files: BTreeMap<String, String> = state
+                .documents
+                .iter()
+                .map(|(uri, doc)| (uri.clone(), doc.text().to_string()))
+                .collect();
+            let index = Index::new(files);
+
+            Ok(match nova_lsp::handle_safe_delete(&index, params) {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
+                    Err(err) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32603, "message": err.to_string() } }),
+                },
+                Err(err) => {
+                    let (code, message) = match err {
+                        nova_lsp::NovaLspError::InvalidParams(msg) => (-32602, msg),
+                        nova_lsp::NovaLspError::Internal(msg) => (-32603, msg),
+                    };
                     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
                 }
             })
