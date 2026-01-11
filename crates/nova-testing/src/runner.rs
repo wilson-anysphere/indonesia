@@ -134,6 +134,38 @@ fn build_runs(project_root: &Path, tool: BuildTool, tests: &[String]) -> Result<
         .collect())
 }
 
+pub(crate) fn maven_executable(project_root: &Path) -> &'static str {
+    if cfg!(windows) {
+        if project_root.join("mvnw.cmd").exists() {
+            "mvnw.cmd"
+        } else if project_root.join("mvnw.bat").exists() {
+            "mvnw.bat"
+        } else {
+            "mvn"
+        }
+    } else if project_root.join("mvnw").exists() {
+        "./mvnw"
+    } else {
+        "mvn"
+    }
+}
+
+pub(crate) fn gradle_executable(project_root: &Path) -> &'static str {
+    if cfg!(windows) {
+        if project_root.join("gradlew.bat").exists() {
+            "gradlew.bat"
+        } else if project_root.join("gradlew.cmd").exists() {
+            "gradlew.cmd"
+        } else {
+            "gradle"
+        }
+    } else if project_root.join("gradlew").exists() {
+        "./gradlew"
+    } else {
+        "gradle"
+    }
+}
+
 fn command_for_tests(
     project_root: &Path,
     tool: BuildTool,
@@ -142,8 +174,7 @@ fn command_for_tests(
 ) -> Command {
     match tool {
         BuildTool::Maven => {
-            let mvnw = project_root.join("mvnw");
-            let executable = if mvnw.exists() { "./mvnw" } else { "mvn" };
+            let executable = maven_executable(project_root);
 
             let mut cmd = Command::new(executable);
             cmd.current_dir(project_root);
@@ -163,12 +194,7 @@ fn command_for_tests(
             cmd
         }
         BuildTool::Gradle => {
-            let gradlew = project_root.join("gradlew");
-            let executable = if gradlew.exists() {
-                "./gradlew"
-            } else {
-                "gradle"
-            };
+            let executable = gradle_executable(project_root);
 
             let mut cmd = Command::new(executable);
             cmd.current_dir(project_root);
@@ -711,6 +737,112 @@ mod tests {
                 "test",
                 "--tests",
                 "com.example.LegacyCalculatorTest.legacyAdds"
+            ]
+        );
+    }
+
+    #[test]
+    fn prefers_maven_wrapper_when_present() {
+        let root = TempDir::new("maven-wrapper");
+        if cfg!(windows) {
+            std::fs::write(root.path.join("mvnw.bat"), "").unwrap();
+            std::fs::write(root.path.join("mvnw.cmd"), "").unwrap();
+        } else {
+            std::fs::write(root.path.join("mvnw"), "").unwrap();
+        }
+
+        let cmd = command_for_tests(&root.path, BuildTool::Maven, None, &[]);
+        let expected = if cfg!(windows) { "mvnw.cmd" } else { "./mvnw" };
+        assert_eq!(cmd.get_program().to_string_lossy(), expected);
+    }
+
+    #[test]
+    fn prefers_gradle_wrapper_when_present() {
+        let root = TempDir::new("gradle-wrapper");
+        if cfg!(windows) {
+            std::fs::write(root.path.join("gradlew.cmd"), "").unwrap();
+            std::fs::write(root.path.join("gradlew.bat"), "").unwrap();
+        } else {
+            std::fs::write(root.path.join("gradlew"), "").unwrap();
+        }
+
+        let cmd = command_for_tests(&root.path, BuildTool::Gradle, None, &[]);
+        let expected = if cfg!(windows) {
+            "gradlew.bat"
+        } else {
+            "./gradlew"
+        };
+        assert_eq!(cmd.get_program().to_string_lossy(), expected);
+    }
+
+    #[test]
+    fn constructs_module_scoped_maven_command_with_wrapper() {
+        let root = TempDir::new("maven-wrapper-module");
+        if cfg!(windows) {
+            std::fs::write(root.path.join("mvnw.bat"), "").unwrap();
+            std::fs::write(root.path.join("mvnw.cmd"), "").unwrap();
+        } else {
+            std::fs::write(root.path.join("mvnw"), "").unwrap();
+        }
+
+        let cmd = command_for_tests(
+            &root.path,
+            BuildTool::Maven,
+            Some("service-a"),
+            &vec!["com.example.DuplicateTest#ok".to_string()],
+        );
+
+        let expected = if cfg!(windows) { "mvnw.cmd" } else { "./mvnw" };
+        assert_eq!(cmd.get_program().to_string_lossy(), expected);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                "-pl",
+                "service-a",
+                "-am",
+                "-Dtest=com.example.DuplicateTest#ok",
+                "test"
+            ]
+        );
+    }
+
+    #[test]
+    fn constructs_module_scoped_gradle_command_with_wrapper() {
+        let root = TempDir::new("gradle-wrapper-module");
+        if cfg!(windows) {
+            std::fs::write(root.path.join("gradlew.cmd"), "").unwrap();
+            std::fs::write(root.path.join("gradlew.bat"), "").unwrap();
+        } else {
+            std::fs::write(root.path.join("gradlew"), "").unwrap();
+        }
+
+        let cmd = command_for_tests(
+            &root.path,
+            BuildTool::Gradle,
+            Some("module-a"),
+            &vec!["com.example.DuplicateTest#ok".to_string()],
+        );
+
+        let expected = if cfg!(windows) {
+            "gradlew.bat"
+        } else {
+            "./gradlew"
+        };
+        assert_eq!(cmd.get_program().to_string_lossy(), expected);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            args,
+            vec![
+                ":module-a:test",
+                "--tests",
+                "com.example.DuplicateTest.ok"
             ]
         );
     }

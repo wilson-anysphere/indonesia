@@ -1,4 +1,4 @@
-use crate::runner::detect_build_tool;
+use crate::runner::{detect_build_tool, gradle_executable, maven_executable};
 use crate::schema::{BuildTool, DebugConfiguration, TestDebugRequest, TestDebugResponse};
 use crate::test_id::parse_qualified_test_id;
 use crate::{Result, SCHEMA_VERSION};
@@ -26,8 +26,7 @@ pub fn debug_configuration_for_test(
 
     let (command, args) = match tool {
         BuildTool::Maven => {
-            let mvnw = project_root.join("mvnw");
-            let executable = if mvnw.exists() { "./mvnw" } else { "mvn" };
+            let executable = maven_executable(&project_root);
 
             let mut args = vec!["-Dmaven.surefire.debug".to_string()];
             if let Some(module_rel_path) = module_rel_path {
@@ -40,18 +39,10 @@ pub fn debug_configuration_for_test(
             args.push(format!("-Dtest={stripped_test_id}"));
             args.push("test".to_string());
 
-            (
-                executable.to_string(),
-                args,
-            )
+            (executable.to_string(), args)
         }
         BuildTool::Gradle => {
-            let gradlew = project_root.join("gradlew");
-            let executable = if gradlew.exists() {
-                "./gradlew"
-            } else {
-                "gradle"
-            };
+            let executable = gradle_executable(&project_root);
             let task = match module_rel_path {
                 Some(".") => ":test".to_string(),
                 Some(path) => format!(":{}:test", path.replace('/', ":")),

@@ -2,7 +2,9 @@ use nova_testing::debug::debug_configuration_for_test;
 use nova_testing::report::parse_junit_report_str;
 use nova_testing::schema::{BuildTool, TestStatus};
 use pretty_assertions::assert_eq;
+use std::fs;
 use std::path::PathBuf;
+use tempfile::TempDir;
 
 fn fixture_root(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -216,4 +218,51 @@ fn creates_module_scoped_debug_configuration_for_gradle() {
             "--debug-jvm"
         ]
     );
+}
+
+#[test]
+fn creates_debug_configuration_for_maven_wrapper_when_present() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(root.join("pom.xml"), "<project/>").unwrap();
+    if cfg!(windows) {
+        fs::write(root.join("mvnw.bat"), "").unwrap();
+        fs::write(root.join("mvnw.cmd"), "").unwrap();
+    } else {
+        fs::write(root.join("mvnw"), "").unwrap();
+    }
+
+    let cfg =
+        debug_configuration_for_test(root, BuildTool::Auto, "com.example.CalculatorTest#adds")
+            .unwrap();
+
+    let expected = if cfg!(windows) { "mvnw.cmd" } else { "./mvnw" };
+    assert_eq!(cfg.command, expected);
+}
+
+#[test]
+fn creates_debug_configuration_for_gradle_wrapper_when_present() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(root.join("build.gradle"), "// fake gradle project").unwrap();
+    if cfg!(windows) {
+        fs::write(root.join("gradlew.cmd"), "").unwrap();
+        fs::write(root.join("gradlew.bat"), "").unwrap();
+    } else {
+        fs::write(root.join("gradlew"), "").unwrap();
+    }
+
+    let cfg = debug_configuration_for_test(
+        root,
+        BuildTool::Auto,
+        "com.example.LegacyCalculatorTest#legacyAdds",
+    )
+    .unwrap();
+
+    let expected = if cfg!(windows) {
+        "gradlew.bat"
+    } else {
+        "./gradlew"
+    };
+    assert_eq!(cfg.command, expected);
 }
