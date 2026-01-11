@@ -185,7 +185,9 @@ fn parse_entity_class(node: Node<'_>, source: &str, source_idx: usize) -> Option
         .and_then(|ann| ann.args.get("name").cloned())
         .unwrap_or_else(|| name.clone());
 
-    let span = Span::new(node.start_byte(), node.end_byte());
+    // Use the class name span for diagnostics/navigation rather than the full
+    // class declaration range.
+    let span = Span::new(name_node.start_byte(), name_node.end_byte());
 
     let body = node
         .child_by_field_name("body")

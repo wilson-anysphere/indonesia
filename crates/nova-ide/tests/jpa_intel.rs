@@ -215,6 +215,8 @@ class UserRepository {
         "expected goto-definition URI to point at User.java; got {:?}",
         loc.uri
     );
+    assert_eq!(loc.range.start.line, 5);
+    assert_eq!(loc.range.start.character, 6);
 
     // 2) Field navigation: `u.name`
     let name_offset = repo_text
