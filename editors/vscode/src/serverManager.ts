@@ -600,7 +600,8 @@ function abortSignalTimeout(ms: number): AbortSignal | undefined {
     return anyAbortSignal.timeout(ms);
   }
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), ms);
+  const timer = setTimeout(() => controller.abort(), ms);
+  timer.unref?.();
   return controller.signal;
 }
 
