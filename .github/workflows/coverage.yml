@@ -31,7 +31,7 @@ jobs:
     timeout-minutes: 20
     env:
       # Optional soft gate. Set via workflow_dispatch input or change the default here.
-      MIN_LINE_COVERAGE: ${{ github.event.inputs.min_line_coverage || '0' }}
+      MIN_LINE_COVERAGE: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.min_line_coverage) || '0' }}
 
     steps:
       - uses: actions/checkout@v4
