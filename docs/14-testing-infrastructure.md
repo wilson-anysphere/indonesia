@@ -309,6 +309,9 @@ To focus on a subset of fixtures (same selection mechanism as `clone-test-projec
 
 # or:
 NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/javac-validate.sh
+
+# or (alias):
+NOVA_REAL_PROJECT=guava,spring-petclinic ./scripts/javac-validate.sh
 ```
 
 ---
@@ -391,6 +394,9 @@ To focus on a subset of fixtures/tests:
 
 # or:
 NOVA_TEST_PROJECTS=spring-petclinic,maven-resolver ./scripts/run-real-project-tests.sh
+
+# or (alias):
+NOVA_REAL_PROJECT=spring-petclinic,maven-resolver ./scripts/run-real-project-tests.sh
 ```
 
 To clone/update only a subset of fixtures (same selection mechanism as above):
@@ -400,6 +406,9 @@ To clone/update only a subset of fixtures (same selection mechanism as above):
 
 # or:
 NOVA_TEST_PROJECTS=spring-petclinic,maven-resolver ./scripts/clone-test-projects.sh
+
+# or (alias):
+NOVA_REAL_PROJECT=spring-petclinic,maven-resolver ./scripts/clone-test-projects.sh
 ```
 
 ---

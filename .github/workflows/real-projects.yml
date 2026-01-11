@@ -7,6 +7,16 @@ on:
         description: "Comma-separated fixture names to run (optional, e.g. guava,spring-petclinic)"
         required: false
         default: ""
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/real-projects.yml"
+      - "crates/nova-project/tests/real_projects.rs"
+      - "crates/nova-cli/tests/real_projects.rs"
+      - "scripts/run-real-project-tests.sh"
+      - "scripts/clone-test-projects.sh"
+      - "scripts/javac-validate.sh"
+      - "test-projects/pins.toml"
   schedule:
     # Offset from other nightly workflows (e.g. fuzz.yml) to avoid running all heavy jobs at once.
     - cron: "0 4 * * *"
@@ -243,4 +253,3 @@ jobs:
           path: |
             real-project-logs/*.log
             test-projects/pins.toml
-
