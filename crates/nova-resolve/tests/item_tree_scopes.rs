@@ -192,10 +192,7 @@ class Outer {
         m_scope,
         &QualifiedName::from_dotted("Inner"),
     );
-    assert_eq!(
-        res,
-        Some(TypeName::from("com.example.Outer$Inner"))
-    );
+    assert_eq!(res, Some(TypeName::from("com.example.Outer$Inner")));
 }
 
 #[test]
