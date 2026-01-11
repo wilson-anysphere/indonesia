@@ -6,8 +6,17 @@
 //! - All values that may outlive cache entries should be stored behind `Arc`
 //!   (mirroring Salsa snapshot semantics). Eviction drops cache references,
 //!   but does not invalidate values held by other parts of the system.
+//!
+//! ## Budgets under cgroups (Linux)
+//!
+//! [`MemoryBudget::default_for_system`] uses the current process cgroup memory
+//! limit when available (cgroup v2 `memory.max`, cgroup v1
+//! `memory.limit_in_bytes`). This makes Nova respect container/agent limits
+//! instead of budgeting against host RAM.
 
 mod budget;
+#[doc(hidden)]
+pub mod cgroup;
 mod degraded;
 mod eviction;
 mod manager;

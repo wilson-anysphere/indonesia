@@ -132,6 +132,11 @@ impl MemoryBudget {
 fn system_total_memory_bytes() -> Option<u64> {
     use sysinfo::System;
 
+    #[cfg(target_os = "linux")]
+    if let Some(limit) = crate::cgroup::cgroup_memory_limit_bytes() {
+        return Some(limit);
+    }
+
     let mut sys = System::new();
     sys.refresh_memory();
     // sysinfo reports KiB.
