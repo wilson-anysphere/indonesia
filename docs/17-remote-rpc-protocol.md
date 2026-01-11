@@ -136,6 +136,8 @@ Recommended handling:
 - **After handshake:** unknown `WireFrame` variants SHOULD be ignored/dropped.
 - For `RpcPayload::Request(Request::Unknown)`, the responder SHOULD return
   `RpcPayload::Response(RpcResult::Err { error: { code: "invalid_request", .. }})`.
+- `RpcPayload::Unknown` and `RpcPayload::Notification(Notification::Unknown)` SHOULD be
+  ignored/dropped.
 
 ### 3.3 CBOR decode safety / allocation hardening (MUST)
 
