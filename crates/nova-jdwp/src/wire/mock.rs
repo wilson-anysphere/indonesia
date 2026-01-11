@@ -41,6 +41,15 @@ pub struct MockJdwpServerConfig {
     /// The order must match the JDWP spec. Most HotSpot VMs return 32 booleans, so the
     /// default mirrors that for realism.
     pub capabilities: Vec<bool>,
+    /// JDWP reference type signature returned by `VirtualMachine.AllClasses` and
+    /// `ReferenceType.Signature`.
+    ///
+    /// Example: `Lcom/example/Main;`
+    pub class_signature: String,
+    /// Java source file name returned by `ReferenceType.SourceFile`.
+    ///
+    /// Example: `Main.java`
+    pub source_file: String,
 }
 
 impl Default for MockJdwpServerConfig {
@@ -48,6 +57,8 @@ impl Default for MockJdwpServerConfig {
         Self {
             delayed_replies: Vec::new(),
             capabilities: vec![false; 32],
+            class_signature: "LMain;".to_string(),
+            source_file: "Main.java".to_string(),
         }
     }
 }
@@ -161,6 +172,7 @@ impl Drop for MockJdwpServer {
 }
 
 struct State {
+    config: MockJdwpServerConfig,
     next_request_id: AtomicI32,
     next_packet_id: AtomicU32,
     hashmap_bucket_calls: AtomicU32,
@@ -193,17 +205,15 @@ impl Default for State {
 
 impl State {
     fn new(config: MockJdwpServerConfig) -> Self {
-        let MockJdwpServerConfig {
-            delayed_replies: delayed_entries,
-            capabilities,
-        } = config;
-
         let mut delayed_replies = HashMap::new();
-        for entry in delayed_entries {
+        for entry in &config.delayed_replies {
             delayed_replies.insert((entry.command_set, entry.command), entry.delay);
         }
 
+        let capabilities = config.capabilities.clone();
+
         Self {
+            config,
             next_request_id: AtomicI32::new(0),
             next_packet_id: AtomicU32::new(0),
             hashmap_bucket_calls: AtomicU32::new(0),
@@ -435,7 +445,7 @@ async fn handle_packet(
 
             let mut w = JdwpWriter::new();
             match signature.as_str() {
-                "LMain;" => {
+                sig if sig == state.config.class_signature => {
                     w.write_u32(1);
                     w.write_u8(1); // class
                     w.write_reference_type_id(CLASS_ID, sizes);
@@ -465,7 +475,7 @@ async fn handle_packet(
             w.write_u32(1);
             w.write_u8(1); // class
             w.write_reference_type_id(CLASS_ID, sizes);
-            w.write_string("LMain;");
+            w.write_string(&state.config.class_signature);
             w.write_u32(1);
             (0, w.into_vec())
         }
@@ -546,7 +556,7 @@ async fn handle_packet(
         (2, 7) => {
             let _class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
-            w.write_string("Main.java");
+            w.write_string(&state.config.source_file);
             (0, w.into_vec())
         }
         // ReferenceType.Signature
@@ -554,7 +564,7 @@ async fn handle_packet(
             let class_id = r.read_reference_type_id(sizes).unwrap_or(0);
             let mut w = JdwpWriter::new();
             let sig = match class_id {
-                CLASS_ID => "LMain;",
+                CLASS_ID => state.config.class_signature.as_str(),
                 FOO_CLASS_ID => "Lcom/example/Foo;",
                 OBJECT_CLASS_ID => "LObject;",
                 STRING_CLASS_ID => "Ljava/lang/String;",

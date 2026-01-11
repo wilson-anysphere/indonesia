@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     net::IpAddr,
+    path::PathBuf,
     process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicI64, Ordering},
@@ -378,6 +379,14 @@ async fn handle_request_inner(
                 }
             }
 
+            let source_roots = match resolve_source_roots(request.command.as_str(), &request.arguments) {
+                Ok(roots) => roots,
+                Err(err) => {
+                    send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                    return;
+                }
+            };
+
             let attach_timeout = Duration::from_millis(args.attach_timeout_ms.unwrap_or(30_000));
 
             // Determine which launch mode we are in.
@@ -491,7 +500,11 @@ async fn handle_request_inner(
                         *guard = Some(child);
                     }
 
-                    AttachArgs { host, port }
+                    AttachArgs {
+                        host,
+                        port,
+                        source_roots: source_roots.clone(),
+                    }
                 }
                 LaunchMode::Java => {
                     let main_class = args.main_class.as_deref().unwrap_or_default();
@@ -593,7 +606,11 @@ async fn handle_request_inner(
                         *guard = Some(child);
                     }
 
-                    AttachArgs { host, port }
+                    AttachArgs {
+                        host,
+                        port,
+                        source_roots: source_roots.clone(),
+                    }
                 }
             };
 
@@ -642,9 +659,23 @@ async fn handle_request_inner(
                     request,
                     false,
                     None,
-                    Some("attach.port is required".to_string()),
+                    Some(format!("{}.port is required", request.command)),
                 );
                 return;
+            };
+            let port = match u16::try_from(port) {
+                Ok(port) => port,
+                Err(_) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("{}.port must be between 0-65535", request.command)),
+                    );
+                    return;
+                }
             };
             let host: IpAddr = match host.parse() {
                 Ok(host) => host,
@@ -676,12 +707,15 @@ async fn handle_request_inner(
                 }
             }
 
-            let dbg = match Debugger::attach(AttachArgs {
-                host,
-                port: port as u16,
-            })
-            .await
-            {
+            let source_roots = match resolve_source_roots(request.command.as_str(), &request.arguments) {
+                Ok(roots) => roots,
+                Err(err) => {
+                    send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                    return;
+                }
+            };
+
+            let dbg = match Debugger::attach(AttachArgs { host, port, source_roots }).await {
                 Ok(dbg) => dbg,
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string()));
@@ -1831,6 +1865,56 @@ async fn handle_request_inner(
 
 fn is_cancelled_error(err: &DebuggerError) -> bool {
     matches!(err, DebuggerError::Jdwp(JdwpError::Cancelled))
+}
+
+fn resolve_source_roots(command: &str, arguments: &Value) -> std::result::Result<Vec<PathBuf>, DebuggerError> {
+    let project_root = arguments
+        .get("projectRoot")
+        .and_then(|v| v.as_str())
+        .map(PathBuf::from)
+        .map(|root| std::fs::canonicalize(&root).unwrap_or(root));
+
+    let mut roots = Vec::new();
+
+    if let Some(source_roots) = arguments.get("sourceRoots").and_then(|v| v.as_array()) {
+        for entry in source_roots {
+            let Some(root) = entry.as_str() else {
+                return Err(DebuggerError::InvalidRequest(format!(
+                    "{command}.sourceRoots must be an array of strings"
+                )));
+            };
+            roots.push(PathBuf::from(root));
+        }
+    }
+
+    if let Some(root) = project_root.as_deref() {
+        let config = nova_project::load_project(root).map_err(|err| {
+            DebuggerError::InvalidRequest(format!("{command}.projectRoot could not be loaded: {err}"))
+        })?;
+        for source_root in config.source_roots {
+            roots.push(source_root.path);
+        }
+    }
+
+    let base_dir = project_root
+        .clone()
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let mut out = Vec::new();
+    for root in roots {
+        let root = if root.is_absolute() {
+            root
+        } else {
+            base_dir.join(root)
+        };
+        let root = std::fs::canonicalize(&root).unwrap_or(root);
+        if !out.iter().any(|existing| existing == &root) {
+            out.push(root);
+        }
+    }
+
+    Ok(out)
 }
 
 fn requires_initialized(command: &str) -> bool {

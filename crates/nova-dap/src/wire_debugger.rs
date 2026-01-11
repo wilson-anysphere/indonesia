@@ -60,6 +60,7 @@ const JDWP_SUSPEND_POLICY_EVENT_THREAD: u8 = 1;
 pub struct AttachArgs {
     pub host: IpAddr,
     pub port: u16,
+    pub source_roots: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -187,6 +188,7 @@ pub struct Debugger {
     last_stop_reason: HashMap<ThreadId, StopReason>,
     exception_stop_context: HashMap<ThreadId, ExceptionStopContext>,
     throwable_detail_message_field: Option<Option<u64>>,
+    source_roots: Vec<PathBuf>,
 
     /// Mapping from JDWP `ReferenceType.SourceFile` (usually just `Main.java`) to the
     /// best-effort full path provided by the DAP client.
@@ -196,6 +198,8 @@ pub struct Debugger {
     /// recover that by remembering the source paths passed to `setBreakpoints`.
     source_paths: HashMap<String, String>,
     source_cache: HashMap<ReferenceTypeId, String>,
+    signature_cache: HashMap<ReferenceTypeId, String>,
+    resolved_source_paths: HashMap<ReferenceTypeId, PathBuf>,
     methods_cache: HashMap<ReferenceTypeId, Vec<MethodInfo>>,
     line_table_cache: HashMap<(ReferenceTypeId, u64), LineTable>,
 
@@ -234,7 +238,12 @@ where
 
 impl Debugger {
     pub async fn attach(args: AttachArgs) -> Result<Self> {
-        let addr = SocketAddr::new(args.host, args.port);
+        let AttachArgs {
+            host,
+            port,
+            source_roots,
+        } = args;
+        let addr = SocketAddr::new(host, port);
         let jdwp = JdwpClient::connect(addr).await?;
 
         let mut dbg = Self {
@@ -250,8 +259,11 @@ impl Debugger {
             last_stop_reason: HashMap::new(),
             exception_stop_context: HashMap::new(),
             throwable_detail_message_field: None,
+            source_roots,
             source_paths: HashMap::new(),
             source_cache: HashMap::new(),
+            signature_cache: HashMap::new(),
+            resolved_source_paths: HashMap::new(),
             methods_cache: HashMap::new(),
             line_table_cache: HashMap::new(),
             frame_handles: HandleTable::default(),
@@ -366,19 +378,26 @@ impl Debugger {
                 .method_name(cancel, frame.location.class_id, frame.location.method_id)
                 .await?
                 .unwrap_or_else(|| "frame".to_string());
-            let source_name = match self.source_file(cancel, frame.location.class_id).await {
+            let source_file = match self.source_file(cancel, frame.location.class_id).await {
                 Ok(name) => Some(name),
                 Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
                 Err(_) => None,
             };
-            let source = source_name.as_ref().map(|name| {
-                let path = self
-                    .source_paths
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| name.clone());
-                json!({"name": name, "path": path})
-            });
+            let source = match source_file {
+                Some(source_file) => {
+                    let path = match self
+                        .resolve_source_path(cancel, frame.location.class_id, &source_file)
+                        .await
+                    {
+                        Ok(Some(path)) => path.to_string_lossy().to_string(),
+                        Ok(None) => source_file.clone(),
+                        Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                        Err(_) => source_file.clone(),
+                    };
+                    Some(json!({"name": source_file, "path": path}))
+                }
+                None => None,
+            };
             let line = match self
                 .line_number(
                     cancel,
@@ -471,21 +490,33 @@ impl Debugger {
         breakpoints: Vec<BreakpointSpec>,
     ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
-        let file = Path::new(source_path)
+        let file_name = Path::new(source_path)
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or(source_path)
             .to_string();
 
         if !source_path.is_empty() {
-            let full_path = std::fs::canonicalize(source_path)
-                .unwrap_or_else(|_| PathBuf::from(source_path))
-                .to_string_lossy()
-                .to_string();
-            self.source_paths.insert(file.clone(), full_path);
+            let full_path = std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path));
+            self.source_paths.insert(
+                file_name.clone(),
+                full_path.to_string_lossy().to_string(),
+            );
         }
 
-        if let Some(existing) = self.breakpoints.remove(&file) {
+        let file_path = if source_path.is_empty() {
+            PathBuf::from(source_path)
+        } else {
+            std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path))
+        };
+        let file_key = if source_path.is_empty() {
+            file_name.clone()
+        } else {
+            file_path.to_string_lossy().to_string()
+        };
+        let file = file_key.clone();
+
+        if let Some(existing) = self.breakpoints.remove(&file_key) {
             for bp in existing {
                 check_cancel(cancel)?;
                 let _ =
@@ -508,14 +539,29 @@ impl Debugger {
         let mut class_candidates: Vec<ClassInfo> = Vec::new();
         for class_info in classes {
             check_cancel(cancel)?;
-            match self.source_file(cancel, class_info.type_id).await {
-                Ok(source_file) => {
-                    if source_file.as_str() == file.as_str() {
-                        class_candidates.push(class_info);
-                    }
-                }
+            let source_file = match self.source_file(cancel, class_info.type_id).await {
+                Ok(source_file) => source_file,
                 Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(_) => {}
+                Err(_) => continue,
+            };
+
+            let resolved = match self
+                .resolve_source_path(cancel, class_info.type_id, &source_file)
+                .await
+            {
+                Ok(resolved) => resolved,
+                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+                Err(_) => None,
+            };
+
+            let matches = if let Some(resolved) = resolved {
+                resolved == file_path
+            } else {
+                source_file.as_str() == file_name.as_str()
+            };
+
+            if matches {
+                class_candidates.push(class_info);
             }
         }
 
@@ -588,7 +634,6 @@ impl Debugger {
                     None => {}
                 }
             }
-
             if verified {
                 let mut obj = serde_json::Map::new();
                 obj.insert("verified".to_string(), json!(true));
@@ -934,6 +979,57 @@ impl Debugger {
         Ok(file)
     }
 
+    async fn signature(
+        &mut self,
+        cancel: &CancellationToken,
+        class_id: ReferenceTypeId,
+    ) -> std::result::Result<String, JdwpError> {
+        check_cancel_jdwp(cancel)?;
+        if let Some(v) = self.signature_cache.get(&class_id) {
+            return Ok(v.clone());
+        }
+        let sig = cancellable_jdwp(cancel, self.jdwp.reference_type_signature(class_id)).await?;
+        self.signature_cache.insert(class_id, sig.clone());
+        Ok(sig)
+    }
+
+    async fn resolve_source_path(
+        &mut self,
+        cancel: &CancellationToken,
+        class_id: ReferenceTypeId,
+        source_file: &str,
+    ) -> std::result::Result<Option<PathBuf>, JdwpError> {
+        check_cancel_jdwp(cancel)?;
+
+        if let Some(cached) = self.resolved_source_paths.get(&class_id) {
+            return Ok(Some(cached.clone()));
+        }
+
+        if !self.source_roots.is_empty() {
+            let sig = self.signature(cancel, class_id).await?;
+            if let Some(package_path) = package_path_from_signature(&sig) {
+                for root in &self.source_roots {
+                    let candidate = if package_path.as_os_str().is_empty() {
+                        root.join(source_file)
+                    } else {
+                        root.join(&package_path).join(source_file)
+                    };
+                    if candidate.is_file() {
+                        let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+                        self.resolved_source_paths.insert(class_id, candidate.clone());
+                        return Ok(Some(candidate));
+                    }
+                }
+            }
+        }
+
+        if let Some(path) = self.source_paths.get(source_file) {
+            return Ok(Some(PathBuf::from(path)));
+        }
+
+        Ok(None)
+    }
+
     async fn method_name(
         &mut self,
         cancel: &CancellationToken,
@@ -1276,7 +1372,15 @@ impl Debugger {
 
     async fn on_class_prepare(&mut self, ref_type_tag: u8, type_id: ReferenceTypeId) -> Result<()> {
         let cancel = CancellationToken::new();
-        let file = self.source_file(&cancel, type_id).await?;
+        let source_file = self.source_file(&cancel, type_id).await?;
+        let file = match self
+            .resolve_source_path(&cancel, type_id, &source_file)
+            .await
+        {
+            Ok(Some(path)) => path.to_string_lossy().to_string(),
+            Ok(None) => source_file.clone(),
+            Err(_) => source_file.clone(),
+        };
         let Some(bps) = self.requested_breakpoints.get(&file).cloned() else {
             return Ok(());
         };
@@ -1432,6 +1536,19 @@ fn signature_to_object_type_name(sig: &str) -> Option<String> {
         out.push_str("[]");
     }
     Some(out)
+}
+
+fn package_path_from_signature(sig: &str) -> Option<PathBuf> {
+    let mut sig = sig.trim();
+    while let Some(rest) = sig.strip_prefix('[') {
+        sig = rest;
+    }
+    let internal = sig.strip_prefix('L').and_then(|s| s.strip_suffix(';'))?;
+    if let Some((pkg, _name)) = internal.rsplit_once('/') {
+        Some(PathBuf::from(pkg))
+    } else {
+        Some(PathBuf::new())
+    }
 }
 fn is_identifier(s: &str) -> bool {
     let mut chars = s.chars();
