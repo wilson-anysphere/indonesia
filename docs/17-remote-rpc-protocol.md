@@ -367,7 +367,7 @@ Semantics:
 
 Receivers decode a packet as:
 
-1. Validate `id`, `compression`, and size limits (see §2.2 and §6.3).
+1. Validate `id`, `compression`, and size limits (see §2.2 and the rules below).
 2. If `compression != "none"`, decompress `data` to obtain CBOR bytes.
 3. Decode CBOR bytes as a `RpcPayload`.
 
