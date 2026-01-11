@@ -151,6 +151,26 @@ jobs:
           path: test-projects/*/
           key: test-projects-v2-${{ runner.os }}-${{ hashFiles('test-projects/pins.toml') }}
 
+      - name: Summary
+        if: always()
+        run: |
+          set -euxo pipefail
+          {
+            echo "## Real project fixtures"
+            echo
+            echo "### pins.toml"
+            echo
+            echo '```toml'
+            cat test-projects/pins.toml
+            echo '```'
+            echo
+            echo "### Checked-out fixture SHAs"
+            echo
+            echo '```text'
+            cat real-project-logs/fixture-revisions.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
