@@ -292,6 +292,8 @@ pub enum SyntaxKind {
     UsesDirective,
     ProvidesDirective,
 
+    DefaultValue,
+
     __Last,
 }
 

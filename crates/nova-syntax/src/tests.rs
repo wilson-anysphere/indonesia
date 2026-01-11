@@ -374,7 +374,7 @@ fn parser_recovers_after_interface_implements_header() {
 }
 
 #[test]
-fn parse_generic_method_and_constructor() {
+fn parse_generic_method_type_parameters() {
     let input = "class Foo { <T> T id(T t) { return t; } <T> Foo(T t) { } }";
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
@@ -387,7 +387,7 @@ fn parse_generic_method_and_constructor() {
 
 #[test]
 fn parse_varargs_parameter() {
-    let input = "class Foo { void m(String... args) {} }";
+    let input = "class Foo { void m(String @A ... args) {} }";
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
 
@@ -402,12 +402,30 @@ fn parse_varargs_parameter() {
 
 #[test]
 fn parse_annotation_element_default_value() {
-    let input = "@interface A { int value() default 1; }";
+    let input = r#"
+@interface A {
+  int value() default 1;
+  String[] names() default {"a", "b"};
+  B ann() default @B(x = 1);
+  int other();
+}
+"#;
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
 
     let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
-    assert!(kinds.contains(&SyntaxKind::AnnotationElementDefault));
+    assert!(kinds.contains(&SyntaxKind::DefaultValue));
+
+    let annotation_decl = result
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::AnnotationTypeDeclaration)
+        .expect("expected annotation type declaration");
+    let method_count = annotation_decl
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::MethodDeclaration)
+        .count();
+    assert_eq!(method_count, 4);
 }
 
 #[test]

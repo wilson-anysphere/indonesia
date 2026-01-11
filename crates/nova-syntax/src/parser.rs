@@ -1035,6 +1035,10 @@ impl<'a> Parser<'a> {
             self.parse_modifiers();
             if self.at_type_start() {
                 self.parse_type();
+                // Permit type-use annotations on varargs ellipsis (e.g. `String @A ... args`).
+                while self.at(SyntaxKind::At) && self.nth(1) != Some(SyntaxKind::InterfaceKw) {
+                    self.parse_annotation();
+                }
             } else {
                 self.error_here("expected parameter type");
             }
@@ -1087,8 +1091,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_annotation_element_default(&mut self) {
-        self.builder
-            .start_node(SyntaxKind::AnnotationElementDefault.into());
+        self.builder.start_node(SyntaxKind::DefaultValue.into());
         self.expect(SyntaxKind::DefaultKw, "expected `default`");
         self.parse_annotation_element_value();
 
