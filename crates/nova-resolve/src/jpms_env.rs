@@ -379,6 +379,7 @@ mod tests {
             modules: vec![Module {
                 name: "dummy".to_string(),
                 root: root.clone(),
+                annotation_processing: Default::default(),
             }],
             jpms_modules: Vec::new(),
             jpms_workspace: None,
@@ -442,6 +443,7 @@ mod tests {
             modules: vec![Module {
                 name: "dummy".to_string(),
                 root: tmp.path().to_path_buf(),
+                annotation_processing: Default::default(),
             }],
             jpms_modules: vec![
                 JpmsModuleRoot {
