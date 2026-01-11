@@ -95,6 +95,9 @@ Changing these settings requires restarting the language server; the extension p
   - does not surface cached AI completion items
   - strips `NOVA_AI_*` environment variables from the `nova-lsp` process env
 - `nova.aiCompletions.enabled` (boolean): enable multi-token completion requests.
+- `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request.
+- `nova.aiCompletions.requestTimeoutMs` (number): max wall-clock time (ms) to poll `nova/completion/more` for async AI completions.
+- `nova.aiCompletions.pollIntervalMs` (number): base polling interval (ms). Nova uses a short exponential backoff derived from this value.
 
 ## Packaging
 
