@@ -214,7 +214,7 @@ where
         expected_schema: u32,
         prefer_mmap: bool,
     ) -> Result<Self, StorageError> {
-        let file = File::open(path)?;
+        let mut file = File::open(path)?;
         let file_len = file.metadata()?.len();
         if file_len < HEADER_LEN as u64 {
             return Err(StorageError::Truncated {
@@ -237,8 +237,7 @@ where
             });
         }
 
-        let bytes = read_file_with_cap(file, MAX_MMAP_FALLBACK_BYTES)?;
-        Self::from_owned_bytes(bytes, expected_kind, expected_schema)
+        Self::from_file(file, file_len as usize, expected_kind, expected_schema)
     }
 
     fn checked_payload_len(header: &StorageHeader) -> Result<usize, StorageError> {
@@ -268,6 +267,39 @@ where
             })
     }
 
+    fn from_file(
+        mut file: File,
+        file_len: usize,
+        expected_kind: ArtifactKind,
+        expected_schema: u32,
+    ) -> Result<Self, StorageError> {
+        let mut header_bytes = [0u8; HEADER_LEN];
+        file.read_exact(&mut header_bytes)?;
+
+        let header = StorageHeader::decode(&header_bytes)?;
+        validate_header(&header, expected_kind, expected_schema)?;
+
+        let payload_offset = header.payload_offset as usize;
+        let payload_len = Self::checked_payload_len(&header)?;
+        ensure_file_bounds(file_len, payload_offset, payload_len)?;
+
+        let aligned = match header.compression {
+            Compression::None => {
+                let mut out = rkyv::util::AlignedVec::with_capacity(payload_len);
+                out.resize(payload_len, 0);
+                file.read_exact(&mut out)?;
+                out
+            }
+            Compression::Zstd => {
+                let mut compressed = vec![0u8; payload_len];
+                file.read_exact(&mut compressed)?;
+                decompress(&compressed, header.uncompressed_len)?
+            }
+        };
+
+        Self::from_backing(header, Backing::Owned(aligned))
+    }
+
     fn from_mmap(
         mmap: Mmap,
         expected_kind: ArtifactKind,
@@ -295,33 +327,6 @@ where
                 Self::from_backing(header, Backing::Owned(aligned))
             }
         }
-    }
-
-    fn from_owned_bytes(
-        bytes: Vec<u8>,
-        expected_kind: ArtifactKind,
-        expected_schema: u32,
-    ) -> Result<Self, StorageError> {
-        if bytes.len() < HEADER_LEN {
-            return Err(StorageError::Truncated {
-                expected: HEADER_LEN,
-                found: bytes.len(),
-            });
-        }
-
-        let header = StorageHeader::decode(&bytes[..HEADER_LEN])?;
-        validate_header(&header, expected_kind, expected_schema)?;
-
-        let payload_offset = header.payload_offset as usize;
-        let payload_len = Self::checked_payload_len(&header)?;
-        ensure_file_bounds(bytes.len(), payload_offset, payload_len)?;
-
-        let payload = &bytes[payload_offset..payload_offset + payload_len];
-        let aligned = match header.compression {
-            Compression::None => aligned_bytes(payload),
-            Compression::Zstd => decompress(payload, header.uncompressed_len)?,
-        };
-        Self::from_backing(header, Backing::Owned(aligned))
     }
 
     fn from_backing(header: StorageHeader, backing: Backing) -> Result<Self, StorageError> {
@@ -478,12 +483,6 @@ fn decompress(
     Ok(out)
 }
 
-fn aligned_bytes(bytes: &[u8]) -> rkyv::util::AlignedVec {
-    let mut aligned = rkyv::util::AlignedVec::with_capacity(bytes.len());
-    aligned.extend_from_slice(bytes);
-    aligned
-}
-
 fn verify_payload_hash(header: &StorageHeader, payload: &[u8]) -> Result<(), StorageError> {
     let should_validate = match header.compression {
         // Compressed artifacts already require a full decompression into memory,
@@ -511,19 +510,6 @@ fn verify_payload_hash(header: &StorageHeader, payload: &[u8]) -> Result<(), Sto
 fn content_hash(payload: &[u8]) -> u64 {
     let hash_bytes = blake3::hash(payload);
     u64::from_le_bytes(hash_bytes.as_bytes()[..8].try_into().expect("hash slice"))
-}
-
-fn read_file_with_cap(mut file: File, cap: u64) -> Result<Vec<u8>, StorageError> {
-    let mut bytes = Vec::new();
-    let mut limited = (&mut file).take(cap.saturating_add(1));
-    limited.read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > cap {
-        return Err(StorageError::TooLargeForFallbackRead {
-            file_len: bytes.len() as u64,
-            cap,
-        });
-    }
-    Ok(bytes)
 }
 
 fn max_payload_len_bytes() -> u64 {
