@@ -11,5 +11,5 @@ nova-classfile = { path = "../nova-classfile" }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
-nova-test-utils = { path = "../nova-test-utils" }
 nova-classpath = { path = "../nova-classpath" }
+tempfile.workspace = true

@@ -3506,8 +3506,8 @@ dependencies = [
  "nova-cache",
  "nova-core",
  "nova-hir",
- "nova-jdk",
  "nova-index",
+ "nova-jdk",
  "nova-memory",
  "nova-project",
  "nova-syntax",
@@ -4130,10 +4130,10 @@ name = "nova-types"
 version = "0.1.0"
 dependencies = [
  "nova-ids",
- "nova-test-utils",
  "pretty_assertions",
  "schemars",
  "serde",
+ "tempfile",
 ]
 
 [[package]]
