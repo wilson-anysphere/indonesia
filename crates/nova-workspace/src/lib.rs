@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
 use nova_db::persistence::{PersistenceConfig, PersistenceMode};
+use nova_db::{FileId, NovaIndexing, SalsaDatabase};
 use nova_index::{
     load_sharded_index_archives_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
     CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
     WorkspaceSymbolSearcher, DEFAULT_SHARD_COUNT,
 };
-use nova_db::{FileId, NovaIndexing, SalsaDatabase};
 use nova_memory::{MemoryBudget, MemoryManager};
 use nova_project::ProjectError;
 use nova_syntax::SyntaxNode;

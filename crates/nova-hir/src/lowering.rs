@@ -81,7 +81,10 @@ impl ItemTreeLower<'_> {
             imports
         };
 
-        self.tree.module = unit.module.as_ref().map(|module| self.lower_module_decl(module));
+        self.tree.module = unit
+            .module
+            .as_ref()
+            .map(|module| self.lower_module_decl(module));
 
         for decl in &unit.types {
             self.check_cancelled();
@@ -115,8 +118,8 @@ impl ItemTreeLower<'_> {
             }
             syntax::TypeDecl::Interface(interface) => {
                 let members = self.lower_members(&interface.members);
-                let ast_id = self
-                    .ast_id_for_name(SyntaxKind::InterfaceDeclaration, interface.name_range)?;
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::InterfaceDeclaration, interface.name_range)?;
                 let id = InterfaceId::new(self.file, ast_id);
                 self.tree.interfaces.insert(
                     ast_id,
@@ -267,8 +270,8 @@ impl ItemTreeLower<'_> {
                 Some(Member::Method(id))
             }
             syntax::MemberDecl::Constructor(cons) => {
-                let ast_id = self
-                    .ast_id_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range)?;
+                let ast_id =
+                    self.ast_id_for_name(SyntaxKind::ConstructorDeclaration, cons.name_range)?;
                 let id = ConstructorId::new(self.file, ast_id);
                 let params = {
                     let mut params = Vec::with_capacity(cons.params.len());
@@ -548,7 +551,11 @@ impl<'a> BodyLower<'a> {
                 let condition = self.lower_expr(&if_stmt.condition);
                 let then_branch = self
                     .lower_stmt(if_stmt.then_branch.as_ref())
-                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Empty { range: if_stmt.range }));
+                    .unwrap_or_else(|| {
+                        self.alloc_stmt(Stmt::Empty {
+                            range: if_stmt.range,
+                        })
+                    });
                 let else_branch = if_stmt
                     .else_branch
                     .as_ref()
@@ -564,7 +571,11 @@ impl<'a> BodyLower<'a> {
                 let condition = self.lower_expr(&while_stmt.condition);
                 let body = self
                     .lower_stmt(while_stmt.body.as_ref())
-                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Empty { range: while_stmt.range }));
+                    .unwrap_or_else(|| {
+                        self.alloc_stmt(Stmt::Empty {
+                            range: while_stmt.range,
+                        })
+                    });
                 Some(self.alloc_stmt(Stmt::While {
                     condition,
                     body,
@@ -591,9 +602,11 @@ impl<'a> BodyLower<'a> {
                     update.push(self.lower_expr(expr));
                 }
 
-                let body = self
-                    .lower_stmt(for_stmt.body.as_ref())
-                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Empty { range: for_stmt.range }));
+                let body = self.lower_stmt(for_stmt.body.as_ref()).unwrap_or_else(|| {
+                    self.alloc_stmt(Stmt::Empty {
+                        range: for_stmt.range,
+                    })
+                });
 
                 Some(self.alloc_stmt(Stmt::For {
                     init,
@@ -612,9 +625,11 @@ impl<'a> BodyLower<'a> {
                     range: for_each.var.range,
                 });
                 let iterable = self.lower_expr(&for_each.iterable);
-                let body = self
-                    .lower_stmt(for_each.body.as_ref())
-                    .unwrap_or_else(|| self.alloc_stmt(Stmt::Empty { range: for_each.range }));
+                let body = self.lower_stmt(for_each.body.as_ref()).unwrap_or_else(|| {
+                    self.alloc_stmt(Stmt::Empty {
+                        range: for_each.range,
+                    })
+                });
                 Some(self.alloc_stmt(Stmt::ForEach {
                     local: local_id,
                     iterable,
@@ -652,7 +667,10 @@ impl<'a> BodyLower<'a> {
                     });
                 }
 
-                let finally = try_stmt.finally.as_ref().map(|block| self.lower_block(block));
+                let finally = try_stmt
+                    .finally
+                    .as_ref()
+                    .map(|block| self.lower_block(block));
 
                 Some(self.alloc_stmt(Stmt::Try {
                     body,
@@ -669,7 +687,9 @@ impl<'a> BodyLower<'a> {
                 }))
             }
             syntax::Stmt::Break(range) => Some(self.alloc_stmt(Stmt::Break { range: *range })),
-            syntax::Stmt::Continue(range) => Some(self.alloc_stmt(Stmt::Continue { range: *range })),
+            syntax::Stmt::Continue(range) => {
+                Some(self.alloc_stmt(Stmt::Continue { range: *range }))
+            }
             syntax::Stmt::Empty(range) => Some(self.alloc_stmt(Stmt::Empty { range: *range })),
         }
     }

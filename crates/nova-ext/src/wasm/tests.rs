@@ -14,6 +14,52 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[test]
+fn abi_types_are_reexported_from_nova_ext() {
+    use std::any::TypeId;
+
+    assert_eq!(
+        TypeId::of::<super::DiagnosticsRequestV1>(),
+        TypeId::of::<nova_ext_abi::v1::DiagnosticsRequestV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::DiagnosticV1>(),
+        TypeId::of::<nova_ext_abi::v1::DiagnosticV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::CompletionsRequestV1>(),
+        TypeId::of::<nova_ext_abi::v1::CompletionsRequestV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::CompletionItemV1>(),
+        TypeId::of::<nova_ext_abi::v1::CompletionItemV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::CodeActionsRequestV1>(),
+        TypeId::of::<nova_ext_abi::v1::CodeActionsRequestV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::CodeActionV1>(),
+        TypeId::of::<nova_ext_abi::v1::CodeActionV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::NavigationRequestV1>(),
+        TypeId::of::<nova_ext_abi::v1::NavigationRequestV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::NavigationTargetV1>(),
+        TypeId::of::<nova_ext_abi::v1::NavigationTargetV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::InlayHintsRequestV1>(),
+        TypeId::of::<nova_ext_abi::v1::InlayHintsRequestV1>()
+    );
+    assert_eq!(
+        TypeId::of::<super::InlayHintV1>(),
+        TypeId::of::<nova_ext_abi::v1::InlayHintV1>()
+    );
+}
+
 struct TestDb {
     text: String,
     path: Option<PathBuf>,

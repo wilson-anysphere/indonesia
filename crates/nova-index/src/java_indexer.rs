@@ -54,7 +54,9 @@ impl ExtrasCollector {
     fn collect_type_declaration(&mut self, decl: &ast::TypeDeclaration) {
         match decl {
             ast::TypeDeclaration::ClassDeclaration(it) => self.collect_class_declaration(it),
-            ast::TypeDeclaration::InterfaceDeclaration(it) => self.collect_interface_declaration(it),
+            ast::TypeDeclaration::InterfaceDeclaration(it) => {
+                self.collect_interface_declaration(it)
+            }
             ast::TypeDeclaration::EnumDeclaration(it) => self.collect_enum_declaration(it),
             ast::TypeDeclaration::RecordDeclaration(it) => self.collect_record_declaration(it),
             ast::TypeDeclaration::AnnotationTypeDeclaration(it) => {
@@ -240,7 +242,9 @@ fn syntax_text_no_trivia(node: &nova_syntax::SyntaxNode) -> String {
     // actual token stream, then strip trivia for stability across whitespace-only edits.
     for el in node.descendants_with_tokens() {
         let Some(tok) = el.into_token() else { continue };
-        if tok.kind().is_trivia() { continue; }
+        if tok.kind().is_trivia() {
+            continue;
+        }
         out.push_str(tok.text());
     }
     out
@@ -257,10 +261,7 @@ fn type_to_simple_name(ty: &ast::Type) -> Option<String> {
         .split_once('<')
         .map(|(head, _)| head)
         .unwrap_or(text.as_str());
-    let base = base
-        .split_once('[')
-        .map(|(head, _)| head)
-        .unwrap_or(base);
+    let base = base.split_once('[').map(|(head, _)| head).unwrap_or(base);
 
     let base = simple_name_from_qualified_name(base);
     if base.is_empty() {
@@ -548,7 +549,9 @@ mod tests {
         let indexes = build_file_indexes("A.java", &hir, &extras);
 
         // Symbol definitions (from HIR).
-        for name in ["A", "Inner", "field", "m", "I1", "I2", "B", "Anno", "Inject", "Param"] {
+        for name in [
+            "A", "Inner", "field", "m", "I1", "I2", "B", "Anno", "Inject", "Param",
+        ] {
             assert!(
                 indexes.symbols.symbols.contains_key(name),
                 "expected symbol {name} in symbols index"

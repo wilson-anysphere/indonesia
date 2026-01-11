@@ -470,7 +470,10 @@ fn lower_non_sealed_class() {
     };
     let class = tree.class(class_id);
     assert_eq!(class.name, "Foo");
-    assert_ne!(class.modifiers.raw & nova_hir::item_tree::Modifiers::NON_SEALED, 0);
+    assert_ne!(
+        class.modifiers.raw & nova_hir::item_tree::Modifiers::NON_SEALED,
+        0
+    );
 }
 
 fn method_id_by_name(

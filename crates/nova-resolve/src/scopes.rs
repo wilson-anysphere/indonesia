@@ -509,20 +509,17 @@ impl<'a> ScopeBuilder<'a> {
                 self.build_stmt_scopes(then_scope, owner, body, *then_branch);
 
                 if let Some(stmt) = else_branch {
-                    let else_scope = self.alloc_scope(
-                        Some(parent),
-                        ScopeKind::Block {
-                            owner,
-                            stmt: *stmt,
-                        },
-                    );
+                    let else_scope =
+                        self.alloc_scope(Some(parent), ScopeKind::Block { owner, stmt: *stmt });
                     self.build_stmt_scopes(else_scope, owner, body, *stmt);
                 }
 
                 parent
             }
             hir::Stmt::While {
-                condition, body: loop_body, ..
+                condition,
+                body: loop_body,
+                ..
             } => {
                 self.stmt_scopes.insert(stmt_id, parent);
                 self.record_expr_scopes(parent, owner, body, *condition);
@@ -609,7 +606,9 @@ impl<'a> ScopeBuilder<'a> {
                 parent
             }
             hir::Stmt::Switch {
-                selector, body: switch_body, ..
+                selector,
+                body: switch_body,
+                ..
             } => {
                 self.stmt_scopes.insert(stmt_id, parent);
                 self.record_expr_scopes(parent, owner, body, *selector);
@@ -736,7 +735,11 @@ impl<'a> ScopeBuilder<'a> {
                 self.record_expr_scopes(scope, owner, body, *then_expr);
                 self.record_expr_scopes(scope, owner, body, *else_expr);
             }
-            hir::Expr::Lambda { params, body: lambda_body, .. } => {
+            hir::Expr::Lambda {
+                params,
+                body: lambda_body,
+                ..
+            } => {
                 let lambda_scope = self.alloc_scope(
                     Some(scope),
                     ScopeKind::Lambda {

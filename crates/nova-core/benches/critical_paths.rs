@@ -3,8 +3,8 @@ use std::time::Duration;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use once_cell::sync::Lazy;
 
-use nova_ide::filter_and_rank_completions;
 use nova_core::{CompletionItem, CompletionItemKind};
+use nova_ide::filter_and_rank_completions;
 use nova_index::{ReferenceIndex, ReferenceLocation, SearchSymbol, SymbolSearchIndex};
 
 static SMALL_JAVA: &str = include_str!("fixtures/small.java");

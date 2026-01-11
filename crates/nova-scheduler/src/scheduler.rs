@@ -21,8 +21,8 @@ fn build_rayon_pool(name_prefix: &'static str, threads: usize) -> ThreadPool {
             .build()
         {
             Ok(pool) => return pool,
-            Err(err) if desired > 1 => {
-                desired = desired / 2;
+            Err(_err) if desired > 1 => {
+                desired /= 2;
                 continue;
             }
             Err(err) => panic!(
@@ -44,8 +44,8 @@ fn build_io_runtime(threads: usize) -> Runtime {
             .build()
         {
             Ok(runtime) => return runtime,
-            Err(err) if desired > 1 => {
-                desired = desired / 2;
+            Err(_err) if desired > 1 => {
+                desired /= 2;
                 continue;
             }
             Err(err) => {

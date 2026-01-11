@@ -30,9 +30,9 @@ mod report;
 mod types;
 
 pub use budget::MemoryBreakdownOverrides;
-pub use budget::{MemoryBudget, MemoryBudgetOverrides, GB, MB};
 #[doc(hidden)]
 pub use budget::{effective_system_total_memory_bytes, interpret_rlimit_as_bytes};
+pub use budget::{MemoryBudget, MemoryBudgetOverrides, GB, MB};
 pub use degraded::{BackgroundIndexingMode, DegradedSettings};
 pub use eviction::{EvictionRequest, EvictionResult, MemoryEvictor};
 pub use manager::{MemoryEvent, MemoryManager, MemoryRegistration, MemoryTracker};

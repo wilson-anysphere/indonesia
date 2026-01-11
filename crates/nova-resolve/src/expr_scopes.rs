@@ -215,7 +215,9 @@ impl Builder {
 
                 scope
             }
-            Stmt::While { condition, body: b, .. } => {
+            Stmt::While {
+                condition, body: b, ..
+            } => {
                 self.stmt_scopes.insert(stmt_id, scope);
                 self.visit_expr(body, *condition, scope);
                 let body_scope = self.alloc_scope(Some(scope));
@@ -266,7 +268,9 @@ impl Builder {
                 let _ = self.visit_stmt(body, *b, for_scope);
                 scope
             }
-            Stmt::Switch { selector, body: b, .. } => {
+            Stmt::Switch {
+                selector, body: b, ..
+            } => {
                 self.stmt_scopes.insert(stmt_id, scope);
                 self.visit_expr(body, *selector, scope);
                 let switch_scope = self.alloc_scope(Some(scope));
@@ -366,7 +370,9 @@ impl Builder {
                 self.visit_expr(body, *then_expr, scope);
                 self.visit_expr(body, *else_expr, scope);
             }
-            Expr::Lambda { params, body: b, .. } => {
+            Expr::Lambda {
+                params, body: b, ..
+            } => {
                 let lambda_scope = self.alloc_scope(Some(scope));
 
                 for param in params {
@@ -379,7 +385,9 @@ impl Builder {
                 }
 
                 match b {
-                    nova_hir::hir::LambdaBody::Expr(expr) => self.visit_expr(body, *expr, lambda_scope),
+                    nova_hir::hir::LambdaBody::Expr(expr) => {
+                        self.visit_expr(body, *expr, lambda_scope)
+                    }
                     nova_hir::hir::LambdaBody::Block(stmt) => {
                         let _ = self.visit_stmt(body, *stmt, lambda_scope);
                     }

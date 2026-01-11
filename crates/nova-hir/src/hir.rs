@@ -337,21 +337,21 @@ impl Expr {
         match self {
             Expr::Name { range, .. }
             | Expr::Literal { range, .. }
-             | Expr::Null { range }
-             | Expr::This { range }
-             | Expr::Super { range }
-             | Expr::Call { range, .. }
-             | Expr::FieldAccess { range, .. }
-             | Expr::MethodReference { range, .. }
-             | Expr::ConstructorReference { range, .. }
-             | Expr::ClassLiteral { range, .. }
-             | Expr::New { range, .. }
-             | Expr::Unary { range, .. }
-             | Expr::Binary { range, .. }
-             | Expr::Assign { range, .. }
-             | Expr::Conditional { range, .. }
-             | Expr::Lambda { range, .. }
-             | Expr::Missing { range } => *range,
+            | Expr::Null { range }
+            | Expr::This { range }
+            | Expr::Super { range }
+            | Expr::Call { range, .. }
+            | Expr::FieldAccess { range, .. }
+            | Expr::MethodReference { range, .. }
+            | Expr::ConstructorReference { range, .. }
+            | Expr::ClassLiteral { range, .. }
+            | Expr::New { range, .. }
+            | Expr::Unary { range, .. }
+            | Expr::Binary { range, .. }
+            | Expr::Assign { range, .. }
+            | Expr::Conditional { range, .. }
+            | Expr::Lambda { range, .. }
+            | Expr::Missing { range } => *range,
         }
     }
 }

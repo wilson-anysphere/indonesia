@@ -152,24 +152,22 @@ fn project_indexes(db: &dyn NovaIndexing, project: ProjectId) -> Arc<Vec<Project
 
     let loaded = if persistence.mode().allows_read() {
         match (cache_dir, snapshot.as_ref()) {
-            (Some(cache_dir), Some(snapshot)) => match nova_index::load_sharded_index_archives(
-                cache_dir,
-                snapshot,
-                shard_count,
-            ) {
-                Ok(Some(loaded)) => {
-                    db.record_disk_cache_hit("project_indexes");
-                    Some(loaded)
+            (Some(cache_dir), Some(snapshot)) => {
+                match nova_index::load_sharded_index_archives(cache_dir, snapshot, shard_count) {
+                    Ok(Some(loaded)) => {
+                        db.record_disk_cache_hit("project_indexes");
+                        Some(loaded)
+                    }
+                    Ok(None) => {
+                        db.record_disk_cache_miss("project_indexes");
+                        None
+                    }
+                    Err(_) => {
+                        db.record_disk_cache_miss("project_indexes");
+                        None
+                    }
                 }
-                Ok(None) => {
-                    db.record_disk_cache_miss("project_indexes");
-                    None
-                }
-                Err(_) => {
-                    db.record_disk_cache_miss("project_indexes");
-                    None
-                }
-            },
+            }
             _ => None,
         }
     } else {

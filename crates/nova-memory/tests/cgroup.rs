@@ -1,8 +1,6 @@
 use nova_memory::{
     cgroup::{parse_cgroup_memory_limit_bytes, parse_proc_self_cgroup},
-    effective_system_total_memory_bytes,
-    interpret_rlimit_as_bytes,
-    MemoryBudget, GB, MB,
+    effective_system_total_memory_bytes, interpret_rlimit_as_bytes, MemoryBudget, GB, MB,
 };
 
 #[test]

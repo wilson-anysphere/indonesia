@@ -625,7 +625,9 @@ pub fn parse_block(text: &str, offset: usize) -> ast::Block {
     let parsed = crate::parse_java_block_fragment(text, offset_u32);
     let root = parsed.parse.syntax();
 
-    let block_node = root.descendants().find(|node| node.kind() == SyntaxKind::Block);
+    let block_node = root
+        .descendants()
+        .find(|node| node.kind() == SyntaxKind::Block);
 
     let Some(block_node) = block_node else {
         return ast::Block {
@@ -758,7 +760,9 @@ impl Lowerer {
             .map(|n| self.spans.map_node(n))
             .unwrap_or_else(|| Span::new(range.end, range.end));
 
-        let name_node = node.children().find(|child| child.kind() == SyntaxKind::Name);
+        let name_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Name);
         let name = name_node
             .as_ref()
             .map(|n| self.collect_non_trivia_text(n))
@@ -839,7 +843,9 @@ impl Lowerer {
                     range: self.spans.map_node(&directive),
                 })
             }
-            SyntaxKind::ExportsDirective | SyntaxKind::OpensDirective | SyntaxKind::ProvidesDirective => {
+            SyntaxKind::ExportsDirective
+            | SyntaxKind::OpensDirective
+            | SyntaxKind::ProvidesDirective => {
                 let names: Vec<_> = directive
                     .children()
                     .filter(|child| child.kind() == SyntaxKind::Name)
@@ -1030,9 +1036,9 @@ impl Lowerer {
                 .into_iter()
                 .map(ast::MemberDecl::Field)
                 .collect(),
-            SyntaxKind::MethodDeclaration => vec![ast::MemberDecl::Method(self.lower_method_decl(
-                node,
-            ))],
+            SyntaxKind::MethodDeclaration => {
+                vec![ast::MemberDecl::Method(self.lower_method_decl(node))]
+            }
             SyntaxKind::ConstructorDeclaration => {
                 let decl = self.lower_constructor_decl(node);
                 if decl.name == enclosing_type {
@@ -1475,9 +1481,7 @@ impl Lowerer {
             .unwrap_or_else(|| ast::Expr::Missing(range));
 
         let mut branches = node.children().filter_map(|child| self.lower_stmt(&child));
-        let then_branch = branches
-            .next()
-            .unwrap_or_else(|| ast::Stmt::Empty(range));
+        let then_branch = branches.next().unwrap_or_else(|| ast::Stmt::Empty(range));
         let else_branch = branches.next().map(Box::new);
 
         ast::IfStmt {
@@ -1610,9 +1614,12 @@ impl Lowerer {
                     .descendants()
                     .filter(|child| {
                         is_expression_kind(child.kind())
-                            && !is_expression_kind(child.parent().map(|p| p.kind()).unwrap_or(
-                                SyntaxKind::Error,
-                            ))
+                            && !is_expression_kind(
+                                child
+                                    .parent()
+                                    .map(|p| p.kind())
+                                    .unwrap_or(SyntaxKind::Error),
+                            )
                     })
                     .filter(|expr| {
                         let span = self.spans.map_node(expr);
@@ -1718,7 +1725,9 @@ impl Lowerer {
     fn lower_try_stmt(&self, node: &SyntaxNode) -> ast::TryStmt {
         let range = self.spans.map_node(node);
 
-        let body_node = node.children().find(|child| child.kind() == SyntaxKind::Block);
+        let body_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Block);
         let body = body_node
             .as_ref()
             .map(|block| self.lower_block(block))
@@ -1755,7 +1764,9 @@ impl Lowerer {
         let param_node = param_node.as_ref().unwrap_or(node);
         let param = self.lower_catch_param(param_node);
 
-        let body_node = node.children().find(|child| child.kind() == SyntaxKind::Block);
+        let body_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Block);
         let body = body_node
             .as_ref()
             .map(|block| self.lower_block(block))
@@ -1769,7 +1780,9 @@ impl Lowerer {
 
     fn lower_catch_param(&self, node: &SyntaxNode) -> ast::CatchParam {
         let (modifiers, annotations) = self.lower_decl_modifiers(node);
-        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Type);
         let ty = ty_node
             .as_ref()
             .map(|n| self.lower_type_ref(n))
@@ -1870,7 +1883,9 @@ impl Lowerer {
             SyntaxKind::MethodCallExpression => self.lower_call_expr(node),
             SyntaxKind::FieldAccessExpression => self.lower_field_access_expr(node),
             SyntaxKind::MethodReferenceExpression => self.lower_method_reference_expr(node),
-            SyntaxKind::ConstructorReferenceExpression => self.lower_constructor_reference_expr(node),
+            SyntaxKind::ConstructorReferenceExpression => {
+                self.lower_constructor_reference_expr(node)
+            }
             SyntaxKind::ClassLiteralExpression => self.lower_class_literal_expr(node),
             SyntaxKind::UnaryExpression => self.lower_unary_expr(node),
             SyntaxKind::BinaryExpression => self.lower_binary_expr(node),
@@ -2155,7 +2170,9 @@ impl Lowerer {
     }
 
     fn lower_new_expr(&self, node: &SyntaxNode) -> ast::Expr {
-        let ty_node = node.children().find(|child| child.kind() == SyntaxKind::Type);
+        let ty_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Type);
         let class = ty_node
             .as_ref()
             .map(|n| self.lower_type_ref(n))
@@ -2195,7 +2212,9 @@ impl Lowerer {
             .filter(|tok| !tok.kind().is_trivia() && tok.kind() != SyntaxKind::Eof)
             .last();
 
-        let operand_node = node.children().find(|child| is_expression_kind(child.kind()));
+        let operand_node = node
+            .children()
+            .find(|child| is_expression_kind(child.kind()));
         let operand = operand_node
             .as_ref()
             .map(|expr| self.lower_expr(expr))
@@ -2372,7 +2391,11 @@ impl Lowerer {
             })
             .unwrap_or_else(|| ast::LambdaBody::Expr(Box::new(ast::Expr::Missing(range))));
 
-        ast::Expr::Lambda(ast::LambdaExpr { params, body, range })
+        ast::Expr::Lambda(ast::LambdaExpr {
+            params,
+            body,
+            range,
+        })
     }
 
     fn lower_decl_modifiers(&self, node: &SyntaxNode) -> (ast::Modifiers, Vec<ast::AnnotationUse>) {
@@ -2421,7 +2444,9 @@ impl Lowerer {
     }
 
     fn lower_annotation_use(&self, node: &SyntaxNode) -> Option<ast::AnnotationUse> {
-        let name_node = node.children().find(|child| child.kind() == SyntaxKind::Name);
+        let name_node = node
+            .children()
+            .find(|child| child.kind() == SyntaxKind::Name);
         let name = name_node
             .as_ref()
             .map(|n| self.collect_non_trivia_text(n))

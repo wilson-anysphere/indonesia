@@ -54,7 +54,9 @@ pub struct ModuleDecl {
 
 impl PartialEq for ModuleDecl {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.is_open == other.is_open && self.directives == other.directives
+        self.name == other.name
+            && self.is_open == other.is_open
+            && self.directives == other.directives
     }
 }
 
@@ -109,7 +111,11 @@ impl PartialEq for ModuleDirective {
                     is_static: other_static,
                     ..
                 },
-            ) => module == other_module && is_transitive == other_transitive && is_static == other_static,
+            ) => {
+                module == other_module
+                    && is_transitive == other_transitive
+                    && is_static == other_static
+            }
             (
                 Exports { package, to, .. },
                 Exports {
