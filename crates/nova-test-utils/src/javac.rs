@@ -186,7 +186,12 @@ fn parse_javac_version(output: &str) -> Option<u32> {
     }
     let version = it.next()?;
     let mut nums = version.split(|c| c == '.' || c == '_');
-    let first = nums.next()?.parse::<u32>().ok()?;
+    let first_part = nums.next()?;
+    let first_digits: String = first_part
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let first = first_digits.parse::<u32>().ok()?;
     if first == 1 {
         nums.next()?.parse::<u32>().ok()
     } else {
@@ -228,23 +233,33 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
     // Paths can contain `:` on Windows (drive letters), so we parse from the end.
     let bytes = line.as_bytes();
 
-    // Find the first `:` that ends a numeric location field and is followed by whitespace.
-    // This should point at the `:` after either the column or line number.
+    // Find the last `:` that ends a numeric location field and is followed by whitespace.
+    //
+    // We search from the end to avoid being confused by `:` inside file paths (which is common
+    // on Windows via drive letters, but can also appear in Unix file names).
     let mut loc_end_colon: Option<usize> = None;
-    for (i, b) in bytes.iter().enumerate() {
-        if *b != b':' {
+    for i in (0..bytes.len()).rev() {
+        if bytes[i] != b':' {
             continue;
         }
-        if i == 0 {
+        if !bytes.get(i + 1).map_or(false, |b| b.is_ascii_whitespace()) {
             continue;
         }
-        if !bytes[i - 1].is_ascii_digit() {
+        if i == 0 || !bytes[i - 1].is_ascii_digit() {
             continue;
         }
-        if bytes.get(i + 1).map_or(false, |b| b.is_ascii_whitespace()) {
-            loc_end_colon = Some(i);
-            break;
+
+        // Ensure the numeric field is preceded by `:` (so we match `:<digits>:\s`).
+        let mut n_start = i;
+        while n_start > 0 && bytes[n_start - 1].is_ascii_digit() {
+            n_start -= 1;
         }
+        if n_start == 0 || bytes[n_start - 1] != b':' {
+            continue;
+        }
+
+        loc_end_colon = Some(i);
+        break;
     }
     let loc_end_colon = loc_end_colon?;
 
@@ -360,5 +375,20 @@ mod tests {
     #[test]
     fn parses_javac_version_8() {
         assert_eq!(parse_javac_version("javac 1.8.0_392"), Some(8));
+    }
+
+    #[test]
+    fn parses_javac_version_ea() {
+        assert_eq!(parse_javac_version("javac 21-ea"), Some(21));
+    }
+
+    #[test]
+    fn parses_paths_with_colon_digit_patterns() {
+        let line = "dir:1: Test.java:3:13: compiler.err.illegal.start.of.expr";
+        let diag = parse_diagnostic_line(line).unwrap();
+        assert_eq!(diag.file, "dir:1: Test.java");
+        assert_eq!(diag.line, 3);
+        assert_eq!(diag.column, 13);
+        assert_eq!(diag.kind, "compiler.err.illegal.start.of.expr");
     }
 }
