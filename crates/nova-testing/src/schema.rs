@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use serde_json::{json, Value};
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -166,4 +167,36 @@ pub struct DebugConfiguration {
     pub args: Vec<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+}
+
+impl DebugConfiguration {
+    /// Convert this configuration into DAP `launch` arguments for `nova-dap`.
+    ///
+    /// The resulting JSON matches the command-based `launch` schema supported by
+    /// `nova-dap`'s wire server implementation (`nova_dap::wire_server`).
+    ///
+    /// Note: `schemaVersion` and `name` are preserved in the output. `nova-dap` ignores
+    /// those fields so the configuration can be passed through mostly unchanged.
+    pub fn as_nova_dap_launch_arguments(&self) -> Value {
+        serde_json::to_value(self).expect("DebugConfiguration should serialize")
+    }
+
+    /// Convert this configuration into DAP `launch` arguments for `nova-dap`, overriding
+    /// the JDWP host/port and attach timeout.
+    pub fn as_nova_dap_launch_arguments_with_jdwp(
+        &self,
+        host: impl Into<String>,
+        port: u16,
+        attach_timeout_ms: Option<u64>,
+    ) -> Value {
+        let mut value = self.as_nova_dap_launch_arguments();
+        if let Value::Object(map) = &mut value {
+            map.insert("host".to_string(), json!(host.into()));
+            map.insert("port".to_string(), json!(port));
+            if let Some(ms) = attach_timeout_ms {
+                map.insert("attachTimeoutMs".to_string(), json!(ms));
+            }
+        }
+        value
+    }
 }

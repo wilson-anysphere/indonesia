@@ -52,7 +52,11 @@ Notes:
 
 ### 3) Configure your DAP client to attach
 
-`nova-dap` currently implements the DAP `attach` request. The arguments are:
+`nova-dap` implements both `attach` and `launch`.
+
+#### `attach`
+
+The arguments are:
 
 ```json
 {
@@ -66,6 +70,67 @@ How you hook up a DAP client depends on your editor.
 For example, in VS Code you can use a DAP client/extension that supports a
 `debugAdapterPath` style configuration and point it at `target/debug/nova-dap`.
 Then create an `attach` configuration using the host/port above.
+
+## `launch` (wire server)
+
+The default adapter implementation (`nova_dap::wire_server`) supports launching a process
+and then attaching to a JDWP socket once it becomes available.
+
+### A) Command-based launch (recommended; works with Maven/Gradle test runs)
+
+This is the mode that `nova-testing` produces (`nova_testing::schema::DebugConfiguration`).
+
+Schema (DAP `launch` arguments):
+
+```jsonc
+{
+  // Required
+  "cwd": "/path/to/project",
+  "command": "mvn",              // or "./mvnw", "gradle", "./gradlew", etc.
+  "args": ["-Dmaven.surefire.debug", "test"],
+  "env": { "KEY": "VALUE" },
+
+  // Optional (defaults shown)
+  "host": "127.0.0.1",
+  "port": 5005,
+  "attachTimeoutMs": 30000
+}
+```
+
+Notes:
+- `stdout`/`stderr` from the launched process are forwarded as DAP `output` events
+  (categories: `stdout` / `stderr`).
+- `launch` only responds `success=true` once the adapter is attached to JDWP.
+- `nova-testing` configurations include `schemaVersion` and `name`; those fields are ignored
+  by `nova-dap`, so the configuration can be passed almost directly as `launch` arguments.
+
+### B) Direct Java launch (optional convenience)
+
+Schema (DAP `launch` arguments):
+
+```jsonc
+{
+  "javaPath": "java",                  // optional (alias: "java")
+  "classpath": ["target/classes"],     // string or string[]
+  "mainClass": "com.example.Main",
+
+  "vmArgs": ["-Xmx1g"],                // optional
+  "args": ["--flag"],                  // optional
+  "cwd": "/path/to/project",           // optional
+  "env": { "KEY": "VALUE" },           // optional
+
+  "attachTimeoutMs": 30000             // optional
+}
+```
+
+The adapter picks a free TCP port, injects a JDWP agent with `suspend=y`, then attaches.
+
+## Termination semantics
+
+- `disconnect` supports the standard DAP argument `terminateDebuggee`:
+  - `true`: kill the launched process (if any) and close the JDWP connection.
+  - `false`: detach and end the debug session.
+- `terminate` always terminates the debuggee and ends the session.
 
 ### 4) Set breakpoints and debug
 

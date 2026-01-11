@@ -18,7 +18,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
-tokio = { version = "1", default-features = false, features = ["io-std", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", default-features = false, features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-util = "0.7"
 
 nova-core = { path = "../nova-core" }
@@ -44,6 +44,10 @@ path = "src/lib.rs"
 # These tests are ignored by default and should be enabled explicitly:
 #   cargo test -p nova-dap --features real-jvm-tests
 real-jvm-tests = []
+
+[[bin]]
+name = "nova_dap_test_helper"
+path = "tests/fixtures/nova_dap_test_helper.rs"
 
 [dev-dependencies]
 tempfile = "3.10.1"

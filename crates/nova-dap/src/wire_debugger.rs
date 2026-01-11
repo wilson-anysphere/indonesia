@@ -4,10 +4,12 @@ use std::{
     hash::Hash,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use serde_json::json;
 use thiserror::Error;
+use tokio::time::{sleep, Instant};
 use tokio_util::sync::CancellationToken;
 
 use nova_jdwp::wire::{
@@ -273,6 +275,36 @@ impl Debugger {
         dbg.jdwp.event_request_set(7, 0, Vec::new()).await?;
 
         Ok(dbg)
+    }
+
+    /// Attach to a JDWP socket, retrying with exponential backoff until it is available.
+    ///
+    /// This is primarily used by `launch` flows where a build tool or JVM is spawned in
+    /// debug mode and the JDWP socket is not immediately accepting connections.
+    pub async fn attach_with_retry(args: AttachArgs, timeout: Duration) -> Result<Self> {
+        if timeout == Duration::ZERO {
+            return Self::attach(args).await;
+        }
+
+        let start = Instant::now();
+        let mut backoff = Duration::from_millis(50);
+        let max_backoff = Duration::from_secs(1);
+
+        loop {
+            match Self::attach(args.clone()).await {
+                Ok(dbg) => return Ok(dbg),
+                Err(err) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= timeout || !is_retryable_attach_error(&err) {
+                        return Err(err);
+                    }
+
+                    let remaining = timeout.saturating_sub(elapsed);
+                    sleep(backoff.min(remaining)).await;
+                    backoff = (backoff * 2).min(max_backoff);
+                }
+            }
+        }
     }
 
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<JdwpEvent> {
@@ -1735,7 +1767,6 @@ fn escape_java_string(input: &str, max_len: usize) -> String {
     }
     out
 }
-
 fn normalize_breakpoint_string(value: Option<String>) -> Option<String> {
     value.and_then(|v| {
         let trimmed = v.trim();
@@ -2050,5 +2081,22 @@ mod tests {
         );
         assert_eq!(render_log_message("{{x}}", Some(&locals)), "{x}");
         assert_eq!(render_log_message("missing {y}", Some(&locals)), "missing {y}");
+    }
+}
+
+fn is_retryable_attach_error(err: &DebuggerError) -> bool {
+    match err {
+        DebuggerError::InvalidRequest(_) => false,
+        DebuggerError::Jdwp(JdwpError::Io(io_err)) => matches!(
+            io_err.kind(),
+            std::io::ErrorKind::ConnectionRefused
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::TimedOut
+                | std::io::ErrorKind::NotConnected
+                | std::io::ErrorKind::AddrNotAvailable
+        ),
+        DebuggerError::Jdwp(JdwpError::ConnectionClosed | JdwpError::Timeout) => true,
+        DebuggerError::Jdwp(JdwpError::Cancelled | JdwpError::Protocol(_) | JdwpError::VmError(_)) => false,
     }
 }

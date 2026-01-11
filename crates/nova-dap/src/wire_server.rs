@@ -1,18 +1,23 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     net::IpAddr,
+    process::Stdio,
     sync::{
         atomic::{AtomicBool, AtomicI64, Ordering},
         Arc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use nova_jdwp::wire::JdwpError;
 use nova_scheduler::CancellationToken;
+use serde::Deserialize;
 use serde_json::{json, Value};
 use thiserror::Error;
 use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    net::TcpListener,
+    process::{Child, Command},
     sync::{broadcast, mpsc, watch, Mutex},
     task::JoinSet,
 };
@@ -52,6 +57,7 @@ where
     let seq = Arc::new(AtomicI64::new(1));
     let terminated_sent = Arc::new(AtomicBool::new(false));
     let debugger: Arc<Mutex<Option<Debugger>>> = Arc::new(Mutex::new(None));
+    let launched_process: Arc<Mutex<Option<Child>>> = Arc::new(Mutex::new(None));
     let in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let server_shutdown = CancellationToken::new();
@@ -89,8 +95,9 @@ where
                     in_flight.insert(request.seq, request_token.clone());
                 }
 
-                let is_disconnect = request.command == "disconnect";
-                if is_disconnect {
+                let is_shutdown_request =
+                    matches!(request.command.as_str(), "disconnect" | "terminate");
+                if is_shutdown_request {
                     shutdown_request_seq = Some(request.seq);
                     server_shutdown.cancel();
                 }
@@ -101,6 +108,7 @@ where
                     out_tx.clone(),
                     seq.clone(),
                     debugger.clone(),
+                    launched_process.clone(),
                     in_flight.clone(),
                     initialized_tx.clone(),
                     initialized_rx.clone(),
@@ -108,7 +116,7 @@ where
                     terminated_sent.clone(),
                 ));
 
-                if is_disconnect {
+                if is_shutdown_request {
                     break;
                 }
             }
@@ -153,6 +161,7 @@ async fn handle_request(
     out_tx: mpsc::UnboundedSender<Value>,
     seq: Arc<AtomicI64>,
     debugger: Arc<Mutex<Option<Debugger>>>,
+    launched_process: Arc<Mutex<Option<Child>>>,
     in_flight: Arc<Mutex<HashMap<i64, CancellationToken>>>,
     initialized_tx: watch::Sender<bool>,
     initialized_rx: watch::Receiver<bool>,
@@ -169,6 +178,7 @@ async fn handle_request(
         &out_tx,
         &seq,
         &debugger,
+        &launched_process,
         &in_flight,
         &initialized_tx,
         initialized_rx,
@@ -187,6 +197,7 @@ async fn handle_request_inner(
     out_tx: &mpsc::UnboundedSender<Value>,
     seq: &Arc<AtomicI64>,
     debugger: &Arc<Mutex<Option<Debugger>>>,
+    launched_process: &Arc<Mutex<Option<Child>>>,
     in_flight: &Arc<Mutex<HashMap<i64, CancellationToken>>>,
     initialized_tx: &watch::Sender<bool>,
     initialized_rx: watch::Receiver<bool>,
@@ -214,6 +225,7 @@ async fn handle_request_inner(
                 "supportsEvaluateForHovers": true,
                 "supportsPauseRequest": true,
                 "supportsCancelRequest": true,
+                "supportsTerminateRequest": true,
                 "supportsSetVariable": false,
                 "supportsStepBack": false,
                 "supportsExceptionBreakpoints": true,
@@ -328,6 +340,290 @@ async fn handle_request_inner(
             // after breakpoints have been configured.
             send_response(out_tx, seq, request, true, None, None);
         }
+        "launch" => {
+            let args: LaunchArguments = match serde_json::from_value(request.arguments.clone()) {
+                Ok(args) => args,
+                Err(err) => {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some(format!("launch arguments are invalid: {err}")),
+                    );
+                    return;
+                }
+            };
+
+            // Ensure we don't leak previous launched processes if the client retries.
+            terminate_existing_process(launched_process).await;
+
+            // `launch` must not run concurrently with an existing debugger connection because
+            // event forwarding tasks cannot be restarted safely mid-session.
+            {
+                let guard = debugger.lock().await;
+                if guard.is_some() {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("already attached".to_string()),
+                    );
+                    return;
+                }
+            }
+
+            let attach_timeout = Duration::from_millis(args.attach_timeout_ms.unwrap_or(30_000));
+
+            // Determine which launch mode we are in.
+            let mode = if args.command.is_some() {
+                LaunchMode::Command
+            } else if args.main_class.is_some() {
+                LaunchMode::Java
+            } else {
+                send_response(
+                    out_tx,
+                    seq,
+                    request,
+                    false,
+                    None,
+                    Some("launch must specify either {command,cwd} or {mainClass,classpath}".to_string()),
+                );
+                return;
+            };
+
+            let attach = match mode {
+                LaunchMode::Command => {
+                    let Some(cwd) = args.cwd.as_deref() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("launch.cwd is required".to_string()),
+                        );
+                        return;
+                    };
+                    let Some(command) = args.command.as_deref() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("launch.command is required".to_string()),
+                        );
+                        return;
+                    };
+
+                    let host = args.host.as_deref().unwrap_or("127.0.0.1");
+                    let host: IpAddr = match host.parse() {
+                        Ok(host) => host,
+                        Err(err) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!("invalid host {host:?}: {err}")),
+                            );
+                            return;
+                        }
+                    };
+                    let port = args.port.unwrap_or(5005);
+
+                    let mut cmd = Command::new(command);
+                    cmd.args(&args.args);
+                    cmd.current_dir(cwd);
+                    cmd.stdin(Stdio::null());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+                    for (k, v) in &args.env {
+                        cmd.env(k, v);
+                    }
+
+                    let mut child = match cmd.spawn() {
+                        Ok(child) => child,
+                        Err(err) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!("failed to spawn {command:?}: {err}")),
+                            );
+                            return;
+                        }
+                    };
+
+                    if let Some(stdout) = child.stdout.take() {
+                        spawn_output_task(
+                            stdout,
+                            out_tx.clone(),
+                            seq.clone(),
+                            "stdout",
+                            server_shutdown.clone(),
+                        );
+                    }
+                    if let Some(stderr) = child.stderr.take() {
+                        spawn_output_task(
+                            stderr,
+                            out_tx.clone(),
+                            seq.clone(),
+                            "stderr",
+                            server_shutdown.clone(),
+                        );
+                    }
+
+                    {
+                        let mut guard = launched_process.lock().await;
+                        *guard = Some(child);
+                    }
+
+                    AttachArgs { host, port }
+                }
+                LaunchMode::Java => {
+                    let main_class = args.main_class.as_deref().unwrap_or_default();
+                    let Some(classpath) = args.classpath.clone() else {
+                        send_response(
+                            out_tx,
+                            seq,
+                            request,
+                            false,
+                            None,
+                            Some("launch.classpath is required for Java launch".to_string()),
+                        );
+                        return;
+                    };
+
+                    let port = match pick_free_port().await {
+                        Ok(port) => port,
+                        Err(err) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!("failed to select debug port: {err}")),
+                            );
+                            return;
+                        }
+                    };
+                    let host: IpAddr = "127.0.0.1".parse().unwrap();
+
+                    let java = args.java.clone().unwrap_or_else(|| "java".to_string());
+
+                    let cp_joined = match join_classpath(&classpath) {
+                        Ok(cp) => cp,
+                        Err(err) => {
+                            send_response(out_tx, seq, request, false, None, Some(err));
+                            return;
+                        }
+                    };
+
+                    let debug_arg = format!(
+                        "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address={port}"
+                    );
+
+                    let mut cmd = Command::new(java);
+                    cmd.stdin(Stdio::null());
+                    cmd.stdout(Stdio::piped());
+                    cmd.stderr(Stdio::piped());
+                    if let Some(cwd) = args.cwd.as_deref() {
+                        cmd.current_dir(cwd);
+                    }
+                    for (k, v) in &args.env {
+                        cmd.env(k, v);
+                    }
+                    cmd.args(&args.vm_args);
+                    cmd.arg(debug_arg);
+                    cmd.arg("-classpath");
+                    cmd.arg(cp_joined);
+                    cmd.arg(main_class);
+                    cmd.args(&args.args);
+
+                    let mut child = match cmd.spawn() {
+                        Ok(child) => child,
+                        Err(err) => {
+                            send_response(
+                                out_tx,
+                                seq,
+                                request,
+                                false,
+                                None,
+                                Some(format!("failed to spawn java: {err}")),
+                            );
+                            return;
+                        }
+                    };
+
+                    if let Some(stdout) = child.stdout.take() {
+                        spawn_output_task(
+                            stdout,
+                            out_tx.clone(),
+                            seq.clone(),
+                            "stdout",
+                            server_shutdown.clone(),
+                        );
+                    }
+                    if let Some(stderr) = child.stderr.take() {
+                        spawn_output_task(
+                            stderr,
+                            out_tx.clone(),
+                            seq.clone(),
+                            "stderr",
+                            server_shutdown.clone(),
+                        );
+                    }
+
+                    {
+                        let mut guard = launched_process.lock().await;
+                        *guard = Some(child);
+                    }
+
+                    AttachArgs { host, port }
+                }
+            };
+
+            let attach_fut = Debugger::attach_with_retry(attach, attach_timeout);
+            let dbg = tokio::select! {
+                _ = cancel.cancelled() => {
+                    terminate_existing_process(launched_process).await;
+                    send_response(out_tx, seq, request, false, None, Some("cancelled".to_string()));
+                    return;
+                }
+                res = attach_fut => match res {
+                    Ok(dbg) => dbg,
+                    Err(err) => {
+                        terminate_existing_process(launched_process).await;
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                        return;
+                    }
+                }
+            };
+
+            {
+                let mut guard = debugger.lock().await;
+                *guard = Some(dbg);
+            }
+
+            spawn_event_task(
+                debugger.clone(),
+                out_tx.clone(),
+                seq.clone(),
+                terminated_sent.clone(),
+                server_shutdown.clone(),
+            );
+
+            send_response(out_tx, seq, request, true, None, None);
+        }
         "attach" => {
             let host = request
                 .arguments
@@ -359,6 +655,21 @@ async fn handle_request_inner(
                     return;
                 }
             };
+
+            {
+                let guard = debugger.lock().await;
+                if guard.is_some() {
+                    send_response(
+                        out_tx,
+                        seq,
+                        request,
+                        false,
+                        None,
+                        Some("already attached".to_string()),
+                    );
+                    return;
+                }
+            }
 
             let dbg = match Debugger::attach(AttachArgs {
                 host,
@@ -1401,11 +1712,31 @@ async fn handle_request_inner(
                 Some("method return values are not implemented in the wire adapter yet".to_string()),
             );
         }
+        "terminate" => {
+            terminate_existing_process(launched_process).await;
+            disconnect_debugger(debugger).await;
+            send_response(out_tx, seq, request, true, None, None);
+            send_terminated_once(out_tx, seq, terminated_sent);
+            server_shutdown.cancel();
+        }
         "disconnect" => {
-            let mut guard = debugger.lock().await;
-            if let Some(mut dbg) = guard.take() {
-                dbg.disconnect().await;
+            let terminate_debuggee = match request
+                .arguments
+                .get("terminateDebuggee")
+                .and_then(|v| v.as_bool())
+            {
+                Some(value) => value,
+                None => launched_process.lock().await.is_some(),
+            };
+
+            if terminate_debuggee {
+                terminate_existing_process(launched_process).await;
+            } else {
+                // Drop the process handle without killing. The process will continue running.
+                let _ = launched_process.lock().await.take();
             }
+
+            disconnect_debugger(debugger).await;
             send_response(out_tx, seq, request, true, None, None);
             send_terminated_once(out_tx, seq, terminated_sent);
             server_shutdown.cancel();
@@ -1430,8 +1761,140 @@ fn is_cancelled_error(err: &DebuggerError) -> bool {
 fn requires_initialized(command: &str) -> bool {
     !matches!(
         command,
-        "initialize" | "cancel" | "disconnect" | "nova/bugReport" | "nova/metrics"
+        "initialize" | "cancel" | "disconnect" | "terminate" | "nova/bugReport" | "nova/metrics"
     )
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LaunchArguments {
+    // Command-based launch (build tools / tests).
+    cwd: Option<String>,
+    command: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    host: Option<String>,
+    port: Option<u16>,
+    attach_timeout_ms: Option<u64>,
+
+    // Direct Java launch.
+    #[serde(rename = "javaPath", alias = "java")]
+    java: Option<String>,
+    classpath: Option<Classpath>,
+    main_class: Option<String>,
+    #[serde(default)]
+    vm_args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum Classpath {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Classpath {
+    fn entries(&self) -> Vec<&str> {
+        match self {
+            Classpath::One(cp) => vec![cp.as_str()],
+            Classpath::Many(cps) => cps.iter().map(|s| s.as_str()).collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LaunchMode {
+    Command,
+    Java,
+}
+
+fn join_classpath(classpath: &Classpath) -> std::result::Result<std::ffi::OsString, String> {
+    let parts: Vec<std::ffi::OsString> = classpath
+        .entries()
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect();
+    std::env::join_paths(parts.iter())
+        .map_err(|err| format!("launch.classpath is invalid: {err}"))
+}
+
+async fn pick_free_port() -> std::io::Result<u16> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let port = listener.local_addr()?.port();
+    Ok(port)
+}
+
+fn spawn_output_task<R>(
+    reader: R,
+    tx: mpsc::UnboundedSender<Value>,
+    seq: Arc<AtomicI64>,
+    category: &'static str,
+    server_shutdown: CancellationToken,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(reader);
+        let mut buf = Vec::new();
+
+        loop {
+            buf.clear();
+            let read = tokio::select! {
+                _ = server_shutdown.cancelled() => return,
+                res = reader.read_until(b'\n', &mut buf) => match res {
+                    Ok(n) => n,
+                    Err(_) => return,
+                }
+            };
+
+            if read == 0 {
+                return;
+            }
+
+            let output = String::from_utf8_lossy(&buf).to_string();
+            send_event(
+                &tx,
+                &seq,
+                "output",
+                Some(json!({ "category": category, "output": output })),
+            );
+        }
+    });
+}
+
+async fn terminate_existing_process(launched_process: &Arc<Mutex<Option<Child>>>) {
+    let mut child = {
+        let mut guard = launched_process.lock().await;
+        guard.take()
+    };
+
+    if let Some(child) = child.as_mut() {
+        let _ = terminate_child(child).await;
+    }
+}
+
+async fn terminate_child(child: &mut Child) -> std::io::Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+
+    child.start_kill()?;
+
+    // Reap the process, but don't hang shutdown if it refuses to die.
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    Ok(())
+}
+
+async fn disconnect_debugger(debugger: &Arc<Mutex<Option<Debugger>>>) {
+    let mut dbg = {
+        let mut guard = debugger.lock().await;
+        guard.take()
+    };
+    if let Some(dbg) = dbg.as_mut() {
+        dbg.disconnect().await;
+    }
 }
 
 async fn wait_initialized(
