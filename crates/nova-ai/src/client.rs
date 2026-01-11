@@ -15,6 +15,9 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use url::Host;
 
+#[cfg(feature = "local-llm")]
+use crate::providers::in_process_llama::InProcessLlamaProvider;
+
 pub struct AiClient {
     provider: Arc<dyn AiProvider>,
     semaphore: Arc<Semaphore>,
@@ -29,7 +32,8 @@ pub struct AiClient {
 
 impl AiClient {
     pub fn from_config(config: &AiConfig) -> Result<Self, AiError> {
-        if config.provider.concurrency == 0 {
+        let concurrency = config.provider.effective_concurrency();
+        if concurrency == 0 {
             return Err(AiError::InvalidConfig(
                 "ai.provider.concurrency must be >= 1".into(),
             ));
@@ -51,6 +55,19 @@ impl AiClient {
                 config.provider.timeout(),
                 config.api_key.clone(),
             )?),
+            AiProviderKind::InProcessLlama => {
+                #[cfg(feature = "local-llm")]
+                {
+                    Arc::new(InProcessLlamaProvider::new(&config.provider)?)
+                }
+                #[cfg(not(feature = "local-llm"))]
+                {
+                    return Err(AiError::InvalidConfig(
+                        "ai.provider.kind = \"in_process_llama\" requires building nova-ai with --features local-llm"
+                            .into(),
+                    ));
+                }
+            }
         };
 
         let cache = if config.cache_enabled {
@@ -75,7 +92,7 @@ impl AiClient {
 
         Ok(Self {
             provider,
-            semaphore: Arc::new(Semaphore::new(config.provider.concurrency)),
+            semaphore: Arc::new(Semaphore::new(concurrency)),
             privacy: PrivacyFilter::new(&config.privacy)?,
             default_max_tokens: config.provider.max_tokens,
             audit_enabled: config.enabled && config.audit_log.enabled,

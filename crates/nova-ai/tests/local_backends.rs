@@ -52,7 +52,8 @@ fn openai_config(url: Url) -> AiConfig {
             model: "test-model".to_string(),
             max_tokens: 128,
             timeout_ms: 500,
-            concurrency: 1,
+            concurrency: Some(1),
+            in_process_llama: None,
         },
         privacy: AiPrivacyConfig {
             local_only: true,
@@ -73,7 +74,8 @@ fn ollama_config(url: Url) -> AiConfig {
             model: "llama3".to_string(),
             max_tokens: 128,
             timeout_ms: 500,
-            concurrency: 1,
+            concurrency: Some(1),
+            in_process_llama: None,
         },
         privacy: AiPrivacyConfig {
             local_only: true,

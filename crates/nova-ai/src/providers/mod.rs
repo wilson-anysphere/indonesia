@@ -1,3 +1,5 @@
+#[cfg(feature = "local-llm")]
+pub mod in_process_llama;
 pub mod ollama;
 pub mod openai_compatible;
 

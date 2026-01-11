@@ -450,6 +450,8 @@ pub enum AiProviderKind {
     Ollama,
     /// OpenAI-compatible endpoints (e.g. vLLM, llama.cpp server, etc.)
     OpenAiCompatible,
+    /// In-process local inference using a GGUF model file (llama.cpp).
+    InProcessLlama,
 }
 
 impl Default for AiProviderKind {
@@ -465,9 +467,11 @@ pub struct AiProviderConfig {
     pub kind: AiProviderKind,
 
     /// Base URL for the provider (e.g. http://localhost:11434, http://localhost:8000).
+    #[serde(default = "default_provider_url")]
     pub url: Url,
 
     /// Default model name.
+    #[serde(default = "default_model_name")]
     pub model: String,
 
     /// Default max tokens for responses.
@@ -479,8 +483,24 @@ pub struct AiProviderConfig {
     pub timeout_ms: u64,
 
     /// Maximum number of concurrent requests Nova will make to the backend.
-    #[serde(default = "default_concurrency")]
-    pub concurrency: usize,
+    ///
+    /// If unset, defaults to:
+    /// - `1` for [`AiProviderKind::InProcessLlama`]
+    /// - `4` for HTTP providers
+    #[serde(default)]
+    pub concurrency: Option<usize>,
+
+    /// Configuration for in-process inference when `kind = "in_process_llama"`.
+    #[serde(default)]
+    pub in_process_llama: Option<InProcessLlamaConfig>,
+}
+
+fn default_provider_url() -> Url {
+    Url::parse("http://localhost:11434").expect("valid default url")
+}
+
+fn default_model_name() -> String {
+    "llama3".to_string()
 }
 
 fn default_max_tokens() -> u32 {
@@ -499,11 +519,12 @@ impl Default for AiProviderConfig {
     fn default() -> Self {
         Self {
             kind: AiProviderKind::default(),
-            url: Url::parse("http://localhost:11434").expect("valid default url"),
-            model: "llama3".to_string(),
+            url: default_provider_url(),
+            model: default_model_name(),
             max_tokens: default_max_tokens(),
             timeout_ms: default_timeout_ms(),
-            concurrency: default_concurrency(),
+            concurrency: None,
+            in_process_llama: None,
         }
     }
 }
@@ -512,6 +533,57 @@ impl AiProviderConfig {
     pub fn timeout(&self) -> Duration {
         Duration::from_millis(self.timeout_ms)
     }
+
+    pub fn effective_concurrency(&self) -> usize {
+        self.concurrency.unwrap_or_else(|| match self.kind {
+            AiProviderKind::InProcessLlama => 1,
+            AiProviderKind::Ollama | AiProviderKind::OpenAiCompatible => default_concurrency(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InProcessLlamaConfig {
+    /// Path to a GGUF model file on disk.
+    pub model_path: PathBuf,
+
+    /// Context window size (`n_ctx`) used for inference.
+    ///
+    /// Larger values increase memory usage roughly linearly.
+    #[serde(default = "default_in_process_llama_context_size")]
+    pub context_size: usize,
+
+    /// Number of CPU threads to use (`n_threads`).
+    ///
+    /// If unset or set to `0`, the backend will use the available parallelism.
+    #[serde(default)]
+    pub threads: Option<usize>,
+
+    /// Sampling temperature.
+    #[serde(default = "default_in_process_llama_temperature")]
+    pub temperature: f32,
+
+    /// Nucleus sampling probability.
+    #[serde(default = "default_in_process_llama_top_p")]
+    pub top_p: f32,
+
+    /// Number of layers to offload to GPU (if supported by the build).
+    ///
+    /// A value of `0` disables GPU offload.
+    #[serde(default)]
+    pub gpu_layers: u32,
+}
+
+fn default_in_process_llama_context_size() -> usize {
+    4096
+}
+
+fn default_in_process_llama_temperature() -> f32 {
+    0.2
+}
+
+fn default_in_process_llama_top_p() -> f32 {
+    0.95
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
