@@ -52,7 +52,7 @@ jobs:
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "${api_url}" | \
-              python -c 'import json,os,sys; base=os.environ["BASE_SHA"]; data=json.load(sys.stdin); print(next((str(run["id"]) for run in data.get("workflow_runs", []) if run.get("head_sha")==base and run.get("conclusion")=="success"), ""), end="")' \
+              python3 -c 'import json,os,sys; base=os.environ["BASE_SHA"]; data=json.load(sys.stdin); print(next((str(run["id"]) for run in data.get("workflow_runs", []) if run.get("head_sha")==base and run.get("conclusion")=="success"), ""), end="")' \
               || true
           )"
 
