@@ -398,6 +398,7 @@ async function fetchJson<T>(fetchImpl: typeof fetch, url: string): Promise<T> {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'nova-vscode',
         'X-GitHub-Api-Version': '2022-11-28',
+        ...githubAuthHeaders(),
       },
       signal: abortSignalTimeout(20_000),
     });
@@ -424,6 +425,7 @@ async function downloadBytes(fetchImpl: typeof fetch, url: string): Promise<Arra
     resp = await fetchImpl(url, {
       headers: {
         'User-Agent': 'nova-vscode',
+        ...githubAuthHeaders(),
       },
       signal: abortSignalTimeout(30_000),
     });
@@ -542,6 +544,7 @@ async function downloadToFileAndSha256(fetchImpl: typeof fetch, url: string, des
     resp = await fetchImpl(url, {
       headers: {
         'User-Agent': 'nova-vscode',
+        ...githubAuthHeaders(),
       },
       signal: abortSignalTimeout(5 * 60_000),
     });
@@ -607,6 +610,14 @@ function isAbortError(err: unknown): boolean {
   }
   const candidate = err as { name?: unknown; code?: unknown };
   return candidate.name === 'AbortError' || candidate.code === 'ABORT_ERR';
+}
+
+function githubAuthHeaders(): Record<string, string> {
+  const token = process.env.NOVA_GITHUB_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (!token) {
+    return {};
+  }
+  return { Authorization: `Bearer ${token}` };
 }
 
 async function readErrorBody(resp: Response): Promise<string | undefined> {
