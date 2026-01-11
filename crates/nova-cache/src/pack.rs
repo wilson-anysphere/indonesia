@@ -48,12 +48,6 @@ pub fn pack_cache_package(cache_dir: &CacheDir, out_file: &Path) -> Result<()> {
     let encoder = zstd::Encoder::new(out, 19)?;
     let mut builder = tar::Builder::new(encoder);
 
-    for rel in &files {
-        let disk_path = root.join(rel);
-        let rel_string = rel.to_string_lossy().replace('\\', "/");
-        builder.append_path_with_name(&disk_path, &rel_string)?;
-    }
-
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     let mut header = tar::Header::new_gnu();
     header.set_size(manifest_json.len() as u64);
@@ -64,6 +58,30 @@ pub fn pack_cache_package(cache_dir: &CacheDir, out_file: &Path) -> Result<()> {
         CACHE_PACKAGE_MANIFEST_PATH,
         Cursor::new(manifest_json),
     )?;
+
+    // Put metadata first so installs can read it without streaming through large
+    // index artifacts.
+    let metadata_json = PathBuf::from(crate::metadata::CACHE_METADATA_JSON_FILENAME);
+    let metadata_bin = PathBuf::from(crate::metadata::CACHE_METADATA_BIN_FILENAME);
+    let include_bin = files.iter().any(|p| p == &metadata_bin);
+
+    for rel in [&metadata_json, &metadata_bin] {
+        if rel == &metadata_bin && !include_bin {
+            continue;
+        }
+        let disk_path = root.join(rel);
+        let rel_string = rel.to_string_lossy().replace('\\', "/");
+        builder.append_path_with_name(&disk_path, &rel_string)?;
+    }
+
+    for rel in &files {
+        if rel == &metadata_json || rel == &metadata_bin {
+            continue;
+        }
+        let disk_path = root.join(rel);
+        let rel_string = rel.to_string_lossy().replace('\\', "/");
+        builder.append_path_with_name(&disk_path, &rel_string)?;
+    }
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
@@ -656,6 +674,49 @@ mod tests {
         assert!(cache_dir2.indexes_dir().join("symbols.idx").is_file());
         assert!(cache_dir2.queries_dir().join("types.cache").is_file());
         assert!(cache_dir2.ast_dir().join("metadata.bin").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn pack_places_manifest_and_metadata_first() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir_all(project_root.join("src"))?;
+        std::fs::write(project_root.join("src/Main.java"), b"class Main {}")?;
+
+        let cache_root = tmp.path().join("cache-root");
+        let cache_dir = CacheDir::new(
+            &project_root,
+            CacheConfig {
+                cache_root_override: Some(cache_root),
+            },
+        )?;
+
+        let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("src/Main.java")])?;
+        let metadata = CacheMetadata::new(&snapshot);
+        metadata.save(cache_dir.metadata_path())?;
+        write_fake_cache(&cache_dir)?;
+
+        let package_path = tmp.path().join("cache.tar.zst");
+        pack_cache_package(&cache_dir, &package_path)?;
+
+        let file = File::open(&package_path)?;
+        let decoder = zstd::Decoder::new(file)?;
+        let mut archive = tar::Archive::new(decoder);
+        let mut entries = archive.entries()?;
+
+        let first = entries.next().expect("checksums entry")?;
+        let first_path = archive_path_string(&first.path()?.into_owned())?;
+        assert_eq!(first_path, CACHE_PACKAGE_MANIFEST_PATH);
+
+        let second = entries.next().expect("metadata.json entry")?;
+        let second_path = archive_path_string(&second.path()?.into_owned())?;
+        assert_eq!(second_path, crate::metadata::CACHE_METADATA_JSON_FILENAME);
+
+        let third = entries.next().expect("metadata.bin entry")?;
+        let third_path = archive_path_string(&third.path()?.into_owned())?;
+        assert_eq!(third_path, crate::metadata::CACHE_METADATA_BIN_FILENAME);
+
         Ok(())
     }
 
