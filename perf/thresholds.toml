@@ -12,3 +12,31 @@ p95_regression = 0.20
 [benchmarks]
 # Per-benchmark overrides go here, for example:
 # "parsing/large" = { p50_regression = 0.15, p95_regression = 0.30 }
+
+# Full-fidelity parsing (`nova_syntax::parse_java`).
+"syntax_parse_java/small" = { p50_regression = 0.15, p95_regression = 0.30 }
+"syntax_parse_java/medium" = { p50_regression = 0.15, p95_regression = 0.30 }
+"syntax_parse_java/large" = { p50_regression = 0.15, p95_regression = 0.30 }
+
+# Parse + small edit + reparse (simulates typing latency; includes a string splice).
+"syntax_parse_java_incremental/small" = { p50_regression = 0.15, p95_regression = 0.30 }
+"syntax_parse_java_incremental/medium" = { p50_regression = 0.15, p95_regression = 0.30 }
+"syntax_parse_java_incremental/large" = { p50_regression = 0.15, p95_regression = 0.30 }
+
+# Formatter (`nova_format::format_java` + diffing edits).
+"format_java/small" = { p50_regression = 0.20, p95_regression = 0.40 }
+"format_java/medium" = { p50_regression = 0.20, p95_regression = 0.40 }
+"format_java/pathological" = { p50_regression = 0.20, p95_regression = 0.40 }
+
+"format_edits_for_formatting/small" = { p50_regression = 0.20, p95_regression = 0.40 }
+"format_edits_for_formatting/medium" = { p50_regression = 0.20, p95_regression = 0.40 }
+"format_edits_for_formatting/pathological" = { p50_regression = 0.20, p95_regression = 0.40 }
+
+# Refactorings (semantic organize imports / rename).
+"refactor/organize_imports" = { p50_regression = 0.25, p95_regression = 0.50 }
+"refactor/rename_method" = { p50_regression = 0.25, p95_regression = 0.50 }
+
+# Classpath indexing (includes local file I/O; allow more noise).
+"classpath_index_build/dep_jar" = { p50_regression = 0.40, p95_regression = 0.80 }
+"classpath_index_build/multirelease_jar" = { p50_regression = 0.40, p95_regression = 0.80 }
+"classpath_index_build/named_module_jmod" = { p50_regression = 0.40, p95_regression = 0.80 }

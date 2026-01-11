@@ -9,5 +9,10 @@ nova-syntax = { path = "../nova-syntax" }
 thiserror = "1.0"
 
 [dev-dependencies]
+criterion = "0.5"
 insta = "1.38"
 pretty_assertions = "1.4"
+
+[[bench]]
+name = "format"
+harness = false

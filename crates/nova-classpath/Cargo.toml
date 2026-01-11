@@ -18,4 +18,9 @@ nova-modules = { path = "../nova-modules" }
 nova-types = { path = "../nova-types" }
 
 [dev-dependencies]
+criterion = "0.5"
 tempfile = "3.10.1"
+
+[[bench]]
+name = "index"
+harness = false

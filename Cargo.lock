@@ -3128,6 +3128,7 @@ name = "nova-classpath"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "criterion",
  "nova-classfile",
  "nova-core",
  "nova-deps-cache",
@@ -3311,6 +3312,7 @@ dependencies = [
 name = "nova-format"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "insta",
  "nova-core",
  "nova-syntax",
@@ -3643,6 +3645,7 @@ dependencies = [
 name = "nova-refactor"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "lsp-types",
  "nova-format",
  "nova-index",
@@ -3742,6 +3745,7 @@ dependencies = [
 name = "nova-syntax"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "nova-core",
  "nova-memory",
  "nova-types",

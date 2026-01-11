@@ -36,6 +36,10 @@ jobs:
           git worktree add /tmp/nova-perf-base ${{ github.event.pull_request.base.sha }}
           pushd /tmp/nova-perf-base
           cargo bench -p nova-core --bench critical_paths
+          cargo bench -p nova-syntax --bench parse_java
+          cargo bench -p nova-format --bench format
+          cargo bench -p nova-refactor --bench refactor
+          cargo bench -p nova-classpath --bench index
           cargo run -p nova-cli --release -- perf capture \
             --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
             --out "${GITHUB_WORKSPACE}/perf-base.json"
@@ -45,6 +49,10 @@ jobs:
         run: |
           set -euxo pipefail
           cargo bench -p nova-core --bench critical_paths
+          cargo bench -p nova-syntax --bench parse_java
+          cargo bench -p nova-format --bench format
+          cargo bench -p nova-refactor --bench refactor
+          cargo bench -p nova-classpath --bench index
           cargo run -p nova-cli --release -- perf capture \
             --criterion-dir "${CARGO_TARGET_DIR}/criterion" \
             --out perf-current.json
