@@ -4,11 +4,11 @@ use std::str::FromStr;
 
 use lsp_types::{Position, Uri};
 use nova_core::{path_to_file_uri, AbsPathBuf};
-use nova_db::{FileId, RootDatabase};
+use nova_db::{FileId, InMemoryFileStore};
 use nova_ide::{declaration, implementation, type_definition};
 
 struct FileIdFixture {
-    db: RootDatabase,
+    db: InMemoryFileStore,
     files: HashMap<FileId, String>,
     paths: HashMap<FileId, PathBuf>,
     markers: HashMap<u32, (FileId, usize)>,
@@ -41,7 +41,7 @@ impl FileIdFixture {
             files.push((path, current_text));
         }
 
-        let mut db = RootDatabase::new();
+        let mut db = InMemoryFileStore::new();
         let mut file_texts: HashMap<FileId, String> = HashMap::new();
         let mut file_paths: HashMap<FileId, PathBuf> = HashMap::new();
         let mut markers: HashMap<u32, (FileId, usize)> = HashMap::new();

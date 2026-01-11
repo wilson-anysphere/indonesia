@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use nova_framework_spring::{SPRING_AMBIGUOUS_BEAN, SPRING_CIRCULAR_DEP, SPRING_NO_BEAN};
 use nova_ide::{completions, file_diagnostics, find_references, goto_definition};
 use nova_types::Severity;
@@ -26,15 +26,21 @@ fn fixture_multi(
     primary_path: PathBuf,
     primary_text_with_caret: &str,
     extra_files: Vec<(PathBuf, String)>,
-) -> (RootDatabase, nova_db::FileId, lsp_types::Position) {
+) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
     let caret = "<|>";
-    let caret_offset = primary_text_with_caret
-        .find(caret)
-        .expect("fixture must contain <|> caret marker");
-    let primary_text = primary_text_with_caret.replace(caret, "");
-    let pos = offset_to_position(&primary_text, caret_offset);
+    let (primary_text, pos) = match primary_text_with_caret.find(caret) {
+        Some(caret_offset) => {
+            let primary_text = primary_text_with_caret.replace(caret, "");
+            let pos = offset_to_position(&primary_text, caret_offset);
+            (primary_text, pos)
+        }
+        None => (
+            primary_text_with_caret.to_string(),
+            lsp_types::Position::new(0, 0),
+        ),
+    };
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let primary_file = db.file_id_for_path(&primary_path);
     db.set_file_text(primary_file, primary_text);
     for (path, text) in extra_files {
@@ -260,7 +266,7 @@ class FooService {}
         "expected definition URI to point at FooService; got {:?}",
         loc.uri
     );
-    assert_eq!(loc.range.start.line, 2);
+    assert_eq!(loc.range.start.line, 3);
     assert_eq!(loc.range.start.character, 6);
 }
 

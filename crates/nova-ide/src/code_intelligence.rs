@@ -16,11 +16,16 @@ use lsp_types::{
     SignatureInformation, SymbolKind, TextEdit, TypeHierarchyItem,
 };
 
+use once_cell::sync::Lazy;
+use serde_json::json;
 use nova_core::{path_to_file_uri, AbsPathBuf};
 use nova_db::{Database, FileId};
 use nova_fuzzy::FuzzyMatcher;
-use nova_types::{Diagnostic, Severity, Span};
-use serde_json::json;
+use nova_jdk::JdkIndex;
+use nova_types::{
+    CallKind, ClassId, ClassKind, Diagnostic, MethodCall, MethodDef, MethodResolution,
+    PrimitiveType, ResolvedMethod, Severity, Span, TyContext, Type, TypeEnv, TypeStore,
+};
 
 use crate::framework_cache;
 use crate::lombok_intel;
@@ -1377,37 +1382,77 @@ pub fn hover(db: &dyn Database, file: FileId, position: Position) -> Option<Hove
         return None;
     }
 
-    // Variable hover: show type.
+    let mut types = TypeStore::with_minimal_jdk();
+
+    // Method hover (prefer call-sites so we can resolve classpath methods).
+    if let Some(call) = analysis.calls.iter().find(|c| c.name_span == token.span) {
+        if let Some(sig) = semantic_call_signatures(&mut types, &analysis, call, 1).into_iter().next()
+        {
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("```java\n{sig}\n```"),
+                }),
+                range: None,
+            });
+        }
+    }
+
+    // Variable hover: show semantic type (best-effort).
     if let Some(var) = analysis.vars.iter().find(|v| v.name == token.text) {
+        let ty = parse_source_type(&mut types, &var.ty);
+        let ty = nova_types::format_type(&types, &ty);
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("```java\n{}: {}\n```", var.name, var.ty),
+                value: format!("```java\n{}: {ty}\n```", var.name),
             }),
             range: None,
         });
     }
 
-    // Field hover: show type.
+    // Field hover: show semantic type (best-effort).
     if let Some(field) = analysis.fields.iter().find(|f| f.name == token.text) {
+        let ty = parse_source_type(&mut types, &field.ty);
+        let ty = nova_types::format_type(&types, &ty);
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("```java\n{}: {}\n```", field.name, field.ty),
+                value: format!("```java\n{}: {ty}\n```", field.name),
             }),
             range: None,
         });
     }
 
-    // Method hover: show signature.
-    if let Some(method) = analysis.methods.iter().find(|m| m.name == token.text) {
+    // Method hover for declarations in this file.
+    if let Some(method) = analysis
+        .methods
+        .iter()
+        .find(|m| m.name_span == token.span)
+    {
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: format!("```java\n{}\n```", format_method_signature(method)),
+                value: format!(
+                    "```java\n{}\n```",
+                    format_local_method_signature(&mut types, method)
+                ),
             }),
             range: None,
         });
+    }
+
+    // Class/type hover: show fully-qualified name.
+    if let Some(class_id) = types.class_id(&token.text) {
+        if let Some(class) = types.class(class_id) {
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("```java\n{}\n```", class.name),
+                }),
+                range: None,
+            });
+        }
     }
 
     None
@@ -1428,8 +1473,6 @@ pub fn signature_help(
         .iter()
         .find(|c| c.name_span.start <= offset && offset <= c.close_paren)?;
 
-    let method = analysis.methods.iter().find(|m| m.name == call.name)?;
-    let sig = format_method_signature(method);
     let active_parameter = call
         .arg_starts
         .iter()
@@ -1437,6 +1480,29 @@ pub fn signature_help(
         .filter(|(_, start)| **start <= offset)
         .map(|(idx, _)| idx as u32)
         .last();
+
+    // Prefer semantic resolution (classpath-aware) for method calls with receivers.
+    let mut types = TypeStore::with_minimal_jdk();
+    let signatures = semantic_call_signatures(&mut types, &analysis, call, 5);
+    if !signatures.is_empty() {
+        return Some(SignatureHelp {
+            signatures: signatures
+                .into_iter()
+                .map(|label| SignatureInformation {
+                    label,
+                    documentation: None,
+                    parameters: None,
+                    active_parameter: None,
+                })
+                .collect(),
+            active_signature: Some(0),
+            active_parameter: active_parameter.or(Some(0)),
+        });
+    }
+
+    // Fallback to same-file method declarations.
+    let method = analysis.methods.iter().find(|m| m.name == call.name)?;
+    let sig = format_method_signature(method);
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {
             label: sig,
@@ -1465,6 +1531,7 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
     let analysis = analyze(text);
 
     let mut hints = Vec::new();
+    let mut types = TypeStore::with_minimal_jdk();
 
     // Type hints for `var`.
     for v in &analysis.vars {
@@ -1474,10 +1541,12 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
         if v.name_span.start < start || v.name_span.end > end {
             continue;
         }
+        let ty = parse_source_type(&mut types, &v.ty);
+        let ty = nova_types::format_type(&types, &ty);
         let pos = offset_to_position(text, v.name_span.end);
         hints.push(InlayHint {
             position: pos,
-            label: lsp_types::InlayHintLabel::String(format!(": {}", v.ty)),
+            label: lsp_types::InlayHintLabel::String(format!(": {ty}")),
             kind: Some(InlayHintKind::TYPE),
             text_edits: None,
             tooltip: None,
@@ -1487,11 +1556,40 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
         });
     }
 
-    // Parameter name hints (best-effort).
+    // Parameter name hints (best-effort, including classpath methods).
     for call in &analysis.calls {
         if call.name_span.start < start || call.name_span.end > end {
             continue;
         }
+
+        if let Some((method, names)) = semantic_call_for_inlay(&mut types, &analysis, call) {
+            for (idx, arg_start) in call.arg_starts.iter().enumerate() {
+                let Some(name) = names.get(idx) else {
+                    continue;
+                };
+                let param_ty = method
+                    .params
+                    .get(idx)
+                    .map(|ty| nova_types::format_type(&types, ty))
+                    .unwrap_or_else(|| "?".to_string());
+                let pos = offset_to_position(text, *arg_start);
+                hints.push(InlayHint {
+                    position: pos,
+                    label: lsp_types::InlayHintLabel::String(format!("{name}:")),
+                    kind: Some(InlayHintKind::PARAMETER),
+                    text_edits: None,
+                    tooltip: Some(lsp_types::InlayHintTooltip::String(format!(
+                        "{name}: {param_ty}"
+                    ))),
+                    padding_left: None,
+                    padding_right: None,
+                    data: None,
+                });
+            }
+            continue;
+        }
+
+        // Fallback: same-file methods only.
         let Some(callee) = analysis.methods.iter().find(|m| m.name == call.name) else {
             continue;
         };
@@ -1514,6 +1612,489 @@ pub fn inlay_hints(db: &dyn Database, file: FileId, range: Range) -> Vec<InlayHi
     }
 
     hints
+}
+
+// -----------------------------------------------------------------------------
+// Semantic helpers (JDK/classpath-aware signatures and type formatting)
+// -----------------------------------------------------------------------------
+
+static JDK_INDEX: Lazy<Option<JdkIndex>> = Lazy::new(|| JdkIndex::discover(None).ok());
+
+fn semantic_call_signatures(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    call: &CallExpr,
+    limit: usize,
+) -> Vec<String> {
+    let Some(receiver) = call.receiver.as_deref() else {
+        return Vec::new();
+    };
+
+    let (receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return Vec::new();
+    }
+
+    ensure_type_methods_loaded(types, &receiver_ty);
+    let args = call
+        .arg_starts
+        .iter()
+        .map(|start| infer_expr_type_at(types, analysis, *start))
+        .collect::<Vec<_>>();
+
+    let call = MethodCall {
+        receiver: receiver_ty,
+        call_kind,
+        name: call.name.as_str(),
+        args,
+        expected_return: None,
+        explicit_type_args: Vec::new(),
+    };
+
+    let mut ctx = TyContext::new(&*types);
+    match nova_types::resolve_method_call(&mut ctx, &call) {
+        MethodResolution::Found(method) => vec![format_resolved_method_signature(&ctx, &method)],
+        MethodResolution::Ambiguous(methods) => methods
+            .candidates
+            .iter()
+            .take(limit.max(1))
+            .map(|m| format_resolved_method_signature(&ctx, m))
+            .collect(),
+        MethodResolution::NotFound(_) => Vec::new(),
+    }
+}
+
+fn semantic_call_for_inlay(
+    types: &mut TypeStore,
+    analysis: &Analysis,
+    call: &CallExpr,
+) -> Option<(ResolvedMethod, Vec<String>)> {
+    let Some(receiver) = call.receiver.as_deref() else {
+        return None;
+    };
+
+    let (receiver_ty, call_kind) = infer_receiver(types, analysis, receiver);
+    if matches!(receiver_ty, Type::Unknown | Type::Error) {
+        return None;
+    }
+
+    ensure_type_methods_loaded(types, &receiver_ty);
+    let args = call
+        .arg_starts
+        .iter()
+        .map(|start| infer_expr_type_at(types, analysis, *start))
+        .collect::<Vec<_>>();
+
+    let call = MethodCall {
+        receiver: receiver_ty,
+        call_kind,
+        name: call.name.as_str(),
+        args,
+        expected_return: None,
+        explicit_type_args: Vec::new(),
+    };
+
+    let mut ctx = TyContext::new(&*types);
+    let resolved = match nova_types::resolve_method_call(&mut ctx, &call) {
+        MethodResolution::Found(method) => method,
+        MethodResolution::Ambiguous(methods) => methods.candidates.into_iter().next()?,
+        MethodResolution::NotFound(_) => return None,
+    };
+
+    let names = param_names_for_method(&*types, &resolved);
+    Some((resolved, names))
+}
+
+fn infer_receiver(types: &mut TypeStore, analysis: &Analysis, receiver: &str) -> (Type, CallKind) {
+    if receiver.starts_with('"') {
+        return (
+            types
+                .class_id("java.lang.String")
+                .map(|id| Type::class(id, vec![]))
+                .unwrap_or_else(|| Type::Named("java.lang.String".to_string())),
+            CallKind::Instance,
+        );
+    }
+
+    if let Some(var) = analysis.vars.iter().find(|v| v.name == receiver) {
+        return (parse_source_type(types, &var.ty), CallKind::Instance);
+    }
+    if let Some(field) = analysis.fields.iter().find(|f| f.name == receiver) {
+        return (parse_source_type(types, &field.ty), CallKind::Instance);
+    }
+
+    // Allow `Foo.bar()` to treat `Foo` as a type reference.
+    (parse_source_type(types, receiver), CallKind::Static)
+}
+
+fn infer_expr_type_at(types: &mut TypeStore, analysis: &Analysis, offset: usize) -> Type {
+    // `CallExpr::arg_starts` points at the beginning of the first token in the
+    // argument. Prefer an exact span-start match to avoid `token_at_offset`
+    // picking the preceding delimiter token (e.g. `(` or `,`) at a boundary.
+    let Some(token) = analysis
+        .tokens
+        .iter()
+        .find(|t| t.span.start == offset)
+        .or_else(|| token_at_offset(&analysis.tokens, offset))
+    else {
+        return Type::Unknown;
+    };
+
+    match token.kind {
+        TokenKind::StringLiteral => types
+            .class_id("java.lang.String")
+            .map(|id| Type::class(id, vec![]))
+            .unwrap_or_else(|| Type::Named("java.lang.String".to_string())),
+        TokenKind::Number => Type::Primitive(PrimitiveType::Int),
+        TokenKind::Symbol(_) => Type::Unknown,
+        TokenKind::Ident => match token.text.as_str() {
+            "null" => Type::Null,
+            "true" | "false" => Type::Primitive(PrimitiveType::Boolean),
+            ident => analysis
+                .vars
+                .iter()
+                .find(|v| v.name == ident)
+                .map(|v| parse_source_type(types, &v.ty))
+                .or_else(|| {
+                    analysis
+                        .fields
+                        .iter()
+                        .find(|f| f.name == ident)
+                        .map(|f| parse_source_type(types, &f.ty))
+                })
+                .unwrap_or(Type::Unknown),
+        },
+    }
+}
+
+fn ensure_type_methods_loaded(types: &mut TypeStore, receiver: &Type) {
+    let class_id = match receiver {
+        Type::Class(nova_types::ClassType { def, .. }) => Some(*def),
+        Type::Named(name) => ensure_class_id(types, name),
+        _ => None,
+    };
+    let Some(class_id) = class_id else {
+        return;
+    };
+
+    let binary_name = match types.class(class_id) {
+        Some(class_def) => class_def.name.clone(),
+        None => return,
+    };
+
+    let has_methods = types
+        .class(class_id)
+        .is_some_and(|class_def| !class_def.methods.is_empty());
+    if has_methods {
+        return;
+    }
+
+    if let Some(jdk) = JDK_INDEX.as_ref() {
+        if let Ok(Some(stub)) = jdk.lookup_type(&binary_name) {
+            let mut methods = Vec::new();
+            for m in &stub.methods {
+                if m.name == "<init>" || m.name == "<clinit>" {
+                    continue;
+                }
+                let Some((params, return_type)) =
+                    parse_method_descriptor(types, m.descriptor.as_str())
+                else {
+                    continue;
+                };
+
+                methods.push(MethodDef {
+                    name: m.name.clone(),
+                    type_params: Vec::new(),
+                    params,
+                    return_type,
+                    is_static: m.access_flags & ACC_STATIC != 0,
+                    is_varargs: m.access_flags & ACC_VARARGS != 0,
+                    is_abstract: m.access_flags & ACC_ABSTRACT != 0,
+                });
+            }
+
+            if let Some(class_def) = types.class_mut(class_id) {
+                merge_method_defs(&mut class_def.methods, methods);
+            }
+        }
+    }
+
+    if types
+        .class(class_id)
+        .is_some_and(|class_def| class_def.methods.is_empty() && class_def.name == "java.lang.String")
+    {
+        add_builtin_string_methods(types, class_id);
+    }
+}
+
+fn merge_method_defs(existing: &mut Vec<MethodDef>, incoming: Vec<MethodDef>) {
+    for method in incoming {
+        if existing.iter().any(|m| {
+            m.name == method.name
+                && m.params == method.params
+                && m.return_type == method.return_type
+                && m.is_static == method.is_static
+        }) {
+            continue;
+        }
+        existing.push(method);
+    }
+}
+
+fn ensure_class_id(types: &mut TypeStore, name: &str) -> Option<ClassId> {
+    if let Some(id) = types.class_id(name) {
+        return Some(id);
+    }
+
+    let jdk = JDK_INDEX.as_ref()?;
+    let stub = jdk.lookup_type(name).ok().flatten()?;
+
+    let kind = if stub.access_flags & ACC_INTERFACE != 0 {
+        ClassKind::Interface
+    } else {
+        ClassKind::Class
+    };
+
+    let super_class = stub.super_internal_name.as_deref().map(|internal| {
+        let binary = internal.replace('/', ".");
+        parse_source_type(types, &binary)
+    });
+    let interfaces = stub
+        .interfaces_internal_names
+        .iter()
+        .map(|internal| {
+            let binary = internal.replace('/', ".");
+            parse_source_type(types, &binary)
+        })
+        .collect::<Vec<_>>();
+
+    let id = types.add_class(nova_types::ClassDef {
+        name: stub.binary_name.clone(),
+        kind,
+        type_params: Vec::new(),
+        super_class,
+        interfaces,
+        fields: Vec::new(),
+        constructors: Vec::new(),
+        methods: Vec::new(),
+    });
+
+    Some(id)
+}
+
+const ACC_STATIC: u16 = 0x0008;
+const ACC_VARARGS: u16 = 0x0080;
+const ACC_INTERFACE: u16 = 0x0200;
+const ACC_ABSTRACT: u16 = 0x0400;
+
+fn add_builtin_string_methods(types: &mut TypeStore, string: ClassId) {
+    let Some(class_def) = types.class_mut(string) else {
+        return;
+    };
+
+    let string_ty = Type::class(string, vec![]);
+    let int = Type::Primitive(PrimitiveType::Int);
+
+    class_def.methods.extend([
+        MethodDef {
+            name: "length".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: int.clone(),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: false,
+        },
+        MethodDef {
+            name: "substring".to_string(),
+            type_params: Vec::new(),
+            params: vec![int.clone()],
+            return_type: string_ty.clone(),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: false,
+        },
+        MethodDef {
+            name: "substring".to_string(),
+            type_params: Vec::new(),
+            params: vec![int.clone(), int.clone()],
+            return_type: string_ty.clone(),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: false,
+        },
+        MethodDef {
+            name: "charAt".to_string(),
+            type_params: Vec::new(),
+            params: vec![int.clone()],
+            return_type: Type::Primitive(PrimitiveType::Char),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: false,
+        },
+        MethodDef {
+            name: "isEmpty".to_string(),
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: Type::Primitive(PrimitiveType::Boolean),
+            is_static: false,
+            is_varargs: false,
+            is_abstract: false,
+        },
+    ]);
+}
+
+fn parse_source_type(types: &mut TypeStore, source: &str) -> Type {
+    let mut s = source.trim();
+    if s.is_empty() {
+        return Type::Unknown;
+    }
+
+    // Strip generics.
+    if let Some(idx) = s.find('<') {
+        s = &s[..idx];
+    }
+
+    // Arrays.
+    let mut array_dims = 0usize;
+    while let Some(stripped) = s.strip_suffix("[]") {
+        array_dims += 1;
+        s = stripped.trim_end();
+    }
+
+    let mut ty = match s {
+        "void" => Type::Void,
+        "boolean" => Type::Primitive(PrimitiveType::Boolean),
+        "byte" => Type::Primitive(PrimitiveType::Byte),
+        "short" => Type::Primitive(PrimitiveType::Short),
+        "char" => Type::Primitive(PrimitiveType::Char),
+        "int" => Type::Primitive(PrimitiveType::Int),
+        "long" => Type::Primitive(PrimitiveType::Long),
+        "float" => Type::Primitive(PrimitiveType::Float),
+        "double" => Type::Primitive(PrimitiveType::Double),
+        other => {
+            if let Some(id) = ensure_class_id(types, other) {
+                Type::class(id, vec![])
+            } else {
+                Type::Named(other.to_string())
+            }
+        }
+    };
+
+    for _ in 0..array_dims {
+        ty = Type::Array(Box::new(ty));
+    }
+
+    ty
+}
+
+fn format_resolved_method_signature(env: &dyn TypeEnv, method: &ResolvedMethod) -> String {
+    let return_ty = nova_types::format_type(env, &method.return_type);
+    let param_names = param_names_for_method(env, method);
+
+    let params = method
+        .params
+        .iter()
+        .enumerate()
+        .map(|(idx, ty)| {
+            let ty = nova_types::format_type(env, ty);
+            let name = param_names.get(idx).map(String::as_str).unwrap_or("arg");
+            format!("{ty} {name}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!("{return_ty} {}({params})", method.name)
+}
+
+fn param_names_for_method(env: &dyn TypeEnv, method: &ResolvedMethod) -> Vec<String> {
+    let owner = env.class(method.owner).map(|c| c.name.as_str()).unwrap_or("");
+    let arity = method.params.len();
+
+    if let Some(names) = known_param_names(owner, method.name.as_str(), arity) {
+        return names.iter().map(|n| (*n).to_string()).collect();
+    }
+
+    (0..arity).map(|idx| format!("arg{idx}")).collect()
+}
+
+fn known_param_names(
+    owner: &str,
+    name: &str,
+    arity: usize,
+) -> Option<&'static [&'static str]> {
+    match (owner, name, arity) {
+        ("java.lang.String", "substring", 1) => Some(&["beginIndex"]),
+        ("java.lang.String", "substring", 2) => Some(&["beginIndex", "endIndex"]),
+        ("java.lang.String", "charAt", 1) => Some(&["index"]),
+        _ => None,
+    }
+}
+
+fn format_local_method_signature(types: &mut TypeStore, method: &MethodDecl) -> String {
+    let params = method
+        .params
+        .iter()
+        .map(|p| {
+            let parsed = parse_source_type(types, &p.ty);
+            let ty = nova_types::format_type(types, &parsed);
+            format!("{ty} {}", p.name)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{}({params})", method.name)
+}
+
+fn parse_method_descriptor(types: &TypeStore, desc: &str) -> Option<(Vec<Type>, Type)> {
+    if !desc.starts_with('(') {
+        return None;
+    }
+    let mut rest = &desc[1..];
+    let mut params = Vec::new();
+    while !rest.starts_with(')') {
+        let (ty, next) = parse_field_descriptor(types, rest)?;
+        params.push(ty);
+        rest = next;
+    }
+    rest = &rest[1..];
+    let (return_type, rest) = if rest.starts_with('V') {
+        (Type::Void, &rest[1..])
+    } else {
+        parse_field_descriptor(types, rest)?
+    };
+    if !rest.is_empty() {
+        return None;
+    }
+    Some((params, return_type))
+}
+
+fn parse_field_descriptor<'a>(types: &TypeStore, desc: &'a str) -> Option<(Type, &'a str)> {
+    let b = desc.as_bytes().first().copied()? as char;
+    match b {
+        'B' => Some((Type::Primitive(PrimitiveType::Byte), &desc[1..])),
+        'C' => Some((Type::Primitive(PrimitiveType::Char), &desc[1..])),
+        'D' => Some((Type::Primitive(PrimitiveType::Double), &desc[1..])),
+        'F' => Some((Type::Primitive(PrimitiveType::Float), &desc[1..])),
+        'I' => Some((Type::Primitive(PrimitiveType::Int), &desc[1..])),
+        'J' => Some((Type::Primitive(PrimitiveType::Long), &desc[1..])),
+        'S' => Some((Type::Primitive(PrimitiveType::Short), &desc[1..])),
+        'Z' => Some((Type::Primitive(PrimitiveType::Boolean), &desc[1..])),
+        '[' => {
+            let (elem, rest) = parse_field_descriptor(types, &desc[1..])?;
+            Some((Type::Array(Box::new(elem)), rest))
+        }
+        'L' => {
+            let end = desc.find(';')?;
+            let internal = &desc[1..end];
+            let binary = internal.replace('/', ".");
+            let ty = types
+                .class_id(&binary)
+                .map(|id| Type::class(id, vec![]))
+                .unwrap_or_else(|| Type::Named(binary));
+            Some((ty, &desc[end + 1..]))
+        }
+        _ => None,
+    }
 }
 
 // -----------------------------------------------------------------------------

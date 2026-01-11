@@ -1,10 +1,10 @@
 #![cfg(feature = "ai")]
 
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use nova_ide::multi_token_completion_context;
 use std::path::PathBuf;
 
-fn fixture(text_with_caret: &str) -> (RootDatabase, nova_db::FileId, lsp_types::Position) {
+fn fixture(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, lsp_types::Position) {
     let caret = "<|>";
     let caret_offset = text_with_caret
         .find(caret)
@@ -12,7 +12,7 @@ fn fixture(text_with_caret: &str) -> (RootDatabase, nova_db::FileId, lsp_types::
     let text = text_with_caret.replace(caret, "");
     let pos = offset_to_position(&text, caret_offset);
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");
     let file = db.file_id_for_path(&path);
     db.set_file_text(file, text);

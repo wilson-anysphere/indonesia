@@ -2,20 +2,20 @@ use std::path::{Path, PathBuf};
 
 use lsp_types::Position;
 
-use nova_db::{Database as _, RootDatabase};
+use nova_db::{Database as _, InMemoryFileStore};
 use nova_ide::{file_diagnostics, goto_definition};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../nova-framework-dagger/tests/fixtures")
 }
 
-fn load_fixture(name: &str) -> (RootDatabase, Vec<PathBuf>) {
+fn load_fixture(name: &str) -> (InMemoryFileStore, Vec<PathBuf>) {
     let root = fixtures_root().join(name);
     let mut paths = Vec::new();
     collect_java_files(&root, &mut paths);
     paths.sort();
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     for path in &paths {
         let text = std::fs::read_to_string(path).expect("read java fixture file");
         let id = db.file_id_for_path(path);

@@ -1160,6 +1160,10 @@ impl TypeStore {
             _ => None,
         }
     }
+
+    pub fn class_mut(&mut self, id: ClassId) -> Option<&mut ClassDef> {
+        self.classes.get_mut(id.to_raw() as usize)
+    }
 }
 
 impl TypeEnv for TypeStore {

@@ -1,8 +1,8 @@
 use nova_db::InMemoryFileStore;
 use nova_ide::{
     call_hierarchy_outgoing_calls, completions, document_symbols, file_diagnostics,
-    find_references, goto_definition, prepare_call_hierarchy, prepare_type_hierarchy,
-    type_hierarchy_subtypes, type_hierarchy_supertypes,
+    find_references, goto_definition, hover, inlay_hints, prepare_call_hierarchy,
+    prepare_type_hierarchy, signature_help, type_hierarchy_subtypes, type_hierarchy_supertypes,
 };
 use nova_types::Severity;
 use std::path::PathBuf;
@@ -321,4 +321,84 @@ class B<|> extends A {}
     let subs = type_hierarchy_subtypes(&db, file, "A");
     assert_eq!(subs.len(), 1);
     assert_eq!(subs[0].name, "B");
+}
+
+#[test]
+fn signature_help_resolves_jdk_method() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    "x".substring(<|>0, 1);
+  }
+}
+"#,
+    );
+
+    let sig = signature_help(&db, file, pos).expect("expected signature help");
+    let labels: Vec<_> = sig.signatures.iter().map(|s| s.label.as_str()).collect();
+    assert!(
+        labels.iter().any(|l| l.contains("String substring(int")),
+        "expected signature help to mention `String substring(int`; got {labels:?}"
+    );
+}
+
+#[test]
+fn hover_shows_inferred_type_for_var_literal() {
+    let (db, file, pos) = fixture(
+        r#"
+class A {
+  void m() {
+    var x = "hello";
+    x<|>.toString();
+  }
+}
+"#,
+    );
+
+    let hover = hover(&db, file, pos).expect("expected hover");
+    let value = match hover.contents {
+        lsp_types::HoverContents::Markup(markup) => markup.value,
+        other => format!("{other:?}"),
+    };
+    assert!(
+        value.contains("x: String"),
+        "expected hover to contain inferred type `String`; got {value:?}"
+    );
+}
+
+#[test]
+fn inlay_hints_include_parameter_names_for_jdk_call() {
+    let (db, file) = fixture_file(
+        r#"
+class A {
+  void m() {
+    "x".substring(0, 1);
+  }
+}
+"#,
+    );
+
+    let range = lsp_types::Range::new(
+        lsp_types::Position::new(0, 0),
+        lsp_types::Position::new(999, 999),
+    );
+    let hints = inlay_hints(&db, file, range);
+    let param_labels: Vec<String> = hints
+        .into_iter()
+        .filter(|h| h.kind == Some(lsp_types::InlayHintKind::PARAMETER))
+        .filter_map(|h| match h.label {
+            lsp_types::InlayHintLabel::String(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+
+    assert!(
+        param_labels.iter().any(|l| l.contains("beginIndex:")),
+        "expected parameter inlay hint for beginIndex; got {param_labels:?}"
+    );
+    assert!(
+        param_labels.iter().any(|l| l.contains("endIndex:")),
+        "expected parameter inlay hint for endIndex; got {param_labels:?}"
+    );
 }
