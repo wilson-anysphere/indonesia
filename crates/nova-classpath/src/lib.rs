@@ -995,13 +995,21 @@ enum ZipKind {
 }
 
 fn read_module_info_from_dir(dir: &Path) -> Result<Option<ModuleInfo>, ClasspathError> {
-    let path = dir.join("module-info.class");
-    if !path.is_file() {
-        return Ok(None);
+    // Multi-release JARs can store `module-info.class` under `META-INF/versions/9/`.
+    // While directories are not formally multi-release archives, some build tools
+    // (or Bazel-style dependency extraction) surface JAR contents as directories,
+    // so we check the versioned location as a best-effort.
+    for candidate in ["module-info.class", "META-INF/versions/9/module-info.class"] {
+        let path = dir.join(candidate);
+        if !path.is_file() {
+            continue;
+        }
+
+        let bytes = std::fs::read(path)?;
+        return Ok(Some(parse_module_info_class(&bytes)?));
     }
 
-    let bytes = std::fs::read(path)?;
-    Ok(Some(parse_module_info_class(&bytes)?))
+    Ok(None)
 }
 
 fn read_module_info_from_zip(

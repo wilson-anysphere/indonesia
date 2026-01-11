@@ -160,6 +160,37 @@ fn module_path_class_directories_with_module_info_are_named_modules() {
 }
 
 #[test]
+fn module_path_class_directories_with_multi_release_module_info_are_named_modules() {
+    let tmp = TempDir::new().unwrap();
+    let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));
+
+    let jar = test_named_module_jar();
+    let module_info = jar_bytes(&jar, "module-info.class");
+    let api_class = jar_bytes(&jar, "com/example/api/Api.class");
+
+    let dir = tmp.path().join("mr-exploded-module");
+    fs::create_dir_all(dir.join("META-INF/versions/9")).unwrap();
+    fs::create_dir_all(dir.join("com/example/api")).unwrap();
+    fs::write(dir.join("META-INF/versions/9/module-info.class"), module_info).unwrap();
+    fs::write(dir.join("com/example/api/Api.class"), api_class).unwrap();
+
+    let index = ModuleAwareClasspathIndex::build_module_path_with_deps_store(
+        &[ClasspathEntry::ClassDir(dir)],
+        None,
+        Some(&deps_store),
+        None,
+    )
+    .unwrap();
+
+    let module = index.module_of("com.example.api.Api").unwrap();
+    assert_eq!(module.as_str(), "example.mod");
+    assert_eq!(
+        index.module_kind_of("com.example.api.Api"),
+        ModuleNameKind::Explicit
+    );
+}
+
+#[test]
 fn module_path_class_directories_without_module_info_become_automatic_modules() {
     let tmp = TempDir::new().unwrap();
     let deps_store = DependencyIndexStore::new(tmp.path().join("deps"));

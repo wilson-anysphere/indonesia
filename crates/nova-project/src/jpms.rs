@@ -169,6 +169,7 @@ fn module_candidate_from_module_path_entry(path: &Path) -> Option<ModuleCandidat
         .read("module-info.class")
         .ok()
         .flatten()
+        .or_else(|| archive.read("META-INF/versions/9/module-info.class").ok().flatten())
         .or_else(|| archive.read("classes/module-info.class").ok().flatten())
     {
         if let Ok(info) = parse_module_info_class(&bytes) {
@@ -427,6 +428,23 @@ mod tests {
             derive_automatic_module_name(Path::new("com.example.app")).as_str(),
             "com.example.app"
         );
+    }
+
+    #[test]
+    fn module_candidate_detects_multi_release_module_info() {
+        let tmp = tempdir().expect("tempdir");
+        let dep_dir = tmp.path().join("multi-release-dep");
+        std::fs::create_dir_all(dep_dir.join("META-INF/versions/9")).expect("mkdir");
+        std::fs::write(
+            dep_dir.join("META-INF/versions/9/module-info.class"),
+            make_module_info_class(),
+        )
+        .expect("write module-info.class");
+
+        let candidate =
+            module_candidate_from_module_path_entry(&dep_dir).expect("module candidate");
+        assert_eq!(candidate.kind, ModuleCandidateKind::Explicit);
+        assert_eq!(candidate.info.name.as_str(), "mod.b");
     }
 
     #[test]
