@@ -23,7 +23,10 @@ async fn refuses_plain_tcp_on_non_loopback_by_default() {
         source_roots: Vec::new(),
     };
 
-    let err = QueryRouter::new_distributed(config, layout).await.unwrap_err();
+    let err = QueryRouter::new_distributed(config, layout)
+        .await
+        .err()
+        .expect("expected router to reject insecure TCP listener");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("plaintext TCP") && msg.contains("not loopback"),
@@ -51,7 +54,10 @@ async fn refuses_plain_tcp_with_auth_token_by_default() {
         source_roots: Vec::new(),
     };
 
-    let err = QueryRouter::new_distributed(config, layout).await.unwrap_err();
+    let err = QueryRouter::new_distributed(config, layout)
+        .await
+        .err()
+        .expect("expected router to reject auth token over plaintext TCP");
     let msg = format!("{err:#}");
     assert!(
         msg.contains("plaintext TCP") && msg.contains("auth token"),
