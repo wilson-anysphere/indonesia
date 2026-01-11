@@ -505,6 +505,9 @@ To prevent collisions when both peers can initiate requests:
 - **Router-initiated** request IDs MUST be **even**: `2, 4, 6, ...`
 - **Worker-initiated** request IDs MUST be **odd**: `1, 3, 5, ...`
 
+Each side SHOULD generate request IDs monotonically within its parity class (e.g. start at `2` or
+`1` and increment by `2`).
+
 Enforcement:
 
 - When receiving a `RpcPayload::Request`, the receiver MUST validate that the `request_id` parity
