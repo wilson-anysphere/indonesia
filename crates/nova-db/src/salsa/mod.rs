@@ -901,6 +901,7 @@ where
 mod tests {
     use super::*;
     use nova_cache::CacheConfig;
+    use nova_hir::hir::{Body, Expr, ExprId};
     use nova_memory::{MemoryBudget, MemoryPressure};
     use tempfile::TempDir;
 
@@ -914,6 +915,19 @@ mod tests {
 
     fn executions(db: &RootDatabase, query_name: &str) -> u64 {
         stat(db, query_name).executions
+    }
+
+    fn expr_path(body: &Body, expr: ExprId) -> Option<String> {
+        match &body.exprs[expr] {
+            Expr::Name { name, .. } => Some(name.clone()),
+            Expr::FieldAccess { receiver, name, .. } => {
+                let mut path = expr_path(body, *receiver)?;
+                path.push('.');
+                path.push_str(name);
+                Some(path)
+            }
+            _ => None,
+        }
     }
 
     #[test]
@@ -1185,6 +1199,117 @@ mod tests {
             1,
             "dependent query should be reused due to early-cutoff"
         );
+    }
+
+    #[test]
+    fn hir_body_queries_lower_locals_and_calls() {
+        let mut db = RootDatabase::default();
+        let file = FileId::from_raw(1);
+
+        let source = r#"
+package com.example;
+
+import java.util.List;
+import java.util.*;
+import static java.lang.Math.*;
+import static java.lang.Math.PI;
+
+@interface Marker {
+    int value() default 1;
+}
+
+class Foo {
+    int field;
+
+    static {
+        final int s = 0;
+        System.out.println(s);
+    }
+
+    Foo(final int a) {
+        final int x = a;
+        bar(x);
+    }
+
+    class Inner {}
+
+    @interface InnerAnn {}
+
+    void bar(final int y) {
+        final int z = y + 1;
+        System.out.println(z);
+        return;
+    }
+}
+"#;
+
+        db.set_file_exists(file, true);
+        db.set_file_content(file, Arc::new(source.to_string()));
+
+        let tree = db.hir_item_tree(file);
+        assert_eq!(
+            tree.package.as_ref().map(|pkg| pkg.name.as_str()),
+            Some("com.example")
+        );
+        assert!(tree.classes.iter().any(|class| class.name == "Foo"));
+        assert!(tree.classes.iter().any(|class| class.name == "Inner"));
+
+        let bar_index = tree
+            .methods
+            .iter()
+            .position(|method| method.name == "bar")
+            .expect("bar method");
+        let bar_id = nova_hir::ids::MethodId::new(file, bar_index as u32);
+        let body = db.hir_body(bar_id);
+
+        let local_names: Vec<_> = body
+            .locals
+            .iter()
+            .map(|(_, local)| local.name.as_str())
+            .collect();
+        assert_eq!(local_names, vec!["z"]);
+
+        let mut call_paths = Vec::new();
+        for (id, expr) in body.exprs.iter() {
+            if let Expr::Call { callee, .. } = expr {
+                let callee_path =
+                    expr_path(&body, *callee).unwrap_or_else(|| format!("ExprId({id})"));
+                call_paths.push(callee_path);
+            }
+        }
+        assert!(call_paths.iter().any(|path| path == "System.out.println"));
+
+        let ctor_body = db.hir_constructor_body(nova_hir::ids::ConstructorId::new(file, 0));
+        let ctor_locals: Vec<_> = ctor_body
+            .locals
+            .iter()
+            .map(|(_, local)| local.name.as_str())
+            .collect();
+        assert_eq!(ctor_locals, vec!["x"]);
+
+        let mut ctor_call_paths = Vec::new();
+        for (id, expr) in ctor_body.exprs.iter() {
+            if let Expr::Call { callee, .. } = expr {
+                let callee_path =
+                    expr_path(&ctor_body, *callee).unwrap_or_else(|| format!("ExprId({id})"));
+                ctor_call_paths.push(callee_path);
+            }
+        }
+        assert!(ctor_call_paths.iter().any(|path| path == "bar"));
+
+        let init_index = tree
+            .initializers
+            .iter()
+            .position(|init| init.is_static)
+            .expect("static initializer");
+        let init_id = nova_hir::ids::InitializerId::new(file, init_index as u32);
+        let init_body = db.hir_initializer_body(init_id);
+        let init_locals: Vec<_> = init_body
+            .locals
+            .iter()
+            .map(|(_, local)| local.name.as_str())
+            .collect();
+        assert_eq!(init_locals, vec!["s"]);
     }
 
     #[test]
