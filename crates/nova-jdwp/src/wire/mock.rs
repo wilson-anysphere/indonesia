@@ -292,6 +292,8 @@ async fn handle_packet(
             let err = state.redefine_classes_error_code.load(Ordering::Relaxed);
             (err, Vec::new())
         }
+        // VirtualMachine.Suspend
+        (1, 8) => Vec::new(),
         // VirtualMachine.Resume
         (1, 9) => {
             (0, Vec::new())

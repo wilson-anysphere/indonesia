@@ -120,6 +120,16 @@ impl JdwpClient {
         self.inner.shutdown.cancel();
     }
 
+    /// A token that is cancelled when the JDWP client is shut down, either
+    /// explicitly via [`JdwpClient::shutdown`] or implicitly when the underlying
+    /// TCP connection closes.
+    ///
+    /// This is useful for higher-level adapters (e.g. DAP) that need to exit
+    /// cleanly when the debuggee disconnects.
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.inner.shutdown.clone()
+    }
+
     pub fn subscribe_events(&self) -> broadcast::Receiver<JdwpEvent> {
         self.inner.events.subscribe()
     }

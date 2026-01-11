@@ -6,6 +6,7 @@ use std::{
 
 use serde_json::json;
 use thiserror::Error;
+use tokio_util::sync::CancellationToken;
 
 use nova_jdwp::wire::{
     ClassInfo, EventModifier, FrameInfo, JdwpClient, JdwpError, JdwpEvent, JdwpValue, LineTable,
@@ -127,6 +128,10 @@ impl Debugger {
 
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<JdwpEvent> {
         self.jdwp.subscribe_events()
+    }
+
+    pub fn jdwp_shutdown_token(&self) -> CancellationToken {
+        self.jdwp.shutdown_token()
     }
 
     pub async fn disconnect(&mut self) {

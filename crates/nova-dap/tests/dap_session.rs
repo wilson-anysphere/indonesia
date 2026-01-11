@@ -108,30 +108,90 @@ async fn dap_can_attach_set_breakpoints_and_stop() {
     let locals = vars_resp.pointer("/body/variables").and_then(|v| v.as_array()).unwrap();
     assert!(locals.iter().any(|v| v.get("name").and_then(|n| n.as_str()) == Some("x")));
 
-    // Continue and expect a stopped event from the mock JDWP VM.
-    send_request(&mut writer, 8, "continue", json!({ "threadId": thread_id })).await;
-    let cont_resp = read_response(&mut reader, 8).await;
-    assert!(cont_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
-
-    // stopped event can race with continue response; scan a bit.
-    let mut stopped = None;
-    for _ in 0..20 {
+    // Pause should suspend the VM and emit a stopped event.
+    send_request(&mut writer, 8, "pause", json!({ "threadId": thread_id })).await;
+    let mut pause_resp = None;
+    let mut pause_stopped = None;
+    for _ in 0..50 {
         let msg = read_next(&mut reader).await;
-        if msg.get("type").and_then(|v| v.as_str()) == Some("event")
-            && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
+        if msg.get("type").and_then(|v| v.as_str()) == Some("response")
+            && msg.get("request_seq").and_then(|v| v.as_i64()) == Some(8)
         {
-            stopped = Some(msg);
+            pause_resp = Some(msg);
+        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
+            && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("pause")
+        {
+            pause_stopped = Some(msg);
+        }
+
+        if pause_resp.is_some() && pause_stopped.is_some() {
             break;
         }
     }
-    let stopped = stopped.expect("expected stopped event");
+    let pause_resp = pause_resp.expect("expected pause response");
+    assert!(pause_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    let pause_stopped = pause_stopped.expect("expected stopped event for pause");
+    assert_eq!(pause_stopped.pointer("/body/allThreadsStopped").and_then(|v| v.as_bool()), Some(true));
+
+    // Unknown/unhandled requests should be reported as errors (success: false).
+    send_request(&mut writer, 9, "nope", json!({})).await;
+    let bad_resp = read_response(&mut reader, 9).await;
+    assert!(!bad_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(true));
+
+    // Continue should emit a continued event and then a stopped event from the mock JDWP VM.
+    send_request(&mut writer, 10, "continue", json!({ "threadId": thread_id })).await;
+
+    let mut cont_resp = None;
+    let mut continued = None;
+    let mut stopped = None;
+
+    for _ in 0..100 {
+        let msg = read_next(&mut reader).await;
+
+        if msg.get("type").and_then(|v| v.as_str()) == Some("response")
+            && msg.get("request_seq").and_then(|v| v.as_i64()) == Some(10)
+        {
+            cont_resp = Some(msg);
+        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("continued")
+        {
+            continued = Some(msg);
+        } else if msg.get("type").and_then(|v| v.as_str()) == Some("event")
+            && msg.get("event").and_then(|v| v.as_str()) == Some("stopped")
+            && msg.pointer("/body/reason").and_then(|v| v.as_str()) == Some("breakpoint")
+        {
+            stopped = Some(msg);
+        }
+
+        if cont_resp.is_some() && continued.is_some() && stopped.is_some() {
+            break;
+        }
+    }
+
+    let cont_resp = cont_resp.expect("expected continue response");
+    assert!(cont_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
     assert_eq!(
-        stopped.pointer("/body/reason").and_then(|v| v.as_str()),
-        Some("breakpoint")
+        cont_resp.pointer("/body/allThreadsContinued").and_then(|v| v.as_bool()),
+        Some(true)
     );
 
-    send_request(&mut writer, 9, "disconnect", json!({})).await;
-    let _disc_resp = read_response(&mut reader, 9).await;
+    let continued = continued.expect("expected continued event");
+    assert_eq!(
+        continued.pointer("/body/allThreadsContinued").and_then(|v| v.as_bool()),
+        Some(true)
+    );
+
+    let stopped = stopped.expect("expected stopped event");
+    assert_eq!(stopped.pointer("/body/reason").and_then(|v| v.as_str()), Some("breakpoint"));
+    // The mock JDWP VM uses SuspendPolicy.EVENT_THREAD (only the event thread is suspended).
+    assert_eq!(
+        stopped.pointer("/body/allThreadsStopped").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    send_request(&mut writer, 11, "disconnect", json!({})).await;
+    let _disc_resp = read_response(&mut reader, 11).await;
 
     server_task.await.unwrap().unwrap();
 }
