@@ -303,19 +303,10 @@ fn module_config_from_compile_info(
     sort_dedup_classpath(&mut classpath);
     sort_dedup_classpath(&mut module_path);
 
-    let release = info.release.as_deref().and_then(JavaVersion::parse);
-    let (source, target_level) = if release.is_some() {
-        (None, None)
-    } else {
-        (
-            info.source.as_deref().and_then(JavaVersion::parse),
-            info.target.as_deref().and_then(JavaVersion::parse),
-        )
-    };
     let language_level = JavaLanguageLevel {
-        release,
-        source,
-        target: target_level,
+        release: info.release.as_deref().and_then(JavaVersion::parse),
+        source: info.source.as_deref().and_then(JavaVersion::parse),
+        target: info.target.as_deref().and_then(JavaVersion::parse),
         preview: info.preview,
     };
 
