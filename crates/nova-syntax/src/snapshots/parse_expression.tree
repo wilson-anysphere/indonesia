@@ -1,0 +1,15 @@
+ExpressionRoot
+  MethodCallExpression
+    NameExpression
+      Identifier "foo"
+    ArgumentList
+      LParen "("
+      ArrayAccessExpression
+        NameExpression
+          Identifier "bar"
+        LBracket "["
+        LiteralExpression
+          IntLiteral "0"
+        RBracket "]"
+      RParen ")"
+  Eof ""

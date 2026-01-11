@@ -1,7 +1,8 @@
 use pretty_assertions::assert_eq;
 
 use crate::{
-    lex, lex_with_errors, parse_java, parse_java_with_options, AstNode, CompilationUnit,
+    lex, lex_with_errors, parse_expression, parse_java, parse_java_with_options, AstNode,
+    CompilationUnit,
     ExportsDirective, JavaLanguageLevel, OpensDirective, ParseOptions, ProvidesDirective,
     RequiresDirective, UsesDirective, SyntaxKind,
 };
@@ -502,6 +503,58 @@ fn parse_postfix_increment_decrement() {
 
     assert_eq!(plus_plus, 2);
     assert_eq!(minus_minus, 2);
+}
+
+#[test]
+fn parse_expression_parses_binary_expression() {
+    let result = parse_expression("a + b");
+    assert_eq!(result.errors, Vec::new());
+    assert_eq!(result.syntax().kind(), SyntaxKind::ExpressionRoot);
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::BinaryExpression));
+}
+
+#[test]
+fn parse_expression_parses_this_access() {
+    let result = parse_expression("this.x");
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::ThisExpression));
+    assert!(
+        kinds.contains(&SyntaxKind::FieldAccessExpression) || kinds.contains(&SyntaxKind::NameExpression),
+        "expected either a field access or name expression"
+    );
+}
+
+#[test]
+fn parse_expression_parses_method_call_and_array_access() {
+    let result = parse_expression("foo(bar[0])");
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::MethodCallExpression));
+    assert!(kinds.contains(&SyntaxKind::ArrayAccessExpression));
+}
+
+#[test]
+fn parse_expression_snapshot() {
+    let input = "foo(bar[0])";
+    let result = parse_expression(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let actual = crate::parser::debug_dump(&result.syntax());
+    let snapshot_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src/snapshots/parse_expression.tree");
+
+    if bless_enabled() {
+        std::fs::write(&snapshot_path, &actual).expect("write blessed snapshot");
+        return;
+    }
+
+    let expected = std::fs::read_to_string(&snapshot_path).expect("read snapshot");
+    assert_eq!(actual, expected);
 }
 
 #[test]

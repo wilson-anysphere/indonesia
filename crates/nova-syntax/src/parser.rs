@@ -237,6 +237,21 @@ pub fn parse_java(input: &str) -> JavaParseResult {
     Parser::new(input).parse()
 }
 
+pub fn parse_expression(input: &str) -> JavaParseResult {
+    let mut parser = Parser::new(input);
+    parser.builder.start_node(SyntaxKind::ExpressionRoot.into());
+    parser.eat_trivia();
+    parser.parse_expression(0);
+    parser.eat_trivia();
+    parser.expect(SyntaxKind::Eof, "expected end of expression");
+    parser.builder.finish_node();
+
+    JavaParseResult {
+        green: parser.builder.finish(),
+        errors: parser.errors,
+    }
+}
+
 struct Parser<'a> {
     input: &'a str,
     tokens: VecDeque<Token>,

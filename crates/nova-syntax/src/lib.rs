@@ -17,7 +17,7 @@ mod util;
 
 pub use ast::*;
 pub use lexer::{lex, lex_with_errors, LexError, Lexer, Token};
-pub use parser::{parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
+pub use parser::{parse_expression, parse_java, JavaParseResult, SyntaxElement, SyntaxNode, SyntaxToken};
 pub use syntax_kind::{JavaLanguage, SyntaxKind, SYNTAX_SCHEMA_VERSION};
 pub use tree_store::SyntaxTreeStore;
 pub use language_level::{FeatureAvailability, JavaFeature, JavaLanguageLevel};

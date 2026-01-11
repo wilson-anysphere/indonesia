@@ -257,6 +257,7 @@ pub enum SyntaxKind {
     ConditionalExpression,
     LambdaExpression,
     CastExpression,
+    ExpressionRoot,
 
     // --- Declarations / generics / annotation defaults ---
     ExtendsClause,
