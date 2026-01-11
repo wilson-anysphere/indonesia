@@ -489,11 +489,6 @@ mod tests {
             Some(PathBuf::from("/workspace/lib/core"))
         );
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn loads_workspace_config_instead_of_defaults() {
