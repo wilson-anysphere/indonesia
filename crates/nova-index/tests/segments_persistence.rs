@@ -76,10 +76,15 @@ fn segments_overlay_and_compaction() {
     )
     .unwrap();
 
-    // The zero-copy view currently only supports the base per-index archives; segment overlays
-    // require supersession rules. Until those are implemented for `ProjectIndexesView`, it must
-    // treat segmented caches as a miss.
-    assert!(load_index_view(&cache_dir, &snapshot_v2).unwrap().is_none());
+    let view_with_segment = load_index_view(&cache_dir, &snapshot_v2).unwrap().unwrap();
+    assert!(view_with_segment.invalidated_files.is_empty());
+    assert!(view_with_segment.symbol_locations("A").next().is_none());
+    assert_eq!(view_with_segment.symbol_locations("A2").count(), 1);
+    assert_eq!(view_with_segment.symbol_locations("B").count(), 1);
+    assert_eq!(
+        view_with_segment.symbol_names().collect::<Vec<_>>(),
+        vec!["A2", "B"]
+    );
 
     let store = load_index_archives(&cache_dir, &snapshot_v2)
         .unwrap()
@@ -136,9 +141,7 @@ fn segments_overlay_and_compaction() {
         }]
     );
 
-    // After compaction, segment overlays are removed and the base per-index archives reflect the
-    // new state, so the view should be available again.
-    let view = load_index_view(&cache_dir, &snapshot_v2).unwrap().unwrap();
-    assert!(view.symbol_locations("A").next().is_none());
-    assert_eq!(view.symbol_locations("A2").count(), 1);
+    let view_after_compaction = load_index_view(&cache_dir, &snapshot_v2).unwrap().unwrap();
+    assert!(view_after_compaction.symbol_locations("A").next().is_none());
+    assert_eq!(view_after_compaction.symbol_locations("A2").count(), 1);
 }

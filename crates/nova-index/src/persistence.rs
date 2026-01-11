@@ -212,6 +212,10 @@ pub struct ProjectIndexesView {
     pub references: nova_storage::PersistedArchive<ReferenceIndex>,
     pub inheritance: nova_storage::PersistedArchive<InheritanceIndex>,
     pub annotations: nova_storage::PersistedArchive<AnnotationIndex>,
+    pub segments: Vec<IndexSegmentArchive>,
+    /// Maps each covered file to the newest segment index (0-based into
+    /// [`ProjectIndexesView::segments`]).
+    pub file_to_segment: BTreeMap<String, usize>,
 
     /// Files whose contents differ from the snapshot used to persist the
     /// indexes (new/modified/deleted).
@@ -268,16 +272,49 @@ impl ProjectIndexesView {
     /// non-invalidated file.
     pub fn symbol_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.symbols
+        let file_to_segment = &self.file_to_segment;
+
+        let base = self
+            .symbols
             .archived()
             .symbols
             .iter()
             .filter_map(move |(name, locations)| {
                 locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                    })
                     .then(|| name.as_str())
-            })
+            });
+
+        let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            let invalidated_files = invalidated_files;
+            let file_to_segment = file_to_segment;
+
+            let names = segment
+                .archive
+                .archived()
+                .symbols
+                .symbols
+                .iter()
+                .filter_map(move |(name, locations)| {
+                    locations
+                        .iter()
+                        .any(|loc| {
+                            let file = loc.file.as_str();
+                            !invalidated_files.contains(file)
+                                && file_to_segment.get(file).copied() == Some(segment_idx)
+                        })
+                        .then(|| name.as_str())
+                });
+
+            iter = Box::new(merge_sorted_dedup(iter, names));
+        }
+
+        iter
     }
 
     /// Returns symbol names starting with `prefix` that have at least one
@@ -287,7 +324,10 @@ impl ProjectIndexesView {
         prefix: &'a str,
     ) -> impl Iterator<Item = &'a str> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.symbols
+        let file_to_segment = &self.file_to_segment;
+
+        let base = self
+            .symbols
             .archived()
             .symbols
             .iter()
@@ -296,9 +336,41 @@ impl ProjectIndexesView {
             .filter_map(move |(name, locations)| {
                 locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                    })
                     .then(|| name.as_str())
-            })
+            });
+
+        let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            let invalidated_files = invalidated_files;
+            let file_to_segment = file_to_segment;
+
+            let names = segment
+                .archive
+                .archived()
+                .symbols
+                .symbols
+                .iter()
+                .skip_while(move |(name, _)| name.as_str() < prefix)
+                .take_while(move |(name, _)| name.as_str().starts_with(prefix))
+                .filter_map(move |(name, locations)| {
+                    locations
+                        .iter()
+                        .any(|loc| {
+                            let file = loc.file.as_str();
+                            !invalidated_files.contains(file)
+                                && file_to_segment.get(file).copied() == Some(segment_idx)
+                        })
+                        .then(|| name.as_str())
+                });
+
+            iter = Box::new(merge_sorted_dedup(iter, names));
+        }
+
+        iter
     }
 
     /// Returns all symbol names from both persisted archives (filtering out
@@ -339,16 +411,31 @@ impl ProjectIndexesView {
         name: &str,
     ) -> impl Iterator<Item = &'a ArchivedSymbolLocation> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.symbols
-            .archived()
-            .symbols
-            .get(name)
+        let file_to_segment = &self.file_to_segment;
+
+        let mut segment_lists = Vec::new();
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            if let Some(locations) = segment.archive.archived().symbols.symbols.get(name) {
+                segment_lists.push((segment_idx, locations));
+            }
+        }
+        let base_locations = self.symbols.archived().symbols.get(name);
+
+        segment_lists
             .into_iter()
-            .flat_map(move |locations| {
-                locations
-                    .iter()
-                    .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .flat_map(move |(segment_idx, locations)| {
+                locations.iter().filter(move |loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file)
+                        && file_to_segment.get(file).copied() == Some(segment_idx)
+                })
             })
+            .chain(base_locations.into_iter().flat_map(move |locations| {
+                locations.iter().filter(move |loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                })
+            }))
     }
 
     /// Returns symbol definition locations for `name`, merging persisted results
@@ -390,16 +477,37 @@ impl ProjectIndexesView {
         name: &str,
     ) -> impl Iterator<Item = &'a ArchivedAnnotationLocation> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.annotations
-            .archived()
-            .annotations
-            .get(name)
+        let file_to_segment = &self.file_to_segment;
+
+        let mut segment_lists = Vec::new();
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            if let Some(locations) = segment
+                .archive
+                .archived()
+                .annotations
+                .annotations
+                .get(name)
+            {
+                segment_lists.push((segment_idx, locations));
+            }
+        }
+        let base_locations = self.annotations.archived().annotations.get(name);
+
+        segment_lists
             .into_iter()
-            .flat_map(move |locations| {
-                locations
-                    .iter()
-                    .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .flat_map(move |(segment_idx, locations)| {
+                locations.iter().filter(move |loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file)
+                        && file_to_segment.get(file).copied() == Some(segment_idx)
+                })
             })
+            .chain(base_locations.into_iter().flat_map(move |locations| {
+                locations.iter().filter(move |loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                })
+            }))
     }
 
     /// Returns annotation locations for `name`, merging persisted results (with
@@ -434,16 +542,49 @@ impl ProjectIndexesView {
     /// non-invalidated file.
     pub fn annotation_names<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.annotations
+        let file_to_segment = &self.file_to_segment;
+
+        let base = self
+            .annotations
             .archived()
             .annotations
             .iter()
             .filter_map(move |(name, locations)| {
                 locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                    })
                     .then(|| name.as_str())
-            })
+            });
+
+        let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            let invalidated_files = invalidated_files;
+            let file_to_segment = file_to_segment;
+
+            let names = segment
+                .archive
+                .archived()
+                .annotations
+                .annotations
+                .iter()
+                .filter_map(move |(name, locations)| {
+                    locations
+                        .iter()
+                        .any(|loc| {
+                            let file = loc.file.as_str();
+                            !invalidated_files.contains(file)
+                                && file_to_segment.get(file).copied() == Some(segment_idx)
+                        })
+                        .then(|| name.as_str())
+                });
+
+            iter = Box::new(merge_sorted_dedup(iter, names));
+        }
+
+        iter
     }
 
     /// Returns annotation names starting with `prefix` that have at least one
@@ -453,7 +594,10 @@ impl ProjectIndexesView {
         prefix: &'a str,
     ) -> impl Iterator<Item = &'a str> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.annotations
+        let file_to_segment = &self.file_to_segment;
+
+        let base = self
+            .annotations
             .archived()
             .annotations
             .iter()
@@ -462,9 +606,41 @@ impl ProjectIndexesView {
             .filter_map(move |(name, locations)| {
                 locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                    })
                     .then(|| name.as_str())
-            })
+            });
+
+        let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            let invalidated_files = invalidated_files;
+            let file_to_segment = file_to_segment;
+
+            let names = segment
+                .archive
+                .archived()
+                .annotations
+                .annotations
+                .iter()
+                .skip_while(move |(name, _)| name.as_str() < prefix)
+                .take_while(move |(name, _)| name.as_str().starts_with(prefix))
+                .filter_map(move |(name, locations)| {
+                    locations
+                        .iter()
+                        .any(|loc| {
+                            let file = loc.file.as_str();
+                            !invalidated_files.contains(file)
+                                && file_to_segment.get(file).copied() == Some(segment_idx)
+                        })
+                        .then(|| name.as_str())
+                });
+
+            iter = Box::new(merge_sorted_dedup(iter, names));
+        }
+
+        iter
     }
 
     /// Returns all annotation names from both persisted archives (filtering out
@@ -505,16 +681,37 @@ impl ProjectIndexesView {
         symbol: &str,
     ) -> impl Iterator<Item = &'a ArchivedReferenceLocation> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.references
-            .archived()
-            .references
-            .get(symbol)
+        let file_to_segment = &self.file_to_segment;
+
+        let mut segment_lists = Vec::new();
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            if let Some(locations) = segment
+                .archive
+                .archived()
+                .references
+                .references
+                .get(symbol)
+            {
+                segment_lists.push((segment_idx, locations));
+            }
+        }
+        let base_locations = self.references.archived().references.get(symbol);
+
+        segment_lists
             .into_iter()
-            .flat_map(move |locations| {
-                locations
-                    .iter()
-                    .filter(move |loc| !invalidated_files.contains(loc.file.as_str()))
+            .flat_map(move |(segment_idx, locations)| {
+                locations.iter().filter(move |loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file)
+                        && file_to_segment.get(file).copied() == Some(segment_idx)
+                })
             })
+            .chain(base_locations.into_iter().flat_map(move |locations| {
+                locations.iter().filter(move |loc| {
+                    let file = loc.file.as_str();
+                    !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                })
+            }))
     }
 
     /// Returns reference locations for `symbol`, merging persisted results
@@ -549,16 +746,49 @@ impl ProjectIndexesView {
     /// non-invalidated file.
     pub fn referenced_symbols<'a>(&'a self) -> impl Iterator<Item = &'a str> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.references
+        let file_to_segment = &self.file_to_segment;
+
+        let base = self
+            .references
             .archived()
             .references
             .iter()
             .filter_map(move |(symbol, locations)| {
                 locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                    })
                     .then(|| symbol.as_str())
-            })
+            });
+
+        let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            let invalidated_files = invalidated_files;
+            let file_to_segment = file_to_segment;
+
+            let names = segment
+                .archive
+                .archived()
+                .references
+                .references
+                .iter()
+                .filter_map(move |(symbol, locations)| {
+                    locations
+                        .iter()
+                        .any(|loc| {
+                            let file = loc.file.as_str();
+                            !invalidated_files.contains(file)
+                                && file_to_segment.get(file).copied() == Some(segment_idx)
+                        })
+                        .then(|| symbol.as_str())
+                });
+
+            iter = Box::new(merge_sorted_dedup(iter, names));
+        }
+
+        iter
     }
 
     /// Returns referenced symbol names starting with `prefix` that have at
@@ -568,7 +798,10 @@ impl ProjectIndexesView {
         prefix: &'a str,
     ) -> impl Iterator<Item = &'a str> + 'a {
         let invalidated_files = &self.invalidated_files;
-        self.references
+        let file_to_segment = &self.file_to_segment;
+
+        let base = self
+            .references
             .archived()
             .references
             .iter()
@@ -577,9 +810,41 @@ impl ProjectIndexesView {
             .filter_map(move |(symbol, locations)| {
                 locations
                     .iter()
-                    .any(|loc| !invalidated_files.contains(loc.file.as_str()))
+                    .any(|loc| {
+                        let file = loc.file.as_str();
+                        !invalidated_files.contains(file) && !file_to_segment.contains_key(file)
+                    })
                     .then(|| symbol.as_str())
-            })
+            });
+
+        let mut iter: Box<dyn Iterator<Item = &'a str> + 'a> = Box::new(base);
+        for (segment_idx, segment) in self.segments.iter().enumerate() {
+            let invalidated_files = invalidated_files;
+            let file_to_segment = file_to_segment;
+
+            let names = segment
+                .archive
+                .archived()
+                .references
+                .references
+                .iter()
+                .skip_while(move |(name, _)| name.as_str() < prefix)
+                .take_while(move |(name, _)| name.as_str().starts_with(prefix))
+                .filter_map(move |(symbol, locations)| {
+                    locations
+                        .iter()
+                        .any(|loc| {
+                            let file = loc.file.as_str();
+                            !invalidated_files.contains(file)
+                                && file_to_segment.get(file).copied() == Some(segment_idx)
+                        })
+                        .then(|| symbol.as_str())
+                });
+
+            iter = Box::new(merge_sorted_dedup(iter, names));
+        }
+
+        iter
     }
 
     /// Returns all referenced symbols from both persisted archives (filtering
@@ -1332,13 +1597,6 @@ pub fn load_index_view(
         return Ok(None);
     };
 
-    // Segment overlays are persisted as `ProjectIndexes` archives. `ProjectIndexesView` is a
-    // lightweight wrapper over the base per-index archives; it does not (yet) apply segment
-    // supersession rules. Avoid returning a view that would silently ignore segments.
-    if !archives.segments.is_empty() || !archives.file_to_segment.is_empty() {
-        return Ok(None);
-    }
-
     let invalidated_files = archives
         .invalidated_files
         .into_iter()
@@ -1349,6 +1607,8 @@ pub fn load_index_view(
         references: archives.references,
         inheritance: archives.inheritance,
         annotations: archives.annotations,
+        segments: archives.segments,
+        file_to_segment: archives.file_to_segment,
         invalidated_files,
         overlay: ProjectIndexes::default(),
     }))
@@ -1369,10 +1629,6 @@ pub fn load_index_view_fast(
         return Ok(None);
     };
 
-    if !archives.segments.is_empty() || !archives.file_to_segment.is_empty() {
-        return Ok(None);
-    }
-
     let invalidated_files = archives
         .invalidated_files
         .into_iter()
@@ -1383,6 +1639,8 @@ pub fn load_index_view_fast(
         references: archives.references,
         inheritance: archives.inheritance,
         annotations: archives.annotations,
+        segments: archives.segments,
+        file_to_segment: archives.file_to_segment,
         invalidated_files,
         overlay: ProjectIndexes::default(),
     }))
