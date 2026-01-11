@@ -59,6 +59,9 @@ impl CacheStore for S3Store {
             url: url.to_string(),
         })?;
 
+        let max_download_bytes = s3_max_download_bytes_from_env()?;
+        let dest = dest.to_path_buf();
+
         let runtime = tokio::runtime::Runtime::new().map_err(|err| CacheError::S3 {
             message: err.to_string(),
         })?;
@@ -76,16 +79,8 @@ impl CacheStore for S3Store {
                     message: err.to_string(),
                 })?;
 
-            let data = object
-                .body
-                .collect()
-                .await
-                .map_err(|err| CacheError::S3 {
-                    message: err.to_string(),
-                })?
-                .into_bytes();
-
-            std::fs::write(dest, data)?;
+            stream_async_read_to_path(object.body.into_async_read(), &dest, max_download_bytes)
+                .await?;
             Ok(())
         })
     }
@@ -99,6 +94,115 @@ fn parse_s3_url(url: &str) -> Option<(String, String)> {
         return None;
     }
     Some((bucket.to_string(), key.to_string()))
+}
+
+#[cfg(feature = "s3")]
+fn s3_max_download_bytes_from_env() -> Result<Option<u64>> {
+    // Safety valve: large cache packages can be multi-GB, and disk is shared across many agents.
+    // When set (in bytes), downloads larger than this will fail before being published to `dest`.
+    let raw = match std::env::var("NOVA_CACHE_MAX_DOWNLOAD_BYTES") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(err) => {
+            return Err(CacheError::S3 {
+                message: err.to_string(),
+            })
+        }
+    };
+
+    let raw = raw.trim();
+    if raw.is_empty() || raw == "0" {
+        return Ok(None);
+    }
+
+    let parsed = raw.parse::<u64>().map_err(|err| CacheError::S3 {
+        message: format!("invalid NOVA_CACHE_MAX_DOWNLOAD_BYTES={raw:?}: {err}"),
+    })?;
+    Ok(Some(parsed))
+}
+
+#[cfg(feature = "s3")]
+fn tmp_download_path(dest: &Path) -> PathBuf {
+    let file_name = dest
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("download"));
+    dest.with_file_name(format!(".{}.tmp", file_name.to_string_lossy()))
+}
+
+#[cfg(feature = "s3")]
+async fn stream_async_read_to_path(
+    reader: impl tokio::io::AsyncRead + Unpin,
+    dest: &Path,
+    max_bytes: Option<u64>,
+) -> Result<u64> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    if let Some(parent) = dest.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+    }
+
+    let tmp_path = tmp_download_path(dest);
+    let result = async {
+        let mut file = tokio::fs::File::create(&tmp_path).await?;
+
+        let copied = if let Some(max_bytes) = max_bytes {
+            let mut limited = reader.take(max_bytes.saturating_add(1));
+            tokio::io::copy(&mut limited, &mut file).await?
+        } else {
+            let mut reader = reader;
+            tokio::io::copy(&mut reader, &mut file).await?
+        };
+
+        file.flush().await?;
+        // Best-effort: ensure bytes are on disk before we publish the final path.
+        let _ = file.sync_all().await;
+        drop(file);
+
+        if let Some(max_bytes) = max_bytes {
+            if copied > max_bytes {
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                return Err(CacheError::S3 {
+                    message: format!(
+                        "download exceeded NOVA_CACHE_MAX_DOWNLOAD_BYTES={max_bytes} (downloaded {copied} bytes)"
+                    ),
+                });
+            }
+        }
+
+        match tokio::fs::rename(&tmp_path, dest).await {
+            Ok(()) => Ok(copied),
+            Err(_err) => {
+                // On Windows, rename doesn't overwrite. Try remove + rename.
+                if tokio::fs::metadata(dest).await.is_ok() {
+                    let _ = tokio::fs::remove_file(dest).await;
+                    if tokio::fs::rename(&tmp_path, dest).await.is_ok() {
+                        return Ok(copied);
+                    }
+                }
+
+                // If we can't rename, fall back to copying the temp file into place.
+                let mut tmp_reader = tokio::fs::File::open(&tmp_path).await?;
+                let mut dest_file = tokio::fs::File::create(dest).await?;
+                tokio::io::copy(&mut tmp_reader, &mut dest_file).await?;
+                dest_file.flush().await?;
+                let _ = dest_file.sync_all().await;
+                drop(dest_file);
+                let _ = tokio::fs::remove_file(&tmp_path).await;
+                Ok(copied)
+            }
+        }
+    }
+    .await;
+
+    if result.is_err() {
+        // Best-effort cleanup: if we failed before publishing the final path, don't leave behind
+        // a potentially huge partial download.
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+    }
+
+    result
 }
 
 pub fn store_for_url(url: &str) -> Result<Box<dyn CacheStore>> {
@@ -120,4 +224,69 @@ pub fn store_for_url(url: &str) -> Result<Box<dyn CacheStore>> {
     }
 
     Ok(Box::new(LocalStore))
+}
+
+#[cfg(all(test, feature = "s3"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_s3_url_valid() {
+        assert_eq!(
+            parse_s3_url("s3://bucket/key"),
+            Some(("bucket".to_string(), "key".to_string()))
+        );
+        assert_eq!(
+            parse_s3_url("s3://bucket/dir/file.tar.zst"),
+            Some(("bucket".to_string(), "dir/file.tar.zst".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_s3_url_invalid() {
+        assert_eq!(parse_s3_url("https://bucket/key"), None);
+        assert_eq!(parse_s3_url("s3://"), None);
+        assert_eq!(parse_s3_url("s3://bucket"), None);
+        assert_eq!(parse_s3_url("s3:///key"), None);
+        assert_eq!(parse_s3_url("s3://bucket/"), None);
+    }
+
+    #[tokio::test]
+    async fn stream_async_read_to_path_writes_large_payload() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let dest = tmp.path().join("nested").join("payload.bin");
+
+        let bytes = vec![0xAB_u8; 16 * 1024 * 1024];
+        let cursor = tokio::io::Cursor::new(bytes.clone());
+
+        let copied = stream_async_read_to_path(cursor, &dest, None).await?;
+        assert_eq!(copied as usize, bytes.len());
+
+        let on_disk = tokio::fs::read(&dest).await?;
+        assert_eq!(on_disk, bytes);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stream_async_read_to_path_enforces_max_bytes() -> Result<()> {
+        let tmp = tempfile::tempdir()?;
+        let dest = tmp.path().join("payload.bin");
+
+        let bytes = vec![0xCD_u8; 1024 * 1024];
+        let cursor = tokio::io::Cursor::new(bytes);
+
+        let err = stream_async_read_to_path(cursor, &dest, Some(64 * 1024))
+            .await
+            .unwrap_err();
+        match err {
+            CacheError::S3 { message } => {
+                assert!(message.contains("NOVA_CACHE_MAX_DOWNLOAD_BYTES"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+
+        assert!(!dest.exists());
+        assert!(!tmp_download_path(&dest).exists());
+        Ok(())
+    }
 }
