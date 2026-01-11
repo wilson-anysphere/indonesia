@@ -17,11 +17,43 @@ export function registerNovaDebugAdapter(
   context: vscode.ExtensionContext,
   opts: { serverManager: ServerManager; output: vscode.OutputChannel },
 ): void {
-  const factory = new NovaDebugAdapterDescriptorFactory(context, opts.serverManager, opts.output);
-  context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory(NOVA_DEBUG_TYPE, factory));
+  const manager = new NovaDebugAdapterManager(context, opts.serverManager, opts.output);
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.installOrUpdateDebugAdapter', async () => {
+      try {
+        await manager.installOrUpdateDebugAdapter(vscode.workspace.workspaceFolders?.[0]);
+      } catch (err) {
+        if (err instanceof Error && err.message === 'cancelled') {
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(`Nova: failed to install nova-dap: ${message}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.useLocalDebugAdapterBinary', async () => {
+      await manager.useLocalDebugAdapterBinary();
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('nova.showDebugAdapterVersion', async () => {
+      try {
+        await manager.showDebugAdapterVersion(vscode.workspace.workspaceFolders?.[0]);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(`Nova: failed to run nova-dap --version: ${message}`);
+      }
+    }),
+  );
+
+  context.subscriptions.push(vscode.debug.registerDebugAdapterDescriptorFactory(NOVA_DEBUG_TYPE, manager));
 }
 
-class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptorFactory {
+class NovaDebugAdapterManager implements vscode.DebugAdapterDescriptorFactory {
   private readonly extensionVersion: string;
   private installTask: Promise<{ path: string; version: string }> | undefined;
 
@@ -38,7 +70,7 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
     _executable: vscode.DebugAdapterExecutable | undefined,
   ): Promise<vscode.DebugAdapterDescriptor> {
     try {
-      const command = await this.resolveNovaDapCommand(session);
+      const command = await this.resolveNovaDapCommandForWorkspaceFolder(session.workspaceFolder);
       const args: string[] = [];
 
       const useLegacy = vscode.workspace.getConfiguration('nova').get<boolean>('debug.legacyAdapter', false);
@@ -56,10 +88,61 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
       const message = err instanceof Error ? err.message : String(err);
       void vscode.window.showErrorMessage(
         `Nova: failed to start debug adapter (nova-dap): ${message}. ` +
-          `Install nova-dap or configure nova.dap.path.`,
+          `Install it with "Nova: Install/Update Debug Adapter" or configure nova.dap.path.`,
       );
       throw err;
     }
+  }
+
+  async installOrUpdateDebugAdapter(workspaceFolder: vscode.WorkspaceFolder | undefined): Promise<void> {
+    const config = vscode.workspace.getConfiguration('nova', workspaceFolder?.uri);
+
+    const workspaceRoot = workspaceFolder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+    const rawPath = config.get<string | null>('dap.path', null) ?? config.get<string | null>('debug.adapterPath', null);
+    const resolvedPath = resolveNovaConfigPath({ configPath: rawPath, workspaceRoot }) ?? null;
+
+    if (resolvedPath) {
+      const choice = await vscode.window.showInformationMessage(
+        `Nova: nova.dap.path is set to "${resolvedPath}". Clear it to use the downloaded debug adapter?`,
+        'Clear and Install',
+        'Install (keep setting)',
+        'Cancel',
+      );
+      if (!choice || choice === 'Cancel') {
+        throw new Error('cancelled');
+      }
+      if (choice === 'Clear and Install') {
+        await clearSettingAtAllTargets(config, 'dap.path');
+        await clearSettingAtAllTargets(config, 'debug.adapterPath');
+      }
+    }
+
+    const installedPath = await this.installOrUpdateDap(config);
+    const version = await getBinaryVersion(installedPath);
+    void vscode.window.showInformationMessage(`Nova: Installed nova-dap v${version}.`);
+  }
+
+  async useLocalDebugAdapterBinary(): Promise<void> {
+    const picked = await vscode.window.showOpenDialog({
+      title: 'Select nova-dap binary',
+      canSelectMany: false,
+      canSelectFolders: false,
+      canSelectFiles: true,
+    });
+    if (!picked?.length) {
+      return;
+    }
+
+    const cfg = vscode.workspace.getConfiguration('nova');
+    await cfg.update('dap.path', picked[0].fsPath, vscode.ConfigurationTarget.Global);
+    // Clear deprecated alias to avoid confusing precedence rules.
+    await cfg.update('debug.adapterPath', undefined, vscode.ConfigurationTarget.Global);
+  }
+
+  async showDebugAdapterVersion(workspaceFolder: vscode.WorkspaceFolder | undefined): Promise<void> {
+    const command = await this.resolveNovaDapCommandForWorkspaceFolder(workspaceFolder);
+    const version = await getBinaryVersion(command);
+    void vscode.window.showInformationMessage(`Nova: nova-dap v${version}`);
   }
 
   private readDownloadMode(config: vscode.WorkspaceConfiguration): DownloadMode {
@@ -223,8 +306,9 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
     return pickedPath;
   }
 
-  private async resolveNovaDapCommand(session: vscode.DebugSession): Promise<string> {
-    const workspaceFolder = session.workspaceFolder;
+  private async resolveNovaDapCommandForWorkspaceFolder(
+    workspaceFolder: vscode.WorkspaceFolder | undefined,
+  ): Promise<string> {
     const workspaceRoot = workspaceFolder?.uri.fsPath ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
     const config = vscode.workspace.getConfiguration('nova', workspaceFolder?.uri);
     const downloadMode = this.readDownloadMode(config);
@@ -368,3 +452,21 @@ class NovaDebugAdapterDescriptorFactory implements vscode.DebugAdapterDescriptor
 }
 
 class UserFacingError extends Error {}
+
+async function clearSettingAtAllTargets(config: vscode.WorkspaceConfiguration, key: string): Promise<void> {
+  const inspected = config.inspect(key);
+  if (!inspected) {
+    await config.update(key, undefined, vscode.ConfigurationTarget.Global);
+    return;
+  }
+
+  if (typeof inspected.workspaceFolderValue !== 'undefined') {
+    await config.update(key, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+  }
+  if (typeof inspected.workspaceValue !== 'undefined') {
+    await config.update(key, undefined, vscode.ConfigurationTarget.Workspace);
+  }
+  if (typeof inspected.globalValue !== 'undefined') {
+    await config.update(key, undefined, vscode.ConfigurationTarget.Global);
+  }
+}

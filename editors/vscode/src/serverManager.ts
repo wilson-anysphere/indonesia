@@ -820,7 +820,8 @@ async function extractFromTar(opts: ExtractBinaryOptions): Promise<void> {
     } catch (err) {
       const code = (err as { code?: unknown }).code;
       if (code === 'ENOENT') {
-        const settingKey = path.basename(opts.binaryName).startsWith('nova-dap') ? 'nova.dap.path' : 'nova.server.path';
+        const settingKey =
+          path.basename(opts.binaryName).startsWith('nova-dap') ? 'nova.dap.path' : 'nova.server.path';
         throw new Error(
           `Failed to extract ${path.basename(opts.binaryName)}: the \`tar\` command was not found. Install \`tar\` (required to unpack .tar.xz releases) or set ${settingKey} to a local ${path.basename(opts.binaryName)} binary.`,
         );

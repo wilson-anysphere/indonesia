@@ -21,6 +21,9 @@
     "onCommand:nova.useLocalServerBinary",
     "onCommand:nova.showServerVersion",
     "onCommand:nova.showBinaryStatus",
+    "onCommand:nova.installOrUpdateDebugAdapter",
+    "onCommand:nova.useLocalDebugAdapterBinary",
+    "onCommand:nova.showDebugAdapterVersion",
     "onCommand:nova.organizeImports",
     "onCommand:nova.bugReport",
     "onCommand:nova.discoverTests",
@@ -47,6 +50,18 @@
       {
         "command": "nova.showBinaryStatus",
         "title": "Nova: Show Binary Status"
+      },
+      {
+        "command": "nova.installOrUpdateDebugAdapter",
+        "title": "Nova: Install/Update Debug Adapter"
+      },
+      {
+        "command": "nova.useLocalDebugAdapterBinary",
+        "title": "Nova: Use Local Debug Adapter Binary..."
+      },
+      {
+        "command": "nova.showDebugAdapterVersion",
+        "title": "Nova: Show Debug Adapter Version"
       },
       {
         "command": "nova.organizeImports",
@@ -175,6 +190,14 @@
           "default": 50,
           "minimum": 1,
           "description": "Base polling interval (ms) for nova/completion/more. Nova uses a short exponential backoff derived from this value."
+        },
+        "nova.debug.adapterPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Deprecated alias for nova.dap.path."
         },
         "nova.debug.host": {
           "type": "string",

@@ -52,6 +52,15 @@ npm run compile
 - **Nova: Show Binary Status** (`nova.showBinaryStatus`)
   - Prints resolved paths + versions for `nova-lsp` and `nova-dap` to the **Nova** output channel.
 
+- **Nova: Install/Update Debug Adapter** (`nova.installOrUpdateDebugAdapter`)
+  - Downloads and installs `nova-dap` into VS Code global storage.
+
+- **Nova: Use Local Debug Adapter Binary...** (`nova.useLocalDebugAdapterBinary`)
+  - Sets `nova.dap.path` to a local `nova-dap` binary.
+
+- **Nova: Show Debug Adapter Version** (`nova.showDebugAdapterVersion`)
+  - Runs `nova-dap --version` using the configured debug adapter.
+
 - **Nova: Organize Imports** (`nova.organizeImports`)
   - Sends a custom LSP request: `nova/java/organizeImports` (the server applies edits via `workspace/applyEdit`).
   - The server also supports the standard LSP `source.organizeImports` code action; see
@@ -187,6 +196,7 @@ Changing these settings requires restarting the language server; the extension p
 ### Debugging
 
 - `nova.dap.path` (string | null): override the `nova-dap` binary path. Supports `~` and `${workspaceFolder}`; relative paths are resolved against the first workspace folder. If unset, Nova will look on `$PATH` and then fall back to managed downloads (controlled by `nova.download.mode`).
+- `nova.debug.adapterPath` (string | null): deprecated alias for `nova.dap.path`.
 - `nova.debug.host` (string): default JDWP host for Nova debug sessions (default: `127.0.0.1`).
 - `nova.debug.port` (number): default JDWP port for Nova debug sessions (default: `5005`).
 - `nova.debug.legacyAdapter` (boolean): run `nova-dap --legacy` (default: false).
