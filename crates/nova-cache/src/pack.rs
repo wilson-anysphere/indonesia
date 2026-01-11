@@ -499,6 +499,7 @@ fn install_component_dir(src_dir: &Path, dest_dir: &Path) -> Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(dest_dir)?;
+    clear_dir_except_lock(dest_dir)?;
 
     let mut files = Vec::new();
     for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
@@ -529,6 +530,7 @@ fn install_ast_dir(src_dir: &Path, dest_dir: &Path) -> Result<()> {
         return Ok(());
     }
     std::fs::create_dir_all(dest_dir)?;
+    clear_dir_except_lock(dest_dir)?;
 
     let mut files = Vec::new();
     for entry in walkdir::WalkDir::new(src_dir).follow_links(false) {
@@ -571,6 +573,26 @@ fn replace_file_atomically(src_file: &Path, dest_file: &Path) -> Result<()> {
     std::fs::rename(src_file, dest_file)?;
     if backup.exists() {
         let _ = std::fs::remove_file(&backup);
+    }
+    Ok(())
+}
+
+fn clear_dir_except_lock(dir: &Path) -> Result<()> {
+    let entries = std::fs::read_dir(dir)?;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == OsStr::new(".lock") {
+            continue;
+        }
+
+        let path = entry.path();
+        let meta = std::fs::symlink_metadata(&path)?;
+        if meta.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
     }
     Ok(())
 }
