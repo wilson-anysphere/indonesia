@@ -6,6 +6,9 @@
 
 This guide is for **coding agents developing Nova** (not end-users of Nova). When hundreds of agents work on the codebase simultaneously on a shared machine, we need guardrails to prevent memory exhaustion while letting agents work as fast as possible.
 
+For Nova’s test tiers, fixture/snapshot workflows, and CI parity commands, see:
+[`docs/14-testing-infrastructure.md`](14-testing-infrastructure.md).
+
 **Target Environment**: Headless Ubuntu Linux x64 (EC2 or similar), no GPU required
 
 Example specs: 192 vCPU, 1.5TB RAM, 110TB NVMe
