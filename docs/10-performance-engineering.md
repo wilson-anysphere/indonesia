@@ -645,6 +645,12 @@ pub fn diagnose_performance(db: &dyn Database) -> PerformanceReport {
 
 ## Benchmarking
 
+For the **operational** performance regression guard (what CI runs, thresholds, how to compare runs),
+see:
+
+- [`perf/README.md`](../perf/README.md)
+- [`14-testing-infrastructure.md`](14-testing-infrastructure.md) (performance regression tests section)
+
 ```rust
 /// Standard benchmarks for Nova
 #[cfg(test)]
