@@ -2558,11 +2558,11 @@ pub struct ResolvedMethod {
     /// For varargs methods invoked in variable-arity form, this list is expanded so it
     /// matches the call-site arity.
     pub params: Vec<Type>,
-    /// Parameter types as they appear in the declared signature.
+    /// Parameter types as they appear in the declared signature, when they differ from `params`.
     ///
-    /// For varargs methods this preserves the trailing array type so pretty-printers can render
-    /// `T...` rather than showing an expanded argument pattern.
-    pub signature_params: Vec<Type>,
+    /// This is primarily used for variable-arity varargs invocations: `params` is expanded to match
+    /// the call-site arity, but pretty-printers generally want to show the declared `T...` parameter.
+    pub signature_params: Option<Vec<Type>>,
     pub return_type: Type,
     pub is_varargs: bool,
     pub is_static: bool,
@@ -3112,10 +3112,16 @@ fn try_method_invocation(
         .zip(inferred_type_args.iter().cloned())
         .collect();
 
-    let signature_params: Vec<Type> = base_params
-        .iter()
-        .map(|t| substitute(t, &method_subst))
-        .collect();
+    let signature_params = if method.is_varargs && used_varargs {
+        Some(
+            base_params
+                .iter()
+                .map(|t| substitute(t, &method_subst))
+                .collect(),
+        )
+    } else {
+        None
+    };
 
     // Validate inferred/explicit type arguments against the declared bounds.
     let object = Type::class(env.well_known().object, vec![]);

@@ -215,7 +215,8 @@ fn fmt_resolved_method(
         f.write_char(' ')?;
         f.write_str(&method.name)?;
     }
-    fmt_param_list(env, &method.signature_params, method.is_varargs, f)
+    let params = method.signature_params.as_deref().unwrap_or(&method.params);
+    fmt_param_list(env, params, method.is_varargs, f)
 }
 
 fn fmt_type_param_list(

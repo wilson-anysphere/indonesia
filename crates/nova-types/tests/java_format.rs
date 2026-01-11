@@ -133,7 +133,7 @@ fn formats_varargs_and_generic_methods() {
         owner: test_owner,
         name: "max".to_string(),
         params: vec![Type::class(string, vec![]), Type::class(string, vec![])],
-        signature_params: vec![Type::class(string, vec![]), Type::class(string, vec![])],
+        signature_params: None,
         return_type: Type::class(string, vec![]),
         is_varargs: false,
         is_static: true,
@@ -192,6 +192,10 @@ fn resolved_method_collapses_varargs_patterns_for_display() {
         "expected variable-arity varargs invocation"
     );
     assert_eq!(resolved.params.len(), 2);
+    assert_eq!(
+        resolved.signature_params.as_deref(),
+        Some(&[Type::Array(Box::new(Type::class(string, vec![])))][..])
+    );
 
     assert_eq!(
         format_resolved_method(&env, &resolved),
