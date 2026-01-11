@@ -892,6 +892,8 @@ impl Debugger {
         thread: ThreadId,
         _location: Location,
     ) -> Result<BreakpointDisposition> {
+        // Pull any config we need out of `breakpoint_metadata` up front so we don't hold a mutable
+        // borrow across `await` points.
         let (hit_count, hit_condition, condition, log_message) = {
             let Some(meta) = self.breakpoint_metadata.get_mut(&request_id) else {
                 // Unknown breakpoint request. Prefer stopping over auto-resuming to avoid silently

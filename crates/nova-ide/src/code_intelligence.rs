@@ -26,7 +26,6 @@ use crate::framework_cache;
 use crate::lombok_intel;
 use crate::micronaut_intel;
 use crate::spring_di;
-use crate::text::{offset_to_position, position_to_offset, span_to_lsp_range};
 
 #[cfg(feature = "ai")]
 use nova_ai::{maybe_rank_completions, BaselineCompletionRanker};
