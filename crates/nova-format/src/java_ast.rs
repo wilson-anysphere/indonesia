@@ -787,6 +787,10 @@ fn needs_space_between(last: Option<&SigToken>, next_kind: SyntaxKind, next_text
         return false;
     };
 
+    if needs_space_to_avoid_token_merge(last, next_kind) {
+        return true;
+    }
+
     if matches!(next_text, ")" | "]" | "}" | ";" | "," | "." | "::") {
         return false;
     }
@@ -828,6 +832,77 @@ fn is_control_keyword(text: &str) -> bool {
     matches!(
         text,
         "if" | "for" | "while" | "switch" | "catch" | "synchronized"
+    )
+}
+
+fn needs_space_to_avoid_token_merge(last: &SigToken, next_kind: SyntaxKind) -> bool {
+    let SigToken::Token { kind: last_kind, .. } = last else {
+        return false;
+    };
+
+    if is_numeric_literal_kind(*last_kind) && next_kind == SyntaxKind::Dot {
+        return true;
+    }
+    if *last_kind == SyntaxKind::Dot && is_numeric_literal_kind(next_kind) {
+        return true;
+    }
+
+    match (*last_kind, next_kind) {
+        // Keep `:` tokens separated so we don't accidentally create a `::` method reference token
+        // when the input contains `: :`.
+        (SyntaxKind::Colon, SyntaxKind::Colon) => true,
+
+        // Prevent sequences of dot tokens (e.g. `. . .`) from collapsing into the `...` ellipsis
+        // token on the next parse.
+        (SyntaxKind::Dot, SyntaxKind::Dot) => true,
+
+        // Avoid producing comment tokens like `//` or `/*` from separate `/` + `/` / `*` tokens.
+        (SyntaxKind::Slash, SyntaxKind::Slash | SyntaxKind::Star) => true,
+
+        // Avoid turning `- >` into the `->` arrow token.
+        (SyntaxKind::Minus, SyntaxKind::Greater) => true,
+
+        // Avoid merging standalone operators into their combined forms when the input separated
+        // them with whitespace (e.g. `+ +` -> `++`).
+        (SyntaxKind::Plus, SyntaxKind::Plus) => true,
+        (SyntaxKind::Minus, SyntaxKind::Minus) => true,
+        (SyntaxKind::Amp, SyntaxKind::Amp) => true,
+        (SyntaxKind::Pipe, SyntaxKind::Pipe) => true,
+        (SyntaxKind::Eq, SyntaxKind::Eq) => true,
+        (SyntaxKind::Bang, SyntaxKind::Eq) => true,
+        (SyntaxKind::Less, SyntaxKind::Less) => true,
+        (SyntaxKind::Greater, SyntaxKind::Greater) => true,
+
+        // Avoid forming assignment operators like `+=` / `>>=` from separated tokens.
+        (
+            SyntaxKind::Plus
+            | SyntaxKind::Minus
+            | SyntaxKind::Star
+            | SyntaxKind::Slash
+            | SyntaxKind::Percent
+            | SyntaxKind::Amp
+            | SyntaxKind::Pipe
+            | SyntaxKind::Caret
+            | SyntaxKind::Less
+            | SyntaxKind::Greater
+            | SyntaxKind::LeftShift
+            | SyntaxKind::RightShift
+            | SyntaxKind::UnsignedRightShift,
+            SyntaxKind::Eq,
+        ) => true,
+
+        _ => false,
+    }
+}
+
+fn is_numeric_literal_kind(kind: SyntaxKind) -> bool {
+    matches!(
+        kind,
+        SyntaxKind::Number
+            | SyntaxKind::IntLiteral
+            | SyntaxKind::LongLiteral
+            | SyntaxKind::FloatLiteral
+            | SyntaxKind::DoubleLiteral
     )
 }
 

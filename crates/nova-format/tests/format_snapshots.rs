@@ -187,6 +187,64 @@ class Foo {
 }
 
 #[test]
+fn ast_formatting_avoids_punctuation_token_merges() {
+    let input = "class Foo{void m(){int a=1 / / 2;int b=1 / * 2;int c=1: :2;int d=1- >2;boolean e=1> >2;boolean f=1> =2;boolean g=1= =2;boolean h=1! =2;}}\n";
+    let parse = parse_java(input);
+    let formatted = format_java_ast(&parse, input, &FormatConfig::default());
+
+    assert!(
+        !formatted.contains("//"),
+        "formatter should not synthesize line comments: {formatted}"
+    );
+    assert!(
+        !formatted.contains("/*"),
+        "formatter should not synthesize block comments: {formatted}"
+    );
+    assert!(
+        !formatted.contains("::"),
+        "formatter should not synthesize method reference tokens: {formatted}"
+    );
+    assert!(
+        formatted.contains("1/ /2"),
+        "expected `/ /` tokens to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("1/ *2"),
+        "expected `/ *` tokens to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("1: :2"),
+        "expected `: :` tokens to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("1- >2"),
+        "expected `- >` tokens to remain separated: {formatted}"
+    );
+    assert!(
+        formatted.contains("1> >2"),
+        "expected `> >` tokens to remain separated: {formatted}"
+    );
+
+    assert_snapshot!(
+        formatted,
+        @r###"
+class Foo {
+    void m() {
+        int a=1/ /2;
+        int b=1/ *2;
+        int c=1: :2;
+        int d=1- >2;
+        boolean e=1> >2;
+        boolean f=1> =2;
+        boolean g=1= =2;
+        boolean h=1! =2;
+    }
+}
+"###
+    );
+}
+
+#[test]
 fn ast_formatting_is_idempotent() {
     fn assert_idempotent(input: &str) {
         let parse = parse_java(input);
@@ -217,6 +275,12 @@ void m(){
 java.util.Collections.<String> emptyList();
 }
 }
+"#,
+    );
+
+    assert_idempotent(
+        r#"
+class Foo{void m(){int a=1 / / 2;int b=1 / * 2;int c=1: :2;int d=1- >2;boolean e=1> >2;boolean f=1> =2;boolean g=1= =2;boolean h=1! =2;}}
 "#,
     );
 }
