@@ -7,7 +7,6 @@ use anyhow::{Context, Result};
 use std::{
     collections::BTreeSet,
     fs,
-    io::BufRead,
     ops::ControlFlow,
     path::{Path, PathBuf},
 };
@@ -23,29 +22,40 @@ const BUILDFILES_QUERY_TEMPLATE: &str = "buildfiles(deps(TARGET))";
 const LOADFILES_QUERY_TEMPLATE: &str = "loadfiles(deps(TARGET))";
 const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v3";
 
-const COMPILE_INFO_EXPR_VERSION_SEED: &str = concat!(
-    "java_targets_query=",
-    JAVA_TARGETS_QUERY,
-    "\n",
-    "aquery_output=",
-    AQUERY_OUTPUT,
-    "\n",
-    "aquery_direct=",
-    AQUERY_DIRECT_TEMPLATE,
-    "\n",
-    "aquery_deps=",
-    AQUERY_DEPS_TEMPLATE,
-    "\n",
-    "query_buildfiles=",
-    BUILDFILES_QUERY_TEMPLATE,
-    "\n",
-    "query_loadfiles=",
-    LOADFILES_QUERY_TEMPLATE,
-    "\n",
-    "textproto_parser=",
-    TEXTPROTO_PARSER_VERSION,
-    "\n",
-);
+fn compile_info_expr_version_hex() -> String {
+    // Keep this in sync with the query expressions above; changes should invalidate cached compile
+    // info even if file digests happen to remain the same.
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"java_targets_query=");
+    hasher.update(JAVA_TARGETS_QUERY.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"aquery_output=");
+    hasher.update(AQUERY_OUTPUT.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"aquery_direct=");
+    hasher.update(AQUERY_DIRECT_TEMPLATE.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"aquery_deps=");
+    hasher.update(AQUERY_DEPS_TEMPLATE.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"query_buildfiles=");
+    hasher.update(BUILDFILES_QUERY_TEMPLATE.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"query_loadfiles=");
+    hasher.update(LOADFILES_QUERY_TEMPLATE.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.update(b"textproto_parser=");
+    hasher.update(TEXTPROTO_PARSER_VERSION.as_bytes());
+    hasher.update(b"\n");
+
+    hasher.finalize().to_hex().to_string()
+}
 
 /// Walk upwards from `start` to find the Bazel workspace root.
 ///
@@ -98,9 +108,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             runner,
             cache_path: None,
             cache: BazelCache::default(),
-            compile_info_expr_version_hex: blake3::hash(COMPILE_INFO_EXPR_VERSION_SEED.as_bytes())
-                .to_hex()
-                .to_string(),
+            compile_info_expr_version_hex: compile_info_expr_version_hex(),
         })
     }
 
@@ -396,4 +404,3 @@ fn workspace_path_from_label(label: &str) -> Option<PathBuf> {
         Some(PathBuf::from(rest))
     }
 }
-

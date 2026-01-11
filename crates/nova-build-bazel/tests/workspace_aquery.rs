@@ -237,3 +237,56 @@ action {
         .collect();
     assert_eq!(aquery_exprs, vec![direct_expr, deps_expr]);
 }
+
+#[test]
+fn target_compile_info_extracts_full_compile_info() {
+    let target = "//java/com/example:hello";
+    let direct_expr = format!(r#"mnemonic("Javac", {target})"#);
+    let direct_expr_for_closure = direct_expr.clone();
+
+    let output = format!(
+        r#"
+action {{
+  mnemonic: "Javac"
+  owner: "{target}"
+  arguments: "javac"
+  arguments: "-classpath"
+  arguments: "a.jar:b.jar"
+  arguments: "--module-path"
+  arguments: "mods"
+  arguments: "--release=21"
+  arguments: "--enable-preview"
+  arguments: "-d=out/dir"
+  arguments: "--source"
+  arguments: "17"
+  arguments: "--target"
+  arguments: "17"
+  arguments: "java/com/example/Hello.java"
+}}
+"#
+    );
+
+    let runner = TestRunner::new({
+        let output = output.clone();
+        move |expr| {
+            assert_eq!(expr, direct_expr_for_closure);
+            Box::new(Cursor::new(output.clone().into_bytes()))
+        }
+    });
+
+    let root = tempdir().unwrap();
+    let mut workspace = BazelWorkspace::new(root.path().to_path_buf(), runner).unwrap();
+    let info = workspace.target_compile_info(target).unwrap();
+
+    assert_eq!(
+        info.classpath,
+        vec!["a.jar".to_string(), "b.jar".to_string()]
+    );
+    assert_eq!(info.module_path, vec!["mods".to_string()]);
+    assert_eq!(info.release.as_deref(), Some("21"));
+    assert!(info.enable_preview);
+    assert_eq!(info.output_dir.as_deref(), Some("out/dir"));
+    assert_eq!(info.source.as_deref(), Some("17"));
+    assert_eq!(info.target.as_deref(), Some("17"));
+    assert_eq!(info.source_roots, vec!["java/com/example".to_string()]);
+}
