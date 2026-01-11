@@ -72,7 +72,8 @@ class Foo {
 
 #[test]
 fn formats_package_imports_and_class() {
-    let input = "package  foo.bar;\nimport java.util.List;import java.util.Map;\npublic class  Foo{}\n";
+    let input =
+        "package  foo.bar;\nimport java.util.List;import java.util.Map;\npublic class  Foo{}\n";
     let parse = parse_java(input);
     let formatted = format_java_ast(&parse, input, &FormatConfig::default());
 

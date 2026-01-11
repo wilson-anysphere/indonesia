@@ -34,11 +34,11 @@ pub use derived_cache::{
 };
 pub use error::CacheError;
 pub use fingerprint::{Fingerprint, ProjectSnapshot};
-pub use lock::CacheLock;
 pub use gc::{
     cache_root, enumerate_project_caches, enumerate_project_caches_from_config, gc_project_caches,
     gc_project_caches_from_config, CacheGcFailure, CacheGcPolicy, CacheGcReport, ProjectCacheInfo,
 };
+pub use lock::CacheLock;
 pub use metadata::{
     CacheMetadata, CacheMetadataArchive, CACHE_METADATA_BIN_FILENAME, CACHE_METADATA_JSON_FILENAME,
     CACHE_METADATA_SCHEMA_VERSION,

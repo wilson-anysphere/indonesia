@@ -169,13 +169,14 @@ impl QueryDiskCache {
                 return Ok(None);
             }
         };
-        let stored_fingerprint: Fingerprint = match bincode_options_limited().deserialize_from(&mut reader) {
-            Ok(v) => v,
-            Err(_) => {
-                let _ = std::fs::remove_file(&path);
-                return Ok(None);
-            }
-        };
+        let stored_fingerprint: Fingerprint =
+            match bincode_options_limited().deserialize_from(&mut reader) {
+                Ok(v) => v,
+                Err(_) => {
+                    let _ = std::fs::remove_file(&path);
+                    return Ok(None);
+                }
+            };
 
         if stored_fingerprint != key_fingerprint {
             let _ = std::fs::remove_file(&path);

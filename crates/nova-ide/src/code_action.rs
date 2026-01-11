@@ -1,10 +1,10 @@
 use lsp_types::{CodeAction, CodeActionKind, Command, Range, Uri};
+use nova_core::{LineIndex, Position as CorePosition};
 use nova_refactor::extract_method::{
     ExtractMethod, ExtractMethodIssue, InsertionStrategy, Visibility,
 };
 use nova_refactor::TextRange;
 use serde::{Deserialize, Serialize};
-use nova_core::{LineIndex, Position as CorePosition};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtractMethodCommandArgs {

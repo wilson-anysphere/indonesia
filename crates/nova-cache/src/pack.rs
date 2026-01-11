@@ -122,12 +122,16 @@ pub fn install_cache_package(
     let _project_lock = CacheLock::lock_exclusive(&cache_dir.root().join(".lock"))?;
     let _indexes_lock = CacheLock::lock_exclusive(&cache_dir.indexes_dir().join(".lock"))?;
     let _queries_lock = if full_install {
-        Some(CacheLock::lock_exclusive(&cache_dir.queries_dir().join(".lock"))?)
+        Some(CacheLock::lock_exclusive(
+            &cache_dir.queries_dir().join(".lock"),
+        )?)
     } else {
         None
     };
     let _ast_lock = if full_install {
-        Some(CacheLock::lock_exclusive(&cache_dir.ast_dir().join(".lock"))?)
+        Some(CacheLock::lock_exclusive(
+            &cache_dir.ast_dir().join(".lock"),
+        )?)
     } else {
         None
     };

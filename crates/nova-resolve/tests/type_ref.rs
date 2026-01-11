@@ -70,8 +70,14 @@ impl TypeIndex for TestIndex {
     }
 }
 
-fn setup(imports: &[&str]) -> (JdkIndex, TestIndex, nova_resolve::ScopeGraph, nova_resolve::ScopeId)
-{
+fn setup(
+    imports: &[&str],
+) -> (
+    JdkIndex,
+    TestIndex,
+    nova_resolve::ScopeGraph,
+    nova_resolve::ScopeId,
+) {
     let jdk = JdkIndex::new();
     let mut index = TestIndex::default();
     // The built-in JDK index used in tests does not include `java.util.Map`, but

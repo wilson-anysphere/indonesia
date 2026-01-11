@@ -1,5 +1,5 @@
-use std::fmt;
 use std::ffi::OsString;
+use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
 use nova_core::{file_uri_to_path, path_to_file_uri, AbsPathBuf};
@@ -30,7 +30,11 @@ impl VfsPath {
         let entry = entry.into();
         match normalize_archive_entry(&entry) {
             Some(entry) => Self::Archive(ArchivePath::new(ArchiveKind::Jar, archive, entry)),
-            None => Self::Uri(format_archive_uri_fallback(ArchiveKind::Jar, &archive, &entry)),
+            None => Self::Uri(format_archive_uri_fallback(
+                ArchiveKind::Jar,
+                &archive,
+                &entry,
+            )),
         }
     }
 
@@ -39,7 +43,11 @@ impl VfsPath {
         let entry = entry.into();
         match normalize_archive_entry(&entry) {
             Some(entry) => Self::Archive(ArchivePath::new(ArchiveKind::Jmod, archive, entry)),
-            None => Self::Uri(format_archive_uri_fallback(ArchiveKind::Jmod, &archive, &entry)),
+            None => Self::Uri(format_archive_uri_fallback(
+                ArchiveKind::Jmod,
+                &archive,
+                &entry,
+            )),
         }
     }
 

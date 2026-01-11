@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use nova_classpath::{ClasspathEntry, ClasspathIndex};
 use nova_types::{
-    is_subtype, resolve_method_call, CallKind, ChainTypeProvider, ClassKind, MethodCall, MethodResolution,
-    PrimitiveType, TyContext, Type, TypeEnv, TypeStore, TypeStoreLoader,
+    is_subtype, resolve_method_call, CallKind, ChainTypeProvider, ClassKind, MethodCall,
+    MethodResolution, PrimitiveType, TyContext, Type, TypeEnv, TypeStore, TypeStoreLoader,
 };
 
 use pretty_assertions::assert_eq;

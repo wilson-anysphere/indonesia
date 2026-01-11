@@ -156,13 +156,11 @@ impl CommandRunner for DefaultCommandRunner {
         let timed_out = Arc::new(AtomicBool::new(false));
         let timed_out_for_timeout = Arc::clone(&timed_out);
         let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
-        let timeout_handle = thread::spawn(move || {
-            match cancel_rx.recv_timeout(TIMEOUT) {
-                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    timed_out_for_timeout.store(true, Ordering::SeqCst);
-                    kill_process_tree_by_pid(pid);
-                }
+        let timeout_handle = thread::spawn(move || match cancel_rx.recv_timeout(TIMEOUT) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                timed_out_for_timeout.store(true, Ordering::SeqCst);
+                kill_process_tree_by_pid(pid);
             }
         });
 
@@ -209,7 +207,8 @@ impl CommandRunner for DefaultCommandRunner {
         let _ = timeout_handle.join();
         let _ = wait_handle.join();
 
-        let status_result = status_message.map_err(|_| anyhow!("failed to wait for `{program}`"))?;
+        let status_result =
+            status_message.map_err(|_| anyhow!("failed to wait for `{program}`"))?;
 
         if timed_out.load(Ordering::SeqCst) && !broke_early && callback_err.is_none() {
             return Err(anyhow!(

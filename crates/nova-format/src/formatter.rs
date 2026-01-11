@@ -1541,7 +1541,9 @@ fn write_token(
                 state.line_len += punct.len();
                 state.bracket_depth = state.bracket_depth.saturating_sub(1);
                 state.last_sig = Some(SigToken::Punct(Punct::RBracket));
-                if state.pending_new && !matches!(next, Some(Token::Punct(Punct::LBracket | Punct::LBrace))) {
+                if state.pending_new
+                    && !matches!(next, Some(Token::Punct(Punct::LBracket | Punct::LBrace)))
+                {
                     state.pending_new = false;
                 }
             }
@@ -1818,7 +1820,11 @@ fn is_annotation_args(tokens: &[Token], l_paren_idx: usize) -> bool {
 }
 
 fn is_inline_brace_open(state: &FormatState<'_>, prev: Option<SigToken>) -> bool {
-    if state.paren_stack.last().is_some_and(|ctx| ctx.annotation_args) {
+    if state
+        .paren_stack
+        .last()
+        .is_some_and(|ctx| ctx.annotation_args)
+    {
         return true;
     }
 

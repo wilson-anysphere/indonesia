@@ -1,5 +1,7 @@
 use crate::error::CacheError;
-use crate::metadata::{CacheMetadataArchive, CACHE_METADATA_BIN_FILENAME, CACHE_METADATA_JSON_FILENAME};
+use crate::metadata::{
+    CacheMetadataArchive, CACHE_METADATA_BIN_FILENAME, CACHE_METADATA_JSON_FILENAME,
+};
 use crate::util::now_millis;
 use crate::CacheConfig;
 use serde::Deserialize;

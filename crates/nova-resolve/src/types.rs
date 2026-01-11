@@ -26,4 +26,3 @@ pub struct TypeDef {
     pub initializers: Vec<InitializerId>,
     pub nested_types: HashMap<Name, ItemId>,
 }
-

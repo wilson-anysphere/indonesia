@@ -36,7 +36,11 @@ impl<'env> TyContext<'env> {
         self.locals.clear();
     }
 
-    fn add_capture_type_param(&mut self, upper_bounds: Vec<Type>, lower_bound: Option<Type>) -> TypeVarId {
+    fn add_capture_type_param(
+        &mut self,
+        upper_bounds: Vec<Type>,
+        lower_bound: Option<Type>,
+    ) -> TypeVarId {
         let idx: u32 = self
             .locals
             .len()
@@ -104,8 +108,7 @@ impl<'env> TyContext<'env> {
                         .get(idx)
                         .cloned()
                         .unwrap_or_else(|| object.clone());
-                    let cap =
-                        self.add_capture_type_param(vec![upper], Some((**lower).clone()));
+                    let cap = self.add_capture_type_param(vec![upper], Some((**lower).clone()));
                     new_args.push(Type::TypeVar(cap));
                 }
                 other => new_args.push(other.clone()),

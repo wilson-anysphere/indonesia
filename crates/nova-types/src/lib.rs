@@ -2638,7 +2638,11 @@ pub enum MethodResolution {
     Ambiguous(MethodAmbiguity),
 }
 
-fn resolve_method_call_impl(env: &dyn TypeEnv, call: &MethodCall<'_>, receiver: Type) -> MethodResolution {
+fn resolve_method_call_impl(
+    env: &dyn TypeEnv,
+    call: &MethodCall<'_>,
+    receiver: Type,
+) -> MethodResolution {
     let candidates = collect_method_candidates(env, &receiver, call.name);
 
     if candidates.is_empty() {
@@ -2660,11 +2664,11 @@ fn resolve_method_call_impl(env: &dyn TypeEnv, call: &MethodCall<'_>, receiver: 
                 .map(|t| substitute(t, &cand.class_subst))
                 .collect::<Vec<_>>();
             let base_return = substitute(&cand.method.return_type, &cand.class_subst);
-        MethodCandidateDiagnostics {
-            candidate: MethodCandidate {
-                owner: cand.owner,
-                name: cand.method.name.clone(),
-                params: base_params,
+            MethodCandidateDiagnostics {
+                candidate: MethodCandidate {
+                    owner: cand.owner,
+                    name: cand.method.name.clone(),
+                    params: base_params,
                     return_type: base_return,
                     is_static: cand.method.is_static,
                     is_varargs: cand.method.is_varargs,

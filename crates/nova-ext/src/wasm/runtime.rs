@@ -293,7 +293,10 @@ impl WasmPlugin {
         &self.config
     }
 
-    fn config_for_ctx<DB: ?Sized + Send + Sync>(&self, ctx: &ExtensionContext<DB>) -> WasmPluginConfig {
+    fn config_for_ctx<DB: ?Sized + Send + Sync>(
+        &self,
+        ctx: &ExtensionContext<DB>,
+    ) -> WasmPluginConfig {
         let mut config = self.config.clone();
         if let Some(timeout_ms) = ctx.config.extensions.wasm_timeout_ms {
             config.timeout = Duration::from_millis(timeout_ms);

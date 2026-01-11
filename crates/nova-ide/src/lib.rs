@@ -16,8 +16,8 @@ pub mod framework_cache;
 pub mod semantics;
 
 pub mod code_intelligence;
-mod file_navigation;
 mod completion;
+mod file_navigation;
 mod jpa_intel;
 mod micronaut_intel;
 mod project;

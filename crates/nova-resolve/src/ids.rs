@@ -26,4 +26,3 @@ impl ParamId {
         Self { owner, index }
     }
 }
-

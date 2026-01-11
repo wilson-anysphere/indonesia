@@ -551,5 +551,8 @@ fn needs_space_between(last: Option<&LastToken>, next_kind: SyntaxKind, next_tex
 }
 
 fn is_control_keyword(text: &str) -> bool {
-    matches!(text, "if" | "for" | "while" | "switch" | "catch" | "synchronized")
+    matches!(
+        text,
+        "if" | "for" | "while" | "switch" | "catch" | "synchronized"
+    )
 }

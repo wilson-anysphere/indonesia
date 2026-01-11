@@ -146,22 +146,20 @@ fn parse_location_prefix(line: &str) -> Option<(&str, usize, usize, &str)> {
         n1_start -= 1;
     }
 
-    let (file, line_no, col_no, rest_start) = if n1_start < n1_end
-        && n1_start > 0
-        && bytes[n1_start - 1] == b':'
-    {
-        // file:line:col:
-        let n1: usize = line[n1_start..n1_end].parse().ok()?;
-        let sep1 = n1_start - 1;
-        let file = &line[..sep1];
-        let rest_start = loc_end_colon + 1;
-        (file, n1, n2, rest_start)
-    } else {
-        // file:line:
-        let file = &line[..sep2];
-        let rest_start = loc_end_colon + 1;
-        (file, n2, 0usize, rest_start)
-    };
+    let (file, line_no, col_no, rest_start) =
+        if n1_start < n1_end && n1_start > 0 && bytes[n1_start - 1] == b':' {
+            // file:line:col:
+            let n1: usize = line[n1_start..n1_end].parse().ok()?;
+            let sep1 = n1_start - 1;
+            let file = &line[..sep1];
+            let rest_start = loc_end_colon + 1;
+            (file, n1, n2, rest_start)
+        } else {
+            // file:line:
+            let file = &line[..sep2];
+            let rest_start = loc_end_colon + 1;
+            (file, n2, 0usize, rest_start)
+        };
 
     let rest = line.get(rest_start..)?.trim_start();
     Some((file, line_no, col_no.max(1), rest))

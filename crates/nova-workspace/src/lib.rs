@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use nova_cache::{CacheConfig, CacheDir, CacheMetadata, Fingerprint, ProjectSnapshot};
 use nova_index::{
     load_sharded_index_archives_from_fast_snapshot, save_sharded_indexes, shard_id_for_path,
-    CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation, SymbolSearchIndex,
-    DEFAULT_SHARD_COUNT,
+    CandidateStrategy, ProjectIndexes, SearchStats, SearchSymbol, SymbolLocation,
+    SymbolSearchIndex, DEFAULT_SHARD_COUNT,
 };
 use nova_project::ProjectError;
 use nova_syntax::SyntaxNode;
@@ -212,19 +212,22 @@ impl Workspace {
 
         let snapshot_start = Instant::now();
         let stamp_snapshot = ProjectSnapshot::new_fast(&self.root, files).with_context(|| {
-                format!(
-                    "failed to build file stamp snapshot for {}",
-                    self.root.display()
-                )
-            })?;
+            format!(
+                "failed to build file stamp snapshot for {}",
+                self.root.display()
+            )
+        })?;
         let snapshot_ms = snapshot_start.elapsed().as_millis();
 
         // Load persisted sharded indexes based on the stamp snapshot. This avoids hashing
         // full file contents before deciding whether the cache is reusable.
         let shard_count = DEFAULT_SHARD_COUNT;
-        let loaded =
-            load_sharded_index_archives_from_fast_snapshot(&cache_dir, &stamp_snapshot, shard_count)
-                .context("failed to load cached indexes")?;
+        let loaded = load_sharded_index_archives_from_fast_snapshot(
+            &cache_dir,
+            &stamp_snapshot,
+            shard_count,
+        )
+        .context("failed to load cached indexes")?;
 
         let (mut shards, mut invalidated_files) = match loaded {
             Some(loaded) => {

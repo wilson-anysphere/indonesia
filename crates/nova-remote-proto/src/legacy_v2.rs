@@ -48,10 +48,7 @@ pub enum RpcMessage {
         files: Vec<FileText>,
     },
     /// Update a single file in the shard and rebuild affected indexes (MVP: rebuild shard).
-    UpdateFile {
-        revision: Revision,
-        file: FileText,
-    },
+    UpdateFile { revision: Revision, file: FileText },
 
     /// Query worker internal counters (used by tests + monitoring).
     GetWorkerStats,

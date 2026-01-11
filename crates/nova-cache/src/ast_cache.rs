@@ -100,7 +100,10 @@ impl AstArtifactCache {
     pub fn new(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref().to_path_buf();
         let metadata_path = root.join("metadata.bin");
-        Self { root, metadata_path }
+        Self {
+            root,
+            metadata_path,
+        }
     }
 
     pub fn load(

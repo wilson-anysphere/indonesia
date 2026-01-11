@@ -3,7 +3,10 @@ use std::sync::Arc;
 use lsp_types::{CompletionParams, TextDocumentIdentifier, TextDocumentPositionParams};
 use nova_config::NovaConfig;
 use nova_db::InMemoryFileStore;
-use nova_ext::{CompletionItem, CompletionParams as ExtCompletionParams, CompletionProvider, ExtensionContext, ProjectId};
+use nova_ext::{
+    CompletionItem, CompletionParams as ExtCompletionParams, CompletionProvider, ExtensionContext,
+    ProjectId,
+};
 use nova_lsp::NovaLspIdeState;
 use nova_scheduler::CancellationToken;
 use tempfile::TempDir;

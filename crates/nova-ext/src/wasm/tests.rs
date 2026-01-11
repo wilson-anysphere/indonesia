@@ -39,7 +39,12 @@ fn ctx(db: Arc<TestDb>) -> ExtensionContext<TestDb> {
 }
 
 fn ctx_with_config(db: Arc<TestDb>, config: NovaConfig) -> ExtensionContext<TestDb> {
-    ExtensionContext::new(db, Arc::new(config), ProjectId::new(0), CancellationToken::new())
+    ExtensionContext::new(
+        db,
+        Arc::new(config),
+        ProjectId::new(0),
+        CancellationToken::new(),
+    )
 }
 
 const WAT_DIAG_AND_COMPLETIONS: &str = r#"

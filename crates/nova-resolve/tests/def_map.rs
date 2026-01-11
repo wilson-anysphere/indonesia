@@ -48,13 +48,17 @@ class Outer {
         .expect("Outer");
     assert_eq!(def_map.binary_name(outer).unwrap().as_str(), "p.Outer");
 
-    let inner = def_map.lookup_nested(outer, &Name::from("Inner")).expect("Inner");
+    let inner = def_map
+        .lookup_nested(outer, &Name::from("Inner"))
+        .expect("Inner");
     assert_eq!(
         def_map.binary_name(inner).unwrap().as_str(),
         "p.Outer$Inner"
     );
 
-    let deep = def_map.lookup_nested(inner, &Name::from("Deep")).expect("Deep");
+    let deep = def_map
+        .lookup_nested(inner, &Name::from("Deep"))
+        .expect("Deep");
     assert_eq!(
         def_map.binary_name(deep).unwrap().as_str(),
         "p.Outer$Inner$Deep"

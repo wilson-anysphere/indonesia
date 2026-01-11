@@ -219,7 +219,11 @@ fn read_shard_cache_bytes(path: &Path, shard_id: ShardId) -> Option<Vec<u8>> {
 
     if meta.file_type().is_symlink() {
         let _ = std::fs::remove_file(path);
-        emit_cache_diagnostic(shard_id, path, format_args!("shard cache path is a symlink"));
+        emit_cache_diagnostic(
+            shard_id,
+            path,
+            format_args!("shard cache path is a symlink"),
+        );
         return None;
     }
 

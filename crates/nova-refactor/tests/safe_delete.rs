@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use nova_index::Index;
 use nova_refactor::{
-    FileId, safe_delete, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, UsageKind,
+    safe_delete, FileId, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, UsageKind,
     WorkspaceEdit,
 };
 use pretty_assertions::assert_eq;

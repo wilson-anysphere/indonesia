@@ -4,7 +4,9 @@ use crate::indexes::{
     SymbolIndex, SymbolLocation,
 };
 use crate::segments::{build_file_to_newest_segment_map, build_segment_files, segment_file_name};
-use nova_cache::{CacheDir, CacheLock, CacheMetadata, CacheMetadataArchive, Fingerprint, ProjectSnapshot};
+use nova_cache::{
+    CacheDir, CacheLock, CacheMetadata, CacheMetadataArchive, Fingerprint, ProjectSnapshot,
+};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -1457,7 +1459,9 @@ where
 }
 
 fn acquire_index_write_lock(indexes_dir: &Path) -> Result<CacheLock, IndexPersistenceError> {
-    Ok(CacheLock::lock_exclusive(&indexes_dir.join(INDEX_WRITE_LOCK_NAME))?)
+    Ok(CacheLock::lock_exclusive(
+        &indexes_dir.join(INDEX_WRITE_LOCK_NAME),
+    )?)
 }
 
 fn next_generation(previous_generation: u64) -> u64 {

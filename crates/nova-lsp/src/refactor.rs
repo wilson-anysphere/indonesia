@@ -6,11 +6,12 @@ use nova_core::{LineIndex, Position as CorePosition};
 use nova_index::Index;
 use nova_index::SymbolId;
 use nova_refactor::{
-    change_signature as refactor_change_signature, convert_to_record, extract_variable, inline_variable,
-    safe_delete, workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError, ConvertToRecordOptions,
-    ExtractVariableParams, FileId, InMemoryJavaDatabase, InlineVariableParams, JavaSymbolKind,
-    SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget, SemanticRefactorError, TextDatabase,
-    WorkspaceEdit as RefactorWorkspaceEdit, WorkspaceTextRange,
+    change_signature as refactor_change_signature, convert_to_record, extract_variable,
+    inline_variable, safe_delete, workspace_edit_to_lsp, ChangeSignature, ConvertToRecordError,
+    ConvertToRecordOptions, ExtractVariableParams, FileId, InMemoryJavaDatabase,
+    InlineVariableParams, JavaSymbolKind, SafeDeleteMode, SafeDeleteOutcome, SafeDeleteTarget,
+    SemanticRefactorError, TextDatabase, WorkspaceEdit as RefactorWorkspaceEdit,
+    WorkspaceTextRange,
 };
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -192,7 +193,11 @@ pub fn resolve_extract_member_code_action(
 /// The returned action is unresolved (it only carries `data`). Clients can
 /// resolve it through [`resolve_extract_variable_code_action`], supplying a
 /// variable name.
-pub fn extract_variable_code_actions(uri: &Uri, source: &str, selection: Range) -> Vec<CodeActionOrCommand> {
+pub fn extract_variable_code_actions(
+    uri: &Uri,
+    source: &str,
+    selection: Range,
+) -> Vec<CodeActionOrCommand> {
     if !is_java_uri(uri) {
         return Vec::new();
     }
@@ -290,7 +295,9 @@ pub fn resolve_extract_variable_code_action(
         ExtractVariableParams {
             file,
             expr_range,
-            name: name.or(stored_name).unwrap_or_else(|| "extracted".to_string()),
+            name: name
+                .or(stored_name)
+                .unwrap_or_else(|| "extracted".to_string()),
             use_var,
         },
     ) {
@@ -355,13 +362,7 @@ pub fn inline_variable_code_actions(
         (false, "Inline variable"),
         (true, "Inline variable (all usages)"),
     ] {
-        let edit = match inline_variable(
-            &db,
-            InlineVariableParams {
-                symbol,
-                inline_all,
-            },
-        ) {
+        let edit = match inline_variable(&db, InlineVariableParams { symbol, inline_all }) {
             Ok(edit) => edit,
             Err(SemanticRefactorError::InlineNotSupported) => continue,
             Err(err) => {
@@ -445,7 +446,8 @@ pub fn convert_to_record_code_action(
 
 fn lsp_position_to_offset(text: &str, position: Position) -> Option<usize> {
     let index = LineIndex::new(text);
-    let offset = index.offset_of_position(text, CorePosition::new(position.line, position.character))?;
+    let offset =
+        index.offset_of_position(text, CorePosition::new(position.line, position.character))?;
     Some(u32::from(offset) as usize)
 }
 
@@ -455,7 +457,8 @@ fn lsp_range_to_workspace_text_range(text: &str, range: Range) -> Option<Workspa
         text,
         CorePosition::new(range.start.line, range.start.character),
     )?;
-    let end = index.offset_of_position(text, CorePosition::new(range.end.line, range.end.character))?;
+    let end =
+        index.offset_of_position(text, CorePosition::new(range.end.line, range.end.character))?;
     let start = u32::from(start) as usize;
     let end = u32::from(end) as usize;
     if start > end {

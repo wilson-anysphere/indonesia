@@ -1,5 +1,5 @@
-use nova_testing::schema::TestDiscoverResponse;
 use nova_index::Index;
+use nova_testing::schema::TestDiscoverResponse;
 use pretty_assertions::assert_eq;
 use serde::Deserialize;
 use serde_json::json;
@@ -380,7 +380,10 @@ fn stdio_server_handles_change_signature_request() {
     assert!(updated.contains("sum(2, 1)"));
 
     // shutdown + exit
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 3, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_response_with_id(&mut stdout, 3);
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));
     drop(stdin);

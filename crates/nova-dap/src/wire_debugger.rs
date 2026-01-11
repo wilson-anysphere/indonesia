@@ -497,11 +497,10 @@ impl Debugger {
             .to_string();
 
         if !source_path.is_empty() {
-            let full_path = std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path));
-            self.source_paths.insert(
-                file_name.clone(),
-                full_path.to_string_lossy().to_string(),
-            );
+            let full_path =
+                std::fs::canonicalize(source_path).unwrap_or_else(|_| PathBuf::from(source_path));
+            self.source_paths
+                .insert(file_name.clone(), full_path.to_string_lossy().to_string());
         }
 
         let file_path = if source_path.is_empty() {
@@ -1016,7 +1015,8 @@ impl Debugger {
                     };
                     if candidate.is_file() {
                         let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
-                        self.resolved_source_paths.insert(class_id, candidate.clone());
+                        self.resolved_source_paths
+                            .insert(class_id, candidate.clone());
                         return Ok(Some(candidate));
                     }
                 }

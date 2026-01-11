@@ -5,8 +5,8 @@ use lsp_types::{
 };
 use nova_core::{LineIndex, Position, Range, TextEdit as CoreTextEdit};
 use nova_format::{
-    edits_for_formatting_ast, edits_for_on_type_formatting, edits_for_range_formatting, FormatConfig,
-    IndentStyle,
+    edits_for_formatting_ast, edits_for_on_type_formatting, edits_for_range_formatting,
+    FormatConfig, IndentStyle,
 };
 use nova_syntax::{parse, parse_java};
 

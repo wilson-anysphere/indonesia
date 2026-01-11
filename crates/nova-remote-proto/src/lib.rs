@@ -178,7 +178,11 @@ mod bounded_de {
         D: Deserializer<'de>,
         T: Deserialize<'de>,
     {
-        vec_with_limit(deserializer, MAX_SEARCH_RESULTS_PER_MESSAGE, "search results")
+        vec_with_limit(
+            deserializer,
+            MAX_SEARCH_RESULTS_PER_MESSAGE,
+            "search results",
+        )
     }
 
     pub fn symbols_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
@@ -318,7 +322,9 @@ pub mod transport {
         let len = u32::from_le_bytes(bytes[0..LEN_PREFIX_BYTES].try_into().unwrap()) as usize;
         let max = max_frame_size();
         if len > max {
-            return Err(anyhow!("frame payload too large ({len} bytes > max_frame_bytes={max})"));
+            return Err(anyhow!(
+                "frame payload too large ({len} bytes > max_frame_bytes={max})"
+            ));
         }
 
         let expected_len = LEN_PREFIX_BYTES
@@ -393,13 +399,16 @@ pub mod transport {
         let len = u32::from_le_bytes(prefix) as usize;
         let max = max_frame_size();
         if len > max {
-            return Err(anyhow!("frame payload too large ({len} bytes > max_frame_bytes={max})"));
+            return Err(anyhow!(
+                "frame payload too large ({len} bytes > max_frame_bytes={max})"
+            ));
         }
 
         // Use fallible reservation so allocation failure surfaces as an error rather than
         // aborting the process.
         let mut buf = Vec::new();
-        buf.try_reserve_exact(len).context("allocate message buffer")?;
+        buf.try_reserve_exact(len)
+            .context("allocate message buffer")?;
         buf.resize(len, 0);
         stream
             .read_exact(&mut buf)

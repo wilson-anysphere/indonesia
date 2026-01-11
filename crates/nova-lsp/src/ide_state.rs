@@ -76,10 +76,17 @@ impl NovaLspIdeState {
         Some(self.ide_extensions.code_actions_lsp(cancel, file, span))
     }
 
-    pub fn inlay_hints(&self, cancel: CancellationToken, params: InlayHintParams) -> Option<Vec<lsp_types::InlayHint>> {
+    pub fn inlay_hints(
+        &self,
+        cancel: CancellationToken,
+        params: InlayHintParams,
+    ) -> Option<Vec<lsp_types::InlayHint>> {
         let uri = &params.text_document.uri;
         let file = self.file_id_for_uri(uri)?;
-        Some(self.ide_extensions.inlay_hints_lsp(cancel, file, params.range))
+        Some(
+            self.ide_extensions
+                .inlay_hints_lsp(cancel, file, params.range),
+        )
     }
 
     pub fn diagnostics(&self, cancel: CancellationToken, uri: &Uri) -> Vec<lsp_types::Diagnostic> {
@@ -106,7 +113,12 @@ fn diagnostic_to_lsp(text: &str, diag: Diagnostic) -> lsp_types::Diagnostic {
         range: diag
             .span
             .map(|span| crate::span_to_lsp_range(text, span.start, span.end))
-            .unwrap_or_else(|| lsp_types::Range::new(lsp_types::Position::new(0, 0), lsp_types::Position::new(0, 0))),
+            .unwrap_or_else(|| {
+                lsp_types::Range::new(
+                    lsp_types::Position::new(0, 0),
+                    lsp_types::Position::new(0, 0),
+                )
+            }),
         severity: Some(match diag.severity {
             Severity::Error => DiagnosticSeverity::ERROR,
             Severity::Warning => DiagnosticSeverity::WARNING,
@@ -131,7 +143,11 @@ impl DiagnosticProvider<DynDb> for FixmeDiagnosticProvider {
         "nova.fixme"
     }
 
-    fn provide_diagnostics(&self, ctx: nova_ext::ExtensionContext<DynDb>, params: DiagnosticParams) -> Vec<Diagnostic> {
+    fn provide_diagnostics(
+        &self,
+        ctx: nova_ext::ExtensionContext<DynDb>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
         if ctx.cancel.is_cancelled() {
             return Vec::new();
         }

@@ -180,10 +180,7 @@ impl JdkIndex {
     /// This is intended for decompilation / virtual documents. When this index
     /// is not backed by a real JDK symbol index (`symbols` is `None`) the method
     /// returns `Ok(None)`.
-    pub fn read_class_bytes(
-        &self,
-        internal_name: &str,
-    ) -> Result<Option<Vec<u8>>, JdkIndexError> {
+    pub fn read_class_bytes(&self, internal_name: &str) -> Result<Option<Vec<u8>>, JdkIndexError> {
         match &self.symbols {
             Some(symbols) => symbols.read_class_bytes(internal_name),
             None => Ok(None),

@@ -517,7 +517,8 @@ impl WorkerState {
                         .as_ref()
                         .map(|index| index.search(&query, limit))
                         .unwrap_or_default();
-                    transport::write_message(stream, &RpcMessage::SearchSymbolsResult { items }).await?;
+                    transport::write_message(stream, &RpcMessage::SearchSymbolsResult { items })
+                        .await?;
                 }
                 RpcMessage::Shutdown => return Ok(()),
                 other => {

@@ -375,10 +375,7 @@ impl JdkSymbolIndex {
     ///
     /// This uses the same lazy module indexing strategy as [`Self::lookup_type`]
     /// and will not scan every `.jmod` on every call.
-    pub fn read_class_bytes(
-        &self,
-        internal_name: &str,
-    ) -> Result<Option<Vec<u8>>, JdkIndexError> {
+    pub fn read_class_bytes(&self, internal_name: &str) -> Result<Option<Vec<u8>>, JdkIndexError> {
         if is_non_type_classfile(internal_name) {
             return Ok(None);
         }

@@ -2,8 +2,8 @@ use crate::anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
 use crate::patch::{Position, Range as PositionRange};
 use crate::privacy::PrivacyMode;
 use crate::types::CodeSnippet;
-use nova_core::{LineIndex, TextSize};
 use nova_core::ProjectDatabase;
+use nova_core::{LineIndex, TextSize};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::PathBuf;
@@ -314,11 +314,9 @@ impl ContextRequest {
         privacy: PrivacyMode,
         include_doc_comments: bool,
     ) -> Self {
-        let selection = clamp_range_to_char_boundaries(source, clamp_range(selection, source.len()));
-        let focal_code = source
-            .get(selection.clone())
-            .unwrap_or("")
-            .to_string();
+        let selection =
+            clamp_range_to_char_boundaries(source, clamp_range(selection, source.len()));
+        let focal_code = source.get(selection.clone()).unwrap_or("").to_string();
 
         let extracted =
             analyze_java_context(source, selection.clone(), &focal_code, include_doc_comments);

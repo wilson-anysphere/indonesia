@@ -3,13 +3,14 @@ use std::fmt;
 
 use nova_classfile::{
     parse_class_signature, parse_field_descriptor, parse_field_signature, parse_method_descriptor,
-    parse_method_signature, BaseType, ClassTypeSignature, FieldType, ReturnType, TypeArgument, TypeParameter,
-    TypeSignature,
+    parse_method_signature, BaseType, ClassTypeSignature, FieldType, ReturnType, TypeArgument,
+    TypeParameter, TypeSignature,
 };
 
 use crate::{
-    ClassDef, ClassId, ClassKind, ConstructorDef, FieldDef, FieldStub, MethodDef, MethodStub, PrimitiveType,
-    Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore, TypeVarId, WellKnownTypes, WildcardBound,
+    ClassDef, ClassId, ClassKind, ConstructorDef, FieldDef, FieldStub, MethodDef, MethodStub,
+    PrimitiveType, Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore, TypeVarId, WellKnownTypes,
+    WildcardBound,
 };
 
 #[derive(Debug)]
@@ -86,8 +87,10 @@ impl<'a> TypeStoreLoader<'a> {
             ClassKind::Class,
             Some(object_ty.clone()),
         );
-        let cloneable = self.ensure_builtin_class("java.lang.Cloneable", ClassKind::Interface, None);
-        let serializable = self.ensure_builtin_class("java.io.Serializable", ClassKind::Interface, None);
+        let cloneable =
+            self.ensure_builtin_class("java.lang.Cloneable", ClassKind::Interface, None);
+        let serializable =
+            self.ensure_builtin_class("java.io.Serializable", ClassKind::Interface, None);
 
         self.store.well_known = Some(WellKnownTypes {
             object,
@@ -250,7 +253,11 @@ impl<'a> TypeStoreLoader<'a> {
         })
     }
 
-    fn build_field_def(&mut self, stub: &FieldStub, type_vars: &HashMap<String, TypeVarId>) -> Result<FieldDef, TypeLoadError> {
+    fn build_field_def(
+        &mut self,
+        stub: &FieldStub,
+        type_vars: &HashMap<String, TypeVarId>,
+    ) -> Result<FieldDef, TypeLoadError> {
         const ACC_STATIC: u16 = 0x0008;
         const ACC_FINAL: u16 = 0x0010;
 
@@ -288,7 +295,9 @@ impl<'a> TypeStoreLoader<'a> {
             let mut type_vars = class_type_vars.clone();
 
             for tp in &sig.type_parameters {
-                let id = self.store.add_type_param(tp.name.clone(), vec![object.clone()]);
+                let id = self
+                    .store
+                    .add_type_param(tp.name.clone(), vec![object.clone()]);
                 type_vars.insert(tp.name.clone(), id);
             }
             for tp in &sig.type_parameters {

@@ -351,4 +351,3 @@ fn binary_name_for_top_level(package: Option<&PackageName>, name: &Name) -> Type
         _ => TypeName::new(name.as_str()),
     }
 }
-

@@ -235,10 +235,10 @@ impl Args {
                     )
                 }
                 "--auth-token-file" => {
-                    auth_token_file = Some(PathBuf::from(
-                        iter.next()
-                            .ok_or_else(|| anyhow!("--auth-token-file requires value"))?,
-                    ))
+                    auth_token_file =
+                        Some(PathBuf::from(iter.next().ok_or_else(|| {
+                            anyhow!("--auth-token-file requires value")
+                        })?))
                 }
                 "--auth-token-env" => {
                     auth_token_env = Some(

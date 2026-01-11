@@ -466,7 +466,10 @@ impl SyntaxKind {
         // Keep this fast without having to enumerate every keyword.
         let raw = self as u16;
         (SyntaxKind::AbstractKw as u16..=SyntaxKind::WhileKw as u16).contains(&raw)
-            || matches!(self, SyntaxKind::TrueKw | SyntaxKind::FalseKw | SyntaxKind::NullKw)
+            || matches!(
+                self,
+                SyntaxKind::TrueKw | SyntaxKind::FalseKw | SyntaxKind::NullKw
+            )
             || self.is_contextual_keyword()
     }
 

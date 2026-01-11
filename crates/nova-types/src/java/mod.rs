@@ -5,6 +5,6 @@
 //! intended for diagnostics and language server features.
 
 pub mod env;
+pub mod format;
 pub mod overload;
 pub mod subtyping;
-pub mod format;

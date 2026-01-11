@@ -16,9 +16,11 @@ fn arb_ascii_string(max_len: usize) -> impl Strategy<Value = String> {
 }
 
 fn arb_file_text() -> impl Strategy<Value = FileText> {
-    (arb_ascii_string(MAX_PATH_LEN), arb_ascii_string(MAX_TEXT_LEN)).prop_map(|(path, text)| {
-        FileText { path, text }
-    })
+    (
+        arb_ascii_string(MAX_PATH_LEN),
+        arb_ascii_string(MAX_TEXT_LEN),
+    )
+        .prop_map(|(path, text)| FileText { path, text })
 }
 
 fn arb_symbol_rank_key() -> impl Strategy<Value = SymbolRankKey> {
@@ -63,12 +65,18 @@ fn arb_shard_index_info() -> impl Strategy<Value = ShardIndexInfo> {
 fn arb_rpc_message() -> impl Strategy<Value = RpcMessage> {
     prop_oneof![
         // Handshake
-        (any::<u32>(), prop::option::of(arb_ascii_string(MAX_AUTH_TOKEN_LEN)), any::<bool>())
-            .prop_map(|(shard_id, auth_token, has_cached_index)| RpcMessage::WorkerHello {
-                shard_id,
-                auth_token,
-                has_cached_index
-            }),
+        (
+            any::<u32>(),
+            prop::option::of(arb_ascii_string(MAX_AUTH_TOKEN_LEN)),
+            any::<bool>()
+        )
+            .prop_map(
+                |(shard_id, auth_token, has_cached_index)| RpcMessage::WorkerHello {
+                    shard_id,
+                    auth_token,
+                    has_cached_index
+                }
+            ),
         (any::<u32>(), any::<u32>(), any::<u64>(), any::<u32>()).prop_map(
             |(worker_id, shard_id, revision, protocol_version)| RpcMessage::RouterHello {
                 worker_id,
@@ -78,12 +86,16 @@ fn arb_rpc_message() -> impl Strategy<Value = RpcMessage> {
             }
         ),
         // Commands
-        (any::<u64>(), prop::collection::vec(arb_file_text(), 0..=MAX_FILES)).prop_map(
-            |(revision, files)| RpcMessage::LoadFiles { revision, files }
-        ),
-        (any::<u64>(), prop::collection::vec(arb_file_text(), 0..=MAX_FILES)).prop_map(
-            |(revision, files)| RpcMessage::IndexShard { revision, files }
-        ),
+        (
+            any::<u64>(),
+            prop::collection::vec(arb_file_text(), 0..=MAX_FILES)
+        )
+            .prop_map(|(revision, files)| RpcMessage::LoadFiles { revision, files }),
+        (
+            any::<u64>(),
+            prop::collection::vec(arb_file_text(), 0..=MAX_FILES)
+        )
+            .prop_map(|(revision, files)| RpcMessage::IndexShard { revision, files }),
         (any::<u64>(), arb_file_text())
             .prop_map(|(revision, file)| RpcMessage::UpdateFile { revision, file }),
         Just(RpcMessage::GetWorkerStats),

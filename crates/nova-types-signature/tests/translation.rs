@@ -50,8 +50,7 @@ fn interface_only_bounds_do_not_get_implicit_object() {
     let mut store = TypeStore::with_minimal_jdk();
     let serializable = store.class_id("java.io.Serializable").unwrap();
 
-    let sig =
-        parse_class_signature("<T::Ljava/io/Serializable;>Ljava/lang/Object;").unwrap();
+    let sig = parse_class_signature("<T::Ljava/io/Serializable;>Ljava/lang/Object;").unwrap();
 
     let (type_params, _super_class, _interfaces) =
         class_sig_from_classfile(&mut store, &TypeVarScope::new(), &sig);
@@ -80,10 +79,9 @@ fn wildcards_translate() {
         ty_from_field_sig(&store, &scope, &sig),
         Type::class(
             list,
-            vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-                number,
-                vec![]
-            ))))]
+            vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+                Type::class(number, vec![])
+            )))]
         )
     );
 

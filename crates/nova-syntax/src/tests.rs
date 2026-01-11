@@ -1500,7 +1500,11 @@ class Foo {
     let result = parse_java(input);
     assert_eq!(result.errors, Vec::new());
 
-    let patterns: Vec<_> = result.syntax().descendants().filter_map(RecordPattern::cast).collect();
+    let patterns: Vec<_> = result
+        .syntax()
+        .descendants()
+        .filter_map(RecordPattern::cast)
+        .collect();
     assert_eq!(patterns.len(), 3, "expected outer + nested record patterns");
 
     // `Point(int x, int y)`

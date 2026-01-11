@@ -1093,9 +1093,12 @@ async fn handle_new_connection(
     #[cfg(not(feature = "tls"))]
     let _ = &identity;
 
-    let payload = timeout(WORKER_HANDSHAKE_TIMEOUT, transport::read_payload(&mut stream))
-        .await
-        .context("timed out waiting for WorkerHello")??;
+    let payload = timeout(
+        WORKER_HANDSHAKE_TIMEOUT,
+        transport::read_payload(&mut stream),
+    )
+    .await
+    .context("timed out waiting for WorkerHello")??;
     let hello = match nova_remote_proto::decode_message(&payload) {
         Ok(message) => message,
         Err(v2_err) => {
@@ -1313,23 +1316,23 @@ async fn handle_new_connection(
         tx,
     };
 
-        // Finalize the reservation now that RouterHello is on the wire.
-        {
-            let mut guard = state.shards.lock().await;
-            let Some(shard) = guard.get_mut(&shard_id) else {
-                return Err(anyhow!(
-                    "BUG: shard {shard_id} disappeared during handshake"
-                ));
-            };
+    // Finalize the reservation now that RouterHello is on the wire.
+    {
+        let mut guard = state.shards.lock().await;
+        let Some(shard) = guard.get_mut(&shard_id) else {
+            return Err(anyhow!(
+                "BUG: shard {shard_id} disappeared during handshake"
+            ));
+        };
 
-            if shard.pending_worker != Some(worker_id) {
-                return Err(anyhow!(
-                    "BUG: shard {shard_id} pending worker mismatch during handshake"
-                ));
-            }
-            shard.pending_worker = None;
-            shard.worker = Some(handle.clone());
+        if shard.pending_worker != Some(worker_id) {
+            return Err(anyhow!(
+                "BUG: shard {shard_id} pending worker mismatch during handshake"
+            ));
         }
+        shard.pending_worker = None;
+        shard.worker = Some(handle.clone());
+    }
 
     info!(shard_id, worker_id, has_cached_index, "worker connected");
 
@@ -1455,7 +1458,12 @@ async fn worker_connection_loop(
             break;
         }
 
-        let read_res = match timeout(WORKER_RPC_READ_TIMEOUT, transport::read_message(&mut stream)).await {
+        let read_res = match timeout(
+            WORKER_RPC_READ_TIMEOUT,
+            transport::read_message(&mut stream),
+        )
+        .await
+        {
             Ok(res) => res.with_context(|| {
                 format!("read response from worker {worker_id} (shard {shard_id})")
             }),

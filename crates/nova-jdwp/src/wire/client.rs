@@ -1096,7 +1096,10 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
             break;
         };
 
-        if matches!(event, JdwpEvent::SingleStep { .. } | JdwpEvent::Breakpoint { .. }) {
+        if matches!(
+            event,
+            JdwpEvent::SingleStep { .. } | JdwpEvent::Breakpoint { .. }
+        ) {
             stop_events.push(event);
         } else {
             non_stop_events.push(event);

@@ -182,7 +182,11 @@ pub fn class_sig_from_classfile(
         .collect();
 
     let mut scope = enclosing_scope.child();
-    for (tp, id) in sig.type_parameters.iter().zip(type_param_ids.iter().copied()) {
+    for (tp, id) in sig
+        .type_parameters
+        .iter()
+        .zip(type_param_ids.iter().copied())
+    {
         scope.insert(tp.name.clone(), id);
     }
 
@@ -240,7 +244,11 @@ pub fn method_sig_from_classfile(
         .collect();
 
     let mut scope = class_scope.child();
-    for (tp, id) in sig.type_parameters.iter().zip(type_param_ids.iter().copied()) {
+    for (tp, id) in sig
+        .type_parameters
+        .iter()
+        .zip(type_param_ids.iter().copied())
+    {
         scope.insert(tp.name.clone(), id);
     }
 
@@ -327,7 +335,11 @@ fn upper_bounds_from_type_parameter(
     vec![default_object.clone()]
 }
 
-fn ty_from_class_type_sig(env: &dyn TypeEnv, scope: &TypeVarScope, sig: &ClassTypeSignature) -> Type {
+fn ty_from_class_type_sig(
+    env: &dyn TypeEnv,
+    scope: &TypeVarScope,
+    sig: &ClassTypeSignature,
+) -> Type {
     let binary_name = internal_to_binary_name(&sig.internal_name());
     let Some(def) = env.lookup_class(&binary_name) else {
         return Type::Named(binary_name);
@@ -344,7 +356,11 @@ fn ty_from_class_type_sig(env: &dyn TypeEnv, scope: &TypeVarScope, sig: &ClassTy
 
     let flattened_args: Vec<Type> = per_segment_args.iter().flatten().cloned().collect();
     let args = match env.class(def) {
-        Some(class_def) => reconcile_class_args(class_def.type_params.len(), &per_segment_args, flattened_args),
+        Some(class_def) => reconcile_class_args(
+            class_def.type_params.len(),
+            &per_segment_args,
+            flattened_args,
+        ),
         None => flattened_args,
     };
 
@@ -364,7 +380,11 @@ fn ty_from_type_argument(env: &dyn TypeEnv, scope: &TypeVarScope, arg: &TypeArgu
     }
 }
 
-fn reconcile_class_args(expected_len: usize, per_segment_args: &[Vec<Type>], flattened: Vec<Type>) -> Vec<Type> {
+fn reconcile_class_args(
+    expected_len: usize,
+    per_segment_args: &[Vec<Type>],
+    flattened: Vec<Type>,
+) -> Vec<Type> {
     if expected_len == 0 {
         return Vec::new();
     }
@@ -406,7 +426,10 @@ fn internal_to_binary_name(internal: &str) -> String {
 fn is_java_lang_object(env: &dyn TypeEnv, ty: &Type) -> bool {
     match ty {
         Type::Class(ClassType { def, args }) => {
-            args.is_empty() && env.lookup_class("java.lang.Object").is_some_and(|obj| obj == *def)
+            args.is_empty()
+                && env
+                    .lookup_class("java.lang.Object")
+                    .is_some_and(|obj| obj == *def)
         }
         Type::Named(name) => name == "java.lang.Object",
         _ => false,

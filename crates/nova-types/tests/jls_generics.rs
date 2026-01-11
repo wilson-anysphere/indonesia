@@ -1,6 +1,6 @@
 use nova_types::{
-    is_assignable, is_subtype, resolve_method_call, CallKind, ClassType, MethodCall, MethodResolution, TyContext,
-    Type, TypeEnv, TypeStore, WildcardBound,
+    is_assignable, is_subtype, resolve_method_call, CallKind, ClassType, MethodCall,
+    MethodResolution, TyContext, Type, TypeEnv, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -80,7 +80,10 @@ fn method_resolution_applies_capture_conversion_for_extends_wildcard() {
 
     // `List<? extends String>.get(int)` should return a capture variable `CAP#n` with upper bound `String`.
     let Type::TypeVar(cap) = resolved.return_type.clone() else {
-        panic!("expected capture type var return, got {:?}", resolved.return_type);
+        panic!(
+            "expected capture type var return, got {:?}",
+            resolved.return_type
+        );
     };
     let cap_data = ctx.type_param(cap).unwrap();
     assert_eq!(cap_data.upper_bounds, vec![Type::class(string, vec![])]);
@@ -122,7 +125,10 @@ fn method_resolution_applies_capture_conversion_for_super_wildcard() {
     };
 
     let Type::TypeVar(cap) = resolved.params[0].clone() else {
-        panic!("expected capture type var param, got {:?}", resolved.params[0]);
+        panic!(
+            "expected capture type var param, got {:?}",
+            resolved.params[0]
+        );
     };
     let cap_data = ctx_ok.type_param(cap).unwrap();
     assert_eq!(cap_data.lower_bound, Some(Type::class(string, vec![])));
@@ -213,10 +219,9 @@ fn method_resolution_is_deterministic_across_invocations() {
 
     let receiver = Type::class(
         list,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-            string,
-            vec![],
-        ))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::class(string, vec![]),
+        )))],
     );
 
     let call = MethodCall {
@@ -251,10 +256,9 @@ fn method_resolution_is_order_independent() {
     let call_string = MethodCall {
         receiver: Type::class(
             list,
-            vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-                string,
-                vec![],
-            ))))],
+            vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+                Type::class(string, vec![]),
+            )))],
         ),
         call_kind: CallKind::Instance,
         name: "get",
@@ -266,10 +270,9 @@ fn method_resolution_is_order_independent() {
     let call_integer = MethodCall {
         receiver: Type::class(
             list,
-            vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-                integer,
-                vec![],
-            ))))],
+            vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+                Type::class(integer, vec![]),
+            )))],
         ),
         call_kind: CallKind::Instance,
         name: "get",
@@ -301,4 +304,3 @@ fn method_resolution_is_order_independent() {
     assert_eq!(res_a1, res_a2);
     assert_eq!(res_b1, res_b2);
 }
-

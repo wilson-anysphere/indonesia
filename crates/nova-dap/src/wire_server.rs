@@ -379,13 +379,14 @@ async fn handle_request_inner(
                 }
             }
 
-            let source_roots = match resolve_source_roots(request.command.as_str(), &request.arguments) {
-                Ok(roots) => roots,
-                Err(err) => {
-                    send_response(out_tx, seq, request, false, None, Some(err.to_string()));
-                    return;
-                }
-            };
+            let source_roots =
+                match resolve_source_roots(request.command.as_str(), &request.arguments) {
+                    Ok(roots) => roots,
+                    Err(err) => {
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                        return;
+                    }
+                };
 
             let attach_timeout = Duration::from_millis(args.attach_timeout_ms.unwrap_or(30_000));
 
@@ -707,15 +708,22 @@ async fn handle_request_inner(
                 }
             }
 
-            let source_roots = match resolve_source_roots(request.command.as_str(), &request.arguments) {
-                Ok(roots) => roots,
-                Err(err) => {
-                    send_response(out_tx, seq, request, false, None, Some(err.to_string()));
-                    return;
-                }
-            };
+            let source_roots =
+                match resolve_source_roots(request.command.as_str(), &request.arguments) {
+                    Ok(roots) => roots,
+                    Err(err) => {
+                        send_response(out_tx, seq, request, false, None, Some(err.to_string()));
+                        return;
+                    }
+                };
 
-            let dbg = match Debugger::attach(AttachArgs { host, port, source_roots }).await {
+            let dbg = match Debugger::attach(AttachArgs {
+                host,
+                port,
+                source_roots,
+            })
+            .await
+            {
                 Ok(dbg) => dbg,
                 Err(err) => {
                     send_response(out_tx, seq, request, false, None, Some(err.to_string()));
@@ -1867,7 +1875,10 @@ fn is_cancelled_error(err: &DebuggerError) -> bool {
     matches!(err, DebuggerError::Jdwp(JdwpError::Cancelled))
 }
 
-fn resolve_source_roots(command: &str, arguments: &Value) -> std::result::Result<Vec<PathBuf>, DebuggerError> {
+fn resolve_source_roots(
+    command: &str,
+    arguments: &Value,
+) -> std::result::Result<Vec<PathBuf>, DebuggerError> {
     let project_root = arguments
         .get("projectRoot")
         .and_then(|v| v.as_str())
@@ -1889,7 +1900,9 @@ fn resolve_source_roots(command: &str, arguments: &Value) -> std::result::Result
 
     if let Some(root) = project_root.as_deref() {
         let config = nova_project::load_project(root).map_err(|err| {
-            DebuggerError::InvalidRequest(format!("{command}.projectRoot could not be loaded: {err}"))
+            DebuggerError::InvalidRequest(format!(
+                "{command}.projectRoot could not be loaded: {err}"
+            ))
         })?;
         for source_root in config.source_roots {
             roots.push(source_root.path);
