@@ -2,12 +2,13 @@ use crate::{
     aquery::{
         extract_java_compile_info, parse_aquery_textproto_streaming, JavaCompileInfo,
     },
-    cache::{digest_file, BazelCache, CacheEntry},
+    cache::{BazelCache, BuildFileDigest, CacheEntry},
     command::CommandRunner,
 };
 use anyhow::{Context, Result};
 use blake3::Hash;
 use std::{
+    collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
@@ -131,7 +132,17 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     }
 
     pub fn invalidate_changed_build_files(&mut self, changed: &[PathBuf]) -> Result<()> {
-        self.cache.invalidate_changed_build_files(changed);
+        let changed = changed
+            .iter()
+            .map(|path| {
+                if let Ok(rel) = path.strip_prefix(&self.root) {
+                    rel.to_path_buf()
+                } else {
+                    path.clone()
+                }
+            })
+            .collect::<Vec<_>>();
+        self.cache.invalidate_changed_build_files(&changed);
         self.persist_cache()
     }
 
@@ -147,36 +158,9 @@ impl<R: CommandRunner> BazelWorkspace<R> {
     fn build_file_digests_for_target(
         &self,
         target: &str,
-    ) -> Result<Vec<crate::cache::BuildFileDigest>> {
-        let mut paths = bazel_config_files(&self.root);
-
-        if let Some(build_file) = build_file_for_label(&self.root, target)? {
-            paths.push(build_file);
-        }
-
-        paths.sort();
-        paths.dedup();
-
-        let mut digests = Vec::new();
-        for path in paths {
-            if !path.is_file() {
-                continue;
-            }
-            match digest_file(&path) {
-                Ok(digest) => digests.push(digest),
-                Err(err)
-                    if err
-                        .downcast_ref::<std::io::Error>()
-                        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
-                {
-                    // Best-effort: if the file disappeared between discovery and digesting,
-                    // ignore it rather than failing the query.
-                }
-                Err(err) => return Err(err),
-            }
-        }
-
-        Ok(digests)
+    ) -> Result<Vec<BuildFileDigest>> {
+        let build_files = self.build_definition_inputs_for_target(target)?;
+        digest_workspace_files(&self.root, &build_files)
     }
 
     fn ensure_query_hash(&mut self) -> Result<Hash> {
@@ -217,6 +201,62 @@ impl<R: CommandRunner> BazelWorkspace<R> {
                 Ok(selected.or(first_info))
             },
         )
+    }
+
+    fn build_definition_inputs_for_target(&self, target: &str) -> Result<Vec<PathBuf>> {
+        let mut inputs = BTreeSet::<PathBuf>::new();
+
+        inputs.extend(bazel_config_files(&self.root));
+
+        // Bazel's top-level module/workspace files can influence the action graph, even if the
+        // target's BUILD file is unchanged (e.g., toolchains, module deps, repository rules).
+        for name in ["WORKSPACE", "WORKSPACE.bazel", "MODULE.bazel"] {
+            let path = self.root.join(name);
+            if path.is_file() {
+                inputs.insert(PathBuf::from(name));
+            }
+        }
+
+        // Best-effort: include the target package's BUILD file even if query evaluation fails.
+        if let Some(build_file) = build_file_for_label(&self.root, target)? {
+            if let Ok(rel) = build_file.strip_prefix(&self.root) {
+                inputs.insert(rel.to_path_buf());
+            } else {
+                inputs.insert(build_file);
+            }
+        }
+
+        // Collect all BUILD / BUILD.bazel files that can influence `deps(target)` evaluation.
+        let buildfiles_query = format!("buildfiles(deps({target}))");
+        if let Ok(output) = self.runner.run(
+            &self.root,
+            "bazel",
+            &["query", &buildfiles_query, "--output=label"],
+        ) {
+            for label in output.stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                if let Some(path) = workspace_path_from_label(label) {
+                    inputs.insert(path);
+                }
+            }
+        }
+
+        // Additionally include Starlark `.bzl` files loaded by the target's build graph.
+        //
+        // Not all Bazel versions support `loadfiles(...)`; treat failures as best-effort.
+        let loadfiles_query = format!("loadfiles(deps({target}))");
+        if let Ok(output) = self.runner.run(
+            &self.root,
+            "bazel",
+            &["query", &loadfiles_query, "--output=label"],
+        ) {
+            for label in output.stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+                if let Some(path) = workspace_path_from_label(label) {
+                    inputs.insert(path);
+                }
+            }
+        }
+
+        Ok(inputs.into_iter().collect())
     }
 }
 
@@ -259,9 +299,9 @@ fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     for name in [".bazelrc", ".bazelversion", "MODULE.bazel.lock", "bazelisk.rc"] {
-        let path = workspace_root.join(name);
-        if path.is_file() {
-            paths.push(path);
+        let abs = workspace_root.join(name);
+        if abs.is_file() {
+            paths.push(PathBuf::from(name));
         }
     }
 
@@ -273,9 +313,9 @@ fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
                 continue;
             }
 
-            let path = entry.path();
-            if path.is_file() {
-                paths.push(path);
+            let abs = entry.path();
+            if abs.is_file() {
+                paths.push(PathBuf::from(entry.file_name()));
             }
         }
     }
@@ -283,4 +323,49 @@ fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
     paths.sort();
     paths.dedup();
     paths
+}
+
+fn workspace_path_from_label(label: &str) -> Option<PathBuf> {
+    // External repositories live outside the workspace root. We currently treat cache invalidation
+    // for those as best-effort and only track workspace-local build definition files.
+    let rest = label.strip_prefix("//")?;
+
+    if let Some((package, name)) = rest.split_once(':') {
+        if package.is_empty() {
+            Some(PathBuf::from(name))
+        } else {
+            Some(PathBuf::from(package).join(name))
+        }
+    } else {
+        Some(PathBuf::from(rest))
+    }
+}
+
+fn digest_workspace_files(workspace_root: &Path, files: &[PathBuf]) -> Result<Vec<BuildFileDigest>> {
+    let mut digests = Vec::new();
+    for path in files {
+        let abs = if path.is_absolute() {
+            path.clone()
+        } else {
+            workspace_root.join(path)
+        };
+
+        let bytes = match fs::read(&abs) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                // Best-effort: if the file disappeared between discovery and digesting, ignore it
+                // rather than failing the query.
+                continue;
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let hash = blake3::hash(&bytes);
+        digests.push(BuildFileDigest {
+            path: path.clone(),
+            digest_hex: hash.to_hex().to_string(),
+        });
+    }
+
+    Ok(digests)
 }
