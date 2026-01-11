@@ -682,6 +682,72 @@ class A {
     }
 
     #[test]
+    fn safe_delete_request_returns_edits_for_all_files() {
+        let uri_a: Uri = "file:///A.java".parse().unwrap();
+        let uri_b: Uri = "file:///B.java".parse().unwrap();
+
+        let source_a = r#"
+class A {
+    public void used() {
+    }
+}
+"#;
+
+        let source_b = r#"
+class B {
+    public void entry() {
+        new A().used();
+    }
+}
+"#;
+
+        let mut files = BTreeMap::new();
+        files.insert(uri_a.to_string(), source_a.to_string());
+        files.insert(uri_b.to_string(), source_b.to_string());
+        let index = Index::new(files);
+
+        let target = index.find_method("A", "used").expect("method exists").id;
+
+        let preview = handle_safe_delete(
+            &index,
+            SafeDeleteParams {
+                target: SafeDeleteTargetParam::SymbolId(target),
+                mode: SafeDeleteMode::Safe,
+            },
+        )
+        .expect("safe delete preview");
+        let report = match preview {
+            SafeDeleteResult::Preview(RefactorResponse::Preview { report }) => report,
+            other => panic!("expected preview result, got {other:?}"),
+        };
+        assert_eq!(report.usages.len(), 1);
+        assert_eq!(report.usages[0].file, uri_b.to_string());
+
+        let applied = handle_safe_delete(
+            &index,
+            SafeDeleteParams {
+                target: SafeDeleteTargetParam::SymbolId(target),
+                mode: SafeDeleteMode::DeleteAnyway,
+            },
+        )
+        .expect("safe delete apply");
+        let edit = match applied {
+            SafeDeleteResult::WorkspaceEdit(edit) => edit,
+            other => panic!("expected workspace edit result, got {other:?}"),
+        };
+
+        let changes = edit.changes.expect("workspace edit changes present");
+        let updated_a = apply_lsp_edits(source_a, changes.get(&uri_a).expect("edits for A"));
+        let updated_b = apply_lsp_edits(source_b, changes.get(&uri_b).expect("edits for B"));
+
+        assert!(
+            !updated_a.contains("void used"),
+            "declaration should be removed"
+        );
+        assert!(!updated_b.contains("used();"), "usage should be removed");
+    }
+
+    #[test]
     fn change_signature_workspace_edit_uses_utf16_character_offsets() {
         let uri: Uri = "file:///A.java".parse().unwrap();
         let source = concat!(
