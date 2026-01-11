@@ -1,0 +1,39 @@
+name: Javac differential
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  javac:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      RUST_BACKTRACE: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run javac differential tests
+        run: cargo test -p nova-types --test javac_differential -- --ignored
+

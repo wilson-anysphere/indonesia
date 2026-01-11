@@ -245,6 +245,15 @@ cargo test -p nova-project --test real_projects -- --include-ignored
 cargo test -p nova-cli --test real_projects -- --include-ignored
 ```
 
+To focus on a subset of fixtures/tests:
+
+```bash
+./scripts/run-real-project-tests.sh --only spring-petclinic,maven-resolver
+
+# or:
+NOVA_TEST_PROJECTS=spring-petclinic,maven-resolver ./scripts/run-real-project-tests.sh
+```
+
 ---
 
 ### 7) Performance regression tests (`perf.yml`)
@@ -324,9 +333,10 @@ Always inspect `git diff` after updating snapshots.
 |---|---|---|---|
 | `.github/workflows/ci.yml` | in repo | `cargo fmt`, `cargo clippy`, `cargo test` (plus actionlint + VS Code packaging) | `cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test` |
 | `.github/workflows/perf.yml` | in repo | `cargo bench -p nova-core --bench critical_paths` + `nova perf capture/compare` against `perf/thresholds.toml` | See “Performance regression tests” above |
-| `javac.yml` | planned | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
-| `real-projects.yml` | planned | Clone `test-projects/` and run ignored real-project suites | `./scripts/run-real-project-tests.sh` |
-| `fuzz.yml` | planned | Run short, time-boxed `cargo fuzz` jobs | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60` |
+| `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
+| `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual) | `./scripts/run-real-project-tests.sh` |
+| `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60` |
+| `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (weekly / main) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html` |
 
 Note: `.github/workflows/release.yml` exists for packaging and release automation; it is not a test gate.
 
