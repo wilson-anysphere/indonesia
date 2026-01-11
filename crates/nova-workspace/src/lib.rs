@@ -276,17 +276,29 @@ impl Workspace {
             return Ok((stamp_snapshot, cache_dir, shards, metrics));
         }
 
+        // If everything is invalidated, we will re-index all existing files and
+        // can rebuild the content fingerprint map from scratch. Avoid loading
+        // the previous metadata (which can be large on big projects).
+        let indexing_all_files = invalidated_files
+            .iter()
+            .filter(|path| stamp_snapshot.file_fingerprints().contains_key(*path))
+            .count()
+            == stamp_snapshot.file_fingerprints().len();
+
         // Load cache metadata (if any) so we can reuse content fingerprints for
         // unchanged files when persisting updated metadata.
         let metadata_path = cache_dir.metadata_path();
-        let metadata = CacheMetadata::load(&metadata_path).ok().filter(|meta| {
-            meta.is_compatible() && &meta.project_hash == stamp_snapshot.project_hash()
-        });
-
-        let mut content_fingerprints = metadata
-            .as_ref()
-            .map(|meta| meta.file_fingerprints.clone())
-            .unwrap_or_default();
+        let mut content_fingerprints = if indexing_all_files {
+            std::collections::BTreeMap::new()
+        } else {
+            CacheMetadata::load(&metadata_path)
+                .ok()
+                .filter(|meta| {
+                    meta.is_compatible() && &meta.project_hash == stamp_snapshot.project_hash()
+                })
+                .map(|meta| meta.file_fingerprints)
+                .unwrap_or_default()
+        };
 
         // If metadata is missing content fingerprints for a file that still
         // exists, force it through the indexer so we can compute a content hash
