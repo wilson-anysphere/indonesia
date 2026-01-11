@@ -85,6 +85,15 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     #[test]
+    fn inserts_at_top_when_no_package_or_imports() {
+        let text = "class Foo {}\n";
+        let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
+        assert_eq!(edit.range.start, Position::new(0, 0));
+        assert_eq!(edit.range.end, Position::new(0, 0));
+        assert_eq!(edit.new_text, "import java.util.List;\n");
+    }
+
+    #[test]
     fn inserts_after_package_when_no_imports() {
         let text = "package com.example;\n\nclass Foo {}\n";
         let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
@@ -94,12 +103,30 @@ mod tests {
     }
 
     #[test]
+    fn preserves_crlf_line_endings() {
+        let text = "package com.example;\r\n\r\nclass Foo {}\r\n";
+        let edit = java_import_text_edit(text, "java.util.List").expect("expected edit");
+        assert_eq!(edit.range.start, Position::new(1, 0));
+        assert_eq!(edit.range.end, Position::new(1, 0));
+        assert_eq!(edit.new_text, "import java.util.List;\r\n");
+    }
+
+    #[test]
     fn inserts_after_last_import_when_present() {
         let text = "package com.example;\n\nimport java.util.List;\nimport java.util.Set;\n\nclass Foo {}\n";
         let edit = java_import_text_edit(text, "java.util.Map").expect("expected edit");
         assert_eq!(edit.range.start, Position::new(4, 0));
         assert_eq!(edit.range.end, Position::new(4, 0));
         assert_eq!(edit.new_text, "import java.util.Map;\n");
+    }
+
+    #[test]
+    fn returns_none_when_static_import_already_present() {
+        let text = "package com.example;\n\nimport static java.util.stream.Collectors.toList;\n\nclass Foo {}\n";
+        assert_eq!(
+            java_import_text_edit(text, "java.util.stream.Collectors.toList"),
+            None
+        );
     }
 
     #[test]
