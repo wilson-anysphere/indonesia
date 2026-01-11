@@ -338,6 +338,13 @@ gates, see [`14-testing-infrastructure.md`](14-testing-infrastructure.md).
 - **Known gaps vs intended docs:**
   - Focused on CI regressions; not yet integrated with runtime telemetry aggregation.
 
+### `nova-process`
+- **Purpose:** safe helpers for spawning external commands with bounded output capture (avoids OOM from chatty build tools) and optional timeouts.
+- **Key entry points:** `crates/nova-process/src/lib.rs` (`run_command`, `run_command_checked`, `RunOptions`, `CommandFailure`).
+- **Maturity:** productionizing
+- **Known gaps vs intended docs:**
+  - No async API yet (uses threads to drain stdout/stderr); callers that need cancellation must layer it externally.
+
 ### `nova-project`
 - **Purpose:** workspace discovery and project configuration (source roots, classpath, Java levels).
 - **Key entry points:** `crates/nova-project/src/lib.rs` (`load_project`, `ProjectConfig`, `LoadOptions`).
