@@ -74,7 +74,7 @@ pub(crate) fn diagnostics_for_file(db: &dyn Database, file: FileId) -> Vec<Diagn
                     Severity::Info
                 }
             },
-            code: dagger_code(d.source.as_deref()),
+            code: dagger_code(d.source.as_deref()).into(),
             message: d.message.clone(),
             span: core_range_to_span(text, d.range),
         })
@@ -373,4 +373,3 @@ fn fallback_offset_utf8(text: &str, index: &LineIndex, pos: CorePosition) -> Opt
 
     Some(offset)
 }
-
