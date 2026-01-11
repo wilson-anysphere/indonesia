@@ -417,6 +417,9 @@ See `perf/README.md` for details.
 Nova tracks test coverage drift via `.github/workflows/coverage.yml` (runs on `main` + scheduled + manual).
 Coverage is not a strict gate today, but it’s useful for spotting untested areas and regressions.
 
+The workflow also supports an optional, **warn-only** minimum line coverage threshold via the
+`workflow_dispatch` input `min_line_coverage` (see `.github/workflows/coverage.yml`).
+
 **Run locally (HTML report):**
 
 ```bash
