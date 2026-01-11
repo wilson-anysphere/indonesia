@@ -234,4 +234,37 @@ mod tests {
         assert!(!out.contains("id_0"), "{out}");
         assert!(!out.contains("sk-verysecret"), "{out}");
     }
+
+    #[test]
+    fn preserves_code_edit_range_markers_when_comment_stripping_enabled() {
+        // Cloud mode defaults to comment stripping and literal redaction even when identifier
+        // anonymization is disabled (required for cloud code edits). The synthetic range markers
+        // used by Nova's code-edit prompts must remain intact so the model can locate the edit
+        // region.
+        let cfg = AiPrivacyConfig {
+            local_only: false,
+            anonymize_identifiers: Some(false),
+            ..AiPrivacyConfig::default()
+        };
+        let filter = PrivacyFilter::new(&cfg).expect("filter");
+        let mut session = filter.new_session();
+
+        let prompt = r#"Edit the marked range:
+```java
+/*__NOVA_AI_RANGE_START__*/
+class Foo {
+  /* secret */ String apiKey = "sk-verysecretstringthatislong";
+}
+/*__NOVA_AI_RANGE_END__*/
+```
+"#;
+
+        let out = filter.sanitize_prompt_text(&mut session, prompt);
+        assert!(out.contains("/*__NOVA_AI_RANGE_START__*/"), "{out}");
+        assert!(out.contains("/*__NOVA_AI_RANGE_END__*/"), "{out}");
+        assert!(out.contains("/* [REDACTED] */"), "{out}");
+        assert!(out.contains("\"[REDACTED]\""), "{out}");
+        assert!(!out.contains("secret"), "{out}");
+        assert!(!out.contains("sk-verysecret"), "{out}");
+    }
 }

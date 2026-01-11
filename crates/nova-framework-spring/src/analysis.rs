@@ -601,11 +601,7 @@ fn parse_class_body(
                     beans.push(bean);
                     if collect_injections {
                         parse_bean_method_param_injections(
-                            child,
-                            source_idx,
-                            source,
-                            &bean_ty,
-                            injections,
+                            child, source_idx, source, &bean_ty, injections,
                         );
                     }
                 }
