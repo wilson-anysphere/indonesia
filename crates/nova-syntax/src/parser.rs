@@ -368,15 +368,33 @@ pub fn parse_java(input: &str) -> JavaParseResult {
 /// not a full compilation unit.
 ///
 /// - The returned syntax tree is always rooted at [`SyntaxKind::ExpressionRoot`].
-/// - A trailing semicolon (`;`) is accepted.
 /// - Use [`JavaParseResult::expression`] to obtain the parsed expression node.
 pub fn parse_java_expression(input: &str) -> JavaParseResult {
     Parser::new(input).parse_expression_root()
 }
 
-/// Compatibility alias for [`parse_java_expression`].
+/// Parses `input` as a Java expression (not a full compilation unit).
+///
+/// This is the stable public entry point used by debugger integrations.
 pub fn parse_expression(input: &str) -> JavaParseResult {
-    parse_java_expression(input)
+    let mut parser = Parser::new(input);
+    parser.builder.start_node(SyntaxKind::ExpressionRoot.into());
+    parser.eat_trivia();
+    parser.parse_expression(0);
+    parser.eat_trivia();
+    if !parser.expect(SyntaxKind::Eof, "expected end of expression") {
+        // Keep the parse lossless by consuming trailing junk tokens until EOF.
+        parser.builder.start_node(SyntaxKind::Error.into());
+        parser.recover_to(TokenSet::new(&[SyntaxKind::Eof]));
+        parser.builder.finish_node();
+        parser.expect(SyntaxKind::Eof, "expected end of expression");
+    }
+    parser.builder.finish_node();
+
+    JavaParseResult {
+        green: parser.builder.finish(),
+        errors: parser.errors,
+    }
 }
 
 pub fn parse_java_block_fragment(text: &str, offset: u32) -> JavaFragmentParseResult {
