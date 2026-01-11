@@ -22,7 +22,7 @@ fn lsp_endpoints_respect_workspace_generated_sources_config() {
 
     // Disable generated sources via workspace config.
     write_file(
-        &root.join(".nova/config.toml"),
+        &root.join("nova.toml"),
         "[generated_sources]\nenabled = false\n",
     );
 

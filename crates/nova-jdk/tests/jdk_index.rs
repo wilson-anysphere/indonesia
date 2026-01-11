@@ -197,10 +197,9 @@ fn discovery_supports_workspace_config_override() -> Result<(), Box<dyn std::err
     let temp = tempdir()?;
     let workspace_root = temp.path();
 
-    std::fs::create_dir_all(workspace_root.join(".nova"))?;
     let fake = fake_jdk_root();
     std::fs::write(
-        workspace_root.join(".nova/config.toml"),
+        workspace_root.join("nova.toml"),
         format!("[jdk]\njdk_home = '{}'\n", fake.display()),
     )?;
 

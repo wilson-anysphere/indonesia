@@ -14,9 +14,8 @@ fn workspace_config_can_disable_generated_sources() {
     // Create a default generated-sources directory that would normally be picked up.
     fs::create_dir_all(root.join("target/generated-sources/annotations")).unwrap();
 
-    fs::create_dir_all(root.join(".nova")).unwrap();
     fs::write(
-        root.join(".nova/config.toml"),
+        root.join("nova.toml"),
         "[generated_sources]\nenabled = false\n",
     )
     .unwrap();
@@ -42,9 +41,8 @@ fn workspace_config_override_roots_adds_generated_sources() {
 
     fs::create_dir_all(root.join("gen")).unwrap();
 
-    fs::create_dir_all(root.join(".nova")).unwrap();
     fs::write(
-        root.join(".nova/config.toml"),
+        root.join("nova.toml"),
         "[generated_sources]\noverride_roots = [\"gen\"]\n",
     )
     .unwrap();
