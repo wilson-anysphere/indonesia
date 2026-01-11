@@ -20,6 +20,9 @@ pub trait NovaHir: NovaSyntax + HasQueryStats {
     /// Parse a file using the lightweight syntax layer used by semantic lowering.
     fn java_parse(&self, file: FileId) -> Arc<nova_syntax::java::Parse>;
 
+    /// Stable mapping between syntax nodes and per-file [`nova_hir::ast_id::AstId`]s.
+    fn hir_ast_id_map(&self, file: FileId) -> Arc<AstIdMap>;
+
     /// File-level item tree lowered into Nova's stable semantic substrate.
     fn hir_item_tree(&self, file: FileId) -> Arc<HirItemTree>;
 
@@ -56,6 +59,22 @@ fn java_parse(db: &dyn NovaHir, file: FileId) -> Arc<nova_syntax::java::Parse> {
     result
 }
 
+fn hir_ast_id_map(db: &dyn NovaHir, file: FileId) -> Arc<AstIdMap> {
+    let start = Instant::now();
+
+    #[cfg(feature = "tracing")]
+    let _span = tracing::debug_span!("query", name = "hir_ast_id_map", ?file).entered();
+
+    cancel::check_cancelled(db);
+
+    let parse_java = db.parse_java(file);
+    let syntax = parse_java.syntax();
+    let map = AstIdMap::new(&syntax);
+    let result = Arc::new(map);
+    db.record_query_stat("hir_ast_id_map", start.elapsed());
+    result
+}
+
 fn hir_item_tree(db: &dyn NovaHir, file: FileId) -> Arc<HirItemTree> {
     let start = Instant::now();
 
@@ -66,8 +85,7 @@ fn hir_item_tree(db: &dyn NovaHir, file: FileId) -> Arc<HirItemTree> {
 
     let parse = db.java_parse(file);
     let parse_java = db.parse_java(file);
-    let syntax = parse_java.syntax();
-    let ast_id_map = AstIdMap::new(&syntax);
+    let ast_id_map = db.hir_ast_id_map(file);
     let mut steps: u32 = 0;
     let mut check_cancelled = || {
         cancel::checkpoint_cancelled(db, steps);
@@ -77,7 +95,7 @@ fn hir_item_tree(db: &dyn NovaHir, file: FileId) -> Arc<HirItemTree> {
         file,
         parse.compilation_unit(),
         parse_java.as_ref(),
-        &ast_id_map,
+        ast_id_map.as_ref(),
         &mut check_cancelled,
     );
 
@@ -96,16 +114,14 @@ fn hir_body(db: &dyn NovaHir, method: MethodId) -> Arc<HirBody> {
 
     let tree = db.hir_item_tree(method.file);
     let method_data = tree.method(method);
-    let Some(body_id) = method_data.body else {
+    let Some(body) = method_data.body else {
         let result = Arc::new(HirBody::empty(method_data.range));
         db.record_query_stat("hir_body", start.elapsed());
         return result;
     };
 
-    let parse_java = db.parse_java(method.file);
-    let syntax = parse_java.syntax();
-    let ast_id_map = AstIdMap::new(&syntax);
-    let Some(body_range) = ast_id_map.span(body_id) else {
+    let ast_id_map = db.hir_ast_id_map(method.file);
+    let Some(body_range) = ast_id_map.span(body) else {
         let result = Arc::new(HirBody::empty(method_data.range));
         db.record_query_stat("hir_body", start.elapsed());
         return result;
@@ -147,9 +163,7 @@ fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<Hir
 
     let tree = db.hir_item_tree(constructor.file);
     let data = tree.constructor(constructor);
-    let parse_java = db.parse_java(constructor.file);
-    let syntax = parse_java.syntax();
-    let ast_id_map = AstIdMap::new(&syntax);
+    let ast_id_map = db.hir_ast_id_map(constructor.file);
     let Some(body_range) = ast_id_map.span(data.body) else {
         let result = Arc::new(HirBody::empty(data.range));
         db.record_query_stat("hir_constructor_body", start.elapsed());
@@ -192,9 +206,7 @@ fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<Hir
 
     let tree = db.hir_item_tree(initializer.file);
     let data = tree.initializer(initializer);
-    let parse_java = db.parse_java(initializer.file);
-    let syntax = parse_java.syntax();
-    let ast_id_map = AstIdMap::new(&syntax);
+    let ast_id_map = db.hir_ast_id_map(initializer.file);
     let Some(body_range) = ast_id_map.span(data.body) else {
         let result = Arc::new(HirBody::empty(data.range));
         db.record_query_stat("hir_initializer_body", start.elapsed());

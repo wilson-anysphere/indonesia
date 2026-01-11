@@ -1034,7 +1034,6 @@ mod tests {
 
     #[test]
     fn hir_body_edit_early_cutoff_preserves_structural_name_queries() {
-        use nova_hir::ast_id::AstIdMap;
         use nova_hir::item_tree::{Item as HirItem, Member as HirMember};
 
         let mut db = RootDatabase::default();
@@ -1057,8 +1056,8 @@ mod tests {
             HirItem::Class(id) => id,
             other => panic!("expected top-level class, got {other:?}"),
         };
-        let class_before = tree_before.class(class_id);
-        let method = class_before
+        let class = tree_before.class(class_id);
+        let method = class
             .members
             .iter()
             .find_map(|member| match member {
@@ -1067,16 +1066,11 @@ mod tests {
             })
             .expect("expected to find method `bar` in class members");
 
-        let body_id_before = tree_before
-            .method(method)
-            .body
-            .expect("method has a body");
-        let parse_before = db.parse_java(file);
-        let syntax_before = parse_before.syntax();
-        let ast_id_map_before = AstIdMap::new(&syntax_before);
-        let range_before = ast_id_map_before
-            .span(body_id_before)
-            .expect("method body range is present");
+        let body = tree_before.method(method).body.expect("method has a body");
+        let range_before = db
+            .hir_ast_id_map(file)
+            .span(body)
+            .expect("method body span should exist");
 
         assert_eq!(executions(&db, "java_parse"), 1);
         assert_eq!(executions(&db, "hir_item_tree"), 1);
@@ -1093,16 +1087,11 @@ mod tests {
         assert_eq!(executions(&db, "hir_item_tree"), 2);
 
         let tree_after = db.hir_item_tree(file);
-        let body_id_after = tree_after
-            .method(method)
-            .body
-            .expect("method still has a body");
-        let parse_after = db.parse_java(file);
-        let syntax_after = parse_after.syntax();
-        let ast_id_map_after = AstIdMap::new(&syntax_after);
-        let range_after = ast_id_map_after
-            .span(body_id_after)
-            .expect("method body range is present after edit");
+        let body_after = tree_after.method(method).body.expect("method still has a body");
+        let range_after = db
+            .hir_ast_id_map(file)
+            .span(body_after)
+            .expect("method body span should exist");
         assert_eq!(range_after.start, range_before.start);
         assert!(
             range_after.end > range_before.end,
@@ -1118,7 +1107,6 @@ mod tests {
 
     #[test]
     fn hir_whitespace_edit_early_cutoff_preserves_structural_name_queries() {
-        use nova_hir::ast_id::AstIdMap;
         use nova_hir::item_tree::{Item as HirItem, Member as HirMember};
 
         let mut db = RootDatabase::default();
@@ -1141,8 +1129,8 @@ mod tests {
             HirItem::Class(id) => id,
             other => panic!("expected top-level class, got {other:?}"),
         };
-        let class_before = tree_before.class(class_id);
-        let method = class_before
+        let class = tree_before.class(class_id);
+        let method = class
             .members
             .iter()
             .find_map(|member| match member {
@@ -1151,16 +1139,11 @@ mod tests {
             })
             .expect("expected to find method `bar` in class members");
 
-        let body_id_before = tree_before
-            .method(method)
-            .body
-            .expect("method has a body");
-        let parse_before = db.parse_java(file);
-        let syntax_before = parse_before.syntax();
-        let ast_id_map_before = AstIdMap::new(&syntax_before);
-        let range_before = ast_id_map_before
-            .span(body_id_before)
-            .expect("method body range is present");
+        let body = tree_before.method(method).body.expect("method has a body");
+        let range_before = db
+            .hir_ast_id_map(file)
+            .span(body)
+            .expect("method body span should exist");
 
         assert_eq!(executions(&db, "java_parse"), 1);
         assert_eq!(executions(&db, "hir_item_tree"), 1);
@@ -1179,16 +1162,11 @@ mod tests {
         assert_eq!(executions(&db, "hir_item_tree"), 2);
 
         let tree_after = db.hir_item_tree(file);
-        let body_id_after = tree_after
-            .method(method)
-            .body
-            .expect("method still has a body");
-        let parse_after = db.parse_java(file);
-        let syntax_after = parse_after.syntax();
-        let ast_id_map_after = AstIdMap::new(&syntax_after);
-        let range_after = ast_id_map_after
-            .span(body_id_after)
-            .expect("method body range is present after edit");
+        let body_after = tree_after.method(method).body.expect("method still has a body");
+        let range_after = db
+            .hir_ast_id_map(file)
+            .span(body_after)
+            .expect("method body span should exist");
         assert_eq!(
             range_after.start,
             range_before.start + 2,

@@ -43,7 +43,7 @@ impl AstPtr {
 }
 
 /// A bidirectional mapping between [`AstId`] and rowan syntax nodes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AstIdMap {
     nodes: Vec<AstPtr>,
     by_ptr: HashMap<AstPtr, AstId>,
