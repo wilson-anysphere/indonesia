@@ -232,8 +232,8 @@ Nova is distributed as standalone binaries (`nova-lsp`, `nova-dap`) and editor i
 If Nova hits an internal error (panic) or enters safe mode, generate a diagnostic bundle via the
 custom LSP request:
 
-- `nova/bugReport` → returns `{ "path": "/tmp/nova-bugreport-..." }`
-  - also returns `"archivePath"` (best-effort) pointing at a single `.zip` file for easy sharing
+- `nova/bugReport` → returns `{ "path": "/tmp/nova-bugreport-...", "archivePath": "/tmp/nova-bugreport-....zip" }`
+  (where `archivePath` may be `null` if archive creation is disabled or fails)
 
 If you are troubleshooting the headless CLI itself, you can also generate a bundle directly:
 
