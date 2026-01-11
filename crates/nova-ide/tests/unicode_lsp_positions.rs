@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use lsp_types::{HoverContents, Position};
-use nova_db::RootDatabase;
+use nova_db::InMemoryFileStore;
 use nova_ide::{completions, find_references, hover};
 
-fn fixture_utf16(text_with_caret: &str) -> (RootDatabase, nova_db::FileId, Position) {
+fn fixture_utf16(text_with_caret: &str) -> (InMemoryFileStore, nova_db::FileId, Position) {
     let caret = "<|>";
     let caret_offset = text_with_caret
         .find(caret)
@@ -12,7 +12,7 @@ fn fixture_utf16(text_with_caret: &str) -> (RootDatabase, nova_db::FileId, Posit
     let text = text_with_caret.replace(caret, "");
     let pos = offset_to_position_utf16(&text, caret_offset);
 
-    let mut db = RootDatabase::new();
+    let mut db = InMemoryFileStore::new();
     let path = PathBuf::from("/test.java");
     let file = db.file_id_for_path(&path);
     db.set_file_text(file, text);
