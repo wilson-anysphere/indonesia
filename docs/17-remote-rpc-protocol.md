@@ -549,6 +549,10 @@ Chunking is allowed only if `chosen_capabilities.supports_chunking = true`.
 If `supports_chunking = false`, a receiver MUST treat any `WireFrame::PacketChunk` as a protocol
 violation and close the connection.
 
+If `supports_chunking = false`, a sender MUST NOT attempt to transmit a packet that does not fit in
+one frame. If an application-level message cannot fit, the sender MUST fail it locally (e.g. return
+an error to the caller) rather than sending an oversized frame.
+
 ### 6.1 Chunk frame format
 
 ```rust
