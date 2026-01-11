@@ -5,7 +5,10 @@
 
 use std::collections::HashMap;
 
-use nova_syntax::{parse_java, SyntaxKind, SyntaxNode, SyntaxToken};
+use nova_syntax::{
+    parse_java, Annotation, AnnotationElementValuePairList, AstNode, SyntaxKind, SyntaxNode,
+    SyntaxToken,
+};
 use nova_types::{CompletionItem, Diagnostic, Span};
 
 use crate::entity::EntityModel;
@@ -259,9 +262,8 @@ fn jpql_string_from_annotation(
     key: &str,
     allow_positional: bool,
 ) -> Option<(String, Span)> {
-    let args = annotation
-        .children()
-        .find(|n| n.kind() == SyntaxKind::ArgumentList)?;
+    let annotation = Annotation::cast(annotation.clone())?;
+    let args = annotation.arguments()?;
 
     // Prefer a named argument (`key = "..."`).
     if let Some((value, span)) = string_literal_for_named_arg(&args, key) {
@@ -270,8 +272,8 @@ fn jpql_string_from_annotation(
 
     // Otherwise, support a single positional string literal argument (used by `@Query("...")`).
     if allow_positional {
-        let first_expr = args.children().next()?;
-        if let Some((value, span)) = first_string_literal_token(&first_expr) {
+        let value = args.value()?;
+        if let Some((value, span)) = first_string_literal_token(value.syntax()) {
             return Some((value, span));
         }
     }
@@ -279,50 +281,20 @@ fn jpql_string_from_annotation(
     None
 }
 
-fn string_literal_for_named_arg(args: &SyntaxNode, key: &str) -> Option<(String, Span)> {
-    for expr in args.children() {
-        if expr.kind() != SyntaxKind::AssignmentExpression {
+fn string_literal_for_named_arg(
+    args: &AnnotationElementValuePairList,
+    key: &str,
+) -> Option<(String, Span)> {
+    for pair in args.pairs() {
+        let name = pair.name_token()?;
+        if name.text() != key {
             continue;
         }
 
-        let mut lhs_idents = Vec::new();
-        let mut seen_eq = false;
-        let mut rhs_string: Option<SyntaxToken> = None;
-
-        for token in expr
-            .descendants_with_tokens()
-            .filter_map(|e| e.into_token())
-        {
-            if !seen_eq {
-                if token.kind() == SyntaxKind::Eq {
-                    seen_eq = true;
-                    continue;
-                }
-                if token.kind().is_identifier_like() {
-                    lhs_idents.push(token.text().to_string());
-                }
-                continue;
-            }
-
-            if matches!(
-                token.kind(),
-                SyntaxKind::StringLiteral | SyntaxKind::TextBlock
-            ) {
-                rhs_string = Some(token);
-                break;
-            }
+        let value = pair.value()?;
+        if let Some((value, span)) = first_string_literal_token(value.syntax()) {
+            return Some((value, span));
         }
-
-        let Some(found_key) = lhs_idents.last() else {
-            continue;
-        };
-        if found_key != key {
-            continue;
-        }
-
-        let token = rhs_string?;
-        let span = span_of_token(&token);
-        return Some((strip_quotes(token.text()).to_string(), span));
     }
     None
 }
