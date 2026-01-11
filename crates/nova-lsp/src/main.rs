@@ -2015,9 +2015,11 @@ fn handle_completion(
                 "AI completions are enabled but the Tokio runtime is unavailable".to_string()
             })?;
             let _guard = runtime.enter();
-            state.completion_service.completion(ctx)
+            state.completion_service
+                .completion(ctx, CancellationToken::new())
         } else {
-            state.completion_service.completion(ctx)
+            state.completion_service
+                .completion(ctx, CancellationToken::new())
         };
         (Some(response.context_id.to_string()), has_more)
     };
