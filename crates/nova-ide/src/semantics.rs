@@ -321,6 +321,33 @@ fn scan_lambda_expression(
     let mut arrow_line: Option<Line> = None;
 
     // Header: parameters + `->` stay in the current method context.
+    //
+    // Lambdas are parsed into a structured subtree in `nova-syntax`:
+    //
+    //   LambdaExpression
+    //     LambdaParameters
+    //     Arrow
+    //     LambdaBody
+    //
+    // We want tokens in the parameters + arrow to be attributed to the enclosing method, while
+    // tokens in the body are attributed to the synthetic lambda method (modeled here as "no
+    // enclosing method"). Previously, parameters were tokens directly under `LambdaExpression`,
+    // but they're now nested under `LambdaParameters`, so we explicitly scan that node here.
+    if let Some(params) = lambda
+        .children()
+        .find(|node| node.kind() == SyntaxKind::LambdaParameters)
+    {
+        scan_node(
+            &params,
+            line_index,
+            enclosing_class,
+            enclosing_method,
+            sites,
+            marked_lines,
+            skip_line,
+        );
+    }
+
     for element in lambda.children_with_tokens() {
         if let Some(token) = element.as_token() {
             if arrow_line.is_none() && token.kind() == SyntaxKind::Arrow {
@@ -344,7 +371,10 @@ fn scan_lambda_expression(
     };
     let lambda_body_skip_line = lambda_body_skip_line.or(skip_line);
 
-    for body in lambda.children() {
+    if let Some(body) = lambda
+        .children()
+        .find(|node| node.kind() == SyntaxKind::LambdaBody)
+    {
         let mut lambda_lines = HashSet::<Line>::new();
         scan_node(
             &body,
@@ -519,4 +549,25 @@ class Outer {
             "expected lambda body breakpoint with method None: {sites:?}"
         );
     }
-}
+
+    #[test]
+    fn lambda_parameters_keep_enclosing_method_context() {
+        let java = r#"class C {
+  void f(){
+    java.util.function.IntBinaryOperator add =
+      (int x,
+       int y) -> x + y;
+  }
+}"#;
+
+        let sites = collect_breakpoint_sites(java);
+        assert!(
+            sites.iter().any(|site| {
+                site.line == 4
+                    && site.enclosing_class.as_deref() == Some("C")
+                    && site.enclosing_method.as_deref() == Some("f")
+            }),
+            "expected lambda parameter line to be attributed to enclosing method: {sites:?}"
+        );
+    }
+} 
