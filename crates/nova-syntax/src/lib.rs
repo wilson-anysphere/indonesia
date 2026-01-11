@@ -9,7 +9,7 @@
 //!   unit) into a rowan syntax tree. This is primarily used by debugger
 //!   integrations for watch/evaluate expressions.
 
-mod ast;
+pub mod ast;
 mod feature_gate;
 mod incremental;
 mod language_level;

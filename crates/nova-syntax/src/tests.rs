@@ -960,7 +960,7 @@ fn parse_expression_snapshot() {
 
 #[test]
 fn generated_ast_accessors_work() {
-    use crate::{parse_java, AstNode, CompilationUnit, Expression, Statement, TypeDeclaration};
+    use crate::ast::{AstNode, ClassMember, CompilationUnit, Expression, Statement, TypeDeclaration};
 
     let input = r#"
 package com.example;
@@ -993,7 +993,7 @@ class Foo {
         .unwrap()
         .members()
         .find_map(|member| match member {
-            crate::ClassMember::MethodDeclaration(it) => Some(it),
+            ClassMember::MethodDeclaration(it) => Some(it),
             _ => None,
         })
         .expect("expected a method");

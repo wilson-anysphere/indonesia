@@ -51,49 +51,11 @@ mod generated;
 
 pub use generated::*;
 
-macro_rules! ast_node {
-    ($name:ident, $kind:path) => {
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        pub struct $name {
-            syntax: SyntaxNode,
-        }
+mod ext;
 
-        impl AstNode for $name {
-            fn can_cast(kind: SyntaxKind) -> bool {
-                kind == $kind
-            }
+#[cfg(test)]
+mod tests;
 
-            fn cast(syntax: SyntaxNode) -> Option<Self> {
-                Self::can_cast(syntax.kind()).then_some(Self { syntax })
-            }
-
-            fn syntax(&self) -> &SyntaxNode {
-                &self.syntax
-            }
-        }
-    };
-}
-
-impl SwitchLabel {
-    /// Returns the constant-expression label elements (if any).
-    ///
-    /// Note: switch pattern labels are represented as [`CaseLabelElement`] nodes, so
-    /// expressions are no longer direct children of the switch label.
-    pub fn expressions(&self) -> impl Iterator<Item = Expression> + '_ {
-        self.elements().filter_map(|el| el.expression())
-    }
-}
-
-// --- JPMS module-info.java nodes ---------------------------------------------------------------
-
-ast_node!(ModuleDeclaration, SyntaxKind::ModuleDeclaration);
-ast_node!(ModuleBody, SyntaxKind::ModuleBody);
-ast_node!(ModuleDirective, SyntaxKind::ModuleDirective);
-ast_node!(RequiresDirective, SyntaxKind::RequiresDirective);
-ast_node!(ExportsDirective, SyntaxKind::ExportsDirective);
-ast_node!(OpensDirective, SyntaxKind::OpensDirective);
-ast_node!(UsesDirective, SyntaxKind::UsesDirective);
-ast_node!(ProvidesDirective, SyntaxKind::ProvidesDirective);
 impl CompilationUnit {
     /// Compatibility accessor returning the raw syntax nodes for the top-level type declarations.
     ///
@@ -106,144 +68,8 @@ impl CompilationUnit {
                     | SyntaxKind::InterfaceDeclaration
                     | SyntaxKind::EnumDeclaration
                     | SyntaxKind::RecordDeclaration
+                    | SyntaxKind::AnnotationTypeDeclaration
             )
         })
-    }
-
-    pub fn module_declaration(&self) -> Option<ModuleDeclaration> {
-        support::child::<ModuleDeclaration>(self.syntax())
-    }
-}
-
-impl Name {
-    pub fn text(&self) -> String {
-        let mut out = String::new();
-        for tok in self
-            .syntax()
-            .children_with_tokens()
-            .filter_map(|el| el.into_token())
-            .filter(|tok| !tok.kind().is_trivia())
-        {
-            out.push_str(tok.text());
-        }
-        out
-    }
-}
-
-impl ModuleDeclaration {
-    pub fn name(&self) -> Option<Name> {
-        support::child::<Name>(self.syntax())
-    }
-
-    pub fn body(&self) -> Option<ModuleBody> {
-        support::child::<ModuleBody>(self.syntax())
-    }
-
-    pub fn is_open(&self) -> bool {
-        support::token(self.syntax(), SyntaxKind::OpenKw).is_some()
-    }
-}
-
-impl ModuleBody {
-    pub fn directive_items(&self) -> impl Iterator<Item = ModuleDirective> + '_ {
-        support::children::<ModuleDirective>(self.syntax())
-    }
-
-    pub fn directives(&self) -> impl Iterator<Item = SyntaxNode> + '_ {
-        self.syntax().children().filter_map(|n| {
-            if n.kind() == SyntaxKind::ModuleDirective {
-                return n.children().find(|child| {
-                    matches!(
-                        child.kind(),
-                        SyntaxKind::RequiresDirective
-                            | SyntaxKind::ExportsDirective
-                            | SyntaxKind::OpensDirective
-                            | SyntaxKind::UsesDirective
-                            | SyntaxKind::ProvidesDirective
-                    )
-                });
-            }
-
-            match n.kind() {
-                SyntaxKind::RequiresDirective
-                | SyntaxKind::ExportsDirective
-                | SyntaxKind::OpensDirective
-                | SyntaxKind::UsesDirective
-                | SyntaxKind::ProvidesDirective => Some(n),
-                _ => None,
-            }
-        })
-    }
-}
-
-impl ModuleDirective {
-    pub fn requires(&self) -> Option<RequiresDirective> {
-        support::child::<RequiresDirective>(self.syntax())
-    }
-
-    pub fn exports(&self) -> Option<ExportsDirective> {
-        support::child::<ExportsDirective>(self.syntax())
-    }
-
-    pub fn opens(&self) -> Option<OpensDirective> {
-        support::child::<OpensDirective>(self.syntax())
-    }
-
-    pub fn uses(&self) -> Option<UsesDirective> {
-        support::child::<UsesDirective>(self.syntax())
-    }
-
-    pub fn provides(&self) -> Option<ProvidesDirective> {
-        support::child::<ProvidesDirective>(self.syntax())
-    }
-}
-
-impl RequiresDirective {
-    pub fn module(&self) -> Option<Name> {
-        support::child::<Name>(self.syntax())
-    }
-
-    pub fn is_transitive(&self) -> bool {
-        support::token(self.syntax(), SyntaxKind::TransitiveKw).is_some()
-    }
-
-    pub fn is_static(&self) -> bool {
-        support::token(self.syntax(), SyntaxKind::StaticKw).is_some()
-    }
-}
-
-impl ExportsDirective {
-    pub fn package(&self) -> Option<Name> {
-        support::child::<Name>(self.syntax())
-    }
-
-    pub fn to_modules(&self) -> impl Iterator<Item = Name> + '_ {
-        support::children::<Name>(self.syntax()).skip(1)
-    }
-}
-
-impl OpensDirective {
-    pub fn package(&self) -> Option<Name> {
-        support::child::<Name>(self.syntax())
-    }
-
-    pub fn to_modules(&self) -> impl Iterator<Item = Name> + '_ {
-        support::children::<Name>(self.syntax()).skip(1)
-    }
-}
-
-impl UsesDirective {
-    pub fn service(&self) -> Option<Name> {
-        support::child::<Name>(self.syntax())
-    }
-}
-
-impl ProvidesDirective {
-    pub fn service(&self) -> Option<Name> {
-        support::child::<Name>(self.syntax())
-    }
-
-    pub fn implementations(&self) -> impl Iterator<Item = Name> + '_ {
-        support::children::<Name>(self.syntax()).skip(1)
     }
 }

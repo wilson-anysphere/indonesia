@@ -35,6 +35,10 @@ impl CompilationUnit {
         support::children::<ImportDeclaration>(&self.syntax)
     }
 
+    pub fn module_declaration(&self) -> Option<ModuleDeclaration> {
+        support::child::<ModuleDeclaration>(&self.syntax)
+    }
+
     pub fn type_declarations(&self) -> impl Iterator<Item = TypeDeclaration> + '_ {
         support::children::<TypeDeclaration>(&self.syntax)
     }
@@ -200,6 +204,22 @@ impl ClassDeclaration {
         support::ident_token(&self.syntax)
     }
 
+    pub fn type_parameters(&self) -> Option<TypeParameters> {
+        support::child::<TypeParameters>(&self.syntax)
+    }
+
+    pub fn extends_clause(&self) -> Option<ExtendsClause> {
+        support::child::<ExtendsClause>(&self.syntax)
+    }
+
+    pub fn implements_clause(&self) -> Option<ImplementsClause> {
+        support::child::<ImplementsClause>(&self.syntax)
+    }
+
+    pub fn permits_clause(&self) -> Option<PermitsClause> {
+        support::child::<PermitsClause>(&self.syntax)
+    }
+
     pub fn body(&self) -> Option<ClassBody> {
         support::child::<ClassBody>(&self.syntax)
     }
@@ -232,6 +252,22 @@ impl InterfaceDeclaration {
 
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
+    }
+
+    pub fn type_parameters(&self) -> Option<TypeParameters> {
+        support::child::<TypeParameters>(&self.syntax)
+    }
+
+    pub fn extends_clause(&self) -> Option<ExtendsClause> {
+        support::child::<ExtendsClause>(&self.syntax)
+    }
+
+    pub fn implements_clause(&self) -> Option<ImplementsClause> {
+        support::child::<ImplementsClause>(&self.syntax)
+    }
+
+    pub fn permits_clause(&self) -> Option<PermitsClause> {
+        support::child::<PermitsClause>(&self.syntax)
     }
 
     pub fn body(&self) -> Option<InterfaceBody> {
@@ -268,6 +304,14 @@ impl EnumDeclaration {
         support::ident_token(&self.syntax)
     }
 
+    pub fn implements_clause(&self) -> Option<ImplementsClause> {
+        support::child::<ImplementsClause>(&self.syntax)
+    }
+
+    pub fn permits_clause(&self) -> Option<PermitsClause> {
+        support::child::<PermitsClause>(&self.syntax)
+    }
+
     pub fn body(&self) -> Option<EnumBody> {
         support::child::<EnumBody>(&self.syntax)
     }
@@ -302,8 +346,20 @@ impl RecordDeclaration {
         support::ident_token(&self.syntax)
     }
 
+    pub fn type_parameters(&self) -> Option<TypeParameters> {
+        support::child::<TypeParameters>(&self.syntax)
+    }
+
     pub fn parameter_list(&self) -> Option<ParameterList> {
         support::child::<ParameterList>(&self.syntax)
+    }
+
+    pub fn implements_clause(&self) -> Option<ImplementsClause> {
+        support::child::<ImplementsClause>(&self.syntax)
+    }
+
+    pub fn permits_clause(&self) -> Option<PermitsClause> {
+        support::child::<PermitsClause>(&self.syntax)
     }
 
     pub fn body(&self) -> Option<RecordBody> {
@@ -534,11 +590,15 @@ impl FieldDeclaration {
         support::child::<Modifiers>(&self.syntax)
     }
 
+    pub fn type_parameters(&self) -> Option<TypeParameters> {
+        support::child::<TypeParameters>(&self.syntax)
+    }
+
     pub fn ty(&self) -> Option<Type> {
         support::child::<Type>(&self.syntax)
     }
 
-    pub fn declarators(&self) -> Option<VariableDeclaratorList> {
+    pub fn declarator_list(&self) -> Option<VariableDeclaratorList> {
         support::child::<VariableDeclaratorList>(&self.syntax)
     }
 
@@ -568,12 +628,20 @@ impl MethodDeclaration {
         support::child::<Modifiers>(&self.syntax)
     }
 
+    pub fn type_parameters(&self) -> Option<TypeParameters> {
+        support::child::<TypeParameters>(&self.syntax)
+    }
+
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::ident_token(&self.syntax)
     }
 
     pub fn parameter_list(&self) -> Option<ParameterList> {
         support::child::<ParameterList>(&self.syntax)
+    }
+
+    pub fn default_value(&self) -> Option<DefaultValue> {
+        support::child::<DefaultValue>(&self.syntax)
     }
 
     pub fn body(&self) -> Option<Block> {
@@ -604,6 +672,10 @@ impl AstNode for ConstructorDeclaration {
 impl ConstructorDeclaration {
     pub fn modifiers(&self) -> Option<Modifiers> {
         support::child::<Modifiers>(&self.syntax)
+    }
+
+    pub fn type_parameters(&self) -> Option<TypeParameters> {
+        support::child::<TypeParameters>(&self.syntax)
     }
 
     pub fn name_token(&self) -> Option<SyntaxToken> {
@@ -1499,7 +1571,7 @@ impl LocalVariableDeclarationStatement {
         support::child::<Type>(&self.syntax)
     }
 
-    pub fn declarators(&self) -> Option<VariableDeclaratorList> {
+    pub fn declarator_list(&self) -> Option<VariableDeclaratorList> {
         support::child::<VariableDeclaratorList>(&self.syntax)
     }
 
@@ -2222,6 +2294,401 @@ impl CastExpression {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendsClause {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ExtendsClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ExtendsClause
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ExtendsClause {
+    pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
+        support::children::<Type>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplementsClause {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ImplementsClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ImplementsClause
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ImplementsClause {
+    pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
+        support::children::<Type>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermitsClause {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for PermitsClause {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::PermitsClause
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl PermitsClause {
+    pub fn types(&self) -> impl Iterator<Item = Type> + '_ {
+        support::children::<Type>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParameters {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for TypeParameters {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::TypeParameters
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl TypeParameters {
+    pub fn type_parameters(&self) -> impl Iterator<Item = TypeParameter> + '_ {
+        support::children::<TypeParameter>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeParameter {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for TypeParameter {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::TypeParameter
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl TypeParameter {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::ident_token(&self.syntax)
+    }
+
+    pub fn bounds(&self) -> impl Iterator<Item = Type> + '_ {
+        support::children::<Type>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultValue {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for DefaultValue {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::DefaultValue
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpressionRoot {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ExpressionRoot {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ExpressionRoot
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ExpressionRoot {
+    pub fn expression(&self) -> Option<Expression> {
+        support::child::<Expression>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDeclaration {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ModuleDeclaration {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ModuleDeclaration
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ModuleDeclaration {
+    pub fn modifiers(&self) -> Option<Modifiers> {
+        support::child::<Modifiers>(&self.syntax)
+    }
+
+    pub fn name(&self) -> Option<Name> {
+        support::child::<Name>(&self.syntax)
+    }
+
+    pub fn body(&self) -> Option<ModuleBody> {
+        support::child::<ModuleBody>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleBody {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ModuleBody {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ModuleBody
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ModuleBody {
+    pub fn directive_wrappers(&self) -> impl Iterator<Item = ModuleDirective> + '_ {
+        support::children::<ModuleDirective>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDirective {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ModuleDirective {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ModuleDirective
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ModuleDirective {
+    pub fn directive(&self) -> Option<ModuleDirectiveKind> {
+        support::child::<ModuleDirectiveKind>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequiresDirective {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for RequiresDirective {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::RequiresDirective
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl RequiresDirective {
+    pub fn module(&self) -> Option<Name> {
+        support::child::<Name>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExportsDirective {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ExportsDirective {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ExportsDirective
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ExportsDirective {
+    pub fn package(&self) -> Option<Name> {
+        support::child::<Name>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpensDirective {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for OpensDirective {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::OpensDirective
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl OpensDirective {
+    pub fn package(&self) -> Option<Name> {
+        support::child::<Name>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsesDirective {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for UsesDirective {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::UsesDirective
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl UsesDirective {
+    pub fn service(&self) -> Option<Name> {
+        support::child::<Name>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvidesDirective {
+    syntax: SyntaxNode,
+}
+
+impl AstNode for ProvidesDirective {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == SyntaxKind::ProvidesDirective
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(Self { syntax })
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+}
+
+impl ProvidesDirective {
+    pub fn service(&self) -> Option<Name> {
+        support::child::<Name>(&self.syntax)
+    }
+
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeDeclaration {
     ClassDeclaration(ClassDeclaration),
     InterfaceDeclaration(InterfaceDeclaration),
@@ -2541,6 +3008,50 @@ impl AstNode for LambdaBody {
         match self {
             Self::Block(it) => it.syntax(),
             Self::Expression(it) => it.syntax(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleDirectiveKind {
+    RequiresDirective(RequiresDirective),
+    ExportsDirective(ExportsDirective),
+    OpensDirective(OpensDirective),
+    UsesDirective(UsesDirective),
+    ProvidesDirective(ProvidesDirective),
+}
+
+impl AstNode for ModuleDirectiveKind {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        RequiresDirective::can_cast(kind)
+            || ExportsDirective::can_cast(kind)
+            || OpensDirective::can_cast(kind)
+            || UsesDirective::can_cast(kind)
+            || ProvidesDirective::can_cast(kind)
+    }
+
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        let kind = syntax.kind();
+        if !Self::can_cast(kind) {
+            return None;
+        }
+
+        if let Some(it) = RequiresDirective::cast(syntax.clone()) { return Some(Self::RequiresDirective(it)); }
+        if let Some(it) = ExportsDirective::cast(syntax.clone()) { return Some(Self::ExportsDirective(it)); }
+        if let Some(it) = OpensDirective::cast(syntax.clone()) { return Some(Self::OpensDirective(it)); }
+        if let Some(it) = UsesDirective::cast(syntax.clone()) { return Some(Self::UsesDirective(it)); }
+        if let Some(it) = ProvidesDirective::cast(syntax.clone()) { return Some(Self::ProvidesDirective(it)); }
+
+        None
+    }
+
+    fn syntax(&self) -> &SyntaxNode {
+        match self {
+            Self::RequiresDirective(it) => it.syntax(),
+            Self::ExportsDirective(it) => it.syntax(),
+            Self::OpensDirective(it) => it.syntax(),
+            Self::UsesDirective(it) => it.syntax(),
+            Self::ProvidesDirective(it) => it.syntax(),
         }
     }
 }

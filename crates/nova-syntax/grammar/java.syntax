@@ -74,9 +74,17 @@ Expression =
 
 LambdaBody = Block | Expression
 
+ModuleDirectiveKind =
+    RequiresDirective
+  | ExportsDirective
+  | OpensDirective
+  | UsesDirective
+  | ProvidesDirective
+
 CompilationUnit {
   package: PackageDeclaration?
   imports: ImportDeclaration*
+  module_declaration: ModuleDeclaration?
   type_declarations: TypeDeclaration*
 }
 
@@ -103,25 +111,38 @@ Name {}
 ClassDeclaration {
   modifiers: Modifiers?
   name_token: Ident?
+  type_parameters: TypeParameters?
+  extends_clause: ExtendsClause?
+  implements_clause: ImplementsClause?
+  permits_clause: PermitsClause?
   body: ClassBody?
 }
 
 InterfaceDeclaration {
   modifiers: Modifiers?
   name_token: Ident?
+  type_parameters: TypeParameters?
+  extends_clause: ExtendsClause?
+  implements_clause: ImplementsClause?
+  permits_clause: PermitsClause?
   body: InterfaceBody?
 }
 
 EnumDeclaration {
   modifiers: Modifiers?
   name_token: Ident?
+  implements_clause: ImplementsClause?
+  permits_clause: PermitsClause?
   body: EnumBody?
 }
 
 RecordDeclaration {
   modifiers: Modifiers?
   name_token: Ident?
+  type_parameters: TypeParameters?
   parameter_list: ParameterList?
+  implements_clause: ImplementsClause?
+  permits_clause: PermitsClause?
   body: RecordBody?
 }
 
@@ -159,19 +180,23 @@ EnumConstant {
 
 FieldDeclaration {
   modifiers: Modifiers?
+  type_parameters: TypeParameters?
   ty: Type?
-  declarators: VariableDeclaratorList?
+  declarator_list: VariableDeclaratorList?
 }
 
 MethodDeclaration {
   modifiers: Modifiers?
+  type_parameters: TypeParameters?
   name_token: Ident?
   parameter_list: ParameterList?
+  default_value: DefaultValue?
   body: Block?
 }
 
 ConstructorDeclaration {
   modifiers: Modifiers?
+  type_parameters: TypeParameters?
   name_token: Ident?
   parameter_list: ParameterList?
   body: Block?
@@ -317,7 +342,7 @@ ContinueStatement {
 LocalVariableDeclarationStatement {
   modifiers: Modifiers?
   ty: Type?
-  declarators: VariableDeclaratorList?
+  declarator_list: VariableDeclaratorList?
 }
 
 ExpressionStatement {
@@ -425,4 +450,65 @@ LambdaExpression {
 CastExpression {
   ty: Type?
   expression: Expression?
+}
+
+ExtendsClause {
+  types: Type*
+}
+
+ImplementsClause {
+  types: Type*
+}
+
+PermitsClause {
+  types: Type*
+}
+
+TypeParameters {
+  type_parameters: TypeParameter*
+}
+
+TypeParameter {
+  name_token: Ident?
+  bounds: Type*
+}
+
+DefaultValue {}
+
+ExpressionRoot {
+  expression: Expression?
+}
+
+ModuleDeclaration {
+  modifiers: Modifiers?
+  name: Name?
+  body: ModuleBody?
+}
+
+ModuleBody {
+  directive_wrappers: ModuleDirective*
+}
+
+ModuleDirective {
+  directive: ModuleDirectiveKind?
+}
+
+RequiresDirective {
+  module: Name?
+}
+
+ExportsDirective {
+  package: Name?
+}
+
+OpensDirective {
+  package: Name?
+}
+
+UsesDirective {
+  service: Name?
+}
+
+ProvidesDirective {
+  service: Name?
 }

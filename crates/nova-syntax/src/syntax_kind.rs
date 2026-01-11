@@ -427,7 +427,6 @@ pub enum SyntaxKind {
     StatementFragment,
     ExpressionFragment,
     ClassMemberFragment,
-
     __Last,
 }
 
