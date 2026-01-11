@@ -1,7 +1,7 @@
 use nova_build::{
-    collect_gradle_build_files, collect_maven_build_files,
-    parse_gradle_classpath_output, parse_javac_diagnostics, parse_maven_classpath_output,
-    parse_maven_evaluate_scalar_output, BuildFileFingerprint, JavaCompileConfig,
+    collect_gradle_build_files, collect_maven_build_files, parse_gradle_classpath_output,
+    parse_javac_diagnostics, parse_maven_classpath_output, parse_maven_evaluate_scalar_output,
+    BuildFileFingerprint, JavaCompileConfig,
 };
 use nova_core::{DiagnosticSeverity, Position, Range};
 use std::path::PathBuf;
@@ -45,13 +45,21 @@ fn fingerprint_changes_on_maven_wrapper_edit() {
     let wrapper_dir = root.join(".mvn").join("wrapper");
     std::fs::create_dir_all(&wrapper_dir).unwrap();
     let wrapper_props = wrapper_dir.join("maven-wrapper.properties");
-    std::fs::write(&wrapper_props, "distributionUrl=https://example.invalid/a.zip\n").unwrap();
+    std::fs::write(
+        &wrapper_props,
+        "distributionUrl=https://example.invalid/a.zip\n",
+    )
+    .unwrap();
 
-    let fp1 = BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap())
-        .unwrap();
-    std::fs::write(&wrapper_props, "distributionUrl=https://example.invalid/b.zip\n").unwrap();
-    let fp2 = BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap())
-        .unwrap();
+    let fp1 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
+    std::fs::write(
+        &wrapper_props,
+        "distributionUrl=https://example.invalid/b.zip\n",
+    )
+    .unwrap();
+    let fp2 =
+        BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
 
     assert_ne!(fp1.digest, fp2.digest);
 }
@@ -107,10 +115,53 @@ fn parses_maven_classpath_path_separator_list() {
 }
 
 #[test]
+fn parses_maven_classpath_newline_list() {
+    let out = r#"
+/a/b/c.jar
+/d/e/f.jar
+"#;
+    let cp = parse_maven_classpath_output(out);
+    assert_eq!(
+        cp,
+        vec![PathBuf::from("/a/b/c.jar"), PathBuf::from("/d/e/f.jar")]
+    );
+}
+
+#[test]
 fn parses_maven_classpath_with_noise_and_bracket_list_line() {
     let out = r#"
 [INFO] Scanning for projects...
 [WARNING] Some warning
+[/a/b/c.jar, /d/e/f.jar]
+"#;
+    let cp = parse_maven_classpath_output(out);
+    assert_eq!(
+        cp,
+        vec![PathBuf::from("/a/b/c.jar"), PathBuf::from("/d/e/f.jar")]
+    );
+}
+
+#[test]
+fn parses_maven_classpath_multiline_bracket_list() {
+    let out = r#"
+[INFO] something
+[
+/a/b/c.jar,
+/d/e/f.jar
+]
+"#;
+    let cp = parse_maven_classpath_output(out);
+    assert_eq!(
+        cp,
+        vec![PathBuf::from("/a/b/c.jar"), PathBuf::from("/d/e/f.jar")]
+    );
+}
+
+#[test]
+fn parses_maven_classpath_skips_download_lines() {
+    let out = r#"
+Downloading from central: https://repo1.maven.org/maven2/
+Downloaded from central: https://repo1.maven.org/maven2/ (10 kB at 1.2 MB/s)
 [/a/b/c.jar, /d/e/f.jar]
 "#;
     let cp = parse_maven_classpath_output(out);

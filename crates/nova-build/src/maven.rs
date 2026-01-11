@@ -473,12 +473,24 @@ impl MavenBuild {
 
 pub fn parse_maven_classpath_output(output: &str) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = Vec::new();
+    let mut bracket_accumulator: Option<String> = None;
 
     // `help:evaluate` output may be noisy even with `-q`; in practice we see
     // `[INFO]` preambles, warning lines, and downloads printed ahead of the actual
     // evaluated value.
     for line in output.lines() {
         let line = line.trim();
+        if let Some(mut acc) = bracket_accumulator.take() {
+            if !line.is_empty() && !is_maven_noise_line(line) {
+                acc.push_str(line);
+            }
+            if line.ends_with(']') {
+                entries.extend(parse_maven_bracket_list(&acc));
+            } else {
+                bracket_accumulator = Some(acc);
+            }
+            continue;
+        }
         if line.is_empty() || is_maven_noise_line(line) || is_maven_null_value(line) {
             continue;
         }
@@ -486,14 +498,11 @@ pub fn parse_maven_classpath_output(output: &str) -> Vec<PathBuf> {
         // `help:evaluate` often returns either a bracketed list or
         // newline-separated elements. Importantly, the bracketed list may appear
         // on a single line even when the overall output contains other lines.
-        if line.starts_with('[') && line.ends_with(']') && line.len() >= 2 {
-            let inner = &line[1..line.len() - 1];
-            for part in inner.split(',') {
-                let s = part.trim().trim_matches('"');
-                if s.is_empty() || is_maven_null_value(s) {
-                    continue;
-                }
-                entries.push(PathBuf::from(s));
+        if line.starts_with('[') {
+            if line.ends_with(']') && line.len() >= 2 {
+                entries.extend(parse_maven_bracket_list(line));
+            } else {
+                bracket_accumulator = Some(line.to_string());
             }
             continue;
         }
@@ -531,6 +540,9 @@ fn is_maven_noise_line(line: &str) -> bool {
         || line.starts_with("[WARNING]")
         || line.starts_with("[ERROR]")
         || line.starts_with("[DEBUG]")
+        || line.starts_with("Downloading from")
+        || line.starts_with("Downloaded from")
+        || line.starts_with("Progress (")
         || line.starts_with("Picked up JAVA_TOOL_OPTIONS")
         || line.starts_with("Picked up _JAVA_OPTIONS")
 }
@@ -545,6 +557,24 @@ fn is_maven_null_value(line: &str) -> bool {
         || lower == "[]"
         || lower.contains("null object")
         || lower.contains("invalid expression")
+}
+
+fn parse_maven_bracket_list(line: &str) -> Vec<PathBuf> {
+    let trimmed = line.trim();
+    if !(trimmed.starts_with('[') && trimmed.ends_with(']') && trimmed.len() >= 2) {
+        return Vec::new();
+    }
+
+    let mut entries = Vec::new();
+    let inner = &trimmed[1..trimmed.len() - 1];
+    for part in inner.split(',') {
+        let s = part.trim().trim_matches('"');
+        if s.is_empty() || is_maven_null_value(s) {
+            continue;
+        }
+        entries.push(PathBuf::from(s));
+    }
+    entries
 }
 
 fn combine_output(output: &std::process::Output) -> String {
@@ -614,9 +644,7 @@ fn collect_maven_build_files_rec(root: &Path, dir: &Path, out: &mut Vec<PathBuf>
                     out.push(extensions);
                 }
 
-                let wrapper_props = path
-                    .join("wrapper")
-                    .join("maven-wrapper.properties");
+                let wrapper_props = path.join("wrapper").join("maven-wrapper.properties");
                 if wrapper_props.is_file() {
                     out.push(wrapper_props);
                 }
