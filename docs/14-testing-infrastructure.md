@@ -278,6 +278,15 @@ cargo test -p nova-types --test javac_differential -- --ignored
 ./scripts/javac-validate.sh
 ```
 
+To focus on a subset of fixtures (same selection mechanism as `clone-test-projects.sh`):
+
+```bash
+./scripts/javac-validate.sh --only guava,spring-petclinic
+
+# or:
+NOVA_TEST_PROJECTS=guava,spring-petclinic ./scripts/javac-validate.sh
+```
+
 ---
 
 ### 5) Fuzzing (`cargo fuzz`)
