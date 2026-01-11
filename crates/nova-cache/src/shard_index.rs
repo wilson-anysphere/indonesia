@@ -70,47 +70,61 @@ pub fn load_shard_index(
     };
 
     // 1) Current versioned wrapper format.
-    match bincode_deserialize::<ShardIndexCacheFileOwned>(&bytes) {
-        Ok(file) if file.magic == SHARD_INDEX_CACHE_MAGIC => {
-            if file.cache_format_version != SHARD_INDEX_CACHE_FORMAT_VERSION {
+    if bytes.starts_with(&SHARD_INDEX_CACHE_MAGIC) {
+        let file: ShardIndexCacheFileOwned = match bincode_deserialize(&bytes) {
+            Ok(file) => file,
+            Err(err) => {
                 emit_cache_diagnostic(
                     shard_id,
                     &path,
-                    format_args!(
-                        "unsupported shard cache format version: expected {SHARD_INDEX_CACHE_FORMAT_VERSION}, found {}",
-                        file.cache_format_version
-                    ),
+                    format_args!("failed to decode shard cache wrapper: {err}"),
                 );
                 return Ok(None);
             }
+        };
 
-            if file.protocol_version != PROTOCOL_VERSION {
-                emit_cache_diagnostic(
-                    shard_id,
-                    &path,
-                    format_args!(
-                        "incompatible protocol version: expected {PROTOCOL_VERSION}, found {}",
-                        file.protocol_version
-                    ),
-                );
-                return Ok(None);
-            }
-
-            if file.payload.shard_id != shard_id {
-                emit_cache_diagnostic(
-                    shard_id,
-                    &path,
-                    format_args!(
-                        "shard id mismatch in cache payload: requested {shard_id}, found {}",
-                        file.payload.shard_id
-                    ),
-                );
-                return Ok(None);
-            }
-
-            return Ok(Some(file.payload));
+        if file.magic != SHARD_INDEX_CACHE_MAGIC {
+            emit_cache_diagnostic(shard_id, &path, format_args!("shard cache magic mismatch"));
+            return Ok(None);
         }
-        Ok(_) | Err(_) => {}
+
+        if file.cache_format_version != SHARD_INDEX_CACHE_FORMAT_VERSION {
+            emit_cache_diagnostic(
+                shard_id,
+                &path,
+                format_args!(
+                    "unsupported shard cache format version: expected {SHARD_INDEX_CACHE_FORMAT_VERSION}, found {}",
+                    file.cache_format_version
+                ),
+            );
+            return Ok(None);
+        }
+
+        if file.protocol_version != PROTOCOL_VERSION {
+            emit_cache_diagnostic(
+                shard_id,
+                &path,
+                format_args!(
+                    "incompatible protocol version: expected {PROTOCOL_VERSION}, found {}",
+                    file.protocol_version
+                ),
+            );
+            return Ok(None);
+        }
+
+        if file.payload.shard_id != shard_id {
+            emit_cache_diagnostic(
+                shard_id,
+                &path,
+                format_args!(
+                    "shard id mismatch in cache payload: requested {shard_id}, found {}",
+                    file.payload.shard_id
+                ),
+            );
+            return Ok(None);
+        }
+
+        return Ok(Some(file.payload));
     }
 
     // 2) Legacy persisted wrapper format (no magic bytes).
