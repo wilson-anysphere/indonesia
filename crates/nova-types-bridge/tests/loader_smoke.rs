@@ -198,3 +198,63 @@ fn parses_wildcard_type_arguments_in_field_signatures() {
     );
     assert_eq!(field.ty, expected);
 }
+
+#[test]
+fn resolves_self_referential_method_type_param_bounds() {
+    let comparable_stub = TypeDefStub {
+        binary_name: "java.lang.Comparable".to_string(),
+        access_flags: 0x0200, // ACC_INTERFACE
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: Some("<T:Ljava/lang/Object;>Ljava/lang/Object;".to_string()),
+        fields: vec![],
+        methods: vec![],
+    };
+
+    let util_stub = TypeDefStub {
+        binary_name: "com.example.Util".to_string(),
+        access_flags: 0x0000,
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: None,
+        fields: vec![],
+        methods: vec![MethodStub {
+            name: "id".to_string(),
+            descriptor: "(Ljava/lang/Object;)Ljava/lang/Object;".to_string(),
+            signature: Some("<T:Ljava/lang/Comparable<TT;>;>(TT;)TT;".to_string()),
+            access_flags: 0x0000,
+        }],
+    };
+
+    let mut provider = MapProvider::default();
+    provider
+        .stubs
+        .insert("java.lang.Comparable".to_string(), comparable_stub);
+    provider
+        .stubs
+        .insert("com.example.Util".to_string(), util_stub);
+
+    let mut store = nova_types::TypeStore::default();
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+
+    let util_id = loader
+        .ensure_class("com.example.Util")
+        .expect("Util should load");
+    let comparable_id = store
+        .lookup_class("java.lang.Comparable")
+        .expect("Comparable should have been loaded via method type param bound");
+
+    let util_def = store.class(util_id).unwrap();
+    let method = util_def.methods.iter().find(|m| m.name == "id").unwrap();
+
+    assert_eq!(method.type_params.len(), 1);
+    let t = method.type_params[0];
+
+    let tp = store.type_param(t).expect("method type param should be defined");
+    assert_eq!(
+        tp.upper_bounds,
+        vec![Type::class(comparable_id, vec![Type::TypeVar(t)])]
+    );
+    assert_eq!(method.params, vec![Type::TypeVar(t)]);
+    assert_eq!(method.return_type, Type::TypeVar(t));
+}
