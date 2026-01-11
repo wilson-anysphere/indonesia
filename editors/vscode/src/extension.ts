@@ -78,6 +78,25 @@ function isAiCompletionsEnabled(): boolean {
   return vscode.workspace.getConfiguration('nova').get<boolean>('aiCompletions.enabled', true);
 }
 
+function isAiCodeActionKind(kind: vscode.CodeActionKind | undefined): boolean {
+  const value = kind?.value;
+  return typeof value === 'string' && (value === 'nova.explain' || value.startsWith('nova.ai'));
+}
+
+function isAiCodeActionOrCommand(item: vscode.CodeAction | vscode.Command): boolean {
+  if (isAiCodeActionKind((item as vscode.CodeAction).kind)) {
+    return true;
+  }
+
+  const commandField = (item as vscode.CodeAction | vscode.Command).command as unknown;
+  if (typeof commandField === 'string') {
+    return commandField.startsWith('nova.ai.');
+  }
+
+  const commandName = (commandField as vscode.Command | undefined)?.command;
+  return typeof commandName === 'string' && commandName.startsWith('nova.ai.');
+}
+
 function clearAiCompletionCache(): void {
   aiItemsByContextId.clear();
   aiRequestsInFlight.clear();
@@ -297,6 +316,16 @@ export async function activate(context: vscode.ExtensionContext) {
         })();
 
         return result;
+      },
+      provideCodeActions: async (document, range, context, token, next) => {
+        const result = await next(document, range, context, token);
+        if (isAiEnabled() || !Array.isArray(result)) {
+          return result;
+        }
+
+        // Hide AI code actions when AI is disabled in settings, even if the
+        // server is configured to advertise them.
+        return result.filter((item) => !isAiCodeActionOrCommand(item));
       },
     },
   };

@@ -111,7 +111,7 @@
         "nova.ai.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Master toggle for Nova AI features. When disabled, the extension will not request or surface AI completions and will not pass NOVA_AI_* environment variables to nova-lsp."
+          "description": "Master toggle for Nova AI features. When disabled, the extension hides AI code actions/completions and will not pass NOVA_AI_* environment variables to nova-lsp."
         },
         "nova.aiCompletions.enabled": {
           "type": "boolean",

@@ -95,6 +95,7 @@ Changing these settings requires restarting the language server; the extension p
 - `nova.ai.enabled` (boolean): master toggle for AI features. When disabled, the extension:
   - stops polling `nova/completion/more`
   - does not surface cached AI completion items
+  - hides Nova AI code actions (e.g. "Explain this error", "Generate tests with AI")
   - strips `NOVA_AI_*` environment variables from the `nova-lsp` process env
 - `nova.aiCompletions.enabled` (boolean): enable multi-token completion requests.
 - `nova.aiCompletions.maxItems` (number): maximum number of AI completion items to request.
