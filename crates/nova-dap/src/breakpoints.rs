@@ -328,4 +328,31 @@ class C {
             }]
         );
     }
+
+    #[test]
+    fn chooses_earliest_site_on_a_line_when_multiple_sites_share_the_requested_line() {
+        let java = r#"package pkg;
+class C {
+  static int X = 1; int y = 2;
+}
+"#;
+
+        let mut db = InMemoryFileStore::new();
+        let file_id = db.file_id_for_path("C.java");
+        db.set_file_text(file_id, java.to_string());
+
+        // Both field initializers live on line 3; the mapper should
+        // deterministically pick the earliest site on that line.
+        let resolved = map_line_breakpoints(&db, file_id, &[3]);
+        assert_eq!(
+            resolved,
+            vec![ResolvedBreakpoint {
+                requested_line: 3,
+                resolved_line: 3,
+                verified: true,
+                enclosing_class: Some("pkg.C".to_string()),
+                enclosing_method: Some("<clinit>".to_string()),
+            }]
+        );
+    }
 }
