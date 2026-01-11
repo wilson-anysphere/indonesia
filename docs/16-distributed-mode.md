@@ -297,7 +297,8 @@ into more shards (more source roots) to bound per-message and per-worker memory.
 
 Remote mode is **not hardened** and should not be exposed to untrusted networks.
 
-- The authentication token (provided via `--auth-token`, `--auth-token-file`, or `--auth-token-env`)
+- The authentication token (prefer `--auth-token-file` or `--auth-token-env`; `--auth-token` is
+  discouraged because it exposes secrets via `argv`)
   is a **shared secret** and is sent by the worker during the initial handshake
   (`WorkerHello.auth_token`; in v3 this is the `WireFrame::Hello` body field).
   **Do not send it over plaintext TCP.**
