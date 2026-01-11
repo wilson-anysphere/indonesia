@@ -147,6 +147,15 @@ fn snapshot_diamond_operator() {
 }
 
 #[test]
+fn snapshot_qualified_generics() {
+    let input = include_str!("fixtures/qualified_generics.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("qualified_generics", formatted);
+    assert_idempotent("qualified_generics", input, &config);
+}
+
+#[test]
 fn on_type_formatting_triggers_inside_argument_lists() {
     let input = "class A {\n    void m() {\nfoo(1,2);\n    }\n}\n";
     let tree = parse(input);

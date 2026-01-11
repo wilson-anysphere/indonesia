@@ -496,30 +496,14 @@ impl<'a> FormatState<'a> {
         }
     }
 
-    fn should_start_generic(&self, prev: Option<SigToken>, next: Option<&Token>) -> bool {
+    fn should_start_generic(&self, tokens: &[Token], idx: usize, prev: Option<SigToken>) -> bool {
+        let next = Self::next_non_trivia(tokens, idx + 1);
+        let next2 = Self::next_non_trivia(tokens, idx + 2);
         let Some(next) = next else {
             return false;
         };
 
-        // Diamond operator `<>` in `new Foo<>()`.
-        if matches!(next, Token::Punct(Punct::Greater)) {
-            return matches!(prev, Some(SigToken::Word(info)) if info.kind == WordKind::New)
-                || matches!(prev, Some(SigToken::Word(info)) if info.type_like)
-                || matches!(prev, Some(SigToken::GenericClose { .. }))
-                || matches!(prev, Some(SigToken::Punct(Punct::Dot | Punct::DoubleColon)));
-        }
-
-        // Wildcards (`<?>`) and annotated type arguments are always type-ish.
-        let next_is_typeish = match next {
-            Token::Punct(Punct::Question) | Token::Punct(Punct::At) => true,
-            Token::Word(span) => looks_like_type_name(span.text(self.source)),
-            _ => false,
-        };
-        if !next_is_typeish {
-            return false;
-        }
-
-        match prev {
+        let prev_allows = match prev {
             None => true,
             Some(SigToken::Punct(Punct::Dot | Punct::DoubleColon)) => true,
             Some(SigToken::GenericClose { .. }) => true,
@@ -539,7 +523,36 @@ impl<'a> FormatState<'a> {
                     | Punct::UnsignedRightShift
             ),
             Some(SigToken::Literal | SigToken::Comment) => false,
+        };
+        if !prev_allows {
+            return false;
         }
+
+        // Diamond operator `<>` in `new Foo<>()`.
+        if matches!(next, Token::Punct(Punct::Greater)) {
+            return true;
+        }
+
+        let next_is_typeish = match next {
+            Token::Punct(Punct::Question) | Token::Punct(Punct::At) => true,
+            Token::Word(span) => {
+                let text = span.text(self.source);
+                looks_like_type_name(text) || matches!(next2, Some(Token::Punct(Punct::Dot)))
+            }
+            _ => false,
+        };
+        if !next_is_typeish {
+            return false;
+        }
+
+        // If the type argument begins with an identifier, require that we see a matching `>` before
+        // we hit disqualifying expression punctuation. This prevents treating comparisons like
+        // `MAX < MIN` as generics when there is no closing `>`.
+        if matches!(next, Token::Word(_)) && !has_generic_close_ahead(tokens, idx) {
+            return false;
+        }
+
+        true
     }
 
     fn generic_depth(&self) -> usize {
@@ -1062,9 +1075,7 @@ fn analyze_parens(tokens: &[Token], source: &str, config: &FormatConfig) -> Vec<
         if let Token::Punct(p) = tok {
             match p {
                 Punct::Less => {
-                    if state
-                        .should_start_generic(prev, FormatState::next_non_trivia(tokens, idx + 1))
-                    {
+                    if state.should_start_generic(tokens, idx, prev) {
                         state.generic_stack.push(GenericContext {
                             after_dot: matches!(
                                 prev,
@@ -1474,7 +1485,7 @@ fn write_token(
             }
             Punct::Less => {
                 let prev = state.last_sig;
-                let starts_generic = state.should_start_generic(prev, next);
+                let starts_generic = state.should_start_generic(tokens, idx, prev);
                 let sig = SigToken::Punct(Punct::Less);
 
                 state.write_indent();
@@ -1678,6 +1689,118 @@ fn is_annotation_args(tokens: &[Token], l_paren_idx: usize) -> bool {
     }
 
     false
+}
+
+fn has_generic_close_ahead(tokens: &[Token], l_angle_idx: usize) -> bool {
+    let mut generic_depth: usize = 1;
+    let mut paren_depth: usize = 0;
+    let mut bracket_depth: usize = 0;
+    let mut brace_depth: usize = 0;
+
+    // Limit lookahead to keep the formatter linear-ish even on pathological input.
+    let limit = 256usize;
+    let mut steps = 0usize;
+
+    for tok in tokens.iter().skip(l_angle_idx + 1) {
+        if steps >= limit {
+            break;
+        }
+        steps += 1;
+
+        let is_top_level =
+            paren_depth == 0 && bracket_depth == 0 && brace_depth == 0;
+
+        match tok {
+            Token::BlankLine => continue,
+            Token::Punct(Punct::LParen) => paren_depth += 1,
+            Token::Punct(Punct::RParen) => {
+                if paren_depth == 0 {
+                    return false;
+                }
+                paren_depth -= 1;
+            }
+            Token::Punct(Punct::LBracket) => bracket_depth += 1,
+            Token::Punct(Punct::RBracket) => {
+                if bracket_depth == 0 {
+                    return false;
+                }
+                bracket_depth -= 1;
+            }
+            Token::Punct(Punct::LBrace) => brace_depth += 1,
+            Token::Punct(Punct::RBrace) => {
+                if brace_depth == 0 {
+                    return false;
+                }
+                brace_depth -= 1;
+            }
+            Token::Punct(Punct::Less) if is_top_level => {
+                generic_depth = generic_depth.saturating_add(1);
+            }
+            Token::Punct(Punct::Greater) if is_top_level => {
+                generic_depth = generic_depth.saturating_sub(1);
+                if generic_depth == 0 {
+                    return true;
+                }
+            }
+            Token::Punct(Punct::RightShift) if is_top_level => {
+                generic_depth = generic_depth.saturating_sub(2);
+                if generic_depth == 0 {
+                    return true;
+                }
+            }
+            Token::Punct(Punct::UnsignedRightShift) if is_top_level => {
+                generic_depth = generic_depth.saturating_sub(3);
+                if generic_depth == 0 {
+                    return true;
+                }
+            }
+            Token::Punct(p) if is_top_level && is_disqualifying_generic_punct(*p) => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
+fn is_disqualifying_generic_punct(p: Punct) -> bool {
+    matches!(
+        p,
+        Punct::Semicolon
+            | Punct::Colon
+            | Punct::Eq
+            | Punct::EqEq
+            | Punct::BangEq
+            | Punct::LessEq
+            | Punct::GreaterEq
+            | Punct::AmpAmp
+            | Punct::PipePipe
+            | Punct::Plus
+            | Punct::Minus
+            | Punct::Star
+            | Punct::Slash
+            | Punct::Percent
+            | Punct::Caret
+            | Punct::Pipe
+            | Punct::Bang
+            | Punct::Tilde
+            | Punct::PlusPlus
+            | Punct::MinusMinus
+            | Punct::LeftShift
+            | Punct::RightShiftEq
+            | Punct::UnsignedRightShiftEq
+            | Punct::LeftShiftEq
+            | Punct::PlusEq
+            | Punct::MinusEq
+            | Punct::StarEq
+            | Punct::SlashEq
+            | Punct::PercentEq
+            | Punct::AmpEq
+            | Punct::PipeEq
+            | Punct::CaretEq
+            | Punct::Arrow
+    )
 }
 
 fn count_line_breaks(text: &str) -> u32 {

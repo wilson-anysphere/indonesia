@@ -1,0 +1,10 @@
+class QualifiedGenerics{
+java.util.List<java.lang.String>xs;
+java.util.Map<java.lang.String,java.util.List<java.lang.Integer>>map;
+java.util.List<java.util.Map.Entry<java.lang.String,java.lang.Integer>>entries;
+
+void m(){
+java.util.List<java.lang.String>ys=new java.util.ArrayList<java.lang.String>();
+}
+}
+
