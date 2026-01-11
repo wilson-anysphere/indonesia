@@ -39,6 +39,8 @@ pub enum BreakpointDisposition {
     Log { message: String },
 }
 
+const ARRAY_CHILD_SAMPLE: i64 = 25;
+
 #[derive(Debug, Error)]
 pub enum DebuggerError {
     #[error(transparent)]
@@ -342,7 +344,6 @@ impl Debugger {
     fn invalidate_handles(&mut self) {
         self.frame_handles.clear();
         self.var_handles.clear();
-        self.objects.clear_unpinned();
     }
 
     pub fn jdwp_client(&self) -> JdwpClient {
@@ -1152,10 +1153,12 @@ impl Debugger {
 
         let mut out = Vec::with_capacity(in_scope.len());
         for (var, value) in in_scope.into_iter().zip(values.into_iter()) {
+            let name = var.name;
             out.push(
                 self.render_variable(
                     cancel,
-                    var.name,
+                    name.clone(),
+                    Some(name),
                     value,
                     Some(signature_to_type_name(&var.signature)),
                 )
@@ -1199,33 +1202,127 @@ impl Debugger {
         &mut self,
         cancel: &CancellationToken,
         handle: ObjectHandle,
-        _start: Option<i64>,
-        _count: Option<i64>,
+        start: Option<i64>,
+        count: Option<i64>,
     ) -> Result<Vec<serde_json::Value>> {
         check_cancel(cancel)?;
         let Some(object_id) = self.objects.object_id(handle) else {
             return Ok(Vec::new());
         };
 
-        let children =
-            match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
-                Ok(children) => children,
-                Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
-                Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
-                    self.objects.mark_invalid_object_id(object_id);
-                    return Ok(vec![invalid_collected_variable()]);
-                }
-                Err(err) => return Err(err.into()),
-            };
+        let runtime_type = self.objects.runtime_type(handle).unwrap_or_default();
+        if runtime_type.ends_with("[]") {
+            return self
+                .array_variables(cancel, handle, object_id, start, count)
+                .await;
+        }
+
+        let parent_eval = self.objects.evaluate_name(handle).map(|s| s.to_string());
+
+        let children = match cancellable_jdwp(cancel, self.inspector.object_children(object_id)).await {
+            Ok(children) => children,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                self.objects.mark_invalid_object_id(object_id);
+                return Ok(vec![invalid_collected_variable()]);
+            }
+            Err(err) => return Err(err.into()),
+        };
 
         let mut out = Vec::with_capacity(children.len());
         for child in children {
             check_cancel(cancel)?;
+            let name = child.name;
+            let eval = parent_eval.as_ref().and_then(|base| {
+                is_identifier(&name).then(|| format!("{base}.{name}"))
+            });
             out.push(
-                self.render_variable(cancel, child.name, child.value, child.static_type)
+                self.render_variable(cancel, name, eval, child.value, child.static_type)
                     .await?,
             );
         }
+        Ok(out)
+    }
+
+    async fn array_variables(
+        &mut self,
+        cancel: &CancellationToken,
+        handle: ObjectHandle,
+        array_id: ObjectId,
+        start: Option<i64>,
+        count: Option<i64>,
+    ) -> Result<Vec<serde_json::Value>> {
+        check_cancel(cancel)?;
+
+        let length = match cancellable_jdwp(cancel, self.jdwp.array_reference_length(array_id)).await {
+            Ok(length) => length.max(0) as i64,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                self.objects.mark_invalid_object_id(array_id);
+                return Ok(vec![invalid_collected_variable()]);
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let element_type = self
+            .objects
+            .runtime_type(handle)
+            .and_then(|t| t.strip_suffix("[]"))
+            .unwrap_or("<unknown>")
+            .to_string();
+
+        let parent_eval = self.objects.evaluate_name(handle).map(|s| s.to_string());
+        let paging = start.is_some() || count.is_some();
+
+        let start_index = start.unwrap_or(0).max(0).min(length);
+        let max_count = length.saturating_sub(start_index);
+        let count = count.unwrap_or(ARRAY_CHILD_SAMPLE).max(0).min(max_count);
+
+        let values = match cancellable_jdwp(
+            cancel,
+            self.jdwp.array_reference_get_values(array_id, start_index as i32, count as i32),
+        )
+        .await
+        {
+            Ok(values) => values,
+            Err(JdwpError::Cancelled) => return Err(JdwpError::Cancelled.into()),
+            Err(JdwpError::VmError(code)) if code == ERROR_INVALID_OBJECT => {
+                self.objects.mark_invalid_object_id(array_id);
+                return Ok(vec![invalid_collected_variable()]);
+            }
+            Err(err) => return Err(err.into()),
+        };
+
+        let mut out = Vec::with_capacity(values.len() + usize::from(!paging));
+        if !paging {
+            out.push(
+                self.render_variable(
+                    cancel,
+                    "length",
+                    parent_eval.as_ref().map(|base| format!("{base}.length")),
+                    JdwpValue::Int(length as i32),
+                    Some("int".to_string()),
+                )
+                .await?,
+            );
+        }
+
+        for (idx, value) in values.into_iter().enumerate() {
+            check_cancel(cancel)?;
+            let idx = start_index + idx as i64;
+            let eval = parent_eval.as_ref().map(|base| format!("{base}[{idx}]"));
+            out.push(
+                self.render_variable(
+                    cancel,
+                    format!("[{idx}]"),
+                    eval,
+                    value,
+                    Some(element_type.clone()),
+                )
+                .await?,
+            );
+        }
+
         Ok(out)
     }
 
@@ -1268,6 +1365,7 @@ impl Debugger {
         &mut self,
         cancel: &CancellationToken,
         name: impl Into<String>,
+        evaluate_name: Option<String>,
         value: JdwpValue,
         static_type: Option<String>,
     ) -> Result<serde_json::Value> {
@@ -1276,12 +1374,20 @@ impl Debugger {
         let formatted = self
             .format_value(cancel, &value, static_type.as_deref(), 0)
             .await?;
+
+        let evaluate_name = evaluate_name.or_else(|| Some(name.clone()));
+        if let Some(eval) = evaluate_name.clone() {
+            if let Some(handle) = ObjectHandle::from_variables_reference(formatted.variables_reference) {
+                self.objects.set_evaluate_name(handle, eval);
+            }
+        }
+
         Ok(variable_json(
             name.clone(),
             formatted.value,
             formatted.type_name,
             formatted.variables_reference,
-            Some(name),
+            evaluate_name,
             formatted.presentation_hint,
         ))
     }

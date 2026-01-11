@@ -686,7 +686,7 @@ async fn dap_wire_handle_tables_are_stable_within_stop_and_invalidated_on_resume
 }
 
 #[tokio::test]
-async fn dap_object_handles_are_invalidated_on_resume_unless_pinned() {
+async fn dap_object_handles_are_stable_across_stops_and_pinning_exposes_them_in_a_scope() {
     let jdwp = MockJdwpServer::spawn().await.unwrap();
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
@@ -793,7 +793,8 @@ async fn dap_object_handles_are_invalidated_on_resume_unless_pinned() {
         .unwrap();
     assert!(obj_ref > OBJECT_HANDLE_BASE);
 
-    // Not pinned: after resume and the next stop, the old object handle should be invalid.
+    // Not pinned: object handles should remain stable across resumes as long as the
+    // underlying object is still alive.
     send_request(&mut writer, 9, "continue", json!({ "threadId": thread_id })).await;
     let (_continue_resp, _stopped) = read_response_and_event(&mut reader, 9, "stopped").await;
 
@@ -809,7 +810,7 @@ async fn dap_object_handles_are_invalidated_on_resume_unless_pinned() {
         .pointer("/body/variables")
         .and_then(|v| v.as_array())
         .unwrap();
-    assert!(stale.is_empty());
+    assert!(!stale.is_empty());
 
     // Pin a fresh object handle.
     send_request(

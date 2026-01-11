@@ -48,6 +48,7 @@ impl std::fmt::Display for ObjectHandle {
 struct ObjectEntry {
     object_id: ObjectId,
     runtime_type: String,
+    evaluate_name: Option<String>,
     invalid: bool,
 }
 
@@ -120,6 +121,7 @@ impl ObjectRegistry {
             ObjectEntry {
                 object_id,
                 runtime_type: runtime_type.to_string(),
+                evaluate_name: None,
                 invalid: false,
             },
         );
@@ -134,6 +136,18 @@ impl ObjectRegistry {
         self.handle_to_entry
             .get(&handle)
             .map(|e| e.runtime_type.as_str())
+    }
+
+    pub fn set_evaluate_name(&mut self, handle: ObjectHandle, evaluate_name: String) {
+        if let Some(entry) = self.handle_to_entry.get_mut(&handle) {
+            entry.evaluate_name = Some(evaluate_name);
+        }
+    }
+
+    pub fn evaluate_name(&self, handle: ObjectHandle) -> Option<&str> {
+        self.handle_to_entry
+            .get(&handle)
+            .and_then(|e| e.evaluate_name.as_deref())
     }
 
     pub fn mark_invalid_object_id(&mut self, object_id: ObjectId) {
