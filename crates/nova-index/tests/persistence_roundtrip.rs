@@ -66,7 +66,7 @@ fn indexes_roundtrip_and_invalidation() {
         },
     );
 
-    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     let loaded = load_indexes(&cache_dir, &snapshot_v1).unwrap().unwrap();
     assert!(loaded.invalidated_files.is_empty());
@@ -155,7 +155,7 @@ fn indexes_invalidate_new_files() {
         },
     );
 
-    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     // Add a new file; it won't be present in the stored indexes, so it must be
     // marked as needing indexing on startup.
@@ -219,7 +219,7 @@ fn indexes_invalidate_deleted_files() {
         },
     );
 
-    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     // Delete B.java; it must be invalidated and stripped from indexes.
     std::fs::remove_file(&b).unwrap();
@@ -261,7 +261,7 @@ fn corrupt_metadata_is_cache_miss() {
         },
     );
 
-    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     std::fs::write(cache_dir.metadata_path(), "this is not json").unwrap();
 
@@ -303,7 +303,7 @@ fn load_indexes_fast_detects_mtime_or_size_changes() {
             column: 1,
         },
     );
-    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     // Modify A.java in a way that changes its size so the fast fingerprint must change even if
     // the filesystem has coarse mtime resolution.
@@ -348,7 +348,7 @@ fn load_indexes_fast_does_not_read_project_file_contents() {
             column: 1,
         },
     );
-    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
     // should still work.
@@ -390,7 +390,7 @@ fn load_indexes_fast_schema_mismatch_is_cache_miss() {
             column: 1,
         },
     );
-    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     // Sanity check: the cache is readable through the fast path.
     assert!(

@@ -3501,6 +3501,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "criterion",
+ "fs2",
  "nova-cache",
  "nova-core",
  "nova-fuzzy",

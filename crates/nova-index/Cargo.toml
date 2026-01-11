@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 blake3 = "1.5"
+fs2 = "0.4"
 nova-cache = { path = "../nova-cache" }
 nova-core = { path = "../nova-core" }
 nova-fuzzy = { path = "../nova-fuzzy" }

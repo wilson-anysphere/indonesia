@@ -58,7 +58,7 @@ fn bench_mmap_storage(c: &mut Criterion) {
 
     let mut indexes = ProjectIndexes::default();
     build_symbol_index_entries(&mut indexes, "A.java", 50_000);
-    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     c.bench_function("indexes_load_archives", |b| {
         b.iter(|| {
@@ -86,4 +86,3 @@ fn bench_mmap_storage(c: &mut Criterion) {
 
 criterion_group!(benches, bench_mmap_storage);
 criterion_main!(benches);
-

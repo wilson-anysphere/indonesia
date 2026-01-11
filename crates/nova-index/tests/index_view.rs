@@ -85,7 +85,7 @@ fn index_view_filters_invalidated_files_without_materializing() {
         },
     );
 
-    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     let view_v1 = load_index_view(&cache_dir, &snapshot_v1).unwrap().unwrap();
     assert!(view_v1.invalidated_files.is_empty());
@@ -236,7 +236,7 @@ fn index_view_filters_deleted_files() {
             },
         );
     }
-    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     // Delete B.java; it should be invalidated and filtered out of queries.
     std::fs::remove_file(&b).unwrap();
@@ -291,7 +291,7 @@ fn index_view_marks_new_files_invalidated_without_filtering_existing_results() {
             },
         );
     }
-    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     // Add C.java (new file): should be marked invalidated, but does not affect
     // queries into existing persisted results.
@@ -356,7 +356,7 @@ fn index_view_fast_filters_invalidated_files_without_materializing() {
             },
         );
     }
-    save_indexes(&cache_dir, &snapshot_v1, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot_v1, &mut indexes).unwrap();
 
     // Modify A.java in a way that changes its size so the fast fingerprint must change even if
     // the filesystem has coarse mtime resolution.
@@ -407,7 +407,7 @@ fn index_view_fast_does_not_read_project_file_contents() {
             column: 1,
         },
     );
-    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
     // should still work.
@@ -448,7 +448,7 @@ fn index_view_fast_schema_mismatch_is_cache_miss() {
             column: 1,
         },
     );
-    save_indexes(&cache_dir, &snapshot, &indexes).unwrap();
+    save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
 
     // Sanity check: the cache is readable through the fast path.
     assert!(

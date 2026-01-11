@@ -177,8 +177,8 @@ impl Workspace {
 
     /// Index a project and persist the resulting artifacts into Nova's persistent cache.
     pub fn index_and_write_cache(&self) -> Result<IndexReport> {
-        let (snapshot, cache_dir, indexes, metrics) = self.build_indexes()?;
-        save_indexes(&cache_dir, &snapshot, &indexes).context("failed to persist indexes")?;
+        let (snapshot, cache_dir, mut indexes, metrics) = self.build_indexes()?;
+        save_indexes(&cache_dir, &snapshot, &mut indexes).context("failed to persist indexes")?;
         self.write_cache_perf(&cache_dir, &metrics)?;
         Ok(IndexReport {
             root: snapshot.project_root().to_path_buf(),
@@ -530,8 +530,8 @@ impl Workspace {
     pub fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>> {
         // Keep the symbol index up to date by running the incremental indexer
         // and persisting the updated indexes into the on-disk cache.
-        let (snapshot, cache_dir, indexes, metrics) = self.build_indexes()?;
-        save_indexes(&cache_dir, &snapshot, &indexes).context("failed to persist indexes")?;
+        let (snapshot, cache_dir, mut indexes, metrics) = self.build_indexes()?;
+        save_indexes(&cache_dir, &snapshot, &mut indexes).context("failed to persist indexes")?;
         self.write_cache_perf(&cache_dir, &metrics)?;
 
         const WORKSPACE_SYMBOL_LIMIT: usize = 200;

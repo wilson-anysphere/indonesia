@@ -35,6 +35,7 @@ pub struct SymbolLocation {
 )]
 #[archive(check_bytes)]
 pub struct SymbolIndex {
+    pub generation: u64,
     pub symbols: BTreeMap<String, Vec<SymbolLocation>>,
 }
 
@@ -85,6 +86,7 @@ pub struct ReferenceLocation {
 )]
 #[archive(check_bytes)]
 pub struct ReferenceIndex {
+    pub generation: u64,
     pub references: BTreeMap<String, Vec<ReferenceLocation>>,
 }
 
@@ -134,6 +136,7 @@ pub struct InheritanceEdge {
 )]
 #[archive(check_bytes)]
 pub struct InheritanceIndex {
+    pub generation: u64,
     edges: Vec<InheritanceEdge>,
     pub subtypes: BTreeMap<String, Vec<String>>,
     pub supertypes: BTreeMap<String, Vec<String>>,
@@ -244,6 +247,7 @@ pub struct AnnotationLocation {
 )]
 #[archive(check_bytes)]
 pub struct AnnotationIndex {
+    pub generation: u64,
     pub annotations: BTreeMap<String, Vec<AnnotationLocation>>,
 }
 
@@ -284,6 +288,13 @@ pub struct ProjectIndexes {
 }
 
 impl ProjectIndexes {
+    pub fn set_generation(&mut self, generation: u64) {
+        self.symbols.generation = generation;
+        self.references.generation = generation;
+        self.inheritance.generation = generation;
+        self.annotations.generation = generation;
+    }
+
     pub fn invalidate_file(&mut self, file: &str) {
         self.symbols.invalidate_file(file);
         self.references.invalidate_file(file);

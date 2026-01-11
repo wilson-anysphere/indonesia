@@ -83,7 +83,7 @@ fn sharded_roundtrip_loads_all_shards() {
         },
     );
 
-    save_sharded_indexes(&cache_dir, &snapshot, shard_count, shards.clone()).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     let loaded = load_sharded_index_archives(&cache_dir, &snapshot, shard_count)
         .unwrap()
@@ -148,7 +148,7 @@ fn invalidated_files_map_to_affected_shards() {
             column: 1,
         },
     );
-    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, shards).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot_v1, shard_count, &mut shards).unwrap();
 
     // Change only A.java so only its shard is affected.
     std::fs::write(&a, "class A { void m() {} }").unwrap();
@@ -290,7 +290,7 @@ fn corrupt_shard_is_partial_cache_miss() {
             },
         );
     }
-    save_sharded_indexes(&cache_dir, &snapshot, shard_count, shards).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Corrupt one shard file.
     let corrupt_shard = shard_id_for_path(&paths[0], shard_count);
@@ -362,7 +362,7 @@ fn sharded_save_rewrites_all_shards_when_shard_count_changes() {
                 column: 1,
             },
         );
-    save_sharded_indexes(&cache_dir, &snapshot, shard_count_v1, shards_v1).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count_v1, &mut shards_v1).unwrap();
 
     let mut shards_v2 = empty_shards(shard_count_v2);
     shards_v2[shard_id_for_path(&file, shard_count_v2) as usize]
@@ -375,7 +375,7 @@ fn sharded_save_rewrites_all_shards_when_shard_count_changes() {
                 column: 1,
             },
         );
-    save_sharded_indexes(&cache_dir, &snapshot, shard_count_v2, shards_v2.clone()).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count_v2, &mut shards_v2).unwrap();
 
     let loaded = load_sharded_index_archives(&cache_dir, &snapshot, shard_count_v2)
         .unwrap()
@@ -425,7 +425,7 @@ fn sharded_fast_load_does_not_read_project_file_contents() {
             column: 1,
         },
     );
-    save_sharded_indexes(&cache_dir, &snapshot, shard_count, shards).unwrap();
+    save_sharded_indexes(&cache_dir, &snapshot, shard_count, &mut shards).unwrap();
 
     // Replace the file with a directory. Reading contents would now fail, but metadata access
     // should still work.

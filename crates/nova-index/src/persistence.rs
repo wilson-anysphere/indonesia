@@ -3,11 +3,15 @@ use crate::indexes::{
     ArchivedSymbolLocation, InheritanceIndex, ProjectIndexes, ReferenceIndex, ReferenceLocation,
     SymbolIndex, SymbolLocation,
 };
+use fs2::FileExt as _;
 use nova_cache::{CacheDir, CacheMetadata, ProjectSnapshot};
 use std::collections::BTreeSet;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 
-pub const INDEX_SCHEMA_VERSION: u32 = 1;
+pub const INDEX_SCHEMA_VERSION: u32 = 2;
+
+const INDEX_WRITE_LOCK_NAME: &str = "indexes.lock";
 
 pub const DEFAULT_SHARD_COUNT: u32 = 64;
 
@@ -287,10 +291,24 @@ impl ProjectIndexesView {
 pub fn save_indexes(
     cache_dir: &CacheDir,
     snapshot: &ProjectSnapshot,
-    indexes: &ProjectIndexes,
+    indexes: &mut ProjectIndexes,
 ) -> Result<(), IndexPersistenceError> {
     let indexes_dir = cache_dir.indexes_dir();
     std::fs::create_dir_all(&indexes_dir)?;
+
+    let _lock = acquire_index_write_lock(&indexes_dir)?;
+
+    let metadata_path = cache_dir.metadata_path();
+    let (mut metadata, previous_generation) = match CacheMetadata::load(&metadata_path) {
+        Ok(existing) if existing.is_compatible() && &existing.project_hash == snapshot.project_hash() => {
+            let previous = existing.last_updated_millis;
+            (existing, previous)
+        }
+        _ => (CacheMetadata::new(snapshot), 0),
+    };
+
+    let generation = next_generation(previous_generation);
+    indexes.set_generation(generation);
 
     write_index_file(
         indexes_dir.join("symbols.idx"),
@@ -313,16 +331,8 @@ pub fn save_indexes(
         &indexes.annotations,
     )?;
 
-    let metadata_path = cache_dir.metadata_path();
-    let mut metadata = match CacheMetadata::load(&metadata_path) {
-        Ok(existing)
-            if existing.is_compatible() && &existing.project_hash == snapshot.project_hash() =>
-        {
-            existing
-        }
-        _ => CacheMetadata::new(snapshot),
-    };
     metadata.update_from_snapshot(snapshot);
+    metadata.last_updated_millis = generation;
     metadata.save(metadata_path)?;
     Ok(())
 }
@@ -381,6 +391,17 @@ pub fn load_index_archives(
         Some(value) => value,
         None => return Ok(None),
     };
+
+    let generation = symbols.generation;
+    if references.generation != generation
+        || inheritance.generation != generation
+        || annotations.generation != generation
+    {
+        return Ok(None);
+    }
+    if metadata.last_updated_millis != generation {
+        return Ok(None);
+    }
 
     let invalidated = metadata.diff_files(current_snapshot);
 
@@ -455,6 +476,17 @@ pub fn load_index_archives_fast(
         Some(value) => value,
         None => return Ok(None),
     };
+
+    let generation = symbols.generation;
+    if references.generation != generation
+        || inheritance.generation != generation
+        || annotations.generation != generation
+    {
+        return Ok(None);
+    }
+    if metadata.last_updated_millis != generation {
+        return Ok(None);
+    }
 
     let invalidated = metadata.diff_files_fast(&current_snapshot);
 
@@ -640,6 +672,35 @@ where
         .unwrap_or_default()
 }
 
+struct IndexWriteLock {
+    file: std::fs::File,
+}
+
+impl Drop for IndexWriteLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn acquire_index_write_lock(indexes_dir: &Path) -> Result<Option<IndexWriteLock>, IndexPersistenceError> {
+    let lock_path = indexes_dir.join(INDEX_WRITE_LOCK_NAME);
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+
+    match file.lock_exclusive() {
+        Ok(()) => Ok(Some(IndexWriteLock { file })),
+        Err(_) => Ok(None),
+    }
+}
+
+fn next_generation(previous_generation: u64) -> u64 {
+    let now = nova_cache::now_millis();
+    std::cmp::max(now, previous_generation.saturating_add(1))
+}
+
 // ---------------------------------------------------------------------
 // Sharded persistence (incremental, per-shard archives)
 // ---------------------------------------------------------------------
@@ -799,7 +860,7 @@ pub fn save_sharded_indexes(
     cache_dir: &CacheDir,
     snapshot: &ProjectSnapshot,
     shard_count: u32,
-    shards: Vec<ProjectIndexes>,
+    shards: &mut [ProjectIndexes],
 ) -> Result<(), IndexPersistenceError> {
     if shard_count == 0 {
         return Err(IndexPersistenceError::InvalidShardCount { shard_count });
@@ -812,6 +873,9 @@ pub fn save_sharded_indexes(
     }
 
     let indexes_dir = cache_dir.indexes_dir();
+    std::fs::create_dir_all(&indexes_dir)?;
+    let _lock = acquire_index_write_lock(&indexes_dir)?;
+
     let shards_root = indexes_dir.join(SHARDS_DIR_NAME);
     std::fs::create_dir_all(&shards_root)?;
 
@@ -821,12 +885,19 @@ pub fn save_sharded_indexes(
     // Write/update shard manifest so loads can treat shard-count changes as a cache miss.
     write_shard_manifest(&shards_root, shard_count)?;
 
-    // Determine which shards need to be rewritten based on the previous metadata snapshot.
     let metadata_path = cache_dir.metadata_path();
     let previous_metadata = CacheMetadata::load(&metadata_path)
         .ok()
         .filter(|m| m.is_compatible() && &m.project_hash == snapshot.project_hash());
 
+    let generation = next_generation(
+        previous_metadata
+            .as_ref()
+            .map(|m| m.last_updated_millis)
+            .unwrap_or(0),
+    );
+
+    // Determine which shards need to be rewritten based on the previous metadata snapshot.
     let mut shards_to_write = if shard_count_changed {
         // Existing shards were written with a different modulo space, so they are not reusable.
         (0..shard_count).collect()
@@ -849,7 +920,8 @@ pub fn save_sharded_indexes(
     for shard_id in shards_to_write {
         let shard_dir = shard_dir(&shards_root, shard_id);
         std::fs::create_dir_all(&shard_dir)?;
-        let shard = &shards[shard_id as usize];
+        let shard = &mut shards[shard_id as usize];
+        shard.set_generation(generation);
 
         write_index_file(
             shard_dir.join("symbols.idx"),
@@ -879,6 +951,7 @@ pub fn save_sharded_indexes(
         None => CacheMetadata::new(snapshot),
     };
     metadata.update_from_snapshot(snapshot);
+    metadata.last_updated_millis = generation;
     metadata.save(metadata_path)?;
 
     Ok(())
@@ -1113,6 +1186,14 @@ fn load_shard_archives(shard_dir: &Path) -> Option<LoadedShardIndexArchives> {
         shard_dir.join("annotations.idx"),
         nova_storage::ArtifactKind::AnnotationIndex,
     )?;
+
+    let generation = symbols.generation;
+    if references.generation != generation
+        || inheritance.generation != generation
+        || annotations.generation != generation
+    {
+        return None;
+    }
 
     Some(LoadedShardIndexArchives {
         symbols,
