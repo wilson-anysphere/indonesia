@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use nova_classfile::{
@@ -49,11 +49,18 @@ impl From<nova_classfile::Error> for TypeLoadError {
 pub struct TypeStoreLoader<'a> {
     store: &'a mut TypeStore,
     provider: &'a dyn TypeProvider,
+    in_progress: HashSet<String>,
+    loaded: HashSet<String>,
 }
 
 impl<'a> TypeStoreLoader<'a> {
     pub fn new(store: &'a mut TypeStore, provider: &'a dyn TypeProvider) -> Self {
-        Self { store, provider }
+        Self {
+            store,
+            provider,
+            in_progress: HashSet::new(),
+            loaded: HashSet::new(),
+        }
     }
 
     pub fn store(&self) -> &TypeStore {
@@ -108,20 +115,30 @@ impl<'a> TypeStoreLoader<'a> {
             self.bootstrap_well_known()?;
         }
 
-        if let Some(id) = self.store.lookup_class(binary_name) {
-            return Ok(id);
+        if self.loaded.contains(binary_name) || self.in_progress.contains(binary_name) {
+            return self
+                .store
+                .lookup_class(binary_name)
+                .ok_or_else(|| TypeLoadError::MissingType(binary_name.to_string()));
         }
 
-        let stub = self
-            .provider
-            .lookup_type(binary_name)
-            .ok_or_else(|| TypeLoadError::MissingType(binary_name.to_string()))?;
+        let existing = self.store.lookup_class(binary_name);
+        let Some(stub) = self.provider.lookup_type(binary_name) else {
+            if let Some(id) = existing {
+                self.loaded.insert(binary_name.to_string());
+                return Ok(id);
+            }
+            return Err(TypeLoadError::MissingType(binary_name.to_string()));
+        };
 
         // Reserve an id/placeholder first so self-referential signatures (e.g.
         // `Enum<E extends Enum<E>>`) can resolve back to this id during parsing.
         let id = self.store.intern_class_id(binary_name);
+        self.in_progress.insert(binary_name.to_string());
         let def = self.build_class_def(binary_name, &stub)?;
         self.store.define_class(id, def);
+        self.in_progress.remove(binary_name);
+        self.loaded.insert(binary_name.to_string());
 
         Ok(id)
     }
