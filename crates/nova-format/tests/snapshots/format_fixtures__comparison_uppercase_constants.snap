@@ -1,0 +1,10 @@
+---
+source: crates/nova-format/tests/format_fixtures.rs
+expression: formatted
+---
+class CompareConstants {
+    boolean m(int MAX, int MIN) {
+        return MAX < MIN && MIN > 0;
+    }
+}
+
