@@ -415,6 +415,9 @@ impl<'a> Lexer<'a> {
         if frac.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());
         }
+        if frac.invalid_underscore {
+            return Err("`_` must be between digits in numeric literal".to_string());
+        }
 
         if self.try_scan_exponent_part(b'e', b'E')? {
             // already consumed exponent
@@ -457,6 +460,9 @@ impl<'a> Lexer<'a> {
                 if frac.trailing_underscore {
                     return Err("numeric literal cannot end with `_`".to_string());
                 }
+                if frac.invalid_underscore {
+                    return Err("`_` must be between digits in numeric literal".to_string());
+                }
             }
         }
 
@@ -472,6 +478,9 @@ impl<'a> Lexer<'a> {
                         .to_string(),
                 );
             }
+            if whole.invalid_underscore {
+                return Err("`_` must be between digits in numeric literal".to_string());
+            }
             return Ok(kind);
         }
 
@@ -481,6 +490,9 @@ impl<'a> Lexer<'a> {
                     "`_` is not allowed at the end of the integer part of a numeric literal"
                         .to_string(),
                 );
+            }
+            if whole.invalid_underscore {
+                return Err("`_` must be between digits in numeric literal".to_string());
             }
             return Ok(SyntaxKind::DoubleLiteral);
         }
@@ -499,6 +511,9 @@ impl<'a> Lexer<'a> {
         }
         if whole.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());
+        }
+        if whole.invalid_underscore {
+            return Err("`_` must be between digits in numeric literal".to_string());
         }
 
         // Validate octal digits when the literal starts with `0` and is longer than `0`.
@@ -566,6 +581,9 @@ impl<'a> Lexer<'a> {
                 if after.trailing_underscore {
                     return Err("numeric literal cannot end with `_`".to_string());
                 }
+                if after.invalid_underscore {
+                    return Err("`_` must be between digits in numeric literal".to_string());
+                }
             }
         }
 
@@ -576,6 +594,9 @@ impl<'a> Lexer<'a> {
             }
             if before.trailing_underscore {
                 return Err("numeric literal cannot end with `_`".to_string());
+            }
+            if before.invalid_underscore {
+                return Err("`_` must be between digits in numeric literal".to_string());
             }
             if before.digits == 0 && !has_dot {
                 return Err("expected hexadecimal digits after `0x`".to_string());
@@ -608,6 +629,9 @@ impl<'a> Lexer<'a> {
         if before.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());
         }
+        if before.invalid_underscore {
+            return Err("`_` must be between digits in numeric literal".to_string());
+        }
 
         let suffix = self.peek_byte(0);
         if matches!(suffix, Some(b'l' | b'L')) {
@@ -631,6 +655,9 @@ impl<'a> Lexer<'a> {
         }
         if digits.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());
+        }
+        if digits.invalid_underscore {
+            return Err("`_` must be between digits in numeric literal".to_string());
         }
         if let Some(b) = digits.invalid_digit {
             return Err(format!("invalid digit `{}` in binary literal", b as char));
@@ -661,6 +688,9 @@ impl<'a> Lexer<'a> {
         if exp.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());
         }
+        if exp.invalid_underscore {
+            return Err("`_` must be between digits in numeric literal".to_string());
+        }
         Ok(())
     }
 
@@ -686,6 +716,9 @@ impl<'a> Lexer<'a> {
         }
         if exp.trailing_underscore {
             return Err("numeric literal cannot end with `_`".to_string());
+        }
+        if exp.invalid_underscore {
+            return Err("`_` must be between digits in numeric literal".to_string());
         }
 
         Ok(true)
@@ -714,12 +747,22 @@ impl<'a> Lexer<'a> {
         let mut leading_underscore = false;
         let mut trailing_underscore = false;
         let mut prev_underscore = false;
+        let mut invalid_underscore = false;
         let mut invalid_digit = None;
 
         while let Some(b) = self.peek_byte(0) {
             if b == b'_' {
                 if digits == 0 {
                     leading_underscore = true;
+                }
+                let next = self.peek_byte(1);
+                // JLS: underscores are only allowed *between* digits.
+                if digits == 0
+                    || prev_underscore
+                    || next.is_none()
+                    || !next.is_some_and(allowed_digit)
+                {
+                    invalid_underscore = true;
                 }
                 prev_underscore = true;
                 self.pos += 1;
@@ -743,6 +786,7 @@ impl<'a> Lexer<'a> {
             digits,
             leading_underscore,
             trailing_underscore,
+            invalid_underscore,
             invalid_digit,
         }
     }
@@ -893,6 +937,7 @@ struct DigitsScan {
     digits: usize,
     leading_underscore: bool,
     trailing_underscore: bool,
+    invalid_underscore: bool,
     invalid_digit: Option<u8>,
 }
 
@@ -902,6 +947,7 @@ impl DigitsScan {
             digits: 0,
             leading_underscore: false,
             trailing_underscore: false,
+            invalid_underscore: false,
             invalid_digit: None,
         }
     }
