@@ -215,6 +215,15 @@ fn snapshot_initializer_blocks() {
 }
 
 #[test]
+fn snapshot_ternary_and_labels() {
+    let input = include_str!("fixtures/ternary_and_labels.java");
+    let config = FormatConfig::default();
+    let formatted = format_with_config(input, &config);
+    assert_snapshot!("ternary_and_labels", formatted);
+    assert_idempotent("ternary_and_labels", input, &config);
+}
+
+#[test]
 fn on_type_formatting_triggers_inside_argument_lists() {
     let input = "class A {\n    void m() {\nfoo(1,2);\n    }\n}\n";
     let tree = parse(input);

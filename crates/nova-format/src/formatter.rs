@@ -329,6 +329,7 @@ struct FormatState<'a> {
     bracket_depth: usize,
     brace_stack: Vec<BraceCtx>,
     switch_stack: Vec<SwitchCtx>,
+    ternary_depth: usize,
 
     pending_for: bool,
     pending_try: bool,
@@ -356,6 +357,7 @@ impl<'a> FormatState<'a> {
             bracket_depth: 0,
             brace_stack: Vec::new(),
             switch_stack: Vec::new(),
+            ternary_depth: 0,
 
             pending_for: false,
             pending_try: false,
@@ -1675,13 +1677,20 @@ fn write_token(
                         state.ensure_space();
                     }
                 } else {
-                    if state.needs_space_before(state.last_sig, sig, tok) {
-                        state.ensure_space();
-                    }
+                    state.ensure_space();
                     let next_len = next.map(|t| t.display_len()).unwrap_or(0);
                     state.wrap_if_needed(state.continuation_indent(), punct.len() + next_len + 1);
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
+                    if next.is_some()
+                        && !matches!(
+                            next,
+                            Some(Token::Punct(p)) if p.is_closing_delim() || p.is_chain_separator()
+                        )
+                    {
+                        state.ensure_space();
+                    }
+                    state.ternary_depth = state.ternary_depth.saturating_add(1);
                 }
                 state.last_sig = Some(sig);
             }
@@ -1707,9 +1716,22 @@ fn write_token(
                         None
                     };
                 } else {
+                    if state.ternary_depth > 0 {
+                        state.ensure_space();
+                    }
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
-                    if matches!(
+                    if state.ternary_depth > 0 {
+                        if next.is_some()
+                            && !matches!(
+                                next,
+                                Some(Token::Punct(p)) if p.is_closing_delim() || p.is_chain_separator()
+                            )
+                        {
+                            state.ensure_space();
+                        }
+                        state.ternary_depth = state.ternary_depth.saturating_sub(1);
+                    } else if matches!(
                         next,
                         Some(
                             Token::Word(_)
