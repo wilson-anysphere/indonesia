@@ -23,12 +23,14 @@ For the stable spec of Nova’s custom `nova/*` LSP methods, see
 - **LSP server + custom `nova/*` methods**: `crates/nova-lsp/` (`src/main.rs`, `src/lib.rs`, `src/extensions/*`)
 - **DAP server / debugger UX**: `crates/nova-dap/` (+ `crates/nova-jdwp/`)
 - **Project discovery (Maven/Gradle/Bazel)**: `crates/nova-project/` (+ `crates/nova-build/`, `crates/nova-build-bazel/`)
+- **AI (completion ranking, semantic search, anonymization)**: `crates/nova-ai/` (wired into `nova-ide`/`nova-lsp`)
 - **Parsing / syntax trees**: `crates/nova-syntax/`
 - **Incremental database (Salsa)**: `crates/nova-db/src/salsa.rs`
 - **Indexing + persistence**: `crates/nova-index/`, `crates/nova-cache/`, `crates/nova-storage/`
 - **Refactorings**: `crates/nova-refactor/` (editor-facing wiring currently lives in `crates/nova-lsp/`)
 - **Framework support**: `crates/nova-framework-*` (Spring/Micronaut/JPA/Quarkus/MapStruct/etc)
 - **Distributed mode**: `crates/nova-router/`, `crates/nova-worker/`, `crates/nova-remote-proto/`
+- **Codegen / developer tasks**: `crates/xtask/` (`cargo run -p xtask -- codegen`)
 
 ---
 
