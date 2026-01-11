@@ -59,7 +59,7 @@ fn encode_bytes(bytes: &[u8], out: &mut Vec<u8>) {
 }
 
 fn encode_text(text: &str, out: &mut Vec<u8>) {
-    encode_uint(3, text.as_bytes().len() as u64, out);
+    encode_uint(3, text.len() as u64, out);
     out.extend_from_slice(text.as_bytes());
 }
 

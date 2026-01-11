@@ -210,7 +210,7 @@ fn read_map_key<'a>(r: &mut Reader<'a>) -> anyhow::Result<&'a str> {
         r.remaining()
     );
     let bytes = r.read_exact(len)?;
-    Ok(std::str::from_utf8(bytes).context("map key is not valid UTF-8")?)
+    std::str::from_utf8(bytes).context("map key is not valid UTF-8")
 }
 
 fn validate_item<'a>(r: &mut Reader<'a>, depth: usize, limits: Limits) -> anyhow::Result<()> {
@@ -318,7 +318,7 @@ fn validate_item<'a>(r: &mut Reader<'a>, depth: usize, limits: Limits) -> anyhow
         }
         // simple / float
         7 => match ai {
-            0..=19 | 20..=23 => Ok(()),
+            0..=23 => Ok(()),
             24 => {
                 r.skip(1)?;
                 Ok(())

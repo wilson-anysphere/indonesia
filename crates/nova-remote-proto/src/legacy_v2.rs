@@ -176,7 +176,7 @@ impl WireWriter {
         s: &str,
         max_bytes: usize,
     ) -> anyhow::Result<()> {
-        let len = s.as_bytes().len();
+        let len = s.len();
         ensure!(
             len <= max_bytes,
             "{field} too large: {len} bytes (max {max_bytes})"
