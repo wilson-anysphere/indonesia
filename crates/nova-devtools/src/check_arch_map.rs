@@ -252,24 +252,29 @@ fn parse_crate_sections(doc: &str) -> ParsedCrateSections {
 }
 
 fn parse_crate_header(line: &str) -> Option<String> {
-    let trimmed = line.trim();
-    if !trimmed.starts_with("###") {
+    let trimmed = line.trim_end();
+    if !trimmed.starts_with("### `") {
         return None;
     }
-    let (_prefix, rest) = trimmed.split_once('`')?;
-    let (name, _suffix) = rest.split_once('`')?;
-    if name.is_empty() {
+
+    let content = trimmed.strip_prefix("### `")?;
+    let name = content.strip_suffix('`')?;
+    if name.is_empty() || name.contains('`') {
         return None;
     }
+
     Some(name.to_string())
 }
 
 fn missing_required_bullets(section: &CrateSection) -> Vec<&'static str> {
     let required = [
-        ("Purpose", "**Purpose:**"),
-        ("Key entry points", "**Key entry points:**"),
-        ("Maturity", "**Maturity:**"),
-        ("Known gaps", "**Known gaps"),
+        ("Purpose", "- **Purpose:**"),
+        ("Key entry points", "- **Key entry points:**"),
+        ("Maturity", "- **Maturity:**"),
+        (
+            "Known gaps vs intended docs",
+            "- **Known gaps vs intended docs:**",
+        ),
     ];
 
     let mut missing = Vec::new();

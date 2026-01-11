@@ -193,7 +193,7 @@ fn parse_method_heading(line: &str) -> Option<String> {
 
     let (_prefix, rest) = trimmed.split_once('`')?;
     let (name, _suffix) = rest.split_once('`')?;
-    if !name.starts_with("nova/") {
+    if !name.starts_with("nova/") || name.len() <= "nova/".len() {
         return None;
     }
     Some(name.to_string())
@@ -229,7 +229,11 @@ fn extract_rust_methods_from_text(text: &str) -> Vec<String> {
         let Some(end) = after.find('"') else {
             continue;
         };
-        methods.push(after[..end].to_string());
+        let method = after[..end].to_string();
+        if method.len() <= "nova/".len() {
+            continue;
+        }
+        methods.push(method);
     }
     methods
 }
