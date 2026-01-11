@@ -20,14 +20,21 @@ struct CachedAnalysis {
 static ANALYSIS_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedAnalysis>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
-static PROJECT_CONFIG_CACHE: Lazy<Mutex<HashMap<PathBuf, Option<Arc<ProjectConfig>>>>> =
+#[derive(Clone)]
+struct CachedProjectConfig {
+    fingerprint: u64,
+    config: Option<Arc<ProjectConfig>>,
+}
+
+static PROJECT_CONFIG_CACHE: Lazy<Mutex<HashMap<PathBuf, CachedProjectConfig>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn analysis_for_file(db: &dyn Database, file: FileId) -> Option<Arc<AnalysisResult>> {
     let path = db.file_path(file)?;
     let root = project_root_for_path(path);
 
-    let (sources, config_files, signature) = gather_workspace_inputs(db, &root);
+    let (sources, config_files, mut signature) = gather_workspace_inputs(db, &root);
+    signature ^= build_marker_fingerprint(&root);
 
     // Fast path: cache hit.
     {
@@ -97,12 +104,17 @@ fn is_applicable(config: &Option<Arc<ProjectConfig>>, sources: &[JavaSource]) ->
 }
 
 fn project_config_for_root(root: &Path) -> Option<Arc<ProjectConfig>> {
+    let fingerprint = build_marker_fingerprint(root);
+
     {
         let cache = PROJECT_CONFIG_CACHE
             .lock()
             .expect("project config cache poisoned");
-        if let Some(entry) = cache.get(root) {
-            return entry.clone();
+        if let Some(entry) = cache
+            .get(root)
+            .filter(|entry| entry.fingerprint == fingerprint)
+        {
+            return entry.config.clone();
         }
     }
 
@@ -110,7 +122,13 @@ fn project_config_for_root(root: &Path) -> Option<Arc<ProjectConfig>> {
     let mut cache = PROJECT_CONFIG_CACHE
         .lock()
         .expect("project config cache poisoned");
-    cache.insert(root.to_path_buf(), loaded.clone());
+    cache.insert(
+        root.to_path_buf(),
+        CachedProjectConfig {
+            fingerprint,
+            config: loaded.clone(),
+        },
+    );
     loaded
 }
 
@@ -160,6 +178,42 @@ fn find_build_root(path: &Path) -> Option<PathBuf> {
     }
 }
 
+fn build_marker_fingerprint(root: &Path) -> u64 {
+    const MARKERS: &[&str] = &[
+        "pom.xml",
+        "build.gradle",
+        "build.gradle.kts",
+        "settings.gradle",
+        "settings.gradle.kts",
+        "WORKSPACE",
+        "WORKSPACE.bazel",
+        "MODULE.bazel",
+    ];
+
+    let mut hasher = DefaultHasher::new();
+    for marker in MARKERS {
+        marker.hash(&mut hasher);
+        let path = root.join(marker);
+        match std::fs::metadata(&path) {
+            Ok(meta) => {
+                true.hash(&mut hasher);
+                meta.len().hash(&mut hasher);
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
+                        duration.as_secs().hash(&mut hasher);
+                        duration.subsec_nanos().hash(&mut hasher);
+                    }
+                }
+            }
+            Err(_) => {
+                false.hash(&mut hasher);
+            }
+        }
+    }
+
+    hasher.finish()
+}
+
 fn gather_workspace_inputs(
     db: &dyn Database,
     root: &Path,
@@ -187,12 +241,8 @@ fn gather_workspace_inputs(
         };
         let is_java = path.extension().and_then(|e| e.to_str()) == Some("java");
         let config_kind = match path.file_name().and_then(|n| n.to_str()) {
-            Some("application.properties") => {
-                Some("properties")
-            }
-            Some("application.yml") | Some("application.yaml") => {
-                Some("yaml")
-            }
+            Some("application.properties") => Some("properties"),
+            Some("application.yml") | Some("application.yaml") => Some("yaml"),
             _ => None,
         };
 
