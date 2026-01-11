@@ -94,22 +94,30 @@ pub fn bsp_compile_and_collect_diagnostics(
 pub fn bsp_publish_diagnostics_to_nova_diagnostics(
     notifications: &[PublishDiagnosticsParams],
 ) -> Vec<nova_core::Diagnostic> {
-    let mut out = Vec::new();
+    let mut by_file = BTreeMap::<PathBuf, Vec<nova_core::Diagnostic>>::new();
     for publish in notifications {
         let file = normalize_bsp_uri_to_path(&publish.text_document.uri);
+
+        let mut converted = Vec::with_capacity(publish.diagnostics.len());
         for diag in &publish.diagnostics {
-            let range = bsp_range_to_nova_range(&diag.range);
-            let severity = bsp_severity_to_nova(diag.severity);
-            out.push(nova_core::Diagnostic::new(
+            converted.push(nova_core::Diagnostic::new(
                 file.clone(),
-                range,
-                severity,
+                bsp_range_to_nova_range(&diag.range),
+                bsp_severity_to_nova(diag.severity),
                 diag.message.clone(),
                 Some("bsp".to_string()),
             ));
         }
+
+        match publish.reset {
+            Some(false) => by_file.entry(file).or_default().extend(converted),
+            _ => {
+                by_file.insert(file, converted);
+            }
+        }
     }
-    out
+
+    by_file.into_values().flatten().collect()
 }
 
 pub struct BspClient {
@@ -249,6 +257,21 @@ impl BspClient {
                     }
                     continue;
                 }
+
+                // Some BSP servers can send JSON-RPC requests to the client while we are waiting
+                // for a response. We don't currently implement any server -> client request
+                // surface, but we should still respond so the server doesn't block indefinitely.
+                if let Some(request_id) = incoming.get("id").cloned() {
+                    let _ = self.send_message(&serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32601,
+                            "message": format!("method not supported: {method}"),
+                        }
+                    }));
+                }
+                continue;
             }
 
             if incoming.get("id").and_then(Value::as_i64) != Some(id) {
@@ -442,7 +465,7 @@ impl BspWorkspace {
                 3
             } else if target.id.uri == label_or_uri {
                 2
-            } else if target.id.uri.ends_with(label_or_uri) {
+            } else if target.id.uri.contains(label_or_uri) {
                 1
             } else {
                 0

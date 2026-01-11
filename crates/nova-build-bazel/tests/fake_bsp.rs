@@ -137,6 +137,10 @@ pub struct FakeBspServerConfig {
     pub javac_options: Vec<JavacOptionsItem>,
     pub compile_status_code: i32,
     pub diagnostics: Vec<PublishDiagnosticsParams>,
+    /// If true, the server will send an unsolicited JSON-RPC request (method + id) before
+    /// responding to `build/initialize`. This exercises client handling of server->client
+    /// requests interleaved with normal request/response traffic.
+    pub send_server_request_before_initialize_response: bool,
 }
 
 #[derive(Debug)]
@@ -165,6 +169,17 @@ pub fn spawn_fake_bsp_server(
 
             match (method, id) {
                 (Some("build/initialize"), Some(id)) => {
+                    if config.send_server_request_before_initialize_response {
+                        let _ = write_message(
+                            &mut writer,
+                            &serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "method": "server/request",
+                                "params": Value::Null,
+                            }),
+                        );
+                    }
                     let result = serde_json::to_value(&config.initialize).unwrap();
                     let _ = write_message(
                         &mut writer,

@@ -12,6 +12,38 @@ use nova_build_bazel::{BspWorkspace, JavaCompileInfo};
 use tempfile::tempdir;
 
 #[test]
+fn bsp_initialize_handles_interleaved_server_request_before_response() {
+    let root = tempdir().unwrap();
+
+    let config = FakeBspServerConfig {
+        initialize: InitializeBuildResult {
+            display_name: "fake-bsp".to_string(),
+            version: "0.1.0".to_string(),
+            bsp_version: "2.1.0".to_string(),
+            capabilities: ServerCapabilities {
+                compile_provider: Some(CompileProvider {
+                    language_ids: vec!["java".to_string()],
+                }),
+                javac_provider: Some(JavacProvider {
+                    language_ids: vec!["java".to_string()],
+                }),
+            },
+        },
+        targets: Vec::new(),
+        javac_options: Vec::new(),
+        compile_status_code: 0,
+        diagnostics: Vec::new(),
+        send_server_request_before_initialize_response: true,
+    };
+
+    let (client, server) = spawn_fake_bsp_server(config).unwrap();
+    let workspace = BspWorkspace::from_client(root.path().to_path_buf(), client).unwrap();
+
+    drop(workspace);
+    server.join();
+}
+
+#[test]
 fn bsp_compile_collects_diagnostics_on_non_zero_status() {
     let root = tempdir().unwrap();
     let src_dir = root.path().join("src");
@@ -69,6 +101,7 @@ fn bsp_compile_collects_diagnostics_on_non_zero_status() {
         javac_options: Vec::new(),
         compile_status_code: 2,
         diagnostics: vec![diagnostics],
+        send_server_request_before_initialize_response: false,
     };
 
     let (client, server) = spawn_fake_bsp_server(config).unwrap();
@@ -162,6 +195,7 @@ fn bsp_javac_options_multi_target_conversion() {
         javac_options: vec![javac1, javac2],
         compile_status_code: 0,
         diagnostics: Vec::new(),
+        send_server_request_before_initialize_response: false,
     };
 
     let (client, server) = spawn_fake_bsp_server(config).unwrap();
