@@ -136,7 +136,7 @@ pub struct BspClient {
     stdin: Box<dyn Write + Send>,
     stdout: BufReader<Box<dyn Read + Send>>,
     next_id: i64,
-    diagnostics: Vec<PublishDiagnosticsParams>,
+    diagnostics: BTreeMap<String, PublishDiagnosticsParams>,
     timeout: Option<Duration>,
     timed_out: Arc<AtomicBool>,
     timeout_cancel: Option<mpsc::Sender<()>>,
@@ -256,7 +256,7 @@ impl BspClient {
             stdin,
             stdout: BufReader::new(stdout),
             next_id: 1,
-            diagnostics: Vec::new(),
+            diagnostics: BTreeMap::new(),
             timeout,
             timed_out,
             timeout_cancel,
@@ -274,7 +274,7 @@ impl BspClient {
             stdin: Box::new(stdin),
             stdout: BufReader::new(Box::new(stdout)),
             next_id: 1,
-            diagnostics: Vec::new(),
+            diagnostics: BTreeMap::new(),
             timeout: None,
             timed_out: Arc::new(AtomicBool::new(false)),
             timeout_cancel: None,
@@ -312,7 +312,7 @@ impl BspClient {
 
     /// Drain any diagnostics received via `build/publishDiagnostics` notifications.
     pub fn drain_diagnostics(&mut self) -> Vec<PublishDiagnosticsParams> {
-        std::mem::take(&mut self.diagnostics)
+        std::mem::take(&mut self.diagnostics).into_values().collect()
     }
 
     fn request<P: Serialize, R: DeserializeOwned>(&mut self, method: &str, params: P) -> Result<R> {
@@ -335,7 +335,16 @@ impl BspClient {
                         if let Ok(parsed) =
                             serde_json::from_value::<PublishDiagnosticsParams>(params.clone())
                         {
-                            self.diagnostics.push(parsed);
+                            let uri = parsed.text_document.uri.clone();
+                            if parsed.reset == Some(false) {
+                                if let Some(existing) = self.diagnostics.get_mut(&uri) {
+                                    existing.diagnostics.extend(parsed.diagnostics);
+                                } else {
+                                    self.diagnostics.insert(uri, parsed);
+                                }
+                            } else {
+                                self.diagnostics.insert(uri, parsed);
+                            }
                         }
                     }
                     continue;
