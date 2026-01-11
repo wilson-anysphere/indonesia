@@ -12,7 +12,8 @@ mod module_graph;
 
 pub use cache::{BuildCache, BuildFileFingerprint};
 pub use gradle::{
-    collect_gradle_build_files, parse_gradle_classpath_output, GradleBuild, GradleConfig,
+    collect_gradle_build_files, parse_gradle_classpath_output, parse_gradle_projects_output,
+    GradleBuild, GradleConfig, GradleProjectInfo,
 };
 pub use javac::{parse_javac_diagnostics, JavacDiagnosticFormat};
 pub use maven::{

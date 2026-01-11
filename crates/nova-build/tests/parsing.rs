@@ -1,7 +1,7 @@
 use nova_build::{
     collect_gradle_build_files, collect_maven_build_files, parse_gradle_classpath_output,
-    parse_javac_diagnostics, parse_maven_classpath_output, parse_maven_evaluate_scalar_output,
-    BuildFileFingerprint, JavaCompileConfig,
+    parse_gradle_projects_output, parse_javac_diagnostics, parse_maven_classpath_output,
+    parse_maven_evaluate_scalar_output, BuildFileFingerprint, GradleProjectInfo, JavaCompileConfig,
 };
 use nova_core::{DiagnosticSeverity, Position, Range};
 use std::path::PathBuf;
@@ -332,5 +332,31 @@ fn parses_gradle_classpath_newline_list() {
     assert_eq!(
         cp,
         vec![PathBuf::from("/a/b/c.jar"), PathBuf::from("/d/e/f.jar")]
+    );
+}
+
+#[test]
+fn parses_gradle_projects_json_block_from_noisy_output() {
+    let out = r#"
+> Task :printNovaProjects
+Some random warning
+NOVA_PROJECTS_BEGIN
+{"projects":[{"path":":","projectDir":"/workspace"},{"path":":app","projectDir":"/workspace/app"}]}
+NOVA_PROJECTS_END
+BUILD SUCCESSFUL
+"#;
+    let projects = parse_gradle_projects_output(out).unwrap();
+    assert_eq!(
+        projects,
+        vec![
+            GradleProjectInfo {
+                path: ":".into(),
+                dir: PathBuf::from("/workspace"),
+            },
+            GradleProjectInfo {
+                path: ":app".into(),
+                dir: PathBuf::from("/workspace/app"),
+            }
+        ]
     );
 }

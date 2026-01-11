@@ -118,6 +118,13 @@ impl From<&nova_core::Diagnostic> for CachedDiagnostic {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CachedBuildData {
     pub modules: BTreeMap<String, CachedModuleData>,
+    pub projects: Option<Vec<CachedProjectInfo>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CachedProjectInfo {
+    pub path: String,
+    pub dir: PathBuf,
 }
 
 #[derive(Debug, Clone)]
