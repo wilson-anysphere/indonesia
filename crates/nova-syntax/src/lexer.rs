@@ -288,11 +288,24 @@ impl<'a> Lexer<'a> {
     fn scan_char_literal(&mut self) -> SyntaxKind {
         let start = self.pos;
         self.pos += 1; // opening '
+        let mut value_count = 0usize;
         while let Some(ch) = self.peek_char() {
             match ch {
                 '\'' => {
                     self.bump_char();
-                    return SyntaxKind::CharLiteral;
+                    if value_count == 1 {
+                        return SyntaxKind::CharLiteral;
+                    }
+                    let message = if value_count == 0 {
+                        "empty character literal"
+                    } else {
+                        "character literal must contain exactly one character"
+                    };
+                    self.errors.push(LexError {
+                        message: message.to_string(),
+                        range: TextRange::new(start, self.pos),
+                    });
+                    return SyntaxKind::Error;
                 }
                 '\\' => {
                     self.bump_char();
@@ -304,8 +317,36 @@ impl<'a> Lexer<'a> {
                             });
                             return SyntaxKind::Error;
                         }
-                        Some(_) => {
-                            self.bump_char();
+                        Some(next) => {
+                            match next {
+                                // Single-character escapes.
+                                'b' | 't' | 'n' | 'f' | 'r' | '"' | '\'' | '\\' => {
+                                    self.bump_char();
+                                }
+                                // Octal escape: \0 to \377
+                                '0'..='7' => {
+                                    let first = next;
+                                    self.bump_char();
+                                    // Second digit (optional).
+                                    if matches!(self.peek_char(), Some('0'..='7')) {
+                                        self.bump_char();
+                                        // Third digit (optional), only if the first digit was 0..3.
+                                        if first <= '3' && matches!(self.peek_char(), Some('0'..='7')) {
+                                            self.bump_char();
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    // Keep the literal token lossless but surface a diagnostic.
+                                    self.bump_char();
+                                    self.errors.push(LexError {
+                                        message: "invalid escape sequence in character literal"
+                                            .to_string(),
+                                        range: TextRange::new(start, self.pos),
+                                    });
+                                }
+                            }
+                            value_count += 1;
                         }
                     }
                 }
@@ -318,6 +359,7 @@ impl<'a> Lexer<'a> {
                 }
                 _ => {
                     self.bump_char();
+                    value_count += 1;
                 }
             }
         }

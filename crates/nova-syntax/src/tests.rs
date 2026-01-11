@@ -367,6 +367,61 @@ fn lexer_text_block_closing_allows_trailing_quotes() {
 }
 
 #[test]
+fn lexer_char_literals_validate_length_and_octal_escapes() {
+    let input = "'a' '\\n' '\\123'";
+    let (tokens, errors) = lex_with_errors(input);
+    assert_eq!(errors, Vec::new());
+
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        tokens,
+        vec![
+            (SyntaxKind::CharLiteral, "'a'".into()),
+            (SyntaxKind::CharLiteral, "'\\n'".into()),
+            (SyntaxKind::CharLiteral, "'\\123'".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+}
+
+#[test]
+fn lexer_rejects_invalid_char_literals() {
+    let input = "'' 'ab'";
+    let (tokens, errors) = lex_with_errors(input);
+
+    let non_trivia: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !t.kind.is_trivia())
+        .map(|t| (t.kind, t.text(input).to_string()))
+        .collect();
+
+    assert_eq!(
+        non_trivia,
+        vec![
+            (SyntaxKind::Error, "''".into()),
+            (SyntaxKind::Error, "'ab'".into()),
+            (SyntaxKind::Eof, "".into()),
+        ]
+    );
+
+    assert!(
+        errors.iter().any(|e| e.message.contains("empty character literal")),
+        "expected empty literal error, got: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("character literal must contain exactly one character")),
+        "expected too-long literal error, got: {errors:?}"
+    );
+}
+
+#[test]
 fn parse_java_surfaces_lexer_errors_as_parse_errors() {
     let input = "class Foo { String s = \"unterminated\n }";
     let result = parse_java(input);
