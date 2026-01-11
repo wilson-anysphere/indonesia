@@ -164,6 +164,14 @@ impl MockJdwpServer {
         self.state.thread_resume_calls.load(Ordering::Relaxed)
     }
 
+    /// Returns the mock `java.lang.String` object id that maps to the literal `"mock string"`.
+    ///
+    /// This is useful for wire-level tests that want to exercise `StringReference.Value`
+    /// without depending on other mock replies (like `StackFrame.GetValues`).
+    pub fn string_object_id(&self) -> u64 {
+        STRING_OBJECT_ID
+    }
+
     pub fn sample_string_id(&self) -> u64 {
         SAMPLE_STRING_OBJECT_ID
     }

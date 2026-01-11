@@ -9,7 +9,7 @@ use crate::resolver::{ParamOwner, ParamRef, Resolution, TypeResolution};
 
 use super::{ScopeData, ScopeGraph, ScopeId, ScopeKind};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemTreeScopeBuildResult {
     pub scopes: ScopeGraph,
     pub file_scope: ScopeId,

@@ -158,7 +158,10 @@ async fn jdwp_client_string_reference_value() {
     let server = MockJdwpServer::spawn().await.unwrap();
     let client = JdwpClient::connect(server.addr()).await.unwrap();
 
-    let value = client.string_reference_value(0xABCD).await.unwrap();
+    let value = client
+        .string_reference_value(server.string_object_id())
+        .await
+        .unwrap();
     assert_eq!(value, "mock string");
 }
 

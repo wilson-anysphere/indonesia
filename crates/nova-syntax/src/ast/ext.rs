@@ -1,5 +1,7 @@
 use crate::{JavaLanguage, SyntaxKind, SyntaxNode, SyntaxToken};
 
+use crate::ast::AstNode;
+
 use super::support;
 
 impl super::ImportDeclaration {
@@ -44,7 +46,7 @@ impl super::MethodDeclaration {
     pub fn parameters(&self) -> impl Iterator<Item = super::Parameter> + '_ {
         self.parameter_list()
             .into_iter()
-            .flat_map(|list| list.parameters())
+            .flat_map(|list| list.parameters().collect::<Vec<_>>())
     }
 
     pub fn return_type(&self) -> Option<super::Type> {
@@ -60,13 +62,15 @@ impl super::FieldDeclaration {
     pub fn declarators(&self) -> impl Iterator<Item = super::VariableDeclarator> + '_ {
         self.declarator_list()
             .into_iter()
-            .flat_map(|list| list.declarators())
+            .flat_map(|list| list.declarators().collect::<Vec<_>>())
     }
 }
 
 impl super::SwitchStatement {
     pub fn labels(&self) -> impl Iterator<Item = super::SwitchLabel> + '_ {
-        self.block().into_iter().flat_map(|b| b.labels())
+        self.block()
+            .into_iter()
+            .flat_map(|b| b.labels().collect::<Vec<_>>())
     }
 }
 
@@ -102,7 +106,7 @@ impl super::ModuleDeclaration {
     pub fn directives(&self) -> impl Iterator<Item = super::ModuleDirectiveKind> + '_ {
         self.body()
             .into_iter()
-            .flat_map(|body| body.directive_wrappers())
+            .flat_map(|body| body.directive_wrappers().collect::<Vec<_>>())
             .filter_map(|wrapper| wrapper.directive())
     }
 }
