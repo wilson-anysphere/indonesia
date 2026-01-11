@@ -1,5 +1,5 @@
-use serde_repr::{Deserialize_repr, Serialize_repr};
 use rowan::Language;
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// Unified syntax kind for both tokens and AST nodes.
 ///

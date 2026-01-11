@@ -995,7 +995,11 @@ impl GlobalSymbolIndex {
             }
 
             let scan_limit = FALLBACK_SCAN_LIMIT.min(self.symbols.len());
-            self.score_candidates((0..scan_limit).map(|id| id as u32), &mut matcher, &mut scored);
+            self.score_candidates(
+                (0..scan_limit).map(|id| id as u32),
+                &mut matcher,
+                &mut scored,
+            );
             return self.finish(scored, limit);
         }
 
@@ -1035,20 +1039,17 @@ impl GlobalSymbolIndex {
 
     fn finish(&self, mut scored: Vec<ScoredSymbol>, limit: usize) -> Vec<Symbol> {
         scored.sort_by(|a, b| {
-            b.score
-                .rank_key()
-                .cmp(&a.score.rank_key())
-                .then_with(|| {
-                    let a_sym = &self.symbols[a.id as usize];
-                    let b_sym = &self.symbols[b.id as usize];
-                    a_sym
-                        .name
-                        .len()
-                        .cmp(&b_sym.name.len())
-                        .then_with(|| a_sym.name.cmp(&b_sym.name))
-                        .then_with(|| a_sym.path.cmp(&b_sym.path))
-                        .then_with(|| a.id.cmp(&b.id))
-                })
+            b.score.rank_key().cmp(&a.score.rank_key()).then_with(|| {
+                let a_sym = &self.symbols[a.id as usize];
+                let b_sym = &self.symbols[b.id as usize];
+                a_sym
+                    .name
+                    .len()
+                    .cmp(&b_sym.name.len())
+                    .then_with(|| a_sym.name.cmp(&b_sym.name))
+                    .then_with(|| a_sym.path.cmp(&b_sym.path))
+                    .then_with(|| a.id.cmp(&b.id))
+            })
         });
 
         scored

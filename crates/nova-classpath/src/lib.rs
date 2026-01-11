@@ -1,5 +1,5 @@
-mod persist;
 mod module_name;
+mod persist;
 
 use std::borrow::Cow;
 use std::collections::{hash_map::DefaultHasher, BTreeSet, HashMap};
@@ -15,7 +15,9 @@ use thiserror::Error;
 
 use nova_classfile::{parse_module_info_class, ClassFile};
 use nova_core::{Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
-use nova_deps_cache::{DepsClassStub, DepsFieldStub, DepsMethodStub, DependencyIndexBundle, DependencyIndexStore};
+use nova_deps_cache::{
+    DependencyIndexBundle, DependencyIndexStore, DepsClassStub, DepsFieldStub, DepsMethodStub,
+};
 use nova_modules::{ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
@@ -173,18 +175,16 @@ fn jar_module_meta(path: &Path) -> Result<EntryModuleMeta, ClasspathError> {
         }
     }
 
-    let name = module_name::automatic_module_name_from_jar_manifest(&mut archive)
-        .or_else(|| module_name::derive_automatic_module_name_from_jar_path(path).map(ModuleName::new));
+    let name = module_name::automatic_module_name_from_jar_manifest(&mut archive).or_else(|| {
+        module_name::derive_automatic_module_name_from_jar_path(path).map(ModuleName::new)
+    });
     let kind = if name.is_some() {
         ModuleNameKind::Automatic
     } else {
         ModuleNameKind::None
     };
 
-    Ok(EntryModuleMeta {
-        name,
-        kind,
-    })
+    Ok(EntryModuleMeta { name, kind })
 }
 
 fn canonicalize_if_possible(path: &Path) -> std::io::Result<PathBuf> {
@@ -491,7 +491,9 @@ impl ModuleAwareClasspathIndex {
                         index_entry(&entry, deps_store, stats)?
                     }
                 }
-                ClasspathEntry::Jar(_) | ClasspathEntry::Jmod(_) => index_entry(&entry, deps_store, stats)?,
+                ClasspathEntry::Jar(_) | ClasspathEntry::Jmod(_) => {
+                    index_entry(&entry, deps_store, stats)?
+                }
             };
 
             for stub in stubs {
@@ -600,7 +602,9 @@ impl ModuleAwareClasspathIndex {
 
         self.modules
             .iter()
-            .find_map(|(candidate, kind)| candidate.as_ref().filter(|m| *m == module).map(|_| *kind))
+            .find_map(|(candidate, kind)| {
+                candidate.as_ref().filter(|m| *m == module).map(|_| *kind)
+            })
             .unwrap_or(ModuleNameKind::None)
     }
 }

@@ -50,7 +50,9 @@ pub fn parse_aquery_textproto(output: &str) -> Vec<JavacAction> {
 /// This iterator scans the output line-by-line and yields `Javac` actions without buffering the
 /// entire output string in memory. Only `mnemonic`, `owner`, and `arguments` fields from each
 /// `action { ... }` block are retained.
-pub fn parse_aquery_textproto_streaming<R: BufRead>(reader: R) -> impl Iterator<Item = JavacAction> {
+pub fn parse_aquery_textproto_streaming<R: BufRead>(
+    reader: R,
+) -> impl Iterator<Item = JavacAction> {
     AqueryTextprotoStreamingParser::new(reader)
 }
 

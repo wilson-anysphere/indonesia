@@ -17,4 +17,3 @@ impl CancellationToken {
         self.cancelled.load(Ordering::SeqCst)
     }
 }
-

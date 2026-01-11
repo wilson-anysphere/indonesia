@@ -7,18 +7,19 @@ use nova_cache::{
 };
 use nova_config::NovaConfig;
 use nova_core::{
-    apply_text_edits as apply_core_text_edits, LineIndex, Position, Range, TextEdit as CoreTextEdit,
-    TextSize,
+    apply_text_edits as apply_core_text_edits, LineIndex, Position, Range,
+    TextEdit as CoreTextEdit, TextSize,
 };
+use nova_deps_cache::DependencyIndexStore;
 use nova_format::{edits_for_range_formatting, format_java, minimal_text_edits, FormatConfig};
 use nova_perf::{compare_runs, load_criterion_directory, BenchRun, ThresholdConfig};
 use nova_refactor::{
     apply_text_edits as apply_refactor_text_edits, organize_imports as refactor_organize_imports,
     rename as refactor_rename, Conflict, FileId as RefactorFileId, InMemoryJavaDatabase,
-    OrganizeImportsParams, RenameParams, SemanticRefactorError, WorkspaceTextEdit as RefactorTextEdit,
+    OrganizeImportsParams, RenameParams, SemanticRefactorError,
+    WorkspaceTextEdit as RefactorTextEdit,
 };
 use nova_syntax::parse;
-use nova_deps_cache::DependencyIndexStore;
 use nova_workspace::{
     CacheStatus, DiagnosticsReport, IndexReport, ParseResult, Workspace, WorkspaceSymbol,
 };
@@ -137,17 +138,11 @@ struct DepsArgs {
 #[derive(Subcommand)]
 enum DepsCommand {
     /// Pre-build and store a dependency index bundle for a JAR/JMOD.
-    Index {
-        jar: PathBuf,
-    },
+    Index { jar: PathBuf },
     /// Pack the global dependency index store into a .tar.gz archive.
-    Pack {
-        output: PathBuf,
-    },
+    Pack { output: PathBuf },
     /// Install dependency index bundles from a .tar.gz archive.
-    Install {
-        archive: PathBuf,
-    },
+    Install { archive: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -428,10 +423,7 @@ fn run(cli: Cli) -> Result<i32> {
                     let cache_dir = CacheDir::new(ws.root(), CacheConfig::from_env())?;
                     pack_cache_package(&cache_dir, &args.out)?;
                     if args.json {
-                        print_output(
-                            &serde_json::json!({ "ok": true, "out": args.out }),
-                            true,
-                        )?;
+                        print_output(&serde_json::json!({ "ok": true, "out": args.out }), true)?;
                     } else {
                         println!(
                             "cache: packed {} -> {}",
@@ -622,9 +614,9 @@ fn parse_cli_position(line: u32, col: u32) -> Result<Position> {
 }
 
 fn parse_cli_range(value: &str) -> Result<Range> {
-    let (start, end) = value
-        .split_once('-')
-        .with_context(|| format!("range must be <startLine:startCol-endLine:endCol> (got {value:?})"))?;
+    let (start, end) = value.split_once('-').with_context(|| {
+        format!("range must be <startLine:startCol-endLine:endCol> (got {value:?})")
+    })?;
     let start = parse_cli_pos_pair(start)?;
     let end = parse_cli_pos_pair(end)?;
     Ok(Range::new(start, end))
@@ -634,8 +626,12 @@ fn parse_cli_pos_pair(value: &str) -> Result<Position> {
     let (line, col) = value.split_once(':').with_context(|| {
         format!("position must be <line:col> with 1-based line/col (got {value:?})")
     })?;
-    let line: u32 = line.parse().with_context(|| format!("invalid line {line:?}"))?;
-    let col: u32 = col.parse().with_context(|| format!("invalid col {col:?}"))?;
+    let line: u32 = line
+        .parse()
+        .with_context(|| format!("invalid line {line:?}"))?;
+    let col: u32 = col
+        .parse()
+        .with_context(|| format!("invalid col {col:?}"))?;
     parse_cli_position(line, col)
 }
 
@@ -747,7 +743,11 @@ fn core_edits_to_json(file: String, source: &str, edits: &[CoreTextEdit]) -> Cli
     }
 }
 
-fn refactor_edits_to_json(file: String, source: &str, edits: &[RefactorTextEdit]) -> CliJsonFileEdits {
+fn refactor_edits_to_json(
+    file: String,
+    source: &str,
+    edits: &[RefactorTextEdit],
+) -> CliJsonFileEdits {
     let index = LineIndex::new(source);
     let mut json_edits = edits
         .iter()
@@ -821,8 +821,7 @@ fn handle_format(args: FormatArgs) -> Result<i32> {
     // Normalize edits for deterministic JSON output.
     edits.sort_by_key(|e| (e.range.start(), e.range.end(), e.replacement.clone()));
 
-    let new_text =
-        apply_core_text_edits(&source, &edits).map_err(|err| anyhow::anyhow!(err))?;
+    let new_text = apply_core_text_edits(&source, &edits).map_err(|err| anyhow::anyhow!(err))?;
     let changed = new_text != source;
 
     if args.in_place && changed {
@@ -833,7 +832,11 @@ fn handle_format(args: FormatArgs) -> Result<i32> {
     let file = display_path(&args.file);
     let output = CliJsonOutput {
         ok: true,
-        files_changed: if changed { vec![file.clone()] } else { Vec::new() },
+        files_changed: if changed {
+            vec![file.clone()]
+        } else {
+            Vec::new()
+        },
         edits: if changed {
             vec![core_edits_to_json(file, &source, &edits)]
         } else {
@@ -863,15 +866,19 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
     let file_id = RefactorFileId::new(file_str.clone());
     let db = InMemoryJavaDatabase::new([(file_id.clone(), source.clone())]);
 
-    let mut edit =
-        refactor_organize_imports(&db, OrganizeImportsParams { file: file_id.clone() })?;
+    let mut edit = refactor_organize_imports(
+        &db,
+        OrganizeImportsParams {
+            file: file_id.clone(),
+        },
+    )?;
 
     for e in &mut edit.edits {
         e.replacement = convert_newlines(&e.replacement, newline_style);
     }
 
-    let new_text = apply_refactor_text_edits(&source, &edit.edits)
-        .map_err(|err| anyhow::anyhow!(err))?;
+    let new_text =
+        apply_refactor_text_edits(&source, &edit.edits).map_err(|err| anyhow::anyhow!(err))?;
     let changed = new_text != source;
 
     if args.in_place && changed {
@@ -881,9 +888,17 @@ fn handle_organize_imports(args: OrganizeImportsArgs) -> Result<i32> {
 
     let output = CliJsonOutput {
         ok: true,
-        files_changed: if changed { vec![file_str.clone()] } else { Vec::new() },
+        files_changed: if changed {
+            vec![file_str.clone()]
+        } else {
+            Vec::new()
+        },
         edits: if changed {
-            vec![refactor_edits_to_json(file_str.clone(), &source, &edit.edits)]
+            vec![refactor_edits_to_json(
+                file_str.clone(),
+                &source,
+                &edit.edits,
+            )]
         } else {
             Vec::new()
         },
@@ -934,13 +949,20 @@ fn collect_java_files(root: &Path) -> Result<Vec<PathBuf>> {
 }
 
 fn path_relative_to(root: &Path, path: &Path) -> Result<String> {
-    let rel = path
-        .strip_prefix(root)
-        .with_context(|| format!("{} is not under workspace root {}", path.display(), root.display()))?;
+    let rel = path.strip_prefix(root).with_context(|| {
+        format!(
+            "{} is not under workspace root {}",
+            path.display(),
+            root.display()
+        )
+    })?;
     Ok(rel.to_string_lossy().replace('\\', "/"))
 }
 
-fn conflicts_to_json(files: &BTreeMap<String, String>, conflicts: Vec<Conflict>) -> Vec<CliJsonConflict> {
+fn conflicts_to_json(
+    files: &BTreeMap<String, String>,
+    conflicts: Vec<Conflict>,
+) -> Vec<CliJsonConflict> {
     let mut out = Vec::new();
     for conflict in conflicts {
         match conflict {
@@ -993,7 +1015,9 @@ fn conflicts_to_json(files: &BTreeMap<String, String>, conflicts: Vec<Conflict>)
         }
     }
 
-    fn sort_key<'a>(conflict: &'a CliJsonConflict) -> (&'a str, u8, &'a str, usize, usize, &'a str) {
+    fn sort_key<'a>(
+        conflict: &'a CliJsonConflict,
+    ) -> (&'a str, u8, &'a str, usize, usize, &'a str) {
         match conflict {
             CliJsonConflict::NameCollision {
                 file,
@@ -1034,7 +1058,8 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
     let mut db_files = Vec::with_capacity(java_files.len());
     for path in java_files {
         let file_id = path_relative_to(&root, &path)?;
-        let text = fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
         file_texts.insert(file_id.clone(), text.clone());
         db_files.push((RefactorFileId::new(file_id), text));
     }
@@ -1066,9 +1091,11 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
     };
     let offset = u32::from(offset) as usize;
 
-    let symbol = db
-        .symbol_at(&target_file, offset)
-        .or_else(|| offset.checked_sub(1).and_then(|o| db.symbol_at(&target_file, o)));
+    let symbol = db.symbol_at(&target_file, offset).or_else(|| {
+        offset
+            .checked_sub(1)
+            .and_then(|o| db.symbol_at(&target_file, o))
+    });
 
     let Some(symbol) = symbol else {
         return Ok(rename_error(
@@ -1133,7 +1160,11 @@ fn handle_rename(args: RenameArgs) -> Result<i32> {
         }
 
         changed_files.push(file_str.clone());
-        outputs.push(refactor_edits_to_json(file_str.clone(), original, &edits_owned));
+        outputs.push(refactor_edits_to_json(
+            file_str.clone(),
+            original,
+            &edits_owned,
+        ));
         new_texts.insert(file_str, updated);
     }
 

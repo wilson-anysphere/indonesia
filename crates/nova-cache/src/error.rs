@@ -21,7 +21,10 @@ pub enum CacheError {
     WalkDir(#[from] walkdir::Error),
 
     #[error("path {path} is not under project root {project_root}")]
-    PathNotUnderProjectRoot { path: PathBuf, project_root: PathBuf },
+    PathNotUnderProjectRoot {
+        path: PathBuf,
+        project_root: PathBuf,
+    },
 
     #[error("incompatible cache schema version: expected {expected}, found {found}")]
     IncompatibleSchemaVersion { expected: u32, found: u32 },

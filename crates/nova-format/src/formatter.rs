@@ -242,8 +242,7 @@ fn word_info(text: &str) -> WordInfo {
         "public" | "protected" | "private" | "static" | "final" | "abstract" | "native"
         | "strictfp" | "transient" | "volatile" | "sealed" | "non" | "record" => WordKind::Modifier,
         _ => WordKind::Other,
-    }
-    ;
+    };
 
     WordInfo {
         kind,
@@ -466,7 +465,9 @@ impl<'a> FormatState<'a> {
         match tok {
             Token::Word(span) => SigToken::Word(word_info(span.text(self.source))),
             Token::Number(_) | Token::StringLiteral(_) | Token::CharLiteral(_) => SigToken::Literal,
-            Token::LineComment(_) | Token::BlockComment(_) | Token::DocComment(_) => SigToken::Comment,
+            Token::LineComment(_) | Token::BlockComment(_) | Token::DocComment(_) => {
+                SigToken::Comment
+            }
             Token::Punct(p) => SigToken::Punct(*p),
             Token::BlankLine => SigToken::Comment,
         }
@@ -493,7 +494,9 @@ impl<'a> FormatState<'a> {
             Some(SigToken::GenericClose { .. }) => true,
             Some(SigToken::Word(info)) => match info.kind {
                 WordKind::Modifier | WordKind::New => true,
-                WordKind::Other | WordKind::Switch | WordKind::For | WordKind::Try => info.type_like,
+                WordKind::Other | WordKind::Switch | WordKind::For | WordKind::Try => {
+                    info.type_like
+                }
                 WordKind::Case | WordKind::Default | WordKind::Control => false,
             },
             Some(SigToken::Punct(p)) => matches!(
@@ -539,19 +542,17 @@ impl<'a> FormatState<'a> {
                     | Punct::Arrow
             ),
             Some(SigToken::Word(info)) => {
-                matches!(info.kind, WordKind::Control | WordKind::For | WordKind::Switch)
+                matches!(
+                    info.kind,
+                    WordKind::Control | WordKind::For | WordKind::Switch
+                )
             }
             Some(SigToken::Comment) => true,
             Some(SigToken::Literal | SigToken::GenericClose { .. }) => false,
         }
     }
 
-    fn needs_space_before(
-        &self,
-        prev: Option<SigToken>,
-        curr: SigToken,
-        curr_tok: &Token,
-    ) -> bool {
+    fn needs_space_before(&self, prev: Option<SigToken>, curr: SigToken, curr_tok: &Token) -> bool {
         let Some(prev) = prev else {
             return false;
         };
@@ -638,8 +639,10 @@ impl<'a> FormatState<'a> {
                 if after_dot {
                     return false;
                 }
-                if matches!(curr, SigToken::Word(_) | SigToken::Literal | SigToken::Punct(Punct::At))
-                {
+                if matches!(
+                    curr,
+                    SigToken::Word(_) | SigToken::Literal | SigToken::Punct(Punct::At)
+                ) {
                     // `List<String> foo` but not `List<String>()`.
                     return !matches!(
                         curr_tok,
@@ -979,12 +982,16 @@ fn analyze_parens(tokens: &[Token], source: &str, config: &FormatConfig) -> Vec<
                     }
                 }
             }
-            Token::Punct(Punct::LBrace) => state.brace_stack.push(BraceCtx { kind: BraceKind::Normal }),
+            Token::Punct(Punct::LBrace) => state.brace_stack.push(BraceCtx {
+                kind: BraceKind::Normal,
+            }),
             Token::Punct(Punct::RBrace) => {
                 state.brace_stack.pop();
             }
             Token::Punct(Punct::LBracket) => state.bracket_depth += 1,
-            Token::Punct(Punct::RBracket) => state.bracket_depth = state.bracket_depth.saturating_sub(1),
+            Token::Punct(Punct::RBracket) => {
+                state.bracket_depth = state.bracket_depth.saturating_sub(1)
+            }
             _ => {}
         }
 
@@ -992,7 +999,9 @@ fn analyze_parens(tokens: &[Token], source: &str, config: &FormatConfig) -> Vec<
         if let Token::Punct(p) = tok {
             match p {
                 Punct::Less => {
-                    if state.should_start_generic(prev, FormatState::next_non_trivia(tokens, idx + 1)) {
+                    if state
+                        .should_start_generic(prev, FormatState::next_non_trivia(tokens, idx + 1))
+                    {
                         state.generic_stack.push(GenericContext {
                             after_dot: matches!(
                                 prev,
@@ -1165,7 +1174,8 @@ fn write_token(
                 state.pending_for = false;
             }
             Punct::RBrace => {
-                let closing_switch = matches!(state.brace_stack.last(), Some(ctx) if ctx.kind == BraceKind::Switch);
+                let closing_switch =
+                    matches!(state.brace_stack.last(), Some(ctx) if ctx.kind == BraceKind::Switch);
                 if closing_switch {
                     if let Some(ctx) = state.switch_stack.last_mut() {
                         if ctx.in_case_body {
@@ -1192,7 +1202,9 @@ fn write_token(
                     _ => false,
                 } || matches!(
                     next,
-                    Some(Token::Punct(Punct::Semicolon | Punct::Comma | Punct::RParen | Punct::RBracket))
+                    Some(Token::Punct(
+                        Punct::Semicolon | Punct::Comma | Punct::RParen | Punct::RBracket
+                    ))
                 ) || matches!(next, Some(Token::LineComment(_)));
 
                 if let Some(Token::Word(span)) = next {
@@ -1212,13 +1224,12 @@ fn write_token(
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
 
-                let in_header = state
-                    .paren_stack
-                    .last()
-                    .is_some_and(|ctx| matches!(ctx.kind, ParenKind::ForHeader | ParenKind::ResourceSpec)
+                let in_header = state.paren_stack.last().is_some_and(|ctx| {
+                    matches!(ctx.kind, ParenKind::ForHeader | ParenKind::ResourceSpec)
                         && ctx.start_brace_depth == state.brace_stack.len()
                         && ctx.start_bracket_depth == state.bracket_depth
-                        && ctx.start_generic_depth == state.generic_depth());
+                        && ctx.start_generic_depth == state.generic_depth()
+                });
 
                 let next_is_comment = next.is_some_and(|t| t.is_line_comment());
                 if in_header {
@@ -1252,7 +1263,9 @@ fn write_token(
                     }
                 }
 
-                if !broke_line && matches!(next, Some(Token::Punct(Punct::RParen | Punct::RBracket))) {
+                if !broke_line
+                    && matches!(next, Some(Token::Punct(Punct::RParen | Punct::RBracket)))
+                {
                     // No space before closing.
                 } else if !broke_line && next.is_some() {
                     state.ensure_space();
@@ -1312,7 +1325,10 @@ fn write_token(
                 let ctx = state.paren_stack.pop();
                 if ctx.as_ref().is_some_and(|c| c.multiline) {
                     state.ensure_newline();
-                    let base_indent = ctx.as_ref().map(|c| c.base_indent).unwrap_or(state.indent_level);
+                    let base_indent = ctx
+                        .as_ref()
+                        .map(|c| c.base_indent)
+                        .unwrap_or(state.indent_level);
                     state.write_indent_level(base_indent);
                 } else {
                     state.write_indent();
@@ -1321,7 +1337,9 @@ fn write_token(
                 punct.push_to(&mut state.out);
                 state.line_len += punct.len();
 
-                if ctx.as_ref().is_some_and(|c| c.multiline && c.annotation_args)
+                if ctx
+                    .as_ref()
+                    .is_some_and(|c| c.multiline && c.annotation_args)
                     && matches!(next, Some(Token::Word(_) | Token::Punct(Punct::At)))
                 {
                     state.ensure_newline();
@@ -1513,7 +1531,15 @@ fn write_token(
                 } else {
                     punct.push_to(&mut state.out);
                     state.line_len += punct.len();
-                    if matches!(next, Some(Token::Word(_) | Token::Number(_) | Token::StringLiteral(_) | Token::CharLiteral(_))) {
+                    if matches!(
+                        next,
+                        Some(
+                            Token::Word(_)
+                                | Token::Number(_)
+                                | Token::StringLiteral(_)
+                                | Token::CharLiteral(_)
+                        )
+                    ) {
                         state.ensure_space();
                     }
                     state.last_sig = Some(SigToken::Punct(Punct::Colon));

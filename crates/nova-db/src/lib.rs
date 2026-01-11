@@ -350,4 +350,6 @@ pub use salsa::{
     SyntaxTree,
 };
 
-pub use persistence::{HasPersistence, Persistence, PersistenceConfig, PersistenceMode, PersistenceStats};
+pub use persistence::{
+    HasPersistence, Persistence, PersistenceConfig, PersistenceMode, PersistenceStats,
+};

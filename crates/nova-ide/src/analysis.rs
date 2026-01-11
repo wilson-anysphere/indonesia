@@ -24,4 +24,3 @@ pub fn diagnostics(java_source: &str) -> Vec<Diagnostic> {
 pub fn completions(_java_source: &str, _offset: usize) -> Vec<CompletionItem> {
     Vec::new()
 }
-

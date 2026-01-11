@@ -93,6 +93,8 @@ fn class_directories_are_treated_as_unnamed_modules() {
     .unwrap();
 
     assert!(index.module_of("com.example.dep.Bar").is_none());
-    assert_eq!(index.module_kind_of("com.example.dep.Bar"), ModuleNameKind::None);
+    assert_eq!(
+        index.module_kind_of("com.example.dep.Bar"),
+        ModuleNameKind::None
+    );
 }
-

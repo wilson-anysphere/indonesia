@@ -92,11 +92,17 @@ impl VirtualWorkspace {
                 .unwrap_or(0);
             touched_ranges.insert(
                 file.new_path.clone(),
-                vec![TextRange::new(TextSize::from(0), TextSize::from(len as u32))],
+                vec![TextRange::new(
+                    TextSize::from(0),
+                    TextSize::from(len as u32),
+                )],
             );
         }
 
-        Ok(AppliedPatch { workspace: out, touched_ranges })
+        Ok(AppliedPatch {
+            workspace: out,
+            touched_ranges,
+        })
     }
 }
 
@@ -140,11 +146,15 @@ fn apply_edits_to_text(
         let start = index
             .offset_of_position(original, start_pos)
             .map(text_size_to_usize)
-            .ok_or_else(|| PatchApplyError::InvalidRange { file: edit.file.clone() })?;
+            .ok_or_else(|| PatchApplyError::InvalidRange {
+                file: edit.file.clone(),
+            })?;
         let end = index
             .offset_of_position(original, end_pos)
             .map(text_size_to_usize)
-            .ok_or_else(|| PatchApplyError::InvalidRange { file: edit.file.clone() })?;
+            .ok_or_else(|| PatchApplyError::InvalidRange {
+                file: edit.file.clone(),
+            })?;
         if start > end {
             return Err(PatchApplyError::InvalidRange {
                 file: edit.file.clone(),
@@ -171,12 +181,14 @@ fn apply_edits_to_text(
         last_end = edit.end;
     }
 
-    let mut out = String::with_capacity(original.len().saturating_add(
-        offset_edits
-            .iter()
-            .map(|edit| edit.insert.len())
-            .sum::<usize>(),
-    ));
+    let mut out = String::with_capacity(
+        original.len().saturating_add(
+            offset_edits
+                .iter()
+                .map(|edit| edit.insert.len())
+                .sum::<usize>(),
+        ),
+    );
 
     let mut cursor = 0usize;
     let mut inserted_spans: Vec<(usize, usize)> = Vec::with_capacity(offset_edits.len());
@@ -205,14 +217,21 @@ fn text_size_to_usize(size: TextSize) -> usize {
 fn text_size_from_usize(offset: usize) -> TextSize {
     TextSize::from(offset as u32)
 }
-fn apply_unified_diff_hunks(original: &str, hunks: &[UnifiedDiffHunk]) -> Result<String, PatchApplyError> {
+fn apply_unified_diff_hunks(
+    original: &str,
+    hunks: &[UnifiedDiffHunk],
+) -> Result<String, PatchApplyError> {
     let original_lines: Vec<&str> = original.lines().collect();
 
     let mut output_lines: Vec<String> = Vec::new();
     let mut cursor = 1usize; // diff is 1-based
 
     for hunk in hunks {
-        let old_start = if hunk.old_start == 0 { 1 } else { hunk.old_start };
+        let old_start = if hunk.old_start == 0 {
+            1
+        } else {
+            hunk.old_start
+        };
 
         if old_start < cursor {
             return Err(PatchApplyError::UnifiedDiffApplyFailed(
@@ -306,6 +325,10 @@ fn apply_unified_diff_hunks(original: &str, hunks: &[UnifiedDiffHunk]) -> Result
 pub fn affected_files(patch: &Patch) -> BTreeSet<String> {
     match patch {
         Patch::Edits(edits) => edits.iter().map(|edit| edit.file.clone()).collect(),
-        Patch::UnifiedDiff(diff) => diff.files.iter().map(|file| file.new_path.clone()).collect(),
+        Patch::UnifiedDiff(diff) => diff
+            .files
+            .iter()
+            .map(|file| file.new_path.clone())
+            .collect(),
     }
 }

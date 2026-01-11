@@ -13,7 +13,10 @@ fn assert_idempotent(name: &str, input: &str, config: &FormatConfig) {
     let formatted = format_with_config(input, config);
     let tree = parse(&formatted);
     let formatted_again = format_java(&tree, &formatted, config);
-    assert_eq!(formatted, formatted_again, "fixture `{name}` is not idempotent");
+    assert_eq!(
+        formatted, formatted_again,
+        "fixture `{name}` is not idempotent"
+    );
 }
 
 #[test]
@@ -140,9 +143,8 @@ fn on_type_formatting_triggers_inside_argument_lists() {
     let tree = parse(input);
     // Cursor after the comma in `foo(1,2);`
     let position = Position::new(2, 6);
-    let edits =
-        edits_for_on_type_formatting(&tree, input, position, ',', &FormatConfig::default())
-            .unwrap();
+    let edits = edits_for_on_type_formatting(&tree, input, position, ',', &FormatConfig::default())
+        .unwrap();
     assert_eq!(edits.len(), 1);
     let out = apply_text_edits(input, &edits).unwrap();
     assert!(out.contains("        foo(1,2);"));

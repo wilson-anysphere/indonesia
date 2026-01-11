@@ -18,4 +18,3 @@ pub fn filter_duplicates_against_insert_text_set<T, F>(
             .unwrap_or(true)
     });
 }
-

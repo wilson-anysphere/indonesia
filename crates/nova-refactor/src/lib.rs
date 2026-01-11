@@ -42,8 +42,8 @@ pub use extract_member::{
 };
 pub use inline_method::{inline_method, InlineMethodError, InlineMethodOptions};
 pub use move_java::{
-    move_class, move_package, FileEdit, FileMove, MoveClassParams, MovePackageParams, RefactorError,
-    RefactoringEdit,
+    move_class, move_package, FileEdit, FileMove, MoveClassParams, MovePackageParams,
+    RefactorError, RefactoringEdit,
 };
 pub use move_member::{
     move_method, move_static_member, MoveMemberError, MoveMethodParams, MoveStaticMemberParams,
@@ -68,7 +68,7 @@ pub use materialize::{materialize, MaterializeError};
 pub use preview::{generate_preview, FilePreview, RefactoringPreview};
 pub use refactorings::{
     extract_variable, inline_variable, organize_imports, rename, ExtractVariableParams,
-    InlineVariableParams, OrganizeImportsParams, RenameParams,
-    RefactorError as SemanticRefactorError,
+    InlineVariableParams, OrganizeImportsParams, RefactorError as SemanticRefactorError,
+    RenameParams,
 };
 pub use semantic::{Conflict, RefactorDatabase, SemanticChange};

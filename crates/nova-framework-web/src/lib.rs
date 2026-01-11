@@ -40,12 +40,17 @@ pub fn extract_http_endpoints(sources: &[(&str, Option<PathBuf>)]) -> Vec<Endpoi
 pub fn extract_http_endpoints_from_source(source: &str, file: Option<PathBuf>) -> Vec<Endpoint> {
     let mut endpoints = Vec::new();
     endpoints.extend(extract_jaxrs_endpoints_from_source(source, file.clone()));
-    endpoints.extend(extract_spring_mvc_endpoints_from_source(source, file.clone()));
+    endpoints.extend(extract_spring_mvc_endpoints_from_source(
+        source,
+        file.clone(),
+    ));
     endpoints.extend(extract_micronaut_endpoints_from_source(source, file));
     endpoints
 }
 
-pub fn extract_http_endpoints_in_dir(project_root: impl AsRef<Path>) -> std::io::Result<Vec<Endpoint>> {
+pub fn extract_http_endpoints_in_dir(
+    project_root: impl AsRef<Path>,
+) -> std::io::Result<Vec<Endpoint>> {
     let project_root = project_root.as_ref();
     let mut java_files = Vec::new();
     collect_java_files(project_root, &mut java_files)?;
@@ -57,14 +62,19 @@ pub fn extract_http_endpoints_in_dir(project_root: impl AsRef<Path>) -> std::io:
             Err(_) => continue,
         };
 
-        let rel = file.strip_prefix(project_root).unwrap_or(&file).to_path_buf();
+        let rel = file
+            .strip_prefix(project_root)
+            .unwrap_or(&file)
+            .to_path_buf();
         endpoints.extend(extract_http_endpoints_from_source(&content, Some(rel)));
     }
 
     Ok(endpoints)
 }
 
-pub fn extract_jaxrs_endpoints_in_dir(project_root: impl AsRef<Path>) -> std::io::Result<Vec<Endpoint>> {
+pub fn extract_jaxrs_endpoints_in_dir(
+    project_root: impl AsRef<Path>,
+) -> std::io::Result<Vec<Endpoint>> {
     let project_root = project_root.as_ref();
     let mut java_files = Vec::new();
     collect_java_files(project_root, &mut java_files)?;
@@ -76,7 +86,10 @@ pub fn extract_jaxrs_endpoints_in_dir(project_root: impl AsRef<Path>) -> std::io
             Err(_) => continue,
         };
 
-        let rel = file.strip_prefix(project_root).unwrap_or(&file).to_path_buf();
+        let rel = file
+            .strip_prefix(project_root)
+            .unwrap_or(&file)
+            .to_path_buf();
         endpoints.extend(extract_jaxrs_endpoints_from_source(&content, Some(rel)));
     }
 
@@ -196,7 +209,10 @@ fn extract_spring_mvc_endpoints_from_source(source: &str, file: Option<PathBuf>)
         if !in_class {
             if looks_like_java_class_decl(line) {
                 is_controller_class = pending_annotations.iter().any(|ann| {
-                    matches!(ann.name.as_str(), "RestController" | "Controller" | "RequestMapping")
+                    matches!(
+                        ann.name.as_str(),
+                        "RestController" | "Controller" | "RequestMapping"
+                    )
                 });
                 class_base_path = pending_annotations
                     .iter()
@@ -251,7 +267,10 @@ fn parse_spring_method_mapping(annotations: &[PendingAnnotation]) -> Option<Pars
             _ => continue,
         };
 
-        let path = ann.args.as_deref().and_then(|args| extract_mapping_path(args, path_keys));
+        let path = ann
+            .args
+            .as_deref()
+            .and_then(|args| extract_mapping_path(args, path_keys));
         return Some(ParsedMapping {
             methods: vec![method.to_string()],
             path,
@@ -281,10 +300,7 @@ fn spring_request_mapping_methods(args: Option<&str>) -> Vec<String> {
         let mut rest = args;
         while let Some(pos) = rest.find("RequestMethod.") {
             rest = &rest[pos + "RequestMethod.".len()..];
-            let end = rest
-                .bytes()
-                .take_while(|b| b.is_ascii_alphabetic())
-                .count();
+            let end = rest.bytes().take_while(|b| b.is_ascii_alphabetic()).count();
             if end == 0 {
                 continue;
             }
@@ -341,7 +357,9 @@ fn extract_micronaut_endpoints_from_source(source: &str, file: Option<PathBuf>) 
 
         if !in_class {
             if looks_like_java_class_decl(line) {
-                is_controller_class = pending_annotations.iter().any(|ann| ann.name == "Controller");
+                is_controller_class = pending_annotations
+                    .iter()
+                    .any(|ann| ann.name == "Controller");
                 class_base_path = pending_annotations
                     .iter()
                     .find(|ann| ann.name == "Controller")
@@ -435,10 +453,7 @@ fn count_braces(line: &str) -> i32 {
     open - close
 }
 
-fn consume_leading_annotations<'a>(
-    line: &'a str,
-    pending: &mut Vec<PendingAnnotation>,
-) -> &'a str {
+fn consume_leading_annotations<'a>(line: &'a str, pending: &mut Vec<PendingAnnotation>) -> &'a str {
     let bytes = line.as_bytes();
     let mut idx = 0usize;
 
@@ -461,7 +476,11 @@ fn consume_leading_annotations<'a>(
             break;
         }
         let full_name = &line[start_name..idx];
-        let name = full_name.rsplit('.').next().unwrap_or(full_name).to_string();
+        let name = full_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(full_name)
+            .to_string();
 
         while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
             idx += 1;

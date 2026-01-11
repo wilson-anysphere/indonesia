@@ -37,8 +37,11 @@ pub trait DiagnosticProvider<DB: ?Sized + Send + Sync>: Send + Sync {
         true
     }
 
-    fn provide_diagnostics(&self, ctx: ExtensionContext<DB>, params: DiagnosticParams)
-        -> Vec<Diagnostic>;
+    fn provide_diagnostics(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic>;
 }
 
 pub trait CompletionProvider<DB: ?Sized + Send + Sync>: Send + Sync {
@@ -96,4 +99,3 @@ pub trait InlayHintProvider<DB: ?Sized + Send + Sync>: Send + Sync {
         params: InlayHintParams,
     ) -> Vec<InlayHint>;
 }
-

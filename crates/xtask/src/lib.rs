@@ -19,9 +19,7 @@ pub fn main() -> Result<()> {
             codegen()?;
         }
         _ => {
-            return Err(anyhow!(
-                "unknown command `{cmd}` (supported: `codegen`)"
-            ));
+            return Err(anyhow!("unknown command `{cmd}` (supported: `codegen`)"));
         }
     }
 
@@ -272,10 +270,7 @@ fn parse_grammar(src: &str) -> Result<Grammar> {
                 return Err(anyhow!("missing enum name"));
             }
             if variants.is_empty() {
-                return Err(anyhow!(
-                    "enum `{name}` has no variants (line {})",
-                    idx + 1
-                ));
+                return Err(anyhow!("enum `{name}` has no variants (line {})", idx + 1));
             }
 
             grammar.enums.push(EnumDef {
@@ -335,7 +330,10 @@ fn render_node(out: &mut String, node: &NodeDef) {
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
     let _ = writeln!(out, "    fn cast(syntax: SyntaxNode) -> Option<Self> {{");
-    let _ = writeln!(out, "        Self::can_cast(syntax.kind()).then_some(Self {{ syntax }})");
+    let _ = writeln!(
+        out,
+        "        Self::can_cast(syntax.kind()).then_some(Self {{ syntax }})"
+    );
     let _ = writeln!(out, "    }}");
     let _ = writeln!(out);
     let _ = writeln!(out, "    fn syntax(&self) -> &SyntaxNode {{");
@@ -386,7 +384,10 @@ fn render_field_accessor(out: &mut String, field: &Field, nth: usize) {
                 let _ = writeln!(out, "    }}");
             } else {
                 let _ = writeln!(out, "    pub fn {name}(&self) -> Option<SyntaxToken> {{");
-                let _ = writeln!(out, "        support::ident_tokens(&self.syntax).nth({nth})");
+                let _ = writeln!(
+                    out,
+                    "        support::ident_tokens(&self.syntax).nth({nth})"
+                );
                 let _ = writeln!(out, "    }}");
             }
         }
@@ -431,7 +432,11 @@ fn render_enum(out: &mut String, grammar: &Grammar, enm: &EnumDef) {
     let _ = writeln!(out, "impl AstNode for {} {{", enm.name);
     let _ = writeln!(out, "    fn can_cast(kind: SyntaxKind) -> bool {{");
     for (i, var) in enm.variants.iter().enumerate() {
-        let prefix = if i == 0 { "        " } else { "            || " };
+        let prefix = if i == 0 {
+            "        "
+        } else {
+            "            || "
+        };
         let _ = writeln!(out, "{prefix}{var}::can_cast(kind)");
     }
     let _ = writeln!(out, "    }}");

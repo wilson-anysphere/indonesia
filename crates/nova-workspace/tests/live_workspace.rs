@@ -25,7 +25,10 @@ fn live_workspace_open_and_new_do_not_panic() {
     let overlay = ws.overlay_fs();
     let vfs_path = VfsPath::local(file_path.clone());
     assert!(overlay.exists(&vfs_path));
-    assert_eq!(overlay.read_to_string(&vfs_path).expect("read"), "class Main {}");
+    assert_eq!(
+        overlay.read_to_string(&vfs_path).expect("read"),
+        "class Main {}"
+    );
 
     let config = WorkspaceConfig::new(
         root.to_path_buf(),
@@ -36,4 +39,3 @@ fn live_workspace_open_and_new_do_not_panic() {
     let ws = Workspace::new(config, client);
     let _ = ws.overlay_fs();
 }
-

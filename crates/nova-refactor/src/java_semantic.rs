@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::edit::{FileId, TextRange};
-use crate::semantic::{Reference, RefactorDatabase, SymbolDefinition};
+use crate::semantic::{RefactorDatabase, Reference, SymbolDefinition};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SymbolId(u32);
@@ -107,15 +107,13 @@ impl InMemoryJavaDatabase {
     }
 
     pub fn symbol_at(&self, file: &FileId, offset: usize) -> Option<SymbolId> {
-        self.spans
-            .iter()
-            .find_map(|(span_file, range, symbol)| {
-                if span_file == file && range.contains(offset) {
-                    Some(*symbol)
-                } else {
-                    None
-                }
-            })
+        self.spans.iter().find_map(|(span_file, range, symbol)| {
+            if span_file == file && range.contains(offset) {
+                Some(*symbol)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn symbol_kind(&self, symbol: SymbolId) -> Option<JavaSymbolKind> {
@@ -144,7 +142,12 @@ impl InMemoryJavaDatabase {
         let tokens = tokenize_java(text);
         let sig_tokens: Vec<Token> = tokens
             .into_iter()
-            .filter(|t| matches!(t.kind, TokenKind::Ident(_) | TokenKind::Keyword(_) | TokenKind::Symbol(_)))
+            .filter(|t| {
+                matches!(
+                    t.kind,
+                    TokenKind::Ident(_) | TokenKind::Keyword(_) | TokenKind::Symbol(_)
+                )
+            })
             .collect();
 
         let mut scope_stack: Vec<u32> = vec![root_scope];
@@ -158,7 +161,9 @@ impl InMemoryJavaDatabase {
                     let parent = *scope_stack.last().unwrap();
                     let (kind, params) = match pending_scope.take() {
                         Some(PendingScope::TypeBody) => (ScopeKind::TypeBody, Vec::new()),
-                        Some(PendingScope::MethodBody { params }) => (ScopeKind::MethodBody, params),
+                        Some(PendingScope::MethodBody { params }) => {
+                            (ScopeKind::MethodBody, params)
+                        }
                         None => (ScopeKind::Block, Vec::new()),
                     };
 
@@ -214,9 +219,16 @@ impl InMemoryJavaDatabase {
                     }) = sig_tokens.get(i + 1)
                     {
                         let scope = *scope_stack.last().unwrap();
-                        let symbol =
-                            self.add_symbol(file.clone(), name.clone(), *range, scope, JavaSymbolKind::Type);
-                        self.scopes[scope as usize].symbols.insert(name.clone(), symbol);
+                        let symbol = self.add_symbol(
+                            file.clone(),
+                            name.clone(),
+                            *range,
+                            scope,
+                            JavaSymbolKind::Type,
+                        );
+                        self.scopes[scope as usize]
+                            .symbols
+                            .insert(name.clone(), symbol);
                         pending_scope = Some(PendingScope::TypeBody);
                         i += 2;
                         continue;
@@ -258,7 +270,9 @@ impl InMemoryJavaDatabase {
                 }
 
                 // Field declaration (best-effort).
-                if let Some((next_i, ty_token, name_token)) = try_parse_variable_decl(&sig_tokens, i) {
+                if let Some((next_i, ty_token, name_token)) =
+                    try_parse_variable_decl(&sig_tokens, i)
+                {
                     if let TokenKind::Ident(field_name) = &name_token.kind {
                         let symbol = self.add_symbol(
                             file.clone(),
@@ -276,7 +290,9 @@ impl InMemoryJavaDatabase {
                     }
                 }
             } else if current_kind == ScopeKind::MethodBody || current_kind == ScopeKind::Block {
-                if let Some((next_i, ty_token, name_token)) = try_parse_variable_decl(&sig_tokens, i) {
+                if let Some((next_i, ty_token, name_token)) =
+                    try_parse_variable_decl(&sig_tokens, i)
+                {
                     if let TokenKind::Ident(local_name) = &name_token.kind {
                         let symbol = self.add_symbol(
                             file.clone(),
@@ -307,7 +323,9 @@ impl InMemoryJavaDatabase {
                 }
 
                 if is_method_call(prev, tok, next) {
-                    if let Some(symbol) = resolve_by_kind(self, &scope_stack, name, JavaSymbolKind::Method) {
+                    if let Some(symbol) =
+                        resolve_by_kind(self, &scope_stack, name, JavaSymbolKind::Method)
+                    {
                         self.record_reference(file.clone(), symbol, tok.range);
                     }
                     i += 1;
@@ -359,7 +377,10 @@ impl InMemoryJavaDatabase {
     }
 
     fn record_reference(&mut self, file: FileId, symbol: SymbolId, range: TextRange) {
-        self.references[symbol.as_usize()].push(Reference { file: file.clone(), range });
+        self.references[symbol.as_usize()].push(Reference {
+            file: file.clone(),
+            range,
+        });
         self.spans.push((file, range, symbol));
     }
 
@@ -467,7 +488,10 @@ fn token_is_type(token: &Token) -> bool {
     }
 }
 
-fn try_parse_method_decl(tokens: &[Token], start: usize) -> Option<(usize, Vec<PendingParam>, Token, Token)> {
+fn try_parse_method_decl(
+    tokens: &[Token],
+    start: usize,
+) -> Option<(usize, Vec<PendingParam>, Token, Token)> {
     let mut i = start;
     while let Some(Token {
         kind: TokenKind::Keyword(k),
@@ -639,7 +663,9 @@ fn resolve_member(db: &InMemoryJavaDatabase, stack: &[u32], name: &str) -> Optio
     for scope in stack.iter().rev() {
         if let Some(symbol) = db.resolve_name_in_scope(*scope, name) {
             match db.symbol_kind(symbol) {
-                Some(JavaSymbolKind::Field | JavaSymbolKind::Method | JavaSymbolKind::Type) => return Some(symbol),
+                Some(JavaSymbolKind::Field | JavaSymbolKind::Method | JavaSymbolKind::Type) => {
+                    return Some(symbol)
+                }
                 _ => continue,
             }
         }

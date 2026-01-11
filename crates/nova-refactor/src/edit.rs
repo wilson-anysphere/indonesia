@@ -117,8 +117,9 @@ impl WorkspaceEdit {
         });
 
         // Exact duplicates are redundant.
-        self.edits
-            .dedup_by(|a, b| a.file == b.file && a.range == b.range && a.replacement == b.replacement);
+        self.edits.dedup_by(|a, b| {
+            a.file == b.file && a.range == b.range && a.replacement == b.replacement
+        });
 
         // Merge multiple inserts at the same position. This avoids ambiguous
         // ordering when applying edits and keeps the edit set deterministic.
@@ -130,7 +131,10 @@ impl WorkspaceEdit {
                     continue;
                 }
 
-                if last.file == edit.file && last.range == edit.range && last.replacement != edit.replacement {
+                if last.file == edit.file
+                    && last.range == edit.range
+                    && last.replacement != edit.replacement
+                {
                     return Err(EditError::OverlappingEdits {
                         file: edit.file,
                         first: last.range,
@@ -161,11 +165,11 @@ impl WorkspaceEdit {
 
             if let Some(prev_range) = prev {
                 if edit.range.start < prev_range.end {
-                return Err(EditError::OverlappingEdits {
-                    file: edit.file.clone(),
+                    return Err(EditError::OverlappingEdits {
+                        file: edit.file.clone(),
                         first: prev_range,
-                    second: edit.range,
-                });
+                        second: edit.range,
+                    });
                 }
             }
 

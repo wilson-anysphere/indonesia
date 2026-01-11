@@ -47,6 +47,8 @@ fn infers_gradle_module_edges_from_explicit_project_dependencies() {
 
     let graph = infer_module_graph(&[app, lib]);
 
-    assert_eq!(graph.edges, vec![(ModuleId::new(":app"), ModuleId::new(":lib"))]);
+    assert_eq!(
+        graph.edges,
+        vec![(ModuleId::new(":app"), ModuleId::new(":lib"))]
+    );
 }
-

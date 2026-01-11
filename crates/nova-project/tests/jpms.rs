@@ -4,7 +4,9 @@ use nova_modules::ModuleName;
 use nova_project::load_project;
 
 fn testdata_path(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join(rel)
 }
 
 #[test]

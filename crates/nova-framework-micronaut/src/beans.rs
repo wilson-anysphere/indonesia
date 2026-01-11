@@ -4,8 +4,9 @@ use nova_types::{Diagnostic, Span};
 use tree_sitter::Node;
 
 use crate::parse::{
-    clean_type, collect_annotations, find_named_child, infer_field_type_node, infer_param_type_node,
-    modifier_node, node_text, parse_java, simple_name, visit_nodes, ParsedAnnotation,
+    clean_type, collect_annotations, find_named_child, infer_field_type_node,
+    infer_param_type_node, modifier_node, node_text, parse_java, simple_name, visit_nodes,
+    ParsedAnnotation,
 };
 use crate::JavaSource;
 
@@ -293,12 +294,8 @@ fn discover_beans_in_class(
     let mut beans = Vec::new();
 
     if is_class_bean {
-        let injection_points = discover_injection_points_in_class_body(
-            &class_name,
-            body,
-            src,
-            qualifier_annotations,
-        );
+        let injection_points =
+            discover_injection_points_in_class_body(&class_name, body, src, qualifier_annotations);
 
         let bean_name = class_named
             .clone()

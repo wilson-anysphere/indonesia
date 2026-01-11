@@ -7,7 +7,8 @@ use nova_types::{Diagnostic, Severity};
 use tree_sitter::Node;
 
 pub const MICRONAUT_VALIDATION_PRIMITIVE_NONNULL: &str = "MICRONAUT_VALIDATION_PRIMITIVE_NONNULL";
-pub const MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH: &str = "MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH";
+pub const MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH: &str =
+    "MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH";
 
 /// Produce best-effort diagnostics for common Bean Validation mistakes.
 ///
@@ -74,7 +75,11 @@ fn validate_formal_parameter(node: Node<'_>, src: &JavaSource, out: &mut Vec<Dia
     validate_constraints(&ty, &annotations, out);
 }
 
-fn validate_constraints(ty: &str, annotations: &[crate::parse::ParsedAnnotation], out: &mut Vec<Diagnostic>) {
+fn validate_constraints(
+    ty: &str,
+    annotations: &[crate::parse::ParsedAnnotation],
+    out: &mut Vec<Diagnostic>,
+) {
     let is_primitive = is_primitive_type(ty);
     let is_string = is_string_type(ty);
     let is_numeric = is_numeric_type(ty);

@@ -61,7 +61,8 @@ fn assert_tree_matches(expected: &Path, actual: &Path) {
         let expected_bytes = fs::read(&expected_path).unwrap();
         let actual_bytes = fs::read(&actual_path).unwrap();
         assert_eq!(
-            actual_bytes, expected_bytes,
+            actual_bytes,
+            expected_bytes,
             "file contents differ for {}",
             rel.display()
         );
@@ -134,4 +135,3 @@ fn rename_in_place_matches_fixture() {
 
     assert_tree_matches(&after, temp.path());
 }
-

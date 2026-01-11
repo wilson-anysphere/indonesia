@@ -33,12 +33,7 @@ impl fmt::Display for ArchivePath {
             ArchiveKind::Jar => "jar",
             ArchiveKind::Jmod => "jmod",
         };
-        write!(
-            f,
-            "{kind}:{}!{}",
-            self.archive.display(),
-            self.entry
-        )
+        write!(f, "{kind}:{}!{}", self.archive.display(), self.entry)
     }
 }
 

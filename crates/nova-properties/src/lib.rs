@@ -300,32 +300,20 @@ mod tests {
         assert_eq!(server.value, "8080");
         let key_start = u32::from(server.key_range.start()) as usize;
         let key_end = u32::from(server.key_range.end()) as usize;
-        assert_eq!(
-            &text[key_start..key_end],
-            "server.port"
-        );
+        assert_eq!(&text[key_start..key_end], "server.port");
         let value_start = u32::from(server.value_range.start()) as usize;
         let value_end = u32::from(server.value_range.end()) as usize;
-        assert_eq!(
-            &text[value_start..value_end],
-            "8080"
-        );
+        assert_eq!(&text[value_start..value_end], "8080");
 
         let url = &parsed.entries[1];
         assert_eq!(url.key, "spring.datasource.url");
         assert_eq!(url.value, "jdbc:h2:mem:test");
         let key_start = u32::from(url.key_range.start()) as usize;
         let key_end = u32::from(url.key_range.end()) as usize;
-        assert_eq!(
-            &text[key_start..key_end],
-            "spring.datasource.url"
-        );
+        assert_eq!(&text[key_start..key_end], "spring.datasource.url");
         let value_start = u32::from(url.value_range.start()) as usize;
         let value_end = u32::from(url.value_range.end()) as usize;
-        assert_eq!(
-            &text[value_start..value_end],
-            "jdbc:h2:mem:test"
-        );
+        assert_eq!(&text[value_start..value_end], "jdbc:h2:mem:test");
     }
 
     #[test]
@@ -339,10 +327,7 @@ mod tests {
         assert_eq!(greeting.value, "helloworld");
         let key_start = u32::from(greeting.key_range.start()) as usize;
         let key_end = u32::from(greeting.key_range.end()) as usize;
-        assert_eq!(
-            &text[key_start..key_end],
-            "greeting"
-        );
+        assert_eq!(&text[key_start..key_end], "greeting");
 
         let unicode = &parsed.entries[1];
         assert_eq!(unicode.value, "A");

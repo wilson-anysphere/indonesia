@@ -83,9 +83,7 @@ class C {
     let extract = actions
         .iter()
         .find(|action| {
-            action
-                .pointer("/command/command")
-                .and_then(|v| v.as_str())
+            action.pointer("/command/command").and_then(|v| v.as_str())
                 == Some("nova.extractMethod")
         })
         .expect("extract method action");

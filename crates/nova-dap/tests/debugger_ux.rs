@@ -276,5 +276,7 @@ fn step_emits_output_events_for_return_values_and_expression_values() {
 
     assert_eq!(output.output.len(), 2);
     assert!(output.output[0].output.contains("Return value: 42"));
-    assert!(output.output[1].output.contains("Expression value: \"hello\""));
+    assert!(output.output[1]
+        .output
+        .contains("Expression value: \"hello\""));
 }

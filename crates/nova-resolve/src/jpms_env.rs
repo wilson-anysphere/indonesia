@@ -25,7 +25,10 @@ pub fn build_jpms_environment(
 ) -> Result<JpmsEnvironment> {
     let mut graph = jdk.module_graph().cloned().unwrap_or_else(|| {
         let mut graph = ModuleGraph::new();
-        graph.insert(empty_module(ModuleKind::Explicit, ModuleName::new(JAVA_BASE)));
+        graph.insert(empty_module(
+            ModuleKind::Explicit,
+            ModuleName::new(JAVA_BASE),
+        ));
         graph
     });
 
@@ -47,10 +50,12 @@ pub fn build_jpms_environment(
     }
 
     for entry in module_path_entries {
-        let info = match entry
-            .module_info()
-            .with_context(|| format!("failed to read module-info for `{}`", entry.path().display()))?
-        {
+        let info = match entry.module_info().with_context(|| {
+            format!(
+                "failed to read module-info for `{}`",
+                entry.path().display()
+            )
+        })? {
             Some(info) => info,
             None => {
                 let (name, _) = entry.module_meta().with_context(|| {
@@ -190,12 +195,8 @@ mod tests {
         };
 
         let jdk = JdkIndex::new();
-        let env = build_jpms_environment(
-            &jdk,
-            Some(&ws),
-            &[ClasspathEntry::Jar(test_dep_jar())],
-        )
-        .unwrap();
+        let env = build_jpms_environment(&jdk, Some(&ws), &[ClasspathEntry::Jar(test_dep_jar())])
+            .unwrap();
 
         let java_base = ModuleName::new("java.base");
         assert!(env.graph.get(&java_base).is_some());

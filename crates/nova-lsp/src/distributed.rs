@@ -13,16 +13,25 @@ pub struct NovaLspFrontend {
 impl NovaLspFrontend {
     pub fn new_in_process(source_roots: Vec<PathBuf>) -> Self {
         let layout = WorkspaceLayout {
-            source_roots: source_roots.into_iter().map(|path| SourceRoot { path }).collect(),
+            source_roots: source_roots
+                .into_iter()
+                .map(|path| SourceRoot { path })
+                .collect(),
         };
         Self {
             router: QueryRouter::new_in_process(layout),
         }
     }
 
-    pub async fn new_distributed(config: DistributedRouterConfig, source_roots: Vec<PathBuf>) -> Result<Self> {
+    pub async fn new_distributed(
+        config: DistributedRouterConfig,
+        source_roots: Vec<PathBuf>,
+    ) -> Result<Self> {
         let layout = WorkspaceLayout {
-            source_roots: source_roots.into_iter().map(|path| SourceRoot { path }).collect(),
+            source_roots: source_roots
+                .into_iter()
+                .map(|path| SourceRoot { path })
+                .collect(),
         };
         let router = QueryRouter::new_distributed(config, layout).await?;
         Ok(Self { router })
@@ -40,7 +49,9 @@ impl NovaLspFrontend {
         self.router.workspace_symbols(query).await
     }
 
-    pub async fn worker_stats(&self) -> Result<std::collections::HashMap<u32, nova_remote_proto::WorkerStats>> {
+    pub async fn worker_stats(
+        &self,
+    ) -> Result<std::collections::HashMap<u32, nova_remote_proto::WorkerStats>> {
         self.router.worker_stats().await
     }
 
@@ -48,4 +59,3 @@ impl NovaLspFrontend {
         self.router.shutdown().await
     }
 }
-

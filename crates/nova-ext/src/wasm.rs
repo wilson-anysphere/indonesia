@@ -17,7 +17,9 @@ impl std::fmt::Display for WasmLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             WasmLoadError::Compile(msg) => write!(f, "failed to compile wasm module: {msg}"),
-            WasmLoadError::Instantiate(msg) => write!(f, "failed to instantiate wasm module: {msg}"),
+            WasmLoadError::Instantiate(msg) => {
+                write!(f, "failed to instantiate wasm module: {msg}")
+            }
             WasmLoadError::MissingExport(name) => write!(f, "missing required wasm export: {name}"),
             WasmLoadError::Utf8(msg) => write!(f, "invalid utf-8 from wasm module: {msg}"),
             WasmLoadError::Json(msg) => write!(f, "invalid json from wasm module: {msg}"),
@@ -67,7 +69,8 @@ struct PluginSpan {
 impl WasmDiagnosticProvider {
     pub fn from_wasm_bytes(id: impl Into<String>, bytes: &[u8]) -> Result<Self, WasmLoadError> {
         let engine = Engine::default();
-        let module = Module::new(&engine, bytes).map_err(|e| WasmLoadError::Compile(e.to_string()))?;
+        let module =
+            Module::new(&engine, bytes).map_err(|e| WasmLoadError::Compile(e.to_string()))?;
         Ok(Self {
             id: id.into(),
             engine,
@@ -96,10 +99,13 @@ impl WasmDiagnosticProvider {
             .get_memory(&mut store, "memory")
             .ok_or(WasmLoadError::MissingExport("memory"))?;
 
-        let ptr_func: TypedFunc<(), i32> = instance
-            .get_typed_func(&mut store, "diagnostics_ptr")
-            .map_err(|_| WasmLoadError::MissingExport("diagnostics_ptr"))?;
-        let ptr = ptr_func.call(&mut store, ()).map_err(|e| WasmLoadError::Instantiate(e.to_string()))? as usize;
+        let ptr_func: TypedFunc<(), i32> =
+            instance
+                .get_typed_func(&mut store, "diagnostics_ptr")
+                .map_err(|_| WasmLoadError::MissingExport("diagnostics_ptr"))?;
+        let ptr = ptr_func
+            .call(&mut store, ())
+            .map_err(|e| WasmLoadError::Instantiate(e.to_string()))? as usize;
 
         // Read a NUL-terminated string with a conservative cap.
         const MAX_BYTES: usize = 1024 * 1024;
@@ -147,7 +153,11 @@ impl<DB: ?Sized + Send + Sync> DiagnosticProvider<DB> for WasmDiagnosticProvider
         &self.id
     }
 
-    fn provide_diagnostics(&self, _ctx: ExtensionContext<DB>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+    fn provide_diagnostics(
+        &self,
+        _ctx: ExtensionContext<DB>,
+        _params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
         self.load_diagnostics().unwrap_or_default()
     }
 }

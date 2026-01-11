@@ -39,10 +39,12 @@ impl CommandRunner for RecordingRunner {
                 stdout: "//:hello\n".to_string(),
                 stderr: String::new(),
             }),
-            ["query", expr, "--output=label"] if expr.starts_with("buildfiles(") => Ok(CommandOutput {
-                stdout: "//:BUILD\n".to_string(),
-                stderr: String::new(),
-            }),
+            ["query", expr, "--output=label"] if expr.starts_with("buildfiles(") => {
+                Ok(CommandOutput {
+                    stdout: "//:BUILD\n".to_string(),
+                    stderr: String::new(),
+                })
+            }
             // Exercise best-effort handling for Bazel versions without `loadfiles(...)`.
             ["query", expr, "--output=label"] if expr.starts_with("loadfiles(") => {
                 Err(anyhow!("loadfiles query unsupported in test runner"))
@@ -92,19 +94,23 @@ impl CommandRunner for QueuedRunner {
                 stdout: "//java/com/example:hello\n".to_string(),
                 stderr: String::new(),
             }),
-            ["query", expr, "--output=label"] if expr.starts_with("buildfiles(") => Ok(CommandOutput {
-                stdout: concat!(
-                    "//java/com/example:BUILD\n",
-                    "//java/com/dep:BUILD\n",
-                    "//:WORKSPACE\n",
-                )
-                .to_string(),
-                stderr: String::new(),
-            }),
-            ["query", expr, "--output=label"] if expr.starts_with("loadfiles(") => Ok(CommandOutput {
-                stdout: "//rules:defs.bzl\n".to_string(),
-                stderr: String::new(),
-            }),
+            ["query", expr, "--output=label"] if expr.starts_with("buildfiles(") => {
+                Ok(CommandOutput {
+                    stdout: concat!(
+                        "//java/com/example:BUILD\n",
+                        "//java/com/dep:BUILD\n",
+                        "//:WORKSPACE\n",
+                    )
+                    .to_string(),
+                    stderr: String::new(),
+                })
+            }
+            ["query", expr, "--output=label"] if expr.starts_with("loadfiles(") => {
+                Ok(CommandOutput {
+                    stdout: "//rules:defs.bzl\n".to_string(),
+                    stderr: String::new(),
+                })
+            }
             ["aquery", "--output=textproto", _] => {
                 let stdout = self
                     .aquery_outputs
@@ -229,4 +235,3 @@ fn target_compile_info_cache_is_invalidated_when_any_build_definition_input_chan
     assert_eq!(info.classpath, vec!["c.jar".to_string()]);
     assert_eq!(runner.aquery_calls(), 3);
 }
-

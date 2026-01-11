@@ -99,4 +99,3 @@ pub fn materialize(
     edit.normalize()?;
     Ok(edit)
 }
-

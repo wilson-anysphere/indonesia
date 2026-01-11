@@ -15,9 +15,8 @@ fn sanitize_text(text: &str) -> String {
         Lazy::new(|| Regex::new(r"\bAKIA[0-9A-Z]{16}\b").expect("valid regex"));
     static GITHUB_TOKEN_RE: Lazy<Regex> =
         Lazy::new(|| Regex::new(r"\bghp_[A-Za-z0-9]{30,}\b").expect("valid regex"));
-    static BEARER_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9\-._=+/]{16,}\b").expect("valid regex")
-    });
+    static BEARER_TOKEN_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?i)\bbearer\s+[A-Za-z0-9\-._=+/]{16,}\b").expect("valid regex"));
     static HEADER_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
         Regex::new(r"(?i)\b(authorization|x-api-key|api-key)\s*:\s*([^\r\n]+)")
             .expect("valid regex")
@@ -38,7 +37,9 @@ fn sanitize_text(text: &str) -> String {
         })
         .into_owned();
     out = QUERY_PARAM_RE
-        .replace_all(&out, |caps: &regex::Captures<'_>| format!("{}[REDACTED]", &caps[1]))
+        .replace_all(&out, |caps: &regex::Captures<'_>| {
+            format!("{}[REDACTED]", &caps[1])
+        })
         .into_owned();
 
     for re in [
@@ -150,4 +151,3 @@ pub(crate) fn log_llm_error(
         error = %error,
     );
 }
-

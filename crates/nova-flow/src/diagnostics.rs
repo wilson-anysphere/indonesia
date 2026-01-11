@@ -24,7 +24,11 @@ impl Default for FlowConfig {
     }
 }
 
-pub(crate) fn diagnostic(kind: FlowDiagnosticKind, span: Option<Span>, message: String) -> Diagnostic {
+pub(crate) fn diagnostic(
+    kind: FlowDiagnosticKind,
+    span: Option<Span>,
+    message: String,
+) -> Diagnostic {
     match kind {
         FlowDiagnosticKind::UseBeforeAssignment => {
             Diagnostic::error("FLOW_UNASSIGNED", message, span)

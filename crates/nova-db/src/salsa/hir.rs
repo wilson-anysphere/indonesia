@@ -113,7 +113,8 @@ fn hir_constructor_body(db: &dyn NovaHir, constructor: ConstructorId) -> Arc<Hir
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "hir_constructor_body", ?constructor).entered();
+    let _span =
+        tracing::debug_span!("query", name = "hir_constructor_body", ?constructor).entered();
 
     cancel::check_cancelled(db);
 
@@ -146,7 +147,8 @@ fn hir_initializer_body(db: &dyn NovaHir, initializer: InitializerId) -> Arc<Hir
     let start = Instant::now();
 
     #[cfg(feature = "tracing")]
-    let _span = tracing::debug_span!("query", name = "hir_initializer_body", ?initializer).entered();
+    let _span =
+        tracing::debug_span!("query", name = "hir_initializer_body", ?initializer).entered();
 
     cancel::check_cancelled(db);
 
@@ -195,7 +197,12 @@ fn hir_symbol_names(db: &dyn NovaHir, file: FileId) -> Arc<Vec<String>> {
     result
 }
 
-fn collect_hir_item_names(db: &dyn NovaHir, tree: &HirItemTree, item: HirItem, names: &mut Vec<String>) {
+fn collect_hir_item_names(
+    db: &dyn NovaHir,
+    tree: &HirItemTree,
+    item: HirItem,
+    names: &mut Vec<String>,
+) {
     cancel::check_cancelled(db);
     match item {
         HirItem::Class(id) => {
@@ -243,4 +250,3 @@ fn collect_hir_member_names(
         }
     }
 }
-

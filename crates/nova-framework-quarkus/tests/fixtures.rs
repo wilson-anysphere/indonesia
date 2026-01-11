@@ -17,7 +17,10 @@ fn cdi_reports_unsatisfied_dependency() {
 
     let analysis = analyze_java_sources(&[src]);
     assert!(
-        analysis.diagnostics.iter().any(|d| d.code == CDI_UNSATISFIED_CODE),
+        analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == CDI_UNSATISFIED_CODE),
         "expected {CDI_UNSATISFIED_CODE} diagnostic, got: {:#?}",
         analysis.diagnostics
     );
@@ -58,7 +61,10 @@ fn cdi_reports_ambiguous_dependency() {
 
     let analysis = analyze_java_sources(&[iface, english, spanish, greeter]);
     assert!(
-        analysis.diagnostics.iter().any(|d| d.code == CDI_AMBIGUOUS_CODE),
+        analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == CDI_AMBIGUOUS_CODE),
         "expected {CDI_AMBIGUOUS_CODE} diagnostic, got: {:#?}",
         analysis.diagnostics
     );
@@ -87,7 +93,10 @@ fn cdi_reports_circular_dependency_best_effort() {
 
     let analysis = analyze_java_sources(&[a, b]);
     assert!(
-        analysis.diagnostics.iter().any(|d| d.code == CDI_CIRCULAR_CODE),
+        analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == CDI_CIRCULAR_CODE),
         "expected {CDI_CIRCULAR_CODE} diagnostic, got: {:#?}",
         analysis.diagnostics
     );

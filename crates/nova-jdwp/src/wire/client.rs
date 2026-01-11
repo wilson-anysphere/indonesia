@@ -134,7 +134,12 @@ impl JdwpClient {
         self.inner.events.subscribe()
     }
 
-    async fn send_command_raw(&self, command_set: u8, command: u8, payload: Vec<u8>) -> Result<Vec<u8>> {
+    async fn send_command_raw(
+        &self,
+        command_set: u8,
+        command: u8,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>> {
         let id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
 
@@ -236,7 +241,12 @@ impl JdwpClient {
         r.read_string()
     }
 
-    pub async fn frames(&self, thread: ThreadId, start: i32, length: i32) -> Result<Vec<FrameInfo>> {
+    pub async fn frames(
+        &self,
+        thread: ThreadId,
+        start: i32,
+        length: i32,
+    ) -> Result<Vec<FrameInfo>> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_object_id(thread, &sizes);
@@ -349,7 +359,10 @@ impl JdwpClient {
         r.read_string()
     }
 
-    pub async fn reference_type_methods(&self, class_id: ReferenceTypeId) -> Result<Vec<MethodInfo>> {
+    pub async fn reference_type_methods(
+        &self,
+        class_id: ReferenceTypeId,
+    ) -> Result<Vec<MethodInfo>> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_reference_type_id(class_id, &sizes);
@@ -368,7 +381,11 @@ impl JdwpClient {
         Ok(methods)
     }
 
-    pub async fn method_line_table(&self, class_id: ReferenceTypeId, method_id: MethodId) -> Result<LineTable> {
+    pub async fn method_line_table(
+        &self,
+        class_id: ReferenceTypeId,
+        method_id: MethodId,
+    ) -> Result<LineTable> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_reference_type_id(class_id, &sizes);
@@ -440,7 +457,10 @@ impl JdwpClient {
         Ok(values)
     }
 
-    pub async fn object_reference_reference_type(&self, object_id: ObjectId) -> Result<ReferenceTypeId> {
+    pub async fn object_reference_reference_type(
+        &self,
+        object_id: ObjectId,
+    ) -> Result<ReferenceTypeId> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_object_id(object_id, &sizes);
@@ -528,7 +548,12 @@ impl JdwpClient {
         r.read_i32()
     }
 
-    pub async fn array_reference_get_values(&self, array_id: ObjectId, first_index: i32, length: i32) -> Result<Vec<JdwpValue>> {
+    pub async fn array_reference_get_values(
+        &self,
+        array_id: ObjectId,
+        first_index: i32,
+        length: i32,
+    ) -> Result<Vec<JdwpValue>> {
         let sizes = self.id_sizes().await;
         let mut w = JdwpWriter::new();
         w.write_object_id(array_id, &sizes);
@@ -595,9 +620,15 @@ fn class_name_to_signature(class_name: &str) -> String {
 
 #[derive(Debug)]
 pub enum EventModifier {
-    ThreadOnly { thread: ThreadId },
-    ClassMatch { pattern: String },
-    LocationOnly { location: Location },
+    ThreadOnly {
+        thread: ThreadId,
+    },
+    ClassMatch {
+        pattern: String,
+    },
+    LocationOnly {
+        location: Location,
+    },
     ExceptionOnly {
         exception_or_null: ReferenceTypeId,
         caught: bool,
@@ -635,7 +666,11 @@ impl EventModifier {
                 w.write_bool(caught);
                 w.write_bool(uncaught);
             }
-            EventModifier::Step { thread, size, depth } => {
+            EventModifier::Step {
+                thread,
+                size,
+                depth,
+            } => {
                 w.write_u8(10);
                 w.write_object_id(thread, sizes);
                 w.write_u32(size);
@@ -686,7 +721,10 @@ async fn read_loop(mut reader: tokio::net::tcp::OwnedReadHalf, inner: Arc<Inner>
             };
 
             if let Some(tx) = tx {
-                let _ = tx.send(Ok(Reply { error_code, payload }));
+                let _ = tx.send(Ok(Reply {
+                    error_code,
+                    payload,
+                }));
             }
         } else {
             let command_set = header[9];
@@ -750,7 +788,11 @@ async fn handle_event_packet(inner: &Inner, payload: &[u8]) -> Result<()> {
                 let exception = r.read_object_id(&sizes)?;
                 let catch_location = {
                     let catch_loc = r.read_location(&sizes)?;
-                    if catch_loc.type_tag == 0 && catch_loc.class_id == 0 && catch_loc.method_id == 0 && catch_loc.index == 0 {
+                    if catch_loc.type_tag == 0
+                        && catch_loc.class_id == 0
+                        && catch_loc.method_id == 0
+                        && catch_loc.index == 0
+                    {
                         None
                     } else {
                         Some(catch_loc)

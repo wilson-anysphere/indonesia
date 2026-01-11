@@ -103,7 +103,10 @@ fn local_only_rejects_remote_urls() {
     };
     match err {
         AiError::InvalidConfig(msg) => {
-            assert!(msg.contains("local_only"), "error message should mention local_only");
+            assert!(
+                msg.contains("local_only"),
+                "error message should mention local_only"
+            );
             assert!(
                 msg.contains("loopback") || msg.contains("localhost"),
                 "error message should guide users toward loopback/localhost"

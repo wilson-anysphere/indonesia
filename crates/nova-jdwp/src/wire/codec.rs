@@ -1,4 +1,6 @@
-use super::types::{JdwpError, JdwpIdSizes, JdwpValue, Location, ObjectId, ReferenceTypeId, Result};
+use super::types::{
+    JdwpError, JdwpIdSizes, JdwpValue, Location, ObjectId, ReferenceTypeId, Result,
+};
 
 pub const HANDSHAKE: &[u8] = b"JDWP-Handshake";
 pub const HEADER_LEN: usize = 11;

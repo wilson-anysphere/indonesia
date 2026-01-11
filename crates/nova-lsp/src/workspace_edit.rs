@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use lsp_types::{
-    ClientCapabilities, DocumentChangeOperation, DocumentChanges, OptionalVersionedTextDocumentIdentifier,
-    ResourceOp, ResourceOperationKind, TextDocumentEdit, TextEdit, Uri, WorkspaceEdit,
+    ClientCapabilities, DocumentChangeOperation, DocumentChanges,
+    OptionalVersionedTextDocumentIdentifier, ResourceOp, ResourceOperationKind, TextDocumentEdit,
+    TextEdit, Uri, WorkspaceEdit,
 };
 
 use nova_refactor::RefactoringEdit;
@@ -67,12 +68,14 @@ pub fn workspace_edit_from_refactor(
             let old_uri = join_uri(root_uri, &mv.old_path);
             let new_uri = join_uri(root_uri, &mv.new_path);
 
-            ops.push(DocumentChangeOperation::Op(ResourceOp::Rename(lsp_types::RenameFile {
-                old_uri,
-                new_uri: new_uri.clone(),
-                options: None,
-                annotation_id: None,
-            })));
+            ops.push(DocumentChangeOperation::Op(ResourceOp::Rename(
+                lsp_types::RenameFile {
+                    old_uri,
+                    new_uri: new_uri.clone(),
+                    options: None,
+                    annotation_id: None,
+                },
+            )));
 
             let old_contents = original_files
                 .get(&mv.old_path)
@@ -117,11 +120,13 @@ pub fn workspace_edit_from_refactor(
             let old_uri = join_uri(root_uri, &mv.old_path);
             let new_uri = join_uri(root_uri, &mv.new_path);
 
-            ops.push(DocumentChangeOperation::Op(ResourceOp::Create(lsp_types::CreateFile {
-                uri: new_uri.clone(),
-                options: None,
-                annotation_id: None,
-            })));
+            ops.push(DocumentChangeOperation::Op(ResourceOp::Create(
+                lsp_types::CreateFile {
+                    uri: new_uri.clone(),
+                    options: None,
+                    annotation_id: None,
+                },
+            )));
 
             ops.push(DocumentChangeOperation::Edit(TextDocumentEdit {
                 text_document: OptionalVersionedTextDocumentIdentifier {
@@ -134,10 +139,12 @@ pub fn workspace_edit_from_refactor(
                 })],
             }));
 
-            ops.push(DocumentChangeOperation::Op(ResourceOp::Delete(lsp_types::DeleteFile {
-                uri: old_uri,
-                options: None,
-            })));
+            ops.push(DocumentChangeOperation::Op(ResourceOp::Delete(
+                lsp_types::DeleteFile {
+                    uri: old_uri,
+                    options: None,
+                },
+            )));
         }
 
         for fe in &edit.file_edits {
@@ -249,7 +256,10 @@ fn hex_digit(n: u8) -> char {
 fn full_document_range(contents: &str) -> lsp_types::Range {
     let end = end_position(contents);
     lsp_types::Range {
-        start: lsp_types::Position { line: 0, character: 0 },
+        start: lsp_types::Position {
+            line: 0,
+            character: 0,
+        },
         end,
     }
 }
@@ -314,10 +324,9 @@ mod tests {
         let Some(DocumentChanges::Operations(ops)) = ws_edit.document_changes else {
             panic!("expected document change operations");
         };
-        assert!(ops.iter().any(|op| matches!(
-            op,
-            DocumentChangeOperation::Op(ResourceOp::Rename(_))
-        )));
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Rename(_)))));
     }
 
     #[test]
@@ -400,10 +409,9 @@ mod tests {
         let Some(DocumentChanges::Operations(ops)) = ws_edit.document_changes else {
             panic!("expected document change operations");
         };
-        assert!(ops.iter().any(|op| matches!(
-            op,
-            DocumentChangeOperation::Op(ResourceOp::Rename(_))
-        )));
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Rename(_)))));
     }
 
     #[test]
@@ -445,17 +453,14 @@ mod tests {
             panic!("expected document change operations");
         };
 
-        assert!(ops.iter().any(|op| matches!(
-            op,
-            DocumentChangeOperation::Op(ResourceOp::Create(_))
-        )));
-        assert!(ops.iter().any(|op| matches!(
-            op,
-            DocumentChangeOperation::Op(ResourceOp::Delete(_))
-        )));
-        assert!(!ops.iter().any(|op| matches!(
-            op,
-            DocumentChangeOperation::Op(ResourceOp::Rename(_))
-        )));
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Create(_)))));
+        assert!(ops
+            .iter()
+            .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Delete(_)))));
+        assert!(!ops
+            .iter()
+            .any(|op| matches!(op, DocumentChangeOperation::Op(ResourceOp::Rename(_)))));
     }
 }

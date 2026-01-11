@@ -16,13 +16,11 @@ mod stub;
 
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use nova_core::{
-    JdkConfig, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName,
-};
+use nova_core::{JdkConfig, Name, PackageName, QualifiedName, StaticMemberId, TypeIndex, TypeName};
 use nova_modules::{ModuleGraph, ModuleInfo, ModuleName};
 use nova_types::{FieldStub, MethodStub, TypeDefStub, TypeProvider};
 
@@ -139,9 +137,7 @@ impl JdkIndex {
     ) -> Result<Self, JdkIndexError> {
         let mut this = Self::new();
         this.symbols = Some(index::JdkSymbolIndex::from_jdk_root_with_cache(
-            root,
-            cache_dir,
-            stats,
+            root, cache_dir, stats,
         )?);
         Ok(this)
     }
@@ -163,9 +159,7 @@ impl JdkIndex {
     ) -> Result<Self, JdkIndexError> {
         let mut this = Self::new();
         this.symbols = Some(index::JdkSymbolIndex::discover_with_cache(
-            config,
-            cache_dir,
-            stats,
+            config, cache_dir, stats,
         )?);
         Ok(this)
     }

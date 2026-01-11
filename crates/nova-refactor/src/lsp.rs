@@ -35,10 +35,10 @@ pub fn workspace_edit_to_lsp(
             end: offset_to_position(text, e.range.end),
         };
 
-        changes
-            .entry(uri)
-            .or_default()
-            .push(LspTextEdit { range, new_text: e.replacement.clone() });
+        changes.entry(uri).or_default().push(LspTextEdit {
+            range,
+            new_text: e.replacement.clone(),
+        });
     }
 
     // LSP clients tend to apply edits sequentially. Provide them in reverse
@@ -105,13 +105,19 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
         i += ch.len_utf8();
     }
 
-    Position { line, character: col_utf16 }
+    Position {
+        line,
+        character: col_utf16,
+    }
 }
 
 // Keep this here so callers don't need to import our internal types when
 // building code actions around plain text edits.
 #[allow(dead_code)]
-fn _lsp_text_edit(db: &dyn RefactorDatabase, edit: &TextEdit) -> Result<LspTextEdit, LspConversionError> {
+fn _lsp_text_edit(
+    db: &dyn RefactorDatabase,
+    edit: &TextEdit,
+) -> Result<LspTextEdit, LspConversionError> {
     let text = db
         .file_text(&edit.file)
         .ok_or_else(|| LspConversionError::UnknownFile(edit.file.clone()))?;

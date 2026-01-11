@@ -1,9 +1,9 @@
 use crate::{
     NovaLspError, Result, BUG_REPORT_METHOD, BUILD_DIAGNOSTICS_METHOD, BUILD_PROJECT_METHOD,
-    BUILD_STATUS_METHOD, BUILD_TARGET_CLASSPATH_METHOD, DEBUG_CONFIGURATIONS_METHOD, DEBUG_HOT_SWAP_METHOD,
-    JAVA_CLASSPATH_METHOD, JAVA_GENERATED_SOURCES_METHOD, RELOAD_PROJECT_METHOD,
-    RUN_ANNOTATION_PROCESSING_METHOD, TEST_DEBUG_CONFIGURATION_METHOD, TEST_DISCOVER_METHOD,
-    TEST_RUN_METHOD,
+    BUILD_STATUS_METHOD, BUILD_TARGET_CLASSPATH_METHOD, DEBUG_CONFIGURATIONS_METHOD,
+    DEBUG_HOT_SWAP_METHOD, JAVA_CLASSPATH_METHOD, JAVA_GENERATED_SOURCES_METHOD,
+    RELOAD_PROJECT_METHOD, RUN_ANNOTATION_PROCESSING_METHOD, TEST_DEBUG_CONFIGURATION_METHOD,
+    TEST_DISCOVER_METHOD, TEST_RUN_METHOD,
 };
 use nova_bugreport::{
     create_bug_report_bundle, global_crash_store, install_panic_hook, BugReportOptions,
@@ -100,7 +100,10 @@ fn enter_safe_mode(reason: SafeModeReason) {
     perf().record_safe_mode_entry();
     let safe_mode = safe_mode();
     safe_mode.enabled.store(true, Ordering::Relaxed);
-    let mut until = safe_mode.until.lock().expect("SafeModeState mutex poisoned");
+    let mut until = safe_mode
+        .until
+        .lock()
+        .expect("SafeModeState mutex poisoned");
     let duration = match reason {
         SafeModeReason::Panic => Duration::from_secs(60),
         SafeModeReason::WatchdogTimeout => Duration::from_secs(30),
@@ -141,9 +144,9 @@ pub fn run_with_watchdog(
                 "{method} panicked; entering safe-mode"
             )))
         }
-        Err(WatchdogError::Cancelled) => Err(NovaLspError::Internal(format!(
-            "{method} was cancelled"
-        ))),
+        Err(WatchdogError::Cancelled) => {
+            Err(NovaLspError::Internal(format!("{method} was cancelled")))
+        }
     }
 }
 
@@ -209,7 +212,8 @@ pub fn handle_bug_report(params: serde_json::Value) -> Result<serde_json::Value>
     let params: BugReportParams = if params.is_null() {
         BugReportParams::default()
     } else {
-        serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))?
+        serde_json::from_value(params)
+            .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?
     };
 
     let options = BugReportOptions {
@@ -273,7 +277,9 @@ mod tests {
             .expect("notifications mutex poisoned")
             .clone();
         assert!(
-            notifications.iter().any(|n| n.contains("Nova hit an internal error")),
+            notifications
+                .iter()
+                .any(|n| n.contains("Nova hit an internal error")),
             "expected panic hook notification, got: {notifications:?}"
         );
     }

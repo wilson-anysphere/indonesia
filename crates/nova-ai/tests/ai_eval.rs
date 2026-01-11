@@ -1,12 +1,12 @@
 use std::collections::HashSet;
 
-use nova_ai::{
-    parse_structured_patch, filter_duplicates_against_insert_text_set, safety::enforce_patch_safety,
-    validate_multi_token_completion, AdditionalEdit, AiClient,
-    MultiTokenCompletion, MultiTokenCompletionContext, MultiTokenInsertTextFormat, PatchSafetyConfig,
-    PrivacyMode, SafetyError, VirtualWorkspace,
-};
 use nova_ai::context::{ContextBuilder, ContextRequest, RelatedSymbol};
+use nova_ai::{
+    filter_duplicates_against_insert_text_set, parse_structured_patch,
+    safety::enforce_patch_safety, validate_multi_token_completion, AdditionalEdit, AiClient,
+    MultiTokenCompletion, MultiTokenCompletionContext, MultiTokenInsertTextFormat,
+    PatchSafetyConfig, PrivacyMode, SafetyError, VirtualWorkspace,
+};
 use nova_config::{AiConfig, AiPrivacyConfig, AiProviderConfig, AiProviderKind};
 use url::Url;
 
@@ -221,7 +221,8 @@ fn patch_safety_enforces_file_and_size_limits() {
 
     let mut cfg = PatchSafetyConfig::default();
     cfg.max_total_inserted_chars = 4;
-    let err = enforce_patch_safety(&patch, &cfg).expect_err("should reject patch that inserts too much");
+    let err =
+        enforce_patch_safety(&patch, &cfg).expect_err("should reject patch that inserts too much");
     assert!(matches!(err, SafetyError::TooManyInsertedChars { .. }));
 }
 
@@ -254,7 +255,12 @@ fn multi_token_completion_validation_and_deduplication() {
         additional_edits: vec![],
         confidence: 0.1,
     };
-    assert!(!validate_multi_token_completion(&ctx, &unknown_method, 3, 64));
+    assert!(!validate_multi_token_completion(
+        &ctx,
+        &unknown_method,
+        3,
+        64
+    ));
 
     let unknown_import = MultiTokenCompletion {
         label: "bad import".into(),
@@ -265,7 +271,12 @@ fn multi_token_completion_validation_and_deduplication() {
         }],
         confidence: 0.5,
     };
-    assert!(!validate_multi_token_completion(&ctx, &unknown_import, 3, 64));
+    assert!(!validate_multi_token_completion(
+        &ctx,
+        &unknown_import,
+        3,
+        64
+    ));
 
     let mut ai_items = vec![
         MultiTokenCompletion {

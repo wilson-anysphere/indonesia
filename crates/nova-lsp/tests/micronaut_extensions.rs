@@ -43,8 +43,14 @@ fn lsp_micronaut_endpoints_extension_discovers_controller_methods() {
 
     assert_eq!(resp.schema_version, SCHEMA_VERSION);
     assert_eq!(resp.endpoints.len(), 2);
-    assert!(resp.endpoints.iter().any(|e| e.method == "GET" && e.path == "/hello/world"));
-    assert!(resp.endpoints.iter().any(|e| e.method == "POST" && e.path == "/hello"));
+    assert!(resp
+        .endpoints
+        .iter()
+        .any(|e| e.method == "GET" && e.path == "/hello/world"));
+    assert!(resp
+        .endpoints
+        .iter()
+        .any(|e| e.method == "POST" && e.path == "/hello"));
 }
 
 #[test]
@@ -95,4 +101,3 @@ fn lsp_micronaut_beans_extension_lists_singletons() {
     assert!(resp.beans.iter().any(|b| b.ty == "Foo"));
     assert!(resp.beans.iter().any(|b| b.ty == "Bar"));
 }
-

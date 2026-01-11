@@ -15,7 +15,11 @@ async fn diagnostics_event_on_open_and_change() {
             .await
             .expect("diagnostics event")
             .expect("channel open");
-        if let WorkspaceEvent::DiagnosticsUpdated { file: got, diagnostics } = ev {
+        if let WorkspaceEvent::DiagnosticsUpdated {
+            file: got,
+            diagnostics,
+        } = ev
+        {
             if got == file {
                 assert!(!diagnostics.is_empty());
                 break;
@@ -24,7 +28,11 @@ async fn diagnostics_event_on_open_and_change() {
     }
 
     workspace
-        .apply_changes(&file, 2, &[ContentChange::full("class Main {}".to_string())])
+        .apply_changes(
+            &file,
+            2,
+            &[ContentChange::full("class Main {}".to_string())],
+        )
         .unwrap();
 
     loop {
@@ -32,7 +40,11 @@ async fn diagnostics_event_on_open_and_change() {
             .await
             .expect("diagnostics event")
             .expect("channel open");
-        if let WorkspaceEvent::DiagnosticsUpdated { file: got, diagnostics } = ev {
+        if let WorkspaceEvent::DiagnosticsUpdated {
+            file: got,
+            diagnostics,
+        } = ev
+        {
             if got == file {
                 assert!(diagnostics.is_empty());
                 break;

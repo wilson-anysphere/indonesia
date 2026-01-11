@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use nova_cache::{Fingerprint, FileAstArtifacts};
+use nova_cache::{FileAstArtifacts, Fingerprint};
 use nova_hir::{item_tree as build_item_tree, ItemTree, SymbolSummary};
 
 use crate::FileId;
@@ -49,12 +49,12 @@ fn item_tree(db: &dyn NovaSemantic, file: FileId) -> Arc<ItemTree> {
     };
 
     let file_path = db.file_path(file).filter(|p| !p.is_empty());
-    let fingerprint = if file_path.is_some() && db.persistence().mode() != crate::PersistenceMode::Disabled
-    {
-        Some(Fingerprint::from_bytes(text.as_bytes()))
-    } else {
-        None
-    };
+    let fingerprint =
+        if file_path.is_some() && db.persistence().mode() != crate::PersistenceMode::Disabled {
+            Some(Fingerprint::from_bytes(text.as_bytes()))
+        } else {
+            None
+        };
 
     if let (Some(fingerprint), Some(file_path)) = (fingerprint.as_ref(), file_path.as_ref()) {
         if let Some(artifacts) = db

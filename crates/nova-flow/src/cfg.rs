@@ -28,7 +28,10 @@ impl BasicBlock {
 #[derive(Debug, Clone)]
 pub enum Terminator {
     /// Unconditional jump.
-    Goto { target: BlockId, from: Option<StmtId> },
+    Goto {
+        target: BlockId,
+        from: Option<StmtId>,
+    },
     /// Conditional branch based on a boolean condition expression.
     If {
         condition: ExprId,
@@ -36,8 +39,14 @@ pub enum Terminator {
         else_target: BlockId,
         from: StmtId,
     },
-    Return { value: Option<ExprId>, from: StmtId },
-    Throw { exception: ExprId, from: StmtId },
+    Return {
+        value: Option<ExprId>,
+        from: StmtId,
+    },
+    Throw {
+        exception: ExprId,
+        from: StmtId,
+    },
     Exit,
 }
 

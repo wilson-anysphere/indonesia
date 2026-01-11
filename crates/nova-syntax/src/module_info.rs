@@ -166,12 +166,10 @@ impl<'a> Parser<'a> {
     }
 
     fn current_range(&mut self) -> TextRange {
-        self.current_token()
-            .map(|t| t.range)
-            .unwrap_or_else(|| {
-                let end = self.src.len() as u32;
-                TextRange { start: end, end }
-            })
+        self.current_token().map(|t| t.range).unwrap_or_else(|| {
+            let end = self.src.len() as u32;
+            TextRange { start: end, end }
+        })
     }
 
     fn current_pos(&mut self) -> usize {
@@ -179,7 +177,11 @@ impl<'a> Parser<'a> {
     }
 
     fn eat_trivia(&mut self) {
-        while self.tokens.get(self.idx).map_or(false, |t| t.kind.is_trivia()) {
+        while self
+            .tokens
+            .get(self.idx)
+            .map_or(false, |t| t.kind.is_trivia())
+        {
             self.bump_any();
         }
     }
@@ -213,7 +215,6 @@ impl<'a> Parser<'a> {
             false
         }
     }
-
 
     fn recover_to(&mut self, recovery: &[SyntaxKind]) {
         while !self.at(SyntaxKind::Eof) {
@@ -574,9 +575,7 @@ pub fn parse_module_info_with_errors(src: &str) -> ModuleInfoParseResult {
 }
 
 /// Lossy parsing wrapper returning `(decl, errors)` for convenience.
-pub fn parse_module_info_lossy(
-    src: &str,
-) -> (Option<ModuleDecl>, Vec<ModuleInfoParseError>) {
+pub fn parse_module_info_lossy(src: &str) -> (Option<ModuleDecl>, Vec<ModuleInfoParseError>) {
     let result = parse_module_info_with_errors(src);
     (result.decl, result.errors)
 }
@@ -620,10 +619,16 @@ mod tests {
         let (decl, errors) = parse_module_info_lossy(src);
 
         let decl = decl.expect("module decl");
-        assert_eq!(decl.directives.len(), 2, "should still parse following directives");
+        assert_eq!(
+            decl.directives.len(),
+            2,
+            "should still parse following directives"
+        );
         assert!(!errors.is_empty(), "missing semicolon should be reported");
         assert!(
-            errors.iter().any(|e| e.to_string().contains("expected `;`")),
+            errors
+                .iter()
+                .any(|e| e.to_string().contains("expected `;`")),
             "expected semicolon error"
         );
     }
@@ -637,7 +642,9 @@ mod tests {
         assert_eq!(decl.name.as_str(), "m");
         assert_eq!(decl.directives.len(), 2);
         assert!(
-            errors.iter().any(|e| e.to_string().contains("expected `{`")),
+            errors
+                .iter()
+                .any(|e| e.to_string().contains("expected `{`")),
             "missing opening brace should be reported"
         );
     }

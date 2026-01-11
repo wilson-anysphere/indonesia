@@ -57,7 +57,11 @@ pub fn analyze(body: &Body, config: FlowConfig) -> FlowAnalysisResult {
     }
 }
 
-fn unreachable_diagnostics(body: &Body, cfg: &ControlFlowGraph, reachable: &[bool]) -> Vec<Diagnostic> {
+fn unreachable_diagnostics(
+    body: &Body,
+    cfg: &ControlFlowGraph,
+    reachable: &[bool],
+) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     for (idx, bb) in cfg.blocks.iter().enumerate() {
         if reachable[idx] {
@@ -165,8 +169,13 @@ impl<'a> HirCfgBuilder<'a> {
 
                 let then_fallthrough = self.build_stmt(*then_branch, then_entry);
                 if let Some(bb) = then_fallthrough {
-                    self.cfg
-                        .set_terminator(bb, Terminator::Goto { target: join, from: None });
+                    self.cfg.set_terminator(
+                        bb,
+                        Terminator::Goto {
+                            target: join,
+                            from: None,
+                        },
+                    );
                 }
 
                 let else_fallthrough = match else_branch {
@@ -174,8 +183,13 @@ impl<'a> HirCfgBuilder<'a> {
                     None => Some(else_entry),
                 };
                 if let Some(bb) = else_fallthrough {
-                    self.cfg
-                        .set_terminator(bb, Terminator::Goto { target: join, from: None });
+                    self.cfg.set_terminator(
+                        bb,
+                        Terminator::Goto {
+                            target: join,
+                            from: None,
+                        },
+                    );
                 }
 
                 if then_fallthrough.is_some() || else_fallthrough.is_some() {
@@ -190,8 +204,13 @@ impl<'a> HirCfgBuilder<'a> {
                 let body_bb = self.cfg.new_block();
                 let after_bb = self.cfg.new_block();
 
-                self.cfg
-                    .set_terminator(entry, Terminator::Goto { target: cond_bb, from: None });
+                self.cfg.set_terminator(
+                    entry,
+                    Terminator::Goto {
+                        target: cond_bb,
+                        from: None,
+                    },
+                );
 
                 self.cfg.set_terminator(
                     cond_bb,
@@ -212,8 +231,13 @@ impl<'a> HirCfgBuilder<'a> {
                 self.loop_stack.pop();
 
                 if let Some(bb) = body_fallthrough {
-                    self.cfg
-                        .set_terminator(bb, Terminator::Goto { target: cond_bb, from: None });
+                    self.cfg.set_terminator(
+                        bb,
+                        Terminator::Goto {
+                            target: cond_bb,
+                            from: None,
+                        },
+                    );
                 }
 
                 Some(after_bb)
@@ -341,8 +365,13 @@ impl<'a> HirCfgBuilder<'a> {
             }
 
             StmtKind::Return(value) => {
-                self.cfg
-                    .set_terminator(entry, Terminator::Return { value: *value, from: stmt });
+                self.cfg.set_terminator(
+                    entry,
+                    Terminator::Return {
+                        value: *value,
+                        from: stmt,
+                    },
+                );
                 None
             }
 
@@ -401,7 +430,11 @@ fn initial_assigned(body: &Body) -> Vec<bool> {
         .collect()
 }
 
-fn definite_assignment_states(body: &Body, cfg: &ControlFlowGraph, reachable: &[bool]) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
+fn definite_assignment_states(
+    body: &Body,
+    cfg: &ControlFlowGraph,
+    reachable: &[bool],
+) -> (Vec<Vec<bool>>, Vec<Vec<bool>>) {
     let n_blocks = cfg.blocks.len();
     let n_locals = body.locals().len();
 
@@ -426,13 +459,16 @@ fn definite_assignment_states(body: &Body, cfg: &ControlFlowGraph, reachable: &[
         let new_in = if bb == cfg.entry {
             init.clone()
         } else {
-            meet_assigned(n_locals, cfg.predecessors(bb).iter().filter_map(|pred| {
-                if reachable[pred.index()] {
-                    Some(&out_states[pred.index()])
-                } else {
-                    None
-                }
-            }))
+            meet_assigned(
+                n_locals,
+                cfg.predecessors(bb).iter().filter_map(|pred| {
+                    if reachable[pred.index()] {
+                        Some(&out_states[pred.index()])
+                    } else {
+                        None
+                    }
+                }),
+            )
         };
 
         if new_in != in_states[bb.index()] {
@@ -455,7 +491,9 @@ fn meet_assigned<'a>(
     n_locals: usize,
     mut inputs: impl Iterator<Item = &'a Vec<bool>>,
 ) -> Vec<bool> {
-    let Some(first) = inputs.next() else { return vec![false; n_locals] };
+    let Some(first) = inputs.next() else {
+        return vec![false; n_locals];
+    };
     let mut out = first.clone();
     for inp in inputs {
         for (slot, v) in out.iter_mut().zip(inp.iter().copied()) {
@@ -465,7 +503,12 @@ fn meet_assigned<'a>(
     out
 }
 
-fn transfer_definite_assignment(body: &Body, cfg: &ControlFlowGraph, bb: BlockId, in_state: &[bool]) -> Vec<bool> {
+fn transfer_definite_assignment(
+    body: &Body,
+    cfg: &ControlFlowGraph,
+    bb: BlockId,
+    in_state: &[bool],
+) -> Vec<bool> {
     let mut state = in_state.to_vec();
     let block = cfg.block(bb);
 
@@ -478,7 +521,11 @@ fn transfer_definite_assignment(body: &Body, cfg: &ControlFlowGraph, bb: BlockId
     state
 }
 
-fn definite_assignment_diagnostics(body: &Body, cfg: &ControlFlowGraph, reachable: &[bool]) -> Vec<Diagnostic> {
+fn definite_assignment_diagnostics(
+    body: &Body,
+    cfg: &ControlFlowGraph,
+    reachable: &[bool],
+) -> Vec<Diagnostic> {
     let (in_states, _) = definite_assignment_states(body, cfg, reachable);
     let mut diags = Vec::new();
 
@@ -575,7 +622,9 @@ fn check_expr_assigned(body: &Body, expr: ExprId, state: &[bool], diags: &mut Ve
             check_expr_assigned(body, *lhs, state, diags);
             check_expr_assigned(body, *rhs, state, diags);
         }
-        ExprKind::FieldAccess { receiver, .. } => check_expr_assigned(body, *receiver, state, diags),
+        ExprKind::FieldAccess { receiver, .. } => {
+            check_expr_assigned(body, *receiver, state, diags)
+        }
         ExprKind::Call { receiver, args, .. } => {
             check_expr_assigned(body, *receiver, state, diags);
             for arg in args {
@@ -593,7 +642,11 @@ fn check_expr_assigned(body: &Body, expr: ExprId, state: &[bool], diags: &mut Ve
 
 // === Null dereference analysis ===
 
-fn null_states(body: &Body, cfg: &ControlFlowGraph, reachable: &[bool]) -> (Vec<Vec<NullState>>, Vec<Vec<NullState>>) {
+fn null_states(
+    body: &Body,
+    cfg: &ControlFlowGraph,
+    reachable: &[bool],
+) -> (Vec<Vec<NullState>>, Vec<Vec<NullState>>) {
     let n_blocks = cfg.blocks.len();
     let n_locals = body.locals().len();
 
@@ -619,7 +672,13 @@ fn null_states(body: &Body, cfg: &ControlFlowGraph, reachable: &[bool]) -> (Vec<
                 n_locals,
                 cfg.predecessors(bb).iter().filter_map(|pred| {
                     if reachable[pred.index()] {
-                        Some(edge_narrow_null(body, cfg, *pred, bb, &out_states[pred.index()]))
+                        Some(edge_narrow_null(
+                            body,
+                            cfg,
+                            *pred,
+                            bb,
+                            &out_states[pred.index()],
+                        ))
                     } else {
                         None
                     }
@@ -647,7 +706,9 @@ fn join_nullability(
     n_locals: usize,
     mut inputs: impl Iterator<Item = Vec<NullState>>,
 ) -> Vec<NullState> {
-    let Some(first) = inputs.next() else { return vec![NullState::Unknown; n_locals] };
+    let Some(first) = inputs.next() else {
+        return vec![NullState::Unknown; n_locals];
+    };
     let mut out = first;
     for inp in inputs {
         for (slot, v) in out.iter_mut().zip(inp.into_iter()) {
@@ -709,11 +770,7 @@ fn null_test(body: &Body, expr: ExprId) -> Option<(LocalId, NullState, NullState
         }
 
         ExprKind::Binary { op, lhs, rhs } if matches!(op, BinaryOp::EqEq | BinaryOp::NotEq) => {
-            let (local, is_eq) = match (
-                &body.expr(*lhs).kind,
-                &body.expr(*rhs).kind,
-                op,
-            ) {
+            let (local, is_eq) = match (&body.expr(*lhs).kind, &body.expr(*rhs).kind, op) {
                 (ExprKind::Local(local), ExprKind::Null, BinaryOp::EqEq)
                 | (ExprKind::Null, ExprKind::Local(local), BinaryOp::EqEq) => (*local, true),
                 (ExprKind::Local(local), ExprKind::Null, BinaryOp::NotEq)
@@ -732,7 +789,12 @@ fn null_test(body: &Body, expr: ExprId) -> Option<(LocalId, NullState, NullState
     }
 }
 
-fn transfer_nullability(body: &Body, cfg: &ControlFlowGraph, bb: BlockId, in_state: &[NullState]) -> Vec<NullState> {
+fn transfer_nullability(
+    body: &Body,
+    cfg: &ControlFlowGraph,
+    bb: BlockId,
+    in_state: &[NullState],
+) -> Vec<NullState> {
     let mut state = in_state.to_vec();
     let block = cfg.block(bb);
 
@@ -787,7 +849,10 @@ fn expr_null_state(body: &Body, expr: ExprId, state: &[NullState]) -> NullState 
         ExprKind::New { .. } => NullState::NonNull,
         ExprKind::Bool(_) | ExprKind::Int(_) => NullState::NonNull,
         ExprKind::String(_) => NullState::NonNull,
-        ExprKind::Local(local) => state.get(local.index()).copied().unwrap_or(NullState::Unknown),
+        ExprKind::Local(local) => state
+            .get(local.index())
+            .copied()
+            .unwrap_or(NullState::Unknown),
         ExprKind::Unary { expr, .. } => expr_null_state(body, *expr, state),
         ExprKind::Binary { .. } => NullState::NonNull,
         ExprKind::FieldAccess { .. } | ExprKind::Call { .. } | ExprKind::Invalid => {
@@ -796,7 +861,11 @@ fn expr_null_state(body: &Body, expr: ExprId, state: &[NullState]) -> NullState 
     }
 }
 
-fn null_deref_diagnostics(body: &Body, cfg: &ControlFlowGraph, reachable: &[bool]) -> Vec<Diagnostic> {
+fn null_deref_diagnostics(
+    body: &Body,
+    cfg: &ControlFlowGraph,
+    reachable: &[bool],
+) -> Vec<Diagnostic> {
     let (in_states, _) = null_states(body, cfg, reachable);
     let mut diags = Vec::new();
 
@@ -883,7 +952,10 @@ fn check_expr_null_deref(
 ) -> NullState {
     let expr_data = body.expr(expr);
     match &expr_data.kind {
-        ExprKind::Local(local) => state.get(local.index()).copied().unwrap_or(NullState::Unknown),
+        ExprKind::Local(local) => state
+            .get(local.index())
+            .copied()
+            .unwrap_or(NullState::Unknown),
         ExprKind::Null => NullState::Null,
         ExprKind::New { .. } => NullState::NonNull,
         ExprKind::Bool(_) | ExprKind::Int(_) | ExprKind::String(_) => NullState::NonNull,
@@ -947,11 +1019,17 @@ mod tests {
         let cond_expr = b.expr(ExprKind::Local(cond_local));
 
         let one = b.expr(ExprKind::Int(1));
-        let assign_then = b.stmt(StmtKind::Assign { target: x, value: one });
+        let assign_then = b.stmt(StmtKind::Assign {
+            target: x,
+            value: one,
+        });
         let then_block = b.stmt(StmtKind::Block(vec![assign_then]));
 
         let two = b.expr(ExprKind::Int(2));
-        let assign_else = b.stmt(StmtKind::Assign { target: x, value: two });
+        let assign_else = b.stmt(StmtKind::Assign {
+            target: x,
+            value: two,
+        });
         let else_block = b.stmt(StmtKind::Block(vec![assign_else]));
 
         let if_stmt = b.stmt(StmtKind::If {
@@ -989,7 +1067,10 @@ mod tests {
 
         let ret = b.stmt(StmtKind::Return(None));
         let one = b.expr(ExprKind::Int(1));
-        let assign = b.stmt(StmtKind::Assign { target: x, value: one });
+        let assign = b.stmt(StmtKind::Assign {
+            target: x,
+            value: one,
+        });
 
         let root = b.stmt(StmtKind::Block(vec![ret, assign]));
         let body = b.finish(root);

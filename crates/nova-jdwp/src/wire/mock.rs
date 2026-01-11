@@ -55,7 +55,9 @@ impl MockJdwpServer {
     }
 
     pub fn set_redefine_classes_error_code(&self, code: u16) {
-        self.state.redefine_classes_error_code.store(code, Ordering::Relaxed);
+        self.state
+            .redefine_classes_error_code
+            .store(code, Ordering::Relaxed);
     }
 
     pub async fn redefine_classes_calls(&self) -> Vec<RedefineClassesCall> {
@@ -147,7 +149,11 @@ fn default_location() -> Location {
     }
 }
 
-async fn run(listener: TcpListener, state: Arc<State>, shutdown: CancellationToken) -> std::io::Result<()> {
+async fn run(
+    listener: TcpListener,
+    state: Arc<State>,
+    shutdown: CancellationToken,
+) -> std::io::Result<()> {
     tokio::select! {
         _ = shutdown.cancelled() => return Ok(()),
         accept = listener.accept() => {
@@ -301,7 +307,10 @@ async fn handle_packet(
                 .redefine_classes_calls
                 .lock()
                 .await
-                .push(RedefineClassesCall { class_count, classes });
+                .push(RedefineClassesCall {
+                    class_count,
+                    classes,
+                });
 
             let err = state.redefine_classes_error_code.load(Ordering::Relaxed);
             (err, Vec::new())
@@ -309,9 +318,7 @@ async fn handle_packet(
         // VirtualMachine.Suspend
         (1, 8) => (0, Vec::new()),
         // VirtualMachine.Resume
-        (1, 9) => {
-            (0, Vec::new())
-        }
+        (1, 9) => (0, Vec::new()),
         // ThreadReference.Name
         (11, 1) => {
             let _thread_id = r.read_object_id(sizes).unwrap_or(0);
@@ -556,9 +563,7 @@ async fn handle_packet(
         _ => {
             // Unknown command: reply with a generic error.
             let _ = r;
-            return socket
-                .write_all(&encode_reply(packet.id, 1, &[]))
-                .await;
+            return socket.write_all(&encode_reply(packet.id, 1, &[])).await;
         }
     };
 
@@ -570,7 +575,15 @@ async fn handle_packet(
         let breakpoint_request = { *state.breakpoint_request.lock().await };
         let step_request = { *state.step_request.lock().await };
         let exception_request = { *state.exception_request.lock().await };
-        emit_stop_event(socket, state, id_sizes, breakpoint_request, step_request, exception_request).await?;
+        emit_stop_event(
+            socket,
+            state,
+            id_sizes,
+            breakpoint_request,
+            step_request,
+            exception_request,
+        )
+        .await?;
     }
     Ok(())
 }

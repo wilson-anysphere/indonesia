@@ -114,4 +114,3 @@ pub trait RefactorDatabase {
         true
     }
 }
-

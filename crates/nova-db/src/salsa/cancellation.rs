@@ -52,7 +52,10 @@ pub(crate) fn checkpoint_cancelled_every<DB>(db: &DB, i: u32, every: u32)
 where
     DB: ra_salsa::Database + ?Sized,
 {
-    debug_assert!(every > 0, "cancellation checkpoint interval must be non-zero");
+    debug_assert!(
+        every > 0,
+        "cancellation checkpoint interval must be non-zero"
+    );
     if every == 0 {
         db.unwind_if_cancelled();
         return;

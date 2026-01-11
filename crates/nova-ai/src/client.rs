@@ -11,9 +11,9 @@ use nova_config::{AiConfig, AiProviderKind};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
-use url::Host;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+use url::Host;
 
 pub struct AiClient {
     provider: Arc<dyn AiProvider>,
@@ -544,7 +544,10 @@ mod tests {
             .await
             .expect("chat succeeds");
 
-        assert!(completion.contains(secret), "dummy returns unsanitized content");
+        assert!(
+            completion.contains(secret),
+            "dummy returns unsanitized content"
+        );
 
         let events = events.lock().unwrap();
         let audit = audit_events(&events);

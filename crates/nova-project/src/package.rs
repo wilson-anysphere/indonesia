@@ -188,4 +188,3 @@ mod tests {
         assert!(infer_source_root(file, "com.wrong").is_none());
     }
 }
-

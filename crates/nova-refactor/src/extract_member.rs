@@ -115,7 +115,10 @@ fn extract_impl(
     let (insert_offset, indent, needs_blank_line_after) = insertion_point(source, class_body, kind);
 
     let declaration = match kind {
-        ExtractKind::Constant => format!("private static final {} {} = {};", type_spelling, name, expr_text),
+        ExtractKind::Constant => format!(
+            "private static final {} {} = {};",
+            type_spelling, name, expr_text
+        ),
         ExtractKind::Field => format!("private final {} {} = {};", type_spelling, name, expr_text),
     };
 
@@ -682,11 +685,7 @@ fn find_equivalent_expressions(
     ranges
 }
 
-fn compute_type_and_import(
-    file: &str,
-    source: &str,
-    ty: &TypeRef,
-) -> (String, Option<TextEdit>) {
+fn compute_type_and_import(file: &str, source: &str, ty: &TypeRef) -> (String, Option<TextEdit>) {
     if !ty.needs_import() {
         return (ty.text().to_string(), None);
     }
@@ -740,4 +739,3 @@ fn import_insertion_offset(source: &str) -> usize {
         0
     }
 }
-

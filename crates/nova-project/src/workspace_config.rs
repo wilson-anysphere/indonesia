@@ -15,4 +15,3 @@ pub(crate) fn canonicalize_workspace_root(root: impl AsRef<Path>) -> Result<Path
 pub(crate) fn load_nova_config(workspace_root: &Path) -> Result<NovaConfig, ProjectError> {
     Ok(nova_config::load_for_workspace(workspace_root)?)
 }
-

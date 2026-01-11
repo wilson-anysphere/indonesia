@@ -128,10 +128,8 @@ fn parse_java_files(config: &ProjectConfig) -> Vec<ParsedJavaFile> {
     static TYPE_RE: OnceLock<Regex> = OnceLock::new();
 
     let package_re = PACKAGE_RE.get_or_init(|| {
-        Regex::new(
-            r"(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*;",
-        )
-        .expect("package regex must compile")
+        Regex::new(r"(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*;")
+            .expect("package regex must compile")
     });
     let type_re = TYPE_RE.get_or_init(|| {
         Regex::new(r"\b(class|interface|enum|record|@interface)\s+([A-Za-z_][A-Za-z0-9_]*)")
@@ -260,9 +258,9 @@ fn spring_petclinic_smoke() {
         "expected to find PetClinicApplication in workspace symbols"
     );
 
-    let app_file = config.workspace_root.join(
-        "src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java",
-    );
+    let app_file = config
+        .workspace_root
+        .join("src/main/java/org/springframework/samples/petclinic/PetClinicApplication.java");
     assert!(app_file.exists(), "expected {app_file:?} to exist");
 
     let text = read_text(&app_file);
@@ -325,7 +323,12 @@ fn maven_resolver_smoke() {
 
     let repo_system = index
         .find_exact("org.eclipse.aether.RepositorySystem")
-        .or_else(|| index.workspace_symbols("RepositorySystem").into_iter().next())
+        .or_else(|| {
+            index
+                .workspace_symbols("RepositorySystem")
+                .into_iter()
+                .next()
+        })
         .expect("expected to find RepositorySystem symbol in workspace index");
 
     let file = repo_system.file.clone();

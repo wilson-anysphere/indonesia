@@ -1,7 +1,7 @@
 use unicode_ident::{is_xid_continue, is_xid_start};
 
-use crate::TextRange;
 use crate::syntax_kind::SyntaxKind;
+use crate::TextRange;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
@@ -298,9 +298,14 @@ impl<'a> Lexer<'a> {
         // Special-case `non-sealed` (a single restricted keyword token).
         if &self.input[start..self.pos] == "non" && self.peek_byte(0) == Some(b'-') {
             let after_dash = self.pos + 1;
-            if self.input.get(after_dash..).map_or(false, |s| s.starts_with("sealed")) {
+            if self
+                .input
+                .get(after_dash..)
+                .map_or(false, |s| s.starts_with("sealed"))
+            {
                 let sealed_end = after_dash + "sealed".len();
-                if self.input
+                if self
+                    .input
                     .get(sealed_end..)
                     .and_then(|rest| rest.chars().next())
                     .map_or(true, |ch| !is_ident_continue(ch))

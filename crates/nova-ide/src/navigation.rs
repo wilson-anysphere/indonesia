@@ -104,7 +104,11 @@ impl DatabaseSnapshot {
         out
     }
 
-    fn implementation_for_abstract_method(&self, ty_name: &str, method_name: &str) -> Vec<Location> {
+    fn implementation_for_abstract_method(
+        &self,
+        ty_name: &str,
+        method_name: &str,
+    ) -> Vec<Location> {
         let Some(type_info) = self.type_info(ty_name) else {
             return Vec::new();
         };
@@ -136,7 +140,12 @@ impl DatabaseSnapshot {
         out
     }
 
-    fn implementation_for_call(&self, parsed: &ParsedFile, offset: usize, call: &CallSite) -> Vec<Location> {
+    fn implementation_for_call(
+        &self,
+        parsed: &ParsedFile,
+        offset: usize,
+        call: &CallSite,
+    ) -> Vec<Location> {
         let Some(containing_type) = parsed
             .types
             .iter()
@@ -187,7 +196,11 @@ impl DatabaseSnapshot {
             }
         }
 
-        candidates.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()).then(a.1.start.cmp(&b.1.start)));
+        candidates.sort_by(|a, b| {
+            a.0.to_string()
+                .cmp(&b.0.to_string())
+                .then(a.1.start.cmp(&b.1.start))
+        });
         candidates.dedup_by(|a, b| a.0 == b.0 && a.1.start == b.1.start);
 
         candidates
@@ -233,12 +246,18 @@ impl DatabaseSnapshot {
             if let Some(loc) = self.declaration_in_type(&next, method_name) {
                 return Some(loc);
             }
-            cur = self.type_info(&next).and_then(|info| info.def.super_class.clone());
+            cur = self
+                .type_info(&next)
+                .and_then(|info| info.def.super_class.clone());
         }
 
         // Locals/fields/methods default: declaration == definition.
         let file = self.file(&type_info.uri)?;
-        let method = type_info.def.methods.iter().find(|m| m.name == method_name)?;
+        let method = type_info
+            .def
+            .methods
+            .iter()
+            .find(|m| m.name == method_name)?;
         Some(Location {
             uri: type_info.uri.clone(),
             range: span_to_lsp_range(&file.text, method.name_span),
@@ -247,7 +266,11 @@ impl DatabaseSnapshot {
 
     fn declaration_in_type(&self, ty_name: &str, method_name: &str) -> Option<Location> {
         let type_info = self.type_info(ty_name)?;
-        let method = type_info.def.methods.iter().find(|m| m.name == method_name)?;
+        let method = type_info
+            .def
+            .methods
+            .iter()
+            .find(|m| m.name == method_name)?;
 
         let is_declaration = type_info.def.kind == TypeKind::Interface
             || method.is_abstract
@@ -297,7 +320,12 @@ impl DatabaseSnapshot {
         None
     }
 
-    fn variable_declaration(&self, parsed: &ParsedFile, offset: usize, name: &str) -> Option<(Uri, Span)> {
+    fn variable_declaration(
+        &self,
+        parsed: &ParsedFile,
+        offset: usize,
+        name: &str,
+    ) -> Option<(Uri, Span)> {
         let ty = parsed
             .types
             .iter()
@@ -357,4 +385,3 @@ fn identifier_at(text: &str, offset: usize) -> Option<(String, Span)> {
 
     Some((text[start..end].to_string(), Span::new(start, end)))
 }
-

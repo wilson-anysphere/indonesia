@@ -1,6 +1,6 @@
 use nova_types::{
-    is_assignable, is_subtype, resolve_method_call, ClassType, MethodCall, MethodResolution, Type, TypeEnv,
-    TypeStore, WildcardBound,
+    is_assignable, is_subtype, resolve_method_call, ClassType, MethodCall, MethodResolution, Type,
+    TypeEnv, TypeStore, WildcardBound,
 };
 
 use pretty_assertions::assert_eq;
@@ -30,7 +30,9 @@ fn capture_conversion_allocates_capture_vars() {
 
     let list_extends_integer = Type::class(
         list,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(integer, vec![]))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::class(integer, vec![]),
+        )))],
     );
 
     let captured = env.capture_conversion(&list_extends_integer);
@@ -56,10 +58,9 @@ fn method_resolution_applies_capture_conversion_for_extends_wildcard() {
 
     let receiver = Type::class(
         list,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-            string,
-            vec![],
-        ))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::class(string, vec![]),
+        )))],
     );
 
     let call = MethodCall {
@@ -76,12 +77,19 @@ fn method_resolution_applies_capture_conversion_for_extends_wildcard() {
 
     // `List<? extends String>.get(int)` should return a capture variable `CAP#n` with upper bound `String`.
     let Type::TypeVar(cap) = resolved.return_type.clone() else {
-        panic!("expected capture type var return, got {:?}", resolved.return_type);
+        panic!(
+            "expected capture type var return, got {:?}",
+            resolved.return_type
+        );
     };
     let cap_data = env.type_param(cap).unwrap();
     assert_eq!(cap_data.upper_bounds, vec![Type::class(string, vec![])]);
     assert_eq!(cap_data.lower_bound, None);
-    assert!(is_assignable(&env, &resolved.return_type, &Type::class(string, vec![])));
+    assert!(is_assignable(
+        &env,
+        &resolved.return_type,
+        &Type::class(string, vec![])
+    ));
 }
 
 #[test]
@@ -112,7 +120,10 @@ fn method_resolution_applies_capture_conversion_for_super_wildcard() {
     };
 
     let Type::TypeVar(cap) = resolved.params[0].clone() else {
-        panic!("expected capture type var param, got {:?}", resolved.params[0]);
+        panic!(
+            "expected capture type var param, got {:?}",
+            resolved.params[0]
+        );
     };
     let cap_data = env.type_param(cap).unwrap();
     assert_eq!(cap_data.lower_bound, Some(Type::class(string, vec![])));
@@ -140,17 +151,15 @@ fn wildcard_type_argument_containment_extends() {
 
     let list_extends_string = Type::class(
         list,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-            string,
-            vec![],
-        ))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::class(string, vec![]),
+        )))],
     );
     let list_extends_object = Type::class(
         list,
-        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::class(
-            object,
-            vec![],
-        ))))],
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(
+            Type::class(object, vec![]),
+        )))],
     );
 
     assert!(is_subtype(&env, &list_extends_string, &list_extends_object));

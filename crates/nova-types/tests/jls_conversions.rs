@@ -1,7 +1,7 @@
 use nova_types::{
     assignment_conversion, binary_numeric_promotion, cast_conversion, method_invocation_conversion,
-    unary_numeric_promotion, ConversionStep, PrimitiveType, Type, TypeStore, TypeWarning,
-    TypeEnv, UncheckedReason,
+    unary_numeric_promotion, ConversionStep, PrimitiveType, Type, TypeEnv, TypeStore, TypeWarning,
+    UncheckedReason,
 };
 
 use pretty_assertions::assert_eq;

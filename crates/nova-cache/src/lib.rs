@@ -28,11 +28,11 @@ pub use derived_cache::DerivedArtifactCache;
 pub use error::CacheError;
 pub use fingerprint::{Fingerprint, ProjectSnapshot};
 pub use metadata::{CacheMetadata, CACHE_METADATA_SCHEMA_VERSION};
-pub use path::{normalize_inputs_map, normalize_rel_path};
 pub use pack::{
     fetch_cache_package, install_cache_package, pack_cache_package, CachePackageInstallOutcome,
     CACHE_PACKAGE_MANIFEST_PATH,
 };
+pub use path::{normalize_inputs_map, normalize_rel_path};
 pub use shard_index::{load_shard_index, save_shard_index, shard_cache_path};
 pub use store::{store_for_url, CacheStore, HttpStore, LocalStore};
 pub use util::{atomic_write, now_millis, BINCODE_PAYLOAD_LIMIT_BYTES};

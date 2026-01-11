@@ -4,7 +4,12 @@ use nova_dap::dap_tokio::{DapReader, DapWriter};
 use nova_dap::wire_server;
 use nova_jdwp::wire::mock::MockJdwpServer;
 
-async fn send_request(writer: &mut DapWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>, seq: i64, command: &str, arguments: Value) {
+async fn send_request(
+    writer: &mut DapWriter<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
+    seq: i64,
+    command: &str,
+    arguments: Value,
+) {
     let msg = json!({
         "seq": seq,
         "type": "request",
@@ -39,7 +44,8 @@ async fn dap_can_stop_on_uncaught_exceptions() {
 
     let (client, server_stream) = tokio::io::duplex(64 * 1024);
     let (server_read, server_write) = tokio::io::split(server_stream);
-    let server_task = tokio::spawn(async move { wire_server::run(server_read, server_write).await });
+    let server_task =
+        tokio::spawn(async move { wire_server::run(server_read, server_write).await });
 
     let (client_read, client_write) = tokio::io::split(client);
     let mut reader = DapReader::new(client_read);
@@ -47,10 +53,16 @@ async fn dap_can_stop_on_uncaught_exceptions() {
 
     send_request(&mut writer, 1, "initialize", json!({})).await;
     let init_resp = read_response(&mut reader, 1).await;
-    assert!(init_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(init_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
     // Initialized event.
     let initialized = read_next(&mut reader).await;
-    assert_eq!(initialized.get("event").and_then(|v| v.as_str()), Some("initialized"));
+    assert_eq!(
+        initialized.get("event").and_then(|v| v.as_str()),
+        Some("initialized")
+    );
 
     send_request(
         &mut writer,
@@ -63,7 +75,10 @@ async fn dap_can_stop_on_uncaught_exceptions() {
     )
     .await;
     let attach_resp = read_response(&mut reader, 2).await;
-    assert!(attach_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(attach_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     send_request(&mut writer, 3, "threads", json!({})).await;
     let threads_resp = read_response(&mut reader, 3).await;
@@ -72,17 +87,32 @@ async fn dap_can_stop_on_uncaught_exceptions() {
         .and_then(|v| v.as_i64())
         .unwrap();
 
-    send_request(&mut writer, 4, "setExceptionBreakpoints", json!({ "filters": ["uncaught"] })).await;
+    send_request(
+        &mut writer,
+        4,
+        "setExceptionBreakpoints",
+        json!({ "filters": ["uncaught"] }),
+    )
+    .await;
     let set_exc_resp = read_response(&mut reader, 4).await;
-    assert!(set_exc_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(set_exc_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
-    let exc_req = jdwp.exception_request().await.expect("expected exception request to be configured");
+    let exc_req = jdwp
+        .exception_request()
+        .await
+        .expect("expected exception request to be configured");
     assert!(!exc_req.caught);
     assert!(exc_req.uncaught);
 
     send_request(&mut writer, 5, "continue", json!({ "threadId": thread_id })).await;
     let cont_resp = read_response(&mut reader, 5).await;
-    assert!(cont_resp.get("success").and_then(|v| v.as_bool()).unwrap_or(false));
+    assert!(cont_resp
+        .get("success")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false));
 
     let mut stopped = None;
     for _ in 0..20 {
@@ -95,11 +125,13 @@ async fn dap_can_stop_on_uncaught_exceptions() {
         }
     }
     let stopped = stopped.expect("expected stopped event");
-    assert_eq!(stopped.pointer("/body/reason").and_then(|v| v.as_str()), Some("exception"));
+    assert_eq!(
+        stopped.pointer("/body/reason").and_then(|v| v.as_str()),
+        Some("exception")
+    );
 
     send_request(&mut writer, 6, "disconnect", json!({})).await;
     let _disc_resp = read_response(&mut reader, 6).await;
 
     server_task.await.unwrap().unwrap();
 }
-

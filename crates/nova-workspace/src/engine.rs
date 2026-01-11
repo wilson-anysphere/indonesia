@@ -10,7 +10,9 @@ use nova_ide::{DebugConfiguration, Project};
 use nova_index::{ProjectIndexes, SymbolLocation};
 use nova_scheduler::Scheduler;
 use nova_types::{CompletionItem, Diagnostic as NovaDiagnostic};
-use nova_vfs::{ContentChange, DocumentError, FileIdRegistry, FileSystem, LocalFs, OverlayFs, VfsPath};
+use nova_vfs::{
+    ContentChange, DocumentError, FileIdRegistry, FileSystem, LocalFs, OverlayFs, VfsPath,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexProgress {
@@ -154,9 +156,7 @@ impl WorkspaceEngine {
                 );
             }
 
-            *indexes_arc
-                .lock()
-                .expect("workspace indexes lock poisoned") = new_indexes;
+            *indexes_arc.lock().expect("workspace indexes lock poisoned") = new_indexes;
 
             publish_to_subscribers(
                 &subscribers,
@@ -167,7 +167,10 @@ impl WorkspaceEngine {
     }
 
     pub fn debug_configurations(&self, root: &Path) -> Vec<DebugConfiguration> {
-        let mut project = self.project.write().expect("workspace project lock poisoned");
+        let mut project = self
+            .project
+            .write()
+            .expect("workspace project lock poisoned");
         if project.is_none() {
             if let Ok(loaded) = Project::load_from_dir(root) {
                 *project = Some(loaded);
@@ -214,7 +217,10 @@ impl WorkspaceEngine {
     }
 }
 
-fn publish_to_subscribers(subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>, event: WorkspaceEvent) {
+fn publish_to_subscribers(
+    subscribers: &Arc<Mutex<Vec<Sender<WorkspaceEvent>>>>,
+    event: WorkspaceEvent,
+) {
     let mut subs = subscribers
         .lock()
         .expect("workspace subscriber mutex poisoned");

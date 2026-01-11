@@ -161,8 +161,7 @@ pub struct RootDatabase {
 
 impl Default for RootDatabase {
     fn default() -> Self {
-        let project_root =
-            std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
+        let project_root = std::env::current_dir().unwrap_or_else(|_| Path::new(".").to_path_buf());
         Self::new_with_persistence(project_root, PersistenceConfig::from_env())
     }
 }
@@ -181,9 +180,7 @@ impl RootDatabase {
     }
 
     pub fn set_file_path(&mut self, file: FileId, path: impl Into<String>) {
-        self.file_paths
-            .write()
-            .insert(file, Arc::new(path.into()));
+        self.file_paths.write().insert(file, Arc::new(path.into()));
     }
 
     pub fn persistence_stats(&self) -> crate::PersistenceStats {
@@ -805,9 +802,8 @@ mod tests {
 
         let (entered_tx, entered_rx) = mpsc::channel();
         let h1 = std::thread::spawn(move || {
-            let _guard = cancellation::test_support::install_entered_long_running_region_sender(
-                entered_tx,
-            );
+            let _guard =
+                cancellation::test_support::install_entered_long_running_region_sender(entered_tx);
             snap1.interruptible_work(file, 2_000_000)
         });
 

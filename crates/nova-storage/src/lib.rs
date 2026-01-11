@@ -61,7 +61,8 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
+        let loaded =
+            PersistedArchive::<Sample>::open(&path, ArtifactKind::AstArtifacts, 1).unwrap();
         assert_eq!(loaded.header().schema_version, 1);
 
         assert_eq!(loaded.to_owned().unwrap(), value);
@@ -137,8 +138,7 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         let corrupted_payload = &bytes[HEADER_LEN..];
-        let mut aligned_corrupted =
-            rkyv::util::AlignedVec::with_capacity(corrupted_payload.len());
+        let mut aligned_corrupted = rkyv::util::AlignedVec::with_capacity(corrupted_payload.len());
         aligned_corrupted.extend_from_slice(corrupted_payload);
         assert!(rkyv::check_archived_root::<Sample>(&aligned_corrupted).is_ok());
 
@@ -279,8 +279,9 @@ mod tests {
         let file_len = crate::persisted::MAX_MMAP_FALLBACK_BYTES + 1;
         file.set_len(file_len).unwrap();
 
-        let err = PersistedArchive::<Sample>::open_without_mmap(&path, ArtifactKind::AstArtifacts, 1)
-            .unwrap_err();
+        let err =
+            PersistedArchive::<Sample>::open_without_mmap(&path, ArtifactKind::AstArtifacts, 1)
+                .unwrap_err();
         match err {
             StorageError::TooLargeForFallbackRead { file_len: got, cap } => {
                 assert_eq!(got, file_len);

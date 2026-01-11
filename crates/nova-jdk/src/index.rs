@@ -229,7 +229,10 @@ impl JdkSymbolIndex {
         self.module_graph.get(name)
     }
 
-    pub fn module_of_type(&self, binary_or_internal: &str) -> Result<Option<ModuleName>, JdkIndexError> {
+    pub fn module_of_type(
+        &self,
+        binary_or_internal: &str,
+    ) -> Result<Option<ModuleName>, JdkIndexError> {
         let internal = if binary_or_internal.contains('/') {
             binary_or_internal.to_owned()
         } else if binary_or_internal.contains('.') {
@@ -387,7 +390,9 @@ impl JdkSymbolIndex {
             .lock()
             .expect("mutex poisoned")
             .keys()
-            .filter(|internal| internal.starts_with("java/lang/") && is_direct_java_lang_member(internal))
+            .filter(|internal| {
+                internal.starts_with("java/lang/") && is_direct_java_lang_member(internal)
+            })
             .cloned()
             .collect();
 
@@ -520,12 +525,7 @@ impl JdkSymbolIndex {
             self.ensure_module_indexed(module_idx)?;
         }
 
-        for internal in self
-            .class_to_module
-            .lock()
-            .expect("mutex poisoned")
-            .keys()
-        {
+        for internal in self.class_to_module.lock().expect("mutex poisoned").keys() {
             if let Some((pkg, _)) = internal.rsplit_once('/') {
                 set.insert(internal_to_binary(pkg));
             }
@@ -625,14 +625,17 @@ fn classfile_to_stub(class_file: ClassFile) -> JdkClassStub {
 }
 
 fn is_non_type_classfile(internal_name: &str) -> bool {
-    internal_name == "module-info" || internal_name.ends_with("/module-info")
+    internal_name == "module-info"
+        || internal_name.ends_with("/module-info")
         || internal_name.ends_with("/package-info")
         || internal_name.ends_with("package-info")
 }
 
 fn is_direct_java_lang_member(internal_name: &str) -> bool {
     // Universe scope is only `java.lang.*`, not `java.lang.reflect.*`.
-    let rest = internal_name.strip_prefix("java/lang/").unwrap_or(internal_name);
+    let rest = internal_name
+        .strip_prefix("java/lang/")
+        .unwrap_or(internal_name);
     // Also exclude nested classes (`$`) because they are not implicitly
     // imported as unqualified names.
     !rest.contains('/') && !rest.contains('$')

@@ -33,7 +33,10 @@ pub fn validate_multi_token_completion(
         .all(|m| ctx.available_methods.iter().any(|available| available == m))
 }
 
-fn additional_edits_allowed(ctx: &MultiTokenCompletionContext, completion: &MultiTokenCompletion) -> bool {
+fn additional_edits_allowed(
+    ctx: &MultiTokenCompletionContext,
+    completion: &MultiTokenCompletion,
+) -> bool {
     completion.additional_edits.iter().all(|edit| match edit {
         AdditionalEdit::AddImport { path } => ctx.importable_paths.iter().any(|p| p == path),
     })
@@ -139,4 +142,3 @@ fn is_ident_start(ch: char) -> bool {
 fn is_ident_continue(ch: char) -> bool {
     is_ident_start(ch) || ch.is_ascii_digit()
 }
-

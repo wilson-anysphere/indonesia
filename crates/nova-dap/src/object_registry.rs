@@ -102,7 +102,9 @@ impl ObjectRegistry {
     }
 
     pub fn runtime_type(&self, handle: ObjectHandle) -> Option<&str> {
-        self.handle_to_entry.get(&handle).map(|e| e.runtime_type.as_str())
+        self.handle_to_entry
+            .get(&handle)
+            .map(|e| e.runtime_type.as_str())
     }
 
     pub fn mark_invalid_object_id(&mut self, object_id: ObjectId) {
@@ -140,7 +142,10 @@ impl ObjectRegistry {
         self.object_to_handle.get(&object_id).copied()
     }
 
-    pub fn handle_from_variables_reference(&self, variables_reference: i64) -> Option<ObjectHandle> {
+    pub fn handle_from_variables_reference(
+        &self,
+        variables_reference: i64,
+    ) -> Option<ObjectHandle> {
         let handle = ObjectHandle::from_variables_reference(variables_reference)?;
         self.handle_to_entry.contains_key(&handle).then_some(handle)
     }

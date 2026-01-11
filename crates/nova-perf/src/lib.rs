@@ -73,11 +73,7 @@ pub fn load_criterion_directory(path: impl AsRef<Path>) -> Result<BenchRun> {
         }
 
         let sample_path = entry.path();
-        if sample_path
-            .parent()
-            .and_then(|parent| parent.file_name())
-            != Some(OsStr::new("new"))
-        {
+        if sample_path.parent().and_then(|parent| parent.file_name()) != Some(OsStr::new("new")) {
             continue;
         }
 

@@ -79,8 +79,7 @@ fn starts_with_case_insensitive_folded(candidate: &[u8], query_folded: &[u8]) ->
 fn is_separator(b: u8) -> bool {
     matches!(
         b,
-        b'_' | b'-' | b' ' | b'/' | b'\\' | b'.' | b':' | b'<' | b'>' | b'(' | b')' | b'['
-            | b']'
+        b'_' | b'-' | b' ' | b'/' | b'\\' | b'.' | b':' | b'<' | b'>' | b'(' | b')' | b'[' | b']'
     )
 }
 

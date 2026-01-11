@@ -189,7 +189,10 @@ fn parse_unified_diff(diff: &str) -> Result<UnifiedDiffPatch, PatchParseError> {
     Ok(UnifiedDiffPatch { files })
 }
 
-fn parse_hunk(lines: &[&str], header_idx: usize) -> Result<(UnifiedDiffHunk, usize), PatchParseError> {
+fn parse_hunk(
+    lines: &[&str],
+    header_idx: usize,
+) -> Result<(UnifiedDiffHunk, usize), PatchParseError> {
     let header = lines
         .get(header_idx)
         .ok_or_else(|| PatchParseError::InvalidDiff("missing hunk header".into()))?;
@@ -198,9 +201,7 @@ fn parse_hunk(lines: &[&str], header_idx: usize) -> Result<(UnifiedDiffHunk, usi
         return Err(PatchParseError::InvalidDiff("invalid hunk header".into()));
     }
 
-    let rest = header
-        .trim_start_matches("@@")
-        .trim_start();
+    let rest = header.trim_start_matches("@@").trim_start();
     let (ranges, _section) = rest
         .split_once("@@")
         .ok_or_else(|| PatchParseError::InvalidDiff("invalid hunk header".into()))?;

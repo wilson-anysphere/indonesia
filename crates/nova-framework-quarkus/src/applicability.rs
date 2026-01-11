@@ -32,7 +32,9 @@ pub fn is_quarkus_applicable_with_classpath(
         return true;
     }
 
-    classpath.iter().any(|entry| classpath_entry_has_quarkus(entry))
+    classpath
+        .iter()
+        .any(|entry| classpath_entry_has_quarkus(entry))
 }
 
 /// Applicability check wired into the `nova-framework` database abstraction.

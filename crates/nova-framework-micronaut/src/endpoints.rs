@@ -183,4 +183,3 @@ fn join_paths(base: &str, method: &str) -> String {
 
     out
 }
-

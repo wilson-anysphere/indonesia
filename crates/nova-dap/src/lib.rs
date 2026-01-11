@@ -26,7 +26,9 @@ pub mod format;
 pub mod object_registry;
 pub mod session;
 
-pub use crate::dap::types::{EvaluateResult, OutputEvent, Scope, Variable, VariablePresentationHint};
+pub use crate::dap::types::{
+    EvaluateResult, OutputEvent, Scope, Variable, VariablePresentationHint,
+};
 pub use crate::error::{DebugError, DebugResult};
 pub use crate::object_registry::{ObjectHandle, ObjectRegistry, PINNED_SCOPE_REF};
 pub use crate::session::{DebugSession, StepOutput};

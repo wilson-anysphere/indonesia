@@ -58,7 +58,8 @@ static SYMBOL_SEARCH_INDEX: Lazy<SymbolSearchIndex> = Lazy::new(|| {
 static REFERENCE_INDEX: Lazy<ReferenceIndex> = Lazy::new(|| generate_reference_index(200, 5));
 
 static SYMBOLS_FOR_INDEX_BUILD: Lazy<Vec<Symbol>> = Lazy::new(|| generate_symbols(5_000));
-static REFS_FOR_INDEX_BUILD: Lazy<Vec<ReferenceLocation>> = Lazy::new(|| generate_references(100, 5));
+static REFS_FOR_INDEX_BUILD: Lazy<Vec<ReferenceLocation>> =
+    Lazy::new(|| generate_references(100, 5));
 
 fn bench_parsing(c: &mut Criterion) {
     let mut group = c.benchmark_group("parsing");
@@ -178,11 +179,7 @@ fn diagnostics_for(source: &str) -> usize {
 }
 
 fn find_references(index: &ReferenceIndex, symbol: &str) -> Vec<ReferenceLocation> {
-    let mut refs = index
-        .references
-        .get(symbol)
-        .cloned()
-        .unwrap_or_default();
+    let mut refs = index.references.get(symbol).cloned().unwrap_or_default();
     refs.sort_by(|a, b| {
         a.file
             .cmp(&b.file)

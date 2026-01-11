@@ -11,4 +11,3 @@ pub enum DebugError {
     #[error("unknown object handle {0}")]
     UnknownObjectHandle(i64),
 }
-

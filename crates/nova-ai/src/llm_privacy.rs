@@ -80,14 +80,18 @@ impl PrivacyFilter {
 
     /// Apply redaction patterns to arbitrary prompt text.
     pub fn sanitize_prompt_text(&self, session: &mut SanitizationSession, text: &str) -> String {
-        sanitize_markdown_fenced_code_blocks(text, |block| {
-            let sanitized = if self.anonymize_code {
-                session.anonymizer.anonymize(block)
-            } else {
-                block.to_string()
-            };
-            self.apply_redaction(&sanitized)
-        }, |plain| self.apply_redaction(plain))
+        sanitize_markdown_fenced_code_blocks(
+            text,
+            |block| {
+                let sanitized = if self.anonymize_code {
+                    session.anonymizer.anonymize(block)
+                } else {
+                    block.to_string()
+                };
+                self.apply_redaction(&sanitized)
+            },
+            |plain| self.apply_redaction(plain),
+        )
     }
 
     /// Apply redaction and (optionally) anonymization to code before sending it to an LLM.

@@ -17,13 +17,15 @@ pub fn read_json_message<R: BufRead, T: DeserializeOwned>(reader: &mut R) -> io:
         None => return Ok(None),
     };
 
-    let parsed = serde_json::from_slice(&bytes).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let parsed = serde_json::from_slice(&bytes)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     Ok(Some(parsed))
 }
 
 /// Write a single DAP-framed JSON message to `writer`.
 pub fn write_json_message<W: Write, T: Serialize>(writer: &mut W, message: &T) -> io::Result<()> {
-    let bytes = serde_json::to_vec(message).map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
+    let bytes = serde_json::to_vec(message)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
     write_raw_message(writer, &bytes)?;
     Ok(())
 }

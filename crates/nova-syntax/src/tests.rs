@@ -155,7 +155,12 @@ fn parser_recovers_after_interface_implements_header() {
     let type_count = result
         .syntax()
         .children()
-        .filter(|n| matches!(n.kind(), SyntaxKind::InterfaceDeclaration | SyntaxKind::ClassDeclaration))
+        .filter(|n| {
+            matches!(
+                n.kind(),
+                SyntaxKind::InterfaceDeclaration | SyntaxKind::ClassDeclaration
+            )
+        })
         .count();
     assert_eq!(type_count, 2);
 }
@@ -294,9 +299,7 @@ fn parse_postfix_increment_decrement() {
 
 #[test]
 fn generated_ast_accessors_work() {
-    use crate::{
-        parse_java, AstNode, CompilationUnit, Expression, Statement, TypeDeclaration,
-    };
+    use crate::{parse_java, AstNode, CompilationUnit, Expression, Statement, TypeDeclaration};
 
     let input = r#"
 package com.example;
@@ -353,30 +356,20 @@ class Foo {
         })
         .expect("expected a return statement");
 
-    let expr = return_stmt.expression().expect("expected a return expression");
+    let expr = return_stmt
+        .expression()
+        .expect("expected a return expression");
     let binary = match expr {
         Expression::BinaryExpression(it) => it,
         other => panic!("expected binary expression, got {other:?}"),
     };
 
     assert_eq!(
-        binary
-            .lhs()
-            .unwrap()
-            .syntax()
-            .first_token()
-            .unwrap()
-            .text(),
+        binary.lhs().unwrap().syntax().first_token().unwrap().text(),
         "a"
     );
     assert_eq!(
-        binary
-            .rhs()
-            .unwrap()
-            .syntax()
-            .first_token()
-            .unwrap()
-            .text(),
+        binary.rhs().unwrap().syntax().first_token().unwrap().text(),
         "b"
     );
 }

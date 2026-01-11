@@ -1,23 +1,17 @@
 use crate::ai_codegen::{run_code_generation, CodeGenerationConfig, CodeGenerationError};
+use lsp_types::{Position, Range};
 use nova_ai::provider::AiProvider;
 use nova_ai::provider::AiProviderError;
 use nova_ai::workspace::VirtualWorkspace;
 use nova_ai::CancellationToken;
 use nova_ide::diagnostics::Diagnostic;
-use lsp_types::{Position, Range};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub enum AiCodeAction {
     ExplainError { diagnostic: Diagnostic },
-    GenerateMethodBody {
-        file: String,
-        insert_range: Range,
-    },
-    GenerateTest {
-        file: String,
-        insert_range: Range,
-    },
+    GenerateMethodBody { file: String, insert_range: Range },
+    GenerateTest { file: String, insert_range: Range },
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +60,8 @@ impl<'a> AiCodeActionExecutor<'a> {
                     insert_range,
                     workspace,
                 );
-                let result = run_code_generation(self.provider, workspace, &prompt, &self.config, cancel)?;
+                let result =
+                    run_code_generation(self.provider, workspace, &prompt, &self.config, cancel)?;
                 Ok(CodeActionOutcome::AppliedEdits(result.formatted_workspace))
             }
             AiCodeAction::GenerateTest { file, insert_range } => {
@@ -76,7 +71,8 @@ impl<'a> AiCodeActionExecutor<'a> {
                     insert_range,
                     workspace,
                 );
-                let result = run_code_generation(self.provider, workspace, &prompt, &self.config, cancel)?;
+                let result =
+                    run_code_generation(self.provider, workspace, &prompt, &self.config, cancel)?;
                 Ok(CodeActionOutcome::AppliedEdits(result.formatted_workspace))
             }
         }
@@ -105,8 +101,14 @@ fn build_insert_prompt(
 #[allow(dead_code)]
 fn _placeholder_range() -> Range {
     Range {
-        start: Position { line: 0, character: 0 },
-        end: Position { line: 0, character: 0 },
+        start: Position {
+            line: 0,
+            character: 0,
+        },
+        end: Position {
+            line: 0,
+            character: 0,
+        },
     }
 }
 
@@ -117,7 +119,10 @@ mod tests {
     use nova_ai::safety::SafetyError;
     use nova_ai::PatchSafetyConfig;
     use pretty_assertions::assert_eq;
-    use std::sync::{atomic::{AtomicUsize, Ordering}, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
 
     #[derive(Default)]
     struct MockAiProvider {
@@ -139,7 +144,11 @@ mod tests {
     }
 
     impl AiProvider for MockAiProvider {
-        fn complete(&self, _prompt: &str, _cancel: &CancellationToken) -> Result<String, AiProviderError> {
+        fn complete(
+            &self,
+            _prompt: &str,
+            _cancel: &CancellationToken,
+        ) -> Result<String, AiProviderError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.responses
                 .lock()
@@ -191,12 +200,20 @@ mod tests {
         let action = AiCodeAction::GenerateMethodBody {
             file: "Example.java".into(),
             insert_range: Range {
-                start: Position { line: 2, character: 0 },
-                end: Position { line: 3, character: 0 },
+                start: Position {
+                    line: 2,
+                    character: 0,
+                },
+                end: Position {
+                    line: 3,
+                    character: 0,
+                },
             },
         };
 
-        let outcome = executor.execute(action, &workspace, &cancel).expect("success");
+        let outcome = executor
+            .execute(action, &workspace, &cancel)
+            .expect("success");
         assert_eq!(provider.call_count(), 2);
 
         match outcome {
@@ -237,8 +254,14 @@ mod tests {
         let action = AiCodeAction::GenerateMethodBody {
             file: "Example.java".into(),
             insert_range: Range {
-                start: Position { line: 2, character: 0 },
-                end: Position { line: 3, character: 0 },
+                start: Position {
+                    line: 2,
+                    character: 0,
+                },
+                end: Position {
+                    line: 3,
+                    character: 0,
+                },
             },
         };
 
@@ -249,7 +272,10 @@ mod tests {
             other => panic!("unexpected error: {other:?}"),
         }
 
-        assert_eq!(workspace.get("Example.java").unwrap(), example_workspace().get("Example.java").unwrap());
+        assert_eq!(
+            workspace.get("Example.java").unwrap(),
+            example_workspace().get("Example.java").unwrap()
+        );
     }
 
     #[test]
@@ -278,8 +304,14 @@ mod tests {
         let action = AiCodeAction::GenerateTest {
             file: "secret/Config.java".into(),
             insert_range: Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
             },
         };
 
@@ -287,7 +319,9 @@ mod tests {
         assert_eq!(provider.call_count(), 1);
 
         match err {
-            CodeActionError::Codegen(CodeGenerationError::Safety(SafetyError::ExcludedPath { path })) => {
+            CodeActionError::Codegen(CodeGenerationError::Safety(SafetyError::ExcludedPath {
+                path,
+            })) => {
                 assert_eq!(path, "secret/Config.java");
             }
             other => panic!("unexpected error: {other:?}"),

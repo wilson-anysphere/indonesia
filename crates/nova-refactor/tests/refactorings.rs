@@ -20,7 +20,14 @@ fn rename_updates_all_occurrences_not_strings() {
     let offset = src.find("int foo").unwrap() + "int ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
 
-    let edit = rename(&db, RenameParams { symbol, new_name: "bar".into() }).unwrap();
+    let edit = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap();
     let after = apply_text_edits(src, &edit.edits).unwrap();
 
     assert!(after.contains("int bar = 1;"));
@@ -45,13 +52,22 @@ fn rename_conflict_detection_triggers_on_collision() {
     let offset = src.find("int foo").unwrap() + "int ".len() + 1;
     let symbol = db.symbol_at(&file, offset).expect("symbol at foo");
 
-    let err = rename(&db, RenameParams { symbol, new_name: "bar".into() }).unwrap_err();
+    let err = rename(
+        &db,
+        RenameParams {
+            symbol,
+            new_name: "bar".into(),
+        },
+    )
+    .unwrap_err();
     let SemanticRefactorError::Conflicts(conflicts) = err else {
         panic!("expected conflicts, got: {err:?}");
     };
 
     assert!(
-        conflicts.iter().any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "bar")),
+        conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::NameCollision { name, .. } if name == "bar")),
         "expected NameCollision conflict: {conflicts:?}"
     );
 }

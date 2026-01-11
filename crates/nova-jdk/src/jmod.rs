@@ -31,7 +31,10 @@ pub fn entry_to_internal_name(entry_name: &str) -> Option<&str> {
         .and_then(|s| s.strip_suffix(".class"))
 }
 
-pub fn read_class_bytes(jmod_path: &Path, internal_name: &str) -> Result<Option<Vec<u8>>, JmodError> {
+pub fn read_class_bytes(
+    jmod_path: &Path,
+    internal_name: &str,
+) -> Result<Option<Vec<u8>>, JmodError> {
     let file = File::open(jmod_path)?;
     let mut archive = ZipArchive::new(file)?;
     let entry_name = class_entry_name(internal_name);

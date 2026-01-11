@@ -196,8 +196,14 @@ fn index_view_filters_invalidated_files_without_materializing() {
     assert_eq!(merged_annotation_files, vec!["B.java", "A.java"]);
 
     assert_eq!(view_v2.symbol_names().collect::<Vec<_>>(), vec!["Foo"]);
-    assert_eq!(view_v2.referenced_symbols().collect::<Vec<_>>(), vec!["Foo"]);
-    assert_eq!(view_v2.annotation_names().collect::<Vec<_>>(), vec!["@Deprecated"]);
+    assert_eq!(
+        view_v2.referenced_symbols().collect::<Vec<_>>(),
+        vec!["Foo"]
+    );
+    assert_eq!(
+        view_v2.annotation_names().collect::<Vec<_>>(),
+        vec!["@Deprecated"]
+    );
 }
 
 #[test]
@@ -370,7 +376,10 @@ fn index_view_fast_filters_invalidated_files_without_materializing() {
     .unwrap()
     .unwrap();
 
-    assert_eq!(view.invalidated_files, BTreeSet::from(["A.java".to_string()]));
+    assert_eq!(
+        view.invalidated_files,
+        BTreeSet::from(["A.java".to_string()])
+    );
 
     let files: Vec<&str> = view
         .symbol_locations("Foo")

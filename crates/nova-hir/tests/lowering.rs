@@ -1,6 +1,6 @@
-use nova_vfs::FileId;
 use nova_hir::hir::{Body, Expr, ExprId, Stmt};
 use nova_hir::queries::{body, constructor_body, initializer_body, item_tree, HirDatabase};
+use nova_vfs::FileId;
 use std::sync::Arc;
 
 struct TestDb {
@@ -323,7 +323,10 @@ class Foo {
 
     let mut returns_t = false;
     for (_, stmt) in body.stmts.iter() {
-        if let Stmt::Return { expr: Some(expr), .. } = stmt {
+        if let Stmt::Return {
+            expr: Some(expr), ..
+        } = stmt
+        {
             if let Expr::Name { name, .. } = &body.exprs[*expr] {
                 returns_t |= name == "t";
             }
@@ -365,7 +368,10 @@ class Foo {
         }
     }
     assert!(call_paths.iter().any(|path| path == "System.out.println"));
-    assert!(body.exprs.iter().any(|(_, expr)| matches!(expr, Expr::Name { name, .. } if name == "args")));
+    assert!(body
+        .exprs
+        .iter()
+        .any(|(_, expr)| matches!(expr, Expr::Name { name, .. } if name == "args")));
 }
 
 #[test]

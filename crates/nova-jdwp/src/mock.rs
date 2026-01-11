@@ -124,7 +124,11 @@ impl JdwpClient for MockJdwpClient {
         }
     }
 
-    fn step(&mut self, thread_id: ThreadId, _kind: crate::StepKind) -> Result<StoppedEvent, JdwpError> {
+    fn step(
+        &mut self,
+        thread_id: ThreadId,
+        _kind: crate::StepKind,
+    ) -> Result<StoppedEvent, JdwpError> {
         match self.steps.pop_front() {
             Some(event) => event,
             None => Err(JdwpError::Other(format!(
@@ -150,7 +154,10 @@ impl JdwpClient for MockJdwpClient {
             .ok_or(JdwpError::InvalidObjectId(object_id))
     }
 
-    fn object_children(&mut self, object_id: ObjectId) -> Result<Vec<crate::JdwpVariable>, JdwpError> {
+    fn object_children(
+        &mut self,
+        object_id: ObjectId,
+    ) -> Result<Vec<crate::JdwpVariable>, JdwpError> {
         self.objects
             .get(&object_id)
             .map(|o| o.children.clone())

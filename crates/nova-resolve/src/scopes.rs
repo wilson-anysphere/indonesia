@@ -868,4 +868,3 @@ mod tests {
         assert_eq!(resolved, Some(entry));
     }
 }
-

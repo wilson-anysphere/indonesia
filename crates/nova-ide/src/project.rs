@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use once_cell::sync::Lazy;
 use nova_project::ProjectConfig;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -97,19 +97,20 @@ impl Project {
     /// Loads a project by recursively collecting `.java` files under `root`.
     pub fn load_from_dir(root: impl AsRef<Path>) -> Result<Self, ProjectDiscoveryError> {
         let root = root.as_ref().to_path_buf();
-        let (workspace_root, source_roots) = match nova_project::load_project_with_workspace_config(&root) {
-            Ok(ProjectConfig {
-                workspace_root,
-                source_roots,
-                ..
-            }) => (workspace_root, source_roots),
-            Err(nova_project::ProjectError::UnknownProjectType { .. }) => {
-                // Keep debug configuration discovery working even for ad-hoc folders
-                // that don't have a recognized build tool layout.
-                (root.clone(), Vec::new())
-            }
-            Err(err) => return Err(ProjectDiscoveryError::Project(err)),
-        };
+        let (workspace_root, source_roots) =
+            match nova_project::load_project_with_workspace_config(&root) {
+                Ok(ProjectConfig {
+                    workspace_root,
+                    source_roots,
+                    ..
+                }) => (workspace_root, source_roots),
+                Err(nova_project::ProjectError::UnknownProjectType { .. }) => {
+                    // Keep debug configuration discovery working even for ad-hoc folders
+                    // that don't have a recognized build tool layout.
+                    (root.clone(), Vec::new())
+                }
+                Err(err) => return Err(ProjectDiscoveryError::Project(err)),
+            };
 
         let mut java_files = Vec::new();
         if source_roots.is_empty() {
@@ -124,10 +125,11 @@ impl Project {
 
         let mut files = Vec::new();
         for path in java_files {
-            let text = fs::read_to_string(&path).map_err(|source| ProjectDiscoveryError::ReadFile {
-                path: path.clone(),
-                source,
-            })?;
+            let text =
+                fs::read_to_string(&path).map_err(|source| ProjectDiscoveryError::ReadFile {
+                    path: path.clone(),
+                    source,
+                })?;
             files.push(JavaSourceFile { path, text });
         }
 
@@ -290,9 +292,8 @@ fn discover_class_from_source(path: &Path, text: &str) -> Option<JavaClassInfo> 
 }
 
 fn parse_package(text: &str) -> Option<String> {
-    static PACKAGE_RE: Lazy<Regex> = Lazy::new(|| {
-        Regex::new(r"(?m)^\s*package\s+([A-Za-z0-9_.]+)\s*;").expect("valid regex")
-    });
+    static PACKAGE_RE: Lazy<Regex> =
+        Lazy::new(|| Regex::new(r"(?m)^\s*package\s+([A-Za-z0-9_.]+)\s*;").expect("valid regex"));
     PACKAGE_RE
         .captures(text)
         .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))

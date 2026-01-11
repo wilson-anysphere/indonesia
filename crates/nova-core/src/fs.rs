@@ -44,7 +44,9 @@ pub fn collect_java_files(root: &Path) -> io::Result<Vec<PathBuf>> {
     collect_files_with_extension(root, "java")
 }
 
-pub fn max_modified_time(paths: impl IntoIterator<Item = PathBuf>) -> io::Result<Option<SystemTime>> {
+pub fn max_modified_time(
+    paths: impl IntoIterator<Item = PathBuf>,
+) -> io::Result<Option<SystemTime>> {
     let mut max_time = None;
 
     for path in paths {

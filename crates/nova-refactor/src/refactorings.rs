@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
 use crate::edit::{apply_text_edits, FileId, TextEdit, TextRange, WorkspaceEdit};
+use crate::java::SymbolId;
 use crate::materialize::{materialize, MaterializeError};
 use crate::semantic::{Conflict, RefactorDatabase, SemanticChange};
-use crate::java::SymbolId;
 
 #[derive(Debug, Error)]
 pub enum RefactorError {
@@ -26,7 +26,10 @@ pub struct RenameParams {
     pub new_name: String,
 }
 
-pub fn rename(db: &dyn RefactorDatabase, params: RenameParams) -> Result<WorkspaceEdit, RefactorError> {
+pub fn rename(
+    db: &dyn RefactorDatabase,
+    params: RenameParams,
+) -> Result<WorkspaceEdit, RefactorError> {
     let conflicts = check_rename_conflicts(db, params.symbol, &params.new_name);
     if !conflicts.is_empty() {
         return Err(RefactorError::Conflicts(conflicts));
@@ -39,7 +42,11 @@ pub fn rename(db: &dyn RefactorDatabase, params: RenameParams) -> Result<Workspa
     Ok(materialize(db, changes)?)
 }
 
-fn check_rename_conflicts(db: &dyn RefactorDatabase, symbol: SymbolId, new_name: &str) -> Vec<Conflict> {
+fn check_rename_conflicts(
+    db: &dyn RefactorDatabase,
+    symbol: SymbolId,
+    new_name: &str,
+) -> Vec<Conflict> {
     let mut conflicts = Vec::new();
 
     let Some(def) = db.symbol_definition(symbol) else {
@@ -142,12 +149,16 @@ pub fn inline_variable(
         .ok_or_else(|| RefactorError::UnknownFile(def.file.clone()))?;
 
     let decl_start = line_start(text, def.name_range.start);
-    let semi = text[def.name_range.end..].find(';').map(|o| def.name_range.end + o);
+    let semi = text[def.name_range.end..]
+        .find(';')
+        .map(|o| def.name_range.end + o);
     let Some(semi) = semi else {
         return Err(RefactorError::InlineNotSupported);
     };
 
-    let eq = text[def.name_range.end..semi].find('=').map(|o| def.name_range.end + o);
+    let eq = text[def.name_range.end..semi]
+        .find('=')
+        .map(|o| def.name_range.end + o);
     let Some(eq) = eq else {
         return Err(RefactorError::InlineNotSupported);
     };
@@ -169,7 +180,10 @@ pub fn inline_variable(
 
     if params.inline_all {
         let decl_end = consume_trailing_newline(text, semi + 1);
-        edits.push(TextEdit::delete(def.file.clone(), TextRange::new(decl_start, decl_end)));
+        edits.push(TextEdit::delete(
+            def.file.clone(),
+            TextRange::new(decl_start, decl_end),
+        ));
     }
 
     let mut edit = WorkspaceEdit::new(edits);
@@ -246,7 +260,10 @@ pub fn organize_imports(
             continue;
         }
         if let Some((pkg, _)) = import.split_package_and_name() {
-            if usage.unqualified.contains(import.simple_name().unwrap_or_default()) {
+            if usage
+                .unqualified
+                .contains(import.simple_name().unwrap_or_default())
+            {
                 *explicit_by_package.entry(pkg.to_string()).or_default() += 1;
             }
         }
@@ -558,7 +575,9 @@ impl<'a> JavaScanner<'a> {
         let c = b as char;
         if is_ident_start(c) {
             self.offset += 1;
-            while self.offset < self.bytes.len() && is_ident_continue(self.bytes[self.offset] as char) {
+            while self.offset < self.bytes.len()
+                && is_ident_continue(self.bytes[self.offset] as char)
+            {
                 self.offset += 1;
             }
             return Some(Token {
@@ -615,7 +634,9 @@ impl<'a> JavaScanner<'a> {
                     b'*' => {
                         self.offset += 2;
                         while self.offset + 1 < self.bytes.len() {
-                            if self.bytes[self.offset] == b'*' && self.bytes[self.offset + 1] == b'/' {
+                            if self.bytes[self.offset] == b'*'
+                                && self.bytes[self.offset + 1] == b'/'
+                            {
                                 self.offset += 2;
                                 break;
                             }
@@ -1064,7 +1085,11 @@ fn is_ident_continue(c: char) -> bool {
 
 // Keep the public re-exports in lib.rs tidy.
 #[allow(dead_code)]
-fn _apply_edit_to_file(text: &str, file: FileId, edits: Vec<TextEdit>) -> Result<String, RefactorError> {
+fn _apply_edit_to_file(
+    text: &str,
+    file: FileId,
+    edits: Vec<TextEdit>,
+) -> Result<String, RefactorError> {
     Ok(apply_text_edits(
         text,
         &edits

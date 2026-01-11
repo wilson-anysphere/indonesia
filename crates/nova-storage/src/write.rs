@@ -103,9 +103,9 @@ fn atomic_write(dest: &Path, header: &[u8], payload: &[u8]) -> Result<(), Storag
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
-    let file_name = dest.file_name().ok_or_else(|| {
-        io::Error::other("destination path has no file name")
-    })?;
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| io::Error::other("destination path has no file name"))?;
     let pid = std::process::id();
 
     loop {

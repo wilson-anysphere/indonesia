@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use nova_index::{
-    Index, ReferenceCandidate, ReferenceKind, SymbolId, SymbolKind, TextRange,
-};
+use nova_index::{Index, ReferenceCandidate, ReferenceKind, SymbolId, SymbolKind, TextRange};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

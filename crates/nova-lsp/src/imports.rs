@@ -41,7 +41,10 @@ pub fn java_import_text_edit(text: &str, path: &str) -> Option<TextEdit> {
         .unwrap_or(0) as u32;
 
     Some(TextEdit {
-        range: Range::new(Position::new(insertion_line, 0), Position::new(insertion_line, 0)),
+        range: Range::new(
+            Position::new(insertion_line, 0),
+            Position::new(insertion_line, 0),
+        ),
         new_text: format!("import {path};{line_ending}"),
     })
 }
@@ -105,4 +108,3 @@ mod tests {
         assert_eq!(java_import_text_edit(text, "java.util.List"), None);
     }
 }
-

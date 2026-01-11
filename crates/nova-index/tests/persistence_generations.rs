@@ -1,5 +1,7 @@
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
-use nova_index::{load_index_archives, save_indexes, ProjectIndexes, SymbolLocation, INDEX_SCHEMA_VERSION};
+use nova_index::{
+    load_index_archives, save_indexes, ProjectIndexes, SymbolLocation, INDEX_SCHEMA_VERSION,
+};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -118,10 +120,7 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
                 }
 
                 save_indexes(&cache_dir, &snapshot, &mut indexes).unwrap();
-                generations
-                    .lock()
-                    .unwrap()
-                    .push(indexes.symbols.generation);
+                generations.lock().unwrap().push(indexes.symbols.generation);
 
                 // Give other writers a chance to start saving while we load.
                 std::thread::sleep(Duration::from_millis(1));
@@ -142,7 +141,10 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
     }
 
     let successful_loads = successful_loads.load(Ordering::Relaxed);
-    assert!(successful_loads > 0, "expected at least one successful load");
+    assert!(
+        successful_loads > 0,
+        "expected at least one successful load"
+    );
 
     let generations = generations.lock().unwrap();
     let mut unique = generations.clone();
@@ -150,4 +152,3 @@ fn concurrent_writers_never_produce_mixed_generation_loads() {
     unique.dedup();
     assert_eq!(unique.len(), generations.len());
 }
-

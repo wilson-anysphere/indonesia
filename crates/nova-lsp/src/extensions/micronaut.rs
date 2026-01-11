@@ -168,9 +168,7 @@ fn read_config_files(root: &Path) -> Result<Vec<ConfigFile>> {
     collect_files(root, &mut config_paths, |path| {
         matches!(
             path.file_name().and_then(|n| n.to_str()),
-            Some("application.yml")
-                | Some("application.yaml")
-                | Some("application.properties")
+            Some("application.yml") | Some("application.yaml") | Some("application.properties")
         )
     })?;
 
@@ -193,11 +191,7 @@ fn read_config_files(root: &Path) -> Result<Vec<ConfigFile>> {
     Ok(out)
 }
 
-fn collect_files(
-    dir: &Path,
-    out: &mut Vec<PathBuf>,
-    pred: fn(&Path) -> bool,
-) -> Result<()> {
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>, pred: fn(&Path) -> bool) -> Result<()> {
     let entries = fs::read_dir(dir)
         .map_err(|err| NovaLspError::Internal(format!("failed to read dir {dir:?}: {err}")))?;
 

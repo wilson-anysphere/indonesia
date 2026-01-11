@@ -168,7 +168,10 @@ pub fn analyze_stream_expression(expr: &str) -> Result<StreamChain, StreamAnalys
     analyze_dotted_expr(expr, &dotted)
 }
 
-fn analyze_dotted_expr(expr: &str, dotted: &DottedExpr) -> Result<StreamChain, StreamAnalysisError> {
+fn analyze_dotted_expr(
+    expr: &str,
+    dotted: &DottedExpr,
+) -> Result<StreamChain, StreamAnalysisError> {
     if dotted.segments.is_empty() {
         return Err(StreamAnalysisError::NoStreamPipeline);
     }
@@ -329,7 +332,9 @@ fn resolve_stream_method_stream(name: &str, arg_count: usize) -> Option<Type> {
         ("collect", 1) | ("collect", 3) => Some(Type::Named("java.lang.Object".to_string())),
         ("count", 0) => Some(Type::Primitive(PrimitiveType::Long)),
         ("forEach", 1) => Some(Type::Void),
-        ("reduce", 1) | ("reduce", 2) | ("reduce", 3) => Some(Type::Named("java.lang.Object".to_string())),
+        ("reduce", 1) | ("reduce", 2) | ("reduce", 3) => {
+            Some(Type::Named("java.lang.Object".to_string()))
+        }
         _ => None,
     }
 }
@@ -596,10 +601,7 @@ fn eval_sample<C: JdwpClient>(
 
     let truncated = raw_elements.len() < size;
     let element_type = infer_element_type(&raw_elements);
-    let elements = raw_elements
-        .iter()
-        .map(|v| format_value(jdwp, v))
-        .collect();
+    let elements = raw_elements.iter().map(|v| format_value(jdwp, v)).collect();
 
     Ok(StreamSample {
         elements,
@@ -1015,7 +1017,10 @@ mod tests {
         assert_eq!(chain.intermediates.len(), 2);
         assert_eq!(chain.intermediates[0].kind, StreamOperationKind::Filter);
         assert_eq!(chain.intermediates[1].kind, StreamOperationKind::Map);
-        assert_eq!(chain.terminal.as_ref().unwrap().kind, StreamOperationKind::Collect);
+        assert_eq!(
+            chain.terminal.as_ref().unwrap().kind,
+            StreamOperationKind::Collect
+        );
     }
 
     #[test]
@@ -1109,7 +1114,9 @@ mod tests {
         assert_eq!(result.steps.len(), 2);
         assert_eq!(result.steps[0].output.elements, vec!["2", "3"]);
         assert_eq!(result.steps[1].output.elements, vec!["4", "6"]);
-        assert_eq!(result.terminal.as_ref().unwrap().value.as_deref(), Some("2"));
+        assert_eq!(
+            result.terminal.as_ref().unwrap().value.as_deref(),
+            Some("2")
+        );
     }
 }
-

@@ -16,4 +16,3 @@ pub use types::{
 
 #[cfg(feature = "wire-test-support")]
 pub mod mock;
-

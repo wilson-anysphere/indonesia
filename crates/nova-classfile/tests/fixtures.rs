@@ -1,5 +1,6 @@
 use nova_classfile::{
-    BaseType, ClassFile, ClassMember, ConstValue, ElementValue, FieldType, ReturnType, TypeSignature,
+    BaseType, ClassFile, ClassMember, ConstValue, ElementValue, FieldType, ReturnType,
+    TypeSignature,
 };
 
 #[test]
@@ -47,14 +48,23 @@ fn parse_generic_signatures() {
 
     let field = &stub.fields[0];
     assert_eq!(field.name, "value");
-    assert_eq!(field.signature, Some(TypeSignature::TypeVariable("T".into())));
+    assert_eq!(
+        field.signature,
+        Some(TypeSignature::TypeVariable("T".into()))
+    );
 
     let method = stub.methods.iter().find(|m| m.name == "id").unwrap();
     let msig = method.signature.clone().unwrap();
     assert_eq!(msig.type_parameters.len(), 1);
     assert_eq!(msig.type_parameters[0].name, "U");
-    assert_eq!(msig.parameters, vec![TypeSignature::TypeVariable("U".into())]);
-    assert_eq!(msig.return_type, Some(TypeSignature::TypeVariable("U".into())));
+    assert_eq!(
+        msig.parameters,
+        vec![TypeSignature::TypeVariable("U".into())]
+    );
+    assert_eq!(
+        msig.return_type,
+        Some(TypeSignature::TypeVariable("U".into()))
+    );
 }
 
 #[test]
@@ -184,9 +194,15 @@ fn stub_is_best_effort_for_unparseable_signature_attribute() {
 
     let stub = class.stub().unwrap();
     assert_eq!(stub.raw_signature.as_deref(), Some("not a signature"));
-    assert!(stub.signature.is_none(), "parsed signature should be omitted");
+    assert!(
+        stub.signature.is_none(),
+        "parsed signature should be omitted"
+    );
 
     let field = &stub.fields[0];
     assert_eq!(field.raw_signature.as_deref(), Some("not a signature"));
-    assert!(field.signature.is_none(), "parsed field signature should be omitted");
+    assert!(
+        field.signature.is_none(),
+        "parsed field signature should be omitted"
+    );
 }

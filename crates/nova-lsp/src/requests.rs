@@ -16,4 +16,3 @@ pub struct MoreCompletionsResult {
     /// Mirrors LSP semantics: `true` means the client may poll again.
     pub is_incomplete: bool,
 }
-

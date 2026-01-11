@@ -1,8 +1,8 @@
+use lsp_types::Uri;
 use nova_ide::code_action::ExtractMethodCommandArgs;
 use nova_lsp::extract_method;
 use nova_refactor::extract_method::{InsertionStrategy, Visibility};
 use nova_test_utils::extract_range;
-use lsp_types::Uri;
 use std::str::FromStr;
 
 fn offset_to_position(text: &str, offset: usize) -> lsp_types::Position {

@@ -63,21 +63,35 @@ pub struct ObjectPreview {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ObjectKindPreview {
     Plain,
-    String { value: String },
-    PrimitiveWrapper { value: Box<JdwpValue> },
+    String {
+        value: String,
+    },
+    PrimitiveWrapper {
+        value: Box<JdwpValue>,
+    },
     Array {
         element_type: String,
         length: usize,
         sample: Vec<JdwpValue>,
     },
-    List { size: usize, sample: Vec<JdwpValue> },
-    Set { size: usize, sample: Vec<JdwpValue> },
+    List {
+        size: usize,
+        sample: Vec<JdwpValue>,
+    },
+    Set {
+        size: usize,
+        sample: Vec<JdwpValue>,
+    },
     Map {
         size: usize,
         sample: Vec<(JdwpValue, JdwpValue)>,
     },
-    Optional { value: Option<Box<JdwpValue>> },
-    Stream { size: Option<usize> },
+    Optional {
+        value: Option<Box<JdwpValue>>,
+    },
+    Stream {
+        size: Option<usize>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

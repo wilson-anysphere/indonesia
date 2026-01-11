@@ -2,8 +2,8 @@ use std::time::Duration;
 
 use nova_jdwp::{FrameId, JdwpClient};
 use nova_stream_debug::{
-    analyze_stream_expression, debug_stream, CancellationToken, StreamDebugConfig, StreamDebugError,
-    StreamDebugResult, StreamChain,
+    analyze_stream_expression, debug_stream, CancellationToken, StreamChain, StreamDebugConfig,
+    StreamDebugError, StreamDebugResult,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +41,10 @@ pub fn run_stream_debug<C: JdwpClient>(
     let chain = analyze_stream_expression(expression)?;
     let cancel = CancellationToken::default();
     let runtime = debug_stream(jdwp, frame_id, &chain, &config, &cancel)?;
-    Ok(StreamDebugBody { analysis: chain, runtime })
+    Ok(StreamDebugBody {
+        analysis: chain,
+        runtime,
+    })
 }
 
 impl StreamDebugArguments {

@@ -21,7 +21,11 @@ impl CompletionContextBuilder {
     }
 
     /// Build an instruction prompt for multi-token completions.
-    pub fn build_completion_prompt(&self, ctx: &MultiTokenCompletionContext, max_items: usize) -> String {
+    pub fn build_completion_prompt(
+        &self,
+        ctx: &MultiTokenCompletionContext,
+        max_items: usize,
+    ) -> String {
         // Keep the formatting stable for tests and provider caching.
         let receiver_type = ctx.receiver_type.as_deref().unwrap_or("<unknown>");
         let expected_type = ctx.expected_type.as_deref().unwrap_or("<unknown>");

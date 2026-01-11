@@ -99,7 +99,10 @@ pub fn collect_breakpoint_sites(java_source: &str) -> Vec<BreakpointSite> {
                     .saturating_sub(count_char(raw_line, '}'));
                 method_body_depth = Some(next_depth);
             }
-        } else if current_method.is_none() && current_class.is_some() && looks_like_constructor_decl(line, current_class.as_deref().unwrap()) {
+        } else if current_method.is_none()
+            && current_class.is_some()
+            && looks_like_constructor_decl(line, current_class.as_deref().unwrap())
+        {
             if let Some(name) = extract_method_name(line) {
                 current_method = Some(name);
                 let next_depth = brace_depth
@@ -158,7 +161,9 @@ fn extract_decl_name(line: &str, keyword: &str) -> Option<String> {
     let mut iter = line.split_whitespace().peekable();
     while let Some(tok) = iter.next() {
         if tok == keyword {
-            return iter.peek().map(|s| s.trim_matches('{').trim_matches(';').to_string());
+            return iter
+                .peek()
+                .map(|s| s.trim_matches('{').trim_matches(';').to_string());
         }
     }
     None
@@ -207,8 +212,7 @@ fn is_executable_line(line: &str) -> bool {
     if trimmed.starts_with("//") {
         return false;
     }
-    matches!(trimmed, "{" | "}" | "};")
-        .not()
+    matches!(trimmed, "{" | "}" | "};").not()
 }
 
 trait BoolExt {

@@ -77,7 +77,10 @@ pub fn parse_method_descriptor(desc: &str) -> Result<MethodDescriptor> {
         return Err(Error::InvalidDescriptor(desc.to_string()));
     }
 
-    Ok(MethodDescriptor { params, return_type })
+    Ok(MethodDescriptor {
+        params,
+        return_type,
+    })
 }
 
 fn parse_field_type(input: &str) -> Result<(FieldType, &str)> {
@@ -116,7 +119,10 @@ mod tests {
 
     #[test]
     fn parse_field_descriptor_primitives_and_arrays() {
-        assert_eq!(parse_field_descriptor("I").unwrap(), FieldType::Base(BaseType::Int));
+        assert_eq!(
+            parse_field_descriptor("I").unwrap(),
+            FieldType::Base(BaseType::Int)
+        );
         assert_eq!(
             parse_field_descriptor("[[Ljava/lang/String;").unwrap(),
             FieldType::Array(Box::new(FieldType::Array(Box::new(FieldType::Object(

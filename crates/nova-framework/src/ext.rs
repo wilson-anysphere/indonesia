@@ -1,4 +1,7 @@
-use crate::{CompletionContext, Database, FrameworkAnalyzer, InlayHint as FrameworkInlayHint, NavigationTarget as FrameworkNavigationTarget, Symbol as FrameworkSymbol};
+use crate::{
+    CompletionContext, Database, FrameworkAnalyzer, InlayHint as FrameworkInlayHint,
+    NavigationTarget as FrameworkNavigationTarget, Symbol as FrameworkSymbol,
+};
 use nova_ext::{
     CompletionParams, CompletionProvider, DiagnosticParams, DiagnosticProvider, ExtensionContext,
     InlayHint, InlayHintParams, InlayHintProvider, NavigationParams, NavigationProvider,
@@ -149,4 +152,3 @@ impl From<FrameworkInlayHint> for InlayHint {
         }
     }
 }
-

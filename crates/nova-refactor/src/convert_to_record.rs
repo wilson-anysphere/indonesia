@@ -1,8 +1,8 @@
 use nova_index::TextRange;
 use thiserror::Error;
 
-use crate::safe_delete::TextEdit;
 use crate::java::{is_boundary, is_ident_char_byte, scan_modes, ScanMode, TextSlice};
+use crate::safe_delete::TextEdit;
 
 #[derive(Debug, Clone)]
 pub struct ConvertToRecordOptions {
@@ -35,13 +35,19 @@ pub enum ConvertToRecordError {
     ClassAbstract,
     #[error("record components cannot be derived from fields with initializers (`{field}` has an initializer)")]
     FieldHasInitializer { field: String },
-    #[error("record components cannot be derived from multi-variable declarations (`{declaration}`)")]
+    #[error(
+        "record components cannot be derived from multi-variable declarations (`{declaration}`)"
+    )]
     MultipleFieldDeclarators { declaration: String },
-    #[error("all instance fields must be final to be converted to a record (`{field}` is not final)")]
+    #[error(
+        "all instance fields must be final to be converted to a record (`{field}` is not final)"
+    )]
     FieldNotFinal { field: String },
     #[error("instance initializer blocks are not supported when converting to records")]
     InstanceInitializer,
-    #[error("constructors must be empty or a trivial canonical constructor to be converted to a record")]
+    #[error(
+        "constructors must be empty or a trivial canonical constructor to be converted to a record"
+    )]
     NonCanonicalConstructor,
     #[error("method `{method}` conflicts with the record accessor for component `{component}`")]
     AccessorConflict { method: String, component: String },
@@ -106,8 +112,8 @@ pub fn convert_to_record(
     cursor_offset: usize,
     options: ConvertToRecordOptions,
 ) -> Result<TextEdit, ConvertToRecordError> {
-    let class =
-        parse_enclosing_class(source, cursor_offset).ok_or(ConvertToRecordError::NoClassAtPosition)?;
+    let class = parse_enclosing_class(source, cursor_offset)
+        .ok_or(ConvertToRecordError::NoClassAtPosition)?;
     let analysis = analyze_class(&class, &options)?;
     let replacement = maybe_nova_format(&generate_record(&analysis));
     Ok(TextEdit {
@@ -279,9 +285,7 @@ fn analyze_class<'a>(
 
     // Everything before `class` is preserved except for modifiers/keyword which we
     // rebuild as part of the record declaration.
-    let prefix = sanitize_prefix(
-        &class.source[class.range.start..class.class_keyword_range.start],
-    );
+    let prefix = sanitize_prefix(&class.source[class.range.start..class.class_keyword_range.start]);
 
     Ok(ConvertToRecordAnalysis {
         range: class.range,
@@ -293,7 +297,7 @@ fn analyze_class<'a>(
         kept_members,
     })
 }
- 
+
 fn sanitize_prefix(prefix: &str) -> String {
     let bytes = prefix.as_bytes();
     let mut remove_ranges: Vec<std::ops::Range<usize>> = Vec::new();
@@ -499,43 +503,41 @@ fn parse_top_level_classes<'a>(source: &'a str) -> Vec<ClassDecl<'a>> {
     while idx < bytes.len() {
         let b = bytes[idx];
         match mode {
-            ScanMode::Code => {
-                match b {
-                    b'{' => brace_depth += 1,
-                    b'}' => {
-                        brace_depth = brace_depth.saturating_sub(1);
-                        if brace_depth == 0 {
-                            last_separator = idx + 1;
-                        }
-                    }
-                    b';' if brace_depth == 0 => {
+            ScanMode::Code => match b {
+                b'{' => brace_depth += 1,
+                b'}' => {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    if brace_depth == 0 {
                         last_separator = idx + 1;
                     }
-                    b'/' if idx + 1 < bytes.len() && bytes[idx + 1] == b'/' => {
-                        mode = ScanMode::LineComment;
-                        idx += 2;
-                        continue;
-                    }
-                    b'/' if idx + 1 < bytes.len() && bytes[idx + 1] == b'*' => {
-                        mode = ScanMode::BlockComment;
-                        idx += 2;
-                        continue;
-                    }
-                    b'"' => mode = ScanMode::StringLiteral,
-                    b'\'' => mode = ScanMode::CharLiteral,
-                    b'c' if brace_depth == 0 => {
-                        if source[idx..].starts_with("class")
-                            && is_boundary(bytes, idx.saturating_sub(1))
-                            && is_boundary(bytes, idx + 5)
-                        {
-                            if let Some(class) = parse_class_at(source, idx, last_separator) {
-                                classes.push(class);
-                            }
+                }
+                b';' if brace_depth == 0 => {
+                    last_separator = idx + 1;
+                }
+                b'/' if idx + 1 < bytes.len() && bytes[idx + 1] == b'/' => {
+                    mode = ScanMode::LineComment;
+                    idx += 2;
+                    continue;
+                }
+                b'/' if idx + 1 < bytes.len() && bytes[idx + 1] == b'*' => {
+                    mode = ScanMode::BlockComment;
+                    idx += 2;
+                    continue;
+                }
+                b'"' => mode = ScanMode::StringLiteral,
+                b'\'' => mode = ScanMode::CharLiteral,
+                b'c' if brace_depth == 0 => {
+                    if source[idx..].starts_with("class")
+                        && is_boundary(bytes, idx.saturating_sub(1))
+                        && is_boundary(bytes, idx + 5)
+                    {
+                        if let Some(class) = parse_class_at(source, idx, last_separator) {
+                            classes.push(class);
                         }
                     }
-                    _ => {}
                 }
-            }
+                _ => {}
+            },
             ScanMode::LineComment => {
                 if b == b'\n' {
                     mode = ScanMode::Code;
@@ -574,7 +576,11 @@ fn parse_top_level_classes<'a>(source: &'a str) -> Vec<ClassDecl<'a>> {
     classes
 }
 
-fn parse_class_at<'a>(source: &'a str, class_kw: usize, decl_start: usize) -> Option<ClassDecl<'a>> {
+fn parse_class_at<'a>(
+    source: &'a str,
+    class_kw: usize,
+    decl_start: usize,
+) -> Option<ClassDecl<'a>> {
     let bytes = source.as_bytes();
     let mut idx = class_kw + 5;
     while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
@@ -1087,13 +1093,7 @@ fn parse_field_decl<'a>(slice: &TextSlice<'a>) -> Option<FieldDecl<'a>> {
         }
         let word = &decl[start..idx];
         match word {
-            "public"
-            | "protected"
-            | "private"
-            | "final"
-            | "static"
-            | "transient"
-            | "volatile" => {
+            "public" | "protected" | "private" | "final" | "static" | "transient" | "volatile" => {
                 modifiers.push(word.to_string());
             }
             _ => {
@@ -1190,10 +1190,18 @@ fn find_top_level_comma_eq(text: &str) -> (Option<usize>, Option<usize>) {
                 b']' => depth_bracket = depth_bracket.saturating_sub(1),
                 b'{' => depth_brace += 1,
                 b'}' => depth_brace = depth_brace.saturating_sub(1),
-                b',' if depth_angle == 0 && depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 => {
+                b',' if depth_angle == 0
+                    && depth_paren == 0
+                    && depth_bracket == 0
+                    && depth_brace == 0 =>
+                {
                     comma.get_or_insert(idx);
                 }
-                b'=' if depth_angle == 0 && depth_paren == 0 && depth_bracket == 0 && depth_brace == 0 => {
+                b'=' if depth_angle == 0
+                    && depth_paren == 0
+                    && depth_bracket == 0
+                    && depth_brace == 0 =>
+                {
                     if bytes.get(idx + 1).copied() != Some(b'=') {
                         eq.get_or_insert(idx);
                     }
@@ -1339,13 +1347,8 @@ public final class Point {
 }
 "#;
         let cursor = source.find("class Point").unwrap();
-        let edit = convert_to_record(
-            file,
-            source,
-            cursor,
-            ConvertToRecordOptions::default(),
-        )
-        .unwrap();
+        let edit =
+            convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
         let result = apply_edit(source, &edit);
         assert!(result.contains("public record Point"));
         assert!(result.contains("int x"));
@@ -1368,14 +1371,12 @@ public final class Point {
 }
 "#;
         let cursor = source.find("class Point").unwrap();
-        let err = convert_to_record(
-            file,
-            source,
-            cursor,
-            ConvertToRecordOptions::default(),
-        )
-        .unwrap_err();
-        assert_eq!(err, ConvertToRecordError::FieldNotFinal { field: "x".into() });
+        let err =
+            convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap_err();
+        assert_eq!(
+            err,
+            ConvertToRecordError::FieldNotFinal { field: "x".into() }
+        );
     }
 
     #[test]
@@ -1395,13 +1396,8 @@ public final class User {
 }
 "#;
         let cursor = source.find("class User").unwrap();
-        let edit = convert_to_record(
-            file,
-            source,
-            cursor,
-            ConvertToRecordOptions::default(),
-        )
-        .unwrap();
+        let edit =
+            convert_to_record(file, source, cursor, ConvertToRecordOptions::default()).unwrap();
         let result = apply_edit(source, &edit);
         assert!(result.contains("record User"));
         assert!(result.contains("String name"));

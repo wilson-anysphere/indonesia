@@ -7,8 +7,8 @@ use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 use nova_refactor::{
-    extract_constant, extract_field, inline_method, ExtractError, ExtractOptions, InlineMethodOptions,
-    TextRange,
+    extract_constant, extract_field, inline_method, ExtractError, ExtractOptions,
+    InlineMethodOptions, TextRange,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,7 +64,9 @@ pub fn extract_member_code_actions(
                 ExtractKindDto::Constant => {
                     extract_constant(&file, source, selection, options.clone()).is_ok()
                 }
-                ExtractKindDto::Field => extract_field(&file, source, selection, options.clone()).is_ok(),
+                ExtractKindDto::Field => {
+                    extract_field(&file, source, selection, options.clone()).is_ok()
+                }
             };
             if !ok {
                 continue;
@@ -91,7 +93,11 @@ pub fn extract_member_code_actions(
 }
 
 /// Provide Inline Method code actions at the given cursor position.
-pub fn inline_method_code_actions(uri: &Uri, source: &str, position: Position) -> Vec<CodeActionOrCommand> {
+pub fn inline_method_code_actions(
+    uri: &Uri,
+    source: &str,
+    position: Position,
+) -> Vec<CodeActionOrCommand> {
     let offset = position_to_offset_utf16(source, position);
     let file = uri.to_string();
 
@@ -248,4 +254,3 @@ fn offset_to_position_utf16(text: &str, offset: usize) -> Position {
     }
     Position::new(line, col_utf16)
 }
-

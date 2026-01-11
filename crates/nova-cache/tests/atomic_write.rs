@@ -18,23 +18,25 @@ fn atomic_write_is_safe_under_concurrent_writers() {
         let payload_a = payload_a.clone();
         let payload_b = payload_b.clone();
         let barrier = barrier.clone();
-        handles.push(std::thread::spawn(move || -> Result<(), nova_cache::CacheError> {
-            let payload = if idx % 2 == 0 { payload_a } else { payload_b };
-            let mut error: Option<nova_cache::CacheError> = None;
-            for _ in 0..iterations {
-                barrier.wait();
-                if error.is_none() {
-                    if let Err(err) = nova_cache::atomic_write(dest.as_path(), &payload) {
-                        error = Some(err);
+        handles.push(std::thread::spawn(
+            move || -> Result<(), nova_cache::CacheError> {
+                let payload = if idx % 2 == 0 { payload_a } else { payload_b };
+                let mut error: Option<nova_cache::CacheError> = None;
+                for _ in 0..iterations {
+                    barrier.wait();
+                    if error.is_none() {
+                        if let Err(err) = nova_cache::atomic_write(dest.as_path(), &payload) {
+                            error = Some(err);
+                        }
                     }
                 }
-            }
-            if let Some(err) = error {
-                Err(err)
-            } else {
-                Ok(())
-            }
-        }));
+                if let Some(err) = error {
+                    Err(err)
+                } else {
+                    Ok(())
+                }
+            },
+        ));
     }
 
     for handle in handles {

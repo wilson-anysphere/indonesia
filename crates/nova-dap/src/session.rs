@@ -71,14 +71,12 @@ impl<C: JdwpClient> DebugSession<C> {
                 .map(|child| {
                     let name = child.name;
                     let evaluate_name = child.evaluate_name.clone().or_else(|| Some(name.clone()));
-                    let formatted = self
-                        .formatter
-                        .format_value(
-                            &mut self.jdwp,
-                            &mut self.objects,
-                            &child.value,
-                            child.static_type.as_deref(),
-                        )?;
+                    let formatted = self.formatter.format_value(
+                        &mut self.jdwp,
+                        &mut self.objects,
+                        &child.value,
+                        child.static_type.as_deref(),
+                    )?;
                     Ok(Variable {
                         name,
                         value: formatted.value,
@@ -151,7 +149,9 @@ impl<C: JdwpClient> DebugSession<C> {
         let object_id = self
             .objects
             .object_id(handle)
-            .ok_or(DebugError::UnknownObjectHandle(handle.as_variables_reference()))?;
+            .ok_or(DebugError::UnknownObjectHandle(
+                handle.as_variables_reference(),
+            ))?;
 
         match self.jdwp.disable_collection(object_id) {
             Ok(()) | Err(JdwpError::NotImplemented) => {}
@@ -200,9 +200,12 @@ impl<C: JdwpClient> DebugSession<C> {
         let mut output = Vec::new();
 
         if let Some(return_value) = &stopped.return_value {
-            let formatted =
-                self.formatter
-                    .format_value(&mut self.jdwp, &mut self.objects, return_value, None)?;
+            let formatted = self.formatter.format_value(
+                &mut self.jdwp,
+                &mut self.objects,
+                return_value,
+                None,
+            )?;
             output.push(OutputEvent {
                 category: Some("console".to_string()),
                 output: format!("Return value: {}\n", formatted.value),

@@ -65,10 +65,22 @@ pub enum ExprKind {
     Bool(bool),
     Int(i32),
     String(String),
-    New { class_name: String },
-    Unary { op: UnaryOp, expr: ExprId },
-    Binary { op: BinaryOp, lhs: ExprId, rhs: ExprId },
-    FieldAccess { receiver: ExprId, name: Name },
+    New {
+        class_name: String,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: ExprId,
+    },
+    Binary {
+        op: BinaryOp,
+        lhs: ExprId,
+        rhs: ExprId,
+    },
+    FieldAccess {
+        receiver: ExprId,
+        name: Name,
+    },
     Call {
         receiver: ExprId,
         name: Name,
@@ -216,4 +228,3 @@ impl BodyBuilder {
         }
     }
 }
-

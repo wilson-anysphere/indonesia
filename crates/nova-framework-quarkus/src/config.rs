@@ -6,7 +6,10 @@ use regex::Regex;
 /// Collect config property names from:
 /// - `@ConfigProperty(name = "...")` usages in Java sources
 /// - `application.properties`-style key/value sources (passed as strings)
-pub fn collect_config_property_names(java_sources: &[&str], property_files: &[&str]) -> Vec<String> {
+pub fn collect_config_property_names(
+    java_sources: &[&str],
+    property_files: &[&str],
+) -> Vec<String> {
     let mut props = BTreeSet::<String>::new();
 
     let config_re = Regex::new(r#"@ConfigProperty\s*\(\s*name\s*=\s*"([^"]+)""#).unwrap();
@@ -45,4 +48,3 @@ pub fn config_property_completions(
         .map(CompletionItem::new)
         .collect()
 }
-

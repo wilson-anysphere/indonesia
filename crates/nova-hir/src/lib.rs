@@ -281,7 +281,10 @@ fn token_text<'a>(text: &'a str, range: TextRange) -> &'a str {
 fn is_trivia(kind: SyntaxKind) -> bool {
     matches!(
         kind,
-        SyntaxKind::Whitespace | SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment
+        SyntaxKind::Whitespace
+            | SyntaxKind::LineComment
+            | SyntaxKind::BlockComment
+            | SyntaxKind::DocComment
     )
 }
 
@@ -345,5 +348,5 @@ pub mod hir;
 pub mod ids;
 pub mod item_tree;
 pub mod lowering;
-pub mod queries;
 pub mod module_info;
+pub mod queries;

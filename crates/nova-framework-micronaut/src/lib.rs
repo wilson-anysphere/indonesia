@@ -39,8 +39,8 @@ pub use validation::{
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
 
-use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
 use nova_core::ProjectId;
+use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
 use nova_types::ClassId;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -74,7 +74,10 @@ pub fn analyze_sources(sources: &[JavaSource]) -> AnalysisResult {
 }
 
 /// Analyze sources plus configuration files.
-pub fn analyze_sources_with_config(sources: &[JavaSource], config_files: &[ConfigFile]) -> AnalysisResult {
+pub fn analyze_sources_with_config(
+    sources: &[JavaSource],
+    config_files: &[ConfigFile],
+) -> AnalysisResult {
     let bean_analysis = beans::analyze_beans(sources);
     let endpoints = endpoints::discover_endpoints(sources);
     let config_keys = collect_config_keys(config_files);

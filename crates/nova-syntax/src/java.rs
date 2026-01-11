@@ -345,7 +345,11 @@ struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     fn new(text: &'a str, offset: usize) -> Self {
-        Lexer { text, offset, pos: 0 }
+        Lexer {
+            text,
+            offset,
+            pos: 0,
+        }
     }
 
     fn remaining(&self) -> &'a str {
@@ -661,7 +665,9 @@ impl Parser {
         let mut end = first.range.end;
         let mut parts = vec![first.text];
 
-        while self.at_kind(TokenKind::Dot) && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Ident) {
+        while self.at_kind(TokenKind::Dot)
+            && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Ident)
+        {
             self.bump();
             let part = self.expect_ident();
             end = part.range.end;
@@ -793,7 +799,9 @@ impl Parser {
                     self.bump();
                     continue;
                 }
-                if self.at_keyword("static") && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LBrace) {
+                if self.at_keyword("static")
+                    && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LBrace)
+                {
                     break;
                 }
                 self.bump();
@@ -804,7 +812,11 @@ impl Parser {
         }
     }
 
-    fn parse_type_body(&mut self, type_name: &str, is_enum: bool) -> (Vec<ast::MemberDecl>, Span, usize) {
+    fn parse_type_body(
+        &mut self,
+        type_name: &str,
+        is_enum: bool,
+    ) -> (Vec<ast::MemberDecl>, Span, usize) {
         while !self.at_kind(TokenKind::LBrace) && !self.is_eof() {
             self.bump();
         }
@@ -896,7 +908,8 @@ impl Parser {
             self.skip_balanced(TokenKind::Lt, TokenKind::Gt);
         }
 
-        if self.at_keyword("static") && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LBrace) {
+        if self.at_keyword("static") && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::LBrace)
+        {
             self.bump();
             let body = self.parse_block();
             let range = Span::new(start, body.range.end);
@@ -922,7 +935,8 @@ impl Parser {
                 .peek_n(1)
                 .is_some_and(|t| t.kind == TokenKind::Ident && t.text == "interface");
         let is_nested_type = self.peek().is_some_and(|ty| {
-            ty.kind == TokenKind::Ident && matches!(ty.text.as_str(), "class" | "interface" | "enum" | "record")
+            ty.kind == TokenKind::Ident
+                && matches!(ty.text.as_str(), "class" | "interface" | "enum" | "record")
         });
         if is_annotation_type || is_nested_type {
             if let Some(decl) = self.parse_type_decl() {
@@ -1049,7 +1063,9 @@ impl Parser {
         let mut end = first.range.end;
         let mut text = first.text;
 
-        while self.at_kind(TokenKind::Dot) && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Ident) {
+        while self.at_kind(TokenKind::Dot)
+            && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Ident)
+        {
             let dot = self.bump().unwrap();
             let part = self.expect_ident();
             text.push_str(&dot.text);
@@ -1188,7 +1204,9 @@ impl Parser {
             return Some(local);
         }
 
-        let expr = self.parse_expr().unwrap_or(ast::Expr::Missing(self.peek()?.range));
+        let expr = self
+            .parse_expr()
+            .unwrap_or(ast::Expr::Missing(self.peek()?.range));
         let start = expr.range().start;
         let semi = self.expect_kind(TokenKind::Semi);
         Some(ast::Stmt::Expr(ast::ExprStmt {
@@ -1256,7 +1274,9 @@ impl Parser {
                 break;
             }
             self.bump();
-            let rhs = self.parse_binary_expr(prec + 1).unwrap_or(ast::Expr::Missing(lhs.range()));
+            let rhs = self
+                .parse_binary_expr(prec + 1)
+                .unwrap_or(ast::Expr::Missing(lhs.range()));
             let range = Span::new(lhs.range().start, rhs.range().end);
             lhs = ast::Expr::Binary(ast::BinaryExpr {
                 op,
@@ -1364,7 +1384,10 @@ impl Parser {
 
     fn collect_balanced(&mut self, open: TokenKind, close: TokenKind) -> (String, usize) {
         if !self.at_kind(open) {
-            return (String::new(), self.peek().map(|t| t.range.start).unwrap_or(0));
+            return (
+                String::new(),
+                self.peek().map(|t| t.range.start).unwrap_or(0),
+            );
         }
         let mut text = String::new();
         let mut end = self.peek().unwrap().range.end;

@@ -24,7 +24,10 @@ pub fn implementation(
     }
 }
 
-pub fn declaration(db: &Database, params: GotoDeclarationParams) -> Option<GotoDeclarationResponse> {
+pub fn declaration(
+    db: &Database,
+    params: GotoDeclarationParams,
+) -> Option<GotoDeclarationResponse> {
     let snap = snapshot(db);
     let file = &params.text_document_position_params.text_document.uri;
     let pos = params.text_document_position_params.position;

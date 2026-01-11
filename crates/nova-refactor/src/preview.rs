@@ -57,4 +57,3 @@ pub fn generate_preview(
         files,
     })
 }
-

@@ -6,8 +6,8 @@ use lsp_types::{
     RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
     WorkspaceEdit as LspWorkspaceEdit,
 };
-use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
 use nova_ai::context::ContextRequest;
+use nova_ai::{AiService, CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
 use nova_ide::{
     explain_error_action, generate_method_body_action, generate_tests_action, ExplainErrorArgs,
     GenerateMethodBodyArgs, GenerateTestsArgs, NovaCodeAction, CODE_ACTION_KIND_AI_GENERATE,
@@ -985,8 +985,7 @@ mod tests {
         };
 
         let mut writer = BufWriter::new(Vec::new());
-        let result =
-            run_ai_explain_error(args, work_done_token, &mut state, &mut writer).unwrap();
+        let result = run_ai_explain_error(args, work_done_token, &mut state, &mut writer).unwrap();
         let expected = result.as_str().expect("string result");
 
         let bytes = writer.into_inner().unwrap();
@@ -999,7 +998,8 @@ mod tests {
         assert!(
             messages.iter().any(|msg| {
                 msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
-                    && msg.get("params")
+                    && msg
+                        .get("params")
                         .and_then(|p| p.get("value"))
                         .and_then(|v| v.get("kind"))
                         .and_then(|k| k.as_str())
@@ -1011,7 +1011,8 @@ mod tests {
         assert!(
             messages.iter().any(|msg| {
                 msg.get("method").and_then(|m| m.as_str()) == Some("$/progress")
-                    && msg.get("params")
+                    && msg
+                        .get("params")
                         .and_then(|p| p.get("value"))
                         .and_then(|v| v.get("kind"))
                         .and_then(|k| k.as_str())
@@ -1256,10 +1257,7 @@ fn send_ai_output(writer: &mut impl Write, label: &str, output: &str) -> Result<
     Ok(())
 }
 
-fn send_log_message(
-    writer: &mut impl Write,
-    message: &str,
-) -> Result<(), (i32, String)> {
+fn send_log_message(writer: &mut impl Write, message: &str) -> Result<(), (i32, String)> {
     write_json_message(
         writer,
         &json!({

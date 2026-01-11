@@ -37,7 +37,10 @@ impl Range {
 
     #[inline]
     pub const fn point(pos: Position) -> Self {
-        Self { start: pos, end: pos }
+        Self {
+            start: pos,
+            end: pos,
+        }
     }
 }
 

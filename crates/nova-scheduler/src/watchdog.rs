@@ -28,8 +28,8 @@ impl Watchdog {
         let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {
-            let result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(func)).map_err(|_| WatchdogError::Panicked);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(func))
+                .map_err(|_| WatchdogError::Panicked);
             let _ = tx.send(result);
         });
 
@@ -58,7 +58,9 @@ pub enum WatchdogError {
 impl std::fmt::Display for WatchdogError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WatchdogError::DeadlineExceeded(dur) => write!(f, "request exceeded deadline of {dur:?}"),
+            WatchdogError::DeadlineExceeded(dur) => {
+                write!(f, "request exceeded deadline of {dur:?}")
+            }
             WatchdogError::Cancelled => write!(f, "request was cancelled"),
             WatchdogError::Panicked => write!(f, "request panicked"),
         }
@@ -86,4 +88,3 @@ mod tests {
         assert!(start.elapsed() < Duration::from_millis(150));
     }
 }
-

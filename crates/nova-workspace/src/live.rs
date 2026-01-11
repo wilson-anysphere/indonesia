@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use crossbeam_channel as channel;
-use nova_scheduler::{chunk_vec, Debouncer};
-use nova_project::ProjectError;
-use nova_vfs::{FileId, FileIdRegistry, LocalFs, OverlayFs, VfsPath};
 use notify::RecursiveMode;
 use notify::Watcher;
+use nova_project::ProjectError;
+use nova_scheduler::{chunk_vec, Debouncer};
+use nova_vfs::{FileId, FileIdRegistry, LocalFs, OverlayFs, VfsPath};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -248,14 +248,12 @@ impl Workspace {
         let driver_stop_tx = driver_stop.0.clone();
         let driver_stop_rx = driver_stop.1;
 
-        let driver_thread = thread::spawn(move || {
-            loop {
-                channel::select! {
-                    recv(driver_stop_rx) -> _ => break,
-                    recv(rx) -> msg => {
-                        let Ok(batch) = msg else { break };
-                        workspace.apply_batch(batch);
-                    }
+        let driver_thread = thread::spawn(move || loop {
+            channel::select! {
+                recv(driver_stop_rx) -> _ => break,
+                recv(rx) -> msg => {
+                    let Ok(batch) = msg else { break };
+                    workspace.apply_batch(batch);
                 }
             }
         });
@@ -300,9 +298,12 @@ impl WorkspaceDriver {
         }
 
         self.client.show_status("Reloading project…".to_string());
-        if let Err(err) = nova_project::load_project_with_workspace_config(&self.config.workspace_root) {
+        if let Err(err) =
+            nova_project::load_project_with_workspace_config(&self.config.workspace_root)
+        {
             // Reload failures should not crash the watcher loop; surface as a user-visible error.
-            self.client.show_error(format!("Project reload failed: {err}"));
+            self.client
+                .show_error(format!("Project reload failed: {err}"));
         } else if !events.is_empty() {
             // Currently the live workspace does not store the new project graph, but successfully
             // invoking the loader is still a useful correctness signal (it validates build files
@@ -773,8 +774,14 @@ mod tests {
             attrs: Default::default(),
         };
 
-        assert_eq!(normalizer.push(create, t0), vec![NormalizedEvent::Created(p.clone())]);
-        assert_eq!(normalizer.push(remove, t0), vec![NormalizedEvent::Deleted(p)]);
+        assert_eq!(
+            normalizer.push(create, t0),
+            vec![NormalizedEvent::Created(p.clone())]
+        );
+        assert_eq!(
+            normalizer.push(remove, t0),
+            vec![NormalizedEvent::Deleted(p)]
+        );
     }
 
     #[test]
@@ -796,7 +803,9 @@ mod tests {
             root.join("gradle.properties"),
             root.join("gradlew"),
             root.join("gradlew.bat"),
-            root.join("gradle").join("wrapper").join("gradle-wrapper.properties"),
+            root.join("gradle")
+                .join("wrapper")
+                .join("gradle-wrapper.properties"),
             root.join("mvnw"),
             root.join("mvnw.cmd"),
             root.join(".mvn")
@@ -837,7 +846,10 @@ mod tests {
         let path = root.join("Example.java");
         assert!(!is_build_file(&path));
         let event = NormalizedEvent::Modified(path);
-        assert_eq!(categorize_event(&config, &event), Some(ChangeCategory::Source));
+        assert_eq!(
+            categorize_event(&config, &event),
+            Some(ChangeCategory::Source)
+        );
     }
     #[derive(Default)]
     struct TestClient {

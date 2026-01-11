@@ -552,7 +552,11 @@ pub fn handle_project_model(params: serde_json::Value) -> Result<serde_json::Val
                     rel.to_string_lossy().to_string()
                 };
 
-                let module_relative = if rel == "." { None } else { Some(Path::new(&rel)) };
+                let module_relative = if rel == "." {
+                    None
+                } else {
+                    Some(Path::new(&rel))
+                };
                 let cp = manager
                     .classpath_maven(&project_root, module_relative)
                     .map_err(map_build_error)?;
@@ -849,12 +853,9 @@ pub fn handle_build_diagnostics(params: serde_json::Value) -> Result<serde_json:
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
-    use tempfile::TempDir;
     #[cfg(unix)]
-    use std::{
-        fs,
-        os::unix::fs::PermissionsExt,
-    };
+    use std::{fs, os::unix::fs::PermissionsExt};
+    use tempfile::TempDir;
 
     #[test]
     fn params_accepts_project_root_aliases() {

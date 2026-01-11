@@ -148,10 +148,7 @@ fn is_import_line(line: &str) -> bool {
 pub fn extract_new_imports(before: &str, after: &str) -> Vec<String> {
     let before_imports = import_lines(before);
     let after_imports = import_lines(after);
-    after_imports
-        .difference(&before_imports)
-        .cloned()
-        .collect()
+    after_imports.difference(&before_imports).cloned().collect()
 }
 
 fn import_lines(source: &str) -> BTreeSet<String> {

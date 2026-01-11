@@ -32,4 +32,3 @@ fn from_file_matches_from_bytes_for_empty_file() -> Result<(), nova_cache::Cache
 
     Ok(())
 }
-

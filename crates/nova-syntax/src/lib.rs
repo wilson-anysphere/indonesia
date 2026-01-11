@@ -44,7 +44,6 @@ impl TextRange {
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GreenToken {
     pub kind: SyntaxKind,
@@ -267,10 +266,10 @@ pub fn parse(text: &str) -> ParseResult {
     }
 }
 
-#[cfg(test)]
-mod tests;
 /// Experimental Java AST used by semantic lowering passes.
 pub mod java;
+#[cfg(test)]
+mod tests;
 
 pub mod module_info;
 

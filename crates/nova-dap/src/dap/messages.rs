@@ -71,4 +71,3 @@ impl Event {
         }
     }
 }
-

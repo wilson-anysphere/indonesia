@@ -82,9 +82,7 @@ impl JdwpRedefiner for TcpJdwpClient {
 fn map_jdwp_error(err: NovaJdwpError) -> JdwpError {
     match err {
         NovaJdwpError::CommandFailed { error_code } if is_schema_change(error_code) => {
-            JdwpError::SchemaChange(format!(
-                "HotSwap rejected by JVM (JDWP error {error_code})"
-            ))
+            JdwpError::SchemaChange(format!("HotSwap rejected by JVM (JDWP error {error_code})"))
         }
         other => JdwpError::Other(other.to_string()),
     }
@@ -187,10 +185,13 @@ mod tests {
             files
                 .iter()
                 .map(|file| {
-                    self.outputs.get(file).cloned().unwrap_or_else(|| CompileOutput {
-                        file: file.clone(),
-                        result: Err(CompileError::new("no output configured")),
-                    })
+                    self.outputs
+                        .get(file)
+                        .cloned()
+                        .unwrap_or_else(|| CompileOutput {
+                            file: file.clone(),
+                            result: Err(CompileError::new("no output configured")),
+                        })
                 })
                 .collect()
         }

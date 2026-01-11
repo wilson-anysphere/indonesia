@@ -111,4 +111,3 @@ mod tests {
         assert!(!fs.exists(&missing_path));
     }
 }
-

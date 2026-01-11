@@ -19,11 +19,7 @@ pub struct ExtractMethodCommandArgs {
 /// The action is surfaced as a command because the client typically needs to
 /// collect additional input (method name, visibility) before the edit can be
 /// generated.
-pub fn extract_method_code_action(
-    source: &str,
-    uri: Uri,
-    lsp_range: Range,
-) -> Option<CodeAction> {
+pub fn extract_method_code_action(source: &str, uri: Uri, lsp_range: Range) -> Option<CodeAction> {
     let range = TextRange::new(
         position_to_offset(source, lsp_range.start)?,
         position_to_offset(source, lsp_range.end)?,

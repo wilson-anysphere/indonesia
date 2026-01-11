@@ -19,4 +19,3 @@ pub trait FileWatcher: Send {
     /// Retrieves pending events, if any.
     fn poll(&mut self) -> io::Result<Vec<WatchEvent>>;
 }
-

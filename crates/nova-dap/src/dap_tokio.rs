@@ -53,7 +53,13 @@ pub struct Event {
     pub body: Option<Value>,
 }
 
-pub fn make_response(seq: i64, request: &Request, success: bool, body: Option<Value>, message: Option<String>) -> Response {
+pub fn make_response(
+    seq: i64,
+    request: &Request,
+    success: bool,
+    body: Option<Value>,
+    message: Option<String>,
+) -> Response {
     Response {
         seq,
         message_type: "response".to_string(),
@@ -114,7 +120,9 @@ impl<R: AsyncRead + Unpin> DapReader<R> {
         }
 
         let Some(len) = content_length else {
-            return Err(DapError::Protocol("missing Content-Length header".to_string()));
+            return Err(DapError::Protocol(
+                "missing Content-Length header".to_string(),
+            ));
         };
 
         let mut buf = vec![0u8; len];

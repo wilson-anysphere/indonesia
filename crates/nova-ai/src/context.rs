@@ -257,7 +257,11 @@ fn extract_java_context(
 
         let imports: Vec<_> = unit
             .imports()
-            .map(|imp| slice_node_without_leading_trivia(source, imp.syntax(), true).trim().to_string())
+            .map(|imp| {
+                slice_node_without_leading_trivia(source, imp.syntax(), true)
+                    .trim()
+                    .to_string()
+            })
             .collect();
         if !imports.is_empty() {
             parts.push(format!("// Imports\n{}", imports.join("\n")));
@@ -283,7 +287,10 @@ fn extract_java_context(
         method
             .as_ref()
             .and_then(|n| find_doc_comment_before_node(source, n))
-            .or_else(|| ty.as_ref().and_then(|n| find_doc_comment_before_node(source, n)))
+            .or_else(|| {
+                ty.as_ref()
+                    .and_then(|n| find_doc_comment_before_node(source, n))
+            })
     } else {
         None
     };
@@ -431,7 +438,8 @@ mod tests {
         let builder = ContextBuilder::new();
         let req = ContextRequest {
             file_path: Some("/home/user/project/Secret.java".to_string()),
-            focal_code: r#"class Secret { String apiKey = "sk-verysecretstringthatislong"; }"#.to_string(),
+            focal_code: r#"class Secret { String apiKey = "sk-verysecretstringthatislong"; }"#
+                .to_string(),
             enclosing_context: Some("package com.example;\n".to_string()),
             related_symbols: vec![RelatedSymbol {
                 name: "Secret".to_string(),

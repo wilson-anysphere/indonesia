@@ -6,7 +6,8 @@ use pretty_assertions::assert_eq;
 fn apply_organize_imports(src: &str) -> (String, nova_refactor::WorkspaceEdit) {
     let file = FileId::new("Test.java");
     let db = InMemoryJavaDatabase::new([(file.clone(), src.to_string())]);
-    let edit = organize_imports(&db, OrganizeImportsParams { file }).expect("organize_imports runs");
+    let edit =
+        organize_imports(&db, OrganizeImportsParams { file }).expect("organize_imports runs");
     let after = apply_text_edits(src, &edit.edits).expect("apply edits");
     (after, edit)
 }
@@ -151,4 +152,3 @@ class Test {
     assert_eq!(after, before);
     assert!(edit.edits.is_empty());
 }
-

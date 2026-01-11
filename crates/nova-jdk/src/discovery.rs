@@ -38,8 +38,8 @@ impl JdkInstallation {
     pub fn discover(config: Option<&JdkConfig>) -> Result<Self, JdkDiscoveryError> {
         // Optional config override: when present it should win regardless of environment.
         if let Some(override_home) = config.and_then(|c| c.home.as_deref()) {
-            let candidate =
-                coerce_to_jdk_root(override_home.to_path_buf()).unwrap_or_else(|| override_home.to_path_buf());
+            let candidate = coerce_to_jdk_root(override_home.to_path_buf())
+                .unwrap_or_else(|| override_home.to_path_buf());
             return Self::from_root(candidate);
         }
 

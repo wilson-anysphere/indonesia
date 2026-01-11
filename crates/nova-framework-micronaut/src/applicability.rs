@@ -38,7 +38,9 @@ pub fn is_micronaut_applicable_with_classpath(
         return true;
     }
 
-    classpath.iter().any(|entry| classpath_entry_has_micronaut(entry))
+    classpath
+        .iter()
+        .any(|entry| classpath_entry_has_micronaut(entry))
 }
 
 fn classpath_entry_has_micronaut(path: &Path) -> bool {

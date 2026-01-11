@@ -63,7 +63,9 @@ impl<B, J> HotSwapService<B, J> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nova_dap::hot_swap::{CompileError, CompileOutput, CompiledClass, JdwpError, JdwpRedefiner};
+    use nova_dap::hot_swap::{
+        CompileError, CompileOutput, CompiledClass, JdwpError, JdwpRedefiner,
+    };
     use std::collections::BTreeMap;
     use std::fs;
     use tempfile::TempDir;
@@ -146,10 +148,13 @@ mod tests {
             files
                 .iter()
                 .map(|file| {
-                    self.outputs.get(file).cloned().unwrap_or_else(|| CompileOutput {
-                        file: file.clone(),
-                        result: Err(CompileError::new("no output configured")),
-                    })
+                    self.outputs
+                        .get(file)
+                        .cloned()
+                        .unwrap_or_else(|| CompileOutput {
+                            file: file.clone(),
+                            result: Err(CompileError::new("no output configured")),
+                        })
                 })
                 .collect()
         }
@@ -198,6 +203,9 @@ mod tests {
 
         assert_eq!(result.results.len(), 1);
         assert_eq!(result.results[0].file, file);
-        assert_eq!(result.results[0].status, nova_dap::hot_swap::HotSwapStatus::Success);
+        assert_eq!(
+            result.results[0].status,
+            nova_dap::hot_swap::HotSwapStatus::Success
+        );
     }
 }

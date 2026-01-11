@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use nova_types::{
-    resolve_constructor_call, resolve_field, CallKind, FieldStub, MethodResolution, MethodStub, Type, TypeDefStub,
-    TypeEnv, TypeProvider, TypeStore,
+    resolve_constructor_call, resolve_field, CallKind, FieldStub, MethodResolution, MethodStub,
+    Type, TypeDefStub, TypeEnv, TypeProvider, TypeStore,
 };
 
 #[derive(Default)]
@@ -82,13 +82,15 @@ fn resolves_field_from_loaded_stub_class() {
 
     let receiver = Type::class(foo, vec![]);
 
-    let field = resolve_field(&env, &receiver, "instanceField", CallKind::Instance).expect("field should resolve");
+    let field = resolve_field(&env, &receiver, "instanceField", CallKind::Instance)
+        .expect("field should resolve");
     assert_eq!(field.ty, Type::class(env.well_known().string, vec![]));
     assert!(!field.is_static);
     assert!(!field.is_final);
 
     // Inherited field.
-    let inherited = resolve_field(&env, &receiver, "baseField", CallKind::Instance).expect("inherited field");
+    let inherited =
+        resolve_field(&env, &receiver, "baseField", CallKind::Instance).expect("inherited field");
     assert_eq!(inherited.ty, Type::int());
 
     // Static field can be resolved from a static access.
@@ -146,7 +148,9 @@ fn resolves_constructor_overloads_from_loaded_stub_class() {
     assert_eq!(res.params, vec![]);
     assert!(!res.is_varargs);
 
-    let MethodResolution::Found(res) = resolve_constructor_call(&mut env, class, &[Type::int()], None) else {
+    let MethodResolution::Found(res) =
+        resolve_constructor_call(&mut env, class, &[Type::int()], None)
+    else {
         panic!("expected constructor resolution");
     };
     assert_eq!(res.params, vec![Type::int()]);

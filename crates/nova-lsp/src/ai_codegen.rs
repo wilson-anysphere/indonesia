@@ -177,11 +177,20 @@ pub fn run_code_generation(
         if config.safety.no_new_imports {
             let violation = find_new_imports_violation(workspace, &formatted_workspace, &patch);
             if let Some((file, imports)) = violation {
-                return Err(CodeGenerationError::Safety(SafetyError::NewImports { file, imports }));
+                return Err(CodeGenerationError::Safety(SafetyError::NewImports {
+                    file,
+                    imports,
+                }));
             }
         }
 
-        match validate_patch(workspace, &formatted_workspace, &applied, &engine, &config.validation) {
+        match validate_patch(
+            workspace,
+            &formatted_workspace,
+            &applied,
+            &engine,
+            &config.validation,
+        ) {
             Ok(()) => {
                 return Ok(CodeGenerationResult {
                     patch,
@@ -201,7 +210,11 @@ pub fn run_code_generation(
     }
 }
 
-fn build_prompt(base: &str, config: &CodeGenerationConfig, feedback: Option<&ErrorFeedback>) -> String {
+fn build_prompt(
+    base: &str,
+    config: &CodeGenerationConfig,
+    feedback: Option<&ErrorFeedback>,
+) -> String {
     let mut out = String::new();
     out.push_str(base);
     out.push_str("\n\nReturn ONLY a structured patch.\n");
@@ -307,7 +320,8 @@ fn validate_patch(
             match diag.kind {
                 DiagnosticKind::Syntax => {
                     new_syntax_errors += 1;
-                    let position = LineIndex::new(after_text).position(after_text, diag.range.start());
+                    let position =
+                        LineIndex::new(after_text).position(after_text, diag.range.start());
                     new_diagnostics.push(DiagnosticWithContext {
                         file: file.clone(),
                         context: render_context(after_text, diag.range, config.context_lines),
@@ -335,7 +349,9 @@ fn validate_patch(
         }
     }
 
-    if new_syntax_errors > config.max_new_syntax_errors || new_type_errors > config.max_new_type_errors {
+    if new_syntax_errors > config.max_new_syntax_errors
+        || new_type_errors > config.max_new_type_errors
+    {
         return Err(ErrorReport {
             summary: format!(
                 "Introduced {new_syntax_errors} syntax errors and {new_type_errors} type errors.",
@@ -413,4 +429,3 @@ fn render_context(source: &str, range: TextRange, context_lines: usize) -> Strin
     }
     out
 }
-

@@ -24,7 +24,9 @@ pub use crate::{
     },
     cache::{digest_file, BazelCache, BuildFileDigest, CacheEntry},
     command::{CommandOutput, CommandRunner, DefaultCommandRunner},
-    workspace::{bazel_workspace_root, is_bazel_workspace, BazelWorkspace, BazelWorkspaceDiscovery},
+    workspace::{
+        bazel_workspace_root, is_bazel_workspace, BazelWorkspace, BazelWorkspaceDiscovery,
+    },
 };
 
 #[cfg(any(test, feature = "bsp"))]

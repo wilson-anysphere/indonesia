@@ -28,7 +28,9 @@ where
     let cache_path = cache_file_path(cache_dir, fingerprint);
     if let Ok(bytes) = std::fs::read(&cache_path) {
         if let Ok(file) = bincode::deserialize::<EntryCacheFile>(&bytes) {
-            if file.version == CACHE_VERSION && file.fingerprint == fingerprint && file.entry == *entry
+            if file.version == CACHE_VERSION
+                && file.fingerprint == fingerprint
+                && file.entry == *entry
             {
                 return Ok(file.stubs);
             }
@@ -51,4 +53,3 @@ where
 fn cache_file_path(cache_dir: &Path, fingerprint: ClasspathFingerprint) -> PathBuf {
     cache_dir.join(format!("classpath-entry-{}.bin", fingerprint.to_hex()))
 }
-

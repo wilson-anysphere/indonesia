@@ -25,4 +25,3 @@ pub struct InlayHint {
     pub span: Option<Span>,
     pub label: String,
 }
-

@@ -104,11 +104,7 @@ fn insert_before_class_close(text: &str, class: &ClassBlock, insert: &str) -> Lo
     }
 }
 
-fn find_static_field_range(
-    text: &str,
-    class: &ClassBlock,
-    member_name: &str,
-) -> Option<TextRange> {
+fn find_static_field_range(text: &str, class: &ClassBlock, member_name: &str) -> Option<TextRange> {
     let body = &text[class.body_range.start..class.body_range.end];
     let pattern = format!(
         r"(?m)^[^\n]*\bstatic\b[^\n]*\b{}\b[^\n]*;\s*$",
@@ -181,19 +177,15 @@ pub fn move_static_member(
     files: &BTreeMap<PathBuf, String>,
     params: MoveStaticMemberParams,
 ) -> Result<RefactoringEdit, MoveMemberError> {
-    let (from_path, from_class) =
-        find_file_containing_class(files, &params.from_class)
-            .ok_or_else(|| MoveMemberError::ClassNotFound(params.from_class.clone()))?;
-    let (to_path, to_class) =
-        find_file_containing_class(files, &params.to_class)
-            .ok_or_else(|| MoveMemberError::ClassNotFound(params.to_class.clone()))?;
+    let (from_path, from_class) = find_file_containing_class(files, &params.from_class)
+        .ok_or_else(|| MoveMemberError::ClassNotFound(params.from_class.clone()))?;
+    let (to_path, to_class) = find_file_containing_class(files, &params.to_class)
+        .ok_or_else(|| MoveMemberError::ClassNotFound(params.to_class.clone()))?;
 
     let from_text = files
         .get(&from_path)
         .expect("from_path returned from file map");
-    let to_text = files
-        .get(&to_path)
-        .expect("to_path returned from file map");
+    let to_text = files.get(&to_path).expect("to_path returned from file map");
 
     // Find the member as either a static method or a static field.
     let method_decl = find_method_decl(from_text, &from_class, &params.member_name);
@@ -207,12 +199,11 @@ pub fn move_static_member(
         }
         (decl.range, true)
     } else {
-        let range = find_static_field_range(from_text, &from_class, &params.member_name).ok_or_else(
-            || MoveMemberError::MemberNotFound {
+        let range = find_static_field_range(from_text, &from_class, &params.member_name)
+            .ok_or_else(|| MoveMemberError::MemberNotFound {
                 class: params.from_class.clone(),
                 member: params.member_name.clone(),
-            },
-        )?;
+            })?;
         (range, false)
     };
 
@@ -268,7 +259,10 @@ pub fn move_static_member(
             &params.member_name,
         );
         if !ref_edits.is_empty() {
-            edits_by_file.entry(path.clone()).or_default().extend(ref_edits);
+            edits_by_file
+                .entry(path.clone())
+                .or_default()
+                .extend(ref_edits);
         }
     }
 
@@ -438,11 +432,8 @@ fn parse_param_names(signature: &str) -> Vec<String> {
 }
 
 fn detect_unhandled_dot_calls(text: &str, method_name: &str) -> bool {
-    let any_call_re = Regex::new(&format!(
-        r"\.\s*{}\s*\(",
-        regex::escape(method_name)
-    ))
-    .expect("valid regex");
+    let any_call_re =
+        Regex::new(&format!(r"\.\s*{}\s*\(", regex::escape(method_name))).expect("valid regex");
     for m in any_call_re.find_iter(text) {
         let dot = m.start();
         let prev = text[..dot].chars().rev().find(|c| !c.is_whitespace());
@@ -460,19 +451,15 @@ pub fn move_method(
     files: &BTreeMap<PathBuf, String>,
     params: MoveMethodParams,
 ) -> Result<RefactoringEdit, MoveMemberError> {
-    let (from_path, from_class) =
-        find_file_containing_class(files, &params.from_class)
-            .ok_or_else(|| MoveMemberError::ClassNotFound(params.from_class.clone()))?;
-    let (to_path, to_class) =
-        find_file_containing_class(files, &params.to_class)
-            .ok_or_else(|| MoveMemberError::ClassNotFound(params.to_class.clone()))?;
+    let (from_path, from_class) = find_file_containing_class(files, &params.from_class)
+        .ok_or_else(|| MoveMemberError::ClassNotFound(params.from_class.clone()))?;
+    let (to_path, to_class) = find_file_containing_class(files, &params.to_class)
+        .ok_or_else(|| MoveMemberError::ClassNotFound(params.to_class.clone()))?;
 
     let from_text = files
         .get(&from_path)
         .expect("from_path returned from file map");
-    let to_text = files
-        .get(&to_path)
-        .expect("to_path returned from file map");
+    let to_text = files.get(&to_path).expect("to_path returned from file map");
 
     let method_decl =
         find_method_decl(from_text, &from_class, &params.method_name).ok_or_else(|| {
@@ -487,8 +474,9 @@ pub fn move_method(
     if original_method_text.contains("static") {
         return Err(MoveMemberError::UnsupportedMethod {
             method: params.method_name.clone(),
-            reason: "move_method only supports instance methods (use move_static_member for static)"
-                .into(),
+            reason:
+                "move_method only supports instance methods (use move_static_member for static)"
+                    .into(),
         });
     }
     if original_method_text.contains("super") {
@@ -650,7 +638,10 @@ pub fn move_method(
             let recv = caps.name("recv").unwrap().as_str();
 
             // Skip matches inside the removed method body (otherwise edits can overlap).
-            if path == &from_path && m.start() >= method_decl.range.start && m.end() <= method_decl.range.end {
+            if path == &from_path
+                && m.start() >= method_decl.range.start
+                && m.end() <= method_decl.range.end
+            {
                 continue;
             }
 
@@ -706,4 +697,3 @@ pub fn move_method(
 
     Ok(out)
 }
-

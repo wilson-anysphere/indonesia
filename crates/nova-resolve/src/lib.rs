@@ -4,10 +4,10 @@
 //! simplified `nova-hir` structures and provides name resolution for locals,
 //! members and imports (including the implicit `java.lang.*` import).
 
-pub mod members;
-pub mod scopes;
 pub mod jpms;
 pub mod jpms_env;
+pub mod members;
+pub mod scopes;
 
 pub use members::{complete_member_names, resolve_method_call, CallKind};
 pub use scopes::{

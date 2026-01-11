@@ -17,4 +17,3 @@ pub fn init(config: &NovaConfig, notifier: Arc<dyn Fn(&str) + Send + Sync + 'sta
         notifier,
     );
 }
-

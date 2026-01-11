@@ -1,10 +1,10 @@
+use nova_core::ProjectId;
 use nova_framework::{
     AnalyzerRegistry, CompletionContext, Database as FrameworkDatabase, FrameworkAnalyzer,
     FrameworkData, InlayHint, MemoryDatabase, NavigationTarget, OtherFrameworkData, Symbol,
     VirtualField, VirtualMember,
 };
 use nova_hir::framework::ClassData;
-use nova_core::ProjectId;
 use nova_types::{CompletionItem, Diagnostic, Span, Type};
 
 #[derive(Clone, Copy)]

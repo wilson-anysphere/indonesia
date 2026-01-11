@@ -4,13 +4,13 @@ use std::time::Instant;
 use nova_cache::Fingerprint;
 use nova_syntax::{GreenNode, JavaParseResult, ParseResult};
 
-use crate::FileId;
 use crate::persistence::HasPersistence;
+use crate::FileId;
 
 use super::cancellation as cancel;
-use super::HasFilePaths;
 use super::inputs::NovaInputs;
 use super::stats::HasQueryStats;
+use super::HasFilePaths;
 
 /// The parsed syntax tree type exposed by the database.
 pub type SyntaxTree = GreenNode;

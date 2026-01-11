@@ -1,5 +1,5 @@
-use nova_fuzzy::{FuzzyMatcher, MatchScore};
 use nova_core::{CompletionItem, CompletionItemKind};
+use nova_fuzzy::{FuzzyMatcher, MatchScore};
 
 #[derive(Debug, Clone)]
 struct RankedCompletion {

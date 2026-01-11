@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use futures::future::{BoxFuture, FutureExt};
 
-use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
 use nova_config::AiConfig;
+use nova_core::{CompletionContext, CompletionItem, CompletionItemKind};
 use nova_fuzzy::{FuzzyMatcher, MatchScore};
 
 use crate::util;

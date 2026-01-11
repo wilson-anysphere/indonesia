@@ -37,10 +37,12 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use nova_cache::{AstArtifactCache, CacheConfig, CacheDir, DerivedArtifactCache, FileAstArtifacts, Fingerprint};
+use nova_cache::{
+    AstArtifactCache, CacheConfig, CacheDir, DerivedArtifactCache, FileAstArtifacts, Fingerprint,
+};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -245,38 +247,61 @@ impl Persistence {
         }
 
         let Some(cache) = &self.inner.ast_cache else {
-            self.inner.stats.ast_load_misses.fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .stats
+                .ast_load_misses
+                .fetch_add(1, Ordering::Relaxed);
             return None;
         };
 
         match cache.load(file_path, fingerprint).ok().flatten() {
             Some(artifacts) => {
-                self.inner.stats.ast_load_hits.fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .ast_load_hits
+                    .fetch_add(1, Ordering::Relaxed);
                 Some(artifacts)
             }
             None => {
-                self.inner.stats.ast_load_misses.fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .ast_load_misses
+                    .fetch_add(1, Ordering::Relaxed);
                 None
             }
         }
     }
 
     /// Best-effort store of persisted AST artifacts.
-    pub fn store_ast_artifacts(&self, file_path: &str, fingerprint: &Fingerprint, artifacts: &FileAstArtifacts) {
+    pub fn store_ast_artifacts(
+        &self,
+        file_path: &str,
+        fingerprint: &Fingerprint,
+        artifacts: &FileAstArtifacts,
+    ) {
         if !self.mode().allows_write() {
             return;
         }
         let Some(cache) = &self.inner.ast_cache else {
-            self.inner.stats.ast_store_failure.fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .stats
+                .ast_store_failure
+                .fetch_add(1, Ordering::Relaxed);
             return;
         };
 
         match cache.store(file_path, fingerprint, artifacts) {
             Ok(()) => {
-                self.inner.stats.ast_store_success.fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .ast_store_success
+                    .fetch_add(1, Ordering::Relaxed);
             }
             Err(_) => {
-                self.inner.stats.ast_store_failure.fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .ast_store_failure
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -294,17 +319,30 @@ impl Persistence {
             return None;
         }
         let Some(cache) = &self.inner.derived_cache else {
-            self.inner.stats.derived_load_misses.fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .stats
+                .derived_load_misses
+                .fetch_add(1, Ordering::Relaxed);
             return None;
         };
 
-        match cache.load(query_name, args, input_fingerprints).ok().flatten() {
+        match cache
+            .load(query_name, args, input_fingerprints)
+            .ok()
+            .flatten()
+        {
             Some(value) => {
-                self.inner.stats.derived_load_hits.fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .derived_load_hits
+                    .fetch_add(1, Ordering::Relaxed);
                 Some(value)
             }
             None => {
-                self.inner.stats.derived_load_misses.fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .derived_load_misses
+                    .fetch_add(1, Ordering::Relaxed);
                 None
             }
         }
@@ -322,16 +360,25 @@ impl Persistence {
             return;
         }
         let Some(cache) = &self.inner.derived_cache else {
-            self.inner.stats.derived_store_failure.fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .stats
+                .derived_store_failure
+                .fetch_add(1, Ordering::Relaxed);
             return;
         };
 
         match cache.store(query_name, args, input_fingerprints, value) {
             Ok(()) => {
-                self.inner.stats.derived_store_success.fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .derived_store_success
+                    .fetch_add(1, Ordering::Relaxed);
             }
             Err(_) => {
-                self.inner.stats.derived_store_failure.fetch_add(1, Ordering::Relaxed);
+                self.inner
+                    .stats
+                    .derived_store_failure
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
     }

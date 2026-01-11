@@ -85,9 +85,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
         loop {
             match fs::rename(&tmp_path, path) {
                 Ok(()) => return Ok(()),
-                Err(err)
-                    if err.kind() == io::ErrorKind::AlreadyExists || path.exists() =>
-                {
+                Err(err) if err.kind() == io::ErrorKind::AlreadyExists || path.exists() => {
                     // On Windows, `rename` doesn't overwrite. Under concurrent writers,
                     // multiple `remove + rename` sequences can race; retry until we win.
                     match fs::remove_file(path) {
@@ -118,9 +116,9 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), CacheError> {
 }
 
 fn open_unique_tmp_file(dest: &Path, parent: &Path) -> io::Result<(PathBuf, fs::File)> {
-    let file_name = dest.file_name().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "destination path has no file name")
-    })?;
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "destination path has no file name"))?;
     let pid = std::process::id();
 
     loop {

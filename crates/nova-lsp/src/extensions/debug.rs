@@ -1,12 +1,12 @@
 use crate::{NovaLspError, Result};
 use nova_build::BuildManager;
 use nova_dap::hot_swap::{BuildSystem, CompileError, CompileOutput, CompiledClass, HotSwapEngine};
-use nova_ide::Project;
 use nova_dap::jdwp::{JdwpClient, TcpJdwpClient};
+use nova_ide::Project;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,8 +20,8 @@ pub struct DebugConfigurationsParams {
 }
 
 pub fn handle_debug_configurations(params: serde_json::Value) -> Result<serde_json::Value> {
-    let params: DebugConfigurationsParams =
-        serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let params: DebugConfigurationsParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
     let project = Project::load_from_dir(Path::new(&params.project_root))
         .map_err(|err| NovaLspError::Internal(err.to_string()))?;
@@ -41,8 +41,8 @@ pub struct HotSwapRequestParams {
 }
 
 pub fn handle_hot_swap(params: serde_json::Value) -> Result<serde_json::Value> {
-    let params: HotSwapRequestParams =
-        serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+    let params: HotSwapRequestParams = serde_json::from_value(params)
+        .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
 
     let project_root = PathBuf::from(&params.project_root);
     let project = nova_project::load_project_with_workspace_config(&project_root)
@@ -109,7 +109,11 @@ impl BuildSystem for ProjectHotSwapBuild {
 }
 
 impl ProjectHotSwapBuild {
-    fn outputs_for_build(&self, files: &[PathBuf], build: nova_build::BuildResult) -> Vec<CompileOutput> {
+    fn outputs_for_build(
+        &self,
+        files: &[PathBuf],
+        build: nova_build::BuildResult,
+    ) -> Vec<CompileOutput> {
         let mut error_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
         for diag in build.diagnostics {
             if diag.severity == nova_core::DiagnosticSeverity::Error {
@@ -143,7 +147,10 @@ impl ProjectHotSwapBuild {
             .collect()
     }
 
-    fn compiled_class_for_source(&self, source_file: &Path) -> std::result::Result<CompiledClass, String> {
+    fn compiled_class_for_source(
+        &self,
+        source_file: &Path,
+    ) -> std::result::Result<CompiledClass, String> {
         let source_text = std::fs::read_to_string(source_file)
             .map_err(|err| format!("failed to read {source_file:?}: {err}"))?;
 

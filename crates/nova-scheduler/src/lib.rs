@@ -247,4 +247,3 @@ mod tests {
         assert_eq!(chunk_vec(Vec::<u8>::new(), 3), Vec::<Vec<u8>>::new());
     }
 }
-

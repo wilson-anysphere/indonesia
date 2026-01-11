@@ -35,12 +35,18 @@ async fn jdwp_client_can_handshake_and_fetch_values() {
         _ => panic!("expected object value"),
     };
 
-    let class_id = client.object_reference_reference_type(object_id).await.unwrap();
+    let class_id = client
+        .object_reference_reference_type(object_id)
+        .await
+        .unwrap();
     let fields = client.reference_type_fields(class_id).await.unwrap();
     assert_eq!(fields.len(), 1);
 
     let field_ids: Vec<u64> = fields.iter().map(|f| f.field_id).collect();
-    let field_values = client.object_reference_get_values(object_id, &field_ids).await.unwrap();
+    let field_values = client
+        .object_reference_get_values(object_id, &field_ids)
+        .await
+        .unwrap();
     assert_eq!(field_values.len(), 1);
     assert_eq!(field_values[0], JdwpValue::Int(7));
 }
@@ -74,7 +80,10 @@ async fn jdwp_client_redefine_class_by_name_succeeds_and_records_payload() {
 
     // The mock server only knows about `Lcom/example/Foo;`, so a successful redefine
     // implies the client performed the correct name -> signature conversion.
-    let infos = client.classes_by_signature("Lcom/example/Foo;").await.unwrap();
+    let infos = client
+        .classes_by_signature("Lcom/example/Foo;")
+        .await
+        .unwrap();
     assert_eq!(infos.len(), 1);
 
     let calls = server.redefine_classes_calls().await;

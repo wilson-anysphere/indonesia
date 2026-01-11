@@ -28,8 +28,11 @@ impl SyntaxTreeStore {
             tracker: OnceLock::new(),
         });
 
-        let registration =
-            manager.register_evictor(store.name.clone(), MemoryCategory::SyntaxTrees, store.clone());
+        let registration = manager.register_evictor(
+            store.name.clone(),
+            MemoryCategory::SyntaxTrees,
+            store.clone(),
+        );
         store
             .tracker
             .set(registration.tracker())
@@ -65,12 +68,11 @@ impl SyntaxTreeStore {
     }
 
     fn update_tracker_locked(&self, inner: &HashMap<FileId, Arc<ParseResult>>) {
-        let Some(tracker) = self.tracker.get() else { return };
+        let Some(tracker) = self.tracker.get() else {
+            return;
+        };
         // Approximate parse memory by source length (stored in the root node).
-        let total: u64 = inner
-            .values()
-            .map(|parse| parse.root.text_len as u64)
-            .sum();
+        let total: u64 = inner.values().map(|parse| parse.root.text_len as u64).sum();
         tracker.set_bytes(total);
     }
 }
@@ -106,4 +108,3 @@ impl MemoryEvictor for SyntaxTreeStore {
         }
     }
 }
-

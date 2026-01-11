@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
-use rowan::{GreenNode, GreenNodeBuilder};
 #[cfg(test)]
 use rowan::NodeOrToken;
+use rowan::{GreenNode, GreenNodeBuilder};
 use text_size::TextSize;
 
 use crate::lexer::{lex, Token};
@@ -95,7 +95,10 @@ impl<'a> Parser<'a> {
         }
         self.expect(SyntaxKind::PackageKw, "expected `package`");
         self.parse_name();
-        self.expect(SyntaxKind::Semicolon, "expected `;` after package declaration");
+        self.expect(
+            SyntaxKind::Semicolon,
+            "expected `;` after package declaration",
+        );
         self.builder.finish_node();
     }
 
@@ -112,7 +115,10 @@ impl<'a> Parser<'a> {
             self.bump(); // .
             self.bump(); // *
         }
-        self.expect(SyntaxKind::Semicolon, "expected `;` after import declaration");
+        self.expect(
+            SyntaxKind::Semicolon,
+            "expected `;` after import declaration",
+        );
         self.builder.finish_node();
     }
 
@@ -124,21 +130,22 @@ impl<'a> Parser<'a> {
 
     fn parse_type_declaration_inner(&mut self, checkpoint: rowan::Checkpoint) {
         match self.current() {
-             SyntaxKind::At if self.nth(1) == Some(SyntaxKind::InterfaceKw) => {
-                 self.parse_annotation_type_decl(checkpoint)
-             }
+            SyntaxKind::At if self.nth(1) == Some(SyntaxKind::InterfaceKw) => {
+                self.parse_annotation_type_decl(checkpoint)
+            }
             SyntaxKind::ClassKw => self.parse_class_decl(checkpoint),
             SyntaxKind::InterfaceKw => self.parse_interface_decl(checkpoint),
-             SyntaxKind::EnumKw => self.parse_enum_decl(checkpoint),
-             SyntaxKind::RecordKw => self.parse_record_decl(checkpoint),
-             SyntaxKind::Semicolon => {
-                 self.builder
-                     .start_node_at(checkpoint, SyntaxKind::EmptyDeclaration.into());
+            SyntaxKind::EnumKw => self.parse_enum_decl(checkpoint),
+            SyntaxKind::RecordKw => self.parse_record_decl(checkpoint),
+            SyntaxKind::Semicolon => {
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::EmptyDeclaration.into());
                 self.bump();
                 self.builder.finish_node();
             }
             _ => {
-                self.builder.start_node_at(checkpoint, SyntaxKind::Error.into());
+                self.builder
+                    .start_node_at(checkpoint, SyntaxKind::Error.into());
                 self.error_here("expected type declaration");
                 self.recover_to(&[
                     SyntaxKind::PackageKw,
@@ -154,15 +161,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-     fn parse_annotation_type_decl(&mut self, checkpoint: rowan::Checkpoint) {
-         self.builder
-             .start_node_at(checkpoint, SyntaxKind::AnnotationTypeDeclaration.into());
-         self.expect(SyntaxKind::At, "expected `@`");
-         self.expect(SyntaxKind::InterfaceKw, "expected `interface` after `@`");
-         self.expect_ident_like("expected annotation type name");
-         self.parse_class_body(SyntaxKind::AnnotationBody);
-         self.builder.finish_node();
-     }
+    fn parse_annotation_type_decl(&mut self, checkpoint: rowan::Checkpoint) {
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::AnnotationTypeDeclaration.into());
+        self.expect(SyntaxKind::At, "expected `@`");
+        self.expect(SyntaxKind::InterfaceKw, "expected `interface` after `@`");
+        self.expect_ident_like("expected annotation type name");
+        self.parse_class_body(SyntaxKind::AnnotationBody);
+        self.builder.finish_node();
+    }
 
     fn parse_class_decl(&mut self, checkpoint: rowan::Checkpoint) {
         self.builder
@@ -220,7 +227,10 @@ impl<'a> Parser<'a> {
         self.expect(SyntaxKind::Less, "expected `<`");
         while !matches!(
             self.current(),
-            SyntaxKind::Greater | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift | SyntaxKind::Eof
+            SyntaxKind::Greater
+                | SyntaxKind::RightShift
+                | SyntaxKind::UnsignedRightShift
+                | SyntaxKind::Eof
         ) {
             self.builder.start_node(SyntaxKind::TypeParameter.into());
 
@@ -436,7 +446,10 @@ impl<'a> Parser<'a> {
         // Nested types.
         if matches!(
             self.current(),
-            SyntaxKind::ClassKw | SyntaxKind::InterfaceKw | SyntaxKind::EnumKw | SyntaxKind::RecordKw
+            SyntaxKind::ClassKw
+                | SyntaxKind::InterfaceKw
+                | SyntaxKind::EnumKw
+                | SyntaxKind::RecordKw
         ) || (self.at(SyntaxKind::At) && self.nth(1) == Some(SyntaxKind::InterfaceKw))
         {
             self.parse_type_declaration_inner(checkpoint);
@@ -506,14 +519,18 @@ impl<'a> Parser<'a> {
                 self.builder
                     .start_node_at(checkpoint, SyntaxKind::FieldDeclaration.into());
                 self.parse_variable_declarator_list();
-                self.expect(SyntaxKind::Semicolon, "expected `;` after field declaration");
+                self.expect(
+                    SyntaxKind::Semicolon,
+                    "expected `;` after field declaration",
+                );
                 self.builder.finish_node();
             }
             return;
         }
 
         // Give up: recover.
-        self.builder.start_node_at(checkpoint, SyntaxKind::Error.into());
+        self.builder
+            .start_node_at(checkpoint, SyntaxKind::Error.into());
         self.error_here("unexpected token in class body");
         self.recover_to_class_member_boundary();
         self.builder.finish_node();
@@ -579,7 +596,10 @@ impl<'a> Parser<'a> {
     fn parse_name(&mut self) {
         self.builder.start_node(SyntaxKind::Name.into());
         self.expect_ident_like("expected name");
-        while self.at(SyntaxKind::Dot) && self.nth(1).map_or(false, |k| k.is_identifier_like() || k == SyntaxKind::Star)
+        while self.at(SyntaxKind::Dot)
+            && self
+                .nth(1)
+                .map_or(false, |k| k.is_identifier_like() || k == SyntaxKind::Star)
         {
             self.bump(); // .
             if self.at(SyntaxKind::Star) {
@@ -923,10 +943,7 @@ impl<'a> Parser<'a> {
             self.bump();
             true
         } else {
-            self.expect(
-                SyntaxKind::Colon,
-                "expected `:` or `->` after switch label",
-            );
+            self.expect(SyntaxKind::Colon, "expected `:` or `->` after switch label");
             false
         };
 
@@ -994,7 +1011,10 @@ impl<'a> Parser<'a> {
             }
             break;
         }
-        self.expect(SyntaxKind::RParen, "expected `)` after resource specification");
+        self.expect(
+            SyntaxKind::RParen,
+            "expected `)` after resource specification",
+        );
         self.builder.finish_node(); // ResourceSpecification
     }
 
@@ -1086,7 +1106,8 @@ impl<'a> Parser<'a> {
         } else {
             self.builder.start_node(SyntaxKind::NamedType.into());
             self.expect_ident_like("expected type name");
-            while self.at(SyntaxKind::Dot) && self.nth(1).map_or(false, |k| k.is_identifier_like()) {
+            while self.at(SyntaxKind::Dot) && self.nth(1).map_or(false, |k| k.is_identifier_like())
+            {
                 self.bump();
                 self.expect_ident_like("expected type name segment");
             }
@@ -1107,7 +1128,10 @@ impl<'a> Parser<'a> {
         self.expect(SyntaxKind::Less, "expected `<`");
         while !matches!(
             self.current(),
-            SyntaxKind::Greater | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift | SyntaxKind::Eof
+            SyntaxKind::Greater
+                | SyntaxKind::RightShift
+                | SyntaxKind::UnsignedRightShift
+                | SyntaxKind::Eof
         ) {
             self.builder.start_node(SyntaxKind::TypeArgument.into());
             if self.at(SyntaxKind::Question) {
@@ -1281,7 +1305,8 @@ impl<'a> Parser<'a> {
                     self.builder
                         .start_node_at(checkpoint, SyntaxKind::NameExpression.into());
                     self.bump();
-                    while self.at(SyntaxKind::Dot) && self.nth(1).map_or(false, |k| k.is_identifier_like())
+                    while self.at(SyntaxKind::Dot)
+                        && self.nth(1).map_or(false, |k| k.is_identifier_like())
                     {
                         self.bump();
                         self.bump();
@@ -1331,7 +1356,8 @@ impl<'a> Parser<'a> {
                     if min_bp > 120 {
                         break;
                     }
-                    self.builder.start_node_at(checkpoint, SyntaxKind::MethodCallExpression.into());
+                    self.builder
+                        .start_node_at(checkpoint, SyntaxKind::MethodCallExpression.into());
                     self.parse_argument_list();
                     self.builder.finish_node();
                     continue;
@@ -1515,7 +1541,11 @@ impl<'a> Parser<'a> {
                 Some(SyntaxKind::At) => {
                     // Skip `@Name(...)` very loosely.
                     i = skip_trivia(&self.tokens, i + 1);
-                    if self.tokens.get(i).map_or(false, |t| t.kind.is_identifier_like()) {
+                    if self
+                        .tokens
+                        .get(i)
+                        .map_or(false, |t| t.kind.is_identifier_like())
+                    {
                         i += 1;
                         loop {
                             let dot = skip_trivia(&self.tokens, i);
@@ -1692,7 +1722,10 @@ impl<'a> Parser<'a> {
                 break;
             }
             // `@interface` starts an annotation type declaration, not a package annotation.
-            if self.tokens.get(skip_trivia(&self.tokens, i + 1)).map(|t| t.kind)
+            if self
+                .tokens
+                .get(skip_trivia(&self.tokens, i + 1))
+                .map(|t| t.kind)
                 == Some(SyntaxKind::InterfaceKw)
             {
                 return false;
@@ -1718,7 +1751,10 @@ impl<'a> Parser<'a> {
 
     fn current(&mut self) -> SyntaxKind {
         self.eat_trivia();
-        self.tokens.front().map(|t| t.kind).unwrap_or(SyntaxKind::Eof)
+        self.tokens
+            .front()
+            .map(|t| t.kind)
+            .unwrap_or(SyntaxKind::Eof)
     }
 
     fn nth(&mut self, n: usize) -> Option<SyntaxKind> {
@@ -1792,13 +1828,10 @@ impl<'a> Parser<'a> {
 
     fn current_range(&mut self) -> TextRange {
         self.eat_trivia();
-        self.tokens
-            .front()
-            .map(|t| t.range)
-            .unwrap_or_else(|| {
-                let end = self.input.len() as u32;
-                TextRange { start: end, end }
-            })
+        self.tokens.front().map(|t| t.range).unwrap_or_else(|| {
+            let end = self.input.len() as u32;
+            TextRange { start: end, end }
+        })
     }
 }
 
@@ -1860,7 +1893,10 @@ fn skip_annotation(tokens: &VecDeque<Token>, idx: usize) -> usize {
             break;
         }
         let seg = skip_trivia(tokens, dot + 1);
-        if !tokens.get(seg).map_or(false, |t| t.kind.is_identifier_like()) {
+        if !tokens
+            .get(seg)
+            .map_or(false, |t| t.kind.is_identifier_like())
+        {
             i = dot;
             break;
         }
@@ -1969,14 +2005,18 @@ fn infix_binding_power(op: SyntaxKind) -> Option<(u8, u8, SyntaxKind)> {
     // Returns (left_bp, right_bp, node_kind).
     // Larger = tighter binding.
     let (l, r, kind) = match op {
-        SyntaxKind::Star | SyntaxKind::Slash | SyntaxKind::Percent => (70, 71, SyntaxKind::BinaryExpression),
+        SyntaxKind::Star | SyntaxKind::Slash | SyntaxKind::Percent => {
+            (70, 71, SyntaxKind::BinaryExpression)
+        }
         SyntaxKind::Plus | SyntaxKind::Minus => (60, 61, SyntaxKind::BinaryExpression),
         SyntaxKind::LeftShift | SyntaxKind::RightShift | SyntaxKind::UnsignedRightShift => {
             (55, 56, SyntaxKind::BinaryExpression)
         }
-        SyntaxKind::Less | SyntaxKind::LessEq | SyntaxKind::Greater | SyntaxKind::GreaterEq | SyntaxKind::InstanceofKw => {
-            (50, 51, SyntaxKind::BinaryExpression)
-        }
+        SyntaxKind::Less
+        | SyntaxKind::LessEq
+        | SyntaxKind::Greater
+        | SyntaxKind::GreaterEq
+        | SyntaxKind::InstanceofKw => (50, 51, SyntaxKind::BinaryExpression),
         SyntaxKind::EqEq | SyntaxKind::BangEq => (45, 46, SyntaxKind::BinaryExpression),
         SyntaxKind::Amp => (40, 41, SyntaxKind::BinaryExpression),
         SyntaxKind::Caret => (39, 40, SyntaxKind::BinaryExpression),

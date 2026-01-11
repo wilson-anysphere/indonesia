@@ -136,13 +136,8 @@ impl ExtractMethod {
         let enclosing_block = smallest_enclosing_block(method_body, selection)
             .ok_or("selection must be inside a block")?;
 
-        let (region, extracted_nodes) =
-            classify_selection(source, enclosing_block, selection).unwrap_or_else(|| {
-                (
-                    ExtractRegionKind::Statements,
-                    ExtractedNodes::Invalid,
-                )
-            });
+        let (region, extracted_nodes) = classify_selection(source, enclosing_block, selection)
+            .unwrap_or_else(|| (ExtractRegionKind::Statements, ExtractedNodes::Invalid));
 
         if matches!(extracted_nodes, ExtractedNodes::Invalid) {
             issues.push(ExtractMethodIssue::InvalidSelection);
@@ -150,7 +145,13 @@ impl ExtractMethod {
 
         let mut hazards = Vec::new();
         let mut thrown_exceptions = Vec::new();
-        collect_control_flow_and_exceptions(source, root, selection, &mut hazards, &mut thrown_exceptions);
+        collect_control_flow_and_exceptions(
+            source,
+            root,
+            selection,
+            &mut hazards,
+            &mut thrown_exceptions,
+        );
 
         for hazard in &hazards {
             match hazard {
@@ -162,12 +163,9 @@ impl ExtractMethod {
         }
 
         let locals = collect_method_locals_and_params(source, method);
-        let defined_in_selection =
-            collect_definitions_in_range(source, root, selection);
-        let reads_in_selection =
-            collect_reads_in_range(source, root, selection, &locals.names);
-        let writes_in_selection =
-            collect_writes_in_range(source, root, selection, &locals.names);
+        let defined_in_selection = collect_definitions_in_range(source, root, selection);
+        let reads_in_selection = collect_reads_in_range(source, root, selection, &locals.names);
+        let writes_in_selection = collect_writes_in_range(source, root, selection, &locals.names);
 
         let reads_after = collect_reads_in_range(
             source,
@@ -190,7 +188,9 @@ impl ExtractMethod {
                 let ty = match locals.types.get(name).cloned() {
                     Some(ty) => ty,
                     None => {
-                        issues.push(ExtractMethodIssue::UnknownType { name: (*name).clone() });
+                        issues.push(ExtractMethodIssue::UnknownType {
+                            name: (*name).clone(),
+                        });
                         "Object".to_string()
                     }
                 };
@@ -241,7 +241,10 @@ impl ExtractMethod {
     pub fn apply(&self, source: &str) -> Result<Vec<TextEdit>, String> {
         let analysis = self.analyze(source)?;
         if !analysis.is_extractable() {
-            return Err(format!("extract method is not applicable: {:?}", analysis.issues));
+            return Err(format!(
+                "extract method is not applicable: {:?}",
+                analysis.issues
+            ));
         }
 
         let selection = trim_range(source, self.selection);
@@ -282,18 +285,18 @@ impl ExtractMethod {
         };
 
         let extracted_text = match &extracted_nodes {
-            ExtractedNodes::Statements(range) | ExtractedNodes::Expression(range) => {
-                source
-                    .get(range.start..range.end)
-                    .ok_or("selection out of bounds")?
-                    .to_string()
-            }
+            ExtractedNodes::Statements(range) | ExtractedNodes::Expression(range) => source
+                .get(range.start..range.end)
+                .ok_or("selection out of bounds")?
+                .to_string(),
             ExtractedNodes::Invalid => return Err("invalid selection".into()),
         };
 
         let new_body_indent = format!("{method_indent}    ");
         let extracted_body = match analysis.region {
-            ExtractRegionKind::Statements => reindent(&extracted_text, &call_indent, &new_body_indent),
+            ExtractRegionKind::Statements => {
+                reindent(&extracted_text, &call_indent, &new_body_indent)
+            }
             ExtractRegionKind::Expression => {
                 // Expression extraction: wrap in `return`.
                 let expr = extracted_text.trim().to_string();
@@ -434,10 +437,7 @@ fn indentation_at(source: &str, offset: usize) -> String {
 }
 
 fn line_start_offset(source: &str, offset: usize) -> usize {
-    source[..offset]
-        .rfind('\n')
-        .map(|i| i + 1)
-        .unwrap_or(0)
+    source[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0)
 }
 
 fn class_has_method_named(source: &str, class: Node<'_>, name: &str) -> bool {
@@ -470,7 +470,9 @@ fn smallest_enclosing_block<'a>(method_body: Node<'a>, selection: TextRange) -> 
         {
             let replace = match best {
                 None => true,
-                Some(prev) => (node.end_byte() - node.start_byte()) < (prev.end_byte() - prev.start_byte()),
+                Some(prev) => {
+                    (node.end_byte() - node.start_byte()) < (prev.end_byte() - prev.start_byte())
+                }
             };
             if replace {
                 best = Some(node);
@@ -574,19 +576,17 @@ fn collect_control_flow_and_exceptions(
     hazards: &mut Vec<ControlFlowHazard>,
     thrown: &mut Vec<String>,
 ) {
-    walk_nodes_in_range(root, selection, &mut |node| {
-        match node.kind() {
-            "return_statement" => hazards.push(ControlFlowHazard::Return),
-            "break_statement" => hazards.push(ControlFlowHazard::Break),
-            "continue_statement" => hazards.push(ControlFlowHazard::Continue),
-            "throw_statement" => {
-                hazards.push(ControlFlowHazard::Throw);
-                if let Some(exc) = thrown_exception_type(source, node) {
-                    thrown.push(exc);
-                }
+    walk_nodes_in_range(root, selection, &mut |node| match node.kind() {
+        "return_statement" => hazards.push(ControlFlowHazard::Return),
+        "break_statement" => hazards.push(ControlFlowHazard::Break),
+        "continue_statement" => hazards.push(ControlFlowHazard::Continue),
+        "throw_statement" => {
+            hazards.push(ControlFlowHazard::Throw);
+            if let Some(exc) = thrown_exception_type(source, node) {
+                thrown.push(exc);
             }
-            _ => {}
         }
+        _ => {}
     });
 }
 
@@ -604,42 +604,41 @@ fn collect_method_locals_and_params(source: &str, method: Node<'_>) -> Locals {
     let mut names = HashSet::new();
     let mut types = HashMap::new();
 
-    walk(method, &mut |node| {
-        match node.kind() {
-            "formal_parameter" => {
-                if let (Some(ty), Some(name)) =
-                    (node.child_by_field_name("type"), node.child_by_field_name("name"))
-                {
-                    let name = node_text(source, name);
-                    let ty_text = node_text(source, ty);
-                    names.insert(name.clone());
-                    if ty_text.trim() != "var" {
-                        types.insert(name, ty_text);
-                    }
-                }
-            }
-            "local_variable_declaration" => {
-                let Some(ty) = node.child_by_field_name("type") else {
-                    return;
-                };
+    walk(method, &mut |node| match node.kind() {
+        "formal_parameter" => {
+            if let (Some(ty), Some(name)) = (
+                node.child_by_field_name("type"),
+                node.child_by_field_name("name"),
+            ) {
+                let name = node_text(source, name);
                 let ty_text = node_text(source, ty);
-                let mut decl_cursor = node.walk();
-                for child in node.named_children(&mut decl_cursor) {
-                    if child.kind() != "variable_declarator" {
-                        continue;
-                    }
-                    let Some(name) = child.child_by_field_name("name") else {
-                        continue;
-                    };
-                    let name = node_text(source, name);
-                    names.insert(name.clone());
-                    if ty_text.trim() != "var" {
-                        types.insert(name, ty_text.clone());
-                    }
+                names.insert(name.clone());
+                if ty_text.trim() != "var" {
+                    types.insert(name, ty_text);
                 }
             }
-            _ => {}
         }
+        "local_variable_declaration" => {
+            let Some(ty) = node.child_by_field_name("type") else {
+                return;
+            };
+            let ty_text = node_text(source, ty);
+            let mut decl_cursor = node.walk();
+            for child in node.named_children(&mut decl_cursor) {
+                if child.kind() != "variable_declarator" {
+                    continue;
+                }
+                let Some(name) = child.child_by_field_name("name") else {
+                    continue;
+                };
+                let name = node_text(source, name);
+                names.insert(name.clone());
+                if ty_text.trim() != "var" {
+                    types.insert(name, ty_text.clone());
+                }
+            }
+        }
+        _ => {}
     });
 
     Locals { names, types }

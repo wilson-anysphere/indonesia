@@ -145,7 +145,10 @@ impl DependencyIndexStore {
 
     /// Load a dependency index bundle, returning `Ok(None)` for cache misses,
     /// incompatibility, or corruption.
-    pub fn try_load(&self, jar_sha256: &str) -> Result<Option<DependencyIndexBundle>, DepsCacheError> {
+    pub fn try_load(
+        &self,
+        jar_sha256: &str,
+    ) -> Result<Option<DependencyIndexBundle>, DepsCacheError> {
         let path = self.bundle_path(jar_sha256);
 
         let archive = match nova_storage::PersistedArchive::<DependencyIndexBundle>::open_optional(

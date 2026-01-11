@@ -26,10 +26,10 @@ pub use ai::{
     COMMAND_EXPLAIN_ERROR, COMMAND_GENERATE_METHOD_BODY, COMMAND_GENERATE_TESTS,
 };
 pub use completion::filter_and_rank_completions;
-pub use nova_core::CompletionItem;
 pub use decompile::{decompiled_definition_location, DefinitionLocation};
 pub use diagnostics::{Diagnostic, DiagnosticKind, DiagnosticSeverity, DiagnosticsEngine};
 pub use format::Formatter;
+pub use nova_core::CompletionItem;
 pub use project::{
     DebugConfiguration, DebugConfigurationKind, DebugConfigurationRequest, JavaClassInfo, Project,
     ProjectDiscoveryError,
@@ -53,9 +53,9 @@ pub mod spring {
 pub mod micronaut {
     pub use nova_framework_micronaut::{
         analyze_sources, analyze_sources_with_config, collect_config_keys,
-        completions_for_value_placeholder, config_completions, validation_diagnostics, AnalysisResult,
-        Bean, BeanKind, ConfigFile, ConfigFileKind, Endpoint, HandlerLocation, InjectionPoint,
-        InjectionResolution, JavaSource, MicronautAnalyzer, Qualifier,
+        completions_for_value_placeholder, config_completions, validation_diagnostics,
+        AnalysisResult, Bean, BeanKind, ConfigFile, ConfigFileKind, Endpoint, HandlerLocation,
+        InjectionPoint, InjectionResolution, JavaSource, MicronautAnalyzer, Qualifier,
         MICRONAUT_VALIDATION_CONSTRAINT_MISMATCH, MICRONAUT_VALIDATION_PRIMITIVE_NONNULL,
     };
 }

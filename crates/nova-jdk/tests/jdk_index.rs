@@ -2,8 +2,8 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
 use nova_config::NovaConfig;
+use nova_core::{JdkConfig, Name, StaticMemberId, TypeIndex, TypeName};
 use nova_jdk::{IndexingStats, JdkIndex, JdkInstallation};
 use nova_modules::ModuleName;
 use nova_types::TypeProvider;
@@ -82,10 +82,15 @@ fn loads_java_lang_string_from_test_jmod() -> Result<(), Box<dyn std::error::Err
     );
 
     assert!(index.lookup_type("java/lang/String")?.is_some());
-    assert!(index.lookup_type("String")?.is_some(), "universe-scope lookup");
+    assert!(
+        index.lookup_type("String")?.is_some(),
+        "universe-scope lookup"
+    );
 
     let java_lang = index.java_lang_symbols()?;
-    assert!(java_lang.iter().any(|t| t.binary_name == "java.lang.String"));
+    assert!(java_lang
+        .iter()
+        .any(|t| t.binary_name == "java.lang.String"));
 
     let string_module = index
         .module_of_type("java.lang.String")
@@ -177,9 +182,7 @@ fn discovery_prefers_config_override() -> Result<(), Box<dyn std::error::Error>>
     // to win.
     let bogus = fake.join("bogus");
     let _java_home = EnvVarGuard::set("JAVA_HOME", &bogus);
-    let cfg = JdkConfig {
-        home: Some(fake),
-    };
+    let cfg = JdkConfig { home: Some(fake) };
 
     let install = JdkInstallation::discover(Some(&cfg))?;
     assert_eq!(install.root(), cfg.home.as_deref().unwrap());
@@ -240,8 +243,8 @@ fn discovery_coerces_java_home_jre_subdir() -> Result<(), Box<dyn std::error::Er
 
 #[cfg(not(windows))]
 #[test]
-fn discovery_falls_back_to_java_on_path_via_java_home_property() -> Result<(), Box<dyn std::error::Error>>
-{
+fn discovery_falls_back_to_java_on_path_via_java_home_property(
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
     let _guard = ENV_LOCK.lock().unwrap();
@@ -287,8 +290,8 @@ fn discovery_falls_back_to_java_on_path_via_java_home_property() -> Result<(), B
 
 #[cfg(not(windows))]
 #[test]
-fn discovery_falls_back_to_java_on_path_via_symlink_resolution() -> Result<(), Box<dyn std::error::Error>>
-{
+fn discovery_falls_back_to_java_on_path_via_symlink_resolution(
+) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
 
     let _guard = ENV_LOCK.lock().unwrap();

@@ -137,4 +137,3 @@ fn successful_resolution_produces_navigation_links() {
         "expected provider -> injection navigation link"
     );
 }
-

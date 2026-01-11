@@ -109,11 +109,7 @@ fn fingerprint_changes_on_maven_extensions_xml_edit() {
 
     let fp1 =
         BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
-    std::fs::write(
-        &extensions,
-        "<extensions><!--changed--></extensions>\n",
-    )
-    .unwrap();
+    std::fs::write(&extensions, "<extensions><!--changed--></extensions>\n").unwrap();
     let fp2 =
         BuildFileFingerprint::from_files(&root, collect_maven_build_files(&root).unwrap()).unwrap();
 

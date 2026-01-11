@@ -143,7 +143,8 @@ pub fn enumerate_step_in_targets_in_line(line: &str) -> Vec<StepInTarget> {
             .then_with(|| a.name_start.cmp(&b.name_start))
     });
 
-    calls.into_iter()
+    calls
+        .into_iter()
         .enumerate()
         .map(|(idx, call)| StepInTarget {
             id: idx as i64,

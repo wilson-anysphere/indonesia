@@ -109,8 +109,9 @@ pub fn generate_method_body_action(args: GenerateMethodBodyArgs) -> NovaCodeActi
         kind: CODE_ACTION_KIND_AI_GENERATE,
         command: NovaCommand {
             name: COMMAND_GENERATE_METHOD_BODY.to_string(),
-            arguments: vec![serde_json::to_value(args)
-                .expect("GenerateMethodBodyArgs is serializable")],
+            arguments: vec![
+                serde_json::to_value(args).expect("GenerateMethodBodyArgs is serializable")
+            ],
         },
     }
 }
@@ -137,8 +138,14 @@ mod tests {
             code: Some("foo.bar()".to_string()),
             uri: Some("file:///Test.java".to_string()),
             range: Some(LspRange {
-                start: LspPosition { line: 0, character: 0 },
-                end: LspPosition { line: 0, character: 10 },
+                start: LspPosition {
+                    line: 0,
+                    character: 0,
+                },
+                end: LspPosition {
+                    line: 0,
+                    character: 10,
+                },
             }),
         });
 

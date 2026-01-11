@@ -42,7 +42,9 @@ impl ValueFormatter {
 
         Ok(FormattedValue {
             value: display,
-            type_name: static_type.map(|s| s.to_string()).or_else(|| value_type_name(value)),
+            type_name: static_type
+                .map(|s| s.to_string())
+                .or_else(|| value_type_name(value)),
             variables_reference,
             presentation_hint,
         })
@@ -66,7 +68,9 @@ impl ValueFormatter {
             JdwpValue::Float(v) => Ok((trim_float(*v as f64), 0, None)),
             JdwpValue::Double(v) => Ok((trim_float(*v), 0, None)),
             JdwpValue::Char(c) => Ok((format!("'{c}'"), 0, None)),
-            JdwpValue::Object(obj) => self.format_object(jdwp, objects, obj.id, &obj.runtime_type, depth),
+            JdwpValue::Object(obj) => {
+                self.format_object(jdwp, objects, obj.id, &obj.runtime_type, depth)
+            }
         }
     }
 
@@ -82,7 +86,11 @@ impl ValueFormatter {
         let variables_reference = handle.as_variables_reference();
 
         if depth >= self.max_preview_depth {
-            return Ok((format!("{}{handle}", simple_type_name(runtime_type)), variables_reference, None));
+            return Ok((
+                format!("{}{handle}", simple_type_name(runtime_type)),
+                variables_reference,
+                None,
+            ));
         }
 
         let preview = match jdwp.preview_object(object_id) {

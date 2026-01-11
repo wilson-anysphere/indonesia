@@ -1,6 +1,6 @@
 use insta::assert_snapshot;
-use nova_format::{edits_for_range_formatting, format_java, FormatConfig};
 use nova_core::{apply_text_edits, LineIndex, Position, Range};
+use nova_format::{edits_for_range_formatting, format_java, FormatConfig};
 use nova_syntax::parse;
 use pretty_assertions::assert_eq;
 

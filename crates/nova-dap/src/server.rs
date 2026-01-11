@@ -7,14 +7,14 @@ use crate::smart_step_into::enumerate_step_in_targets_in_line;
 use crate::stream_debug::{run_stream_debug, StreamDebugArguments, STREAM_DEBUG_COMMAND};
 use anyhow::Context;
 use nova_db::InMemoryFileStore;
-use nova_project::{AttachConfig, LaunchConfig};
 use nova_jdwp::{JdwpClient, JdwpEvent, TcpJdwpClient};
+use nova_project::{AttachConfig, LaunchConfig};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::{BufReader, BufWriter, Write};
-use std::path::PathBuf;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 
 struct Outgoing {
     messages: Vec<serde_json::Value>,
@@ -71,8 +71,9 @@ impl<C: JdwpClient> DapServer<C> {
         let mut writer = BufWriter::new(stdout.lock());
 
         while let Some(request) = read_json_message::<_, Request>(&mut reader)? {
-            let outgoing = match std::panic::catch_unwind(AssertUnwindSafe(|| self.handle_request(&request)))
-            {
+            let outgoing = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+                self.handle_request(&request)
+            })) {
                 Ok(Ok(outgoing)) => outgoing,
                 Ok(Err(err)) => Outgoing {
                     messages: vec![serde_json::to_value(Response::error(
@@ -187,7 +188,10 @@ impl<C: JdwpClient> DapServer<C> {
         let initialized_event = Event::new(self.alloc_seq(), "initialized", None);
 
         Ok(Outgoing {
-            messages: vec![serde_json::to_value(response)?, serde_json::to_value(initialized_event)?],
+            messages: vec![
+                serde_json::to_value(response)?,
+                serde_json::to_value(initialized_event)?,
+            ],
             wait_for_stop: false,
         })
     }
@@ -268,18 +272,19 @@ impl<C: JdwpClient> DapServer<C> {
             let mut verified = bp.verified;
             let mut message: Option<String> = None;
             if verified {
-                    if let Some(class) = &bp.enclosing_class {
-                        if let Err(err) =
-                            self.session
-                                .jdwp_mut()
-                                .set_line_breakpoint(class, bp.enclosing_method.as_deref(), bp.resolved_line)
-                        {
-                            verified = false;
-                            message = Some(err.to_string());
-                        }
+                if let Some(class) = &bp.enclosing_class {
+                    if let Err(err) = self.session.jdwp_mut().set_line_breakpoint(
+                        class,
+                        bp.enclosing_method.as_deref(),
+                        bp.resolved_line,
+                    ) {
+                        verified = false;
+                        message = Some(err.to_string());
+                    }
                 } else {
                     verified = false;
-                    message = Some("Unable to determine enclosing class for breakpoint".to_string());
+                    message =
+                        Some("Unable to determine enclosing class for breakpoint".to_string());
                 }
             }
             let mut breakpoint = serde_json::Map::new();
@@ -351,7 +356,10 @@ impl<C: JdwpClient> DapServer<C> {
         self.frame_threads.clear();
         for frame in frames {
             let dap_frame_id = self.alloc_frame_id(frame.id);
-            let source = frame.source_path.as_ref().map(|name| json!({ "name": name }));
+            let source = frame
+                .source_path
+                .as_ref()
+                .map(|name| json!({ "name": name }));
             dap_frames.push(json!({
                 "id": dap_frame_id,
                 "name": frame.name,
@@ -531,7 +539,10 @@ impl<C: JdwpClient> DapServer<C> {
         )?;
 
         let Some(dap_frame_id) = args.frame_id else {
-            return self.simple_ok(request, Some(json!({ "error": "streamDebug requires a frameId" })));
+            return self.simple_ok(
+                request,
+                Some(json!({ "error": "streamDebug requires a frameId" })),
+            );
         };
 
         let Some(jdwp_frame_id) = self.frame_ids.get(&dap_frame_id).copied() else {
@@ -539,7 +550,12 @@ impl<C: JdwpClient> DapServer<C> {
         };
 
         let cfg = args.into_config();
-        match run_stream_debug(self.session.jdwp_mut(), jdwp_frame_id, &args.expression, cfg) {
+        match run_stream_debug(
+            self.session.jdwp_mut(),
+            jdwp_frame_id,
+            &args.expression,
+            cfg,
+        ) {
             Ok(body) => self.simple_ok(request, Some(serde_json::to_value(body)?)),
             Err(err) => self.simple_ok(request, Some(json!({ "error": err.to_string() }))),
         }
@@ -560,7 +576,9 @@ impl<C: JdwpClient> DapServer<C> {
             .transpose()?
             .unwrap_or(Args { thread_id: None });
 
-        let jdwp_thread_id = args.thread_id.and_then(|id| self.thread_ids.get(&id).copied());
+        let jdwp_thread_id = args
+            .thread_id
+            .and_then(|id| self.thread_ids.get(&id).copied());
 
         if let Some(thread_id) = jdwp_thread_id {
             let _ = match request.command.as_str() {
@@ -681,7 +699,11 @@ impl<C: JdwpClient> DapServer<C> {
         Ok(outgoing)
     }
 
-    fn simple_ok(&mut self, request: &Request, body: Option<serde_json::Value>) -> anyhow::Result<Outgoing> {
+    fn simple_ok(
+        &mut self,
+        request: &Request,
+        body: Option<serde_json::Value>,
+    ) -> anyhow::Result<Outgoing> {
         let response = Response::success(self.alloc_seq(), request, body);
         Ok(Outgoing {
             messages: vec![serde_json::to_value(response)?],
@@ -730,11 +752,13 @@ impl<C: JdwpClient> DapServer<C> {
                             serde_json::to_value(Event::new(
                                 self.alloc_seq(),
                                 "output",
-                                Some(serde_json::to_value(crate::dap::types::OutputEvent {
-                                    category: Some("console".to_string()),
-                                    output: format!("Return value: {formatted}\n"),
-                                })
-                                .ok()?),
+                                Some(
+                                    serde_json::to_value(crate::dap::types::OutputEvent {
+                                        category: Some("console".to_string()),
+                                        output: format!("Return value: {formatted}\n"),
+                                    })
+                                    .ok()?,
+                                ),
                             ))
                             .ok()?,
                         );
@@ -747,11 +771,13 @@ impl<C: JdwpClient> DapServer<C> {
                             serde_json::to_value(Event::new(
                                 self.alloc_seq(),
                                 "output",
-                                Some(serde_json::to_value(crate::dap::types::OutputEvent {
-                                    category: Some("console".to_string()),
-                                    output: format!("Expression value: {formatted}\n"),
-                                })
-                                .ok()?),
+                                Some(
+                                    serde_json::to_value(crate::dap::types::OutputEvent {
+                                        category: Some("console".to_string()),
+                                        output: format!("Expression value: {formatted}\n"),
+                                    })
+                                    .ok()?,
+                                ),
                             ))
                             .ok()?,
                         );
@@ -767,7 +793,10 @@ impl<C: JdwpClient> DapServer<C> {
         }
     }
 
-    fn stopped_event_to_dap(&mut self, stopped: nova_jdwp::StoppedEvent) -> Option<serde_json::Value> {
+    fn stopped_event_to_dap(
+        &mut self,
+        stopped: nova_jdwp::StoppedEvent,
+    ) -> Option<serde_json::Value> {
         let dap_thread_id = self.alloc_thread_id(stopped.thread_id);
         serde_json::to_value(Event::new(
             self.alloc_seq(),

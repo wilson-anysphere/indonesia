@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use nova_dap::stream_debug::run_stream_debug;
-use nova_jdwp::{JdwpValue, MockJdwpClient, MockObject, ObjectKindPreview, ObjectPreview, ObjectRef};
+use nova_jdwp::{
+    JdwpValue, MockJdwpClient, MockObject, ObjectKindPreview, ObjectPreview, ObjectRef,
+};
 use nova_stream_debug::StreamDebugConfig;
 
 #[test]
@@ -53,7 +55,11 @@ fn dap_stream_debug_runs_with_mock_jdwp() {
         },
     );
 
-    jdwp.set_evaluation(1, "list.stream().map(x -> x).limit(2).count()", Ok(JdwpValue::Long(2)));
+    jdwp.set_evaluation(
+        1,
+        "list.stream().map(x -> x).limit(2).count()",
+        Ok(JdwpValue::Long(2)),
+    );
 
     let cfg = StreamDebugConfig {
         max_sample_size: 2,
@@ -65,6 +71,8 @@ fn dap_stream_debug_runs_with_mock_jdwp() {
     let body = run_stream_debug(&mut jdwp, 1, expression, cfg).unwrap();
     assert_eq!(body.runtime.steps.len(), 1);
     assert_eq!(body.runtime.steps[0].operation, "map");
-    assert_eq!(body.runtime.terminal.as_ref().unwrap().value.as_deref(), Some("2"));
+    assert_eq!(
+        body.runtime.terminal.as_ref().unwrap().value.as_deref(),
+        Some("2")
+    );
 }
-

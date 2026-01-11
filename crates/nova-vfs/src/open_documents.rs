@@ -13,7 +13,10 @@ pub struct OpenDocuments {
 
 impl OpenDocuments {
     pub fn open(&self, file: FileId) {
-        self.inner.lock().expect("open docs mutex poisoned").insert(file);
+        self.inner
+            .lock()
+            .expect("open docs mutex poisoned")
+            .insert(file);
     }
 
     pub fn close(&self, file: FileId) {
@@ -31,10 +34,6 @@ impl OpenDocuments {
     }
 
     pub fn snapshot(&self) -> HashSet<FileId> {
-        self.inner
-            .lock()
-            .expect("open docs mutex poisoned")
-            .clone()
+        self.inner.lock().expect("open docs mutex poisoned").clone()
     }
 }
-

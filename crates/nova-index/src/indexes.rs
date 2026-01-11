@@ -41,7 +41,10 @@ pub struct SymbolIndex {
 
 impl SymbolIndex {
     pub fn insert(&mut self, symbol: impl Into<String>, location: SymbolLocation) {
-        self.symbols.entry(symbol.into()).or_default().push(location);
+        self.symbols
+            .entry(symbol.into())
+            .or_default()
+            .push(location);
     }
 
     pub fn invalidate_file(&mut self, file: &str) {
@@ -92,7 +95,10 @@ pub struct ReferenceIndex {
 
 impl ReferenceIndex {
     pub fn insert(&mut self, symbol: impl Into<String>, location: ReferenceLocation) {
-        self.references.entry(symbol.into()).or_default().push(location);
+        self.references
+            .entry(symbol.into())
+            .or_default()
+            .push(location);
     }
 
     pub fn invalidate_file(&mut self, file: &str) {

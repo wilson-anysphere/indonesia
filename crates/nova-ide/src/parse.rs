@@ -194,13 +194,14 @@ fn qualifies_as_type(name: &str) -> bool {
     matches!(
         name,
         "byte" | "short" | "int" | "long" | "float" | "double" | "boolean" | "char" | "void"
-    ) || name
-        .chars()
-        .next()
-        .is_some_and(|c| c.is_ascii_uppercase())
+    ) || name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
-fn parse_method_body(tokens: &[Token], body_start: usize, body_end: usize) -> (Vec<VarDef>, Vec<CallSite>) {
+fn parse_method_body(
+    tokens: &[Token],
+    body_start: usize,
+    body_end: usize,
+) -> (Vec<VarDef>, Vec<CallSite>) {
     let mut locals = Vec::new();
     let mut calls = Vec::new();
 
@@ -494,8 +495,10 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
                         }
                     };
 
-                    let body_span =
-                        Span::new(tokens[body_start_idx].span.start, tokens[body_end_idx].span.end);
+                    let body_span = Span::new(
+                        tokens[body_start_idx].span.start,
+                        tokens[body_end_idx].span.end,
+                    );
 
                     let (methods, fields, mut type_calls) =
                         parse_type_body(&tokens, body_start_idx, body_end_idx);
@@ -531,4 +534,3 @@ pub fn parse_file(uri: Uri, text: String) -> ParsedFile {
         calls,
     }
 }
-

@@ -1,5 +1,7 @@
 use nova_framework_micronaut::analyze_java_sources;
-use nova_framework_micronaut::{collect_config_keys, completions_for_value_placeholder, ConfigFile};
+use nova_framework_micronaut::{
+    collect_config_keys, completions_for_value_placeholder, ConfigFile,
+};
 use nova_types::Severity;
 use pretty_assertions::assert_eq;
 
@@ -187,10 +189,7 @@ fn config_value_placeholder_completions_use_application_keys() {
         }
     "#;
 
-    let offset = java
-        .find("${foo.b")
-        .expect("placeholder")
-        + "${foo.b".len();
+    let offset = java.find("${foo.b").expect("placeholder") + "${foo.b".len();
 
     let items = completions_for_value_placeholder(java, offset, &config_keys);
     let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
@@ -214,7 +213,8 @@ fn validation_diagnostic_notnull_on_primitive() {
         analysis
             .diagnostics
             .iter()
-            .any(|d| d.code == "MICRONAUT_VALIDATION_PRIMITIVE_NONNULL" && d.severity == Severity::Warning),
+            .any(|d| d.code == "MICRONAUT_VALIDATION_PRIMITIVE_NONNULL"
+                && d.severity == Severity::Warning),
         "expected validation warning, got: {:#?}",
         analysis.diagnostics
     );

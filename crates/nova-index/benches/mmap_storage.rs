@@ -3,9 +3,7 @@ use std::path::PathBuf;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use nova_cache::{CacheConfig, CacheDir, ProjectSnapshot};
-use nova_index::{
-    load_index_archives, load_indexes, save_indexes, ProjectIndexes, SymbolLocation,
-};
+use nova_index::{load_index_archives, load_indexes, save_indexes, ProjectIndexes, SymbolLocation};
 
 fn build_symbol_index_entries(indexes: &mut ProjectIndexes, file: &str, count: usize) {
     for i in 0..count {
@@ -35,7 +33,11 @@ fn count_prefix_archived(
 }
 
 fn count_prefix_owned(index: &nova_index::SymbolIndex, prefix: &str) -> usize {
-    index.symbols.keys().filter(|name| name.starts_with(prefix)).count()
+    index
+        .symbols
+        .keys()
+        .filter(|name| name.starts_with(prefix))
+        .count()
 }
 
 fn bench_mmap_storage(c: &mut Criterion) {

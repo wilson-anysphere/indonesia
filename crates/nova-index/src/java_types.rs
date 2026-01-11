@@ -113,10 +113,8 @@ fn parse_top_level_type_names(text: &str) -> Vec<String> {
 
     for window in tokens.windows(2) {
         let (keyword, name) = (&window[0], &window[1]);
-        if matches!(
-            keyword.as_str(),
-            "class" | "interface" | "enum" | "record"
-        ) && is_java_identifier(name)
+        if matches!(keyword.as_str(), "class" | "interface" | "enum" | "record")
+            && is_java_identifier(name)
         {
             names.push(name.clone());
         }

@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use nova_project::{load_project, BuildSystem, ClasspathEntryKind, JavaVersion, SourceRootKind};
 
 fn testdata_path(rel: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("testdata").join(rel)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join(rel)
 }
 
 #[test]
@@ -20,7 +22,15 @@ fn loads_maven_multi_module_workspace() {
     let roots: BTreeSet<_> = config
         .source_roots
         .iter()
-        .map(|sr| (sr.kind, sr.path.strip_prefix(&config.workspace_root).unwrap().to_path_buf()))
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.path
+                    .strip_prefix(&config.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
         .collect();
 
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("lib/src/main/java"))));
@@ -33,9 +43,9 @@ fn loads_maven_multi_module_workspace() {
         .filter(|cp| cp.kind == ClasspathEntryKind::Jar)
         .map(|cp| cp.path.clone())
         .collect::<Vec<_>>();
-    assert!(jar_entries
-        .iter()
-        .any(|p| p.to_string_lossy().contains("com/google/guava/guava/33.0.0-jre")));
+    assert!(jar_entries.iter().any(|p| p
+        .to_string_lossy()
+        .contains("com/google/guava/guava/33.0.0-jre")));
 
     // Dependencies should be stable and contain expected coordinates.
     let deps: BTreeSet<_> = config
@@ -67,7 +77,12 @@ fn loads_maven_nested_multi_module_workspace() {
     let module_roots: BTreeSet<_> = config
         .modules
         .iter()
-        .map(|m| m.root.strip_prefix(&config.workspace_root).unwrap().to_path_buf())
+        .map(|m| {
+            m.root
+                .strip_prefix(&config.workspace_root)
+                .unwrap()
+                .to_path_buf()
+        })
         .collect();
     assert!(module_roots.contains(&PathBuf::from("parent-a")));
     assert!(module_roots.contains(&PathBuf::from("parent-a/child-a1")));
@@ -75,7 +90,15 @@ fn loads_maven_nested_multi_module_workspace() {
     let roots: BTreeSet<_> = config
         .source_roots
         .iter()
-        .map(|sr| (sr.kind, sr.path.strip_prefix(&config.workspace_root).unwrap().to_path_buf()))
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.path
+                    .strip_prefix(&config.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
         .collect();
     assert!(roots.contains(&(
         SourceRootKind::Main,
@@ -94,7 +117,15 @@ fn loads_gradle_multi_module_workspace() {
     let roots: BTreeSet<_> = config
         .source_roots
         .iter()
-        .map(|sr| (sr.kind, sr.path.strip_prefix(&config.workspace_root).unwrap().to_path_buf()))
+        .map(|sr| {
+            (
+                sr.kind,
+                sr.path
+                    .strip_prefix(&config.workspace_root)
+                    .unwrap()
+                    .to_path_buf(),
+            )
+        })
         .collect();
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("lib/src/main/java"))));
     assert!(roots.contains(&(SourceRootKind::Main, PathBuf::from("app/src/main/java"))));

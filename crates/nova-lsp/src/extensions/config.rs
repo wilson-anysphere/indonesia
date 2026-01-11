@@ -14,4 +14,3 @@ pub(crate) fn load_workspace_config(root: &Path) -> NovaConfig {
         }
     }
 }
-

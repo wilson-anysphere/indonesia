@@ -11,8 +11,8 @@ mod audit;
 mod cache;
 mod client;
 mod completion;
-mod completion_filter;
 mod completion_context;
+mod completion_filter;
 mod completion_provider;
 mod completion_ranking;
 mod completion_validation;
@@ -39,9 +39,9 @@ pub use anonymizer::{CodeAnonymizer, CodeAnonymizerOptions};
 pub use client::AiClient;
 pub use cloud::{CloudLlmClient, CloudLlmConfig, ProviderKind, RetryConfig};
 pub use completion::{AdditionalEdit, MultiTokenCompletion, MultiTokenInsertTextFormat};
+pub use completion_context::{CompletionContextBuilder, MultiTokenCompletionContext};
 pub use completion_filter::filter_duplicates_against_insert_text_set;
 pub use completion_provider::CloudMultiTokenCompletionProvider;
-pub use completion_context::{CompletionContextBuilder, MultiTokenCompletionContext};
 pub use completion_ranking::{
     maybe_rank_completions, rank_completions_with_timeout, BaselineCompletionRanker,
     CompletionRanker,

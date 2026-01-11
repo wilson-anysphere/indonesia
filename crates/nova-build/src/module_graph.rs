@@ -6,15 +6,7 @@ use std::path::{Component, Path, PathBuf};
 /// * Maven: relative path (`module-a`) or coordinates (`groupId:artifactId`)
 /// * Gradle: project path (`:app`, `:lib:core`)
 #[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
 pub struct ModuleId(String);
 
@@ -52,11 +44,7 @@ pub struct ModuleBuildInfo {
 }
 
 impl ModuleBuildInfo {
-    pub fn new(
-        id: ModuleId,
-        main_output_dir: PathBuf,
-        compile_classpath: Vec<PathBuf>,
-    ) -> Self {
+    pub fn new(id: ModuleId, main_output_dir: PathBuf, compile_classpath: Vec<PathBuf>) -> Self {
         Self {
             id,
             main_output_dir,

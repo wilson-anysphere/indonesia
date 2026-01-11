@@ -9,8 +9,12 @@ pub enum CpInfo {
     Float(f32),
     Long(i64),
     Double(f64),
-    Class { name_index: u16 },
-    String { string_index: u16 },
+    Class {
+        name_index: u16,
+    },
+    String {
+        string_index: u16,
+    },
     Fieldref {
         class_index: u16,
         name_and_type_index: u16,
@@ -31,7 +35,9 @@ pub enum CpInfo {
         reference_kind: u8,
         reference_index: u16,
     },
-    MethodType { descriptor_index: u16 },
+    MethodType {
+        descriptor_index: u16,
+    },
     Dynamic {
         bootstrap_method_attr_index: u16,
         name_and_type_index: u16,
@@ -40,8 +46,12 @@ pub enum CpInfo {
         bootstrap_method_attr_index: u16,
         name_and_type_index: u16,
     },
-    Module { name_index: u16 },
-    Package { name_index: u16 },
+    Module {
+        name_index: u16,
+    },
+    Package {
+        name_index: u16,
+    },
 }
 
 impl CpInfo {
@@ -242,9 +252,8 @@ fn decode_modified_utf8(bytes: &[u8]) -> Result<String> {
             if (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 {
                 return Err(Error::InvalidModifiedUtf8);
             }
-            let value = (((b & 0x0F) as u16) << 12)
-                | (((b2 & 0x3F) as u16) << 6)
-                | ((b3 & 0x3F) as u16);
+            let value =
+                (((b & 0x0F) as u16) << 12) | (((b2 & 0x3F) as u16) << 6) | ((b3 & 0x3F) as u16);
             units.push(value);
             i += 3;
             continue;

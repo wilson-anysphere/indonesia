@@ -121,4 +121,3 @@ impl MemoryEvictor for IndexCache {
         }
     }
 }
-

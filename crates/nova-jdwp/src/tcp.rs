@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use crate::{
     JdwpClient, JdwpError, JdwpEvent, JdwpValue, JdwpVariable, ObjectId, ObjectKindPreview,
-    ObjectPreview, ObjectRef, StackFrameInfo, StepKind, StopReason, StoppedEvent, ThreadId, ThreadInfo,
+    ObjectPreview, ObjectRef, StackFrameInfo, StepKind, StopReason, StoppedEvent, ThreadId,
+    ThreadInfo,
 };
 
 const ERROR_INVALID_OBJECT: u16 = 20;
@@ -73,7 +74,12 @@ impl TcpJdwpClient {
         Ok(())
     }
 
-    fn send_command(&mut self, command_set: u8, command: u8, data: &[u8]) -> Result<Vec<u8>, JdwpError> {
+    fn send_command(
+        &mut self,
+        command_set: u8,
+        command: u8,
+        data: &[u8],
+    ) -> Result<Vec<u8>, JdwpError> {
         let id = self.next_packet_id;
         self.next_packet_id = self.next_packet_id.wrapping_add(1);
 
@@ -164,7 +170,9 @@ impl TcpJdwpClient {
         let _status = cursor.read_u32()?;
 
         let info = ClassInfo { tag, type_id };
-        self.cache.class_by_signature.insert(signature.to_string(), info);
+        self.cache
+            .class_by_signature
+            .insert(signature.to_string(), info);
         Ok(Some(info))
     }
 
@@ -183,7 +191,11 @@ impl TcpJdwpClient {
 
         let mut body = Vec::new();
         body.extend_from_slice(&(1u32).to_be_bytes()); // classCount
-        write_id(&mut body, self.id_sizes.reference_type_id, class_info.type_id);
+        write_id(
+            &mut body,
+            self.id_sizes.reference_type_id,
+            class_info.type_id,
+        );
         body.extend_from_slice(&(bytecode.len() as u32).to_be_bytes());
         body.extend_from_slice(bytecode);
 
@@ -297,7 +309,10 @@ impl TcpJdwpClient {
         Ok((type_tag, type_id))
     }
 
-    fn set_method_exit_with_return_value_request(&mut self, thread_id: ThreadId) -> Result<u32, JdwpError> {
+    fn set_method_exit_with_return_value_request(
+        &mut self,
+        thread_id: ThreadId,
+    ) -> Result<u32, JdwpError> {
         // EventRequest.Set(METHOD_EXIT_WITH_RETURN_VALUE)
         let mut body = Vec::new();
         body.push(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE);
@@ -375,7 +390,11 @@ impl TcpJdwpClient {
         Ok(values)
     }
 
-    fn object_get_values(&mut self, object_id: ObjectId, fields: &[FieldInfo]) -> Result<Vec<JdwpValue>, JdwpError> {
+    fn object_get_values(
+        &mut self,
+        object_id: ObjectId,
+        fields: &[FieldInfo],
+    ) -> Result<Vec<JdwpValue>, JdwpError> {
         let mut body = Vec::new();
         write_id(&mut body, self.id_sizes.object_id, object_id);
         body.extend_from_slice(&(fields.len() as u32).to_be_bytes());
@@ -406,7 +425,11 @@ impl TcpJdwpClient {
         self.read_value_with_tag(cursor, tag)
     }
 
-    fn read_value_with_tag(&mut self, cursor: &mut Cursor<'_>, tag: u8) -> Result<JdwpValue, JdwpError> {
+    fn read_value_with_tag(
+        &mut self,
+        cursor: &mut Cursor<'_>,
+        tag: u8,
+    ) -> Result<JdwpValue, JdwpError> {
         match tag {
             b'V' => Ok(JdwpValue::Void),
             b'Z' => Ok(JdwpValue::Boolean(cursor.read_u8()? != 0)),
@@ -457,7 +480,11 @@ impl TcpJdwpClient {
         }
     }
 
-    fn line_table_for_method(&mut self, type_id: u64, method_id: u64) -> Result<&Vec<(u64, u32)>, JdwpError> {
+    fn line_table_for_method(
+        &mut self,
+        type_id: u64,
+        method_id: u64,
+    ) -> Result<&Vec<(u64, u32)>, JdwpError> {
         if !self.cache.line_tables.contains_key(&(type_id, method_id)) {
             let mut body = Vec::new();
             write_id(&mut body, self.id_sizes.reference_type_id, type_id);
@@ -613,7 +640,12 @@ impl TcpJdwpClient {
         Ok(best.map(|(_, loc)| loc))
     }
 
-    fn handle_command_packet(&mut self, command_set: u8, command: u8, data: &[u8]) -> Result<(), JdwpError> {
+    fn handle_command_packet(
+        &mut self,
+        command_set: u8,
+        command: u8,
+        data: &[u8],
+    ) -> Result<(), JdwpError> {
         // Event.Composite
         if command_set != 64 || command != 100 {
             return Ok(());
@@ -675,19 +707,24 @@ impl TcpJdwpClient {
             let captured = self.pending_return_values.remove(&thread_id);
             let (return_value, expression_value) = match captured {
                 None => (None, None),
-                Some(value) => match self.active_step_requests.get(&thread_id).map(|req| req.kind) {
+                Some(value) => match self
+                    .active_step_requests
+                    .get(&thread_id)
+                    .map(|req| req.kind)
+                {
                     Some(StepKind::Out) => (Some(value), None),
                     Some(StepKind::Over) | Some(StepKind::Into) => (None, Some(value)),
                     None => (Some(value), None),
                 },
             };
-            self.pending_events.push_back(JdwpEvent::Stopped(StoppedEvent {
-                reason,
-                thread_id,
-                request_id,
-                return_value,
-                expression_value,
-            }));
+            self.pending_events
+                .push_back(JdwpEvent::Stopped(StoppedEvent {
+                    reason,
+                    thread_id,
+                    request_id,
+                    return_value,
+                    expression_value,
+                }));
         }
 
         Ok(())
@@ -813,7 +850,8 @@ impl JdwpClient for TcpJdwpClient {
 
         // Best-effort: if METHOD_EXIT_WITH_RETURN_VALUE isn't supported, still step.
         if let Ok(request_id) = self.set_method_exit_with_return_value_request(thread_id) {
-            self.active_method_exit_requests.insert(thread_id, request_id);
+            self.active_method_exit_requests
+                .insert(thread_id, request_id);
         }
 
         let request_id = self.set_step_request(thread_id, 1)?; // StepDepth.OVER
@@ -837,7 +875,8 @@ impl JdwpClient for TcpJdwpClient {
         self.pending_return_values.remove(&thread_id);
 
         if let Ok(request_id) = self.set_method_exit_with_return_value_request(thread_id) {
-            self.active_method_exit_requests.insert(thread_id, request_id);
+            self.active_method_exit_requests
+                .insert(thread_id, request_id);
         }
 
         let request_id = self.set_step_request(thread_id, 0)?; // StepDepth.INTO
@@ -861,7 +900,8 @@ impl JdwpClient for TcpJdwpClient {
         self.pending_return_values.remove(&thread_id);
 
         if let Ok(request_id) = self.set_method_exit_with_return_value_request(thread_id) {
-            self.active_method_exit_requests.insert(thread_id, request_id);
+            self.active_method_exit_requests
+                .insert(thread_id, request_id);
         }
 
         let request_id = self.set_step_request(thread_id, 2)?; // StepDepth.OUT
@@ -946,7 +986,11 @@ impl JdwpClient for TcpJdwpClient {
         // Optional preview by reading its `value` field.
         if runtime_type == "java.util.Optional" {
             if let Ok(children) = self.object_children(object_id) {
-                if let Some(value) = children.iter().find(|v| v.name == "value").map(|v| v.value.clone()) {
+                if let Some(value) = children
+                    .iter()
+                    .find(|v| v.name == "value")
+                    .map(|v| v.value.clone())
+                {
                     return Ok(ObjectPreview {
                         runtime_type,
                         kind: ObjectKindPreview::Optional {
@@ -976,7 +1020,8 @@ impl JdwpClient for TcpJdwpClient {
                     let sample_len = size.min(ARRAY_PREVIEW_SAMPLE);
                     let sample = if sample_len == 0 {
                         Vec::new()
-                    } else if let Ok(values) = self.array_get_values(array_id, 0, sample_len as i32) {
+                    } else if let Ok(values) = self.array_get_values(array_id, 0, sample_len as i32)
+                    {
                         values
                     } else {
                         Vec::new()
@@ -1033,7 +1078,11 @@ impl JdwpClient for TcpJdwpClient {
                                             .map(|v| v.value.clone())
                                             .unwrap_or(JdwpValue::Null);
                                         sample.push((key, value));
-                                        match node_fields.iter().find(|v| v.name == "next").map(|v| &v.value) {
+                                        match node_fields
+                                            .iter()
+                                            .find(|v| v.name == "next")
+                                            .map(|v| &v.value)
+                                        {
                                             Some(JdwpValue::Object(next)) => node = next.clone(),
                                             _ => break,
                                         }
@@ -1168,8 +1217,10 @@ impl JdwpClient for TcpJdwpClient {
             if let Some(step_request) = self.active_step_requests.remove(&stopped.thread_id) {
                 let _ = self.clear_event_request(EVENT_KIND_STEP, step_request.request_id);
             }
-            if let Some(exit_request) = self.active_method_exit_requests.remove(&stopped.thread_id) {
-                let _ = self.clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, exit_request);
+            if let Some(exit_request) = self.active_method_exit_requests.remove(&stopped.thread_id)
+            {
+                let _ = self
+                    .clear_event_request(EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE, exit_request);
                 self.pending_return_values.remove(&stopped.thread_id);
             }
             return Ok(Some(event));
@@ -1196,10 +1247,15 @@ impl JdwpClient for TcpJdwpClient {
                     self.handle_command_packet(command_set, command, &data)?;
                     if let Some(event) = self.pending_events.pop_front() {
                         let JdwpEvent::Stopped(stopped) = &event;
-                        if let Some(step_request) = self.active_step_requests.remove(&stopped.thread_id) {
-                            let _ = self.clear_event_request(EVENT_KIND_STEP, step_request.request_id);
+                        if let Some(step_request) =
+                            self.active_step_requests.remove(&stopped.thread_id)
+                        {
+                            let _ =
+                                self.clear_event_request(EVENT_KIND_STEP, step_request.request_id);
                         }
-                        if let Some(exit_request) = self.active_method_exit_requests.remove(&stopped.thread_id) {
+                        if let Some(exit_request) =
+                            self.active_method_exit_requests.remove(&stopped.thread_id)
+                        {
                             let _ = self.clear_event_request(
                                 EVENT_KIND_METHOD_EXIT_WITH_RETURN_VALUE,
                                 exit_request,
@@ -1439,7 +1495,9 @@ impl<'a> Cursor<'a> {
 
     fn read_f64(&mut self) -> Result<f64, JdwpError> {
         let bytes = self.read_exact(8)?;
-        Ok(f64::from_bits(u64::from_be_bytes(bytes.try_into().unwrap())))
+        Ok(f64::from_bits(u64::from_be_bytes(
+            bytes.try_into().unwrap(),
+        )))
     }
 
     fn read_java_char(&mut self) -> Result<char, JdwpError> {
@@ -1469,7 +1527,10 @@ mod tests {
 
     #[test]
     fn class_signature_conversion() {
-        assert_eq!(class_name_to_signature("com.example.Foo"), "Lcom/example/Foo;");
+        assert_eq!(
+            class_name_to_signature("com.example.Foo"),
+            "Lcom/example/Foo;"
+        );
         assert_eq!(class_name_to_signature("Foo"), "LFoo;");
     }
 

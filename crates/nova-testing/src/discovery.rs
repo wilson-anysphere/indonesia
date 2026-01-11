@@ -165,7 +165,9 @@ fn parse_test_class(
         )?);
     }
 
-    if children.is_empty() && !looks_like_test_class(&class_name, relative_path, enclosing_class_id.is_none()) {
+    if children.is_empty()
+        && !looks_like_test_class(&class_name, relative_path, enclosing_class_id.is_none())
+    {
         return Ok(None);
     }
 
@@ -354,7 +356,11 @@ fn infer_framework_for_test_annotation(
     None
 }
 
-fn looks_like_test_class(class_name: &str, relative_path: &str, allow_path_heuristic: bool) -> bool {
+fn looks_like_test_class(
+    class_name: &str,
+    relative_path: &str,
+    allow_path_heuristic: bool,
+) -> bool {
     if class_name.ends_with("Test")
         || class_name.ends_with("Tests")
         || class_name.ends_with("TestCase")
@@ -363,7 +369,8 @@ fn looks_like_test_class(class_name: &str, relative_path: &str, allow_path_heuri
     {
         return true;
     }
-    allow_path_heuristic && (relative_path.ends_with("Test.java") || relative_path.ends_with("Tests.java"))
+    allow_path_heuristic
+        && (relative_path.ends_with("Test.java") || relative_path.ends_with("Tests.java"))
 }
 
 fn parse_java(source: &str) -> Result<tree_sitter::Tree> {

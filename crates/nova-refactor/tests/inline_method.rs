@@ -24,7 +24,13 @@ fn inline_expression_bodied_method() {
 "#,
     );
 
-    let edits = inline_method("A.java", &src, caret, InlineMethodOptions { inline_all: false }).unwrap();
+    let edits = inline_method(
+        "A.java",
+        &src,
+        caret,
+        InlineMethodOptions { inline_all: false },
+    )
+    .unwrap();
     let mut files = BTreeMap::new();
     files.insert("A.java".to_string(), src);
 
@@ -145,4 +151,3 @@ fn preserves_argument_evaluation_order_with_parameter_temps() {
 "#
     );
 }
-

@@ -19,11 +19,17 @@ pub enum HierarchyPropagation {
 
 impl HierarchyPropagation {
     fn include_overrides(self) -> bool {
-        matches!(self, HierarchyPropagation::Overrides | HierarchyPropagation::Both)
+        matches!(
+            self,
+            HierarchyPropagation::Overrides | HierarchyPropagation::Both
+        )
     }
 
     fn include_overridden(self) -> bool {
-        matches!(self, HierarchyPropagation::Overridden | HierarchyPropagation::Both)
+        matches!(
+            self,
+            HierarchyPropagation::Overridden | HierarchyPropagation::Both
+        )
     }
 }
 
@@ -69,10 +75,21 @@ impl HierarchyPropagation {
 pub enum ChangeSignatureConflict {
     MissingTarget(MethodId),
     TargetNotAMethod(MethodId),
-    InvalidParameterIndex { index: usize, param_len: usize },
-    AddedParameterMissingDefault { name: String },
-    RemovedParameterStillUsed { method: MethodId, param_name: String },
-    OverloadCollision { method: MethodId, collides_with: MethodId },
+    InvalidParameterIndex {
+        index: usize,
+        param_len: usize,
+    },
+    AddedParameterMissingDefault {
+        name: String,
+    },
+    RemovedParameterStillUsed {
+        method: MethodId,
+        param_name: String,
+    },
+    OverloadCollision {
+        method: MethodId,
+        collides_with: MethodId,
+    },
     AmbiguousCallSite {
         file: String,
         range: TextRange,
@@ -84,7 +101,9 @@ pub enum ChangeSignatureConflict {
         expected: String,
         actual: String,
     },
-    InvalidDocumentUri { file: String },
+    InvalidDocumentUri {
+        file: String,
+    },
     OverlappingEdits {
         file: String,
         first: TextRange,
@@ -123,7 +142,10 @@ struct ParsedMethod {
     brace: char,
 }
 
-pub fn change_signature(index: &Index, change: &ChangeSignature) -> Result<WorkspaceEdit, ChangeSignatureError> {
+pub fn change_signature(
+    index: &Index,
+    change: &ChangeSignature,
+) -> Result<WorkspaceEdit, ChangeSignatureError> {
     let mut conflicts = Vec::new();
 
     let target_symbol_id = SymbolId(change.target.0);
@@ -162,7 +184,12 @@ pub fn change_signature(index: &Index, change: &ChangeSignature) -> Result<Works
         return Err(ChangeSignatureError { conflicts });
     }
 
-    let affected = collect_affected_methods(index, target_class, &target_parsed, change.propagate_hierarchy);
+    let affected = collect_affected_methods(
+        index,
+        target_class,
+        &target_parsed,
+        change.propagate_hierarchy,
+    );
     let affected_ids: HashSet<MethodId> = affected.iter().map(|m| m.method_id).collect();
 
     // Conflicts: removed parameter still referenced in each affected body.
@@ -176,7 +203,8 @@ pub fn change_signature(index: &Index, change: &ChangeSignature) -> Result<Works
     }
 
     // Call site updates (semantic verification).
-    let call_updates = collect_call_site_updates(index, &target_parsed, &affected_ids, change, &mut conflicts);
+    let call_updates =
+        collect_call_site_updates(index, &target_parsed, &affected_ids, change, &mut conflicts);
 
     if !conflicts.is_empty() {
         return Err(ChangeSignatureError { conflicts });
@@ -187,8 +215,17 @@ pub fn change_signature(index: &Index, change: &ChangeSignature) -> Result<Works
 
     for m in &affected {
         let new_sig = compute_new_signature_for_method(m, change, &mut Vec::new());
-        edits.push((m.file.clone(), m.header_range, format_method_header(&m.prefix, &new_sig, m.brace)));
-        edits.extend(parameter_rename_edits(index, m, &new_sig, &change.parameters));
+        edits.push((
+            m.file.clone(),
+            m.header_range,
+            format_method_header(&m.prefix, &new_sig, m.brace),
+        ));
+        edits.extend(parameter_rename_edits(
+            index,
+            m,
+            &new_sig,
+            &change.parameters,
+        ));
     }
 
     edits.extend(call_updates);
@@ -196,7 +233,12 @@ pub fn change_signature(index: &Index, change: &ChangeSignature) -> Result<Works
     build_workspace_edit(index, edits).map_err(|c| ChangeSignatureError { conflicts: vec![c] })
 }
 
-fn collect_affected_methods(index: &Index, target_class: &str, target: &ParsedMethod, propagation: HierarchyPropagation) -> Vec<ParsedMethod> {
+fn collect_affected_methods(
+    index: &Index,
+    target_class: &str,
+    target: &ParsedMethod,
+    propagation: HierarchyPropagation,
+) -> Vec<ParsedMethod> {
     let mut out = Vec::new();
     out.push(target.clone());
 
@@ -205,7 +247,12 @@ fn collect_affected_methods(index: &Index, target_class: &str, target: &ParsedMe
     if propagation.include_overridden() {
         let mut cur = index.class_extends(target_class);
         while let Some(super_name) = cur {
-            out.extend(find_methods_by_signature(index, super_name, &target.name, &target_param_types));
+            out.extend(find_methods_by_signature(
+                index,
+                super_name,
+                &target.name,
+                &target_param_types,
+            ));
             cur = index.class_extends(super_name);
         }
     }
@@ -215,7 +262,9 @@ fn collect_affected_methods(index: &Index, target_class: &str, target: &ParsedMe
             if sym.kind != SymbolKind::Method || sym.name != target.name {
                 continue;
             }
-            let Some(class_name) = sym.container.as_deref() else { continue };
+            let Some(class_name) = sym.container.as_deref() else {
+                continue;
+            };
             if class_name == target_class {
                 continue;
             }
@@ -234,7 +283,11 @@ fn collect_affected_methods(index: &Index, target_class: &str, target: &ParsedMe
         }
     }
 
-    out.sort_by(|a, b| a.file.cmp(&b.file).then(a.header_range.start.cmp(&b.header_range.start)));
+    out.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.header_range.start.cmp(&b.header_range.start))
+    });
     out.dedup_by(|a, b| a.method_id == b.method_id);
     out
 }
@@ -252,7 +305,12 @@ fn is_subclass_of<'a>(index: &'a Index, mut sub: &'a str, sup: &'a str) -> bool 
     false
 }
 
-fn find_methods_by_signature(index: &Index, class: &str, name: &str, param_types: &[String]) -> Vec<ParsedMethod> {
+fn find_methods_by_signature(
+    index: &Index,
+    class: &str,
+    name: &str,
+    param_types: &[String],
+) -> Vec<ParsedMethod> {
     let mut out = Vec::new();
     for sym in index.symbols() {
         if sym.kind != SymbolKind::Method {
@@ -276,7 +334,11 @@ fn find_methods_by_signature(index: &Index, class: &str, name: &str, param_types
     out
 }
 
-fn compute_new_params(old: &[ParamDecl], ops: &[ParameterOperation], conflicts: &mut Vec<ChangeSignatureConflict>) -> Vec<ParamDecl> {
+fn compute_new_params(
+    old: &[ParamDecl],
+    ops: &[ParameterOperation],
+    conflicts: &mut Vec<ChangeSignatureConflict>,
+) -> Vec<ParamDecl> {
     let mut params = Vec::new();
     for op in ops {
         match op {
@@ -304,21 +366,41 @@ fn compute_new_params(old: &[ParamDecl], ops: &[ParameterOperation], conflicts: 
                 default_value,
             } => {
                 if default_value.is_none() {
-                    conflicts.push(ChangeSignatureConflict::AddedParameterMissingDefault { name: name.clone() });
+                    conflicts.push(ChangeSignatureConflict::AddedParameterMissingDefault {
+                        name: name.clone(),
+                    });
                 }
-                params.push(ParamDecl { name: name.clone(), ty: ty.clone() });
+                params.push(ParamDecl {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                });
             }
         }
     }
     params
 }
 
-fn compute_new_signature_for_method(old: &ParsedMethod, change: &ChangeSignature, conflicts: &mut Vec<ChangeSignatureConflict>) -> ParsedMethodSig {
+fn compute_new_signature_for_method(
+    old: &ParsedMethod,
+    change: &ChangeSignature,
+    conflicts: &mut Vec<ChangeSignatureConflict>,
+) -> ParsedMethodSig {
     let name = change.new_name.clone().unwrap_or_else(|| old.name.clone());
-    let return_type = change.new_return_type.clone().unwrap_or_else(|| old.return_type.clone());
-    let throws = change.new_throws.clone().unwrap_or_else(|| old.throws.clone());
+    let return_type = change
+        .new_return_type
+        .clone()
+        .unwrap_or_else(|| old.return_type.clone());
+    let throws = change
+        .new_throws
+        .clone()
+        .unwrap_or_else(|| old.throws.clone());
     let params = compute_new_params(&old.params, &change.parameters, conflicts);
-    ParsedMethodSig { name, return_type, params, throws }
+    ParsedMethodSig {
+        name,
+        return_type,
+        params,
+        throws,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,8 +417,12 @@ fn detect_removed_parameter_usage(
     ops: &[ParameterOperation],
     conflicts: &mut Vec<ChangeSignatureConflict>,
 ) {
-    let Some(body_range) = method.body_range else { return };
-    let Some(text) = index.file_text(&method.file) else { return };
+    let Some(body_range) = method.body_range else {
+        return;
+    };
+    let Some(text) = index.file_text(&method.file) else {
+        return;
+    };
     let body = &text[body_range.start..body_range.end];
 
     let mut retained = vec![false; method.params.len()];
@@ -361,7 +447,13 @@ fn detect_removed_parameter_usage(
     }
 }
 
-fn detect_overload_collisions(index: &Index, method: &ParsedMethod, affected: &HashSet<MethodId>, change: &ChangeSignature, conflicts: &mut Vec<ChangeSignatureConflict>) {
+fn detect_overload_collisions(
+    index: &Index,
+    method: &ParsedMethod,
+    affected: &HashSet<MethodId>,
+    change: &ChangeSignature,
+    conflicts: &mut Vec<ChangeSignatureConflict>,
+) {
     let new_sig = compute_new_signature_for_method(method, change, &mut Vec::new());
     let new_param_types: Vec<String> = new_sig.params.iter().map(|p| p.ty.clone()).collect();
 
@@ -376,7 +468,9 @@ fn detect_overload_collisions(index: &Index, method: &ParsedMethod, affected: &H
         if affected.contains(&other_id) {
             continue;
         }
-        let Ok(other) = parse_method(index, sym, other_id) else { continue };
+        let Ok(other) = parse_method(index, sym, other_id) else {
+            continue;
+        };
         let other_types: Vec<String> = other.params.iter().map(|p| p.ty.clone()).collect();
         if other.name == new_sig.name && other_types == new_param_types {
             conflicts.push(ChangeSignatureConflict::OverloadCollision {
@@ -428,14 +522,19 @@ fn collect_call_site_updates(
     let mut updates = Vec::new();
     for candidate in index.find_name_candidates(old_name) {
         if let Some(spans) = header_spans_by_file.get(&candidate.file) {
-            if spans.iter().any(|span| ranges_overlap(candidate.range, *span)) {
+            if spans
+                .iter()
+                .any(|span| ranges_overlap(candidate.range, *span))
+            {
                 continue;
             }
         }
         if candidate.kind != ReferenceKind::Call {
             continue;
         }
-        let Some(text) = index.file_text(&candidate.file) else { continue };
+        let Some(text) = index.file_text(&candidate.file) else {
+            continue;
+        };
         if !is_followed_by_paren(text, candidate.range.end) {
             continue;
         }
@@ -448,10 +547,14 @@ fn collect_call_site_updates(
             continue;
         }
 
-        let Some(receiver_class) = infer_receiver_class(index, &candidate.file, candidate.range.start, text) else {
+        let Some(receiver_class) =
+            infer_receiver_class(index, &candidate.file, candidate.range.start, text)
+        else {
             continue;
         };
-        let Some(resolved) = resolve_method_in_hierarchy(index, &receiver_class, old_name, &old_param_types) else {
+        let Some(resolved) =
+            resolve_method_in_hierarchy(index, &receiver_class, old_name, &old_param_types)
+        else {
             continue;
         };
         if !affected_ids.contains(&resolved) {
@@ -459,7 +562,14 @@ fn collect_call_site_updates(
         }
 
         // Ambiguity (best-effort): multiple overload candidates after the change.
-        let overloads = overload_candidates_after_change(index, &receiver_class, affected_ids, &new_name, new_param_count, &new_param_types);
+        let overloads = overload_candidates_after_change(
+            index,
+            &receiver_class,
+            affected_ids,
+            &new_name,
+            new_param_count,
+            &new_param_types,
+        );
         if overloads.len() > 1 {
             conflicts.push(ChangeSignatureConflict::AmbiguousCallSite {
                 file: candidate.file.clone(),
@@ -472,7 +582,9 @@ fn collect_call_site_updates(
         // Return type compatibility (best-effort): `Type x = call(...)`
         if let Some(new_return) = change.new_return_type.as_deref() {
             if new_return != target.return_type {
-                if let Some((expected, actual)) = check_return_type_compatibility(text, call_range.start, new_return) {
+                if let Some((expected, actual)) =
+                    check_return_type_compatibility(text, call_range.start, new_return)
+                {
                     conflicts.push(ChangeSignatureConflict::ReturnTypeIncompatible {
                         file: candidate.file.clone(),
                         range: call_range,
@@ -561,10 +673,7 @@ fn parse_call_args(text: &str, name_range: TextRange) -> Result<(TextRange, Vec<
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
-    Ok((
-        TextRange::new(name_range.start, close),
-        args,
-    ))
+    Ok((TextRange::new(name_range.start, close), args))
 }
 
 fn rewrite_args(old_args: &[String], ops: &[ParameterOperation]) -> Vec<String> {
@@ -586,10 +695,17 @@ fn rewrite_args(old_args: &[String], ops: &[ParameterOperation]) -> Vec<String> 
     out
 }
 
-fn infer_receiver_class(index: &Index, file: &str, ident_start: usize, text: &str) -> Option<String> {
+fn infer_receiver_class(
+    index: &Index,
+    file: &str,
+    ident_start: usize,
+    text: &str,
+) -> Option<String> {
     let receiver = parse_receiver_expression(text, ident_start);
     match receiver {
-        Receiver::ImplicitThis | Receiver::This => enclosing_class_at_offset(index, file, ident_start),
+        Receiver::ImplicitThis | Receiver::This => {
+            enclosing_class_at_offset(index, file, ident_start)
+        }
         Receiver::New(name) | Receiver::TypeName(name) => Some(name),
         Receiver::Var(name) => infer_var_type_in_scope(text, ident_start, &name),
         Receiver::Unknown => None,
@@ -774,9 +890,16 @@ fn is_ident_continue(b: u8) -> bool {
     (b as char).is_ascii_alphanumeric() || b == b'_' || b == b'$'
 }
 
-fn check_return_type_compatibility(text: &str, call_start: usize, new_return: &str) -> Option<(String, String)> {
+fn check_return_type_compatibility(
+    text: &str,
+    call_start: usize,
+    new_return: &str,
+) -> Option<(String, String)> {
     let line_start = text[..call_start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let line_end = text[call_start..].find('\n').map(|i| call_start + i).unwrap_or(text.len());
+    let line_end = text[call_start..]
+        .find('\n')
+        .map(|i| call_start + i)
+        .unwrap_or(text.len());
     let line = &text[line_start..line_end];
     let rel_call_start = call_start - line_start;
     let before = &line[..rel_call_start];
@@ -803,7 +926,9 @@ fn parameter_rename_edits(
     new_sig: &ParsedMethodSig,
     ops: &[ParameterOperation],
 ) -> Vec<(String, TextRange, String)> {
-    let Some(body_range) = method.body_range else { return Vec::new() };
+    let Some(body_range) = method.body_range else {
+        return Vec::new();
+    };
     let Some(text) = index.file_text(&method.file) else {
         return Vec::new();
     };
@@ -811,7 +936,14 @@ fn parameter_rename_edits(
 
     let mut edits = Vec::new();
     for (new_pos, op) in ops.iter().enumerate() {
-        let ParameterOperation::Existing { old_index, new_name, .. } = op else { continue };
+        let ParameterOperation::Existing {
+            old_index,
+            new_name,
+            ..
+        } = op
+        else {
+            continue;
+        };
         if *old_index >= method.params.len() {
             continue;
         }
@@ -826,7 +958,10 @@ fn parameter_rename_edits(
             let start = cursor + pos;
             edits.push((
                 method.file.clone(),
-                TextRange::new(body_range.start + start, body_range.start + start + old_name.len()),
+                TextRange::new(
+                    body_range.start + start,
+                    body_range.start + start + old_name.len(),
+                ),
                 new_name.to_string(),
             ));
             cursor = start + old_name.len();
@@ -846,7 +981,8 @@ fn find_identifier(text: &str, ident: &str) -> Option<usize> {
     while i + needle.len() <= bytes.len() {
         if &bytes[i..i + needle.len()] == needle {
             let before_ok = i == 0 || !is_ident_continue(bytes[i - 1]);
-            let after_ok = i + needle.len() == bytes.len() || !is_ident_continue(bytes[i + needle.len()]);
+            let after_ok =
+                i + needle.len() == bytes.len() || !is_ident_continue(bytes[i + needle.len()]);
             if before_ok && after_ok {
                 return Some(i);
             }
@@ -856,7 +992,11 @@ fn find_identifier(text: &str, ident: &str) -> Option<usize> {
     None
 }
 
-fn parse_method(index: &Index, sym: &nova_index::Symbol, method_id: MethodId) -> Result<ParsedMethod, ChangeSignatureConflict> {
+fn parse_method(
+    index: &Index,
+    sym: &nova_index::Symbol,
+    method_id: MethodId,
+) -> Result<ParsedMethod, ChangeSignatureConflict> {
     let text = index
         .file_text(&sym.file)
         .ok_or_else(|| ChangeSignatureConflict::ParseError {
@@ -872,7 +1012,10 @@ fn parse_method(index: &Index, sym: &nova_index::Symbol, method_id: MethodId) ->
     };
 
     let name = sym.name.clone();
-    let line_start = text[..sym.name_range.start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_start = text[..sym.name_range.start]
+        .rfind('\n')
+        .map(|p| p + 1)
+        .unwrap_or(0);
 
     // Parse return type token as the final non-whitespace token before the name.
     let before_name = &text[line_start..sym.name_range.start];
@@ -902,10 +1045,11 @@ fn parse_method(index: &Index, sym: &nova_index::Symbol, method_id: MethodId) ->
             context: "missing parameter list",
         });
     }
-    let close = find_matching_paren(text, open).ok_or_else(|| ChangeSignatureConflict::ParseError {
-        file: sym.file.clone(),
-        context: "unmatched paren in signature",
-    })?;
+    let close =
+        find_matching_paren(text, open).ok_or_else(|| ChangeSignatureConflict::ParseError {
+            file: sym.file.clone(),
+            context: "unmatched paren in signature",
+        })?;
 
     let params_src = &text[open + 1..close - 1];
     let params = parse_params(params_src);
@@ -1000,7 +1144,10 @@ fn format_method_header(prefix: &str, sig: &ParsedMethodSig, brace: char) -> Str
     } else {
         format!(" throws {}", sig.throws.join(", "))
     };
-    format!("{prefix}{} {}({}){throws} {brace}", sig.return_type, sig.name, params)
+    format!(
+        "{prefix}{} {}({}){throws} {brace}",
+        sig.return_type, sig.name, params
+    )
 }
 
 fn find_matching_paren(text: &str, open_paren: usize) -> Option<usize> {
@@ -1081,7 +1228,10 @@ fn split_top_level(text: &str, sep: char) -> Vec<String> {
     out
 }
 
-fn build_workspace_edit(index: &Index, edits: Vec<(String, TextRange, String)>) -> Result<WorkspaceEdit, ChangeSignatureConflict> {
+fn build_workspace_edit(
+    index: &Index,
+    edits: Vec<(String, TextRange, String)>,
+) -> Result<WorkspaceEdit, ChangeSignatureConflict> {
     let mut by_file: BTreeMap<String, Vec<(TextRange, String)>> = BTreeMap::new();
     for (file, range, text) in edits {
         by_file.entry(file).or_default().push((range, text));
@@ -1116,14 +1266,21 @@ fn build_workspace_edit(index: &Index, edits: Vec<(String, TextRange, String)>) 
             })
             .collect::<Vec<_>>();
 
-        let uri: lsp_types::Uri = file.parse().map_err(|_| ChangeSignatureConflict::InvalidDocumentUri { file: file.clone() })?;
+        let uri: lsp_types::Uri = file
+            .parse()
+            .map_err(|_| ChangeSignatureConflict::InvalidDocumentUri { file: file.clone() })?;
         doc_edits.push(TextDocumentEdit {
             text_document: OptionalVersionedTextDocumentIdentifier { uri, version: None },
             edits: lsp_edits.into_iter().map(OneOf::Left).collect(),
         });
     }
 
-    doc_edits.sort_by(|a, b| a.text_document.uri.to_string().cmp(&b.text_document.uri.to_string()));
+    doc_edits.sort_by(|a, b| {
+        a.text_document
+            .uri
+            .to_string()
+            .cmp(&b.text_document.uri.to_string())
+    });
     Ok(WorkspaceEdit {
         changes: None,
         document_changes: Some(DocumentChanges::Edits(doc_edits)),
@@ -1147,5 +1304,8 @@ fn offset_to_position(text: &str, offset: usize) -> Position {
         }
         count += ch.len_utf8();
     }
-    Position { line, character: col }
+    Position {
+        line,
+        character: col,
+    }
 }

@@ -111,7 +111,10 @@ impl ProjectSnapshot {
     ///
     /// This is suitable for quickly checking if a persisted cache is likely up
     /// to date without reading the full contents of every file.
-    pub fn new_fast(project_root: impl AsRef<Path>, files: Vec<PathBuf>) -> Result<Self, CacheError> {
+    pub fn new_fast(
+        project_root: impl AsRef<Path>,
+        files: Vec<PathBuf>,
+    ) -> Result<Self, CacheError> {
         Self::new_with_fingerprinter(project_root, files, |path| {
             Fingerprint::from_file_metadata(path)
         })
@@ -136,12 +139,12 @@ impl ProjectSnapshot {
                 project_root.join(file)
             };
             let full = std::fs::canonicalize(&full)?;
-            let relative = full
-                .strip_prefix(&project_root)
-                .map_err(|_| CacheError::PathNotUnderProjectRoot {
+            let relative = full.strip_prefix(&project_root).map_err(|_| {
+                CacheError::PathNotUnderProjectRoot {
                     path: full.clone(),
                     project_root: project_root.clone(),
-                })?;
+                }
+            })?;
             let relative = relative.to_string_lossy().replace('\\', "/");
             file_fingerprints.insert(relative, fingerprinter(&full)?);
         }

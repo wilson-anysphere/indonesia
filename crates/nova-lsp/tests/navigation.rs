@@ -1,5 +1,7 @@
+use lsp_types::request::{
+    GotoDeclarationParams, GotoImplementationParams, GotoTypeDefinitionParams,
+};
 use lsp_types::{TextDocumentIdentifier, TextDocumentPositionParams};
-use lsp_types::request::{GotoDeclarationParams, GotoImplementationParams, GotoTypeDefinitionParams};
 
 use nova_test_utils::Fixture;
 

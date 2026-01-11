@@ -79,12 +79,7 @@ impl<F: FileSystem> Vfs<F> {
     }
 
     #[cfg(feature = "lsp")]
-    pub fn open_document_lsp(
-        &self,
-        uri: lsp_types::Uri,
-        text: String,
-        version: i32,
-    ) -> FileId {
+    pub fn open_document_lsp(&self, uri: lsp_types::Uri, text: String, version: i32) -> FileId {
         self.open_document(VfsPath::from(uri), text, version)
     }
 
@@ -125,7 +120,8 @@ impl<F: FileSystem> Vfs<F> {
         changes: &[lsp_types::TextDocumentContentChangeEvent],
     ) -> Result<ChangeEvent, DocumentError> {
         let path = VfsPath::from(uri);
-        let changes: Vec<ContentChange> = changes.iter().cloned().map(ContentChange::from).collect();
+        let changes: Vec<ContentChange> =
+            changes.iter().cloned().map(ContentChange::from).collect();
         self.apply_document_changes(&path, new_version, &changes)
     }
 }
@@ -225,7 +221,10 @@ mod tests {
         };
 
         let evt = vfs.apply_document_changes_lsp(&uri, 2, &[change]).unwrap();
-        assert_eq!(vfs.read_to_string(&VfsPath::from(&uri)).unwrap(), "hello nova");
+        assert_eq!(
+            vfs.read_to_string(&VfsPath::from(&uri)).unwrap(),
+            "hello nova"
+        );
 
         match evt {
             ChangeEvent::DocumentChanged {

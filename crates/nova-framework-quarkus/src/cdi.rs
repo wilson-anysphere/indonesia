@@ -520,7 +520,10 @@ fn parse_parameter_types(signature_line: &str) -> Vec<(String, Qualifiers)> {
         .collect()
 }
 
-fn consume_leading_annotations<'a>(mut line: &'a str, pending: &mut Vec<(String, Option<String>)>) -> &'a str {
+fn consume_leading_annotations<'a>(
+    mut line: &'a str,
+    pending: &mut Vec<(String, Option<String>)>,
+) -> &'a str {
     loop {
         let trimmed = line.trim_start();
         if !trimmed.starts_with('@') {
@@ -537,7 +540,11 @@ fn consume_leading_annotations<'a>(mut line: &'a str, pending: &mut Vec<(String,
         }
 
         let full_name = &trimmed[1..idx];
-        let name = full_name.rsplit('.').next().unwrap_or(full_name).to_string();
+        let name = full_name
+            .rsplit('.')
+            .next()
+            .unwrap_or(full_name)
+            .to_string();
         let mut rest = &trimmed[idx..];
 
         rest = rest.trim_start();
@@ -578,4 +585,3 @@ fn count_braces(line: &str) -> i32 {
     let close = line.chars().filter(|c| *c == '}').count() as i32;
     open - close
 }
-

@@ -40,7 +40,10 @@ impl DiagnosticsEngine {
                 kind: DiagnosticKind::Syntax,
                 severity: DiagnosticSeverity::Error,
                 message: err.message,
-                range: TextRange::new(TextSize::from(err.range.start), TextSize::from(err.range.end)),
+                range: TextRange::new(
+                    TextSize::from(err.range.start),
+                    TextSize::from(err.range.end),
+                ),
             });
         }
 

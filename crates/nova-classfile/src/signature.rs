@@ -290,7 +290,10 @@ impl<'a> Parser<'a> {
             self.bump();
             let name = self.parse_identifier()?;
             let type_arguments = self.parse_type_arguments_if_present()?;
-            segments.push(ClassTypeSegment { name, type_arguments });
+            segments.push(ClassTypeSegment {
+                name,
+                type_arguments,
+            });
         }
 
         self.expect(';')?;
@@ -321,15 +324,19 @@ impl<'a> Parser<'a> {
             }
             Some('+') => {
                 self.bump();
-                Ok(TypeArgument::Extends(Box::new(self.parse_field_type_signature()?)))
+                Ok(TypeArgument::Extends(Box::new(
+                    self.parse_field_type_signature()?,
+                )))
             }
             Some('-') => {
                 self.bump();
-                Ok(TypeArgument::Super(Box::new(self.parse_field_type_signature()?)))
+                Ok(TypeArgument::Super(Box::new(
+                    self.parse_field_type_signature()?,
+                )))
             }
-            Some('L') | Some('T') | Some('[') => {
-                Ok(TypeArgument::Exact(Box::new(self.parse_field_type_signature()?)))
-            }
+            Some('L') | Some('T') | Some('[') => Ok(TypeArgument::Exact(Box::new(
+                self.parse_field_type_signature()?,
+            ))),
             _ => Err(Error::InvalidSignature(self.sig.to_string())),
         }
     }

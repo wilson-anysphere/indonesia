@@ -149,8 +149,7 @@ where
     /// This is intended as a fallback for callers that need a mutable copy.
     pub fn to_owned(&self) -> Result<T, StorageError>
     where
-        rkyv::Archived<T>:
-            rkyv::Deserialize<T, rkyv::de::deserializers::SharedDeserializeMap>,
+        rkyv::Archived<T>: rkyv::Deserialize<T, rkyv::de::deserializers::SharedDeserializeMap>,
     {
         let mut deserializer = rkyv::de::deserializers::SharedDeserializeMap::default();
         self.archived()

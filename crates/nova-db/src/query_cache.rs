@@ -62,8 +62,11 @@ impl QueryCache {
             tracker: OnceLock::new(),
         });
 
-        let registration =
-            manager.register_evictor(cache.name.clone(), MemoryCategory::QueryCache, cache.clone());
+        let registration = manager.register_evictor(
+            cache.name.clone(),
+            MemoryCategory::QueryCache,
+            cache.clone(),
+        );
         cache
             .tracker
             .set(registration.tracker())
@@ -233,11 +236,7 @@ impl ClockTier {
         self.order.push_back(key);
     }
 
-    fn evict_to(
-        &mut self,
-        target_bytes: u64,
-        pressure: nova_memory::MemoryPressure,
-    ) {
+    fn evict_to(&mut self, target_bytes: u64, pressure: nova_memory::MemoryPressure) {
         // Clock eviction: second chance via `referenced` bit.
         let mut spins = 0usize;
         while self.bytes > target_bytes && spins < self.order.len().saturating_mul(2).max(8) {
@@ -317,7 +316,9 @@ impl PersistentQueryCache {
             schema_version: query_schema_version,
             args,
         };
-        let bytes: Vec<u8> = derived.load(query_name, &key_args, input_fingerprints).ok()??;
+        let bytes: Vec<u8> = derived
+            .load(query_name, &key_args, input_fingerprints)
+            .ok()??;
         let value = Arc::new(bytes);
         self.memory.insert(cache_key, value.clone());
         Some(value)
@@ -488,7 +489,8 @@ mod tests {
             .path();
 
         let bytes = std::fs::read(&entry_path).unwrap();
-        let mut persisted: PersistedDerivedValueOwned<Vec<u8>> = bincode::deserialize(&bytes).unwrap();
+        let mut persisted: PersistedDerivedValueOwned<Vec<u8>> =
+            bincode::deserialize(&bytes).unwrap();
         persisted.schema_version = persisted.schema_version.saturating_add(1);
         let mutated = bincode::serialize(&persisted).unwrap();
         std::fs::write(&entry_path, mutated).unwrap();
@@ -528,7 +530,8 @@ mod tests {
             .path();
 
         let bytes = std::fs::read(&entry_path).unwrap();
-        let mut persisted: PersistedDerivedValueOwned<Vec<u8>> = bincode::deserialize(&bytes).unwrap();
+        let mut persisted: PersistedDerivedValueOwned<Vec<u8>> =
+            bincode::deserialize(&bytes).unwrap();
         persisted.nova_version = "0.0.0-test".to_string();
         let mutated = bincode::serialize(&persisted).unwrap();
         std::fs::write(&entry_path, mutated).unwrap();

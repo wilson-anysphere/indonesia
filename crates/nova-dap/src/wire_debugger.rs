@@ -121,7 +121,13 @@ impl Debugger {
         // Track class loads to support setting breakpoints before the target class is loaded.
         let req = dbg
             .jdwp
-            .event_request_set(8, 0, vec![EventModifier::ClassMatch { pattern: "*".to_string() }])
+            .event_request_set(
+                8,
+                0,
+                vec![EventModifier::ClassMatch {
+                    pattern: "*".to_string(),
+                }],
+            )
             .await?;
         dbg.class_prepare_request = Some(req);
 
@@ -144,24 +150,38 @@ impl Debugger {
         let threads = self.jdwp.all_threads().await?;
         let mut out = Vec::with_capacity(threads.len());
         for thread_id in threads {
-            let name = self.jdwp.thread_name(thread_id).await.unwrap_or_else(|_| "thread".to_string());
+            let name = self
+                .jdwp
+                .thread_name(thread_id)
+                .await
+                .unwrap_or_else(|_| "thread".to_string());
             out.push((thread_id as i64, name));
         }
         Ok(out)
     }
 
     pub async fn stack_trace(&mut self, dap_thread_id: i64) -> Result<Vec<serde_json::Value>> {
-        let thread = dap_thread_id
-            .try_into()
-            .map_err(|_| DebuggerError::InvalidRequest(format!("invalid threadId {dap_thread_id}")))?;
+        let thread = dap_thread_id.try_into().map_err(|_| {
+            DebuggerError::InvalidRequest(format!("invalid threadId {dap_thread_id}"))
+        })?;
 
         let frames = self.jdwp.frames(thread, 0, 100).await?;
         let mut out = Vec::with_capacity(frames.len());
         for frame in frames {
             let frame_id = self.alloc_frame_handle(thread, &frame);
-            let name = self.method_name(frame.location.class_id, frame.location.method_id).await.unwrap_or_else(|| "frame".to_string());
+            let name = self
+                .method_name(frame.location.class_id, frame.location.method_id)
+                .await
+                .unwrap_or_else(|| "frame".to_string());
             let source = self.source_file(frame.location.class_id).await.ok();
-            let line = self.line_number(frame.location.class_id, frame.location.method_id, frame.location.index).await.unwrap_or(1);
+            let line = self
+                .line_number(
+                    frame.location.class_id,
+                    frame.location.method_id,
+                    frame.location.index,
+                )
+                .await
+                .unwrap_or(1);
 
             out.push(json!({
                 "id": frame_id,
@@ -177,7 +197,9 @@ impl Debugger {
 
     pub fn scopes(&mut self, frame_id: i64) -> Result<Vec<serde_json::Value>> {
         let Some(frame) = self.frame_handles.get(frame_id).copied() else {
-            return Err(DebuggerError::InvalidRequest(format!("unknown frameId {frame_id}")));
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown frameId {frame_id}"
+            )));
         };
 
         let locals_ref = self.var_handles.alloc(VarRef::FrameLocals(frame));
@@ -190,7 +212,12 @@ impl Debugger {
         })])
     }
 
-    pub async fn variables(&mut self, variables_reference: i64, start: Option<i64>, count: Option<i64>) -> Result<Vec<serde_json::Value>> {
+    pub async fn variables(
+        &mut self,
+        variables_reference: i64,
+        start: Option<i64>,
+        count: Option<i64>,
+    ) -> Result<Vec<serde_json::Value>> {
         let Some(var_ref) = self.var_handles.get(variables_reference).cloned() else {
             return Ok(Vec::new());
         };
@@ -202,7 +229,11 @@ impl Debugger {
         }
     }
 
-    pub async fn set_breakpoints(&mut self, source_path: &str, lines: Vec<i32>) -> Result<Vec<serde_json::Value>> {
+    pub async fn set_breakpoints(
+        &mut self,
+        source_path: &str,
+        lines: Vec<i32>,
+    ) -> Result<Vec<serde_json::Value>> {
         let file = Path::new(source_path)
             .file_name()
             .and_then(|s| s.to_str())
@@ -215,7 +246,8 @@ impl Debugger {
             }
         }
 
-        self.requested_breakpoints.insert(file.clone(), lines.clone());
+        self.requested_breakpoints
+            .insert(file.clone(), lines.clone());
 
         let mut results = Vec::with_capacity(lines.len());
 
@@ -256,7 +288,9 @@ impl Debugger {
             self.breakpoints.insert(file.clone(), entries);
         } else {
             for line in lines {
-                results.push(json!({"verified": false, "line": line, "message": "class not loaded yet"}));
+                results.push(
+                    json!({"verified": false, "line": line, "message": "class not loaded yet"}),
+                );
             }
         }
 
@@ -274,9 +308,9 @@ impl Debugger {
     }
 
     pub async fn step(&mut self, dap_thread_id: i64, depth: StepDepth) -> Result<()> {
-        let thread: ThreadId = dap_thread_id
-            .try_into()
-            .map_err(|_| DebuggerError::InvalidRequest(format!("invalid threadId {dap_thread_id}")))?;
+        let thread: ThreadId = dap_thread_id.try_into().map_err(|_| {
+            DebuggerError::InvalidRequest(format!("invalid threadId {dap_thread_id}"))
+        })?;
 
         if let Some(old) = self.step_request.take() {
             let _ = self.jdwp.event_request_clear(1, old).await;
@@ -329,7 +363,11 @@ impl Debugger {
 
     pub async fn handle_vm_event(&mut self, event: &JdwpEvent) {
         match event {
-            JdwpEvent::ClassPrepare { ref_type_tag, type_id, .. } => {
+            JdwpEvent::ClassPrepare {
+                ref_type_tag,
+                type_id,
+                ..
+            } => {
                 let _ = self.on_class_prepare(*ref_type_tag, *type_id).await;
             }
             JdwpEvent::SingleStep { request_id, .. } => {
@@ -342,25 +380,40 @@ impl Debugger {
         }
     }
 
-    pub async fn evaluate(&mut self, frame_id: i64, expression: &str) -> Result<Option<serde_json::Value>> {
+    pub async fn evaluate(
+        &mut self,
+        frame_id: i64,
+        expression: &str,
+    ) -> Result<Option<serde_json::Value>> {
         let expr = expression.trim();
         if expr.is_empty() {
             return Ok(Some(json!({"result": "", "variablesReference": 0})));
         }
         if !is_identifier(expr) {
-            return Ok(Some(json!({"result": format!("unsupported expression: {expr}"), "variablesReference": 0})));
+            return Ok(Some(
+                json!({"result": format!("unsupported expression: {expr}"), "variablesReference": 0}),
+            ));
         }
         let Some(frame) = self.frame_handles.get(frame_id).copied() else {
-            return Err(DebuggerError::InvalidRequest(format!("unknown frameId {frame_id}")));
+            return Err(DebuggerError::InvalidRequest(format!(
+                "unknown frameId {frame_id}"
+            )));
         };
         let vars = self.locals_variables(&frame).await?;
         for v in vars {
             if v.get("name").and_then(|v| v.as_str()) == Some(expr) {
-                let result = v.get("value").cloned().unwrap_or(Value::String(String::new()));
-                return Ok(Some(json!({"result": result, "variablesReference": v.get("variablesReference").cloned().unwrap_or(json!(0))})));
+                let result = v
+                    .get("value")
+                    .cloned()
+                    .unwrap_or(Value::String(String::new()));
+                return Ok(Some(
+                    json!({"result": result, "variablesReference": v.get("variablesReference").cloned().unwrap_or(json!(0))}),
+                ));
             }
         }
-        Ok(Some(json!({"result": format!("not found: {expr}"), "variablesReference": 0})))
+        Ok(Some(
+            json!({"result": format!("not found: {expr}"), "variablesReference": 0}),
+        ))
     }
 
     fn alloc_frame_handle(&mut self, thread: ThreadId, frame: &FrameInfo) -> i64 {
@@ -371,7 +424,10 @@ impl Debugger {
         })
     }
 
-    async fn source_file(&mut self, class_id: ReferenceTypeId) -> std::result::Result<String, JdwpError> {
+    async fn source_file(
+        &mut self,
+        class_id: ReferenceTypeId,
+    ) -> std::result::Result<String, JdwpError> {
         if let Some(v) = self.source_cache.get(&class_id) {
             return Ok(v.clone());
         }
@@ -387,12 +443,20 @@ impl Debugger {
             }
         }
         let methods = self.jdwp.reference_type_methods(class_id).await.ok()?;
-        let name = methods.iter().find(|m| m.method_id == method_id).map(|m| m.name.clone());
+        let name = methods
+            .iter()
+            .find(|m| m.method_id == method_id)
+            .map(|m| m.name.clone());
         self.methods_cache.insert(class_id, methods);
         name
     }
 
-    async fn line_number(&mut self, class_id: ReferenceTypeId, method_id: u64, index: u64) -> std::result::Result<i32, JdwpError> {
+    async fn line_number(
+        &mut self,
+        class_id: ReferenceTypeId,
+        method_id: u64,
+        index: u64,
+    ) -> std::result::Result<i32, JdwpError> {
         let key = (class_id, method_id);
         let table = if let Some(t) = self.line_table_cache.get(&key) {
             t.clone()
@@ -419,10 +483,16 @@ impl Debugger {
 
         let in_scope: Vec<VariableInfo> = vars
             .into_iter()
-            .filter(|v| v.code_index <= frame.location.index && frame.location.index < v.code_index + (v.length as u64))
+            .filter(|v| {
+                v.code_index <= frame.location.index
+                    && frame.location.index < v.code_index + (v.length as u64)
+            })
             .collect();
 
-        let slots: Vec<(u32, String)> = in_scope.iter().map(|v| (v.slot, v.signature.clone())).collect();
+        let slots: Vec<(u32, String)> = in_scope
+            .iter()
+            .map(|v| (v.slot, v.signature.clone()))
+            .collect();
         let values = self
             .jdwp
             .stack_frame_get_values(frame.thread, frame.frame_id, &slots)
@@ -442,7 +512,10 @@ impl Debugger {
         let class_id = self.jdwp.object_reference_reference_type(object_id).await?;
         let fields = self.jdwp.reference_type_fields(class_id).await?;
         let field_ids: Vec<u64> = fields.iter().map(|f| f.field_id).collect();
-        let values = self.jdwp.object_reference_get_values(object_id, &field_ids).await?;
+        let values = self
+            .jdwp
+            .object_reference_get_values(object_id, &field_ids)
+            .await?;
         let mut out = Vec::with_capacity(fields.len());
         for (field, value) in fields.into_iter().zip(values.into_iter()) {
             out.push(self.render_variable(field.name, value));
@@ -450,7 +523,12 @@ impl Debugger {
         Ok(out)
     }
 
-    async fn array_elements(&mut self, array_id: ObjectId, start: Option<i64>, count: Option<i64>) -> Result<Vec<serde_json::Value>> {
+    async fn array_elements(
+        &mut self,
+        array_id: ObjectId,
+        start: Option<i64>,
+        count: Option<i64>,
+    ) -> Result<Vec<serde_json::Value>> {
         if array_id == 0 {
             return Ok(Vec::new());
         }
@@ -487,7 +565,11 @@ impl Debugger {
         }
     }
 
-    async fn location_for_line(&mut self, class: &ClassInfo, line: i32) -> Result<Option<Location>> {
+    async fn location_for_line(
+        &mut self,
+        class: &ClassInfo,
+        line: i32,
+    ) -> Result<Option<Location>> {
         let methods = if let Some(methods) = self.methods_cache.get(&class.type_id) {
             methods.clone()
         } else {
@@ -502,7 +584,9 @@ impl Debugger {
                 .method_line_table(class.type_id, method.method_id)
                 .await
                 .ok();
-            let Some(table) = table else { continue; };
+            let Some(table) = table else {
+                continue;
+            };
             if let Some(entry) = table.lines.iter().find(|e| e.line == line) {
                 return Ok(Some(Location {
                     type_tag: class.ref_type_tag,
@@ -523,7 +607,11 @@ impl Debugger {
         let class = ClassInfo {
             ref_type_tag,
             type_id,
-            signature: self.jdwp.reference_type_signature(type_id).await.unwrap_or_default(),
+            signature: self
+                .jdwp
+                .reference_type_signature(type_id)
+                .await
+                .unwrap_or_default(),
             status: 0,
         };
         let mut entries = Vec::new();

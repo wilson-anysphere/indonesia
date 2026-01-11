@@ -80,4 +80,3 @@ fn workspace_diagnostics_include_jpa_missing_id_and_jpql_errors() {
         report.diagnostics
     );
 }
-

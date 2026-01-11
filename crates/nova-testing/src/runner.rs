@@ -6,9 +6,9 @@ use crate::{NovaTestingError, Result, SCHEMA_VERSION};
 use std::collections::BTreeMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::time::{Duration, SystemTime};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 use walkdir::WalkDir;
 
 pub fn run_tests(req: &TestRunRequest) -> Result<TestRunResponse> {
@@ -249,7 +249,10 @@ fn is_modified_since(path: &Path, cutoff: SystemTime) -> bool {
     modified >= cutoff
 }
 
-fn filter_results_by_request(cases: Vec<TestCaseResult>, requested: &[String]) -> Vec<TestCaseResult> {
+fn filter_results_by_request(
+    cases: Vec<TestCaseResult>,
+    requested: &[String],
+) -> Vec<TestCaseResult> {
     if requested.is_empty() {
         return cases;
     }

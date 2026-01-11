@@ -341,10 +341,7 @@ fn minimal_text_edit(original: &str, formatted: &str) -> Option<TextEdit> {
         TextSize::from(orig_end as u32),
     );
 
-    Some(TextEdit::new(
-        range,
-        formatted[start..fmt_end].to_string(),
-    ))
+    Some(TextEdit::new(range, formatted[start..fmt_end].to_string()))
 }
 
 fn common_prefix_len(a: &str, b: &str) -> usize {

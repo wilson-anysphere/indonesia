@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -52,7 +52,10 @@ pub(crate) struct LoadedSymbolIndex {
 }
 
 pub(crate) fn fingerprint_jmods(jmod_paths: &[PathBuf]) -> std::io::Result<Vec<JmodFingerprint>> {
-    jmod_paths.iter().map(|p| JmodFingerprint::for_path(p)).collect()
+    jmod_paths
+        .iter()
+        .map(|p| JmodFingerprint::for_path(p))
+        .collect()
 }
 
 pub(crate) fn load_symbol_index(

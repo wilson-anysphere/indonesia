@@ -398,7 +398,12 @@ where
     Ok(())
 }
 
-fn send_event(tx: &mpsc::UnboundedSender<Value>, seq: &Arc<AtomicI64>, event: impl Into<String>, body: Option<Value>) {
+fn send_event(
+    tx: &mpsc::UnboundedSender<Value>,
+    seq: &Arc<AtomicI64>,
+    event: impl Into<String>,
+    body: Option<Value>,
+) {
     let s = seq.fetch_add(1, Ordering::Relaxed);
     let evt = make_event(s, event, body);
     let _ = tx.send(serde_json::to_value(evt).unwrap_or_else(|_| json!({})));
@@ -417,7 +422,11 @@ fn send_response(
     let _ = tx.send(serde_json::to_value(resp).unwrap_or_else(|_| json!({})));
 }
 
-fn send_terminated_once(tx: &mpsc::UnboundedSender<Value>, seq: &Arc<AtomicI64>, terminated_sent: &Arc<AtomicBool>) {
+fn send_terminated_once(
+    tx: &mpsc::UnboundedSender<Value>,
+    seq: &Arc<AtomicI64>,
+    terminated_sent: &Arc<AtomicBool>,
+) {
     if terminated_sent
         .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
         .is_ok()
@@ -448,7 +457,9 @@ fn spawn_event_task(
         let Some(mut events) = events else {
             return;
         };
-        let Some(shutdown) = shutdown else { return; };
+        let Some(shutdown) = shutdown else {
+            return;
+        };
 
         loop {
             let event = tokio::select! {
@@ -481,7 +492,9 @@ fn spawn_event_task(
                         &tx,
                         &seq,
                         "stopped",
-                        Some(json!({"reason": "breakpoint", "threadId": thread as i64, "allThreadsStopped": false})),
+                        Some(
+                            json!({"reason": "breakpoint", "threadId": thread as i64, "allThreadsStopped": false}),
+                        ),
                     );
                 }
                 nova_jdwp::wire::JdwpEvent::SingleStep { thread, .. } => {
@@ -489,7 +502,9 @@ fn spawn_event_task(
                         &tx,
                         &seq,
                         "stopped",
-                        Some(json!({"reason": "step", "threadId": thread as i64, "allThreadsStopped": false})),
+                        Some(
+                            json!({"reason": "step", "threadId": thread as i64, "allThreadsStopped": false}),
+                        ),
                     );
                 }
                 nova_jdwp::wire::JdwpEvent::Exception { thread, .. } => {
@@ -497,7 +512,9 @@ fn spawn_event_task(
                         &tx,
                         &seq,
                         "stopped",
-                        Some(json!({"reason": "exception", "threadId": thread as i64, "allThreadsStopped": false})),
+                        Some(
+                            json!({"reason": "exception", "threadId": thread as i64, "allThreadsStopped": false}),
+                        ),
                     );
                 }
                 nova_jdwp::wire::JdwpEvent::VmDeath => {

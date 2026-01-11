@@ -123,14 +123,18 @@ impl Index {
     pub fn find_name_candidates(&self, name: &str) -> Vec<ReferenceCandidate> {
         let mut out = Vec::new();
         for (file, text) in &self.files {
-            out.extend(find_identifier_occurrences(text, name).into_iter().map(|range| {
-                let kind = classify_occurrence(text, range);
-                ReferenceCandidate {
-                    file: file.clone(),
-                    range,
-                    kind,
-                }
-            }));
+            out.extend(
+                find_identifier_occurrences(text, name)
+                    .into_iter()
+                    .map(|range| {
+                        let kind = classify_occurrence(text, range);
+                        ReferenceCandidate {
+                            file: file.clone(),
+                            range,
+                            kind,
+                        }
+                    }),
+            );
         }
         out
     }
@@ -409,7 +413,10 @@ impl<'a> JavaSketchParser<'a> {
             end += 1;
         }
         self.cursor = end;
-        Some((self.text[start..end].to_string(), TextRange::new(start, end)))
+        Some((
+            self.text[start..end].to_string(),
+            TextRange::new(start, end),
+        ))
     }
 
     fn scan_identifier(&mut self) -> Option<(String, TextRange)> {
@@ -633,7 +640,11 @@ fn find_matching_brace(text: &str, open_brace: usize) -> Option<usize> {
     find_matching_brace_with_offset(text, 0, open_brace)
 }
 
-fn find_matching_brace_with_offset(text: &str, base_offset: usize, open_brace: usize) -> Option<usize> {
+fn find_matching_brace_with_offset(
+    text: &str,
+    base_offset: usize,
+    open_brace: usize,
+) -> Option<usize> {
     let bytes = text.as_bytes();
     let mut depth = 0usize;
     let mut i = open_brace;
@@ -685,4 +696,3 @@ fn find_matching_brace_with_offset(text: &str, base_offset: usize, open_brace: u
     }
     None
 }
-

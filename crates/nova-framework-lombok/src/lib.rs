@@ -6,12 +6,12 @@
 
 use std::collections::HashSet;
 
+use nova_core::ProjectId;
 use nova_framework::{
-    Database, FrameworkAnalyzer, VirtualConstructor, VirtualField, VirtualInnerClass, VirtualMember,
-    VirtualMethod,
+    Database, FrameworkAnalyzer, VirtualConstructor, VirtualField, VirtualInnerClass,
+    VirtualMember, VirtualMethod,
 };
 use nova_hir::framework::{ClassData, FieldData};
-use nova_core::ProjectId;
 use nova_types::{ClassId, Parameter, Type};
 
 pub struct LombokAnalyzer;

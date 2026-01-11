@@ -718,7 +718,9 @@ mod tests {
         std::fs::create_dir_all(root.join(".mvn").join("wrapper")).unwrap();
         std::fs::write(root.join(".mvn").join("maven.config"), "-DskipTests\n").unwrap();
         std::fs::write(
-            root.join(".mvn").join("wrapper").join("maven-wrapper.properties"),
+            root.join(".mvn")
+                .join("wrapper")
+                .join("maven-wrapper.properties"),
             "distributionUrl=https://example.invalid/maven.zip\n",
         )
         .unwrap();

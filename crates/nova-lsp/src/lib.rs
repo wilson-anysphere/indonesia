@@ -31,53 +31,53 @@
 //! - Resilience endpoints
 //!   - `nova/bugReport`
 
-pub mod decompile;
-pub mod code_action;
 mod ai_codegen;
+pub mod code_action;
+mod completion_resolve;
+pub mod decompile;
 pub mod extensions;
 pub mod extract_method;
-pub mod hardening;
-pub mod refactor;
-pub mod handlers;
 pub mod formatting;
+pub mod handlers;
+pub mod hardening;
 pub mod imports;
-mod completion_resolve;
+pub mod refactor;
 
 mod cancellation;
-mod diagnostics;
-mod distributed;
-mod server;
-pub mod workspace_edit;
 #[cfg(feature = "ai")]
 mod completion_more;
+mod diagnostics;
+mod distributed;
 #[cfg(feature = "ai")]
 mod requests;
+mod server;
 #[cfg(feature = "ai")]
 mod to_lsp;
+pub mod workspace_edit;
 
-pub use code_action::{AiCodeAction, AiCodeActionExecutor, CodeActionError, CodeActionOutcome};
 pub use cancellation::RequestCancellation;
-pub use diagnostics::DiagnosticsDebouncer;
-pub use distributed::NovaLspFrontend;
-pub use refactor::{
-    convert_to_record_code_action, extract_member_code_actions, inline_method_code_actions,
-    resolve_extract_member_code_action,
-    safe_delete_code_action, change_signature_schema, RefactorResponse,
-};
-pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
-pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
-pub use completion_resolve::resolve_completion_item;
+pub use code_action::{AiCodeAction, AiCodeActionExecutor, CodeActionError, CodeActionOutcome};
 #[cfg(feature = "ai")]
 pub use completion_more::{
     CompletionContextId, CompletionMoreConfig, NovaCompletionResponse, NovaCompletionService,
 };
+pub use completion_resolve::resolve_completion_item;
+pub use diagnostics::DiagnosticsDebouncer;
+pub use distributed::NovaLspFrontend;
+pub use refactor::{
+    change_signature_schema, convert_to_record_code_action, extract_member_code_actions,
+    inline_method_code_actions, resolve_extract_member_code_action, safe_delete_code_action,
+    RefactorResponse,
+};
 #[cfg(feature = "ai")]
 pub use requests::{MoreCompletionsParams, MoreCompletionsResult, NOVA_COMPLETION_MORE_METHOD};
+pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
+pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
 
 use nova_dap::hot_swap::{BuildSystem, JdwpRedefiner};
-use thiserror::Error;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum NovaLspError {
@@ -138,17 +138,20 @@ pub fn handle_custom_request(method: &str, params: serde_json::Value) -> Result<
     handle_custom_request_inner(method, params)
 }
 
-fn handle_custom_request_inner(method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
+fn handle_custom_request_inner(
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value> {
     hardening::guard_method(method)?;
 
     match method {
         BUG_REPORT_METHOD => hardening::handle_bug_report(params),
-        TEST_DISCOVER_METHOD => hardening::run_with_watchdog(
-            method,
-            params,
-            extensions::test::handle_discover,
-        ),
-        TEST_RUN_METHOD => hardening::run_with_watchdog(method, params, extensions::test::handle_run),
+        TEST_DISCOVER_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::test::handle_discover)
+        }
+        TEST_RUN_METHOD => {
+            hardening::run_with_watchdog(method, params, extensions::test::handle_run)
+        }
         WEB_ENDPOINTS_METHOD | QUARKUS_ENDPOINTS_METHOD => {
             hardening::run_with_watchdog(method, params, extensions::web::handle_endpoints)
         }
@@ -188,9 +191,11 @@ fn handle_custom_request_inner(method: &str, params: serde_json::Value) -> Resul
         BUILD_STATUS_METHOD => {
             hardening::run_with_watchdog(method, params, extensions::build::handle_build_status)
         }
-        BUILD_DIAGNOSTICS_METHOD => {
-            hardening::run_with_watchdog(method, params, extensions::build::handle_build_diagnostics)
-        }
+        BUILD_DIAGNOSTICS_METHOD => hardening::run_with_watchdog(
+            method,
+            params,
+            extensions::build::handle_build_diagnostics,
+        ),
         PROJECT_MODEL_METHOD => {
             hardening::run_with_watchdog(method, params, extensions::build::handle_project_model)
         }
@@ -243,8 +248,8 @@ pub fn handle_custom_request_with_state<B: BuildSystem, J: JdwpRedefiner>(
         DEBUG_CONFIGURATIONS_METHOD => serde_json::to_value(server.debug_configurations())
             .map_err(|err| NovaLspError::Internal(err.to_string())),
         DEBUG_HOT_SWAP_METHOD => {
-            let params: HotSwapParams =
-                serde_json::from_value(params).map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
+            let params: HotSwapParams = serde_json::from_value(params)
+                .map_err(|err| NovaLspError::InvalidParams(err.to_string()))?;
             let hot_swap = hot_swap.ok_or_else(|| {
                 NovaLspError::InvalidParams("hot-swap service is not available".into())
             })?;
@@ -308,17 +313,14 @@ pub fn goto_definition(
         let offset = position_to_offset(text, position);
         if let (Some(file_path), Some(offset)) = (file_path, offset) {
             let root = find_project_root(file_path);
-            if let Ok(targets) = nova_framework_mapstruct::goto_definition(&root, file_path, offset) {
+            if let Ok(targets) = nova_framework_mapstruct::goto_definition(&root, file_path, offset)
+            {
                 if let Some(target) = targets.first() {
                     if let Some(uri) = uri_from_file_path(&target.file) {
                         let range = std::fs::read_to_string(&target.file)
                             .ok()
                             .map(|target_text| {
-                                span_to_lsp_range(
-                                    &target_text,
-                                    target.span.start,
-                                    target.span.end,
-                                )
+                                span_to_lsp_range(&target_text, target.span.start, target.span.end)
                             })
                             .unwrap_or_else(zero_range);
                         return Some(lsp_types::Location { uri, range });

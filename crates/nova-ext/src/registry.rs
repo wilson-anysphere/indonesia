@@ -155,7 +155,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         register_provider("inlay_hint", &mut self.inlay_hint_providers, provider)
     }
 
-    pub fn diagnostics(&self, ctx: ExtensionContext<DB>, params: DiagnosticParams) -> Vec<Diagnostic> {
+    pub fn diagnostics(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: DiagnosticParams,
+    ) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         for (_id, provider) in &self.diagnostic_providers {
             if ctx.cancel.is_cancelled() {
@@ -169,9 +173,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(self.options.diagnostic_timeout, provider_cancel, move || {
-                provider.provide_diagnostics(provider_ctx, params)
-            }) {
+            match run_with_timeout(
+                self.options.diagnostic_timeout,
+                provider_cancel,
+                move || provider.provide_diagnostics(provider_ctx, params),
+            ) {
                 Ok(mut diagnostics) => {
                     diagnostics.truncate(self.options.max_diagnostics_per_provider);
                     out.extend(diagnostics);
@@ -188,7 +194,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         out
     }
 
-    pub fn completions(&self, ctx: ExtensionContext<DB>, params: CompletionParams) -> Vec<CompletionItem> {
+    pub fn completions(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: CompletionParams,
+    ) -> Vec<CompletionItem> {
         let mut out = Vec::new();
         for (_id, provider) in &self.completion_providers {
             if ctx.cancel.is_cancelled() {
@@ -202,9 +212,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(self.options.completion_timeout, provider_cancel, move || {
-                provider.provide_completions(provider_ctx, params)
-            }) {
+            match run_with_timeout(
+                self.options.completion_timeout,
+                provider_cancel,
+                move || provider.provide_completions(provider_ctx, params),
+            ) {
                 Ok(mut completions) => {
                     completions.truncate(self.options.max_completions_per_provider);
                     out.extend(completions);
@@ -221,7 +233,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         out
     }
 
-    pub fn code_actions(&self, ctx: ExtensionContext<DB>, params: CodeActionParams) -> Vec<CodeAction> {
+    pub fn code_actions(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: CodeActionParams,
+    ) -> Vec<CodeAction> {
         let mut out = Vec::new();
         for (_id, provider) in &self.code_action_providers {
             if ctx.cancel.is_cancelled() {
@@ -235,9 +251,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(self.options.code_action_timeout, provider_cancel, move || {
-                provider.provide_code_actions(provider_ctx, params)
-            }) {
+            match run_with_timeout(
+                self.options.code_action_timeout,
+                provider_cancel,
+                move || provider.provide_code_actions(provider_ctx, params),
+            ) {
                 Ok(mut actions) => {
                     actions.truncate(self.options.max_code_actions_per_provider);
                     out.extend(actions);
@@ -272,9 +290,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(self.options.navigation_timeout, provider_cancel, move || {
-                provider.provide_navigation(provider_ctx, params)
-            }) {
+            match run_with_timeout(
+                self.options.navigation_timeout,
+                provider_cancel,
+                move || provider.provide_navigation(provider_ctx, params),
+            ) {
                 Ok(mut targets) => {
                     targets.truncate(self.options.max_navigation_targets_per_provider);
                     out.extend(targets);
@@ -291,7 +311,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
         out
     }
 
-    pub fn inlay_hints(&self, ctx: ExtensionContext<DB>, params: InlayHintParams) -> Vec<InlayHint> {
+    pub fn inlay_hints(
+        &self,
+        ctx: ExtensionContext<DB>,
+        params: InlayHintParams,
+    ) -> Vec<InlayHint> {
         let mut out = Vec::new();
         for (_id, provider) in &self.inlay_hint_providers {
             if ctx.cancel.is_cancelled() {
@@ -305,9 +329,11 @@ impl<DB: ?Sized + Send + Sync + 'static> ExtensionRegistry<DB> {
             let provider_ctx = ctx.with_cancellation(provider_cancel.clone());
             let provider = Arc::clone(provider);
 
-            match run_with_timeout(self.options.inlay_hint_timeout, provider_cancel, move || {
-                provider.provide_inlay_hints(provider_ctx, params)
-            }) {
+            match run_with_timeout(
+                self.options.inlay_hint_timeout,
+                provider_cancel,
+                move || provider.provide_inlay_hints(provider_ctx, params),
+            ) {
                 Ok(mut hints) => {
                     hints.truncate(self.options.max_inlay_hints_per_provider);
                     out.extend(hints);
@@ -387,7 +413,9 @@ pub enum RegisterError {
 impl fmt::Display for RegisterError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RegisterError::DuplicateId { kind, id } => write!(f, "duplicate {kind} provider id: {id}"),
+            RegisterError::DuplicateId { kind, id } => {
+                write!(f, "duplicate {kind} provider id: {id}")
+            }
         }
     }
 }
@@ -435,7 +463,11 @@ mod tests {
                 &self.id
             }
 
-            fn provide_diagnostics(&self, _ctx: ExtensionContext<()>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
                 vec![diag(&self.message)]
             }
         }
@@ -468,7 +500,9 @@ mod tests {
             }))
             .unwrap();
 
-        let params = DiagnosticParams { file: FileId::from_raw(1) };
+        let params = DiagnosticParams {
+            file: FileId::from_raw(1),
+        };
         let out_a = registry_a.diagnostics(ctx(), params);
         let out_b = registry_b.diagnostics(ctx(), params);
 
@@ -487,7 +521,11 @@ mod tests {
                 "slow"
             }
 
-            fn provide_diagnostics(&self, ctx: ExtensionContext<()>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+            fn provide_diagnostics(
+                &self,
+                ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
                 while !ctx.cancel.is_cancelled() {
                     std::thread::sleep(Duration::from_millis(5));
                 }
@@ -501,7 +539,11 @@ mod tests {
                 "fast"
             }
 
-            fn provide_diagnostics(&self, _ctx: ExtensionContext<()>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
                 vec![diag("fast")]
             }
         }
@@ -516,7 +558,12 @@ mod tests {
             .unwrap();
 
         let start = Instant::now();
-        let out = registry.diagnostics(ctx(), DiagnosticParams { file: FileId::from_raw(1) });
+        let out = registry.diagnostics(
+            ctx(),
+            DiagnosticParams {
+                file: FileId::from_raw(1),
+            },
+        );
         let elapsed = start.elapsed();
 
         assert!(
@@ -535,7 +582,11 @@ mod tests {
                 self.0
             }
 
-            fn provide_diagnostics(&self, _ctx: ExtensionContext<()>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
                 vec![diag("1"), diag("2"), diag("3")]
             }
         }
@@ -551,7 +602,12 @@ mod tests {
             .register_diagnostic_provider(Arc::new(ManyProvider("b")))
             .unwrap();
 
-        let out = registry.diagnostics(ctx(), DiagnosticParams { file: FileId::from_raw(1) });
+        let out = registry.diagnostics(
+            ctx(),
+            DiagnosticParams {
+                file: FileId::from_raw(1),
+            },
+        );
         assert_eq!(out.len(), 3);
         assert_eq!(
             out.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(),
@@ -582,21 +638,36 @@ mod tests {
 
         let mut registry_a = ExtensionRegistry::default();
         registry_a
-            .register_completion_provider(Arc::new(Provider { id: "b", label: "from-b" }))
+            .register_completion_provider(Arc::new(Provider {
+                id: "b",
+                label: "from-b",
+            }))
             .unwrap();
         registry_a
-            .register_completion_provider(Arc::new(Provider { id: "a", label: "from-a" }))
+            .register_completion_provider(Arc::new(Provider {
+                id: "a",
+                label: "from-a",
+            }))
             .unwrap();
 
         let mut registry_b = ExtensionRegistry::default();
         registry_b
-            .register_completion_provider(Arc::new(Provider { id: "a", label: "from-a" }))
+            .register_completion_provider(Arc::new(Provider {
+                id: "a",
+                label: "from-a",
+            }))
             .unwrap();
         registry_b
-            .register_completion_provider(Arc::new(Provider { id: "b", label: "from-b" }))
+            .register_completion_provider(Arc::new(Provider {
+                id: "b",
+                label: "from-b",
+            }))
             .unwrap();
 
-        let params = CompletionParams { file: FileId::from_raw(1), offset: 0 };
+        let params = CompletionParams {
+            file: FileId::from_raw(1),
+            offset: 0,
+        };
         let out_a = registry_a.completions(ctx(), params);
         let out_b = registry_b.completions(ctx(), params);
 
@@ -615,7 +686,11 @@ mod tests {
                 "applicable"
             }
 
-            fn provide_diagnostics(&self, _ctx: ExtensionContext<()>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
                 vec![diag("ok")]
             }
         }
@@ -630,16 +705,29 @@ mod tests {
                 false
             }
 
-            fn provide_diagnostics(&self, _ctx: ExtensionContext<()>, _params: DiagnosticParams) -> Vec<Diagnostic> {
+            fn provide_diagnostics(
+                &self,
+                _ctx: ExtensionContext<()>,
+                _params: DiagnosticParams,
+            ) -> Vec<Diagnostic> {
                 vec![diag("should-not-run")]
             }
         }
 
         let mut registry = ExtensionRegistry::default();
-        registry.register_diagnostic_provider(Arc::new(Inapplicable)).unwrap();
-        registry.register_diagnostic_provider(Arc::new(Applicable)).unwrap();
+        registry
+            .register_diagnostic_provider(Arc::new(Inapplicable))
+            .unwrap();
+        registry
+            .register_diagnostic_provider(Arc::new(Applicable))
+            .unwrap();
 
-        let out = registry.diagnostics(ctx(), DiagnosticParams { file: FileId::from_raw(1) });
+        let out = registry.diagnostics(
+            ctx(),
+            DiagnosticParams {
+                file: FileId::from_raw(1),
+            },
+        );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].message, "ok");
     }

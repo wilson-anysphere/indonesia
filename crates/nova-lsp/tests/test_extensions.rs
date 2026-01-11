@@ -33,8 +33,8 @@ fn lsp_test_debug_configuration_returns_command() {
         "test": "com.example.CalculatorTest#adds",
     });
 
-    let value = nova_lsp::handle_custom_request(nova_lsp::TEST_DEBUG_CONFIGURATION_METHOD, params)
-        .unwrap();
+    let value =
+        nova_lsp::handle_custom_request(nova_lsp::TEST_DEBUG_CONFIGURATION_METHOD, params).unwrap();
     let resp: TestDebugResponse = serde_json::from_value(value).unwrap();
 
     assert_eq!(resp.schema_version, nova_testing::SCHEMA_VERSION);
@@ -104,14 +104,15 @@ fn lsp_debug_configurations_extension_discovers_main_and_tests() {
 
 #[test]
 fn lsp_generated_sources_extension_lists_roots() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../nova-apt/testdata/maven_simple");
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
 
     let params = serde_json::json!({
         "projectRoot": fixture.to_string_lossy(),
     });
 
-    let value = nova_lsp::handle_custom_request(nova_lsp::JAVA_GENERATED_SOURCES_METHOD, params).unwrap();
+    let value =
+        nova_lsp::handle_custom_request(nova_lsp::JAVA_GENERATED_SOURCES_METHOD, params).unwrap();
 
     assert!(value
         .get("enabled")
@@ -139,18 +140,15 @@ fn lsp_generated_sources_extension_lists_roots() {
 
 #[test]
 fn lsp_run_annotation_processing_extension_reports_progress() {
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../nova-apt/testdata/maven_simple");
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nova-apt/testdata/maven_simple");
 
     let params = serde_json::json!({
         "projectRoot": fixture.to_string_lossy(),
     });
 
-    let value = nova_lsp::handle_custom_request(
-        nova_lsp::RUN_ANNOTATION_PROCESSING_METHOD,
-        params,
-    )
-    .unwrap();
+    let value = nova_lsp::handle_custom_request(nova_lsp::RUN_ANNOTATION_PROCESSING_METHOD, params)
+        .unwrap();
 
     let progress = value
         .get("progress")

@@ -249,4 +249,3 @@ fn methods_of_virtual_inner(
 
     out
 }
-

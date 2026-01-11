@@ -161,7 +161,10 @@ fn stdio_server_handles_ai_explain_error_code_action() {
     mock.assert_hits(1);
 
     // 5) shutdown + exit
-    write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }));
+    write_jsonrpc_message(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "id": 4, "method": "shutdown" }),
+    );
     let _shutdown_resp = read_response_with_id(&mut stdout, 4);
 
     write_jsonrpc_message(&mut stdin, &json!({ "jsonrpc": "2.0", "method": "exit" }));

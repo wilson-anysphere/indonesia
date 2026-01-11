@@ -1,5 +1,5 @@
-use nova_refactor::extract_method::{ExtractMethod, InsertionStrategy, Visibility};
 use nova_refactor::apply_edits;
+use nova_refactor::extract_method::{ExtractMethod, InsertionStrategy, Visibility};
 use nova_test_utils::extract_range;
 use std::collections::BTreeMap;
 
@@ -17,10 +17,19 @@ fn assert_no_overlaps(edits: &[nova_refactor::TextEdit]) {
     }
 
     for (_file, mut edits) in by_file {
-        edits.sort_by(|a, b| a.range.start.cmp(&b.range.start).then_with(|| a.range.end.cmp(&b.range.end)));
+        edits.sort_by(|a, b| {
+            a.range
+                .start
+                .cmp(&b.range.start)
+                .then_with(|| a.range.end.cmp(&b.range.end))
+        });
         let mut last_end = 0;
         for edit in edits {
-            assert!(edit.range.start >= last_end, "edits overlap at {:?}", edit.range);
+            assert!(
+                edit.range.start >= last_end,
+                "edits overlap at {:?}",
+                edit.range
+            );
             last_end = last_end.max(edit.range.end);
         }
     }
@@ -133,7 +142,9 @@ class C {
         insertion_strategy: InsertionStrategy::AfterCurrentMethod,
     };
 
-    let err = refactoring.apply(&source).expect_err("should reject selection");
+    let err = refactoring
+        .apply(&source)
+        .expect_err("should reject selection");
     assert!(err.contains("IllegalControlFlow"));
 }
 

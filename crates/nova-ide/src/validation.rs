@@ -14,4 +14,3 @@ pub fn validate_ai_completion(
         config.ai_max_tokens,
     )
 }
-

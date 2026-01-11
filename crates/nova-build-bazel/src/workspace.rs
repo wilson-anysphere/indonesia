@@ -1,7 +1,5 @@
 use crate::{
-    aquery::{
-        extract_java_compile_info, parse_aquery_textproto_streaming, JavaCompileInfo,
-    },
+    aquery::{extract_java_compile_info, parse_aquery_textproto_streaming, JavaCompileInfo},
     cache::{BazelCache, BuildFileDigest, CacheEntry},
     command::CommandRunner,
 };
@@ -155,10 +153,7 @@ impl<R: CommandRunner> BazelWorkspace<R> {
         Ok(())
     }
 
-    fn build_file_digests_for_target(
-        &self,
-        target: &str,
-    ) -> Result<Vec<BuildFileDigest>> {
+    fn build_file_digests_for_target(&self, target: &str) -> Result<Vec<BuildFileDigest>> {
         let build_files = self.build_definition_inputs_for_target(target)?;
         digest_workspace_files(&self.root, &build_files)
     }
@@ -233,7 +228,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             "bazel",
             &["query", &buildfiles_query, "--output=label"],
         ) {
-            for label in output.stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            for label in output
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+            {
                 if let Some(path) = workspace_path_from_label(label) {
                     inputs.insert(path);
                 }
@@ -249,7 +249,12 @@ impl<R: CommandRunner> BazelWorkspace<R> {
             "bazel",
             &["query", &loadfiles_query, "--output=label"],
         ) {
-            for label in output.stdout.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            for label in output
+                .stdout
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+            {
                 if let Some(path) = workspace_path_from_label(label) {
                     inputs.insert(path);
                 }
@@ -298,7 +303,12 @@ fn build_file_for_label(workspace_root: &Path, label: &str) -> Result<Option<Pat
 fn bazel_config_files(workspace_root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
-    for name in [".bazelrc", ".bazelversion", "MODULE.bazel.lock", "bazelisk.rc"] {
+    for name in [
+        ".bazelrc",
+        ".bazelversion",
+        "MODULE.bazel.lock",
+        "bazelisk.rc",
+    ] {
         let abs = workspace_root.join(name);
         if abs.is_file() {
             paths.push(PathBuf::from(name));
@@ -341,7 +351,10 @@ fn workspace_path_from_label(label: &str) -> Option<PathBuf> {
     }
 }
 
-fn digest_workspace_files(workspace_root: &Path, files: &[PathBuf]) -> Result<Vec<BuildFileDigest>> {
+fn digest_workspace_files(
+    workspace_root: &Path,
+    files: &[PathBuf],
+) -> Result<Vec<BuildFileDigest>> {
     let mut digests = Vec::new();
     for path in files {
         let abs = if path.is_absolute() {

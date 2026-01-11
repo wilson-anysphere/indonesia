@@ -29,7 +29,10 @@ pub fn pack_cache_package(cache_dir: &CacheDir, out_file: &Path) -> Result<()> {
     for rel in &files {
         let disk_path = root.join(rel);
         let fingerprint = Fingerprint::from_file(&disk_path)?;
-        manifest.insert(rel.to_string_lossy().replace('\\', "/"), fingerprint.as_str().to_string());
+        manifest.insert(
+            rel.to_string_lossy().replace('\\', "/"),
+            fingerprint.as_str().to_string(),
+        );
     }
 
     if let Some(parent) = out_file.parent() {
@@ -142,11 +145,13 @@ fn collect_cache_files(root: &Path) -> Result<Vec<PathBuf>> {
                 continue;
             }
 
-            let rel = entry.path().strip_prefix(root).map_err(|_| {
-                CacheError::InvalidArchivePath {
-                    path: entry.path().to_path_buf(),
-                }
-            })?;
+            let rel =
+                entry
+                    .path()
+                    .strip_prefix(root)
+                    .map_err(|_| CacheError::InvalidArchivePath {
+                        path: entry.path().to_path_buf(),
+                    })?;
             files.push(rel.to_path_buf());
         }
     }
@@ -233,11 +238,12 @@ fn extract_selected(
                 continue;
             }
             EntryType::Regular => {
-                let expected = manifest.get(&entry_path_str).ok_or_else(|| {
-                    CacheError::MissingChecksum {
-                        path: entry_path_str.clone(),
-                    }
-                })?;
+                let expected =
+                    manifest
+                        .get(&entry_path_str)
+                        .ok_or_else(|| CacheError::MissingChecksum {
+                            path: entry_path_str.clone(),
+                        })?;
                 let out_path = dest.join(&entry_path);
                 if let Some(parent) = out_path.parent() {
                     std::fs::create_dir_all(parent)?;
@@ -294,9 +300,11 @@ fn fingerprints_match(cache_dir: &CacheDir, metadata: &CacheMetadata) -> (bool, 
 }
 
 fn replace_dir_atomically(src_dir: &Path, dest_dir: &Path) -> Result<()> {
-    let parent = dest_dir.parent().ok_or_else(|| CacheError::InvalidArchivePath {
-        path: dest_dir.to_path_buf(),
-    })?;
+    let parent = dest_dir
+        .parent()
+        .ok_or_else(|| CacheError::InvalidArchivePath {
+            path: dest_dir.to_path_buf(),
+        })?;
     std::fs::create_dir_all(parent)?;
 
     let backup_dir = sibling_with_suffix(dest_dir, "old");
@@ -353,10 +361,7 @@ fn replace_file_atomically(src_file: &Path, dest_file: &Path) -> Result<()> {
 }
 
 fn sibling_with_suffix(path: &Path, suffix: &str) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(OsStr::to_str)
-        .unwrap_or("cache");
+    let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or("cache");
     path.with_file_name(format!("{file_name}.{suffix}"))
 }
 
@@ -383,7 +388,11 @@ fn archive_path_string(path: &Path) -> Result<String> {
         match component {
             Component::Normal(os) => parts.push(os.to_string_lossy()),
             Component::CurDir => {}
-            _ => return Err(CacheError::InvalidArchivePath { path: path.to_path_buf() }),
+            _ => {
+                return Err(CacheError::InvalidArchivePath {
+                    path: path.to_path_buf(),
+                })
+            }
         }
     }
     Ok(parts.join("/"))
@@ -393,7 +402,11 @@ fn validate_archive_relative_path(path: &Path) -> Result<()> {
     for component in path.components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
-            _ => return Err(CacheError::InvalidArchivePath { path: path.to_path_buf() }),
+            _ => {
+                return Err(CacheError::InvalidArchivePath {
+                    path: path.to_path_buf(),
+                })
+            }
         }
     }
     Ok(())
@@ -419,9 +432,12 @@ mod tests {
         std::fs::write(project_root.join("src/Main.java"), b"class Main {}")?;
 
         let cache_root = tmp.path().join("cache-root");
-        let cache_dir = CacheDir::new(&project_root, CacheConfig {
-            cache_root_override: Some(cache_root.clone()),
-        })?;
+        let cache_dir = CacheDir::new(
+            &project_root,
+            CacheConfig {
+                cache_root_override: Some(cache_root.clone()),
+            },
+        )?;
 
         let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("src/Main.java")])?;
         let metadata = CacheMetadata::new(&snapshot);
@@ -433,9 +449,12 @@ mod tests {
         pack_cache_package(&cache_dir, &package_path)?;
 
         std::fs::remove_dir_all(cache_dir.root())?;
-        let cache_dir2 = CacheDir::new(&project_root, CacheConfig {
-            cache_root_override: Some(cache_root),
-        })?;
+        let cache_dir2 = CacheDir::new(
+            &project_root,
+            CacheConfig {
+                cache_root_override: Some(cache_root),
+            },
+        )?;
 
         let outcome = install_cache_package(&cache_dir2, &package_path)?;
         assert_eq!(outcome, CachePackageInstallOutcome::Full);
@@ -455,9 +474,12 @@ mod tests {
         std::fs::write(project_root.join("src/Main.java"), b"class Main {}")?;
 
         let cache_root = tmp.path().join("cache-root");
-        let cache_dir = CacheDir::new(&project_root, CacheConfig {
-            cache_root_override: Some(cache_root.clone()),
-        })?;
+        let cache_dir = CacheDir::new(
+            &project_root,
+            CacheConfig {
+                cache_root_override: Some(cache_root.clone()),
+            },
+        )?;
 
         let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("src/Main.java")])?;
         let mut metadata = CacheMetadata::new(&snapshot);
@@ -484,9 +506,12 @@ mod tests {
         std::fs::write(project_root.join("src/Main.java"), b"class Main {}")?;
 
         let cache_root = tmp.path().join("cache-root");
-        let cache_dir = CacheDir::new(&project_root, CacheConfig {
-            cache_root_override: Some(cache_root.clone()),
-        })?;
+        let cache_dir = CacheDir::new(
+            &project_root,
+            CacheConfig {
+                cache_root_override: Some(cache_root.clone()),
+            },
+        )?;
 
         let snapshot = ProjectSnapshot::new(&project_root, vec![PathBuf::from("src/Main.java")])?;
         let mut metadata = CacheMetadata::new(&snapshot);

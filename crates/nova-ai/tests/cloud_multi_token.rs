@@ -8,7 +8,7 @@ use serde_json::json;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use url::Url;
- 
+
 fn ctx() -> MultiTokenCompletionContext {
     MultiTokenCompletionContext {
         receiver_type: Some("Stream<Person>".into()),
@@ -18,7 +18,7 @@ fn ctx() -> MultiTokenCompletionContext {
         importable_paths: vec!["java.util.stream.Collectors".into()],
     }
 }
- 
+
 fn provider_for_server(server: &MockServer) -> CloudMultiTokenCompletionProvider {
     let cfg = CloudLlmConfig {
         provider: ProviderKind::Http,
@@ -45,13 +45,13 @@ fn provider_for_server(server: &MockServer) -> CloudMultiTokenCompletionProvider
             ..PrivacyMode::default()
         })
 }
- 
+
 #[tokio::test]
 async fn sends_prompt_with_context_and_parses_raw_json() {
     let server = MockServer::start();
- 
+
     let completion_payload = r#"{"completions":[{"label":"chain","insert_text":"filter(x -> true)","format":"plain","additional_edits":[],"confidence":0.9}]}"#;
- 
+
     let mock = server.mock(|when, then| {
         when.method(POST)
             .path("/complete")
@@ -65,7 +65,7 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
         then.status(200)
             .json_body(json!({ "completion": completion_payload }));
     });
- 
+
     let provider = provider_for_server(&server);
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
 
@@ -73,7 +73,7 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
         .complete_multi_token(prompt, 3, CancellationToken::new())
         .await
         .expect("provider call succeeds");
- 
+
     mock.assert();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].label, "chain");
@@ -81,20 +81,18 @@ async fn sends_prompt_with_context_and_parses_raw_json() {
     assert_eq!(out[0].format, MultiTokenInsertTextFormat::PlainText);
     assert!((out[0].confidence - 0.9).abs() < f32::EPSILON);
 }
- 
+
 #[tokio::test]
 async fn parses_json_wrapped_in_fenced_block() {
     let server = MockServer::start();
     let completion_payload = r#"{"completions":[{"label":"fenced","insert_text":"map(x -> x)","format":"plain","additional_edits":[],"confidence":0.7}]}"#;
-    let wrapped = format!(
-        "Here you go:\n```json\n{completion_payload}\n```\n"
-    );
- 
+    let wrapped = format!("Here you go:\n```json\n{completion_payload}\n```\n");
+
     let mock = server.mock(|when, then| {
         when.method(POST).path("/complete");
         then.status(200).json_body(json!({ "completion": wrapped }));
     });
- 
+
     let provider = provider_for_server(&server);
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
 
@@ -102,7 +100,7 @@ async fn parses_json_wrapped_in_fenced_block() {
         .complete_multi_token(prompt, 3, CancellationToken::new())
         .await
         .expect("provider call succeeds");
- 
+
     mock.assert();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].label, "fenced");
@@ -110,15 +108,16 @@ async fn parses_json_wrapped_in_fenced_block() {
     assert_eq!(out[0].format, MultiTokenInsertTextFormat::PlainText);
     assert!((out[0].confidence - 0.7).abs() < f32::EPSILON);
 }
- 
+
 #[tokio::test]
 async fn invalid_json_gracefully_degrades_to_empty() {
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST).path("/complete");
-        then.status(200).json_body(json!({ "completion": "not json" }));
+        then.status(200)
+            .json_body(json!({ "completion": "not json" }));
     });
- 
+
     let provider = provider_for_server(&server);
     let prompt = CompletionContextBuilder::new(10_000).build_completion_prompt(&ctx(), 3);
 
@@ -126,7 +125,7 @@ async fn invalid_json_gracefully_degrades_to_empty() {
         .complete_multi_token(prompt, 3, CancellationToken::new())
         .await
         .expect("provider call succeeds");
- 
+
     mock.assert();
     assert!(out.is_empty());
 }

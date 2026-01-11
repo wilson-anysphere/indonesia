@@ -1,5 +1,7 @@
 use crate::classfile::ClassFile;
-use crate::descriptor::{parse_field_descriptor, parse_method_descriptor, FieldType, MethodDescriptor};
+use crate::descriptor::{
+    parse_field_descriptor, parse_method_descriptor, FieldType, MethodDescriptor,
+};
 use crate::error::Result;
 use crate::signature::{
     parse_class_signature, parse_field_signature, parse_method_signature, ClassSignature,
