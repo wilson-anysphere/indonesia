@@ -39,6 +39,7 @@ impl CommandRunner for DeadlineCommandRunner {
 
         let runner = DefaultCommandRunner {
             timeout: Some(remaining),
+            ..Default::default()
         };
         runner.run(cwd, program, args)
     }
