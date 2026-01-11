@@ -1,12 +1,18 @@
 use crate::error::CacheError;
-use crate::metadata::{
-    CacheMetadata, CacheMetadataArchive, CACHE_METADATA_BIN_FILENAME, CACHE_METADATA_JSON_FILENAME,
-};
+use crate::metadata::{CacheMetadataArchive, CACHE_METADATA_BIN_FILENAME, CACHE_METADATA_JSON_FILENAME};
 use crate::util::now_millis;
 use crate::CacheConfig;
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+
+#[derive(Debug, Deserialize)]
+struct CacheMetadataSummary {
+    schema_version: Option<u32>,
+    nova_version: Option<String>,
+    last_updated_millis: Option<u64>,
+}
 
 /// Information about a single per-project cache directory under the global cache root.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,10 +131,10 @@ pub fn enumerate_project_caches(
                     .is_some_and(|meta| meta.is_file())
                 {
                     if let Ok(bytes) = std::fs::read(&metadata_path) {
-                        if let Ok(metadata) = serde_json::from_slice::<CacheMetadata>(&bytes) {
-                            last_updated_millis = Some(metadata.last_updated_millis);
-                            nova_version = Some(metadata.nova_version);
-                            schema_version = Some(metadata.schema_version);
+                        if let Ok(metadata) = serde_json::from_slice::<CacheMetadataSummary>(&bytes) {
+                            last_updated_millis = metadata.last_updated_millis;
+                            nova_version = metadata.nova_version;
+                            schema_version = metadata.schema_version;
                         }
                     }
                 }
