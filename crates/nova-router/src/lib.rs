@@ -17,7 +17,7 @@ use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, RwLock, Semaphore};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{timeout, Duration, Instant};
 use tracing::{error, info, warn};
@@ -55,6 +55,9 @@ pub fn init_observability(
 
 const WORKSPACE_SYMBOL_LIMIT: usize = 200;
 const FALLBACK_SCAN_LIMIT: usize = 50_000;
+const MAX_CONCURRENT_HANDSHAKES: usize = 128;
+const WORKER_RPC_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const WORKER_RPC_READ_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 const WORKER_RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(50);
 const WORKER_RESTART_BACKOFF_MAX: Duration = Duration::from_secs(5);
@@ -463,6 +466,7 @@ struct RouterState {
     global_revision: AtomicU64,
     shards: Mutex<HashMap<ShardId, ShardState>>,
     notify: Notify,
+    handshake_semaphore: Arc<Semaphore>,
 }
 
 struct ShardState {
@@ -539,6 +543,7 @@ impl DistributedRouter {
             global_revision: AtomicU64::new(0),
             shards: Mutex::new(shards),
             notify: Notify::new(),
+            handshake_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_HANDSHAKES)),
         });
 
         let accept_state = state.clone();
@@ -838,9 +843,28 @@ async fn accept_loop_unix(
             res = listener.accept() => {
                 let (stream, _) = res.with_context(|| format!("accept unix socket {path:?}"))?;
                 let boxed: BoxedStream = Box::new(stream);
-                if let Err(err) = handle_new_connection(state.clone(), boxed, WorkerIdentity::Unauthenticated).await {
-                    warn!(socket_path = %path.display(), error = ?err, "failed to handle worker connection");
-                }
+                let Ok(permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
+                    warn!(
+                        socket_path = %path.display(),
+                        "dropping incoming unix connection: too many pending handshakes"
+                    );
+                    continue;
+                };
+                let conn_state = state.clone();
+                let socket_path = path.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(err) =
+                        handle_new_connection(conn_state, boxed, WorkerIdentity::Unauthenticated)
+                            .await
+                    {
+                        warn!(
+                            socket_path = %socket_path.display(),
+                            error = ?err,
+                            "failed to handle worker connection"
+                        );
+                    }
+                });
             }
         }
     }
@@ -866,11 +890,30 @@ async fn accept_loop_named_pipe(
             res = server.connect() => {
                 res.with_context(|| format!("accept named pipe {name}"))?;
                 let stream: BoxedStream = Box::new(server);
-                if let Err(err) = handle_new_connection(state.clone(), stream, WorkerIdentity::Unauthenticated).await {
-                    warn!(pipe_name = %name, error = ?err, "failed to handle worker connection");
-                }
                 server = ipc_security::create_secure_named_pipe_server(&name, false)
                     .with_context(|| format!("create named pipe {name}"))?;
+                let Ok(permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
+                    warn!(
+                        pipe_name = %name,
+                        "dropping incoming named pipe connection: too many pending handshakes"
+                    );
+                    continue;
+                };
+                let conn_state = state.clone();
+                let pipe_name = name.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(err) =
+                        handle_new_connection(conn_state, stream, WorkerIdentity::Unauthenticated)
+                            .await
+                    {
+                        warn!(
+                            pipe_name = %pipe_name,
+                            error = ?err,
+                            "failed to handle worker connection"
+                        );
+                    }
+                });
             }
         }
     }
@@ -908,31 +951,55 @@ async fn accept_loop_tcp(
             }
             res = listener.accept() => {
                 let (stream, peer_addr) = res.with_context(|| format!("accept tcp {addr}"))?;
-                let (boxed, identity): (BoxedStream, WorkerIdentity) = match &cfg {
-                    TcpListenAddr::Plain(_) => (Box::new(stream), WorkerIdentity::Unauthenticated),
-                    #[cfg(feature = "tls")]
-                    TcpListenAddr::Tls { config, .. } => match tls::accept(stream, config.clone()).await {
-                        Ok(accepted) => {
+                let Ok(permit) = state.handshake_semaphore.clone().try_acquire_owned() else {
+                    warn!(
+                        peer_addr = %peer_addr,
+                        "dropping incoming tcp connection: too many pending handshakes"
+                    );
+                    continue;
+                };
+                let conn_state = state.clone();
+                let cfg = cfg.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let (boxed, identity): (BoxedStream, WorkerIdentity) = match cfg {
+                        TcpListenAddr::Plain(_) => (Box::new(stream), WorkerIdentity::Unauthenticated),
+                        #[cfg(feature = "tls")]
+                        TcpListenAddr::Tls { config, .. } => {
+                            let accepted =
+                                match timeout(WORKER_HANDSHAKE_TIMEOUT, tls::accept(stream, config))
+                                    .await
+                                {
+                                    Ok(res) => res,
+                                    Err(_) => {
+                                        warn!(peer_addr = %peer_addr, "tls accept timed out");
+                                        return;
+                                    }
+                                };
+                            let accepted = match accepted {
+                                Ok(accepted) => accepted,
+                                Err(err) => {
+                                    warn!(peer_addr = %peer_addr, error = ?err, "tls accept failed");
+                                    return;
+                                }
+                            };
                             let identity = accepted
                                 .client_cert_fingerprint
                                 .map(WorkerIdentity::TlsClientCertFingerprint)
                                 .unwrap_or(WorkerIdentity::Unauthenticated);
                             (Box::new(accepted.stream), identity)
                         }
-                        Err(err) => {
-                            warn!(peer_addr = %peer_addr, error = ?err, "tls accept failed");
-                            continue;
-                        }
-                    },
-                };
-                if let Err(err) = handle_new_connection(state.clone(), boxed, identity).await {
-                    warn!(
-                        peer_addr = %peer_addr,
-                        identity = ?identity,
-                        error = ?err,
-                        "failed to handle worker connection"
-                    );
-                }
+                    };
+                    let identity_for_log = identity.clone();
+                    if let Err(err) = handle_new_connection(conn_state, boxed, identity).await {
+                        warn!(
+                            peer_addr = %peer_addr,
+                            identity = ?identity_for_log,
+                            error = ?err,
+                            "failed to handle worker connection"
+                        );
+                    }
+                });
             }
         }
     }
@@ -948,7 +1015,9 @@ async fn handle_new_connection(
     mut stream: BoxedStream,
     identity: WorkerIdentity,
 ) -> Result<()> {
-    let payload = read_payload(&mut stream).await?;
+    let payload = timeout(WORKER_HANDSHAKE_TIMEOUT, read_payload(&mut stream))
+        .await
+        .context("timed out waiting for WorkerHello")??;
     let hello = match nova_remote_proto::decode_message(&payload) {
         Ok(message) => message,
         Err(v2_err) => {
@@ -961,7 +1030,9 @@ async fn handle_new_connection(
                         },
                     );
                     if let Ok(bytes) = nova_remote_proto::v3::encode_wire_frame(&reject) {
-                        let _ = write_payload(&mut stream, &bytes).await;
+                        let _ =
+                            timeout(WORKER_HANDSHAKE_TIMEOUT, write_payload(&mut stream, &bytes))
+                                .await;
                     }
                     return Err(anyhow!(
                         "received v3 worker hello; this router only supports legacy_v2"
@@ -983,11 +1054,14 @@ async fn handle_new_connection(
     if let Some(expected) = state.config.auth_token.as_ref() {
         if auth_token.as_deref() != Some(expected.as_str()) {
             warn!(shard_id, "worker authentication failed");
-            write_message(
-                &mut stream,
-                &RpcMessage::Error {
-                    message: "authentication failed".into(),
-                },
+            timeout(
+                WORKER_HANDSHAKE_TIMEOUT,
+                write_message(
+                    &mut stream,
+                    &RpcMessage::Error {
+                        message: "authentication failed".into(),
+                    },
+                ),
             )
             .await
             .ok();
@@ -1003,11 +1077,14 @@ async fn handle_new_connection(
 
         if enforce_allowlist {
             let Some(fingerprint) = identity.tls_client_cert_fingerprint() else {
-                write_message(
-                    &mut stream,
-                    &RpcMessage::Error {
-                        message: "mTLS client certificate required".into(),
-                    },
+                timeout(
+                    WORKER_HANDSHAKE_TIMEOUT,
+                    write_message(
+                        &mut stream,
+                        &RpcMessage::Error {
+                            message: "mTLS client certificate required".into(),
+                        },
+                    ),
                 )
                 .await
                 .ok();
@@ -1025,11 +1102,14 @@ async fn handle_new_connection(
                 });
 
             if !is_allowed {
-                write_message(
-                    &mut stream,
-                    &RpcMessage::Error {
-                        message: "shard authorization failed".into(),
-                    },
+                timeout(
+                    WORKER_HANDSHAKE_TIMEOUT,
+                    write_message(
+                        &mut stream,
+                        &RpcMessage::Error {
+                            message: "shard authorization failed".into(),
+                        },
+                    ),
                 )
                 .await
                 .ok();
@@ -1064,23 +1144,30 @@ async fn handle_new_connection(
                 anyhow!("worker already connected for shard {shard_id}"),
             ),
         };
-        write_message(&mut stream, &RpcMessage::Error { message })
-            .await
-            .ok();
+        timeout(
+            WORKER_HANDSHAKE_TIMEOUT,
+            write_message(&mut stream, &RpcMessage::Error { message }),
+        )
+        .await
+        .ok();
         return Err(err);
     }
 
     let worker_id: WorkerId = state.next_worker_id.fetch_add(1, Ordering::SeqCst);
-    write_message(
-        &mut stream,
-        &RpcMessage::RouterHello {
-            worker_id,
-            shard_id,
-            revision: state.global_revision.load(Ordering::SeqCst),
-            protocol_version: nova_remote_proto::PROTOCOL_VERSION,
-        },
+    timeout(
+        WORKER_HANDSHAKE_TIMEOUT,
+        write_message(
+            &mut stream,
+            &RpcMessage::RouterHello {
+                worker_id,
+                shard_id,
+                revision: state.global_revision.load(Ordering::SeqCst),
+                protocol_version: nova_remote_proto::PROTOCOL_VERSION,
+            },
+        ),
     )
-    .await?;
+    .await
+    .context("timed out sending RouterHello")??;
 
     info!(shard_id, worker_id, has_cached_index, "worker connected");
 
@@ -1155,7 +1242,16 @@ async fn worker_connection_loop(
     while let Some(req) = rx.recv().await {
         let message = req.message;
 
-        if let Err(err) = write_message(&mut stream, &message).await {
+        let write_res = match timeout(
+            WORKER_RPC_WRITE_TIMEOUT,
+            write_message(&mut stream, &message),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => Err(anyhow!("timed out writing worker request")),
+        };
+        if let Err(err) = write_res {
             if let Some(reply) = req.reply {
                 let _ = reply.send(Err(err));
             }
@@ -1169,7 +1265,11 @@ async fn worker_connection_loop(
             break;
         }
 
-        match read_message(&mut stream).await {
+        let read_res = match timeout(WORKER_RPC_READ_TIMEOUT, read_message(&mut stream)).await {
+            Ok(res) => res,
+            Err(_) => Err(anyhow!("timed out waiting for worker response")),
+        };
+        match read_res {
             Ok(resp) => {
                 if let Some(reply) = req.reply {
                     let _ = reply.send(Ok(resp));
