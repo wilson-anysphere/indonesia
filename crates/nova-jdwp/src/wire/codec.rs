@@ -65,7 +65,7 @@ impl JdwpWriter {
 
     pub fn write_string(&mut self, s: &str) {
         // JDWP strings are length-prefixed with a u32 number of bytes.
-        self.write_u32(s.as_bytes().len() as u32);
+        self.write_u32(s.len() as u32);
         self.buf.extend_from_slice(s.as_bytes());
     }
 

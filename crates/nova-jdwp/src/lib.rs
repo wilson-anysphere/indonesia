@@ -229,15 +229,11 @@ pub trait JdwpClient: Send {
             StepKind::Out => self.step_out(thread_id)?,
         }
 
-        loop {
-            match self.wait_for_event()? {
-                Some(JdwpEvent::Stopped(stopped)) => return Ok(stopped),
-                None => {
-                    return Err(JdwpError::Other(
-                        "expected a stopped event after stepping".to_string(),
-                    ))
-                }
-            }
+        match self.wait_for_event()? {
+            Some(JdwpEvent::Stopped(stopped)) => Ok(stopped),
+            None => Err(JdwpError::Other(
+                "expected a stopped event after stepping".to_string(),
+            )),
         }
     }
 

@@ -1227,15 +1227,15 @@ fn primitive_widening(from: PrimitiveType, to: PrimitiveType) -> bool {
     if from == to {
         return true;
     }
-    match (from, to) {
-        (Byte, Short | Int | Long | Float | Double) => true,
-        (Short, Int | Long | Float | Double) => true,
-        (Char, Int | Long | Float | Double) => true,
-        (Int, Long | Float | Double) => true,
-        (Long, Float | Double) => true,
-        (Float, Double) => true,
-        _ => false,
-    }
+    matches!(
+        (from, to),
+        (Byte, Short | Int | Long | Float | Double)
+            | (Short, Int | Long | Float | Double)
+            | (Char, Int | Long | Float | Double)
+            | (Int, Long | Float | Double)
+            | (Long, Float | Double)
+            | (Float, Double)
+    )
 }
 
 fn is_subtype_class(env: &dyn TypeEnv, sub: &Type, super_: &Type) -> bool {
@@ -2170,6 +2170,7 @@ fn check_applicability(
     None
 }
 
+#[allow(clippy::too_many_arguments)]
 fn try_method_invocation(
     env: &dyn TypeEnv,
     owner: ClassId,
@@ -2453,7 +2454,7 @@ fn collect_type_arg_constraints(
 }
 
 fn collect_reverse_constraints(
-    env: &dyn TypeEnv,
+    _env: &dyn TypeEnv,
     lower: &Type,
     actual: &Type,
     bounds: &mut HashMap<TypeVarId, InferenceBounds>,
@@ -2472,7 +2473,7 @@ fn collect_reverse_constraints(
             {
                 if l_def == a_def && l_args.len() == a_args.len() {
                     for (l, a) in l_args.iter().zip(a_args) {
-                        collect_reverse_constraints(env, l, a, bounds);
+                        collect_reverse_constraints(_env, l, a, bounds);
                     }
                 }
             }
@@ -2482,7 +2483,7 @@ fn collect_reverse_constraints(
 }
 
 fn collect_equality_constraints(
-    env: &dyn TypeEnv,
+    _env: &dyn TypeEnv,
     actual: &Type,
     formal: &Type,
     bounds: &mut HashMap<TypeVarId, InferenceBounds>,
@@ -2494,7 +2495,7 @@ fn collect_equality_constraints(
         }
         Type::Array(f_elem) => {
             if let Type::Array(a_elem) = actual {
-                collect_equality_constraints(env, a_elem, f_elem, bounds);
+                collect_equality_constraints(_env, a_elem, f_elem, bounds);
             }
         }
         Type::Class(ClassType {
@@ -2508,7 +2509,7 @@ fn collect_equality_constraints(
             {
                 if f_def == a_def && f_args.len() == a_args.len() {
                     for (a, f) in a_args.iter().zip(f_args) {
-                        collect_equality_constraints(env, a, f, bounds);
+                        collect_equality_constraints(_env, a, f, bounds);
                     }
                 }
             }
@@ -2857,7 +2858,7 @@ fn class_substitution_for_owner(
             .type_params
             .iter()
             .copied()
-            .zip(owner_instantiation.into_iter()),
+            .zip(owner_instantiation),
     );
 
     subst

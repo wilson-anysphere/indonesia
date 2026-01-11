@@ -8,6 +8,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
+type MemoryEventListener = Arc<dyn Fn(MemoryEvent) + Send + Sync>;
+type EvictorEntry = (u64, MemoryCategory, Arc<AtomicU64>, Arc<dyn MemoryEvictor>);
+
 struct RegistrationEntry {
     category: MemoryCategory,
     usage_bytes: Arc<AtomicU64>,
@@ -25,7 +28,7 @@ struct Inner {
     next_id: AtomicU64,
     registrations: Mutex<HashMap<u64, RegistrationEntry>>,
     state: Mutex<State>,
-    listeners: Mutex<Vec<Arc<dyn Fn(MemoryEvent) + Send + Sync>>>,
+    listeners: Mutex<Vec<MemoryEventListener>>,
 }
 
 /// An update emitted when pressure crosses a threshold (after enforcement).
@@ -215,7 +218,7 @@ impl MemoryManager {
     ) {
         // Snapshot current registrations so we don't hold the lock while calling
         // out into evictors.
-        let entries: Vec<(u64, MemoryCategory, Arc<AtomicU64>, Arc<dyn MemoryEvictor>)> = {
+        let entries: Vec<EvictorEntry> = {
             let registrations = self.inner.registrations.lock().unwrap();
             registrations
                 .iter()

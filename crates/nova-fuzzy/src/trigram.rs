@@ -82,7 +82,7 @@ impl TrigramIndex {
             return Vec::new();
         }
 
-        lists.sort_by(|a, b| a.len().cmp(&b.len()));
+        lists.sort_by_key(|a| a.len());
 
         let base = lists[0];
         if lists.len() == 1 {

@@ -26,7 +26,6 @@ pub struct PropertiesFile {
 }
 
 impl PropertiesFile {
-    #[must_use]
     pub fn by_key(&self, key: &str) -> impl Iterator<Item = &PropertyEntry> {
         let key = key.to_string();
         self.entries.iter().filter(move |e| e.key == key)
@@ -99,10 +98,8 @@ fn read_logical_line(bytes: &[u8], offset: &mut usize) -> LogicalLine {
             content_end
         };
 
-        for idx in segment_start..copy_end {
-            out.push(bytes[idx]);
-            mapping.push(idx);
-        }
+        out.extend_from_slice(&bytes[segment_start..copy_end]);
+        mapping.extend(segment_start..copy_end);
 
         // Consume the newline if present.
         *offset = if line_end < bytes.len() {

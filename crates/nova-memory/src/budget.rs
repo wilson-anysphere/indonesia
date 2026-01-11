@@ -45,7 +45,7 @@ impl MemoryBudget {
     /// - budget = min(total_ram / 4, 4GiB) clamped to at least 512MiB.
     pub fn default_for_system() -> Self {
         let total_ram = system_total_memory_bytes().unwrap_or(8 * GB);
-        let budget = (total_ram / 4).min(4 * GB).max(512 * MB);
+        let budget = (total_ram / 4).clamp(512 * MB, 4 * GB);
         Self::from_total(budget)
     }
 

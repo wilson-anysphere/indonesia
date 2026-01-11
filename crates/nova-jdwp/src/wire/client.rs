@@ -444,7 +444,7 @@ impl JdwpClient {
         w.write_u32(slots.len() as u32);
         for (slot, signature) in slots {
             w.write_u32(*slot);
-            w.write_u8(signature_to_tag(signature) as u8);
+            w.write_u8(signature_to_tag(signature));
         }
         let payload = self.send_command_raw(16, 1, w.into_vec()).await?;
         let mut r = JdwpReader::new(&payload);

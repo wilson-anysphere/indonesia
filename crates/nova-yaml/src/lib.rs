@@ -226,10 +226,8 @@ fn strip_comment(value: &str) -> &str {
 
     let bytes = value.as_bytes();
     for idx in 0..bytes.len() {
-        if bytes[idx] == b'#' {
-            if idx == 0 || bytes[idx - 1].is_ascii_whitespace() {
-                return &value[..idx];
-            }
+        if bytes[idx] == b'#' && (idx == 0 || bytes[idx - 1].is_ascii_whitespace()) {
+            return &value[..idx];
         }
     }
     value

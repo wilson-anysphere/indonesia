@@ -155,7 +155,7 @@ async fn run(
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
     tokio::select! {
-        _ = shutdown.cancelled() => return Ok(()),
+        _ = shutdown.cancelled() => Ok(()),
         accept = listener.accept() => {
             let (mut socket, _) = accept?;
 
@@ -171,15 +171,16 @@ async fn run(
 
             loop {
                 tokio::select! {
-                    _ = shutdown.cancelled() => return Ok(()),
+                    _ = shutdown.cancelled() => break,
                     res = read_packet(&mut socket) => {
                         let Some(packet) = res? else {
-                            return Ok(());
+                            break;
                         };
                         handle_packet(&mut socket, &state, &id_sizes, packet).await?;
                     }
                 }
             }
+            Ok(())
         }
     }
 }

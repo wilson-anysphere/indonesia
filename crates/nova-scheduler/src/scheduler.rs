@@ -29,7 +29,7 @@ impl Default for SchedulerConfig {
             .unwrap_or(1);
         Self {
             compute_threads: available.saturating_sub(1).max(1),
-            background_threads: available.min(4).max(1),
+            background_threads: available.clamp(1, 4),
             io_threads: 2,
             progress_channel_capacity: 1024,
         }

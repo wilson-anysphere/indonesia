@@ -325,7 +325,7 @@ impl TcpJdwpClient {
 
         let reply = self.send_command(15, 1, &body)?;
         let mut cursor = Cursor::new(&reply);
-        Ok(cursor.read_u32()?)
+        cursor.read_u32()
     }
 
     fn string_value(&mut self, object_id: ObjectId) -> Result<String, JdwpError> {
@@ -571,7 +571,7 @@ impl TcpJdwpClient {
         body.push(1); // TypeTag.CLASS
         write_id(&mut body, self.id_sizes.reference_type_id, location.type_id);
         write_id(&mut body, self.id_sizes.method_id, location.method_id);
-        body.extend_from_slice(&(location.index as i64).to_be_bytes());
+        body.extend_from_slice(&location.index.to_be_bytes());
 
         let reply = self.send_command(15, 1, &body)?;
         let mut cursor = Cursor::new(&reply);
@@ -608,11 +608,7 @@ impl TcpJdwpClient {
             }
             let mut best_entry: Option<(u32, u64)> = None;
             for &(code_index, entry_line) in table {
-                let dist = if entry_line >= line {
-                    entry_line - line
-                } else {
-                    line - entry_line
-                };
+                let dist = entry_line.abs_diff(line);
                 match best_entry {
                     None => best_entry = Some((dist, code_index)),
                     Some((best_dist, _)) => {
@@ -1020,11 +1016,9 @@ impl JdwpClient for TcpJdwpClient {
                     let sample_len = size.min(ARRAY_PREVIEW_SAMPLE);
                     let sample = if sample_len == 0 {
                         Vec::new()
-                    } else if let Ok(values) = self.array_get_values(array_id, 0, sample_len as i32)
-                    {
-                        values
                     } else {
-                        Vec::new()
+                        self.array_get_values(array_id, 0, sample_len as i32)
+                            .unwrap_or_default()
                     };
 
                     return Ok(ObjectPreview {

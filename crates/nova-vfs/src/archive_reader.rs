@@ -37,7 +37,7 @@ impl ArchiveReader for NovaArchiveReader {
         let archive = Archive::new(path.archive.clone());
         let bytes = archive
             .read(entry.as_ref())
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            .map_err(io::Error::other)?;
         match bytes {
             Some(bytes) => String::from_utf8(bytes)
                 .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err)),
