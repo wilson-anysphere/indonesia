@@ -60,6 +60,27 @@ enum DocKind<'a> {
     /// Increase indentation by `PrintConfig::indent_width`.
     Indent(Doc<'a>),
     Line(LineKind),
+    /// Deferred content that is printed at the end of the current line.
+    ///
+    /// This is primarily used for trailing line comments (`// ...`) which must be rendered before
+    /// the line break that ends the current line, even when surrounding groups decide to break.
+    LineSuffix(Doc<'a>),
+    /// Forces any containing [`Group`](DocKind::Group) to render in [`Mode::Break`].
+    ///
+    /// Unlike [`Doc::hardline`], this does not itself insert a line break. It is useful for cases
+    /// where a descendant requires a parent to break (e.g. certain comment layouts) without
+    /// unconditionally emitting a hard newline.
+    BreakParent,
+    /// A "fill" document packs parts onto the current line until they no longer fit, then
+    /// continues on the next line.
+    ///
+    /// It is modeled after Prettier's `fill` primitive and expects `parts` to alternate between
+    /// "content" docs and "separator" docs, e.g.:
+    ///
+    /// ```text
+    /// [item, line, item, line, item]
+    /// ```
+    Fill(Vec<Doc<'a>>),
     IfBreak {
         break_doc: Doc<'a>,
         flat_doc: Doc<'a>,
@@ -158,13 +179,73 @@ impl<'a> Doc<'a> {
             flat_doc,
         })
     }
+
+    /// Attach `doc` as a line suffix to be rendered at the end of the current line.
+    ///
+    /// This is the primary building block for correct trailing line comment behavior.
+    pub fn line_suffix(doc: Doc<'a>) -> Self {
+        Self::new(DocKind::LineSuffix(doc))
+    }
+
+    /// Force the parent group to break.
+    pub fn break_parent() -> Self {
+        Self::new(DocKind::BreakParent)
+    }
+
+    /// Greedily pack `parts` onto a line, breaking as needed.
+    ///
+    /// See [`DocKind::Fill`] for expected structure.
+    pub fn fill<I>(parts: I) -> Self
+    where
+        I: IntoIterator<Item = Doc<'a>>,
+    {
+        let mut items = Vec::new();
+        for part in parts {
+            if matches!(part.kind(), DocKind::Nil) {
+                continue;
+            }
+            items.push(part);
+        }
+
+        match items.len() {
+            0 => Self::nil(),
+            1 => items.pop().unwrap(),
+            _ => Self::new(DocKind::Fill(items)),
+        }
+    }
+
+    /// Join `docs` with `separator` between each element.
+    pub fn join<I>(separator: Doc<'a>, docs: I) -> Self
+    where
+        I: IntoIterator<Item = Doc<'a>>,
+    {
+        let mut parts = Vec::new();
+        for doc in docs.into_iter() {
+            if matches!(doc.kind(), DocKind::Nil) {
+                continue;
+            }
+            if !parts.is_empty() {
+                parts.push(separator.clone());
+            }
+            parts.push(doc);
+        }
+        Self::concat(parts)
+    }
 }
 
 #[derive(Clone, Debug)]
-struct Command<'a> {
-    indent: usize,
-    mode: Mode,
-    doc: Doc<'a>,
+enum Command<'a> {
+    Doc {
+        indent: usize,
+        mode: Mode,
+        doc: Doc<'a>,
+    },
+    Fill {
+        indent: usize,
+        mode: Mode,
+        doc: Doc<'a>,
+        index: usize,
+    },
 }
 
 /// Render `doc` to a `String`.
@@ -178,98 +259,213 @@ pub fn print<'a>(doc: Doc<'a>, config: PrintConfig) -> String {
     let mut out = String::new();
     let mut pos: usize = 0;
 
-    let mut stack = vec![Command {
+    let mut stack = vec![Command::Doc {
         indent: 0,
         mode: Mode::Break,
         doc,
     }];
 
-    while let Some(Command { indent, mode, doc }) = stack.pop() {
-        match doc.kind() {
-            DocKind::Nil => {}
-            DocKind::Text(text) => {
-                out.push_str(text);
-                pos = pos.saturating_add(text_width(text));
-            }
-            DocKind::Concat(parts) => {
-                for part in parts.iter().rev() {
-                    stack.push(Command {
-                        indent,
-                        mode,
-                        doc: part.clone(),
-                    });
+    let mut line_suffixes: Vec<Command<'a>> = Vec::new();
+
+    while !stack.is_empty() || !line_suffixes.is_empty() {
+        if stack.is_empty() {
+            flush_line_suffixes(&mut stack, &mut line_suffixes);
+            continue;
+        }
+
+        match stack.pop().expect("stack is not empty") {
+            Command::Doc { indent, mode, doc } => match doc.kind() {
+                DocKind::Nil => {}
+                DocKind::Text(text) => {
+                    out.push_str(text);
+                    pos = pos.saturating_add(text_width(text));
                 }
-            }
-            DocKind::Group(inner) => match mode {
-                Mode::Flat => stack.push(Command {
-                    indent,
-                    mode: Mode::Flat,
-                    doc: inner.clone(),
-                }),
-                Mode::Break => {
-                    let remaining_width = config.max_width as isize - pos as isize;
-                    let mut lookahead = stack.clone();
-                    lookahead.push(Command {
+                DocKind::Concat(parts) => {
+                    for part in parts.iter().rev() {
+                        stack.push(Command::Doc {
+                            indent,
+                            mode,
+                            doc: part.clone(),
+                        });
+                    }
+                }
+                DocKind::Group(inner) => match mode {
+                    Mode::Flat => stack.push(Command::Doc {
                         indent,
                         mode: Mode::Flat,
                         doc: inner.clone(),
-                    });
+                    }),
+                    Mode::Break => {
+                        let remaining_width = config.max_width as isize - pos as isize;
+                        let lookahead = vec![Command::Doc {
+                            indent,
+                            mode: Mode::Flat,
+                            doc: inner.clone(),
+                        }];
 
-                    let next_mode = if fits(remaining_width, &lookahead, config) {
-                        Mode::Flat
-                    } else {
-                        Mode::Break
+                        let next_mode = if fits(remaining_width, &stack, &line_suffixes, &lookahead, config)
+                        {
+                            Mode::Flat
+                        } else {
+                            Mode::Break
+                        };
+                        stack.push(Command::Doc {
+                            indent,
+                            mode: next_mode,
+                            doc: inner.clone(),
+                        });
+                    }
+                },
+                DocKind::Nest(spaces, inner) => stack.push(Command::Doc {
+                    indent: indent.saturating_add(*spaces),
+                    mode,
+                    doc: inner.clone(),
+                }),
+                DocKind::Indent(inner) => stack.push(Command::Doc {
+                    indent: indent.saturating_add(config.indent_width),
+                    mode,
+                    doc: inner.clone(),
+                }),
+                DocKind::Line(kind) => {
+                    let will_break = match mode {
+                        Mode::Break => true,
+                        Mode::Flat => matches!(kind, LineKind::Hard),
                     };
-                    stack.push(Command {
+
+                    if will_break && !line_suffixes.is_empty() {
+                        stack.push(Command::Doc {
+                            indent,
+                            mode,
+                            doc: doc.clone(),
+                        });
+                        flush_line_suffixes(&mut stack, &mut line_suffixes);
+                        continue;
+                    }
+
+                    match mode {
+                        Mode::Flat => match kind {
+                            LineKind::Line => {
+                                out.push(' ');
+                                pos = pos.saturating_add(1);
+                            }
+                            LineKind::Soft => {}
+                            LineKind::Hard => {
+                                out.push_str(config.newline);
+                                push_spaces(&mut out, indent);
+                                pos = indent;
+                            }
+                        },
+                        Mode::Break => {
+                            out.push_str(config.newline);
+                            push_spaces(&mut out, indent);
+                            pos = indent;
+                        }
+                    }
+                }
+                DocKind::LineSuffix(inner) => {
+                    line_suffixes.push(Command::Doc {
                         indent,
-                        mode: next_mode,
+                        mode,
                         doc: inner.clone(),
                     });
                 }
-            },
-            DocKind::Nest(spaces, inner) => stack.push(Command {
-                indent: indent.saturating_add(*spaces),
-                mode,
-                doc: inner.clone(),
-            }),
-            DocKind::Indent(inner) => stack.push(Command {
-                indent: indent.saturating_add(config.indent_width),
-                mode,
-                doc: inner.clone(),
-            }),
-            DocKind::Line(kind) => match mode {
-                Mode::Flat => match kind {
-                    LineKind::Line => {
-                        out.push(' ');
-                        pos = pos.saturating_add(1);
-                    }
-                    LineKind::Soft => {}
-                    LineKind::Hard => {
-                        out.push_str(config.newline);
-                        push_spaces(&mut out, indent);
-                        pos = indent;
-                    }
-                },
-                Mode::Break => {
-                    out.push_str(config.newline);
-                    push_spaces(&mut out, indent);
-                    pos = indent;
-                }
-            },
-            DocKind::IfBreak {
-                break_doc,
-                flat_doc,
-            } => {
-                let chosen = if mode == Mode::Break {
-                    break_doc.clone()
-                } else {
-                    flat_doc.clone()
-                };
-                stack.push(Command {
+                DocKind::BreakParent => {}
+                DocKind::Fill(_) => stack.push(Command::Fill {
                     indent,
                     mode,
-                    doc: chosen,
-                });
+                    doc: doc.clone(),
+                    index: 0,
+                }),
+                DocKind::IfBreak {
+                    break_doc,
+                    flat_doc,
+                } => {
+                    let chosen = if mode == Mode::Break {
+                        break_doc.clone()
+                    } else {
+                        flat_doc.clone()
+                    };
+                    stack.push(Command::Doc {
+                        indent,
+                        mode,
+                        doc: chosen,
+                    });
+                }
+            },
+            Command::Fill {
+                indent,
+                mode,
+                doc,
+                index,
+            } => {
+                let DocKind::Fill(parts) = doc.kind() else {
+                    unreachable!("Fill command must reference DocKind::Fill")
+                };
+
+                if index >= parts.len() {
+                    continue;
+                }
+
+                match mode {
+                    Mode::Flat => {
+                        for part in parts[index..].iter().rev() {
+                            stack.push(Command::Doc {
+                                indent,
+                                mode: Mode::Flat,
+                                doc: part.clone(),
+                            });
+                        }
+                    }
+                    Mode::Break => {
+                        if index % 2 == 0 {
+                            // Content part.
+                            stack.push(Command::Fill {
+                                indent,
+                                mode,
+                                doc: doc.clone(),
+                                index: index + 1,
+                            });
+                            stack.push(Command::Doc {
+                                indent,
+                                mode,
+                                doc: parts[index].clone(),
+                            });
+                            continue;
+                        }
+
+                        // Separator part.
+                        let sep = parts[index].clone();
+                        if index + 1 >= parts.len() {
+                            stack.push(Command::Doc { indent, mode, doc: sep });
+                            continue;
+                        }
+
+                        let next = parts[index + 1].clone();
+                        let remaining_width = config.max_width as isize - pos as isize;
+                        let sep_mode = if fits_flat(remaining_width, &[sep.clone(), next.clone()]) {
+                            Mode::Flat
+                        } else {
+                            Mode::Break
+                        };
+
+                        stack.push(Command::Fill {
+                            indent,
+                            mode,
+                            doc: doc.clone(),
+                            index: index + 2,
+                        });
+                        stack.push(Command::Doc {
+                            indent,
+                            mode,
+                            doc: next,
+                        });
+                        stack.push(Command::Doc {
+                            indent,
+                            mode: sep_mode,
+                            doc: sep,
+                        });
+                    }
+                }
             }
         }
     }
@@ -289,15 +485,34 @@ fn text_width(text: &str) -> usize {
     }
 }
 
-fn fits<'a>(mut remaining_width: isize, cmds: &[Command<'a>], config: PrintConfig) -> bool {
+fn flush_line_suffixes<'a>(stack: &mut Vec<Command<'a>>, line_suffixes: &mut Vec<Command<'a>>) {
+    // `line_suffixes` is stored in insertion order. We push them onto the stack in reverse so they
+    // are popped/printed in the original order.
+    for cmd in line_suffixes.drain(..).rev() {
+        stack.push(cmd);
+    }
+}
+
+fn fits_flat<'a>(mut remaining_width: isize, docs: &[Doc<'a>]) -> bool {
     if remaining_width < 0 {
         return false;
     }
 
-    let mut stack: Vec<Command<'a>> = cmds.to_vec();
+    // This is an intentionally small cap: `fits_flat` is used as an inner primitive for `fill`
+    // decisions. If we hit the cap, treat as "doesn't fit" to stay deterministic and avoid
+    // quadratic blowups.
+    const MAX_STEPS: usize = 4_096;
+    let mut steps = 0usize;
+
+    let mut stack: Vec<Doc<'a>> = docs.iter().cloned().rev().collect();
 
     while remaining_width >= 0 {
-        let Some(Command { indent, mode, doc }) = stack.pop() else {
+        if steps >= MAX_STEPS {
+            return false;
+        }
+        steps += 1;
+
+        let Some(doc) = stack.pop() else {
             return true;
         };
 
@@ -306,50 +521,221 @@ fn fits<'a>(mut remaining_width: isize, cmds: &[Command<'a>], config: PrintConfi
             DocKind::Text(text) => remaining_width -= text_width(text) as isize,
             DocKind::Concat(parts) => {
                 for part in parts.iter().rev() {
-                    stack.push(Command {
-                        indent,
-                        mode,
-                        doc: part.clone(),
-                    });
+                    stack.push(part.clone());
                 }
             }
-            DocKind::Group(inner) => stack.push(Command {
-                indent,
-                mode,
-                doc: inner.clone(),
-            }),
-            DocKind::Nest(spaces, inner) => stack.push(Command {
-                indent: indent.saturating_add(*spaces),
-                mode,
-                doc: inner.clone(),
-            }),
-            DocKind::Indent(inner) => stack.push(Command {
-                indent: indent.saturating_add(config.indent_width),
-                mode,
-                doc: inner.clone(),
-            }),
-            DocKind::Line(kind) => match mode {
-                Mode::Flat => match kind {
-                    LineKind::Line => remaining_width -= 1,
-                    LineKind::Soft => {}
-                    LineKind::Hard => return false,
-                },
-                Mode::Break => return true,
+            DocKind::Group(inner) => stack.push(inner.clone()),
+            DocKind::Nest(_, inner) => stack.push(inner.clone()),
+            DocKind::Indent(inner) => stack.push(inner.clone()),
+            DocKind::Line(kind) => match kind {
+                LineKind::Line => remaining_width -= 1,
+                LineKind::Soft => {}
+                LineKind::Hard => return false,
             },
-            DocKind::IfBreak {
-                break_doc,
-                flat_doc,
-            } => {
-                let chosen = if mode == Mode::Break {
-                    break_doc.clone()
-                } else {
-                    flat_doc.clone()
-                };
-                stack.push(Command {
+            DocKind::LineSuffix(inner) => stack.push(inner.clone()),
+            DocKind::BreakParent => return false,
+            DocKind::Fill(parts) => {
+                for part in parts.iter().rev() {
+                    stack.push(part.clone());
+                }
+            }
+            DocKind::IfBreak { flat_doc, .. } => stack.push(flat_doc.clone()),
+        }
+    }
+
+    false
+}
+
+fn fits<'a>(
+    mut remaining_width: isize,
+    base_stack: &[Command<'a>],
+    initial_line_suffixes: &[Command<'a>],
+    lookahead: &[Command<'a>],
+    config: PrintConfig,
+) -> bool {
+    if remaining_width < 0 {
+        return false;
+    }
+
+    // Cap the amount of work `fits` can do to avoid pathological O(n^2) behavior with deeply
+    // nested groups. If we hit the cap, prefer breaking to keep output deterministic.
+    const MAX_STEPS: usize = 32_768;
+    let mut steps = 0usize;
+
+    let mut idx = base_stack.len();
+    let mut stack: Vec<Command<'a>> = lookahead.to_vec();
+    let mut line_suffixes: Vec<Command<'a>> = initial_line_suffixes.to_vec();
+
+    while remaining_width >= 0 {
+        if steps >= MAX_STEPS {
+            return false;
+        }
+        steps += 1;
+
+        let cmd = if let Some(cmd) = stack.pop() {
+            cmd
+        } else if idx > 0 {
+            idx -= 1;
+            base_stack[idx].clone()
+        } else if !line_suffixes.is_empty() {
+            flush_line_suffixes(&mut stack, &mut line_suffixes);
+            continue;
+        } else {
+            return true;
+        };
+
+        match cmd {
+            Command::Doc { indent, mode, doc } => match doc.kind() {
+                DocKind::Nil => {}
+                DocKind::Text(text) => remaining_width -= text_width(text) as isize,
+                DocKind::Concat(parts) => {
+                    for part in parts.iter().rev() {
+                        stack.push(Command::Doc {
+                            indent,
+                            mode,
+                            doc: part.clone(),
+                        });
+                    }
+                }
+                DocKind::Group(inner) => stack.push(Command::Doc {
                     indent,
                     mode,
-                    doc: chosen,
-                });
+                    doc: inner.clone(),
+                }),
+                DocKind::Nest(spaces, inner) => stack.push(Command::Doc {
+                    indent: indent.saturating_add(*spaces),
+                    mode,
+                    doc: inner.clone(),
+                }),
+                DocKind::Indent(inner) => stack.push(Command::Doc {
+                    indent: indent.saturating_add(config.indent_width),
+                    mode,
+                    doc: inner.clone(),
+                }),
+                DocKind::Line(kind) => match mode {
+                    Mode::Flat => match kind {
+                        LineKind::Line => remaining_width -= 1,
+                        LineKind::Soft => {}
+                        LineKind::Hard => return false,
+                    },
+                    Mode::Break => {
+                        if !line_suffixes.is_empty() {
+                            stack.push(Command::Doc {
+                                indent,
+                                mode,
+                                doc: doc.clone(),
+                            });
+                            flush_line_suffixes(&mut stack, &mut line_suffixes);
+                            continue;
+                        }
+                        return true;
+                    }
+                },
+                DocKind::LineSuffix(inner) => {
+                    line_suffixes.push(Command::Doc {
+                        indent,
+                        mode,
+                        doc: inner.clone(),
+                    });
+                }
+                DocKind::BreakParent => {
+                    if mode == Mode::Flat {
+                        return false;
+                    }
+                }
+                DocKind::Fill(_) => stack.push(Command::Fill {
+                    indent,
+                    mode,
+                    doc: doc.clone(),
+                    index: 0,
+                }),
+                DocKind::IfBreak {
+                    break_doc,
+                    flat_doc,
+                } => {
+                    let chosen = if mode == Mode::Break {
+                        break_doc.clone()
+                    } else {
+                        flat_doc.clone()
+                    };
+                    stack.push(Command::Doc {
+                        indent,
+                        mode,
+                        doc: chosen,
+                    });
+                }
+            },
+            Command::Fill {
+                indent,
+                mode,
+                doc,
+                index,
+            } => {
+                let DocKind::Fill(parts) = doc.kind() else {
+                    unreachable!("Fill command must reference DocKind::Fill")
+                };
+
+                if index >= parts.len() {
+                    continue;
+                }
+
+                match mode {
+                    Mode::Flat => {
+                        for part in parts[index..].iter().rev() {
+                            stack.push(Command::Doc {
+                                indent,
+                                mode: Mode::Flat,
+                                doc: part.clone(),
+                            });
+                        }
+                    }
+                    Mode::Break => {
+                        if index % 2 == 0 {
+                            stack.push(Command::Fill {
+                                indent,
+                                mode,
+                                doc: doc.clone(),
+                                index: index + 1,
+                            });
+                            stack.push(Command::Doc {
+                                indent,
+                                mode,
+                                doc: parts[index].clone(),
+                            });
+                            continue;
+                        }
+
+                        let sep = parts[index].clone();
+                        if index + 1 >= parts.len() {
+                            stack.push(Command::Doc { indent, mode, doc: sep });
+                            continue;
+                        }
+
+                        let next = parts[index + 1].clone();
+                        let sep_mode = if fits_flat(remaining_width, &[sep.clone(), next.clone()]) {
+                            Mode::Flat
+                        } else {
+                            Mode::Break
+                        };
+
+                        stack.push(Command::Fill {
+                            indent,
+                            mode,
+                            doc: doc.clone(),
+                            index: index + 2,
+                        });
+                        stack.push(Command::Doc {
+                            indent,
+                            mode,
+                            doc: next,
+                        });
+                        stack.push(Command::Doc {
+                            indent,
+                            mode: sep_mode,
+                            doc: sep,
+                        });
+                    }
+                }
             }
         }
     }
@@ -449,5 +835,61 @@ mod tests {
             newline: "\r\n",
         };
         assert_eq!(print(doc, cfg), "a\r\nb");
+    }
+
+    #[test]
+    fn break_parent_forces_group_to_break() {
+        let doc = Doc::concat([
+            Doc::text("a"),
+            Doc::break_parent(),
+            Doc::line(),
+            Doc::text("b"),
+        ])
+        .group();
+
+        // `break_parent` prevents a group from rendering flat even when it would otherwise fit.
+        assert_eq!(print(doc, cfg(100)), "a\nb");
+    }
+
+    #[test]
+    fn fill_packs_until_it_does_not_fit() {
+        let doc = Doc::fill([
+            Doc::text("a"),
+            Doc::line(),
+            Doc::text("b"),
+            Doc::line(),
+            Doc::text("c"),
+        ]);
+
+        assert_eq!(print(doc.clone(), cfg(100)), "a b c");
+        assert_eq!(print(doc, cfg(3)), "a b\nc");
+    }
+
+    #[test]
+    fn line_suffix_flushes_before_newline() {
+        let args = Doc::concat([Doc::text("arg1,"), Doc::line(), Doc::text("arg2")]);
+        let call = Doc::concat([
+            Doc::text("call("),
+            Doc::concat([Doc::softline(), args]).indent(),
+            Doc::softline(),
+            Doc::text(")"),
+        ])
+        .group();
+
+        let doc = Doc::concat([
+            call,
+            Doc::line_suffix(Doc::text(" // trailing")),
+            Doc::hardline(),
+            Doc::text("next"),
+        ]);
+
+        assert_eq!(
+            print(doc.clone(), cfg(100)),
+            "call(arg1, arg2) // trailing\nnext"
+        );
+        assert_eq!(
+            print(doc, cfg(10)),
+            "call(\n    arg1,\n    arg2\n) // trailing\nnext"
+        );
     }
 }
