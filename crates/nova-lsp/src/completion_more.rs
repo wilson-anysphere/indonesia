@@ -56,7 +56,7 @@ impl Default for CompletionMoreConfig {
     fn default() -> Self {
         Self {
             ai_concurrency: 4,
-            session_ttl: Duration::from_secs(30),
+            session_ttl: Duration::from_secs(120),
         }
     }
 }
@@ -69,7 +69,7 @@ struct CompletionSession {
     expires_at: Instant,
     cancel: CancellationToken,
     ai_state: AiState,
-    created_at: Instant,
+    last_access: Instant,
     document_uri: Option<String>,
 }
 
@@ -115,6 +115,15 @@ impl NovaCompletionService {
         &self.engine
     }
 
+    fn lock_sessions(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<CompletionContextId, CompletionSession>> {
+        match self.sessions.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     fn prune_sessions_locked(
         &self,
         sessions: &mut HashMap<CompletionContextId, CompletionSession>,
@@ -137,7 +146,7 @@ impl NovaCompletionService {
 
         let mut by_age: Vec<_> = sessions
             .iter()
-            .map(|(id, session)| (*id, session.created_at))
+            .map(|(id, session)| (*id, session.last_access))
             .collect();
         by_age.sort_by_key(|(_, created_at)| *created_at);
 
@@ -146,13 +155,6 @@ impl NovaCompletionService {
             if let Some(session) = sessions.remove(&id) {
                 session.cancel();
             }
-        }
-    }
-
-    fn cancel_all_sessions(&self) {
-        let mut sessions = self.sessions.lock().expect("poisoned mutex");
-        for (_, session) in sessions.drain() {
-            session.cancel();
         }
     }
 
@@ -176,8 +178,6 @@ impl NovaCompletionService {
         cancel: CancellationToken,
         document_uri: Option<String>,
     ) -> NovaCompletionResponse {
-        self.cancel_all_sessions();
-
         let context_id = CompletionContextId(self.next_id.fetch_add(1, Ordering::Relaxed));
 
         let standard_items = self.engine.standard_completions(&ctx);
@@ -241,15 +241,16 @@ impl NovaCompletionService {
                 let _ = tx.send(lsp_items);
             });
 
-            let mut sessions = self.sessions.lock().expect("poisoned mutex");
+            let mut sessions = self.lock_sessions();
             self.prune_sessions_locked(&mut sessions);
+            let now = Instant::now();
             sessions.insert(
                 context_id,
                 CompletionSession {
-                    expires_at: Instant::now() + ttl,
+                    expires_at: now + ttl,
                     cancel,
                     ai_state: AiState::Pending(rx),
-                    created_at: Instant::now(),
+                    last_access: now,
                     document_uri,
                 },
             );
@@ -270,7 +271,7 @@ impl NovaCompletionService {
             }
         };
 
-        let mut sessions = self.sessions.lock().expect("poisoned mutex");
+        let mut sessions = self.lock_sessions();
         self.prune_sessions_locked(&mut sessions);
         let session = match sessions.get_mut(&context_id) {
             Some(session) => session,
@@ -282,6 +283,7 @@ impl NovaCompletionService {
             }
         };
 
+        session.last_access = Instant::now();
         let document_uri = session.document_uri.clone();
         match &mut session.ai_state {
             AiState::Pending(rx) => match rx.try_recv() {
@@ -315,7 +317,7 @@ impl NovaCompletionService {
     }
 
     pub fn cancel(&self, context_id: CompletionContextId) -> bool {
-        let mut sessions = self.sessions.lock().expect("poisoned mutex");
+        let mut sessions = self.lock_sessions();
         self.prune_sessions_locked(&mut sessions);
         match sessions.remove(&context_id) {
             Some(session) => {

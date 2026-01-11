@@ -3,7 +3,7 @@ mod codec;
 use codec::{read_json_message, write_json_message};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeLens as LspCodeLens, Command as LspCommand, CompletionItem,
-    CompletionList, CompletionParams,
+    CompletionItemKind, CompletionList, CompletionParams, CompletionTextEdit, TextEdit,
     DidChangeWatchedFilesParams as LspDidChangeWatchedFilesParams,
     FileChangeType as LspFileChangeType, Position as LspTypesPosition, Range as LspTypesRange,
     RenameParams as LspRenameParams, TextDocumentPositionParams, Uri as LspUri,
@@ -2316,36 +2316,44 @@ fn handle_completion(
 
     #[cfg(feature = "ai")]
     let (completion_context_id, has_more) = {
-        let document_uri = Some(uri.as_str().to_string());
-        let cancel = CancellationToken::new();
         let has_more = state.completion_service.completion_engine().supports_ai();
-        let ctx = multi_token_completion_context(&db, file, position);
-        let response = if has_more {
+        let completion_context_id = if has_more {
+            let document_uri = Some(uri.as_str().to_string());
+            let cancel = CancellationToken::new();
+            let ctx = multi_token_completion_context(&db, file, position);
+
             // `NovaCompletionService` is Tokio-driven; enter the runtime so
             // `tokio::spawn` inside the completion pipeline is available.
             let runtime = state.runtime.as_ref().ok_or_else(|| {
                 "AI completions are enabled but the Tokio runtime is unavailable".to_string()
             })?;
             let _guard = runtime.enter();
-            state.completion_service.completion_with_document_uri(
-                ctx,
-                cancel.clone(),
-                document_uri.clone(),
-            )
+            let response = state
+                .completion_service
+                .completion_with_document_uri(ctx, cancel, document_uri);
+            Some(response.context_id.to_string())
         } else {
-            state.completion_service.completion_with_document_uri(
-                ctx,
-                cancel.clone(),
-                document_uri.clone(),
-            )
+            None
         };
-        (Some(response.context_id.to_string()), has_more)
+        (completion_context_id, has_more)
     };
 
     #[cfg(not(feature = "ai"))]
     let (completion_context_id, has_more) = (None::<String>, false);
 
     let mut items = nova_lsp::completion(&db, file, position);
+    if items.is_empty() && completion_context_id.is_some() {
+        items.push(CompletionItem {
+            label: "AI completions…".to_string(),
+            kind: Some(CompletionItemKind::TEXT),
+            sort_text: Some("\u{10FFFF}".to_string()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                range: LspTypesRange::new(position, position),
+                new_text: String::new(),
+            })),
+            ..CompletionItem::default()
+        });
+    }
     for item in &mut items {
         if item.data.is_none() {
             item.data = Some(json!({}));

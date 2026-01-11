@@ -4,10 +4,7 @@ use nova_ai::{AdditionalEdit, MultiTokenInsertTextFormat};
 use nova_ide::{CompletionSource, NovaCompletionItem};
 use serde_json::json;
 
-pub fn to_lsp_completion_item(
-    item: NovaCompletionItem,
-    context_id: &CompletionContextId,
-) -> CompletionItem {
+pub fn to_lsp_completion_item(item: NovaCompletionItem, context_id: &CompletionContextId) -> CompletionItem {
     let mut imports = Vec::new();
     for edit in &item.additional_edits {
         let AdditionalEdit::AddImport { path } = edit;
