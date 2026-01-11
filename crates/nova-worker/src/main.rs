@@ -7,8 +7,8 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
-use nova_db::salsa::{Database as SalsaDatabase, NovaSyntax};
-use nova_db::{FileId, SourceRootId};
+use nova_db::salsa::Database as SalsaDatabase;
+use nova_db::{FileId, NovaSemantic, SourceRootId};
 use nova_fuzzy::{FuzzyMatcher, MatchKind, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
     transport, FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo,

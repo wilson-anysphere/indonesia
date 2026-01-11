@@ -1871,8 +1871,7 @@ where
 }
 
 fn index_for_files(shard_id: ShardId, mut files: Vec<FileText>) -> Vec<Symbol> {
-    use nova_db::salsa::NovaSyntax;
-    use nova_db::{FileId, SalsaDatabase, SourceRootId};
+    use nova_db::{FileId, NovaSemantic, SalsaDatabase, SourceRootId};
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
