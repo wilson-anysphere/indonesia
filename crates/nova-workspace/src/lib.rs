@@ -261,12 +261,19 @@ impl Workspace {
         };
 
         if invalidated_files.is_empty() {
+            let symbols_indexed = self
+                .read_cache_perf(&cache_dir)
+                .ok()
+                .flatten()
+                .map(|perf| perf.symbols_indexed)
+                .unwrap_or_else(|| count_symbols(&shards));
+
             let metrics = PerfMetrics {
                 files_total: stamp_snapshot.file_fingerprints().len(),
                 files_indexed: 0,
                 bytes_indexed: 0,
                 files_invalidated: 0,
-                symbols_indexed: count_symbols(&shards),
+                symbols_indexed,
                 snapshot_ms,
                 index_ms: 0,
                 elapsed_ms: start.elapsed().as_millis(),
