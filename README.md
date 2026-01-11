@@ -206,6 +206,11 @@ These tests are ignored by default because they scan large projects.
 # To reduce peak memory / match CI behavior:
 RUST_TEST_THREADS=1 ./scripts/run-real-project-tests.sh
 
+# To run only a subset of fixtures:
+./scripts/run-real-project-tests.sh --only guava,spring-petclinic
+# or (alias):
+NOVA_REAL_PROJECT=guava ./scripts/run-real-project-tests.sh
+
 cargo test -p nova-project --test real_projects -- --include-ignored
 cargo test -p nova-cli --test real_projects -- --include-ignored
 ```
