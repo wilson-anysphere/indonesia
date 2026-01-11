@@ -86,17 +86,37 @@ function clearAiCompletionCache(): void {
 
 function readLspLaunchConfig(): { args: string[]; env: NodeJS.ProcessEnv } {
   const config = vscode.workspace.getConfiguration('nova');
+  const aiEnabled = config.get<boolean>('ai.enabled', true);
   const configPath = config.get<string | null>('lsp.configPath', null);
   const extraArgs = config.get<string[]>('lsp.extraArgs', []);
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
 
   const resolvedConfigPath = resolveNovaConfigPath({ configPath, workspaceRoot });
-  return {
-    args: buildNovaLspArgs({ configPath: resolvedConfigPath ?? null, extraArgs, workspaceRoot: null }),
+  const args = buildNovaLspArgs({ configPath: resolvedConfigPath ?? null, extraArgs, workspaceRoot: null });
+
+  let env: NodeJS.ProcessEnv = process.env;
+  // Only allocate a copy of the environment when we need to mutate it.
+  if (resolvedConfigPath || !aiEnabled) {
+    env = { ...process.env };
     // `nova-config` already supports `NOVA_CONFIG_PATH`; set it when a config
     // path is configured so users don't have to manually export env vars.
-    env: resolvedConfigPath ? { ...process.env, NOVA_CONFIG_PATH: resolvedConfigPath } : process.env,
-  };
+    if (resolvedConfigPath) {
+      env.NOVA_CONFIG_PATH = resolvedConfigPath;
+    }
+
+    // If AI is disabled in VS Code settings, ensure we don't leak any NOVA_AI_*
+    // environment variables to the server process. This guarantees AI stays off
+    // even if the user has set global env vars in their shell.
+    if (!aiEnabled) {
+      for (const key of Object.keys(env)) {
+        if (key.startsWith('NOVA_AI_')) {
+          delete env[key];
+        }
+      }
+    }
+  }
+
+  return { args, env };
 }
 
 interface BugReportResponse {
@@ -914,7 +934,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
       if (
         !serverPathChanged &&
-        (event.affectsConfiguration('nova.lsp.configPath') || event.affectsConfiguration('nova.lsp.extraArgs'))
+        (event.affectsConfiguration('nova.lsp.configPath') ||
+          event.affectsConfiguration('nova.lsp.extraArgs') ||
+          event.affectsConfiguration('nova.ai.enabled'))
       ) {
         promptRestartLanguageServer();
       }
