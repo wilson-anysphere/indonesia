@@ -49,7 +49,6 @@ nova-scheduler = "core"
 nova-types = "core"
 nova-modules = "core"
 nova-classfile = "core"
-xtask = "core"
 
 # vfs / IO / persistence
 nova-archive = "vfs"
@@ -59,6 +58,7 @@ nova-vfs = "vfs"
 # syntax + file formats
 nova-properties = "syntax"
 nova-syntax = "syntax"
+xtask = "syntax"
 nova-yaml = "syntax"
 
 # semantic + project model
