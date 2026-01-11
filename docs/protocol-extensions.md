@@ -59,7 +59,8 @@ When in safe-mode, **all methods dispatched through** `nova_lsp::handle_custom_r
 Note: safe-mode enforcement is currently implemented by `nova_lsp::hardening::guard_method()` and
 therefore only applies to methods dispatched via `nova_lsp::handle_custom_request()`. Some
 endpoints handled directly by the stdio server (e.g. `nova/memoryStatus`, `nova/java/organizeImports`,
-`nova/refactor/safeDelete`) currently bypass that guard and may still succeed during safe-mode.
+`nova/refactor/safeDelete`, `nova/refactor/changeSignature`) currently bypass that guard and may
+still succeed during safe-mode.
 
 Safe-mode windows:
 
@@ -1242,6 +1243,7 @@ maps offsets to UTF-16 LSP positions.
 
 #### Errors
 
+- `-32602` if params do not match the schema.
 - `-32603` for refactoring conflicts or internal failures.
 
 ---
