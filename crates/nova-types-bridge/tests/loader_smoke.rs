@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use nova_types::{ClassKind, MethodStub, Type, TypeDefStub, TypeEnv, TypeProvider};
+use nova_types::{ClassKind, FieldStub, MethodStub, Type, TypeDefStub, TypeEnv, TypeProvider, WildcardBound};
 use nova_types_bridge::ExternalTypeLoader;
 
 #[derive(Default)]
@@ -95,4 +95,106 @@ fn resolves_self_referential_type_param_bounds() {
         bounds.upper_bounds[0],
         Type::class(enum_id, vec![Type::TypeVar(e)])
     );
+}
+
+#[test]
+fn cycle_safe_loading() {
+    let a_stub = TypeDefStub {
+        binary_name: "com.example.A".to_string(),
+        access_flags: 0x0000,
+        super_binary_name: Some("com.example.B".to_string()),
+        interfaces: vec![],
+        signature: None,
+        fields: vec![],
+        methods: vec![],
+    };
+    let b_stub = TypeDefStub {
+        binary_name: "com.example.B".to_string(),
+        access_flags: 0x0000,
+        super_binary_name: Some("com.example.A".to_string()),
+        interfaces: vec![],
+        signature: None,
+        fields: vec![],
+        methods: vec![],
+    };
+
+    let mut provider = MapProvider::default();
+    provider
+        .stubs
+        .insert("com.example.A".to_string(), a_stub);
+    provider
+        .stubs
+        .insert("com.example.B".to_string(), b_stub);
+
+    let mut store = nova_types::TypeStore::default();
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+
+    let a_id = loader
+        .ensure_class("com.example.A")
+        .expect("class A should load");
+    let b_id = store
+        .lookup_class("com.example.B")
+        .expect("class B should have been loaded recursively");
+
+    let a_def = store.class(a_id).unwrap();
+    let b_def = store.class(b_id).unwrap();
+
+    assert_eq!(a_def.super_class, Some(Type::class(b_id, vec![])));
+    assert_eq!(b_def.super_class, Some(Type::class(a_id, vec![])));
+}
+
+#[test]
+fn parses_wildcard_type_arguments_in_field_signatures() {
+    let list_stub = TypeDefStub {
+        binary_name: "java.util.List".to_string(),
+        access_flags: 0x0200, // ACC_INTERFACE
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: Some("<E:Ljava/lang/Object;>Ljava/lang/Object;".to_string()),
+        fields: vec![],
+        methods: vec![],
+    };
+
+    let outer_stub = TypeDefStub {
+        binary_name: "com.example.Outer".to_string(),
+        access_flags: 0x0000,
+        super_binary_name: Some("java.lang.Object".to_string()),
+        interfaces: vec![],
+        signature: Some("<T:Ljava/lang/Object;>Ljava/lang/Object;".to_string()),
+        fields: vec![FieldStub {
+            name: "items".to_string(),
+            descriptor: "Ljava/util/List;".to_string(),
+            signature: Some("Ljava/util/List<+TT;>;".to_string()),
+            access_flags: 0x0000,
+        }],
+        methods: vec![],
+    };
+
+    let mut provider = MapProvider::default();
+    provider
+        .stubs
+        .insert("java.util.List".to_string(), list_stub);
+    provider
+        .stubs
+        .insert("com.example.Outer".to_string(), outer_stub);
+
+    let mut store = nova_types::TypeStore::default();
+    let mut loader = ExternalTypeLoader::new(&mut store, &provider);
+
+    let outer_id = loader
+        .ensure_class("com.example.Outer")
+        .expect("Outer should load");
+    let list_id = store
+        .lookup_class("java.util.List")
+        .expect("List should have been loaded via field signature");
+
+    let outer_def = store.class(outer_id).unwrap();
+    let t = outer_def.type_params[0];
+    let field = outer_def.fields.iter().find(|f| f.name == "items").unwrap();
+
+    let expected = Type::class(
+        list_id,
+        vec![Type::Wildcard(WildcardBound::Extends(Box::new(Type::TypeVar(t))))],
+    );
+    assert_eq!(field.ty, expected);
 }
