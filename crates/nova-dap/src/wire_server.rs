@@ -872,12 +872,30 @@ async fn handle_request_inner(
                     );
                 }
                 Ok(Some(info)) => {
+                    let full_type_name = info.exception_id;
+                    let type_name = full_type_name
+                        .rsplit(['.', '$'])
+                        .next()
+                        .unwrap_or(full_type_name.as_str())
+                        .to_string();
+                    let description = info.description;
+                    let break_mode = info.break_mode;
+
                     let mut body = serde_json::Map::new();
-                    body.insert("exceptionId".to_string(), json!(info.exception_id));
-                    if let Some(description) = info.description {
+                    body.insert("exceptionId".to_string(), json!(full_type_name.clone()));
+                    if let Some(description) = description.clone() {
                         body.insert("description".to_string(), json!(description));
                     }
-                    body.insert("breakMode".to_string(), json!(info.break_mode));
+
+                    let mut details = serde_json::Map::new();
+                    details.insert("fullTypeName".to_string(), json!(full_type_name));
+                    details.insert("typeName".to_string(), json!(type_name));
+                    if let Some(message) = description {
+                        details.insert("message".to_string(), json!(message));
+                    }
+                    body.insert("details".to_string(), Value::Object(details));
+
+                    body.insert("breakMode".to_string(), json!(break_mode));
                     send_response(out_tx, seq, request, true, Some(Value::Object(body)), None);
                 }
                 Ok(None) => send_response(

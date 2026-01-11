@@ -911,12 +911,30 @@ async fn dap_exception_info_includes_type_name() {
         Some("java.lang.RuntimeException")
     );
     assert_eq!(
+        exc_info
+            .pointer("/body/details/fullTypeName")
+            .and_then(|v| v.as_str()),
+        Some("java.lang.RuntimeException")
+    );
+    assert_eq!(
+        exc_info
+            .pointer("/body/details/typeName")
+            .and_then(|v| v.as_str()),
+        Some("RuntimeException")
+    );
+    assert_eq!(
         exc_info.pointer("/body/breakMode").and_then(|v| v.as_str()),
         Some("unhandled")
     );
     assert_eq!(
         exc_info
             .pointer("/body/description")
+            .and_then(|v| v.as_str()),
+        Some("mock string")
+    );
+    assert_eq!(
+        exc_info
+            .pointer("/body/details/message")
             .and_then(|v| v.as_str()),
         Some("mock string")
     );
