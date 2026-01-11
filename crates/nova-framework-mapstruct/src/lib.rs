@@ -15,7 +15,8 @@
 
 use nova_apt::discover_generated_source_roots;
 use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
-use nova_types::{ClassId, Diagnostic, ProjectId, Span};
+use nova_core::ProjectId;
+use nova_types::{ClassId, Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Parser};

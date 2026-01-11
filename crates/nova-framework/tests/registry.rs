@@ -4,7 +4,8 @@ use nova_framework::{
     VirtualField, VirtualMember,
 };
 use nova_hir::framework::ClassData;
-use nova_types::{CompletionItem, Diagnostic, ProjectId, Span, Type};
+use nova_core::ProjectId;
+use nova_types::{CompletionItem, Diagnostic, Span, Type};
 
 #[derive(Clone, Copy)]
 struct FakeAnalyzer {

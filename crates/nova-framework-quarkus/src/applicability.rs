@@ -3,8 +3,8 @@
 use std::fs::File;
 use std::path::Path;
 
+use nova_core::ProjectId;
 use nova_framework::Database;
-use nova_types::ProjectId;
 use zip::ZipArchive;
 
 /// Returns `true` when Quarkus is likely in use.
@@ -107,4 +107,3 @@ fn archive_has_quarkus(path: &Path) -> bool {
 
     MARKERS.iter().any(|name| zip.by_name(name).is_ok())
 }
-

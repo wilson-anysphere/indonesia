@@ -14,5 +14,5 @@ pub use traits::{
 };
 pub use types::{CodeAction, InlayHint, NavigationTarget, Symbol};
 
-pub use nova_core::FileId;
-pub use nova_types::{ClassId, CompletionItem, Diagnostic, ProjectId, Severity, Span};
+pub use nova_core::{FileId, ProjectId};
+pub use nova_types::{ClassId, CompletionItem, Diagnostic, Severity, Span};

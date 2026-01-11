@@ -14,9 +14,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
-use nova_core::{Diagnostic as CoreDiagnostic, DiagnosticSeverity, Position, Range};
+use nova_core::{Diagnostic as CoreDiagnostic, DiagnosticSeverity, Position, ProjectId, Range};
 use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
-use nova_types::{ClassId, ProjectId};
+use nova_types::ClassId;
 
 #[derive(Debug, Default)]
 pub struct DaggerAnalyzer;

@@ -1,6 +1,6 @@
 use nova_config::NovaConfig;
+use nova_core::ProjectId;
 use nova_scheduler::CancellationToken;
-use nova_types::ProjectId;
 use std::sync::Arc;
 
 #[derive(Clone)]

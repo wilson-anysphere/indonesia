@@ -399,9 +399,9 @@ mod tests {
     use super::*;
     use crate::traits::{CompletionParams, CompletionProvider, DiagnosticProvider};
     use nova_config::NovaConfig;
-    use nova_core::FileId;
+    use nova_core::{FileId, ProjectId};
     use nova_scheduler::CancellationToken;
-    use nova_types::{CompletionItem, Diagnostic, ProjectId, Span};
+    use nova_types::{CompletionItem, Diagnostic, Span};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 

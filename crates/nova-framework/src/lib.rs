@@ -6,8 +6,9 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
+use nova_core::ProjectId;
 use nova_hir::framework::ClassData;
-use nova_types::{ClassId, CompletionItem, Diagnostic, Parameter, ProjectId, Span, Type};
+use nova_types::{ClassId, CompletionItem, Diagnostic, Parameter, Span, Type};
 use nova_vfs::FileId;
 
 /// Maven/Gradle dependency coordinate.

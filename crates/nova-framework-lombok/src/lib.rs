@@ -11,7 +11,8 @@ use nova_framework::{
     VirtualMethod,
 };
 use nova_hir::framework::{ClassData, FieldData};
-use nova_types::{ClassId, Parameter, ProjectId, Type};
+use nova_core::ProjectId;
+use nova_types::{ClassId, Parameter, Type};
 
 pub struct LombokAnalyzer;
 

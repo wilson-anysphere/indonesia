@@ -17,7 +17,8 @@ pub use cdi::{CdiAnalysis, CdiModel};
 pub use config::{collect_config_property_names, config_property_completions};
 
 use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
-use nova_types::{ClassId, ProjectId};
+use nova_core::ProjectId;
+use nova_types::ClassId;
 
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
 

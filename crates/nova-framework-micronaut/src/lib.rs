@@ -40,7 +40,8 @@ pub use validation::{
 pub use nova_types::{CompletionItem, Diagnostic, Severity, Span};
 
 use nova_framework::{Database, FrameworkAnalyzer, VirtualMember};
-use nova_types::{ClassId, ProjectId};
+use nova_core::ProjectId;
+use nova_types::ClassId;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AnalysisResult {
