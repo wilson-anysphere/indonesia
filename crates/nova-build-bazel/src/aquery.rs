@@ -289,7 +289,7 @@ fn apply_javac_argument(
     }
 
     match arg {
-        "-classpath" | "--class-path" => *pending = Some(PendingJavacArg::Classpath),
+        "-classpath" | "--class-path" | "-cp" => *pending = Some(PendingJavacArg::Classpath),
         "--module-path" => *pending = Some(PendingJavacArg::ModulePath),
         "--release" => *pending = Some(PendingJavacArg::Release),
         "--source" | "-source" => *pending = Some(PendingJavacArg::Source),
@@ -300,6 +300,20 @@ fn apply_javac_argument(
         }
         "-sourcepath" | "--source-path" => *pending = Some(PendingJavacArg::SourcePath),
         other => {
+            if let Some(classpath) = other
+                .strip_prefix("-classpath=")
+                .or_else(|| other.strip_prefix("--class-path="))
+                .or_else(|| other.strip_prefix("-cp="))
+            {
+                info.classpath = split_path_list(classpath);
+                return;
+            }
+
+            if let Some(module_path) = other.strip_prefix("--module-path=") {
+                info.module_path = split_path_list(module_path);
+                return;
+            }
+
             if let Some(release) = other.strip_prefix("--release=") {
                 let release = release.to_string();
                 info.release = Some(release.clone());
@@ -308,8 +322,43 @@ fn apply_javac_argument(
                 return;
             }
 
+            if let Some(source) = other
+                .strip_prefix("--source=")
+                .or_else(|| other.strip_prefix("-source="))
+            {
+                if info.release.is_none() {
+                    info.source = Some(source.to_string());
+                }
+                return;
+            }
+
+            if let Some(target) = other
+                .strip_prefix("--target=")
+                .or_else(|| other.strip_prefix("-target="))
+            {
+                if info.release.is_none() {
+                    info.target = Some(target.to_string());
+                }
+                return;
+            }
+
             if let Some(output_dir) = other.strip_prefix("-d=") {
                 info.output_dir = Some(output_dir.to_string());
+                return;
+            }
+
+            if let Some(sourcepath) = other
+                .strip_prefix("-sourcepath=")
+                .or_else(|| other.strip_prefix("--source-path="))
+            {
+                // Once a sourcepath is provided we no longer need to track source roots from
+                // individual `.java` arguments.
+                java_file_roots.clear();
+                for root in split_path_list(sourcepath) {
+                    if !root.is_empty() {
+                        sourcepath_roots.insert(root);
+                    }
+                }
                 return;
             }
 
@@ -651,6 +700,9 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
             }
             "-sourcepath" | "--source-path" => {
                 if let Some(v) = it.next() {
+                    // Once a sourcepath is provided we no longer need to track source roots from
+                    // individual `.java` arguments.
+                    java_file_roots.clear();
                     for root in split_path_list(v) {
                         if !root.is_empty() {
                             sourcepath_roots.insert(root);
@@ -659,37 +711,65 @@ pub(crate) fn extract_java_compile_info_from_args(args: &[String]) -> JavaCompil
                 }
             }
             other => {
-                // Support `--flag=value` forms that show up in some Bazel invocations.
-                if let Some(value) = other.strip_prefix("--module-path=") {
-                    info.module_path = split_path_list(value);
+                if let Some(classpath) = other
+                    .strip_prefix("-classpath=")
+                    .or_else(|| other.strip_prefix("--class-path="))
+                    .or_else(|| other.strip_prefix("-cp="))
+                {
+                    info.classpath = split_path_list(classpath);
                     continue;
                 }
-                if let Some(value) = other.strip_prefix("--class-path=") {
-                    info.classpath = split_path_list(value);
+
+                if let Some(module_path) = other.strip_prefix("--module-path=") {
+                    info.module_path = split_path_list(module_path);
                     continue;
                 }
-                if let Some(value) = other.strip_prefix("--source=") {
-                    if info.release.is_none() {
-                        info.source = Some(value.to_string());
-                    }
-                    continue;
-                }
-                if let Some(value) = other.strip_prefix("--target=") {
-                    if info.release.is_none() {
-                        info.target = Some(value.to_string());
-                    }
-                    continue;
-                }
-                if let Some(value) = other.strip_prefix("--release=") {
-                    let release = value.to_string();
+
+                if let Some(release) = other.strip_prefix("--release=") {
+                    let release = release.to_string();
                     info.release = Some(release.clone());
                     info.source = Some(release.clone());
                     info.target = Some(release);
                     continue;
                 }
 
+                if let Some(source) = other
+                    .strip_prefix("--source=")
+                    .or_else(|| other.strip_prefix("-source="))
+                {
+                    if info.release.is_none() {
+                        info.source = Some(source.to_string());
+                    }
+                    continue;
+                }
+
+                if let Some(target) = other
+                    .strip_prefix("--target=")
+                    .or_else(|| other.strip_prefix("-target="))
+                {
+                    if info.release.is_none() {
+                        info.target = Some(target.to_string());
+                    }
+                    continue;
+                }
+
                 if let Some(output_dir) = other.strip_prefix("-d=") {
                     info.output_dir = Some(output_dir.to_string());
+                    continue;
+                }
+
+                if let Some(sourcepath) = other
+                    .strip_prefix("-sourcepath=")
+                    .or_else(|| other.strip_prefix("--source-path="))
+                {
+                    // Once a sourcepath is provided we no longer need to track source roots from
+                    // individual `.java` arguments.
+                    java_file_roots.clear();
+                    for root in split_path_list(sourcepath) {
+                        if !root.is_empty() {
+                            sourcepath_roots.insert(root);
+                        }
+                    }
                     continue;
                 }
 

@@ -21,7 +21,7 @@ const AQUERY_DEPS_TEMPLATE: &str = r#"mnemonic("Javac", deps(TARGET))"#;
 const BUILDFILES_QUERY_TEMPLATE: &str = "buildfiles(deps(TARGET))";
 const LOADFILES_QUERY_TEMPLATE: &str = "loadfiles(deps(TARGET))";
 const DEPS_QUERY_TEMPLATE: &str = "deps(TARGET)";
-const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v5";
+const TEXTPROTO_PARSER_VERSION: &str = "aquery-textproto-streaming-v6";
 
 fn compile_info_expr_version_hex() -> String {
     // Keep this in sync with the query expressions above; changes should invalidate cached compile

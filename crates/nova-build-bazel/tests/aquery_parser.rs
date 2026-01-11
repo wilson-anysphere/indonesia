@@ -126,6 +126,41 @@ action {
 }
 
 #[test]
+fn parses_equals_form_flags() {
+    let output = r#"
+action {
+  mnemonic: "Javac"
+  owner: "//java/com/example:eq"
+  arguments: "javac"
+  arguments: "--class-path=a.jar:b.jar"
+  arguments: "--module-path=mods"
+  arguments: "--source=17"
+  arguments: "--target=17"
+  arguments: "--source-path=src/main/java:src/test/java"
+  arguments: "src/main/java/com/example/Hello.java"
+}
+"#;
+
+    let actions = parse_aquery_textproto(output);
+    assert_eq!(actions.len(), 1);
+    let info = extract_java_compile_info(&actions[0]);
+
+    assert_eq!(
+        info.classpath,
+        vec!["a.jar".to_string(), "b.jar".to_string()]
+    );
+    assert_eq!(info.module_path, vec!["mods".to_string()]);
+    assert_eq!(info.source.as_deref(), Some("17"));
+    assert_eq!(info.target.as_deref(), Some("17"));
+    assert_eq!(info.release, None);
+    assert!(!info.preview);
+    assert_eq!(
+        info.source_roots,
+        vec!["src/main/java".to_string(), "src/test/java".to_string()]
+    );
+}
+
+#[test]
 fn windows_path_lists_split_on_semicolon() {
     let output = r#"
 action {
