@@ -181,12 +181,31 @@ cargo test -p nova-lsp stdio_
 cargo test -p nova-dap
 ```
 
+#### 3c) DAP end-to-end tests (real JVM; optional)
+
+**What:** A smoke test that attaches to a real JVM via JDWP, sets a breakpoint, and waits for a stop.
+This requires a local JDK (`java` + `javac` on `PATH`) and is opt-in so normal CI stays stable.
+
+**Where:**
+
+- Test: `crates/nova-dap/tests/real_jvm.rs`
+- Java fixture: `crates/nova-dap/testdata/java/Main.java`
+
+**Run locally:**
+
+```bash
+cargo test -p nova-dap --features real-jvm-tests --test real_jvm -- --nocapture
+```
+
 ---
 
 ### 4) Differential tests vs `javac`
 
 **What:** Tests that exercise a “compile with `javac`” harness to validate our own diagnostics/parsing logic
-against the reference compiler. These are `#[ignore]` by default so CI can run without a JDK.
+against the reference compiler.
+
+These tests are `#[ignore]` by default so `cargo test` (and `.github/workflows/ci.yml`) can run without a
+JDK. CI runs them separately in `.github/workflows/javac.yml`.
 
 **Where:**
 
@@ -214,6 +233,8 @@ Nova uses `cargo-fuzz` for “never panic” hardening (parser, formatter, class
 refactoring surfaces).
 
 For deeper details (timeouts, minimization, artifacts), see [`docs/fuzzing.md`](fuzzing.md).
+
+CI runs short, time-boxed fuzz jobs in `.github/workflows/fuzz.yml` (scheduled + manual).
 
 **Where:**
 
@@ -245,6 +266,8 @@ cargo +nightly fuzz list
 These tests validate Nova on large, real OSS Java repositories. They are `#[ignore]` by default because
 they require network access (to clone fixtures) and can take significant time.
 
+CI runs these suites in `.github/workflows/real-projects.yml` (scheduled + manual).
+
 **Where:**
 
 - Fixtures directory (local-only clones): `test-projects/`
@@ -271,6 +294,15 @@ To focus on a subset of fixtures/tests:
 
 # or:
 NOVA_TEST_PROJECTS=spring-petclinic,maven-resolver ./scripts/run-real-project-tests.sh
+```
+
+To clone/update only a subset of fixtures (same selection mechanism as above):
+
+```bash
+./scripts/clone-test-projects.sh --only spring-petclinic,maven-resolver
+
+# or:
+NOVA_TEST_PROJECTS=spring-petclinic,maven-resolver ./scripts/clone-test-projects.sh
 ```
 
 ---
@@ -373,7 +405,7 @@ Always inspect `git diff` after updating snapshots.
 | `.github/workflows/javac.yml` | in repo | Run `#[ignore]` `javac` differential tests in an environment with a JDK | `cargo test -p nova-types --test javac_differential -- --ignored` |
 | `.github/workflows/real-projects.yml` | in repo | Clone `test-projects/` and run ignored real-project suites (nightly / manual) | `./scripts/run-real-project-tests.sh` |
 | `.github/workflows/fuzz.yml` | in repo | Run short, time-boxed `cargo fuzz` jobs (nightly / manual) | `cargo +nightly fuzz run fuzz_syntax_parse -- -max_total_time=60` |
-| `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (weekly / main) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html` |
+| `.github/workflows/coverage.yml` | in repo | Generate coverage reports for selected crates (main + schedule + manual) | `cargo llvm-cov -p nova-core -p nova-syntax -p nova-ide --html` |
 
 Note: `.github/workflows/release.yml` exists for packaging and release automation; it is not a test gate.
 
