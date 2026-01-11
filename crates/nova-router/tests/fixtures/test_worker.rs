@@ -86,6 +86,17 @@ async fn main() -> Result<()> {
         other => return Err(anyhow!("unexpected router hello: {other:?}")),
     }
 
+    if attempt <= cfg.exit_after_handshake_attempts {
+        if cfg.exit_after_handshake_delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(cfg.exit_after_handshake_delay_ms)).await;
+        }
+        eprintln!(
+            "test worker shard {} exiting after handshake (attempt {})",
+            args.shard_id, attempt
+        );
+        return Ok(());
+    }
+
     let mut state = WorkerState::new(args.shard_id);
     loop {
         let msg = read_message(&mut stream).await?;
@@ -282,6 +293,8 @@ struct TestWorkerConfig {
     fail_attempts: u32,
     connect_delay_ms: u64,
     connect_delay_attempts: u32,
+    exit_after_handshake_attempts: u32,
+    exit_after_handshake_delay_ms: u64,
 }
 
 impl TestWorkerConfig {
@@ -313,6 +326,18 @@ impl TestWorkerConfig {
                 "connect_delay_attempts" => {
                     cfg.connect_delay_attempts =
                         value.trim().parse().unwrap_or(cfg.connect_delay_attempts);
+                }
+                "exit_after_handshake_attempts" => {
+                    cfg.exit_after_handshake_attempts = value
+                        .trim()
+                        .parse()
+                        .unwrap_or(cfg.exit_after_handshake_attempts);
+                }
+                "exit_after_handshake_delay_ms" => {
+                    cfg.exit_after_handshake_delay_ms = value
+                        .trim()
+                        .parse()
+                        .unwrap_or(cfg.exit_after_handshake_delay_ms);
                 }
                 _ => {}
             }
