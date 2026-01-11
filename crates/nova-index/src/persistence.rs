@@ -1483,7 +1483,7 @@ impl Drop for IndexWriteLock {
 }
 
 struct ReentrantWriteLockEntry {
-    lock: CacheLock,
+    _lock: CacheLock,
     count: usize,
 }
 
@@ -1517,7 +1517,10 @@ fn acquire_index_write_lock(indexes_dir: &Path) -> Result<IndexWriteLock, IndexP
     INDEX_WRITE_LOCKS.with(|locks_cell| {
         locks_cell.borrow_mut().insert(
             lock_path.clone(),
-            ReentrantWriteLockEntry { lock, count: 1 },
+            ReentrantWriteLockEntry {
+                _lock: lock,
+                count: 1,
+            },
         );
     });
 
