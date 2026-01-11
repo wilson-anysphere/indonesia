@@ -10,8 +10,7 @@ use nova_bugreport::{install_panic_hook, PanicHookConfig};
 use nova_config::{init_tracing_with_config, NovaConfig};
 use nova_fuzzy::{FuzzyMatcher, MatchScore, TrigramIndex, TrigramIndexBuilder};
 use nova_remote_proto::{
-    FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, ShardIndexInfo, Symbol, WorkerId,
-    WorkerStats,
+    FileText, RpcMessage, ScoredSymbol, ShardId, ShardIndex, Symbol, WorkerId, WorkerStats,
 };
 use nova_scheduler::{CancellationToken, Cancelled, Scheduler, SchedulerConfig};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -703,7 +702,7 @@ impl DistributedRouter {
         let mut merged = Vec::new();
         while let Some(res) = tasks.join_next().await {
             match res {
-                Ok((shard_id, worker_id, Ok(RpcMessage::SearchSymbolsResult { items }))) => {
+                Ok((_, _, Ok(RpcMessage::SearchSymbolsResult { items }))) => {
                     merged.extend(items);
                 }
                 Ok((shard_id, worker_id, Ok(RpcMessage::Error { message }))) => {
@@ -1017,6 +1016,9 @@ async fn handle_new_connection(
     mut stream: BoxedStream,
     identity: WorkerIdentity,
 ) -> Result<()> {
+    #[cfg(not(feature = "tls"))]
+    let _ = &identity;
+
     let payload = timeout(WORKER_HANDSHAKE_TIMEOUT, read_payload(&mut stream))
         .await
         .context("timed out waiting for WorkerHello")??;
@@ -1901,7 +1903,11 @@ async fn read_payload(stream: &mut (impl AsyncRead + Unpin)) -> Result<Vec<u8>> 
             nova_remote_proto::MAX_MESSAGE_BYTES
         ));
     }
-    let mut buf = vec![0u8; len_usize];
+    // Use fallible reservation so allocation failure surfaces as an error rather than aborting the
+    // process.
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(len_usize).context("allocate message buffer")?;
+    buf.resize(len_usize, 0);
     stream
         .read_exact(&mut buf)
         .await

@@ -409,7 +409,11 @@ impl<'a> WireReader<'a> {
         let bytes = self.read_exact(len)?;
         let s = std::str::from_utf8(bytes)
             .with_context(|| format!("invalid UTF-8 in {field}"))?;
-        Ok(s.to_owned())
+        let mut out = String::new();
+        out.try_reserve_exact(s.len())
+            .map_err(|err| anyhow!("failed to reserve {} bytes for {field}: {err:?}", s.len()))?;
+        out.push_str(s);
+        Ok(out)
     }
 
     fn read_option<T>(

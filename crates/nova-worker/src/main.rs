@@ -346,6 +346,7 @@ impl Args {
             ));
         }
 
+        #[cfg(feature = "tls")]
         let tls = match (tls_ca_cert, tls_domain) {
             (Some(ca_cert), domain) => {
                 let (client_cert, client_key) = match (tls_client_cert, tls_client_key) {
@@ -760,7 +761,11 @@ async fn read_message(stream: &mut (impl AsyncRead + Unpin)) -> Result<RpcMessag
             nova_remote_proto::MAX_MESSAGE_BYTES
         ));
     }
-    let mut buf = vec![0u8; len_usize];
+    // Use fallible reservation so allocation failure surfaces as an error rather than aborting the
+    // process.
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(len_usize).context("allocate message buffer")?;
+    buf.resize(len_usize, 0);
     stream
         .read_exact(&mut buf)
         .await
