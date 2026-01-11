@@ -432,6 +432,95 @@ fn parse_switch_arrow_labels_with_parenthesized_expressions() {
 }
 
 #[test]
+fn parse_local_type_declaration_statement() {
+    let input = "class Foo { void m() { class Local {} } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let local_stmt = result
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::LocalTypeDeclarationStatement)
+        .expect("expected LocalTypeDeclarationStatement");
+    assert!(
+        local_stmt.children().any(|n| n.kind() == SyntaxKind::ClassDeclaration),
+        "expected local type declaration to contain a class declaration"
+    );
+}
+
+#[test]
+fn parse_switch_mixed_groups_and_rules() {
+    let input = "class Foo { void m(int x) { switch (x) { case 1: case 2: break; case 3 -> break; default -> break; } } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::SwitchGroup));
+    assert!(kinds.contains(&SyntaxKind::SwitchRule));
+}
+
+#[test]
+fn parse_switch_expression_in_return_statement() {
+    let input = "class Foo { int m(int x) { return switch (x) { case 1 -> 1; default -> 0; }; } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    assert!(
+        result
+            .syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::SwitchExpression),
+        "expected SwitchExpression node"
+    );
+}
+
+#[test]
+fn switch_expression_rule_expressions_are_not_expression_statements() {
+    let input = "class Foo { int m(int x) { return switch (x) { case 1 -> 1; default -> 0; }; } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let switch_expr = result
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::SwitchExpression)
+        .expect("expected SwitchExpression");
+    assert!(
+        !switch_expr
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::ExpressionStatement),
+        "expected switch expression rule expressions to be parsed as expressions, not expression statements"
+    );
+}
+
+#[test]
+fn parse_yield_statement_in_switch_expression_rule_block() {
+    let input = "class Foo { int m(int x) { return switch (x) { case 1 -> { yield 1; } default -> { yield 0; } }; } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    assert!(
+        result
+            .syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::YieldStatement),
+        "expected YieldStatement inside switch expression"
+    );
+}
+
+#[test]
+fn parse_try_with_resources_allows_trailing_semicolon() {
+    let input = "class Foo { void m() throws Exception { try (var x = foo(); ) { return; } } }";
+    let result = parse_java(input);
+    assert_eq!(result.errors, Vec::new());
+
+    let kinds: Vec<_> = result.syntax().descendants().map(|n| n.kind()).collect();
+    assert!(kinds.contains(&SyntaxKind::TryStatement));
+    assert!(kinds.contains(&SyntaxKind::ResourceSpecification));
+    assert!(kinds.contains(&SyntaxKind::Resource));
+}
+
+#[test]
 fn cache_parse_detects_doc_comments() {
     let parsed = crate::parse("/** doc */ class Foo {}");
     let kinds: Vec<_> = parsed.tokens().map(|t| t.kind).collect();

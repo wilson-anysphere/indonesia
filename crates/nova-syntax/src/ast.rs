@@ -95,6 +95,37 @@ ast_node!(OpensDirective, SyntaxKind::OpensDirective);
 ast_node!(UsesDirective, SyntaxKind::UsesDirective);
 ast_node!(ProvidesDirective, SyntaxKind::ProvidesDirective);
 
+// Statements / expressions (common, non-exhaustive).
+ast_node!(Block, SyntaxKind::Block);
+ast_node!(IfStatement, SyntaxKind::IfStatement);
+ast_node!(ForStatement, SyntaxKind::ForStatement);
+ast_node!(WhileStatement, SyntaxKind::WhileStatement);
+ast_node!(DoWhileStatement, SyntaxKind::DoWhileStatement);
+ast_node!(TryStatement, SyntaxKind::TryStatement);
+ast_node!(ReturnStatement, SyntaxKind::ReturnStatement);
+ast_node!(ThrowStatement, SyntaxKind::ThrowStatement);
+ast_node!(BreakStatement, SyntaxKind::BreakStatement);
+ast_node!(ContinueStatement, SyntaxKind::ContinueStatement);
+ast_node!(AssertStatement, SyntaxKind::AssertStatement);
+ast_node!(YieldStatement, SyntaxKind::YieldStatement);
+ast_node!(
+    LocalVariableDeclarationStatement,
+    SyntaxKind::LocalVariableDeclarationStatement
+);
+ast_node!(
+    LocalTypeDeclarationStatement,
+    SyntaxKind::LocalTypeDeclarationStatement
+);
+ast_node!(ExpressionStatement, SyntaxKind::ExpressionStatement);
+ast_node!(EmptyStatement, SyntaxKind::EmptyStatement);
+
+ast_node!(SwitchStatement, SyntaxKind::SwitchStatement);
+ast_node!(SwitchExpression, SyntaxKind::SwitchExpression);
+ast_node!(SwitchBlock, SyntaxKind::SwitchBlock);
+ast_node!(SwitchGroup, SyntaxKind::SwitchGroup);
+ast_node!(SwitchRule, SyntaxKind::SwitchRule);
+ast_node!(SwitchLabel, SyntaxKind::SwitchLabel);
+
 impl CompilationUnit {
     /// Compatibility accessor returning the raw syntax nodes for the top-level type declarations.
     ///
