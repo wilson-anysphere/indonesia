@@ -383,6 +383,58 @@ Notes:
 
 ---
 
+### `nova/projectModel`
+
+- **Kind:** request
+- **Stability:** experimental
+- **Rust types:** `crates/nova-lsp/src/extensions/build.rs` (`ProjectModelParams`, `ProjectModelResult`,
+  `ProjectModelUnit`, `JavaLanguageLevel`)
+- **Handler:** `crates/nova-lsp/src/extensions/build.rs::handle_project_model`
+- **Time budget:** 2s (**timeout may enter safe-mode**)
+
+This endpoint returns a **normalized “project model”** for the workspace so editor clients can build
+their own internal module/target graph without having to re-implement Maven/Gradle/Bazel discovery.
+
+#### Request params
+
+```json
+{ "projectRoot": "/absolute/path/to/workspace" }
+```
+
+`projectRoot` also accepts the legacy alias `root`.
+
+#### Response
+
+```json
+{
+  "projectRoot": "/absolute/path/to/workspace",
+  "units": [
+    {
+      "kind": "maven",
+      "module": ".",
+      "compileClasspath": ["/path/to/dependency.jar"],
+      "modulePath": [],
+      "sourceRoots": ["src/main/java"],
+      "languageLevel": { "source": "17", "target": "17", "release": null }
+    }
+  ]
+}
+```
+
+`units` is a list of `ProjectModelUnit` objects keyed by the `kind` discriminator:
+
+- `"maven"`: `{ module, compileClasspath, modulePath, sourceRoots, languageLevel }`
+- `"gradle"`: `{ projectPath, compileClasspath, modulePath, sourceRoots, languageLevel }`
+- `"bazel"`: `{ target, compileClasspath, modulePath, sourceRoots, languageLevel }`
+- `"simple"`: `{ module, compileClasspath, modulePath, sourceRoots, languageLevel }`
+
+#### Errors
+
+- `-32602` if `projectRoot` is missing/empty.
+- `-32603` for build tool invocation failures, Bazel query issues, or filesystem errors.
+
+---
+
 ## Annotation processing / generated sources (`nova-apt`)
 
 ### `nova/java/generatedSources`
