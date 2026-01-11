@@ -15,8 +15,10 @@ pub fn merge_completions(
         return standard;
     }
 
-    let mut seen_insert_text: HashSet<String> =
-        standard.iter().map(|item| item.insert_text.clone()).collect();
+    let mut seen_insert_text: HashSet<String> = standard
+        .iter()
+        .map(|item| item.insert_text.clone())
+        .collect();
 
     ai.retain(|item| seen_insert_text.insert(item.insert_text.clone()));
 
@@ -56,6 +58,7 @@ mod tests {
             ai_max_items: 10,
             ai_max_additional_edits: 3,
             ai_max_tokens: 64,
+            ai_timeout_ms: 5_000,
         };
 
         let standard = vec![

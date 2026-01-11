@@ -68,7 +68,9 @@ pub use server::{HotSwapParams, HotSwapService, NovaLspServer};
 pub use workspace_edit::{client_supports_file_operations, workspace_edit_from_refactor};
 pub use completion_resolve::resolve_completion_item;
 #[cfg(feature = "ai")]
-pub use completion_more::{CompletionContextId, NovaCompletionResponse, NovaCompletionService};
+pub use completion_more::{
+    CompletionContextId, CompletionMoreConfig, NovaCompletionResponse, NovaCompletionService,
+};
 #[cfg(feature = "ai")]
 pub use requests::{MoreCompletionsParams, MoreCompletionsResult, NOVA_COMPLETION_MORE_METHOD};
 

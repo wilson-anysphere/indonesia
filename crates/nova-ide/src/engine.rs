@@ -1,7 +1,10 @@
 use crate::{validate_ai_completion, CompletionConfig, NovaCompletionItem};
-use futures::executor::block_on;
-use nova_ai::{CompletionContextBuilder, MultiTokenCompletionContext, MultiTokenCompletionProvider};
+use nova_ai::{
+    CompletionContextBuilder, MultiTokenCompletionContext, MultiTokenCompletionProvider,
+};
 use std::sync::Arc;
+use tokio::time;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct CompletionEngine {
@@ -32,7 +35,10 @@ impl CompletionEngine {
     }
 
     /// Synchronous semantic completions (fast path).
-    pub fn standard_completions(&self, ctx: &MultiTokenCompletionContext) -> Vec<NovaCompletionItem> {
+    pub fn standard_completions(
+        &self,
+        ctx: &MultiTokenCompletionContext,
+    ) -> Vec<NovaCompletionItem> {
         ctx.available_methods
             .iter()
             .map(|name| NovaCompletionItem::standard(name, name))
@@ -40,11 +46,16 @@ impl CompletionEngine {
     }
 
     /// AI multi-token completions (slow path).
-    ///
-    /// This method is synchronous by design: callers are expected to run it in a
-    /// background thread to preserve interactive latency.
-    pub fn ai_completions(&self, ctx: &MultiTokenCompletionContext) -> Vec<NovaCompletionItem> {
+    pub async fn ai_completions_async(
+        &self,
+        ctx: &MultiTokenCompletionContext,
+        cancel: CancellationToken,
+    ) -> Vec<NovaCompletionItem> {
         if !self.supports_ai() {
+            return Vec::new();
+        }
+
+        if cancel.is_cancelled() {
             return Vec::new();
         }
 
@@ -57,7 +68,20 @@ impl CompletionEngine {
             .context_builder
             .build_completion_prompt(ctx, self.config.ai_max_items);
 
-        let suggestions = match block_on(provider.complete_multi_token(prompt, self.config.ai_max_items)) {
+        let timeout = std::time::Duration::from_millis(self.config.ai_timeout_ms.max(1));
+        let request =
+            provider.complete_multi_token(prompt, self.config.ai_max_items, cancel.clone());
+
+        let suggestions = match tokio::select! {
+            _ = cancel.cancelled() => Err(nova_ai::AiProviderError::Cancelled),
+            res = time::timeout(timeout, request) => match res {
+                Ok(res) => res,
+                Err(_) => {
+                    cancel.cancel();
+                    Err(nova_ai::AiProviderError::Timeout)
+                }
+            }
+        } {
             Ok(suggestions) => suggestions,
             Err(_err) => return Vec::new(),
         };

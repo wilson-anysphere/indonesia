@@ -9,6 +9,8 @@ nova-config = { path = "../nova-config" }
 nova-core = { path = "../nova-core" }
 nova-decompile = { path = "../nova-decompile" }
 futures = "0.3"
+tokio = { workspace = true, optional = true }
+tokio-util = { version = "0.7", optional = true }
 nova-project = { path = "../nova-project" }
 nova-fuzzy = { path = "../nova-fuzzy" }
 nova-db = { path = "../nova-db" }
@@ -28,7 +30,7 @@ nova-framework-spring = { path = "../nova-framework-spring" }
 nova-framework-micronaut = { path = "../nova-framework-micronaut" }
 
 [features]
-ai = ["dep:nova-ai"]
+ai = ["dep:nova-ai", "dep:tokio", "dep:tokio-util"]
 
 [lib]
 path = "src/lib.rs"

@@ -1,4 +1,7 @@
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::time::Duration;
 
 use futures::future::BoxFuture;
@@ -8,25 +11,32 @@ use nova_ai::{
 };
 use nova_ide::{CompletionConfig, CompletionEngine};
 use nova_lsp::{MoreCompletionsParams, NovaCompletionService};
+use tokio_util::sync::CancellationToken;
 
-#[derive(Default)]
 struct Gate {
-    ready: Mutex<bool>,
-    cvar: Condvar,
+    ready: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            ready: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
 }
 
 impl Gate {
-    fn wait(&self) {
-        let mut ready = self.ready.lock().expect("poisoned mutex");
-        while !*ready {
-            ready = self.cvar.wait(ready).expect("poisoned mutex");
+    async fn wait(&self) {
+        while !self.ready.load(Ordering::SeqCst) {
+            self.notify.notified().await;
         }
     }
 
     fn release(&self) {
-        let mut ready = self.ready.lock().expect("poisoned mutex");
-        *ready = true;
-        self.cvar.notify_all();
+        self.ready.store(true, Ordering::SeqCst);
+        self.notify.notify_one();
     }
 }
 
@@ -63,14 +73,17 @@ impl MultiTokenCompletionProvider for MockProvider {
         &'a self,
         prompt: String,
         _max_items: usize,
+        cancel: CancellationToken,
     ) -> BoxFuture<'a, Result<Vec<MultiTokenCompletion>, AiProviderError>> {
         self.prompts.lock().expect("poisoned mutex").push(prompt);
         let gate = Arc::clone(&self.gate);
         let response = self.response.lock().expect("poisoned mutex").clone();
 
         Box::pin(async move {
-            gate.wait();
-            Ok(response)
+            tokio::select! {
+                _ = gate.wait() => Ok(response),
+                _ = cancel.cancelled() => Err(AiProviderError::Cancelled),
+            }
         })
     }
 }
@@ -85,8 +98,8 @@ fn ctx() -> MultiTokenCompletionContext {
     }
 }
 
-#[test]
-fn completion_more_returns_multi_token_items_async() {
+#[tokio::test]
+async fn completion_more_returns_multi_token_items_async() {
     let provider = Arc::new(MockProvider::new());
     provider.set_response(vec![
         MultiTokenCompletion {
@@ -126,7 +139,11 @@ fn completion_more_returns_multi_token_items_async() {
     let service = NovaCompletionService::new(engine);
 
     let completion = service.completion(ctx());
-    assert!(completion.list.items.iter().any(|item| item.label == "filter"));
+    assert!(completion
+        .list
+        .items
+        .iter()
+        .any(|item| item.label == "filter"));
 
     let first_poll = service.completion_more(MoreCompletionsParams {
         context_id: completion.context_id.to_string(),
@@ -145,7 +162,7 @@ fn completion_more_returns_multi_token_items_async() {
             resolved = Some(poll);
             break;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     let poll = resolved.expect("AI completions should resolve");
@@ -155,7 +172,10 @@ fn completion_more_returns_multi_token_items_async() {
         .as_deref()
         .unwrap()
         .contains("filter("));
-    assert_eq!(poll.items[0].insert_text_format, Some(lsp_types::InsertTextFormat::SNIPPET));
+    assert_eq!(
+        poll.items[0].insert_text_format,
+        Some(lsp_types::InsertTextFormat::SNIPPET)
+    );
 
     // Prompt construction included important context.
     let prompts = provider.prompts();
@@ -164,4 +184,77 @@ fn completion_more_returns_multi_token_items_async() {
     assert!(prompts[0].contains("Expected type: List<String>"));
     assert!(prompts[0].contains("- filter"));
     assert!(prompts[0].contains("people.stream()."));
+}
+
+struct CancelAwareProvider {
+    started: tokio::sync::Notify,
+    cancelled: tokio::sync::Notify,
+}
+
+impl CancelAwareProvider {
+    fn new() -> Self {
+        Self {
+            started: tokio::sync::Notify::new(),
+            cancelled: tokio::sync::Notify::new(),
+        }
+    }
+
+    async fn wait_started(&self) {
+        self.started.notified().await;
+    }
+
+    async fn wait_cancelled(&self) {
+        self.cancelled.notified().await;
+    }
+}
+
+impl MultiTokenCompletionProvider for CancelAwareProvider {
+    fn complete_multi_token<'a>(
+        &'a self,
+        _prompt: String,
+        _max_items: usize,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<Vec<MultiTokenCompletion>, AiProviderError>> {
+        Box::pin(async move {
+            self.started.notify_one();
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    self.cancelled.notify_one();
+                    Err(AiProviderError::Cancelled)
+                }
+                _ = tokio::time::sleep(Duration::from_secs(60)) => Ok(Vec::new()),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn completion_can_be_cancelled() {
+    let provider = Arc::new(CancelAwareProvider::new());
+    let mut config = CompletionConfig::default();
+    config.ai_timeout_ms = 30_000;
+    let engine = CompletionEngine::new(
+        config,
+        CompletionContextBuilder::new(10_000),
+        Some(provider.clone()),
+    );
+    let service = NovaCompletionService::new(engine);
+
+    let completion = service.completion(ctx());
+
+    tokio::time::timeout(Duration::from_secs(1), provider.wait_started())
+        .await
+        .expect("provider should start");
+
+    assert!(service.cancel(completion.context_id));
+
+    tokio::time::timeout(Duration::from_secs(1), provider.wait_cancelled())
+        .await
+        .expect("provider should observe cancellation");
+
+    let poll = service.completion_more(MoreCompletionsParams {
+        context_id: completion.context_id.to_string(),
+    });
+    assert!(poll.items.is_empty());
+    assert!(!poll.is_incomplete);
 }

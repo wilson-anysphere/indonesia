@@ -10,6 +10,13 @@ pub struct CompletionConfig {
     pub ai_max_additional_edits: usize,
     /// Maximum token budget for the insert text (best-effort tokenization).
     pub ai_max_tokens: usize,
+    /// Timeout (in milliseconds) for a single AI completion request.
+    #[serde(default = "default_ai_timeout_ms")]
+    pub ai_timeout_ms: u64,
+}
+
+fn default_ai_timeout_ms() -> u64 {
+    5_000
 }
 
 impl Default for CompletionConfig {
@@ -19,7 +26,7 @@ impl Default for CompletionConfig {
             ai_max_items: 8,
             ai_max_additional_edits: 3,
             ai_max_tokens: 64,
+            ai_timeout_ms: default_ai_timeout_ms(),
         }
     }
 }
-
